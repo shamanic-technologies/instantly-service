@@ -5,6 +5,10 @@ import { instantlyEvents } from "../db/schema";
 const router = Router();
 const WEBHOOK_SECRET = process.env.INSTANTLY_WEBHOOK_SECRET;
 
+if (!WEBHOOK_SECRET) {
+  throw new Error("INSTANTLY_WEBHOOK_SECRET is required");
+}
+
 interface InstantlyWebhookPayload {
   event_type: string;
   campaign_id?: string;
@@ -16,15 +20,12 @@ interface InstantlyWebhookPayload {
 
 /**
  * POST /webhooks/instantly
- * Receives Instantly webhook events
+ * Receives Instantly webhook events (requires valid signature)
  */
 router.post("/instantly", async (req: Request, res: Response) => {
-  // Verify webhook secret if configured
-  if (WEBHOOK_SECRET) {
-    const signature = req.headers["x-instantly-signature"] || req.headers["authorization"];
-    if (signature !== WEBHOOK_SECRET && signature !== `Bearer ${WEBHOOK_SECRET}`) {
-      return res.status(401).json({ error: "Invalid webhook signature" });
-    }
+  const signature = req.headers["x-instantly-signature"] || req.headers["authorization"];
+  if (signature !== WEBHOOK_SECRET && signature !== `Bearer ${WEBHOOK_SECRET}`) {
+    return res.status(401).json({ error: "Invalid webhook signature" });
   }
 
   const payload = req.body as InstantlyWebhookPayload;
