@@ -1,0 +1,104 @@
+import { Router, Request, Response } from "express";
+import { db } from "../db";
+import { instantlyAccounts } from "../db/schema";
+import { eq } from "drizzle-orm";
+import {
+  listAccounts as listInstantlyAccounts,
+  enableWarmup as enableInstantlyWarmup,
+  disableWarmup as disableInstantlyWarmup,
+  getWarmupAnalytics,
+} from "../lib/instantly-client";
+
+const router = Router();
+
+/**
+ * GET /accounts
+ */
+router.get("/", async (req: Request, res: Response) => {
+  try {
+    const accounts = await db.select().from(instantlyAccounts);
+    res.json({ accounts });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /accounts/sync
+ * Sync accounts from Instantly API to local DB
+ */
+router.post("/sync", async (req: Request, res: Response) => {
+  try {
+    const instantlyAccountsList = await listInstantlyAccounts();
+
+    for (const account of instantlyAccountsList) {
+      await db
+        .insert(instantlyAccounts)
+        .values({
+          email: account.email,
+          warmupEnabled: account.warmup_enabled,
+          status: account.status,
+          dailySendLimit: account.daily_limit,
+        })
+        .onConflictDoUpdate({
+          target: instantlyAccounts.email,
+          set: {
+            warmupEnabled: account.warmup_enabled,
+            status: account.status,
+            dailySendLimit: account.daily_limit,
+            updatedAt: new Date(),
+          },
+        });
+    }
+
+    res.json({
+      success: true,
+      synced: instantlyAccountsList.length,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /accounts/:email/warmup
+ */
+router.post("/:email/warmup", async (req: Request, res: Response) => {
+  const { email } = req.params;
+  const { enabled } = req.body as { enabled: boolean };
+
+  if (typeof enabled !== "boolean") {
+    return res.status(400).json({ error: "enabled (boolean) required" });
+  }
+
+  try {
+    if (enabled) {
+      await enableInstantlyWarmup(email);
+    } else {
+      await disableInstantlyWarmup(email);
+    }
+
+    await db
+      .update(instantlyAccounts)
+      .set({ warmupEnabled: enabled, updatedAt: new Date() })
+      .where(eq(instantlyAccounts.email, email));
+
+    res.json({ success: true, email, warmupEnabled: enabled });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /accounts/warmup-analytics
+ */
+router.get("/warmup-analytics", async (req: Request, res: Response) => {
+  try {
+    const analytics = await getWarmupAnalytics();
+    res.json({ analytics });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+export default router;
