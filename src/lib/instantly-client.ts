@@ -26,9 +26,17 @@ export interface Lead {
 
 export interface Account {
   email: string;
-  warmup_enabled: boolean;
-  status: string;
+  warmup_status: number;
+  status: number;
+  first_name?: string;
+  last_name?: string;
+  stat_warmup_score?: number;
   daily_limit?: number;
+}
+
+interface PaginatedResponse<T> {
+  items: T[];
+  next_starting_after?: string;
 }
 
 export interface CampaignAnalytics {
@@ -163,7 +171,8 @@ export async function deleteLeads(
 // ─── Accounts ────────────────────────────────────────────────────────────────
 
 export async function listAccounts(): Promise<Account[]> {
-  return instantlyRequest<Account[]>("/accounts");
+  const response = await instantlyRequest<PaginatedResponse<Account>>("/accounts");
+  return response.items;
 }
 
 export async function enableWarmup(email: string): Promise<Account> {

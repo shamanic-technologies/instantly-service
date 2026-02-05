@@ -3,6 +3,11 @@ import { db } from "../db";
 import { instantlyEvents } from "../db/schema";
 
 const router = Router();
+const WEBHOOK_SECRET = process.env.INSTANTLY_WEBHOOK_SECRET;
+
+if (!WEBHOOK_SECRET) {
+  throw new Error("INSTANTLY_WEBHOOK_SECRET is required");
+}
 
 interface InstantlyWebhookPayload {
   event_type: string;
@@ -15,9 +20,15 @@ interface InstantlyWebhookPayload {
 
 /**
  * POST /webhooks/instantly
- * Receives Instantly webhook events (public, no auth)
+ * Receives Instantly webhook events (requires valid secret)
  */
 router.post("/instantly", async (req: Request, res: Response) => {
+  // Check secret in query param, header, or authorization
+  const secret = req.query.secret || req.headers["x-instantly-signature"] || req.headers["authorization"];
+  if (secret !== WEBHOOK_SECRET && secret !== `Bearer ${WEBHOOK_SECRET}`) {
+    return res.status(401).json({ error: "Invalid webhook secret" });
+  }
+
   const payload = req.body as InstantlyWebhookPayload;
 
   if (!payload.event_type) {
