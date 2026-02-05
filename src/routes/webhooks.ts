@@ -20,12 +20,13 @@ interface InstantlyWebhookPayload {
 
 /**
  * POST /webhooks/instantly
- * Receives Instantly webhook events (requires valid signature)
+ * Receives Instantly webhook events (requires valid secret)
  */
 router.post("/instantly", async (req: Request, res: Response) => {
-  const signature = req.headers["x-instantly-signature"] || req.headers["authorization"];
-  if (signature !== WEBHOOK_SECRET && signature !== `Bearer ${WEBHOOK_SECRET}`) {
-    return res.status(401).json({ error: "Invalid webhook signature" });
+  // Check secret in query param, header, or authorization
+  const secret = req.query.secret || req.headers["x-instantly-signature"] || req.headers["authorization"];
+  if (secret !== WEBHOOK_SECRET && secret !== `Bearer ${WEBHOOK_SECRET}`) {
+    return res.status(401).json({ error: "Invalid webhook secret" });
   }
 
   const payload = req.body as InstantlyWebhookPayload;
