@@ -32,19 +32,22 @@ router.post("/sync", async (req: Request, res: Response) => {
     const instantlyAccountsList = await listInstantlyAccounts();
 
     for (const account of instantlyAccountsList) {
+      const warmupEnabled = account.warmup_status === 1;
+      const status = account.status === 1 ? "active" : "inactive";
+
       await db
         .insert(instantlyAccounts)
         .values({
           email: account.email,
-          warmupEnabled: account.warmup_enabled,
-          status: account.status,
+          warmupEnabled,
+          status,
           dailySendLimit: account.daily_limit,
         })
         .onConflictDoUpdate({
           target: instantlyAccounts.email,
           set: {
-            warmupEnabled: account.warmup_enabled,
-            status: account.status,
+            warmupEnabled,
+            status,
             dailySendLimit: account.daily_limit,
             updatedAt: new Date(),
           },
