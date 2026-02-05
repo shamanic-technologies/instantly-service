@@ -49,9 +49,15 @@ export interface CampaignAnalytics {
   unsubscribed: number;
 }
 
+export interface EmailContent {
+  subject: string;
+  body: string;
+}
+
 export interface CreateCampaignParams {
   name: string;
   account_ids?: string[];
+  email?: EmailContent;
 }
 
 export interface AddLeadsParams {
@@ -115,9 +121,37 @@ async function instantlyRequest<T>(
 // ─── Campaigns ───────────────────────────────────────────────────────────────
 
 export async function createCampaign(params: CreateCampaignParams): Promise<Campaign> {
+  const body: Record<string, unknown> = {
+    name: params.name,
+  };
+
+  if (params.account_ids) {
+    body.account_ids = params.account_ids;
+  }
+
+  // Add email sequence if content provided
+  if (params.email) {
+    body.sequences = [
+      {
+        steps: [
+          {
+            type: "email",
+            delay: 0,
+            variants: [
+              {
+                subject: params.email.subject,
+                body: params.email.body,
+              },
+            ],
+          },
+        ],
+      },
+    ];
+  }
+
   return instantlyRequest<Campaign>("/campaigns", {
     method: "POST",
-    body: params,
+    body,
   });
 }
 

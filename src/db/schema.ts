@@ -8,6 +8,25 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
+// Organizations table - maps Clerk org IDs to internal IDs
+export const organizations = pgTable("organizations", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  clerkOrgId: text("clerk_org_id").notNull().unique(),
+  name: text("name"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Users table - maps Clerk user IDs to internal IDs
+export const users = pgTable("users", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  clerkUserId: text("clerk_user_id").notNull().unique(),
+  organizationId: text("organization_id").notNull(),
+  email: text("email"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // Campaigns table
 export const instantlyCampaigns = pgTable("instantly_campaigns", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),

@@ -10,6 +10,7 @@ import leadsRoutes from "./routes/leads";
 import accountsRoutes from "./routes/accounts";
 import analyticsRoutes from "./routes/analytics";
 import webhooksRoutes from "./routes/webhooks";
+import sendRoutes from "./routes/send";
 import { serviceAuth } from "./middleware/serviceAuth";
 
 const app = express();
@@ -22,6 +23,7 @@ app.use(healthRoutes);
 app.use("/webhooks", webhooksRoutes);
 
 // Protected routes (require X-API-Key)
+app.use("/send", serviceAuth, sendRoutes);
 app.use("/campaigns", serviceAuth, campaignsRoutes);
 app.use("/campaigns", serviceAuth, leadsRoutes);
 app.use("/accounts", serviceAuth, accountsRoutes);
