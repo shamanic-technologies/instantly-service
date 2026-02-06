@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "nodemon --exec ts-node src/index.ts",
-    "build": "tsc",
+    "build": "tsc && npm run generate:openapi",
+    "generate:openapi": "tsx scripts/generate-openapi.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
@@ -21,7 +22,8 @@
     "dotenv": "^16.6.1",
     "drizzle-orm": "^0.44.0",
     "express": "^4.21.2",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "swagger-autogen": "^2.23.7"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
@@ -34,6 +36,7 @@
     "nodemon": "^3.1.10",
     "supertest": "^7.2.2",
     "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.2",
     "vitest": "^4.0.18"
   }
