@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { instantlyAnalyticsSnapshots, instantlyCampaigns } from "../db/schema";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, and, type SQL } from "drizzle-orm";
 import { getCampaignAnalytics } from "../lib/instantly-client";
 
 const router = Router();
@@ -49,17 +49,31 @@ router.get("/:campaignId/analytics", async (req: Request, res: Response) => {
  * Aggregated stats by runIds (mirrors postmark /stats pattern)
  */
 router.post("/stats", async (req: Request, res: Response) => {
-  const { runIds } = req.body as { runIds: string[] };
+  const { runIds, clerkOrgId, brandId, appId, campaignId } = req.body as {
+    runIds?: string[];
+    clerkOrgId?: string;
+    brandId?: string;
+    appId?: string;
+    campaignId?: string;
+  };
 
-  if (!runIds || !Array.isArray(runIds)) {
-    return res.status(400).json({ error: "runIds array required" });
+  // Build filters
+  const conditions: SQL[] = [];
+  if (runIds?.length) conditions.push(inArray(instantlyCampaigns.runId, runIds));
+  if (clerkOrgId) conditions.push(eq(instantlyCampaigns.clerkOrgId, clerkOrgId));
+  if (brandId) conditions.push(eq(instantlyCampaigns.brandId, brandId));
+  if (appId) conditions.push(eq(instantlyCampaigns.appId, appId));
+  if (campaignId) conditions.push(eq(instantlyCampaigns.id, campaignId));
+
+  if (conditions.length === 0) {
+    return res.status(400).json({ error: "At least one filter required: runIds, clerkOrgId, brandId, appId, campaignId" });
   }
 
   try {
     const campaigns = await db
       .select()
       .from(instantlyCampaigns)
-      .where(inArray(instantlyCampaigns.runId, runIds));
+      .where(and(...conditions));
 
     if (campaigns.length === 0) {
       return res.json({
