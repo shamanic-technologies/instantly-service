@@ -20,6 +20,7 @@ COPY package*.json ./
 RUN npm ci --only=production
 
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/openapi.json ./openapi.json
 
 ENV NODE_ENV=production
 ENV PORT=3011
