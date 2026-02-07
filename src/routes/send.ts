@@ -53,7 +53,8 @@ async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
 async function getOrCreateCampaign(
   campaignId: string,
   organizationId: string,
-  email: { subject: string; body: string }
+  email: { subject: string; body: string },
+  runId: string
 ): Promise<{ id: string; instantlyCampaignId: string; isNew: boolean }> {
   // Check if campaign exists
   const [existing] = await db
@@ -84,6 +85,7 @@ async function getOrCreateCampaign(
       name: `Campaign ${campaignId}`,
       status: instantlyCampaign.status,
       orgId: organizationId,
+      runId,
     })
     .returning();
 
@@ -133,7 +135,8 @@ router.post("/", async (req: Request, res: Response) => {
       const campaign = await getOrCreateCampaign(
         body.campaignId,
         organizationId,
-        body.email
+        body.email,
+        body.runId
       );
 
       // 4. Add lead to campaign
