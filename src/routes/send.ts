@@ -19,6 +19,8 @@ const router = Router();
 
 interface SendRequest {
   orgId: string;
+  brandId: string;
+  appId: string;
   runId: string;
   campaignId: string;
   to: string;
@@ -54,7 +56,10 @@ async function getOrCreateCampaign(
   campaignId: string,
   organizationId: string,
   email: { subject: string; body: string },
-  runId: string
+  runId: string,
+  clerkOrgId: string,
+  brandId: string,
+  appId: string
 ): Promise<{ id: string; instantlyCampaignId: string; isNew: boolean }> {
   // Check if campaign exists
   const [existing] = await db
@@ -85,6 +90,9 @@ async function getOrCreateCampaign(
       name: `Campaign ${campaignId}`,
       status: instantlyCampaign.status,
       orgId: organizationId,
+      clerkOrgId,
+      brandId,
+      appId,
       runId,
     })
     .returning();
@@ -104,10 +112,10 @@ router.post("/", async (req: Request, res: Response) => {
   const body = req.body as SendRequest;
 
   // Validate required fields
-  if (!body.orgId || !body.runId || !body.campaignId || !body.to || !body.email) {
+  if (!body.orgId || !body.runId || !body.campaignId || !body.to || !body.email || !body.brandId || !body.appId) {
     return res.status(400).json({
       error: "Missing required fields",
-      required: ["orgId", "runId", "campaignId", "to", "email"],
+      required: ["orgId", "runId", "campaignId", "to", "email", "brandId", "appId"],
     });
   }
 
@@ -136,7 +144,10 @@ router.post("/", async (req: Request, res: Response) => {
         body.campaignId,
         organizationId,
         body.email,
-        body.runId
+        body.runId,
+        body.orgId,
+        body.brandId,
+        body.appId
       );
 
       // 4. Add lead to campaign

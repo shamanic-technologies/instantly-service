@@ -18,6 +18,9 @@ const router = Router();
 
 interface CreateCampaignRequest {
   orgId: string;
+  clerkOrgId: string;
+  brandId: string;
+  appId: string;
   runId?: string;
   name: string;
   accountIds?: string[];
@@ -31,10 +34,10 @@ interface CreateCampaignRequest {
 router.post("/", async (req: Request, res: Response) => {
   const body = req.body as CreateCampaignRequest;
 
-  if (!body.orgId || !body.name) {
+  if (!body.orgId || !body.name || !body.clerkOrgId || !body.brandId || !body.appId) {
     return res.status(400).json({
       error: "Missing required fields",
-      required: ["orgId", "name"],
+      required: ["orgId", "name", "clerkOrgId", "brandId", "appId"],
     });
   }
 
@@ -63,6 +66,9 @@ router.post("/", async (req: Request, res: Response) => {
           name: body.name,
           status: instantlyCampaign.status,
           orgId: body.orgId,
+          clerkOrgId: body.clerkOrgId,
+          brandId: body.brandId,
+          appId: body.appId,
           runId: run.id,
           metadata: body.metadata,
         })
