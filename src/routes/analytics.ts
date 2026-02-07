@@ -61,9 +61,7 @@ router.post("/stats", async (req: Request, res: Response) => {
       .from(instantlyCampaigns)
       .where(inArray(instantlyCampaigns.runId, runIds));
 
-    const campaignIds = campaigns.map((c) => c.instantlyCampaignId);
-
-    if (campaignIds.length === 0) {
+    if (campaigns.length === 0) {
       return res.json({
         totalCampaigns: 0,
         totalLeads: 0,
@@ -75,11 +73,31 @@ router.post("/stats", async (req: Request, res: Response) => {
       });
     }
 
-    // Get latest snapshots for each campaign
-    const snapshots = await db
-      .select()
-      .from(instantlyAnalyticsSnapshots)
-      .where(inArray(instantlyAnalyticsSnapshots.campaignId, campaignIds));
+    // Fetch live analytics from Instantly for each campaign and save snapshots
+    const analyticsResults = await Promise.all(
+      campaigns.map(async (c) => {
+        try {
+          const analytics = await getCampaignAnalytics(c.instantlyCampaignId);
+
+          // Save snapshot
+          await db.insert(instantlyAnalyticsSnapshots).values({
+            campaignId: c.instantlyCampaignId,
+            totalLeads: analytics.total_leads,
+            contacted: analytics.contacted,
+            opened: analytics.opened,
+            replied: analytics.replied,
+            bounced: analytics.bounced,
+            unsubscribed: analytics.unsubscribed,
+            snapshotAt: new Date(),
+            rawData: analytics,
+          });
+
+          return analytics;
+        } catch {
+          return null;
+        }
+      })
+    );
 
     // Aggregate
     const stats = {
@@ -92,22 +110,14 @@ router.post("/stats", async (req: Request, res: Response) => {
       unsubscribed: 0,
     };
 
-    // Get latest snapshot per campaign
-    const latestBycamp = new Map<string, typeof snapshots[0]>();
-    for (const s of snapshots) {
-      const existing = latestBycamp.get(s.campaignId);
-      if (!existing || s.snapshotAt > existing.snapshotAt) {
-        latestBycamp.set(s.campaignId, s);
-      }
-    }
-
-    for (const snapshot of latestBycamp.values()) {
-      stats.totalLeads += snapshot.totalLeads;
-      stats.contacted += snapshot.contacted;
-      stats.opened += snapshot.opened;
-      stats.replied += snapshot.replied;
-      stats.bounced += snapshot.bounced;
-      stats.unsubscribed += snapshot.unsubscribed;
+    for (const analytics of analyticsResults) {
+      if (!analytics) continue;
+      stats.totalLeads += analytics.total_leads;
+      stats.contacted += analytics.contacted;
+      stats.opened += analytics.opened;
+      stats.replied += analytics.replied;
+      stats.bounced += analytics.bounced;
+      stats.unsubscribed += analytics.unsubscribed;
     }
 
     res.json(stats);
