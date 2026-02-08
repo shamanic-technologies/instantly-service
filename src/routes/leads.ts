@@ -14,20 +14,9 @@ import {
   updateRun,
   addCosts,
 } from "../lib/runs-client";
+import { AddLeadsRequestSchema, DeleteLeadsRequestSchema } from "../schemas";
 
 const router = Router();
-
-interface AddLeadsRequest {
-  orgId: string;
-  runId?: string;
-  leads: Array<{
-    email: string;
-    firstName?: string;
-    lastName?: string;
-    companyName?: string;
-    customVariables?: Record<string, string>;
-  }>;
-}
 
 /**
  * POST /campaigns/:campaignId/leads
@@ -35,14 +24,15 @@ interface AddLeadsRequest {
  */
 router.post("/:campaignId/leads", async (req: Request, res: Response) => {
   const { campaignId } = req.params;
-  const body = req.body as AddLeadsRequest;
 
-  if (!body.orgId || !body.leads || !Array.isArray(body.leads)) {
+  const parsed = AddLeadsRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
     return res.status(400).json({
-      error: "Missing required fields",
-      required: ["orgId", "leads"],
+      error: "Invalid request",
+      details: parsed.error.flatten(),
     });
   }
+  const body = parsed.data;
 
   try {
     // Get campaign
@@ -156,11 +146,12 @@ router.get("/:campaignId/leads", async (req: Request, res: Response) => {
  */
 router.delete("/:campaignId/leads", async (req: Request, res: Response) => {
   const { campaignId } = req.params;
-  const { emails } = req.body as { emails: string[] };
 
-  if (!emails || !Array.isArray(emails)) {
+  const parsed = DeleteLeadsRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
     return res.status(400).json({ error: "emails array required" });
   }
+  const { emails } = parsed.data;
 
   try {
     const [campaign] = await db

@@ -1,21 +1,13 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { instantlyEvents } from "../db/schema";
+import { WebhookPayloadSchema } from "../schemas";
 
 const router = Router();
 const WEBHOOK_SECRET = process.env.INSTANTLY_WEBHOOK_SECRET;
 
 if (!WEBHOOK_SECRET) {
   throw new Error("INSTANTLY_WEBHOOK_SECRET is required");
-}
-
-interface InstantlyWebhookPayload {
-  event_type: string;
-  campaign_id?: string;
-  lead_email?: string;
-  account_email?: string;
-  timestamp?: string;
-  [key: string]: unknown;
 }
 
 /**
@@ -29,11 +21,11 @@ router.post("/instantly", async (req: Request, res: Response) => {
     return res.status(401).json({ error: "Invalid webhook secret" });
   }
 
-  const payload = req.body as InstantlyWebhookPayload;
-
-  if (!payload.event_type) {
+  const parsed = WebhookPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
     return res.status(400).json({ error: "Missing event_type" });
   }
+  const payload = parsed.data;
 
   try {
     await db.insert(instantlyEvents).values({
@@ -42,7 +34,7 @@ router.post("/instantly", async (req: Request, res: Response) => {
       leadEmail: payload.lead_email,
       accountEmail: payload.account_email,
       timestamp: payload.timestamp ? new Date(payload.timestamp) : new Date(),
-      rawPayload: payload,
+      rawPayload: req.body,
     });
 
     res.json({
