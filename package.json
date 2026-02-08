@@ -18,12 +18,13 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
+    "@asteasolutions/zod-to-openapi": "^8.4.0",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "drizzle-orm": "^0.44.0",
     "express": "^4.21.2",
     "pg": "^8.16.3",
-    "swagger-autogen": "^2.23.7"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

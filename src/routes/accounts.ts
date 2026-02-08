@@ -8,6 +8,7 @@ import {
   disableWarmup as disableInstantlyWarmup,
   getWarmupAnalytics,
 } from "../lib/instantly-client";
+import { WarmupRequestSchema } from "../schemas";
 
 const router = Router();
 
@@ -68,11 +69,12 @@ router.post("/sync", async (req: Request, res: Response) => {
  */
 router.post("/:email/warmup", async (req: Request, res: Response) => {
   const { email } = req.params;
-  const { enabled } = req.body as { enabled: boolean };
 
-  if (typeof enabled !== "boolean") {
+  const parsed = WarmupRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
     return res.status(400).json({ error: "enabled (boolean) required" });
   }
+  const { enabled } = parsed.data;
 
   try {
     if (enabled) {

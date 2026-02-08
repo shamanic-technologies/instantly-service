@@ -3,6 +3,7 @@ import { db } from "../db";
 import { instantlyAnalyticsSnapshots, instantlyCampaigns } from "../db/schema";
 import { eq, inArray, and, type SQL } from "drizzle-orm";
 import { getCampaignAnalytics } from "../lib/instantly-client";
+import { StatsRequestSchema } from "../schemas";
 
 const router = Router();
 
@@ -49,64 +50,14 @@ router.get("/:campaignId/analytics", async (req: Request, res: Response) => {
  * Aggregated stats by runIds (mirrors postmark /stats pattern)
  */
 router.post("/stats", async (req: Request, res: Response) => {
-  // #swagger.summary = 'Get aggregated stats by filters'
-  // #swagger.description = 'Aggregates Instantly campaign analytics across campaigns matching the provided filters. At least one filter is required.'
-  /* #swagger.requestBody = {
-    required: true,
-    content: {
-      "application/json": {
-        schema: {
-          type: "object",
-          properties: {
-            runIds: { type: "array", items: { type: "string" }, description: "Filter by run IDs" },
-            clerkOrgId: { type: "string", description: "Filter by Clerk organization ID" },
-            brandId: { type: "string", description: "Filter by brand ID" },
-            appId: { type: "string", description: "Filter by app ID" },
-            campaignId: { type: "string", description: "Filter by campaign ID" }
-          }
-        }
-      }
-    }
-  } */
-  /* #swagger.responses[200] = {
-    description: "Aggregated campaign stats",
-    content: {
-      "application/json": {
-        schema: {
-          type: "object",
-          properties: {
-            totalCampaigns: { type: "integer", description: "Number of campaigns matched" },
-            totalLeads: { type: "integer", description: "Total leads across campaigns" },
-            contacted: { type: "integer", description: "Total contacted leads" },
-            opened: { type: "integer", description: "Total opens" },
-            replied: { type: "integer", description: "Total replies" },
-            bounced: { type: "integer", description: "Total bounces" },
-            unsubscribed: { type: "integer", description: "Total unsubscribes" }
-          }
-        }
-      }
-    }
-  } */
-  /* #swagger.responses[400] = {
-    description: "No filter provided",
-    content: {
-      "application/json": {
-        schema: {
-          type: "object",
-          properties: {
-            error: { type: "string", example: "At least one filter required: runIds, clerkOrgId, brandId, appId, campaignId" }
-          }
-        }
-      }
-    }
-  } */
-  const { runIds, clerkOrgId, brandId, appId, campaignId } = req.body as {
-    runIds?: string[];
-    clerkOrgId?: string;
-    brandId?: string;
-    appId?: string;
-    campaignId?: string;
-  };
+  const parsed = StatsRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Invalid request",
+      details: parsed.error.flatten(),
+    });
+  }
+  const { runIds, clerkOrgId, brandId, appId, campaignId } = parsed.data;
 
   // Build filters
   const conditions: SQL[] = [];

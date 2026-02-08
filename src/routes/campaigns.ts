@@ -13,33 +13,26 @@ import {
   updateRun,
   addCosts,
 } from "../lib/runs-client";
+import {
+  CreateCampaignRequestSchema,
+  UpdateStatusRequestSchema,
+} from "../schemas";
 
 const router = Router();
-
-interface CreateCampaignRequest {
-  orgId: string;
-  clerkOrgId: string;
-  brandId: string;
-  appId: string;
-  runId?: string;
-  name: string;
-  accountIds?: string[];
-  metadata?: Record<string, unknown>;
-}
 
 /**
  * POST /campaigns
  * Create a campaign in Instantly + DB, log run via runs-service (BLOCKING)
  */
 router.post("/", async (req: Request, res: Response) => {
-  const body = req.body as CreateCampaignRequest;
-
-  if (!body.orgId || !body.name || !body.clerkOrgId || !body.brandId || !body.appId) {
+  const parsed = CreateCampaignRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
     return res.status(400).json({
-      error: "Missing required fields",
-      required: ["orgId", "name", "clerkOrgId", "brandId", "appId"],
+      error: "Invalid request",
+      details: parsed.error.flatten(),
     });
   }
+  const body = parsed.data;
 
   try {
     // 1. Create run in runs-service FIRST (BLOCKING)
@@ -147,14 +140,15 @@ router.get("/by-org/:orgId", async (req: Request, res: Response) => {
  */
 router.patch("/:campaignId/status", async (req: Request, res: Response) => {
   const { campaignId } = req.params;
-  const { status } = req.body as { status: "active" | "paused" | "completed" };
 
-  if (!status || !["active", "paused", "completed"].includes(status)) {
+  const parsed = UpdateStatusRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
     return res.status(400).json({
       error: "Invalid status",
       allowed: ["active", "paused", "completed"],
     });
   }
+  const { status } = parsed.data;
 
   try {
     const [campaign] = await db

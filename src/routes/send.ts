@@ -14,25 +14,9 @@ import {
   updateRun,
   addCosts,
 } from "../lib/runs-client";
+import { SendRequestSchema } from "../schemas";
 
 const router = Router();
-
-interface SendRequest {
-  orgId: string;
-  brandId: string;
-  appId: string;
-  runId: string;
-  campaignId: string;
-  to: string;
-  firstName?: string;
-  lastName?: string;
-  company?: string;
-  variables?: Record<string, string>;
-  email: {
-    subject: string;
-    body: string;
-  };
-}
 
 async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
   const [existing] = await db
@@ -61,7 +45,6 @@ async function getOrCreateCampaign(
   brandId: string,
   appId: string
 ): Promise<{ id: string; instantlyCampaignId: string; isNew: boolean }> {
-  // Check if campaign exists
   const [existing] = await db
     .select()
     .from(instantlyCampaigns)
@@ -75,13 +58,11 @@ async function getOrCreateCampaign(
     };
   }
 
-  // Create new campaign in Instantly with email content
   const instantlyCampaign = await createInstantlyCampaign({
     name: `Campaign ${campaignId}`,
     email,
   });
 
-  // Save to database
   const [created] = await db
     .insert(instantlyCampaigns)
     .values({
@@ -109,21 +90,14 @@ async function getOrCreateCampaign(
  * Add a lead to a campaign and send email via Instantly
  */
 router.post("/", async (req: Request, res: Response) => {
-  const body = req.body as SendRequest;
-
-  // Validate required fields
-  if (!body.orgId || !body.runId || !body.campaignId || !body.to || !body.email || !body.brandId || !body.appId) {
+  const parsed = SendRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
     return res.status(400).json({
-      error: "Missing required fields",
-      required: ["orgId", "runId", "campaignId", "to", "email", "brandId", "appId"],
+      error: "Invalid request",
+      details: parsed.error.flatten(),
     });
   }
-
-  if (!body.email.subject || !body.email.body) {
-    return res.status(400).json({
-      error: "email must contain subject and body",
-    });
-  }
+  const body = parsed.data;
 
   try {
     // 1. Get or create organization

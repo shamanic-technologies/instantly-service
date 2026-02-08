@@ -1,26 +1,21 @@
-import swaggerAutogen from "swagger-autogen";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
+import { OpenApiGeneratorV3 } from "@asteasolutions/zod-to-openapi";
+import { registry } from "../src/schemas";
+import * as fs from "fs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const projectRoot = join(__dirname, "..");
+const generator = new OpenApiGeneratorV3(registry.definitions);
 
-const doc = {
+const document = generator.generateDocument({
+  openapi: "3.0.0",
   info: {
     title: "Instantly Service",
     description:
       "Cold email outreach service via Instantly.ai API. Manages campaigns, leads, accounts, analytics, and webhook events.",
     version: "1.0.0",
   },
-  host: process.env.SERVICE_URL || "http://localhost:3011",
-  basePath: "/",
-  schemes: ["https"],
-};
-
-const outputFile = join(projectRoot, "openapi.json");
-const routes = [join(projectRoot, "src/index.ts")];
-
-swaggerAutogen({ openapi: "3.0.0" })(outputFile, routes, doc).then(() => {
-  console.log("openapi.json generated");
+  servers: [
+    { url: process.env.SERVICE_URL || "http://localhost:3011" },
+  ],
 });
+
+fs.writeFileSync("openapi.json", JSON.stringify(document, null, 2));
+console.log("Generated openapi.json");
