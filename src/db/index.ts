@@ -4,8 +4,12 @@ import * as dotenv from "dotenv";
 
 dotenv.config();
 
+const connectionString = process.env.INSTANTLY_SERVICE_DATABASE_URL;
+
 const pool = new Pool({
-  connectionString: process.env.INSTANTLY_SERVICE_DATABASE_URL,
+  connectionString: connectionString?.includes("sslmode=")
+    ? connectionString
+    : `${connectionString}${connectionString?.includes("?") ? "&" : "?"}sslmode=verify-full`,
 });
 
 export const db = drizzle(pool);
