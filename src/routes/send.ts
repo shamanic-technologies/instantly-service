@@ -9,7 +9,6 @@ import {
   Lead,
 } from "../lib/instantly-client";
 import {
-  ensureOrganization,
   createRun,
   updateRun,
   addCosts,
@@ -109,11 +108,13 @@ router.post("/", async (req: Request, res: Response) => {
     // 2. Create run in runs-service (only if orgId provided)
     let sendRun: { id: string } | null = null;
     if (body.orgId) {
-      const runsOrgId = await ensureOrganization(body.orgId);
       sendRun = await createRun({
-        organizationId: runsOrgId,
+        clerkOrgId: body.orgId,
+        appId: body.appId,
         serviceName: "instantly-service",
         taskName: "email-send",
+        brandId: body.brandId,
+        campaignId: body.campaignId,
         parentRunId: body.runId,
       });
     }

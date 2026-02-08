@@ -9,11 +9,6 @@ describe("runs-client", () => {
     mockFetch.mockClear();
   });
 
-  it("should export ensureOrganization function", async () => {
-    const { ensureOrganization } = await import("../../src/lib/runs-client");
-    expect(typeof ensureOrganization).toBe("function");
-  });
-
   it("should export createRun function", async () => {
     const { createRun } = await import("../../src/lib/runs-client");
     expect(typeof createRun).toBe("function");
