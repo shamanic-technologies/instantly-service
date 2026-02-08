@@ -8,7 +8,6 @@ import {
   updateCampaignStatus as updateInstantlyStatus,
 } from "../lib/instantly-client";
 import {
-  ensureOrganization,
   createRun,
   updateRun,
   addCosts,
@@ -36,11 +35,12 @@ router.post("/", async (req: Request, res: Response) => {
 
   try {
     // 1. Create run in runs-service FIRST (BLOCKING)
-    const runsOrgId = await ensureOrganization(body.orgId);
     const run = await createRun({
-      organizationId: runsOrgId,
+      clerkOrgId: body.clerkOrgId,
+      appId: body.appId,
       serviceName: "instantly-service",
       taskName: "campaign-create",
+      brandId: body.brandId,
       parentRunId: body.runId,
     });
 

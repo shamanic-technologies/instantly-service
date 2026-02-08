@@ -13,6 +13,9 @@ export interface Run {
   parentRunId: string | null;
   organizationId: string;
   userId: string | null;
+  appId: string;
+  brandId: string | null;
+  campaignId: string | null;
   serviceName: string;
   taskName: string;
   status: string;
@@ -32,19 +35,15 @@ export interface RunCost {
   createdAt: string;
 }
 
-interface RunsOrganization {
-  id: string;
-  externalId: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface CreateRunParams {
-  organizationId: string;
+  clerkOrgId: string;
+  appId: string;
   serviceName: string;
   taskName: string;
   parentRunId?: string;
-  userId?: string;
+  clerkUserId?: string;
+  brandId?: string;
+  campaignId?: string;
 }
 
 export interface CostItem {
@@ -81,24 +80,7 @@ async function runsRequest<T>(
   return response.json() as Promise<T>;
 }
 
-// ─── Org cache (in-memory, per process) ──────────────────────────────────────
-
-const orgCache = new Map<string, string>();
-
 // ─── Public API ──────────────────────────────────────────────────────────────
-
-export async function ensureOrganization(clerkOrgId: string): Promise<string> {
-  const cached = orgCache.get(clerkOrgId);
-  if (cached) return cached;
-
-  const org = await runsRequest<RunsOrganization>("/v1/organizations", {
-    method: "POST",
-    body: { externalId: clerkOrgId },
-  });
-
-  orgCache.set(clerkOrgId, org.id);
-  return org.id;
-}
 
 export async function createRun(params: CreateRunParams): Promise<Run> {
   return runsRequest<Run>("/v1/runs", {
