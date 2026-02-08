@@ -104,7 +104,7 @@ registry.registerPath({
 
 export const SendRequestSchema = z
   .object({
-    orgId: z.string(),
+    orgId: z.string().optional(),
     brandId: z.string(),
     appId: z.string(),
     runId: z.string(),

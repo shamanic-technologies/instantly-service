@@ -38,10 +38,10 @@ async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
 
 async function getOrCreateCampaign(
   campaignId: string,
-  organizationId: string,
+  organizationId: string | null,
   email: { subject: string; body: string },
   runId: string,
-  clerkOrgId: string,
+  clerkOrgId: string | undefined,
   brandId: string,
   appId: string
 ): Promise<{ id: string; instantlyCampaignId: string; isNew: boolean }> {
@@ -100,17 +100,23 @@ router.post("/", async (req: Request, res: Response) => {
   const body = parsed.data;
 
   try {
-    // 1. Get or create organization
-    const organizationId = await getOrCreateOrganization(body.orgId);
+    // 1. Get or create organization (only if orgId provided)
+    let organizationId: string | null = null;
+    if (body.orgId) {
+      organizationId = await getOrCreateOrganization(body.orgId);
+    }
 
-    // 2. Create run in runs-service FIRST (BLOCKING)
-    const runsOrgId = await ensureOrganization(body.orgId);
-    const sendRun = await createRun({
-      organizationId: runsOrgId,
-      serviceName: "instantly-service",
-      taskName: "email-send",
-      parentRunId: body.runId,
-    });
+    // 2. Create run in runs-service (only if orgId provided)
+    let sendRun: { id: string } | null = null;
+    if (body.orgId) {
+      const runsOrgId = await ensureOrganization(body.orgId);
+      sendRun = await createRun({
+        organizationId: runsOrgId,
+        serviceName: "instantly-service",
+        taskName: "email-send",
+        parentRunId: body.runId,
+      });
+    }
 
     try {
       // 3. Get or create campaign
@@ -149,7 +155,7 @@ router.post("/", async (req: Request, res: Response) => {
           companyName: body.company,
           customVariables: body.variables,
           orgId: organizationId,
-          runId: sendRun.id,
+          runId: sendRun?.id,
         })
         .onConflictDoNothing()
         .returning();
@@ -163,16 +169,18 @@ router.post("/", async (req: Request, res: Response) => {
           .where(eq(instantlyCampaigns.id, campaign.id));
       }
 
-      // 7. Log costs and complete run
-      await addCosts(sendRun.id, [
-        { costName: "instantly-lead-add", quantity: 1 },
-      ]);
-      if (campaign.isNew) {
+      // 7. Log costs and complete run (only if tracking)
+      if (sendRun) {
         await addCosts(sendRun.id, [
-          { costName: "instantly-campaign-create", quantity: 1 },
+          { costName: "instantly-lead-add", quantity: 1 },
         ]);
+        if (campaign.isNew) {
+          await addCosts(sendRun.id, [
+            { costName: "instantly-campaign-create", quantity: 1 },
+          ]);
+        }
+        await updateRun(sendRun.id, "completed");
       }
-      await updateRun(sendRun.id, "completed");
 
       res.status(200).json({
         success: true,
@@ -181,7 +189,9 @@ router.post("/", async (req: Request, res: Response) => {
         added: result.added,
       });
     } catch (error: any) {
-      await updateRun(sendRun.id, "failed", error.message);
+      if (sendRun) {
+        await updateRun(sendRun.id, "failed", error.message);
+      }
       throw error;
     }
   } catch (error: any) {
