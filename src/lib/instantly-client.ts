@@ -75,6 +75,8 @@ export interface CreateCampaignParams {
 export interface UpdateCampaignParams {
   email_list?: string[];
   bcc_list?: string[];
+  open_tracking?: boolean;
+  link_tracking?: boolean;
 }
 
 export interface AddLeadsParams {

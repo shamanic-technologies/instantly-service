@@ -63,7 +63,7 @@ export const WebhookPayloadSchema = z
     event_type: z.string(),
     campaign_id: z.string().optional(),
     lead_email: z.string().optional(),
-    account_email: z.string().optional(),
+    email_account: z.string().optional(),
     timestamp: z.string().optional(),
   })
   .openapi("WebhookPayload");

@@ -36,7 +36,7 @@ router.post("/instantly", async (req: Request, res: Response) => {
       eventType: payload.event_type,
       campaignId: payload.campaign_id,
       leadEmail: payload.lead_email,
-      accountEmail: payload.account_email,
+      accountEmail: payload.email_account,
       timestamp: payload.timestamp ? new Date(payload.timestamp) : new Date(),
       rawPayload: req.body,
     });
