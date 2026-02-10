@@ -130,6 +130,16 @@ async function instantlyRequest<T>(
 export async function createCampaign(params: CreateCampaignParams): Promise<Campaign> {
   const body: Record<string, unknown> = {
     name: params.name,
+    campaign_schedule: {
+      schedules: [
+        {
+          name: "Default",
+          timing: { from: "00:00", to: "23:59" },
+          days: { "0": true, "1": true, "2": true, "3": true, "4": true, "5": true, "6": true },
+          timezone: "America/Chicago",
+        },
+      ],
+    },
   };
 
   if (params.account_ids) {
