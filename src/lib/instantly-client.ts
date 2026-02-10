@@ -77,6 +77,7 @@ export interface UpdateCampaignParams {
   bcc_list?: string[];
   open_tracking?: boolean;
   link_tracking?: boolean;
+  insert_unsubscribe_header?: boolean;
 }
 
 export interface AddLeadsParams {

@@ -81,6 +81,7 @@ async function getOrCreateCampaign(
       bcc_list: ["kevin@mcpfactory.org"],
       open_tracking: true,
       link_tracking: true,
+      insert_unsubscribe_header: true,
     });
 
     // Verify accounts were actually assigned

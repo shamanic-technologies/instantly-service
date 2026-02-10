@@ -151,7 +151,7 @@ describe("POST /send", () => {
     // updateCampaign should PATCH the campaign with email_list and bcc_list
     expect(mockUpdateCampaign).toHaveBeenCalledWith(
       "inst-camp-new",
-      { email_list: ["sender@example.com"], bcc_list: ["kevin@mcpfactory.org"], open_tracking: true, link_tracking: true }
+      { email_list: ["sender@example.com"], bcc_list: ["kevin@mcpfactory.org"], open_tracking: true, link_tracking: true, insert_unsubscribe_header: true }
     );
   });
 
