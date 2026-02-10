@@ -29,11 +29,13 @@ vi.mock("../../src/db/schema", () => ({
 const mockAddLeads = vi.fn();
 const mockUpdateCampaignStatus = vi.fn();
 const mockCreateCampaign = vi.fn();
+const mockListAccounts = vi.fn();
 
 vi.mock("../../src/lib/instantly-client", () => ({
   addLeads: (...args: unknown[]) => mockAddLeads(...args),
   createCampaign: (...args: unknown[]) => mockCreateCampaign(...args),
   updateCampaignStatus: (...args: unknown[]) => mockUpdateCampaignStatus(...args),
+  listAccounts: (...args: unknown[]) => mockListAccounts(...args),
 }));
 
 // Mock runs-client
@@ -86,6 +88,7 @@ describe("POST /send", () => {
     mockAddLeads.mockResolvedValue({ added: 1 });
     mockAddCosts.mockResolvedValue({ costs: [] });
     mockUpdateRun.mockResolvedValue({});
+    mockListAccounts.mockResolvedValue([{ email: "sender@example.com" }]);
     mockDbReturning.mockResolvedValue([{ id: "lead-1" }]);
   });
 
@@ -114,6 +117,31 @@ describe("POST /send", () => {
       ([, items]: [string, { costName: string }[]]) => items.map((i) => i.costName)
     );
     expect(allCostNames).not.toContain("instantly-campaign-create");
+  });
+
+  it("should fetch accounts and pass them when creating a new campaign", async () => {
+    // Override: campaign does NOT exist (force creation)
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
+    mockDbWhere.mockResolvedValueOnce([]); // campaign lookup (not found → create)
+    mockDbWhere.mockResolvedValueOnce([]); // lead lookup (not found)
+
+    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-new", status: "draft" });
+    mockDbReturning.mockResolvedValueOnce([{ id: "camp-1", instantlyCampaignId: "inst-camp-new" }]); // campaign insert
+    mockDbReturning.mockResolvedValueOnce([{ id: "lead-1" }]); // lead insert
+    mockUpdateCampaignStatus.mockResolvedValue({});
+
+    const app = await createSendApp();
+    await request(app).post("/send").send(validBody);
+
+    // listAccounts should have been called to fetch available accounts
+    expect(mockListAccounts).toHaveBeenCalled();
+    // createCampaign should have been called with account_ids
+    expect(mockCreateCampaign).toHaveBeenCalledWith(
+      expect.objectContaining({
+        account_ids: ["sender@example.com"],
+      })
+    );
   });
 
   it("should skip Instantly API call when lead already exists in campaign", async () => {

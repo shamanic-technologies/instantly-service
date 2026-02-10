@@ -37,6 +37,45 @@ describe("instantly-client", () => {
     expect(typeof getCampaignAnalytics).toBe("function");
   });
 
+  it("createCampaign should include BCC to kevin@mcpfactory.org", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ id: "camp-1", name: "Test", status: "draft", created_at: "", updated_at: "" }),
+    });
+
+    const { createCampaign } = await import("../../src/lib/instantly-client");
+    await createCampaign({
+      name: "Test Campaign",
+      email: { subject: "Hi", body: "Hello" },
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [, options] = mockFetch.mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.bcc).toEqual(["kevin@mcpfactory.org"]);
+  });
+
+  it("createCampaign should pass account_ids when provided", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ id: "camp-1", name: "Test", status: "draft", created_at: "", updated_at: "" }),
+    });
+
+    const { createCampaign } = await import("../../src/lib/instantly-client");
+    await createCampaign({
+      name: "Test Campaign",
+      account_ids: ["sender@example.com"],
+      email: { subject: "Hi", body: "Hello" },
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [, options] = mockFetch.mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.account_ids).toEqual(["sender@example.com"]);
+  });
+
   it("updateCampaignStatus should not send Content-Type without a body", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,

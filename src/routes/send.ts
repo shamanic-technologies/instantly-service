@@ -6,6 +6,7 @@ import {
   createCampaign as createInstantlyCampaign,
   addLeads as addInstantlyLeads,
   updateCampaignStatus,
+  listAccounts,
   Lead,
 } from "../lib/instantly-client";
 import {
@@ -57,9 +58,14 @@ async function getOrCreateCampaign(
     };
   }
 
+  // Fetch available email accounts so Instantly can actually send
+  const accounts = await listAccounts();
+  const accountIds = accounts.map((a) => a.email);
+
   const instantlyCampaign = await createInstantlyCampaign({
     name: `Campaign ${campaignId}`,
     email,
+    account_ids: accountIds.length > 0 ? accountIds : undefined,
   });
 
   const [created] = await db
