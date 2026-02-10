@@ -79,6 +79,8 @@ async function getOrCreateCampaign(
     await updateInstantlyCampaign(instantlyCampaign.id, {
       email_list: accountIds,
       bcc_list: ["kevin@mcpfactory.org"],
+      open_tracking: true,
+      link_tracking: true,
     });
 
     // Verify accounts were actually assigned
