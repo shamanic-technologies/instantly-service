@@ -4,6 +4,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
+// Set API key for tests
+process.env.INSTANTLY_API_KEY = "test-api-key";
+
 describe("instantly-client", () => {
   beforeEach(() => {
     mockFetch.mockClear();
@@ -32,5 +35,27 @@ describe("instantly-client", () => {
   it("should export getCampaignAnalytics function", async () => {
     const { getCampaignAnalytics } = await import("../../src/lib/instantly-client");
     expect(typeof getCampaignAnalytics).toBe("function");
+  });
+
+  it("updateCampaignStatus should not send Content-Type without a body", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ id: "camp-1", status: "active" }),
+    });
+
+    const { updateCampaignStatus } = await import("../../src/lib/instantly-client");
+    await updateCampaignStatus("camp-1", "active");
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toContain("/campaigns/camp-1/activate");
+    expect(options.method).toBe("POST");
+
+    // The bug: sending Content-Type: application/json with no body
+    // causes Instantly API to return 400 "Body cannot be empty when content-type is set to 'application/json'"
+    if (options.body === undefined) {
+      expect(options.headers["Content-Type"]).toBeUndefined();
+    }
   });
 });

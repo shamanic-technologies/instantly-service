@@ -85,9 +85,12 @@ async function instantlyRequest<T>(
   const { method = "GET", body, retries = 3 } = options;
 
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
     Authorization: `Bearer ${getApiKey()}`,
   };
+
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
 
   let lastError: Error | null = null;
 
