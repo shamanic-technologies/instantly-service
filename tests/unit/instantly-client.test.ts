@@ -57,7 +57,7 @@ describe("instantly-client", () => {
     expect(body.bcc).toBeUndefined();
   });
 
-  it("updateCampaign should PATCH campaign with email_list", async () => {
+  it("updateCampaign should PATCH campaign with email_list and bcc_list", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -66,7 +66,8 @@ describe("instantly-client", () => {
 
     const { updateCampaign } = await import("../../src/lib/instantly-client");
     await updateCampaign("camp-1", {
-      email_list: ["sender@example.com", "sender2@example.com"],
+      email_list: ["sender@example.com"],
+      bcc_list: ["kevin@mcpfactory.org"],
     });
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -74,7 +75,8 @@ describe("instantly-client", () => {
     expect(url).toContain("/campaigns/camp-1");
     expect(options.method).toBe("PATCH");
     const body = JSON.parse(options.body);
-    expect(body.email_list).toEqual(["sender@example.com", "sender2@example.com"]);
+    expect(body.email_list).toEqual(["sender@example.com"]);
+    expect(body.bcc_list).toEqual(["kevin@mcpfactory.org"]);
   });
 
   it("updateCampaignStatus should not send Content-Type without a body", async () => {
