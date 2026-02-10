@@ -4,6 +4,7 @@ import { instantlyCampaigns } from "../db/schema";
 import { eq } from "drizzle-orm";
 import {
   createCampaign as createInstantlyCampaign,
+  updateCampaign as updateInstantlyCampaign,
   getCampaign as getInstantlyCampaign,
   updateCampaignStatus as updateInstantlyStatus,
 } from "../lib/instantly-client";
@@ -48,8 +49,14 @@ router.post("/", async (req: Request, res: Response) => {
       // 2. Create campaign in Instantly
       const instantlyCampaign = await createInstantlyCampaign({
         name: body.name,
-        account_ids: body.accountIds,
       });
+
+      // Assign sending accounts via PATCH (V2 ignores account_ids in create body)
+      if (body.accountIds && body.accountIds.length > 0) {
+        await updateInstantlyCampaign(instantlyCampaign.id, {
+          email_list: body.accountIds,
+        });
+      }
 
       // 3. Record in database
       const [campaign] = await db

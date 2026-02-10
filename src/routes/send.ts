@@ -4,6 +4,7 @@ import { organizations, instantlyCampaigns, instantlyLeads } from "../db/schema"
 import { eq, and } from "drizzle-orm";
 import {
   createCampaign as createInstantlyCampaign,
+  updateCampaign as updateInstantlyCampaign,
   addLeads as addInstantlyLeads,
   updateCampaignStatus,
   listAccounts,
@@ -68,9 +69,17 @@ async function getOrCreateCampaign(
   const instantlyCampaign = await createInstantlyCampaign({
     name: `Campaign ${campaignId}`,
     email,
-    account_ids: accountIds.length > 0 ? accountIds : undefined,
   });
   console.log(`[send] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`);
+
+  // Assign sending accounts via PATCH (V2 ignores account_ids in create body)
+  if (accountIds.length > 0) {
+    console.log(`[send] Assigning ${accountIds.length} accounts to campaign ${instantlyCampaign.id}`);
+    await updateInstantlyCampaign(instantlyCampaign.id, {
+      email_list: accountIds,
+    });
+    console.log(`[send] Accounts assigned`);
+  }
 
   const [created] = await db
     .insert(instantlyCampaigns)
