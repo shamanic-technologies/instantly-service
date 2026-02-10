@@ -51,6 +51,7 @@ async function getOrCreateCampaign(
     .where(eq(instantlyCampaigns.id, campaignId));
 
   if (existing) {
+    console.log(`[send] Reusing existing campaign ${campaignId} → instantly=${existing.instantlyCampaignId}`);
     return {
       id: existing.id,
       instantlyCampaignId: existing.instantlyCampaignId,
@@ -61,12 +62,15 @@ async function getOrCreateCampaign(
   // Fetch available email accounts so Instantly can actually send
   const accounts = await listAccounts();
   const accountIds = accounts.map((a) => a.email);
+  console.log(`[send] Found ${accounts.length} accounts: ${JSON.stringify(accountIds)}`);
 
+  console.log(`[send] Creating new campaign ${campaignId} with subject="${email.subject}"`);
   const instantlyCampaign = await createInstantlyCampaign({
     name: `Campaign ${campaignId}`,
     email,
     account_ids: accountIds.length > 0 ? accountIds : undefined,
   });
+  console.log(`[send] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`);
 
   const [created] = await db
     .insert(instantlyCampaigns)
@@ -103,6 +107,7 @@ router.post("/", async (req: Request, res: Response) => {
     });
   }
   const body = parsed.data;
+  console.log(`[send] POST /send to=${body.to} campaignId=${body.campaignId} subject="${body.email.subject}"`);
 
   try {
     // 1. Get or create organization (only if orgId provided)
@@ -151,6 +156,10 @@ router.post("/", async (req: Request, res: Response) => {
       let savedLead = existingLead;
       let added = 0;
 
+      if (existingLead) {
+        console.log(`[send] Lead ${body.to} already exists in campaign ${campaign.instantlyCampaignId}, skipping addLeads`);
+      }
+
       if (!existingLead) {
         // 5. Add lead to campaign in Instantly
         const lead: Lead = {
@@ -161,11 +170,13 @@ router.post("/", async (req: Request, res: Response) => {
           variables: body.variables,
         };
 
+        console.log(`[send] Adding lead ${body.to} to instantly campaign ${campaign.instantlyCampaignId}`);
         const result = await addInstantlyLeads({
           campaign_id: campaign.instantlyCampaignId,
           leads: [lead],
         });
         added = result.added;
+        console.log(`[send] addLeads result: added=${added}`);
 
         // 6. Save lead to database
         const [created] = await db
@@ -188,6 +199,7 @@ router.post("/", async (req: Request, res: Response) => {
 
       // 7. Activate campaign if new
       if (campaign.isNew) {
+        console.log(`[send] Activating new campaign ${campaign.instantlyCampaignId}`);
         await updateCampaignStatus(campaign.instantlyCampaignId, "active");
         await db
           .update(instantlyCampaigns)
@@ -203,6 +215,7 @@ router.post("/", async (req: Request, res: Response) => {
         await updateRun(sendRun.id, "completed");
       }
 
+      console.log(`[send] Done — to=${body.to} campaign=${campaign.id} isNew=${campaign.isNew} added=${added}`);
       res.status(200).json({
         success: true,
         campaignId: campaign.id,
