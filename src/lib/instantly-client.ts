@@ -184,9 +184,9 @@ export async function updateCampaignStatus(
   campaignId: string,
   status: "active" | "paused" | "completed"
 ): Promise<Campaign> {
-  return instantlyRequest<Campaign>(`/campaigns/${campaignId}`, {
-    method: "PATCH",
-    body: { status },
+  const action = status === "active" ? "activate" : "pause";
+  return instantlyRequest<Campaign>(`/campaigns/${campaignId}/${action}`, {
+    method: "POST",
   });
 }
 
