@@ -193,10 +193,22 @@ export async function updateCampaignStatus(
 // ─── Leads ───────────────────────────────────────────────────────────────────
 
 export async function addLeads(params: AddLeadsParams): Promise<{ added: number }> {
-  return instantlyRequest<{ added: number }>(`/campaigns/${params.campaign_id}/leads`, {
-    method: "POST",
-    body: { leads: params.leads },
-  });
+  let added = 0;
+  for (const lead of params.leads) {
+    await instantlyRequest<unknown>("/leads", {
+      method: "POST",
+      body: {
+        email: lead.email,
+        first_name: lead.first_name,
+        last_name: lead.last_name,
+        company_name: lead.company_name,
+        campaign_id: params.campaign_id,
+        ...(lead.variables && { custom_variables: lead.variables }),
+      },
+    });
+    added++;
+  }
+  return { added };
 }
 
 export async function listLeads(
@@ -204,19 +216,33 @@ export async function listLeads(
   limit = 100,
   skip = 0
 ): Promise<Lead[]> {
-  return instantlyRequest<Lead[]>(
-    `/campaigns/${campaignId}/leads?limit=${limit}&skip=${skip}`
-  );
+  const response = await instantlyRequest<{ items: Lead[] }>("/leads/list", {
+    method: "POST",
+    body: {
+      campaign_id: campaignId,
+      limit,
+      skip,
+    },
+  });
+  return response.items ?? [];
 }
 
 export async function deleteLeads(
   campaignId: string,
   emails: string[]
 ): Promise<{ deleted: number }> {
-  return instantlyRequest<{ deleted: number }>(`/campaigns/${campaignId}/leads`, {
-    method: "DELETE",
-    body: { emails },
-  });
+  let deleted = 0;
+  for (const email of emails) {
+    await instantlyRequest<unknown>("/leads", {
+      method: "DELETE",
+      body: {
+        campaign_id: campaignId,
+        delete_list: [email],
+      },
+    });
+    deleted++;
+  }
+  return { deleted };
 }
 
 // ─── Accounts ────────────────────────────────────────────────────────────────
