@@ -48,12 +48,18 @@ interface PaginatedResponse<T> {
 
 export interface CampaignAnalytics {
   campaign_id: string;
-  total_leads: number;
-  contacted: number;
-  opened: number;
-  replied: number;
-  bounced: number;
-  unsubscribed: number;
+  campaign_name: string;
+  campaign_status: number;
+  leads_count: number;
+  contacted_count: number;
+  emails_sent_count: number;
+  new_leads_contacted_count: number;
+  open_count: number;
+  reply_count: number;
+  link_click_count: number;
+  bounced_count: number;
+  unsubscribed_count: number;
+  completed_count: number;
 }
 
 export interface EmailContent {
@@ -294,6 +300,9 @@ export async function getWarmupAnalytics(): Promise<unknown> {
 
 // ─── Analytics ───────────────────────────────────────────────────────────────
 
-export async function getCampaignAnalytics(campaignId: string): Promise<CampaignAnalytics> {
-  return instantlyRequest<CampaignAnalytics>(`/campaigns/${campaignId}/analytics`);
+export async function getCampaignAnalytics(campaignId: string): Promise<CampaignAnalytics | null> {
+  const results = await instantlyRequest<CampaignAnalytics[]>(
+    `/campaigns/analytics?id=${encodeURIComponent(campaignId)}`
+  );
+  return results[0] ?? null;
 }
