@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { organizations, instantlyCampaigns, instantlyLeads } from "../db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import {
   createCampaign as createInstantlyCampaign,
   addLeads as addInstantlyLeads,
@@ -131,37 +131,56 @@ router.post("/", async (req: Request, res: Response) => {
         body.appId
       );
 
-      // 4. Add lead to campaign
-      const lead: Lead = {
-        email: body.to,
-        first_name: body.firstName,
-        last_name: body.lastName,
-        company_name: body.company,
-        variables: body.variables,
-      };
+      // 4. Check if lead already exists in this campaign (avoid wasting uploaded contact slots)
+      const [existingLead] = await db
+        .select()
+        .from(instantlyLeads)
+        .where(
+          and(
+            eq(instantlyLeads.instantlyCampaignId, campaign.instantlyCampaignId),
+            eq(instantlyLeads.email, body.to)
+          )
+        );
 
-      const result = await addInstantlyLeads({
-        campaign_id: campaign.instantlyCampaignId,
-        leads: [lead],
-      });
+      let savedLead = existingLead;
+      let added = 0;
 
-      // 5. Save lead to database
-      const [savedLead] = await db
-        .insert(instantlyLeads)
-        .values({
-          instantlyCampaignId: campaign.instantlyCampaignId,
+      if (!existingLead) {
+        // 5. Add lead to campaign in Instantly
+        const lead: Lead = {
           email: body.to,
-          firstName: body.firstName,
-          lastName: body.lastName,
-          companyName: body.company,
-          customVariables: body.variables,
-          orgId: organizationId,
-          runId: sendRun?.id,
-        })
-        .onConflictDoNothing()
-        .returning();
+          first_name: body.firstName,
+          last_name: body.lastName,
+          company_name: body.company,
+          variables: body.variables,
+        };
 
-      // 6. Activate campaign if new
+        const result = await addInstantlyLeads({
+          campaign_id: campaign.instantlyCampaignId,
+          leads: [lead],
+        });
+        added = result.added;
+
+        // 6. Save lead to database
+        const [created] = await db
+          .insert(instantlyLeads)
+          .values({
+            instantlyCampaignId: campaign.instantlyCampaignId,
+            email: body.to,
+            firstName: body.firstName,
+            lastName: body.lastName,
+            companyName: body.company,
+            customVariables: body.variables,
+            orgId: organizationId,
+            runId: sendRun?.id,
+          })
+          .onConflictDoNothing()
+          .returning();
+
+        if (created) savedLead = created;
+      }
+
+      // 7. Activate campaign if new
       if (campaign.isNew) {
         await updateCampaignStatus(campaign.instantlyCampaignId, "active");
         await db
@@ -170,16 +189,11 @@ router.post("/", async (req: Request, res: Response) => {
           .where(eq(instantlyCampaigns.id, campaign.id));
       }
 
-      // 7. Log costs and complete run (only if tracking)
+      // 8. Log costs and complete run (only if tracking)
       if (sendRun) {
         await addCosts(sendRun.id, [
-          { costName: "instantly-lead-add", quantity: 1 },
+          { costName: "instantly-email-send", quantity: 1 },
         ]);
-        if (campaign.isNew) {
-          await addCosts(sendRun.id, [
-            { costName: "instantly-campaign-create", quantity: 1 },
-          ]);
-        }
         await updateRun(sendRun.id, "completed");
       }
 
@@ -187,7 +201,7 @@ router.post("/", async (req: Request, res: Response) => {
         success: true,
         campaignId: campaign.id,
         leadId: savedLead?.id,
-        added: result.added,
+        added,
       });
     } catch (error: any) {
       if (sendRun) {
