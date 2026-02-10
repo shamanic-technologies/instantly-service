@@ -37,7 +37,7 @@ describe("instantly-client", () => {
     expect(typeof getCampaignAnalytics).toBe("function");
   });
 
-  it("createCampaign should include BCC to kevin@mcpfactory.org", async () => {
+  it("createCampaign should NOT include account_ids or bcc (V2 ignores them)", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -53,27 +53,28 @@ describe("instantly-client", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const [, options] = mockFetch.mock.calls[0];
     const body = JSON.parse(options.body);
-    expect(body.bcc).toEqual(["kevin@mcpfactory.org"]);
+    expect(body.account_ids).toBeUndefined();
+    expect(body.bcc).toBeUndefined();
   });
 
-  it("createCampaign should pass account_ids when provided", async () => {
+  it("updateCampaign should PATCH campaign with email_list", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ id: "camp-1", name: "Test", status: "draft", created_at: "", updated_at: "" }),
+      json: () => Promise.resolve({ id: "camp-1", name: "Test", status: "draft" }),
     });
 
-    const { createCampaign } = await import("../../src/lib/instantly-client");
-    await createCampaign({
-      name: "Test Campaign",
-      account_ids: ["sender@example.com"],
-      email: { subject: "Hi", body: "Hello" },
+    const { updateCampaign } = await import("../../src/lib/instantly-client");
+    await updateCampaign("camp-1", {
+      email_list: ["sender@example.com", "sender2@example.com"],
     });
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [, options] = mockFetch.mock.calls[0];
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toContain("/campaigns/camp-1");
+    expect(options.method).toBe("PATCH");
     const body = JSON.parse(options.body);
-    expect(body.account_ids).toEqual(["sender@example.com"]);
+    expect(body.email_list).toEqual(["sender@example.com", "sender2@example.com"]);
   });
 
   it("updateCampaignStatus should not send Content-Type without a body", async () => {

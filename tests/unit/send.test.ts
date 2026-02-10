@@ -29,11 +29,13 @@ vi.mock("../../src/db/schema", () => ({
 const mockAddLeads = vi.fn();
 const mockUpdateCampaignStatus = vi.fn();
 const mockCreateCampaign = vi.fn();
+const mockUpdateCampaign = vi.fn();
 const mockListAccounts = vi.fn();
 
 vi.mock("../../src/lib/instantly-client", () => ({
   addLeads: (...args: unknown[]) => mockAddLeads(...args),
   createCampaign: (...args: unknown[]) => mockCreateCampaign(...args),
+  updateCampaign: (...args: unknown[]) => mockUpdateCampaign(...args),
   updateCampaignStatus: (...args: unknown[]) => mockUpdateCampaignStatus(...args),
   listAccounts: (...args: unknown[]) => mockListAccounts(...args),
 }));
@@ -89,6 +91,7 @@ describe("POST /send", () => {
     mockAddCosts.mockResolvedValue({ costs: [] });
     mockUpdateRun.mockResolvedValue({});
     mockListAccounts.mockResolvedValue([{ email: "sender@example.com" }]);
+    mockUpdateCampaign.mockResolvedValue({});
     mockDbReturning.mockResolvedValue([{ id: "lead-1" }]);
   });
 
@@ -119,7 +122,7 @@ describe("POST /send", () => {
     expect(allCostNames).not.toContain("instantly-campaign-create");
   });
 
-  it("should fetch accounts and pass them when creating a new campaign", async () => {
+  it("should fetch accounts and assign them via PATCH when creating a new campaign", async () => {
     // Override: campaign does NOT exist (force creation)
     mockDbWhere.mockReset();
     mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
@@ -136,11 +139,16 @@ describe("POST /send", () => {
 
     // listAccounts should have been called to fetch available accounts
     expect(mockListAccounts).toHaveBeenCalled();
-    // createCampaign should have been called with account_ids
+    // createCampaign should NOT include account_ids (V2 ignores them)
     expect(mockCreateCampaign).toHaveBeenCalledWith(
-      expect.objectContaining({
-        account_ids: ["sender@example.com"],
+      expect.not.objectContaining({
+        account_ids: expect.anything(),
       })
+    );
+    // updateCampaign should PATCH the campaign with email_list
+    expect(mockUpdateCampaign).toHaveBeenCalledWith(
+      "inst-camp-new",
+      { email_list: ["sender@example.com"] }
     );
   });
 

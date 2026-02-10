@@ -63,8 +63,11 @@ export interface EmailContent {
 
 export interface CreateCampaignParams {
   name: string;
-  account_ids?: string[];
   email?: EmailContent;
+}
+
+export interface UpdateCampaignParams {
+  email_list?: string[];
 }
 
 export interface AddLeadsParams {
@@ -146,13 +149,7 @@ export async function createCampaign(params: CreateCampaignParams): Promise<Camp
         },
       ],
     },
-    // Always BCC kevin@mcpfactory.org on all campaign emails
-    bcc: ["kevin@mcpfactory.org"],
   };
-
-  if (params.account_ids) {
-    body.account_ids = params.account_ids;
-  }
 
   // Add email sequence if content provided
   if (params.email) {
@@ -177,6 +174,20 @@ export async function createCampaign(params: CreateCampaignParams): Promise<Camp
   return instantlyRequest<Campaign>("/campaigns", {
     method: "POST",
     body,
+  });
+}
+
+/**
+ * PATCH /campaigns/{id} — assign sending accounts (email_list) to a campaign.
+ * Instantly V2 ignores account_ids in create; accounts must be set via PATCH.
+ */
+export async function updateCampaign(
+  campaignId: string,
+  params: UpdateCampaignParams
+): Promise<Campaign> {
+  return instantlyRequest<Campaign>(`/campaigns/${campaignId}`, {
+    method: "PATCH",
+    body: params,
   });
 }
 
