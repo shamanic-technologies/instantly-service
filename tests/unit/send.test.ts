@@ -30,12 +30,14 @@ const mockAddLeads = vi.fn();
 const mockUpdateCampaignStatus = vi.fn();
 const mockCreateCampaign = vi.fn();
 const mockUpdateCampaign = vi.fn();
+const mockGetCampaign = vi.fn();
 const mockListAccounts = vi.fn();
 
 vi.mock("../../src/lib/instantly-client", () => ({
   addLeads: (...args: unknown[]) => mockAddLeads(...args),
   createCampaign: (...args: unknown[]) => mockCreateCampaign(...args),
   updateCampaign: (...args: unknown[]) => mockUpdateCampaign(...args),
+  getCampaign: (...args: unknown[]) => mockGetCampaign(...args),
   updateCampaignStatus: (...args: unknown[]) => mockUpdateCampaignStatus(...args),
   listAccounts: (...args: unknown[]) => mockListAccounts(...args),
 }));
@@ -92,6 +94,7 @@ describe("POST /send", () => {
     mockUpdateRun.mockResolvedValue({});
     mockListAccounts.mockResolvedValue([{ email: "sender@example.com" }]);
     mockUpdateCampaign.mockResolvedValue({});
+    mockGetCampaign.mockResolvedValue({ email_list: [], bcc_list: [], not_sending_status: null });
     mockDbReturning.mockResolvedValue([{ id: "lead-1" }]);
   });
 

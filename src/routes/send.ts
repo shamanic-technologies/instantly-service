@@ -5,6 +5,7 @@ import { eq, and } from "drizzle-orm";
 import {
   createCampaign as createInstantlyCampaign,
   updateCampaign as updateInstantlyCampaign,
+  getCampaign as getInstantlyCampaign,
   addLeads as addInstantlyLeads,
   updateCampaignStatus,
   listAccounts,
@@ -79,7 +80,10 @@ async function getOrCreateCampaign(
       email_list: accountIds,
       bcc_list: ["kevin@mcpfactory.org"],
     });
-    console.log(`[send] Accounts assigned`);
+
+    // Verify accounts were actually assigned
+    const verified = await getInstantlyCampaign(instantlyCampaign.id) as unknown as Record<string, unknown>;
+    console.log(`[send] Verify after PATCH — email_list=${JSON.stringify(verified.email_list)} bcc_list=${JSON.stringify(verified.bcc_list)} not_sending_status=${JSON.stringify(verified.not_sending_status)}`);
   }
 
   const [created] = await db
@@ -211,6 +215,11 @@ router.post("/", async (req: Request, res: Response) => {
       if (campaign.isNew) {
         console.log(`[send] Activating new campaign ${campaign.instantlyCampaignId}`);
         await updateCampaignStatus(campaign.instantlyCampaignId, "active");
+
+        // Verify campaign state after activation
+        const postActivate = await getInstantlyCampaign(campaign.instantlyCampaignId) as unknown as Record<string, unknown>;
+        console.log(`[send] Post-activate — status=${postActivate.status} email_list=${JSON.stringify(postActivate.email_list)} not_sending_status=${JSON.stringify(postActivate.not_sending_status)}`);
+
         await db
           .update(instantlyCampaigns)
           .set({ status: "active", updatedAt: new Date() })
