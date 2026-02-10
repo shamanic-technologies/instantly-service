@@ -222,7 +222,7 @@ export async function addLeads(params: AddLeadsParams): Promise<{ added: number 
         first_name: lead.first_name,
         last_name: lead.last_name,
         company_name: lead.company_name,
-        campaign_id: params.campaign_id,
+        campaign: params.campaign_id,
         ...(lead.variables && { custom_variables: lead.variables }),
       },
     });
@@ -239,7 +239,7 @@ export async function listLeads(
   const response = await instantlyRequest<{ items: Lead[] }>("/leads/list", {
     method: "POST",
     body: {
-      campaign_id: campaignId,
+      campaign: campaignId,
       limit,
       skip,
     },

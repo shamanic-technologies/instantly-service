@@ -79,6 +79,26 @@ describe("instantly-client", () => {
     expect(body.bcc_list).toEqual(["kevin@mcpfactory.org"]);
   });
 
+  it("addLeads should use 'campaign' field (not 'campaign_id') per V2 API", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ id: "lead-1", email: "test@example.com" }),
+    });
+
+    const { addLeads } = await import("../../src/lib/instantly-client");
+    await addLeads({
+      campaign_id: "camp-123",
+      leads: [{ email: "test@example.com", first_name: "Test" }],
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [, options] = mockFetch.mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.campaign).toBe("camp-123");
+    expect(body.campaign_id).toBeUndefined();
+  });
+
   it("updateCampaignStatus should not send Content-Type without a body", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
