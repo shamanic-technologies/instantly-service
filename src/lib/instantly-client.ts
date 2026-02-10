@@ -110,12 +110,15 @@ async function instantlyRequest<T>(
 
       if (!response.ok) {
         const errorText = await response.text();
+        console.error(`[instantly-api] ${method} ${path} → ${response.status}: ${errorText}`);
         throw new Error(
           `instantly-api ${method} ${path} failed: ${response.status} - ${errorText}`
         );
       }
 
-      return response.json() as Promise<T>;
+      const json = await response.json() as T;
+      console.log(`[instantly-api] ${method} ${path} → ${response.status}`, JSON.stringify(json).slice(0, 500));
+      return json;
     } catch (error) {
       lastError = error as Error;
       if (attempt < retries - 1) {
