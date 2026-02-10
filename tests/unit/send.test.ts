@@ -155,40 +155,6 @@ describe("POST /send", () => {
     );
   });
 
-  it("should replace Postmark {{{pm:unsubscribe}}} with Instantly {{unsubscribe_url}} in email body", async () => {
-    // Override: campaign does NOT exist (force creation so we can see the email body)
-    mockDbWhere.mockReset();
-    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
-    mockDbWhere.mockResolvedValueOnce([]); // campaign lookup (not found → create)
-    mockDbWhere.mockResolvedValueOnce([]); // lead lookup (not found)
-
-    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-unsub", status: "draft" });
-    mockDbReturning.mockResolvedValueOnce([{ id: "camp-1", instantlyCampaignId: "inst-camp-unsub" }]);
-    mockDbReturning.mockResolvedValueOnce([{ id: "lead-1" }]);
-    mockUpdateCampaignStatus.mockResolvedValue({});
-
-    const app = await createSendApp();
-    const bodyWithPostmark = {
-      ...validBody,
-      email: {
-        subject: "Hello",
-        body: '<p>Hi</p><a href="{{{pm:unsubscribe}}}">Unsubscribe</a>',
-      },
-    };
-
-    await request(app).post("/send").send(bodyWithPostmark);
-
-    // createCampaign should receive the normalized body with {{unsubscribe_url}}
-    expect(mockCreateCampaign).toHaveBeenCalledWith(
-      expect.objectContaining({
-        email: {
-          subject: "Hello",
-          body: '<p>Hi</p><a href="{{unsubscribe_url}}">Unsubscribe</a>',
-        },
-      })
-    );
-  });
-
   it("should skip Instantly API call when lead already exists in campaign", async () => {
     // Override: lead already exists
     mockDbWhere.mockReset();

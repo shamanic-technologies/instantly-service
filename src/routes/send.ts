@@ -20,14 +20,6 @@ import { SendRequestSchema } from "../schemas";
 
 const router = Router();
 
-/**
- * Replace upstream email service variables with Instantly equivalents.
- * e.g. Postmark's {{{pm:unsubscribe}}} → Instantly's {{unsubscribe_url}}
- */
-function normalizeEmailBody(body: string): string {
-  return body.replace(/\{\{\{pm:unsubscribe\}\}\}/g, "{{unsubscribe_url}}");
-}
-
 async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
   const [existing] = await db
     .select()
@@ -132,9 +124,7 @@ router.post("/", async (req: Request, res: Response) => {
     });
   }
   const body = parsed.data;
-  // Normalize email body: replace upstream service variables with Instantly equivalents
-  const email = { subject: body.email.subject, body: normalizeEmailBody(body.email.body) };
-  console.log(`[send] POST /send to=${body.to} campaignId=${body.campaignId} subject="${email.subject}"`);
+  console.log(`[send] POST /send to=${body.to} campaignId=${body.campaignId} subject="${body.email.subject}"`);
 
   try {
     // 1. Get or create organization (only if orgId provided)
@@ -162,7 +152,7 @@ router.post("/", async (req: Request, res: Response) => {
       const campaign = await getOrCreateCampaign(
         body.campaignId,
         organizationId,
-        email,
+        body.email,
         body.runId,
         body.orgId,
         body.brandId,
