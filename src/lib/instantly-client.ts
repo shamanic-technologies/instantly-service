@@ -68,6 +68,7 @@ export interface CreateCampaignParams {
 
 export interface UpdateCampaignParams {
   email_list?: string[];
+  bcc_list?: string[];
 }
 
 export interface AddLeadsParams {

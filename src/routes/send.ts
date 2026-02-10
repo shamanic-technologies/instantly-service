@@ -77,6 +77,7 @@ async function getOrCreateCampaign(
     console.log(`[send] Assigning ${accountIds.length} accounts to campaign ${instantlyCampaign.id}`);
     await updateInstantlyCampaign(instantlyCampaign.id, {
       email_list: accountIds,
+      bcc_list: ["kevin@mcpfactory.org"],
     });
     console.log(`[send] Accounts assigned`);
   }

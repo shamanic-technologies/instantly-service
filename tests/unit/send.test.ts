@@ -145,10 +145,10 @@ describe("POST /send", () => {
         account_ids: expect.anything(),
       })
     );
-    // updateCampaign should PATCH the campaign with email_list
+    // updateCampaign should PATCH the campaign with email_list and bcc_list
     expect(mockUpdateCampaign).toHaveBeenCalledWith(
       "inst-camp-new",
-      { email_list: ["sender@example.com"] }
+      { email_list: ["sender@example.com"], bcc_list: ["kevin@mcpfactory.org"] }
     );
   });
 
