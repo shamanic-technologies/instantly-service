@@ -4,7 +4,14 @@
  */
 
 const INSTANTLY_API_URL = "https://api.instantly.ai/api/v2";
-const INSTANTLY_API_KEY = process.env.INSTANTLY_API_KEY || "";
+
+function getApiKey(): string {
+  const key = process.env.INSTANTLY_API_KEY;
+  if (!key) {
+    throw new Error("INSTANTLY_API_KEY environment variable is not set");
+  }
+  return key;
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -79,7 +86,7 @@ async function instantlyRequest<T>(
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${INSTANTLY_API_KEY}`,
+    Authorization: `Bearer ${getApiKey()}`,
   };
 
   let lastError: Error | null = null;
