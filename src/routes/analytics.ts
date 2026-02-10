@@ -26,15 +26,19 @@ router.get("/:campaignId/analytics", async (req: Request, res: Response) => {
 
     const analytics = await getCampaignAnalytics(campaign.instantlyCampaignId);
 
+    if (!analytics) {
+      return res.json({ analytics: null });
+    }
+
     // Save snapshot
     await db.insert(instantlyAnalyticsSnapshots).values({
       campaignId: campaign.instantlyCampaignId,
-      totalLeads: analytics.total_leads,
-      contacted: analytics.contacted,
-      opened: analytics.opened,
-      replied: analytics.replied,
-      bounced: analytics.bounced,
-      unsubscribed: analytics.unsubscribed,
+      totalLeads: analytics.leads_count,
+      contacted: analytics.contacted_count,
+      opened: analytics.open_count,
+      replied: analytics.reply_count,
+      bounced: analytics.bounced_count,
+      unsubscribed: analytics.unsubscribed_count,
       snapshotAt: new Date(),
       rawData: analytics,
     });
@@ -94,16 +98,17 @@ router.post("/stats", async (req: Request, res: Response) => {
       campaigns.map(async (c) => {
         try {
           const analytics = await getCampaignAnalytics(c.instantlyCampaignId);
+          if (!analytics) return null;
 
           // Save snapshot
           await db.insert(instantlyAnalyticsSnapshots).values({
             campaignId: c.instantlyCampaignId,
-            totalLeads: analytics.total_leads,
-            contacted: analytics.contacted,
-            opened: analytics.opened,
-            replied: analytics.replied,
-            bounced: analytics.bounced,
-            unsubscribed: analytics.unsubscribed,
+            totalLeads: analytics.leads_count,
+            contacted: analytics.contacted_count,
+            opened: analytics.open_count,
+            replied: analytics.reply_count,
+            bounced: analytics.bounced_count,
+            unsubscribed: analytics.unsubscribed_count,
             snapshotAt: new Date(),
             rawData: analytics,
           });
@@ -128,12 +133,12 @@ router.post("/stats", async (req: Request, res: Response) => {
 
     for (const analytics of analyticsResults) {
       if (!analytics) continue;
-      stats.totalLeads += analytics.total_leads;
-      stats.contacted += analytics.contacted;
-      stats.opened += analytics.opened;
-      stats.replied += analytics.replied;
-      stats.bounced += analytics.bounced;
-      stats.unsubscribed += analytics.unsubscribed;
+      stats.totalLeads += analytics.leads_count;
+      stats.contacted += analytics.contacted_count;
+      stats.opened += analytics.open_count;
+      stats.replied += analytics.reply_count;
+      stats.bounced += analytics.bounced_count;
+      stats.unsubscribed += analytics.unsubscribed_count;
     }
 
     res.json(stats);
