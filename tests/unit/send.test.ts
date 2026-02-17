@@ -53,6 +53,7 @@ vi.mock("../../src/lib/runs-client", () => ({
   addCosts: (...args: unknown[]) => mockAddCosts(...args),
 }));
 
+import { appendAccountSignature } from "../../src/routes/send";
 import request from "supertest";
 import express from "express";
 
@@ -76,6 +77,30 @@ const validBody = {
   brandId: "brand-1",
   appId: "app-1",
 };
+
+describe("appendAccountSignature", () => {
+  it("should append {{accountSignature}} to plain text body", () => {
+    const result = appendAccountSignature("Hello world");
+    expect(result).toBe("Hello world\n\n{{accountSignature}}");
+  });
+
+  it("should append {{accountSignature}} to HTML body", () => {
+    const result = appendAccountSignature("<p>Hello world</p>");
+    expect(result).toBe("<p>Hello world</p>\n\n{{accountSignature}}");
+  });
+
+  it("should not duplicate if {{accountSignature}} already present", () => {
+    const body = "Hello\n\n{{accountSignature}}";
+    const result = appendAccountSignature(body);
+    expect(result).toBe(body);
+  });
+
+  it("should not duplicate if {{accountSignature}} is inline in HTML", () => {
+    const body = '<p>Hello</p><div>{{accountSignature}}</div>';
+    const result = appendAccountSignature(body);
+    expect(result).toBe(body);
+  });
+});
 
 describe("POST /send", () => {
   beforeEach(() => {
@@ -142,12 +167,11 @@ describe("POST /send", () => {
 
     // listAccounts should have been called to fetch available accounts
     expect(mockListAccounts).toHaveBeenCalled();
-    // createCampaign should NOT include account_ids (V2 ignores them)
-    expect(mockCreateCampaign).toHaveBeenCalledWith(
-      expect.not.objectContaining({
-        account_ids: expect.anything(),
-      })
-    );
+    // createCampaign should include {{accountSignature}} in body and NOT include account_ids
+    expect(mockCreateCampaign).toHaveBeenCalledWith({
+      name: "Campaign camp-1",
+      email: { subject: "Hello", body: "World\n\n{{accountSignature}}" },
+    });
     // updateCampaign should PATCH the campaign with email_list and bcc_list
     expect(mockUpdateCampaign).toHaveBeenCalledWith(
       "inst-camp-new",
