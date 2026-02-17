@@ -20,6 +20,17 @@ import { SendRequestSchema } from "../schemas";
 
 const router = Router();
 
+/**
+ * Append Instantly's {{accountSignature}} variable so each sending account's
+ * configured signature is injected automatically.
+ */
+export function appendAccountSignature(body: string): string {
+  if (body.includes("{{accountSignature}}")) {
+    return body;
+  }
+  return `${body}\n\n{{accountSignature}}`;
+}
+
 async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
   const [existing] = await db
     .select()
@@ -69,7 +80,7 @@ async function getOrCreateCampaign(
   console.log(`[send] Creating new campaign ${campaignId} with subject="${email.subject}"`);
   const instantlyCampaign = await createInstantlyCampaign({
     name: `Campaign ${campaignId}`,
-    email,
+    email: { subject: email.subject, body: appendAccountSignature(email.body) },
   });
   console.log(`[send] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`);
 
