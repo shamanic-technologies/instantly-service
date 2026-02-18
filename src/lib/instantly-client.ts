@@ -37,6 +37,7 @@ export interface Account {
   status: number;
   first_name?: string;
   last_name?: string;
+  signature?: string;
   stat_warmup_score?: number;
   daily_limit?: number;
 }
