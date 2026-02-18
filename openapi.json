@@ -1,0 +1,1185 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Instantly Service",
+    "description": "Cold email outreach service via Instantly.ai API. Manages campaigns, leads, accounts, analytics, and webhook events.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3011"
+    }
+  ],
+  "components": {
+    "schemas": {
+      "RootResponse": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "version"
+        ]
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "service"
+        ]
+      },
+      "WebhookResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "eventType": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "eventType"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "WebhookPayload": {
+        "type": "object",
+        "properties": {
+          "event_type": {
+            "type": "string"
+          },
+          "campaign_id": {
+            "type": "string"
+          },
+          "lead_email": {
+            "type": "string"
+          },
+          "email_account": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_type"
+        ]
+      },
+      "SendResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "campaignId": {
+            "type": "string"
+          },
+          "leadId": {
+            "type": "string",
+            "nullable": true
+          },
+          "added": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "success",
+          "campaignId",
+          "added"
+        ]
+      },
+      "SendRequest": {
+        "type": "object",
+        "properties": {
+          "orgId": {
+            "type": "string"
+          },
+          "brandId": {
+            "type": "string"
+          },
+          "appId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "campaignId": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "company": {
+            "type": "string"
+          },
+          "variables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "email": {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "subject",
+              "body"
+            ]
+          }
+        },
+        "required": [
+          "brandId",
+          "appId",
+          "runId",
+          "campaignId",
+          "to",
+          "email"
+        ]
+      },
+      "CreateCampaignResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "campaign": {
+            "$ref": "#/components/schemas/CampaignSummary"
+          }
+        },
+        "required": [
+          "success",
+          "campaign"
+        ]
+      },
+      "CampaignSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "instantlyCampaignId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "instantlyCampaignId",
+          "name",
+          "status"
+        ]
+      },
+      "CreateCampaignRequest": {
+        "type": "object",
+        "properties": {
+          "orgId": {
+            "type": "string"
+          },
+          "clerkOrgId": {
+            "type": "string"
+          },
+          "brandId": {
+            "type": "string"
+          },
+          "appId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "accountIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "nullable": true
+            }
+          }
+        },
+        "required": [
+          "orgId",
+          "clerkOrgId",
+          "brandId",
+          "appId",
+          "name"
+        ]
+      },
+      "UpdateStatusRequest": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "paused",
+              "completed"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "AddLeadsResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "added": {
+            "type": "number"
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "success",
+          "added",
+          "total"
+        ]
+      },
+      "AddLeadsRequest": {
+        "type": "object",
+        "properties": {
+          "orgId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "leads": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "email": {
+                  "type": "string"
+                },
+                "firstName": {
+                  "type": "string"
+                },
+                "lastName": {
+                  "type": "string"
+                },
+                "companyName": {
+                  "type": "string"
+                },
+                "customVariables": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "email"
+              ]
+            }
+          }
+        },
+        "required": [
+          "orgId",
+          "leads"
+        ]
+      },
+      "DeleteLeadsResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "deleted": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "success",
+          "deleted"
+        ]
+      },
+      "DeleteLeadsRequest": {
+        "type": "object",
+        "properties": {
+          "emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "emails"
+        ]
+      },
+      "CampaignAnalytics": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string"
+          },
+          "total_leads": {
+            "type": "number"
+          },
+          "contacted": {
+            "type": "number"
+          },
+          "opened": {
+            "type": "number"
+          },
+          "replied": {
+            "type": "number"
+          },
+          "bounced": {
+            "type": "number"
+          },
+          "unsubscribed": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "total_leads",
+          "contacted",
+          "opened",
+          "replied",
+          "bounced",
+          "unsubscribed"
+        ]
+      },
+      "StatsResponse": {
+        "type": "object",
+        "properties": {
+          "stats": {
+            "type": "object",
+            "properties": {
+              "emailsSent": {
+                "type": "number"
+              },
+              "emailsDelivered": {
+                "type": "number"
+              },
+              "emailsOpened": {
+                "type": "number"
+              },
+              "emailsClicked": {
+                "type": "number"
+              },
+              "emailsReplied": {
+                "type": "number"
+              },
+              "emailsBounced": {
+                "type": "number"
+              },
+              "repliesAutoReply": {
+                "type": "number"
+              },
+              "repliesNotInterested": {
+                "type": "number"
+              },
+              "repliesOutOfOffice": {
+                "type": "number"
+              },
+              "repliesUnsubscribe": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "emailsSent",
+              "emailsDelivered",
+              "emailsOpened",
+              "emailsClicked",
+              "emailsReplied",
+              "emailsBounced",
+              "repliesAutoReply",
+              "repliesNotInterested",
+              "repliesOutOfOffice",
+              "repliesUnsubscribe"
+            ]
+          },
+          "recipients": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "stats",
+          "recipients"
+        ]
+      },
+      "StatsRequest": {
+        "type": "object",
+        "properties": {
+          "runIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "clerkOrgId": {
+            "type": "string"
+          },
+          "brandId": {
+            "type": "string"
+          },
+          "appId": {
+            "type": "string"
+          },
+          "campaignId": {
+            "type": "string"
+          }
+        }
+      },
+      "SyncResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "synced": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "success",
+          "synced"
+        ]
+      },
+      "WarmupResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "email": {
+            "type": "string"
+          },
+          "warmupEnabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "email",
+          "warmupEnabled"
+        ]
+      },
+      "WarmupRequest": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "summary": "Service info",
+        "responses": {
+          "200": {
+            "description": "Service info",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RootResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/instantly": {
+      "post": {
+        "summary": "Receive Instantly webhook events",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Webhook processed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing event_type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid webhook secret",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/send": {
+      "post": {
+        "summary": "Send email via Instantly campaign",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Email sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing required fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Failed to send",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns": {
+      "post": {
+        "summary": "Create a campaign",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCampaignRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Campaign created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateCampaignResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing required fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Failed to create campaign",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns/{campaignId}": {
+      "get": {
+        "summary": "Get a campaign",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "campaignId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Campaign found"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns/by-org/{orgId}": {
+      "get": {
+        "summary": "List campaigns by organization",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "orgId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Campaigns list"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/campaigns/{campaignId}/status": {
+      "patch": {
+        "summary": "Update campaign status",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "campaignId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateStatusRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Status updated"
+          },
+          "400": {
+            "description": "Invalid status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns/{campaignId}/leads": {
+      "post": {
+        "summary": "Add leads to a campaign",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "campaignId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddLeadsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Leads added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AddLeadsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing required fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to add leads",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List campaign leads",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "campaignId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "skip",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Leads list"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete leads from a campaign",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "campaignId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteLeadsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Leads deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteLeadsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing emails",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/{campaignId}/analytics": {
+      "get": {
+        "summary": "Get campaign analytics",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "campaignId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Campaign analytics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "analytics": {
+                      "$ref": "#/components/schemas/CampaignAnalytics"
+                    }
+                  },
+                  "required": [
+                    "analytics"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stats": {
+      "post": {
+        "summary": "Get aggregated stats by filters",
+        "description": "Aggregates stats from webhook events across campaigns matching the provided filters. At least one filter is required. Response shape aligned with Postmark stats contract.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Aggregated campaign stats",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No filter provided",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/accounts": {
+      "get": {
+        "summary": "List email accounts",
+        "responses": {
+          "200": {
+            "description": "Accounts list"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/accounts/sync": {
+      "post": {
+        "summary": "Sync accounts from Instantly",
+        "responses": {
+          "200": {
+            "description": "Sync complete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/accounts/{email}/warmup": {
+      "post": {
+        "summary": "Enable or disable warmup for an account",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "email",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WarmupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Warmup setting updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarmupResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/accounts/warmup-analytics": {
+      "get": {
+        "summary": "Get warmup analytics",
+        "responses": {
+          "200": {
+            "description": "Warmup analytics"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    }
+  }
+}
