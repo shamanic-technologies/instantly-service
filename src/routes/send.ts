@@ -10,6 +10,7 @@ import {
   updateCampaignStatus,
   listAccounts,
   Lead,
+  Account,
 } from "../lib/instantly-client";
 import {
   createRun,
@@ -21,14 +22,39 @@ import { SendRequestSchema } from "../schemas";
 const router = Router();
 
 /**
- * Append Instantly's {{accountSignature}} variable so each sending account's
- * configured signature is injected automatically.
+ * Inject the real account signature into the email body.
+ *
+ * {{accountSignature}} only resolves in the Instantly UI — campaigns created
+ * via the API send it as literal text.  Instead we fetch each account's
+ * `signature` field from `GET /api/v2/accounts` and splice it in directly.
+ *
+ * Because Instantly rotates senders we cannot match a signature to a specific
+ * recipient, so we pick the first non-empty signature from the assigned
+ * accounts (pre-warmed accounts in the same workspace typically share the
+ * same signature).
  */
-export function appendAccountSignature(body: string): string {
-  if (body.includes("{{accountSignature}}")) {
-    return body;
+export function buildEmailBodyWithSignature(
+  body: string,
+  accounts: Account[],
+): string {
+  const signature = accounts
+    .map((a) => a.signature)
+    .find((s) => s && s.trim().length > 0);
+
+  if (!signature) {
+    console.warn(
+      "[send] No account has a signature configured — email will be sent without signature",
+    );
+    // Strip the placeholder so it doesn't leak as literal text
+    return body.replace(/\n*\{\{accountSignature\}\}/g, "");
   }
-  return `${body}\n\n{{accountSignature}}`;
+
+  // Replace placeholder if the caller included it, otherwise append
+  if (body.includes("{{accountSignature}}")) {
+    return body.replace("{{accountSignature}}", signature);
+  }
+
+  return `${body}\n\n${signature}`;
 }
 
 async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
@@ -77,10 +103,11 @@ async function getOrCreateCampaign(
   const accountIds = accounts.map((a) => a.email);
   console.log(`[send] Found ${accounts.length} accounts: ${JSON.stringify(accountIds)}`);
 
+  const bodyWithSig = buildEmailBodyWithSignature(email.body, accounts);
   console.log(`[send] Creating new campaign ${campaignId} with subject="${email.subject}"`);
   const instantlyCampaign = await createInstantlyCampaign({
     name: `Campaign ${campaignId}`,
-    email: { subject: email.subject, body: appendAccountSignature(email.body) },
+    email: { subject: email.subject, body: bodyWithSig },
   });
   console.log(`[send] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`);
 
