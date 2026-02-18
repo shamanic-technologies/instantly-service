@@ -465,13 +465,19 @@ export type StatsRequest = z.infer<typeof StatsRequestSchema>;
 
 const StatsResponseSchema = z
   .object({
-    totalCampaigns: z.number(),
-    totalLeads: z.number(),
-    contacted: z.number(),
-    opened: z.number(),
-    replied: z.number(),
-    bounced: z.number(),
-    unsubscribed: z.number(),
+    stats: z.object({
+      emailsSent: z.number(),
+      emailsDelivered: z.number(),
+      emailsOpened: z.number(),
+      emailsClicked: z.number(),
+      emailsReplied: z.number(),
+      emailsBounced: z.number(),
+      repliesAutoReply: z.number(),
+      repliesNotInterested: z.number(),
+      repliesOutOfOffice: z.number(),
+      repliesUnsubscribe: z.number(),
+    }),
+    recipients: z.number(),
   })
   .openapi("StatsResponse");
 
@@ -480,7 +486,7 @@ registry.registerPath({
   path: "/stats",
   summary: "Get aggregated stats by filters",
   description:
-    "Aggregates Instantly campaign analytics across campaigns matching the provided filters. At least one filter is required.",
+    "Aggregates stats from webhook events across campaigns matching the provided filters. At least one filter is required. Response shape aligned with Postmark stats contract.",
   request: {
     body: {
       content: { "application/json": { schema: StatsRequestSchema } },
