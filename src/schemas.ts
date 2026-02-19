@@ -415,13 +415,16 @@ registry.registerPath({
 
 const CampaignAnalyticsSchema = z
   .object({
-    campaign_id: z.string(),
-    total_leads: z.number(),
-    contacted: z.number(),
-    opened: z.number(),
-    replied: z.number(),
-    bounced: z.number(),
-    unsubscribed: z.number(),
+    total_leads: z.number().describe("Total leads in campaign"),
+    contacted: z.number().describe("Leads contacted (emails sent)"),
+    opened: z
+      .number()
+      .describe(
+        "Unique recipients who opened (deduplicated; each recipient counted at most once regardless of repeat opens)",
+      ),
+    replied: z.number().describe("Total replies received"),
+    bounced: z.number().describe("Total bounced emails"),
+    unsubscribed: z.number().describe("Total unsubscribes"),
   })
   .openapi("CampaignAnalytics");
 
@@ -466,18 +469,32 @@ export type StatsRequest = z.infer<typeof StatsRequestSchema>;
 const StatsResponseSchema = z
   .object({
     stats: z.object({
-      emailsSent: z.number(),
-      emailsDelivered: z.number(),
-      emailsOpened: z.number(),
-      emailsClicked: z.number(),
-      emailsReplied: z.number(),
-      emailsBounced: z.number(),
-      repliesAutoReply: z.number(),
-      repliesNotInterested: z.number(),
-      repliesOutOfOffice: z.number(),
-      repliesUnsubscribe: z.number(),
+      emailsSent: z.number().describe("Total email_sent events"),
+      emailsDelivered: z
+        .number()
+        .describe("emailsSent minus emailsBounced"),
+      emailsOpened: z
+        .number()
+        .describe(
+          "Unique recipients who opened (COUNT DISTINCT lead_email with email_opened events)",
+        ),
+      emailsClicked: z.number().describe("Total link click events"),
+      emailsReplied: z.number().describe("Total reply_received events"),
+      emailsBounced: z.number().describe("Total email_bounced events"),
+      repliesAutoReply: z.number().describe("Total auto_reply_received events"),
+      repliesNotInterested: z
+        .number()
+        .describe("Total lead_not_interested events"),
+      repliesOutOfOffice: z
+        .number()
+        .describe("Total lead_out_of_office events"),
+      repliesUnsubscribe: z
+        .number()
+        .describe("Total lead_unsubscribed events"),
     }),
-    recipients: z.number(),
+    recipients: z
+      .number()
+      .describe("Unique recipients (COUNT DISTINCT lead_email with email_sent events)"),
   })
   .openapi("StatsResponse");
 

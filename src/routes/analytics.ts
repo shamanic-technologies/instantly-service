@@ -31,10 +31,16 @@ router.get("/:campaignId/analytics", async (req: Request, res: Response) => {
     }
 
     // Aggregate analytics across all sub-campaigns
-    let aggregated: Record<string, number> | null = null;
+    let aggregated = {
+      total_leads: 0, contacted: 0, opened: 0, replied: 0,
+      bounced: 0, unsubscribed: 0,
+    };
+    let found = false;
+
     for (const campaign of campaigns) {
       const analytics = await getCampaignAnalytics(campaign.instantlyCampaignId);
       if (!analytics) continue;
+      found = true;
 
       // Save snapshot per sub-campaign
       await db.insert(instantlyAnalyticsSnapshots).values({
@@ -49,20 +55,17 @@ router.get("/:campaignId/analytics", async (req: Request, res: Response) => {
         rawData: analytics,
       });
 
-      if (!aggregated) {
-        aggregated = {
-          leads_count: 0, contacted_count: 0, emails_sent_count: 0,
-          new_leads_contacted_count: 0, open_count: 0, reply_count: 0,
-          link_click_count: 0, bounced_count: 0, unsubscribed_count: 0,
-          completed_count: 0,
-        };
-      }
-      for (const key of Object.keys(aggregated)) {
-        aggregated[key] += (analytics as unknown as Record<string, number>)[key] ?? 0;
-      }
+      // Use open_count_unique (unique recipients who opened) instead of
+      // open_count (total open events including repeat opens)
+      aggregated.total_leads += analytics.leads_count;
+      aggregated.contacted += analytics.contacted_count;
+      aggregated.opened += analytics.open_count_unique;
+      aggregated.replied += analytics.reply_count;
+      aggregated.bounced += analytics.bounced_count;
+      aggregated.unsubscribed += analytics.unsubscribed_count;
     }
 
-    res.json({ analytics: aggregated });
+    res.json({ analytics: found ? aggregated : null });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

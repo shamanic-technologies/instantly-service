@@ -366,30 +366,32 @@
       "CampaignAnalytics": {
         "type": "object",
         "properties": {
-          "campaign_id": {
-            "type": "string"
-          },
           "total_leads": {
-            "type": "number"
+            "type": "number",
+            "description": "Total leads in campaign"
           },
           "contacted": {
-            "type": "number"
+            "type": "number",
+            "description": "Leads contacted (emails sent)"
           },
           "opened": {
-            "type": "number"
+            "type": "number",
+            "description": "Unique recipients who opened (deduplicated; each recipient counted at most once regardless of repeat opens)"
           },
           "replied": {
-            "type": "number"
+            "type": "number",
+            "description": "Total replies received"
           },
           "bounced": {
-            "type": "number"
+            "type": "number",
+            "description": "Total bounced emails"
           },
           "unsubscribed": {
-            "type": "number"
+            "type": "number",
+            "description": "Total unsubscribes"
           }
         },
         "required": [
-          "campaign_id",
           "total_leads",
           "contacted",
           "opened",
@@ -405,34 +407,44 @@
             "type": "object",
             "properties": {
               "emailsSent": {
-                "type": "number"
+                "type": "number",
+                "description": "Total email_sent events"
               },
               "emailsDelivered": {
-                "type": "number"
+                "type": "number",
+                "description": "emailsSent minus emailsBounced"
               },
               "emailsOpened": {
-                "type": "number"
+                "type": "number",
+                "description": "Unique recipients who opened (COUNT DISTINCT lead_email with email_opened events)"
               },
               "emailsClicked": {
-                "type": "number"
+                "type": "number",
+                "description": "Total link click events"
               },
               "emailsReplied": {
-                "type": "number"
+                "type": "number",
+                "description": "Total reply_received events"
               },
               "emailsBounced": {
-                "type": "number"
+                "type": "number",
+                "description": "Total email_bounced events"
               },
               "repliesAutoReply": {
-                "type": "number"
+                "type": "number",
+                "description": "Total auto_reply_received events"
               },
               "repliesNotInterested": {
-                "type": "number"
+                "type": "number",
+                "description": "Total lead_not_interested events"
               },
               "repliesOutOfOffice": {
-                "type": "number"
+                "type": "number",
+                "description": "Total lead_out_of_office events"
               },
               "repliesUnsubscribe": {
-                "type": "number"
+                "type": "number",
+                "description": "Total lead_unsubscribed events"
               }
             },
             "required": [
@@ -449,7 +461,8 @@
             ]
           },
           "recipients": {
-            "type": "number"
+            "type": "number",
+            "description": "Unique recipients (COUNT DISTINCT lead_email with email_sent events)"
           }
         },
         "required": [
