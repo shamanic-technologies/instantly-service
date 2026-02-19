@@ -1,8 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
-import { instantlyAnalyticsSnapshots, instantlyCampaigns } from "../db/schema";
-import { eq, or, sql, type SQL } from "drizzle-orm";
-import { getCampaignAnalytics } from "../lib/instantly-client";
+import { sql, type SQL } from "drizzle-orm";
 import { StatsRequestSchema } from "../schemas";
 
 const router = Router();
@@ -33,70 +31,6 @@ function internalExclusionClause(): SQL {
     AND NOT (${sql.join(domainConditions, sql` OR `)})
   `;
 }
-
-/**
- * GET /campaigns/:campaignId/analytics
- * Fetch from Instantly API and save snapshot
- */
-router.get("/:campaignId/analytics", async (req: Request, res: Response) => {
-  const { campaignId } = req.params;
-
-  try {
-    // Look up by id (direct-created campaigns) or campaignId (send-created)
-    const campaigns = await db
-      .select()
-      .from(instantlyCampaigns)
-      .where(
-        or(
-          eq(instantlyCampaigns.id, campaignId),
-          eq(instantlyCampaigns.campaignId, campaignId),
-        ),
-      );
-
-    if (campaigns.length === 0) {
-      return res.status(404).json({ error: "Campaign not found" });
-    }
-
-    // Aggregate analytics across all sub-campaigns
-    let aggregated = {
-      total_leads: 0, contacted: 0, opened: 0, replied: 0,
-      bounced: 0, unsubscribed: 0,
-    };
-    let found = false;
-
-    for (const campaign of campaigns) {
-      const analytics = await getCampaignAnalytics(campaign.instantlyCampaignId);
-      if (!analytics) continue;
-      found = true;
-
-      // Save snapshot per sub-campaign
-      await db.insert(instantlyAnalyticsSnapshots).values({
-        campaignId: campaign.instantlyCampaignId,
-        totalLeads: analytics.leads_count,
-        contacted: analytics.contacted_count,
-        opened: analytics.open_count_unique,
-        replied: analytics.reply_count,
-        bounced: analytics.bounced_count,
-        unsubscribed: analytics.unsubscribed_count,
-        snapshotAt: new Date(),
-        rawData: analytics,
-      });
-
-      // Use open_count_unique (unique recipients who opened) instead of
-      // open_count (total open events including repeat opens)
-      aggregated.total_leads += analytics.leads_count;
-      aggregated.contacted += analytics.contacted_count;
-      aggregated.opened += analytics.open_count_unique;
-      aggregated.replied += analytics.reply_count;
-      aggregated.bounced += analytics.bounced_count;
-      aggregated.unsubscribed += analytics.unsubscribed_count;
-    }
-
-    res.json({ analytics: found ? aggregated : null });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 /**
  * POST /stats
