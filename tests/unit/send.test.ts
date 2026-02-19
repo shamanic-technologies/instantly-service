@@ -111,26 +111,26 @@ describe("pickRandomAccount", () => {
 describe("buildEmailBodyWithSignature", () => {
   const sig = "<p>Best,<br>John Doe</p>";
 
-  it("should append the account's signature to plain text body", () => {
+  it("should append separator + signature to plain text body", () => {
     const result = buildEmailBodyWithSignature("Hello world", acct({ signature: sig }));
-    expect(result).toBe(`Hello world\n\n${sig}`);
+    expect(result).toBe(`Hello world\n\n--\n${sig}`);
   });
 
-  it("should append the account's signature to HTML body", () => {
+  it("should append separator + signature to HTML body", () => {
     const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: sig }));
-    expect(result).toBe(`<p>Hello</p>\n\n${sig}`);
+    expect(result).toBe(`<p>Hello</p>\n\n--\n${sig}`);
   });
 
-  it("should replace {{accountSignature}} placeholder with real signature", () => {
+  it("should replace {{accountSignature}} placeholder with separator + signature", () => {
     const body = "Hello\n\n{{accountSignature}}";
     const result = buildEmailBodyWithSignature(body, acct({ signature: sig }));
-    expect(result).toBe(`Hello\n\n${sig}`);
+    expect(result).toBe(`Hello\n\n--\n${sig}`);
   });
 
-  it("should replace inline {{accountSignature}} in HTML", () => {
+  it("should replace inline {{accountSignature}} in HTML with separator + signature", () => {
     const body = "<p>Hello</p><div>{{accountSignature}}</div>";
     const result = buildEmailBodyWithSignature(body, acct({ signature: sig }));
-    expect(result).toBe(`<p>Hello</p><div>${sig}</div>`);
+    expect(result).toBe(`<p>Hello</p><div>--\n${sig}</div>`);
   });
 
   it("should strip {{accountSignature}} when account has no signature", () => {
@@ -197,7 +197,7 @@ describe("POST /send", () => {
     // createCampaign should include the picked account's signature
     expect(mockCreateCampaign).toHaveBeenCalledWith({
       name: "Campaign camp-1",
-      email: { subject: "Hello", body: "World\n\n<p>Best,<br>Sender</p>" },
+      email: { subject: "Hello", body: "World\n\n--\n<p>Best,<br>Sender</p>" },
     });
     // updateCampaign should PATCH with only the single picked account
     expect(mockUpdateCampaign).toHaveBeenCalledWith(
