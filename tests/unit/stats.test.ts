@@ -2,6 +2,22 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
 import express from "express";
 
+/** Recursively extract SQL text fragments from a drizzle SQL object */
+function extractSqlText(obj: unknown): string {
+  if (typeof obj === "string") return obj;
+  if (obj == null) return "";
+  if (Array.isArray(obj)) return obj.map(extractSqlText).join("");
+  if (typeof obj === "object") {
+    const o = obj as Record<string, unknown>;
+    // StringChunk has a `value` array of strings
+    if (Array.isArray(o.value)) return o.value.join("");
+    // SQL has queryChunks
+    if (Array.isArray(o.queryChunks)) return extractSqlText(o.queryChunks);
+    return Object.values(o).map(extractSqlText).join("");
+  }
+  return "";
+}
+
 // Mock DB — db.execute returns { rows: [...] }
 const mockExecute = vi.fn();
 
@@ -172,6 +188,26 @@ describe("POST /stats", () => {
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(10);
     expect(mockExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("should exclude internal emails and sender from stats query", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+    const app = await createStatsApp();
+
+    await request(app).post("/stats").send({ appId: "test-app" });
+
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+
+    // Extract SQL string chunks from the drizzle SQL object
+    const sqlObj = mockExecute.mock.calls[0][0];
+    const sqlText = extractSqlText(sqlObj);
+
+    // Sender exclusion: don't count events where lead = sender
+    expect(sqlText).toContain("lead_email != e.account_email");
+    // Specific email exclusion
+    expect(sqlText).toContain("lead_email NOT IN");
+    // Domain exclusions
+    expect(sqlText).toContain("LIKE");
   });
 
   it("should return 500 on db error", async () => {
