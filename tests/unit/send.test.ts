@@ -51,7 +51,7 @@ vi.mock("../../src/lib/runs-client", () => ({
   addCosts: (...args: unknown[]) => mockAddCosts(...args),
 }));
 
-import { buildEmailBodyWithSignature } from "../../src/routes/send";
+import { buildEmailBodyWithSignature, pickRandomAccount } from "../../src/routes/send";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
 import express from "express";
@@ -96,49 +96,51 @@ function mockNewCampaignFlow() {
   mockUpdateCampaignStatus.mockResolvedValue({});
 }
 
+describe("pickRandomAccount", () => {
+  it("should return one of the provided accounts", () => {
+    const accounts = [
+      acct({ email: "a@test.com" }),
+      acct({ email: "b@test.com" }),
+      acct({ email: "c@test.com" }),
+    ];
+    const picked = pickRandomAccount(accounts);
+    expect(accounts).toContainEqual(picked);
+  });
+});
+
 describe("buildEmailBodyWithSignature", () => {
   const sig = "<p>Best,<br>John Doe</p>";
 
-  it("should append the real signature to plain text body", () => {
-    const result = buildEmailBodyWithSignature("Hello world", [acct({ signature: sig })]);
+  it("should append the account's signature to plain text body", () => {
+    const result = buildEmailBodyWithSignature("Hello world", acct({ signature: sig }));
     expect(result).toBe(`Hello world\n\n${sig}`);
   });
 
-  it("should append the real signature to HTML body", () => {
-    const result = buildEmailBodyWithSignature("<p>Hello</p>", [acct({ signature: sig })]);
+  it("should append the account's signature to HTML body", () => {
+    const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: sig }));
     expect(result).toBe(`<p>Hello</p>\n\n${sig}`);
   });
 
   it("should replace {{accountSignature}} placeholder with real signature", () => {
     const body = "Hello\n\n{{accountSignature}}";
-    const result = buildEmailBodyWithSignature(body, [acct({ signature: sig })]);
+    const result = buildEmailBodyWithSignature(body, acct({ signature: sig }));
     expect(result).toBe(`Hello\n\n${sig}`);
   });
 
   it("should replace inline {{accountSignature}} in HTML", () => {
     const body = "<p>Hello</p><div>{{accountSignature}}</div>";
-    const result = buildEmailBodyWithSignature(body, [acct({ signature: sig })]);
+    const result = buildEmailBodyWithSignature(body, acct({ signature: sig }));
     expect(result).toBe(`<p>Hello</p><div>${sig}</div>`);
   });
 
-  it("should pick the first non-empty signature from multiple accounts", () => {
-    const accounts = [
-      acct({ email: "a@test.com", signature: "" }),
-      acct({ email: "b@test.com", signature: sig }),
-      acct({ email: "c@test.com", signature: "<p>Other sig</p>" }),
-    ];
-    const result = buildEmailBodyWithSignature("Hi", accounts);
-    expect(result).toBe(`Hi\n\n${sig}`);
-  });
-
-  it("should strip {{accountSignature}} when no account has a signature", () => {
+  it("should strip {{accountSignature}} when account has no signature", () => {
     const body = "Hello\n\n{{accountSignature}}";
-    const result = buildEmailBodyWithSignature(body, [acct({ signature: "" }), acct()]);
+    const result = buildEmailBodyWithSignature(body, acct({ signature: "" }));
     expect(result).toBe("Hello");
   });
 
-  it("should return body as-is when no accounts have signatures and no placeholder", () => {
-    const result = buildEmailBodyWithSignature("Hello", [acct()]);
+  it("should return body as-is when account has no signature and no placeholder", () => {
+    const result = buildEmailBodyWithSignature("Hello", acct());
     expect(result).toBe("Hello");
   });
 });
@@ -185,22 +187,25 @@ describe("POST /send", () => {
     expect(allCostNames).not.toContain("instantly-campaign-create");
   });
 
-  it("should fetch accounts and assign them via PATCH when creating a new campaign", async () => {
+  it("should pick a random account and assign only that one to the campaign", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
     await request(app).post("/send").send(validBody);
 
     // listAccounts should have been called to fetch available accounts
     expect(mockListAccounts).toHaveBeenCalled();
-    // createCampaign should include the real signature (not {{accountSignature}})
+    // createCampaign should include the picked account's signature
     expect(mockCreateCampaign).toHaveBeenCalledWith({
       name: "Campaign camp-1",
       email: { subject: "Hello", body: "World\n\n<p>Best,<br>Sender</p>" },
     });
-    // updateCampaign should PATCH the campaign with email_list and bcc_list
+    // updateCampaign should PATCH with only the single picked account
     expect(mockUpdateCampaign).toHaveBeenCalledWith(
       "inst-camp-new",
-      { email_list: ["sender@example.com"], bcc_list: ["kevin@mcpfactory.org"], open_tracking: true, link_tracking: true, insert_unsubscribe_header: true }
+      expect.objectContaining({
+        email_list: ["sender@example.com"],
+        bcc_list: ["kevin@mcpfactory.org"],
+      }),
     );
   });
 
