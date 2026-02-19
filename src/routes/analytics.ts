@@ -7,6 +7,33 @@ import { StatsRequestSchema } from "../schemas";
 
 const router = Router();
 
+// Internal emails/domains excluded from all stats.
+// Events where lead_email matches these (or equals the sender) are never counted.
+const EXCLUDED_EMAILS = ["kevin.lourd@gmail.com"];
+const EXCLUDED_DOMAINS = [
+  "mcpfactory.org",
+  "growthagency.dev",
+  "growthservice.org",
+  "pressbeat.io",
+  "kevinlourd.com",
+  "polaritycourse.com",
+];
+
+/** SQL fragment that filters out internal/sender events */
+function internalExclusionClause(): SQL {
+  const domainConditions = EXCLUDED_DOMAINS.map(
+    (d) => sql`e.lead_email LIKE ${"%" + d}`,
+  );
+  return sql`
+    e.lead_email != e.account_email
+    AND e.lead_email NOT IN (${sql.join(
+      EXCLUDED_EMAILS.map((e) => sql`${e}`),
+      sql`, `,
+    )})
+    AND NOT (${sql.join(domainConditions, sql` OR `)})
+  `;
+}
+
 /**
  * GET /campaigns/:campaignId/analytics
  * Fetch from Instantly API and save snapshot
@@ -135,6 +162,7 @@ router.post("/stats", async (req: Request, res: Response) => {
       FROM instantly_events e
       JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
       WHERE ${whereClause}
+        AND ${internalExclusionClause()}
     `);
     const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
