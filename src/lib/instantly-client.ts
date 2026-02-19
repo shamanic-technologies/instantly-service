@@ -56,6 +56,7 @@ export interface CampaignAnalytics {
   emails_sent_count: number;
   new_leads_contacted_count: number;
   open_count: number;
+  open_count_unique: number;
   reply_count: number;
   link_click_count: number;
   bounced_count: number;
