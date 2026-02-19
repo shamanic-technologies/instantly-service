@@ -363,43 +363,6 @@
           "emails"
         ]
       },
-      "CampaignAnalytics": {
-        "type": "object",
-        "properties": {
-          "total_leads": {
-            "type": "number",
-            "description": "Total leads in campaign"
-          },
-          "contacted": {
-            "type": "number",
-            "description": "Leads contacted (emails sent)"
-          },
-          "opened": {
-            "type": "number",
-            "description": "Unique recipients who opened (deduplicated; each recipient counted at most once regardless of repeat opens)"
-          },
-          "replied": {
-            "type": "number",
-            "description": "Total replies received"
-          },
-          "bounced": {
-            "type": "number",
-            "description": "Total bounced emails"
-          },
-          "unsubscribed": {
-            "type": "number",
-            "description": "Total unsubscribes"
-          }
-        },
-        "required": [
-          "total_leads",
-          "contacted",
-          "opened",
-          "replied",
-          "bounced",
-          "unsubscribed"
-        ]
-      },
       "StatsResponse": {
         "type": "object",
         "properties": {
@@ -981,54 +944,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "404": {
-            "description": "Campaign not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/{campaignId}/analytics": {
-      "get": {
-        "summary": "Get campaign analytics",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "campaignId",
-            "in": "path"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Campaign analytics",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "analytics": {
-                      "$ref": "#/components/schemas/CampaignAnalytics"
-                    }
-                  },
-                  "required": [
-                    "analytics"
-                  ]
                 }
               }
             }

@@ -411,47 +411,6 @@ registry.registerPath({
   },
 });
 
-// ─── Analytics ──────────────────────────────────────────────────────────────
-
-const CampaignAnalyticsSchema = z
-  .object({
-    total_leads: z.number().describe("Total leads in campaign"),
-    contacted: z.number().describe("Leads contacted (emails sent)"),
-    opened: z
-      .number()
-      .describe(
-        "Unique recipients who opened (deduplicated; each recipient counted at most once regardless of repeat opens)",
-      ),
-    replied: z.number().describe("Total replies received"),
-    bounced: z.number().describe("Total bounced emails"),
-    unsubscribed: z.number().describe("Total unsubscribes"),
-  })
-  .openapi("CampaignAnalytics");
-
-registry.registerPath({
-  method: "get",
-  path: "/{campaignId}/analytics",
-  summary: "Get campaign analytics",
-  request: {
-    params: z.object({ campaignId: z.string() }),
-  },
-  responses: {
-    200: {
-      description: "Campaign analytics",
-      content: {
-        "application/json": {
-          schema: z.object({ analytics: CampaignAnalyticsSchema }),
-        },
-      },
-    },
-    404: {
-      description: "Campaign not found",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: { description: "Unauthorized" },
-  },
-});
-
 // ─── Stats ──────────────────────────────────────────────────────────────────
 
 export const StatsRequestSchema = z

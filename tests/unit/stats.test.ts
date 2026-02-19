@@ -29,11 +29,6 @@ vi.mock("../../src/db", () => ({
 
 vi.mock("../../src/db/schema", () => ({
   instantlyCampaigns: {},
-  instantlyAnalyticsSnapshots: {},
-}));
-
-vi.mock("../../src/lib/instantly-client", () => ({
-  getCampaignAnalytics: vi.fn(),
 }));
 
 process.env.INSTANTLY_SERVICE_API_KEY = "test-api-key";
