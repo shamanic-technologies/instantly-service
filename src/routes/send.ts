@@ -52,10 +52,10 @@ export function buildEmailBodyWithSignature(
   }
 
   if (body.includes("{{accountSignature}}")) {
-    return body.replace("{{accountSignature}}", signature);
+    return body.replace("{{accountSignature}}", `--\n${signature}`);
   }
 
-  return `${body}\n\n${signature}`;
+  return `${body}\n\n--\n${signature}`;
 }
 
 async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
