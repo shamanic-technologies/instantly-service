@@ -41,7 +41,7 @@ router.get("/:campaignId/analytics", async (req: Request, res: Response) => {
         campaignId: campaign.instantlyCampaignId,
         totalLeads: analytics.leads_count,
         contacted: analytics.contacted_count,
-        opened: analytics.open_count,
+        opened: analytics.open_count_unique,
         replied: analytics.reply_count,
         bounced: analytics.bounced_count,
         unsubscribed: analytics.unsubscribed_count,
@@ -120,7 +120,7 @@ router.post("/stats", async (req: Request, res: Response) => {
           COUNT(*) FILTER (WHERE e.event_type = 'email_sent')
           - COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'),
         0)::int AS "emailsDelivered",
-        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'reply_received'), 0)::int AS "emailsReplied",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
