@@ -22,34 +22,35 @@ import { SendRequestSchema } from "../schemas";
 const router = Router();
 
 /**
- * Inject the real account signature into the email body.
+ * Pick a random account from the list.
+ *
+ * Each per-lead campaign is assigned a single random account so the
+ * signature in the email body always matches the actual sender.
+ */
+export function pickRandomAccount(accounts: Account[]): Account {
+  return accounts[Math.floor(Math.random() * accounts.length)];
+}
+
+/**
+ * Inject the selected account's signature into the email body.
  *
  * {{accountSignature}} only resolves in the Instantly UI — campaigns created
- * via the API send it as literal text.  Instead we fetch each account's
- * `signature` field from `GET /api/v2/accounts` and splice it in directly.
- *
- * Because Instantly rotates senders we cannot match a signature to a specific
- * recipient, so we pick the first non-empty signature from the assigned
- * accounts (pre-warmed accounts in the same workspace typically share the
- * same signature).
+ * via the API send it as literal text.  Instead we use the assigned account's
+ * `signature` field and splice it in directly.
  */
 export function buildEmailBodyWithSignature(
   body: string,
-  accounts: Account[],
+  account: Account,
 ): string {
-  const signature = accounts
-    .map((a) => a.signature)
-    .find((s) => s && s.trim().length > 0);
+  const signature = account.signature?.trim() || "";
 
   if (!signature) {
     console.warn(
-      "[send] No account has a signature configured — email will be sent without signature",
+      `[send] Account ${account.email} has no signature configured — email will be sent without signature`,
     );
-    // Strip the placeholder so it doesn't leak as literal text
     return body.replace(/\n*\{\{accountSignature\}\}/g, "");
   }
 
-  // Replace placeholder if the caller included it, otherwise append
   if (body.includes("{{accountSignature}}")) {
     return body.replace("{{accountSignature}}", signature);
   }
@@ -115,12 +116,15 @@ async function getOrCreateCampaignForLead(
     };
   }
 
-  // Fetch available email accounts so Instantly can actually send
+  // Fetch available email accounts and pick one at random for this lead
   const accounts = await listAccounts();
-  const accountIds = accounts.map((a) => a.email);
-  console.log(`[send] Found ${accounts.length} accounts: ${JSON.stringify(accountIds)}`);
+  if (accounts.length === 0) {
+    throw new Error("No email accounts available — cannot create campaign");
+  }
+  const account = pickRandomAccount(accounts);
+  console.log(`[send] Picked account ${account.email} (out of ${accounts.length}) for ${campaignId}/${leadEmail}`);
 
-  const bodyWithSig = buildEmailBodyWithSignature(email.body, accounts);
+  const bodyWithSig = buildEmailBodyWithSignature(email.body, account);
   console.log(`[send] Creating new Instantly campaign for ${campaignId}/${leadEmail} subject="${email.subject}"`);
   const instantlyCampaign = await createInstantlyCampaign({
     name: `Campaign ${campaignId}`,
@@ -128,11 +132,11 @@ async function getOrCreateCampaignForLead(
   });
   console.log(`[send] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`);
 
-  // Assign sending accounts via PATCH (V2 ignores account_ids in create body)
-  if (accountIds.length > 0) {
-    console.log(`[send] Assigning ${accountIds.length} accounts to campaign ${instantlyCampaign.id}`);
+  // Assign the single selected account via PATCH (V2 ignores account_ids in create body)
+  {
+    console.log(`[send] Assigning account ${account.email} to campaign ${instantlyCampaign.id}`);
     await updateInstantlyCampaign(instantlyCampaign.id, {
-      email_list: accountIds,
+      email_list: [account.email],
       bcc_list: ["kevin@mcpfactory.org"],
       open_tracking: true,
       link_tracking: true,
