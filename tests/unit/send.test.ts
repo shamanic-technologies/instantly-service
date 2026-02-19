@@ -1,14 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock DB
-const mockDbSelect = vi.fn();
-const mockDbInsert = vi.fn();
-const mockDbUpdate = vi.fn();
-const mockDbFrom = vi.fn();
 const mockDbWhere = vi.fn();
-const mockDbValues = vi.fn();
-const mockDbSet = vi.fn();
-const mockDbOnConflictDoNothing = vi.fn();
 const mockDbReturning = vi.fn();
 
 vi.mock("../../src/db", () => ({
@@ -21,7 +14,12 @@ vi.mock("../../src/db", () => ({
 
 vi.mock("../../src/db/schema", () => ({
   organizations: {},
-  instantlyCampaigns: { id: "id", instantlyCampaignId: "instantly_campaign_id" },
+  instantlyCampaigns: {
+    id: "id",
+    campaignId: "campaign_id",
+    leadEmail: "lead_email",
+    instantlyCampaignId: "instantly_campaign_id",
+  },
   instantlyLeads: { instantlyCampaignId: "instantly_campaign_id", email: "email" },
 }));
 
@@ -83,6 +81,21 @@ function acct(overrides: Partial<Account> = {}): Account {
   return { email: "a@test.com", warmup_status: 1, status: 1, ...overrides };
 }
 
+/**
+ * Helper: set up mocks for a new campaign creation flow.
+ * DB calls in order: org lookup → campaign-for-lead lookup (not found) → campaign insert → lead insert
+ */
+function mockNewCampaignFlow() {
+  mockDbWhere.mockReset();
+  mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
+  mockDbWhere.mockResolvedValueOnce([]); // campaign-for-lead lookup (not found → create)
+
+  mockCreateCampaign.mockResolvedValue({ id: "inst-camp-new", status: "draft" });
+  mockDbReturning.mockResolvedValueOnce([{ id: "sub-camp-1", campaignId: "camp-1", instantlyCampaignId: "inst-camp-new" }]); // campaign insert
+  mockDbReturning.mockResolvedValueOnce([{ id: "lead-1" }]); // lead insert
+  mockUpdateCampaignStatus.mockResolvedValue({});
+}
+
 describe("buildEmailBodyWithSignature", () => {
   const sig = "<p>Best,<br>John Doe</p>";
 
@@ -134,29 +147,22 @@ describe("POST /send", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // Default: org exists
-    mockDbWhere.mockResolvedValue([{ id: "org-db-1", clerkOrgId: "org-1" }]);
-    // Default: campaign exists
-    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
-    mockDbWhere.mockResolvedValueOnce([{ id: "camp-1", instantlyCampaignId: "inst-camp-1", isNew: false }]); // campaign lookup
-    mockDbWhere.mockResolvedValueOnce([]); // lead lookup (not found)
-
     mockCreateRun.mockResolvedValue({ id: "run-1" });
     mockAddLeads.mockResolvedValue({ added: 1 });
     mockAddCosts.mockResolvedValue({ costs: [] });
     mockUpdateRun.mockResolvedValue({});
     mockListAccounts.mockResolvedValue([{ email: "sender@example.com", warmup_status: 1, status: 1, signature: "<p>Best,<br>Sender</p>" }]);
     mockUpdateCampaign.mockResolvedValue({});
-    mockGetCampaign.mockResolvedValue({ email_list: [], bcc_list: [], not_sending_status: null });
+    mockGetCampaign.mockResolvedValue({ email_list: [], bcc_list: [], not_sending_status: null, status: "active" });
     mockDbReturning.mockResolvedValue([{ id: "lead-1" }]);
   });
 
   it("should use 'instantly-email-send' cost name (not 'instantly-lead-add')", async () => {
+    mockNewCampaignFlow();
     const app = await createSendApp();
 
     await request(app).post("/send").send(validBody);
 
-    // Verify cost name
     expect(mockAddCosts).toHaveBeenCalled();
     const costCalls = mockAddCosts.mock.calls;
     const allCostNames = costCalls.flatMap(
@@ -167,6 +173,7 @@ describe("POST /send", () => {
   });
 
   it("should not track 'instantly-campaign-create' cost", async () => {
+    mockNewCampaignFlow();
     const app = await createSendApp();
 
     await request(app).post("/send").send(validBody);
@@ -179,17 +186,7 @@ describe("POST /send", () => {
   });
 
   it("should fetch accounts and assign them via PATCH when creating a new campaign", async () => {
-    // Override: campaign does NOT exist (force creation)
-    mockDbWhere.mockReset();
-    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
-    mockDbWhere.mockResolvedValueOnce([]); // campaign lookup (not found → create)
-    mockDbWhere.mockResolvedValueOnce([]); // lead lookup (not found)
-
-    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-new", status: "draft" });
-    mockDbReturning.mockResolvedValueOnce([{ id: "camp-1", instantlyCampaignId: "inst-camp-new" }]); // campaign insert
-    mockDbReturning.mockResolvedValueOnce([{ id: "lead-1" }]); // lead insert
-    mockUpdateCampaignStatus.mockResolvedValue({});
-
+    mockNewCampaignFlow();
     const app = await createSendApp();
     await request(app).post("/send").send(validBody);
 
@@ -207,18 +204,74 @@ describe("POST /send", () => {
     );
   });
 
-  it("should skip Instantly API call when lead already exists in campaign", async () => {
-    // Override: lead already exists
+  it("should skip Instantly API call when same lead already processed for campaign", async () => {
+    // (campaignId, leadEmail) already exists → skip
     mockDbWhere.mockReset();
     mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
-    mockDbWhere.mockResolvedValueOnce([{ id: "camp-1", instantlyCampaignId: "inst-camp-1" }]); // campaign lookup
-    mockDbWhere.mockResolvedValueOnce([{ id: "lead-existing", email: "test@example.com" }]); // lead lookup (found!)
+    mockDbWhere.mockResolvedValueOnce([{
+      id: "sub-camp-1",
+      campaignId: "camp-1",
+      leadEmail: "test@example.com",
+      instantlyCampaignId: "inst-camp-1",
+    }]); // campaign-for-lead lookup (found!)
 
     const app = await createSendApp();
-
     await request(app).post("/send").send(validBody);
 
-    // addLeads should NOT have been called since lead already exists
+    // No campaign or lead creation should happen
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
     expect(mockAddLeads).not.toHaveBeenCalled();
+  });
+
+  // ─── REGRESSION TEST: the original bug ────────────────────────────────────
+
+  it("should create separate Instantly campaigns for different leads in the same campaign", async () => {
+    const app = await createSendApp();
+
+    // ── Send 1: Briannah ──
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org
+    mockDbWhere.mockResolvedValueOnce([]); // campaign-for-lead (not found → create)
+    mockCreateCampaign.mockResolvedValueOnce({ id: "inst-camp-A", status: "draft" });
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([{ id: "sub-A", campaignId: "camp-1", instantlyCampaignId: "inst-camp-A" }]);
+    mockDbReturning.mockResolvedValueOnce([{ id: "lead-A" }]);
+
+    const res1 = await request(app).post("/send").send({
+      ...validBody,
+      to: "briannah@example.com",
+      email: { subject: "community builders in higher education", body: "Hi Briannah" },
+    });
+    expect(res1.status).toBe(200);
+
+    // ── Send 2: Matt (same campaignId, different lead + content) ──
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org
+    mockDbWhere.mockResolvedValueOnce([]); // campaign-for-lead (not found → create NEW)
+    mockCreateCampaign.mockResolvedValueOnce({ id: "inst-camp-B", status: "draft" });
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([{ id: "sub-B", campaignId: "camp-1", instantlyCampaignId: "inst-camp-B" }]);
+    mockDbReturning.mockResolvedValueOnce([{ id: "lead-B" }]);
+
+    const res2 = await request(app).post("/send").send({
+      ...validBody,
+      to: "matt@example.com",
+      email: { subject: "community builders funding real change", body: "Hi Matt" },
+    });
+    expect(res2.status).toBe(200);
+
+    // Verify: createCampaign was called TWICE with DIFFERENT email content
+    expect(mockCreateCampaign).toHaveBeenCalledTimes(2);
+
+    const call1 = mockCreateCampaign.mock.calls[0][0];
+    const call2 = mockCreateCampaign.mock.calls[1][0];
+    expect(call1.email.subject).toBe("community builders in higher education");
+    expect(call2.email.subject).toBe("community builders funding real change");
+    expect(call1.email.body).toContain("Hi Briannah");
+    expect(call2.email.body).toContain("Hi Matt");
+
+    // Both responses return the same logical campaignId
+    expect(res1.body.campaignId).toBe("camp-1");
+    expect(res2.body.campaignId).toBe("camp-1");
   });
 });

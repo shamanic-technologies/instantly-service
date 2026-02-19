@@ -6,6 +6,7 @@ import {
   boolean,
   integer,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
 
 // Organizations table - maps Clerk org IDs to internal IDs
@@ -28,20 +29,34 @@ export const users = pgTable("users", {
 });
 
 // Campaigns table
-export const instantlyCampaigns = pgTable("instantly_campaigns", {
-  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  instantlyCampaignId: text("instantly_campaign_id").notNull().unique(),
-  name: text("name").notNull(),
-  status: text("status").notNull().default("active"),
-  orgId: text("org_id"),
-  clerkOrgId: text("clerk_org_id"),
-  brandId: text("brand_id").notNull(),
-  appId: text("app_id").notNull(),
-  runId: text("run_id"),
-  metadata: jsonb("metadata"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+// Each POST /send creates its own row (one Instantly campaign per lead).
+// `campaignId` groups sub-campaigns that belong to the same logical campaign.
+export const instantlyCampaigns = pgTable(
+  "instantly_campaigns",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    campaignId: text("campaign_id"),
+    leadEmail: text("lead_email"),
+    instantlyCampaignId: text("instantly_campaign_id").notNull().unique(),
+    name: text("name").notNull(),
+    status: text("status").notNull().default("active"),
+    orgId: text("org_id"),
+    clerkOrgId: text("clerk_org_id"),
+    brandId: text("brand_id").notNull(),
+    appId: text("app_id").notNull(),
+    runId: text("run_id"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("instantly_campaigns_campaign_lead_idx").on(
+      table.campaignId,
+      table.leadEmail,
+    ),
+    index("instantly_campaigns_campaign_id_idx").on(table.campaignId),
+  ],
+);
 
 // Leads table
 export const instantlyLeads = pgTable(

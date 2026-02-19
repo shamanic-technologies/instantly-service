@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { instantlyCampaigns } from "../db/schema";
-import { eq } from "drizzle-orm";
+import { eq, or } from "drizzle-orm";
 import {
   createCampaign as createInstantlyCampaign,
   updateCampaign as updateInstantlyCampaign,
@@ -104,21 +104,29 @@ router.post("/", async (req: Request, res: Response) => {
 
 /**
  * GET /campaigns/:campaignId
+ * Looks up by id (direct-created) or campaignId column (send-created).
+ * Returns an array when multiple sub-campaigns exist for a logical campaign.
  */
 router.get("/:campaignId", async (req: Request, res: Response) => {
   const { campaignId } = req.params;
 
   try {
-    const [campaign] = await db
+    const campaigns = await db
       .select()
       .from(instantlyCampaigns)
-      .where(eq(instantlyCampaigns.id, campaignId));
+      .where(
+        or(
+          eq(instantlyCampaigns.id, campaignId),
+          eq(instantlyCampaigns.campaignId, campaignId),
+        ),
+      );
 
-    if (!campaign) {
+    if (campaigns.length === 0) {
       return res.status(404).json({ error: "Campaign not found" });
     }
 
-    res.json({ campaign });
+    // Backwards compat: return first as `campaign`, full list as `campaigns`
+    res.json({ campaign: campaigns[0], campaigns });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -144,6 +152,7 @@ router.get("/by-org/:orgId", async (req: Request, res: Response) => {
 
 /**
  * PATCH /campaigns/:campaignId/status
+ * Updates all sub-campaigns matching the given campaignId.
  */
 router.patch("/:campaignId/status", async (req: Request, res: Response) => {
   const { campaignId } = req.params;
@@ -158,26 +167,33 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
   const { status } = parsed.data;
 
   try {
-    const [campaign] = await db
+    const campaigns = await db
       .select()
       .from(instantlyCampaigns)
-      .where(eq(instantlyCampaigns.id, campaignId));
+      .where(
+        or(
+          eq(instantlyCampaigns.id, campaignId),
+          eq(instantlyCampaigns.campaignId, campaignId),
+        ),
+      );
 
-    if (!campaign) {
+    if (campaigns.length === 0) {
       return res.status(404).json({ error: "Campaign not found" });
     }
 
-    // Update in Instantly
-    await updateInstantlyStatus(campaign.instantlyCampaignId, status);
+    // Update all sub-campaigns in Instantly + DB
+    const updated = [];
+    for (const campaign of campaigns) {
+      await updateInstantlyStatus(campaign.instantlyCampaignId, status);
+      const [row] = await db
+        .update(instantlyCampaigns)
+        .set({ status, updatedAt: new Date() })
+        .where(eq(instantlyCampaigns.id, campaign.id))
+        .returning();
+      updated.push(row);
+    }
 
-    // Update in DB
-    const [updated] = await db
-      .update(instantlyCampaigns)
-      .set({ status, updatedAt: new Date() })
-      .where(eq(instantlyCampaigns.id, campaignId))
-      .returning();
-
-    res.json({ campaign: updated });
+    res.json({ campaign: updated[0], campaigns: updated });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
