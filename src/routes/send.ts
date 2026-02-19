@@ -75,25 +75,42 @@ async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
   return created.id;
 }
 
-async function getOrCreateCampaign(
+/**
+ * Create one Instantly campaign per lead.
+ *
+ * Each (campaignId, leadEmail) pair gets its own Instantly campaign so that
+ * every lead receives its own personalised subject + body.  The caller's
+ * `campaignId` is stored as a grouping key — it is NOT a 1:1 mapping to a
+ * single Instantly campaign.
+ */
+async function getOrCreateCampaignForLead(
   campaignId: string,
+  leadEmail: string,
   organizationId: string | null,
   email: { subject: string; body: string },
   runId: string,
   clerkOrgId: string | undefined,
   brandId: string,
-  appId: string
-): Promise<{ id: string; instantlyCampaignId: string; isNew: boolean }> {
+  appId: string,
+): Promise<{ id: string; instantlyCampaignId: string; campaignId: string; isNew: boolean }> {
+  // Dedup: if we already created an Instantly campaign for this exact lead
+  // in this logical campaign, reuse it.
   const [existing] = await db
     .select()
     .from(instantlyCampaigns)
-    .where(eq(instantlyCampaigns.id, campaignId));
+    .where(
+      and(
+        eq(instantlyCampaigns.campaignId, campaignId),
+        eq(instantlyCampaigns.leadEmail, leadEmail),
+      ),
+    );
 
   if (existing) {
-    console.log(`[send] Reusing existing campaign ${campaignId} → instantly=${existing.instantlyCampaignId}`);
+    console.log(`[send] Reusing existing campaign for ${campaignId}/${leadEmail} → instantly=${existing.instantlyCampaignId}`);
     return {
       id: existing.id,
       instantlyCampaignId: existing.instantlyCampaignId,
+      campaignId,
       isNew: false,
     };
   }
@@ -104,7 +121,7 @@ async function getOrCreateCampaign(
   console.log(`[send] Found ${accounts.length} accounts: ${JSON.stringify(accountIds)}`);
 
   const bodyWithSig = buildEmailBodyWithSignature(email.body, accounts);
-  console.log(`[send] Creating new campaign ${campaignId} with subject="${email.subject}"`);
+  console.log(`[send] Creating new Instantly campaign for ${campaignId}/${leadEmail} subject="${email.subject}"`);
   const instantlyCampaign = await createInstantlyCampaign({
     name: `Campaign ${campaignId}`,
     email: { subject: email.subject, body: bodyWithSig },
@@ -130,7 +147,8 @@ async function getOrCreateCampaign(
   const [created] = await db
     .insert(instantlyCampaigns)
     .values({
-      id: campaignId,
+      campaignId,
+      leadEmail,
       instantlyCampaignId: instantlyCampaign.id,
       name: `Campaign ${campaignId}`,
       status: instantlyCampaign.status,
@@ -145,6 +163,7 @@ async function getOrCreateCampaign(
   return {
     id: created.id,
     instantlyCampaignId: created.instantlyCampaignId,
+    campaignId,
     isNew: true,
   };
 }
@@ -186,37 +205,23 @@ router.post("/", async (req: Request, res: Response) => {
     }
 
     try {
-      // 3. Get or create campaign
-      const campaign = await getOrCreateCampaign(
+      // 3. Get or create a per-lead Instantly campaign
+      const campaign = await getOrCreateCampaignForLead(
         body.campaignId,
+        body.to,
         organizationId,
         body.email,
         body.runId,
         body.orgId,
         body.brandId,
-        body.appId
+        body.appId,
       );
 
-      // 4. Check if lead already exists in this campaign (avoid wasting uploaded contact slots)
-      const [existingLead] = await db
-        .select()
-        .from(instantlyLeads)
-        .where(
-          and(
-            eq(instantlyLeads.instantlyCampaignId, campaign.instantlyCampaignId),
-            eq(instantlyLeads.email, body.to)
-          )
-        );
-
-      let savedLead = existingLead;
+      let savedLead: { id: string } | undefined;
       let added = 0;
 
-      if (existingLead) {
-        console.log(`[send] Lead ${body.to} already exists in campaign ${campaign.instantlyCampaignId}, skipping addLeads`);
-      }
-
-      if (!existingLead) {
-        // 5. Add lead to campaign in Instantly
+      if (campaign.isNew) {
+        // 4. Add lead to the new Instantly campaign
         const lead: Lead = {
           email: body.to,
           first_name: body.firstName,
@@ -233,7 +238,7 @@ router.post("/", async (req: Request, res: Response) => {
         added = result.added;
         console.log(`[send] addLeads result: added=${added}`);
 
-        // 6. Save lead to database
+        // 5. Save lead to database
         const [created] = await db
           .insert(instantlyLeads)
           .values({
@@ -250,10 +255,8 @@ router.post("/", async (req: Request, res: Response) => {
           .returning();
 
         if (created) savedLead = created;
-      }
 
-      // 7. Activate campaign if new
-      if (campaign.isNew) {
+        // 6. Activate the new campaign
         console.log(`[send] Activating new campaign ${campaign.instantlyCampaignId}`);
         await updateCampaignStatus(campaign.instantlyCampaignId, "active");
 
@@ -265,9 +268,11 @@ router.post("/", async (req: Request, res: Response) => {
           .update(instantlyCampaigns)
           .set({ status: "active", updatedAt: new Date() })
           .where(eq(instantlyCampaigns.id, campaign.id));
+      } else {
+        console.log(`[send] Lead ${body.to} already processed for campaign ${body.campaignId}, skipping`);
       }
 
-      // 8. Log costs and complete run (only if tracking)
+      // 7. Log costs and complete run (only if tracking)
       if (sendRun) {
         await addCosts(sendRun.id, [
           { costName: "instantly-email-send", quantity: 1 },
@@ -275,10 +280,10 @@ router.post("/", async (req: Request, res: Response) => {
         await updateRun(sendRun.id, "completed");
       }
 
-      console.log(`[send] Done — to=${body.to} campaign=${campaign.id} isNew=${campaign.isNew} added=${added}`);
+      console.log(`[send] Done — to=${body.to} campaignId=${body.campaignId} isNew=${campaign.isNew} added=${added}`);
       res.status(200).json({
         success: true,
-        campaignId: campaign.id,
+        campaignId: body.campaignId,
         leadId: savedLead?.id,
         added,
       });

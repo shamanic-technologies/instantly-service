@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { instantlyAnalyticsSnapshots, instantlyCampaigns } from "../db/schema";
-import { eq, sql, type SQL } from "drizzle-orm";
+import { eq, or, sql, type SQL } from "drizzle-orm";
 import { getCampaignAnalytics } from "../lib/instantly-client";
 import { StatsRequestSchema } from "../schemas";
 
@@ -15,35 +15,54 @@ router.get("/:campaignId/analytics", async (req: Request, res: Response) => {
   const { campaignId } = req.params;
 
   try {
-    const [campaign] = await db
+    // Look up by id (direct-created campaigns) or campaignId (send-created)
+    const campaigns = await db
       .select()
       .from(instantlyCampaigns)
-      .where(eq(instantlyCampaigns.id, campaignId));
+      .where(
+        or(
+          eq(instantlyCampaigns.id, campaignId),
+          eq(instantlyCampaigns.campaignId, campaignId),
+        ),
+      );
 
-    if (!campaign) {
+    if (campaigns.length === 0) {
       return res.status(404).json({ error: "Campaign not found" });
     }
 
-    const analytics = await getCampaignAnalytics(campaign.instantlyCampaignId);
+    // Aggregate analytics across all sub-campaigns
+    let aggregated: Record<string, number> | null = null;
+    for (const campaign of campaigns) {
+      const analytics = await getCampaignAnalytics(campaign.instantlyCampaignId);
+      if (!analytics) continue;
 
-    if (!analytics) {
-      return res.json({ analytics: null });
+      // Save snapshot per sub-campaign
+      await db.insert(instantlyAnalyticsSnapshots).values({
+        campaignId: campaign.instantlyCampaignId,
+        totalLeads: analytics.leads_count,
+        contacted: analytics.contacted_count,
+        opened: analytics.open_count,
+        replied: analytics.reply_count,
+        bounced: analytics.bounced_count,
+        unsubscribed: analytics.unsubscribed_count,
+        snapshotAt: new Date(),
+        rawData: analytics,
+      });
+
+      if (!aggregated) {
+        aggregated = {
+          leads_count: 0, contacted_count: 0, emails_sent_count: 0,
+          new_leads_contacted_count: 0, open_count: 0, reply_count: 0,
+          link_click_count: 0, bounced_count: 0, unsubscribed_count: 0,
+          completed_count: 0,
+        };
+      }
+      for (const key of Object.keys(aggregated)) {
+        aggregated[key] += (analytics as unknown as Record<string, number>)[key] ?? 0;
+      }
     }
 
-    // Save snapshot
-    await db.insert(instantlyAnalyticsSnapshots).values({
-      campaignId: campaign.instantlyCampaignId,
-      totalLeads: analytics.leads_count,
-      contacted: analytics.contacted_count,
-      opened: analytics.open_count,
-      replied: analytics.reply_count,
-      bounced: analytics.bounced_count,
-      unsubscribed: analytics.unsubscribed_count,
-      snapshotAt: new Date(),
-      rawData: analytics,
-    });
-
-    res.json({ analytics });
+    res.json({ analytics: aggregated });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -69,7 +88,7 @@ router.post("/stats", async (req: Request, res: Response) => {
   if (clerkOrgId) conditions.push(sql`c.clerk_org_id = ${clerkOrgId}`);
   if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
   if (appId) conditions.push(sql`c.app_id = ${appId}`);
-  if (campaignId) conditions.push(sql`c.id = ${campaignId}`);
+  if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
 
   if (conditions.length === 0) {
     return res.status(400).json({ error: "At least one filter required: runIds, clerkOrgId, brandId, appId, campaignId" });
