@@ -85,6 +85,12 @@
           },
           "timestamp": {
             "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "variant": {
+            "type": "integer"
           }
         },
         "required": [
@@ -150,20 +156,38 @@
               "type": "string"
             }
           },
-          "email": {
-            "type": "object",
-            "properties": {
-              "subject": {
-                "type": "string"
+          "subject": {
+            "type": "string",
+            "description": "Shared subject for all steps in the sequence"
+          },
+          "sequence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "step": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "1-based ordinal step number"
+                },
+                "bodyHtml": {
+                  "type": "string",
+                  "description": "HTML body for this step"
+                },
+                "daysSinceLastStep": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Delay in days since the previous step (0 = immediate)"
+                }
               },
-              "body": {
-                "type": "string"
-              }
+              "required": [
+                "step",
+                "bodyHtml",
+                "daysSinceLastStep"
+              ]
             },
-            "required": [
-              "subject",
-              "body"
-            ]
+            "minItems": 1,
+            "description": "Ordered email steps — at least one required"
           }
         },
         "required": [
@@ -172,7 +196,8 @@
           "runId",
           "campaignId",
           "to",
-          "email"
+          "subject",
+          "sequence"
         ]
       },
       "CreateCampaignResponse": {
@@ -426,6 +451,38 @@
           "recipients": {
             "type": "number",
             "description": "Unique recipients (COUNT DISTINCT lead_email with email_sent events)"
+          },
+          "stepStats": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "step": {
+                  "type": "number",
+                  "description": "Step number (1-based)"
+                },
+                "emailsSent": {
+                  "type": "number"
+                },
+                "emailsOpened": {
+                  "type": "number"
+                },
+                "emailsReplied": {
+                  "type": "number"
+                },
+                "emailsBounced": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "step",
+                "emailsSent",
+                "emailsOpened",
+                "emailsReplied",
+                "emailsBounced"
+              ]
+            },
+            "description": "Per-step breakdown (only present when step data exists)"
           }
         },
         "required": [

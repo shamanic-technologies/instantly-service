@@ -5,9 +5,11 @@ import {
   instantlyAccounts,
   instantlyEvents,
   instantlyAnalyticsSnapshots,
+  sequenceCosts,
 } from "../../src/db/schema";
 
 export async function cleanTestData() {
+  await db.delete(sequenceCosts);
   await db.delete(instantlyAnalyticsSnapshots);
   await db.delete(instantlyEvents);
   await db.delete(instantlyLeads);

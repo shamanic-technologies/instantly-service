@@ -1,6 +1,11 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
-import { organizations, instantlyCampaigns, instantlyLeads } from "../db/schema";
+import {
+  organizations,
+  instantlyCampaigns,
+  instantlyLeads,
+  sequenceCosts,
+} from "../db/schema";
 import { eq, and } from "drizzle-orm";
 import {
   createCampaign as createInstantlyCampaign,
@@ -11,6 +16,7 @@ import {
   listAccounts,
   Lead,
   Account,
+  SequenceStep,
 } from "../lib/instantly-client";
 import {
   createRun,
@@ -58,6 +64,25 @@ export function buildEmailBodyWithSignature(
   return `${body}\n\n--\n${signature}`;
 }
 
+/**
+ * Build Instantly sequence steps from the request sequence.
+ * Injects the account signature into every step's bodyHtml.
+ * All steps share the same subject (Instantly handles Re: threading for follow-ups).
+ */
+export function buildSequenceSteps(
+  subject: string,
+  sequence: { step: number; bodyHtml: string; daysSinceLastStep: number }[],
+  account: Account,
+): SequenceStep[] {
+  return sequence
+    .sort((a, b) => a.step - b.step)
+    .map((s) => ({
+      subject,
+      bodyHtml: buildEmailBodyWithSignature(s.bodyHtml, account),
+      daysSinceLastStep: s.daysSinceLastStep,
+    }));
+}
+
 async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
   const [existing] = await db
     .select()
@@ -77,10 +102,10 @@ async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
 }
 
 /**
- * Create one Instantly campaign per lead.
+ * Create one Instantly campaign per lead with multi-step sequence.
  *
  * Each (campaignId, leadEmail) pair gets its own Instantly campaign so that
- * every lead receives its own personalised subject + body.  The caller's
+ * every lead receives its own personalised sequence.  The caller's
  * `campaignId` is stored as a grouping key — it is NOT a 1:1 mapping to a
  * single Instantly campaign.
  */
@@ -88,7 +113,8 @@ async function getOrCreateCampaignForLead(
   campaignId: string,
   leadEmail: string,
   organizationId: string | null,
-  email: { subject: string; body: string },
+  steps: SequenceStep[],
+  account: Account,
   runId: string,
   clerkOrgId: string | undefined,
   brandId: string,
@@ -116,23 +142,16 @@ async function getOrCreateCampaignForLead(
     };
   }
 
-  // Fetch available email accounts and pick one at random for this lead
-  const accounts = await listAccounts();
-  if (accounts.length === 0) {
-    throw new Error("No email accounts available — cannot create campaign");
-  }
-  const account = pickRandomAccount(accounts);
-  console.log(`[send] Picked account ${account.email} (out of ${accounts.length}) for ${campaignId}/${leadEmail}`);
-
-  const bodyWithSig = buildEmailBodyWithSignature(email.body, account);
-  console.log(`[send] Creating new Instantly campaign for ${campaignId}/${leadEmail} subject="${email.subject}"`);
+  console.log(`[send] Picked account ${account.email} for ${campaignId}/${leadEmail}`);
+  console.log(`[send] Creating new Instantly campaign for ${campaignId}/${leadEmail} subject="${steps[0]?.subject}" steps=${steps.length}`);
   const instantlyCampaign = await createInstantlyCampaign({
     name: `Campaign ${campaignId}`,
-    email: { subject: email.subject, body: bodyWithSig },
+    steps,
   });
   console.log(`[send] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`);
 
   // Assign the single selected account via PATCH (V2 ignores account_ids in create body)
+  // Also enable stop_on_reply so Instantly stops the sequence when a lead replies
   {
     console.log(`[send] Assigning account ${account.email} to campaign ${instantlyCampaign.id}`);
     await updateInstantlyCampaign(instantlyCampaign.id, {
@@ -141,6 +160,7 @@ async function getOrCreateCampaignForLead(
       open_tracking: true,
       link_tracking: true,
       insert_unsubscribe_header: true,
+      stop_on_reply: true,
     });
 
     // Verify accounts were actually assigned
@@ -174,7 +194,11 @@ async function getOrCreateCampaignForLead(
 
 /**
  * POST /send
- * Add a lead to a campaign and send email via Instantly
+ * Add a lead to a multi-step sequence campaign via Instantly.
+ *
+ * Creates 1 actual cost (step 1 sent immediately) + N-1 provisioned costs
+ * (follow-up steps). Provisioned costs are converted to actual on webhook
+ * email_sent, or cancelled on reply/bounce/unsub/not_interested.
  */
 router.post("/", async (req: Request, res: Response) => {
   const parsed = SendRequestSchema.safeParse(req.body);
@@ -185,7 +209,7 @@ router.post("/", async (req: Request, res: Response) => {
     });
   }
   const body = parsed.data;
-  console.log(`[send] POST /send to=${body.to} campaignId=${body.campaignId} subject="${body.email.subject}"`);
+  console.log(`[send] POST /send to=${body.to} campaignId=${body.campaignId} subject="${body.subject}" steps=${body.sequence.length}`);
 
   try {
     // 1. Get or create organization (only if orgId provided)
@@ -209,12 +233,21 @@ router.post("/", async (req: Request, res: Response) => {
     }
 
     try {
-      // 3. Get or create a per-lead Instantly campaign
+      // 3. Pick account and build sequence steps with signature injected
+      const accounts = await listAccounts();
+      if (accounts.length === 0) {
+        throw new Error("No email accounts available — cannot create campaign");
+      }
+      const account = pickRandomAccount(accounts);
+      const sortedSequence = [...body.sequence].sort((a, b) => a.step - b.step);
+      const steps = buildSequenceSteps(body.subject, sortedSequence, account);
+
       const campaign = await getOrCreateCampaignForLead(
         body.campaignId,
         body.to,
         organizationId,
-        body.email,
+        steps,
+        account,
         body.runId,
         body.orgId,
         body.brandId,
@@ -225,7 +258,7 @@ router.post("/", async (req: Request, res: Response) => {
       let added = 0;
 
       if (campaign.isNew) {
-        // 4. Add lead to the new Instantly campaign
+        // 5. Add lead to the new Instantly campaign
         const lead: Lead = {
           email: body.to,
           first_name: body.firstName,
@@ -242,7 +275,7 @@ router.post("/", async (req: Request, res: Response) => {
         added = result.added;
         console.log(`[send] addLeads result: added=${added}`);
 
-        // 5. Save lead to database
+        // 6. Save lead to database
         const [created] = await db
           .insert(instantlyLeads)
           .values({
@@ -260,7 +293,7 @@ router.post("/", async (req: Request, res: Response) => {
 
         if (created) savedLead = created;
 
-        // 6. Activate the new campaign
+        // 7. Activate the new campaign
         console.log(`[send] Activating new campaign ${campaign.instantlyCampaignId}`);
         await updateCampaignStatus(campaign.instantlyCampaignId, "active");
 
@@ -276,11 +309,36 @@ router.post("/", async (req: Request, res: Response) => {
         console.log(`[send] Lead ${body.to} already processed for campaign ${body.campaignId}, skipping`);
       }
 
-      // 7. Log costs and complete run (only if tracking)
+      // 8. Log costs: 1 actual (step 1) + N-1 provisioned (follow-ups)
       if (sendRun) {
-        await addCosts(sendRun.id, [
-          { costName: "instantly-email-send", quantity: 1 },
-        ]);
+        const costItems = sortedSequence.map((s, i) => ({
+          costName: "instantly-email-send",
+          quantity: 1,
+          status: i === 0 ? ("actual" as const) : ("provisioned" as const),
+        }));
+
+        const costResult = await addCosts(sendRun.id, costItems);
+
+        // Store provisioned cost IDs for follow-up steps so webhooks can
+        // convert them to actual or cancel them later
+        if (costResult.costs.length > 1) {
+          const provisionedCosts = costResult.costs
+            .filter((c) => c.id)
+            .slice(1); // skip first (actual)
+
+          for (let i = 0; i < provisionedCosts.length; i++) {
+            const stepNumber = i + 2; // steps 2, 3, ...
+            await db.insert(sequenceCosts).values({
+              campaignId: body.campaignId,
+              leadEmail: body.to,
+              step: stepNumber,
+              runId: sendRun.id,
+              costId: provisionedCosts[i].id,
+              status: "provisioned",
+            });
+          }
+        }
+
         await updateRun(sendRun.id, "completed");
       }
 
