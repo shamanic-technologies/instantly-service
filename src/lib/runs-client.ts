@@ -49,6 +49,7 @@ export interface CreateRunParams {
 export interface CostItem {
   costName: string;
   quantity: number;
+  status?: "actual" | "provisioned";
 }
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
@@ -107,5 +108,16 @@ export async function addCosts(
   return runsRequest<{ costs: RunCost[] }>(`/v1/runs/${runId}/costs`, {
     method: "POST",
     body: { items },
+  });
+}
+
+export async function updateCostStatus(
+  runId: string,
+  costId: string,
+  status: "actual" | "cancelled"
+): Promise<RunCost> {
+  return runsRequest<RunCost>(`/v1/runs/${runId}/costs/${costId}`, {
+    method: "PATCH",
+    body: { status },
   });
 }

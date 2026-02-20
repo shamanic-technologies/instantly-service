@@ -102,10 +102,35 @@ export const instantlyEvents = pgTable("instantly_events", {
   campaignId: text("campaign_id"),
   leadEmail: text("lead_email"),
   accountEmail: text("account_email"),
+  step: integer("step"),
+  variant: integer("variant"),
   timestamp: timestamp("timestamp").notNull(),
   rawPayload: jsonb("raw_payload").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+// Sequence costs table — tracks provisioned/actual/cancelled cost items per lead step
+export const sequenceCosts = pgTable(
+  "sequence_costs",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    campaignId: text("campaign_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    step: integer("step").notNull(),
+    runId: text("run_id").notNull(),
+    costId: text("cost_id").notNull(),
+    status: text("status").notNull().default("provisioned"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("sequence_costs_campaign_lead_idx").on(
+      table.campaignId,
+      table.leadEmail,
+    ),
+    uniqueIndex("sequence_costs_cost_id_idx").on(table.costId),
+  ],
+);
 
 // Analytics snapshots table
 export const instantlyAnalyticsSnapshots = pgTable("instantly_analytics_snapshots", {

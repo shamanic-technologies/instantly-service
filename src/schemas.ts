@@ -65,6 +65,8 @@ export const WebhookPayloadSchema = z
     lead_email: z.string().optional(),
     email_account: z.string().optional(),
     timestamp: z.string().optional(),
+    step: z.number().int().optional(),
+    variant: z.number().int().optional(),
   })
   .openapi("WebhookPayload");
 
@@ -102,6 +104,16 @@ registry.registerPath({
 
 // ─── Send ───────────────────────────────────────────────────────────────────
 
+export const SequenceStepSchema = z.object({
+  step: z.number().int().min(1).describe("1-based ordinal step number"),
+  bodyHtml: z.string().describe("HTML body for this step"),
+  daysSinceLastStep: z
+    .number()
+    .int()
+    .min(0)
+    .describe("Delay in days since the previous step (0 = immediate)"),
+});
+
 export const SendRequestSchema = z
   .object({
     orgId: z.string().optional(),
@@ -114,10 +126,11 @@ export const SendRequestSchema = z
     lastName: z.string().optional(),
     company: z.string().optional(),
     variables: z.record(z.string(), z.string()).optional(),
-    email: z.object({
-      subject: z.string(),
-      body: z.string(),
-    }),
+    subject: z.string().describe("Shared subject for all steps in the sequence"),
+    sequence: z
+      .array(SequenceStepSchema)
+      .min(1)
+      .describe("Ordered email steps — at least one required"),
   })
   .openapi("SendRequest");
 
@@ -425,6 +438,14 @@ export const StatsRequestSchema = z
 
 export type StatsRequest = z.infer<typeof StatsRequestSchema>;
 
+const StepStatsSchema = z.object({
+  step: z.number().describe("Step number (1-based)"),
+  emailsSent: z.number(),
+  emailsOpened: z.number(),
+  emailsReplied: z.number(),
+  emailsBounced: z.number(),
+});
+
 const StatsResponseSchema = z
   .object({
     stats: z.object({
@@ -454,6 +475,10 @@ const StatsResponseSchema = z
     recipients: z
       .number()
       .describe("Unique recipients (COUNT DISTINCT lead_email with email_sent events)"),
+    stepStats: z
+      .array(StepStatsSchema)
+      .optional()
+      .describe("Per-step breakdown (only present when step data exists)"),
   })
   .openapi("StatsResponse");
 

@@ -46,9 +46,10 @@ router.post("/", async (req: Request, res: Response) => {
     });
 
     try {
-      // 2. Create campaign in Instantly
+      // 2. Create campaign in Instantly (no sequence steps — steps are added via POST /send)
       const instantlyCampaign = await createInstantlyCampaign({
         name: body.name,
+        steps: [],
       });
 
       // Assign sending accounts via PATCH (V2 ignores account_ids in create body)

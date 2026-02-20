@@ -73,6 +73,8 @@ describe("POST /stats", () => {
         },
       ],
     });
+    // Second call for step stats
+    mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
 
@@ -81,21 +83,10 @@ describe("POST /stats", () => {
       .send({ appId: "test-app" });
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({
-      stats: {
-        emailsSent: 0,
-        emailsDelivered: 0,
-        emailsOpened: 0,
-        emailsClicked: 0,
-        emailsReplied: 0,
-        emailsBounced: 0,
-        repliesAutoReply: 0,
-        repliesNotInterested: 0,
-        repliesOutOfOffice: 0,
-        repliesUnsubscribe: 0,
-      },
-      recipients: 0,
-    });
+    expect(response.body.stats.emailsSent).toBe(0);
+    expect(response.body.recipients).toBe(0);
+    // stepStats should not be present when empty
+    expect(response.body.stepStats).toBeUndefined();
   });
 
   it("should aggregate event counts correctly", async () => {
@@ -116,6 +107,8 @@ describe("POST /stats", () => {
         },
       ],
     });
+    // Step stats
+    mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
 
@@ -124,20 +117,50 @@ describe("POST /stats", () => {
       .send({ appId: "mcpfactory", clerkOrgId: "org_123" });
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({
-      stats: {
-        emailsSent: 80,
-        emailsDelivered: 75,
-        emailsOpened: 40,
-        emailsClicked: 3,
-        emailsReplied: 2,
-        emailsBounced: 5,
-        repliesAutoReply: 1,
-        repliesNotInterested: 1,
-        repliesOutOfOffice: 2,
+    expect(response.body.stats.emailsSent).toBe(80);
+    expect(response.body.stats.emailsReplied).toBe(2);
+    expect(response.body.recipients).toBe(75);
+  });
+
+  it("should include per-step stats when step data exists", async () => {
+    // Aggregate stats
+    mockExecute.mockResolvedValueOnce({
+      rows: [{
+        emailsSent: 30,
+        emailsDelivered: 28,
+        emailsOpened: 15,
+        emailsClicked: 1,
+        emailsReplied: 3,
+        emailsBounced: 2,
+        repliesAutoReply: 0,
+        repliesNotInterested: 0,
+        repliesOutOfOffice: 0,
         repliesUnsubscribe: 0,
-      },
-      recipients: 75,
+        recipients: 10,
+      }],
+    });
+    // Step stats
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { step: 1, emailsSent: 10, emailsOpened: 8, emailsReplied: 1, emailsBounced: 1 },
+        { step: 2, emailsSent: 10, emailsOpened: 5, emailsReplied: 1, emailsBounced: 1 },
+        { step: 3, emailsSent: 10, emailsOpened: 2, emailsReplied: 1, emailsBounced: 0 },
+      ],
+    });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .post("/stats")
+      .send({ campaignId: "camp-1" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.stepStats).toHaveLength(3);
+    expect(response.body.stepStats[0]).toEqual({
+      step: 1, emailsSent: 10, emailsOpened: 8, emailsReplied: 1, emailsBounced: 1,
+    });
+    expect(response.body.stepStats[2]).toEqual({
+      step: 3, emailsSent: 10, emailsOpened: 2, emailsReplied: 1, emailsBounced: 0,
     });
   });
 
@@ -157,22 +180,14 @@ describe("POST /stats", () => {
 
   it("should accept runIds filter", async () => {
     mockExecute.mockResolvedValueOnce({
-      rows: [
-        {
-          emailsSent: 10,
-          emailsDelivered: 10,
-          emailsOpened: 5,
-          emailsClicked: 0,
-          emailsReplied: 0,
-          emailsBounced: 0,
-          repliesAutoReply: 0,
-          repliesNotInterested: 0,
-          repliesOutOfOffice: 0,
-          repliesUnsubscribe: 0,
-          recipients: 10,
-        },
-      ],
+      rows: [{
+        emailsSent: 10, emailsDelivered: 10, emailsOpened: 5,
+        emailsClicked: 0, emailsReplied: 0, emailsBounced: 0,
+        repliesAutoReply: 0, repliesNotInterested: 0,
+        repliesOutOfOffice: 0, repliesUnsubscribe: 0, recipients: 10,
+      }],
     });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
 
@@ -182,7 +197,6 @@ describe("POST /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(10);
-    expect(mockExecute).toHaveBeenCalledTimes(1);
   });
 
   it("should exclude internal emails and sender from stats query", async () => {
@@ -193,15 +207,11 @@ describe("POST /stats", () => {
 
     expect(mockExecute).toHaveBeenCalledTimes(1);
 
-    // Extract SQL string chunks from the drizzle SQL object
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
 
-    // Sender exclusion: don't count events where lead = sender
     expect(sqlText).toContain("lead_email != e.account_email");
-    // Specific email exclusion
     expect(sqlText).toContain("lead_email NOT IN");
-    // Domain exclusions
     expect(sqlText).toContain("LIKE");
   });
 

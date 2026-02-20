@@ -64,14 +64,15 @@ export interface CampaignAnalytics {
   completed_count: number;
 }
 
-export interface EmailContent {
+export interface SequenceStep {
   subject: string;
-  body: string;
+  bodyHtml: string;
+  daysSinceLastStep: number;
 }
 
 export interface CreateCampaignParams {
   name: string;
-  email?: EmailContent;
+  steps: SequenceStep[];
 }
 
 export interface UpdateCampaignParams {
@@ -80,6 +81,7 @@ export interface UpdateCampaignParams {
   open_tracking?: boolean;
   link_tracking?: boolean;
   insert_unsubscribe_header?: boolean;
+  stop_on_reply?: boolean;
 }
 
 export interface AddLeadsParams {
@@ -149,6 +151,17 @@ async function instantlyRequest<T>(
 // ─── Campaigns ───────────────────────────────────────────────────────────────
 
 export async function createCampaign(params: CreateCampaignParams): Promise<Campaign> {
+  const instantlySteps = params.steps.map((step) => ({
+    type: "email" as const,
+    delay: step.daysSinceLastStep,
+    variants: [
+      {
+        subject: step.subject,
+        body: step.bodyHtml,
+      },
+    ],
+  }));
+
   const body: Record<string, unknown> = {
     name: params.name,
     campaign_schedule: {
@@ -161,27 +174,8 @@ export async function createCampaign(params: CreateCampaignParams): Promise<Camp
         },
       ],
     },
+    ...(instantlySteps.length > 0 && { sequences: [{ steps: instantlySteps }] }),
   };
-
-  // Add email sequence if content provided
-  if (params.email) {
-    body.sequences = [
-      {
-        steps: [
-          {
-            type: "email",
-            delay: 0,
-            variants: [
-              {
-                subject: params.email.subject,
-                body: params.email.body,
-              },
-            ],
-          },
-        ],
-      },
-    ];
-  }
 
   return instantlyRequest<Campaign>("/campaigns", {
     method: "POST",
