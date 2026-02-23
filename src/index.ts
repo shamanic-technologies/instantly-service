@@ -45,8 +45,17 @@ app.use("/", serviceAuth, analyticsRoutes);
 
 const PORT = process.env.PORT || 3011;
 
-app.listen(PORT, () => {
-  console.log(`instantly-service running on port ${PORT}`);
+async function start() {
+  const { runMigrations } = await import("./db/migrate");
+  await runMigrations();
+  app.listen(PORT, () => {
+    console.log(`instantly-service running on port ${PORT}`);
+  });
+}
+
+start().catch((err) => {
+  console.error("[startup] Fatal error:", err);
+  process.exit(1);
 });
 
 export { app };
