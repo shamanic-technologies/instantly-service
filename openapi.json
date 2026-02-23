@@ -296,6 +296,48 @@
           "status"
         ]
       },
+      "CheckStatusResponse": {
+        "type": "object",
+        "properties": {
+          "checked": {
+            "type": "number",
+            "description": "Number of active campaigns checked"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "instantlyCampaignId": {
+                  "type": "string"
+                },
+                "campaignId": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "leadEmail": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "instantlyCampaignId",
+                "campaignId",
+                "leadEmail",
+                "reason"
+              ]
+            },
+            "description": "Campaigns that entered error state"
+          }
+        },
+        "required": [
+          "checked",
+          "errors"
+        ]
+      },
       "AddLeadsResponse": {
         "type": "object",
         "properties": {
@@ -837,6 +879,37 @@
           },
           "404": {
             "description": "Campaign not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns/check-status": {
+      "post": {
+        "summary": "Poll active campaigns for errors",
+        "description": "Checks all active campaigns against the Instantly API to detect error states. For each errored campaign: updates DB status, cancels provisioned costs, fails the run, and sends an admin notification.",
+        "responses": {
+          "200": {
+            "description": "Status check complete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Server error",
             "content": {
               "application/json": {
                 "schema": {

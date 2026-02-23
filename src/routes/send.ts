@@ -23,6 +23,7 @@ import {
   updateRun,
   addCosts,
 } from "../lib/runs-client";
+import { handleCampaignError } from "../lib/campaign-error-handler";
 import { SendRequestSchema } from "../schemas";
 
 const router = Router();
@@ -256,6 +257,7 @@ router.post("/", async (req: Request, res: Response) => {
 
       let savedLead: { id: string } | undefined;
       let added = 0;
+      let warning: string | undefined;
 
       if (campaign.isNew) {
         // 5. Add lead to the new Instantly campaign
@@ -301,10 +303,18 @@ router.post("/", async (req: Request, res: Response) => {
         const postActivate = await getInstantlyCampaign(campaign.instantlyCampaignId) as unknown as Record<string, unknown>;
         console.log(`[send] Post-activate — status=${postActivate.status} email_list=${JSON.stringify(postActivate.email_list)} not_sending_status=${JSON.stringify(postActivate.not_sending_status)}`);
 
-        await db
-          .update(instantlyCampaigns)
-          .set({ status: "active", updatedAt: new Date() })
-          .where(eq(instantlyCampaigns.id, campaign.id));
+        // Check for sending errors (e.g. disconnected account)
+        if (postActivate.not_sending_status) {
+          const reason = `not_sending_status: ${JSON.stringify(postActivate.not_sending_status)}`;
+          console.error(`[send] Campaign ${campaign.instantlyCampaignId} has ${reason}`);
+          await handleCampaignError(campaign.instantlyCampaignId, reason);
+          warning = reason;
+        } else {
+          await db
+            .update(instantlyCampaigns)
+            .set({ status: "active", updatedAt: new Date() })
+            .where(eq(instantlyCampaigns.id, campaign.id));
+        }
       } else {
         console.log(`[send] Lead ${body.to} already processed for campaign ${body.campaignId}, skipping`);
       }
@@ -342,12 +352,13 @@ router.post("/", async (req: Request, res: Response) => {
         await updateRun(sendRun.id, "completed");
       }
 
-      console.log(`[send] Done — to=${body.to} campaignId=${body.campaignId} isNew=${campaign.isNew} added=${added}`);
+      console.log(`[send] Done — to=${body.to} campaignId=${body.campaignId} isNew=${campaign.isNew} added=${added}${warning ? ` warning="${warning}"` : ""}`);
       res.status(200).json({
         success: true,
         campaignId: body.campaignId,
         leadId: savedLead?.id,
         added,
+        ...(warning && { warning }),
       });
     } catch (error: any) {
       if (sendRun) {

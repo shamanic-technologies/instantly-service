@@ -13,6 +13,7 @@ import {
   updateRun,
   addCosts,
 } from "../lib/runs-client";
+import { handleCampaignError } from "../lib/campaign-error-handler";
 import {
   CreateCampaignRequestSchema,
   UpdateStatusRequestSchema,
@@ -197,6 +198,68 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
     res.json({ campaign: updated[0], campaigns: updated });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /campaigns/check-status
+ * Poll all active campaigns against the Instantly API to detect error states.
+ * For each errored campaign: updates DB, cancels provisions, fails run, notifies admin.
+ */
+router.post("/check-status", async (_req: Request, res: Response) => {
+  try {
+    const activeCampaigns = await db
+      .select()
+      .from(instantlyCampaigns)
+      .where(eq(instantlyCampaigns.status, "active"));
+
+    console.log(`[campaigns] check-status: checking ${activeCampaigns.length} active campaigns`);
+
+    const errors: {
+      instantlyCampaignId: string;
+      campaignId: string | null;
+      leadEmail: string | null;
+      reason: string;
+    }[] = [];
+
+    for (const campaign of activeCampaigns) {
+      try {
+        const instantly = (await getInstantlyCampaign(
+          campaign.instantlyCampaignId,
+        )) as unknown as Record<string, unknown>;
+
+        if (instantly.not_sending_status) {
+          const reason = `not_sending_status: ${JSON.stringify(instantly.not_sending_status)}`;
+          console.error(
+            `[campaigns] check-status: ${campaign.instantlyCampaignId} error — ${reason}`,
+          );
+          await handleCampaignError(campaign.instantlyCampaignId, reason);
+          errors.push({
+            instantlyCampaignId: campaign.instantlyCampaignId,
+            campaignId: campaign.campaignId,
+            leadEmail: campaign.leadEmail,
+            reason,
+          });
+        }
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(
+          `[campaigns] check-status: failed to check ${campaign.instantlyCampaignId}: ${message}`,
+        );
+      }
+
+      // Small delay to avoid rate limiting
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    console.log(
+      `[campaigns] check-status: done — checked=${activeCampaigns.length} errors=${errors.length}`,
+    );
+    res.json({ checked: activeCampaigns.length, errors });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[campaigns] check-status failed: ${message}`);
+    res.status(500).json({ error: message });
   }
 });
 

@@ -298,6 +298,41 @@ registry.registerPath({
   },
 });
 
+const CheckStatusErrorSchema = z.object({
+  instantlyCampaignId: z.string(),
+  campaignId: z.string().nullable(),
+  leadEmail: z.string().nullable(),
+  reason: z.string(),
+});
+
+const CheckStatusResponseSchema = z
+  .object({
+    checked: z.number().describe("Number of active campaigns checked"),
+    errors: z.array(CheckStatusErrorSchema).describe("Campaigns that entered error state"),
+  })
+  .openapi("CheckStatusResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/campaigns/check-status",
+  summary: "Poll active campaigns for errors",
+  description:
+    "Checks all active campaigns against the Instantly API to detect error states. " +
+    "For each errored campaign: updates DB status, cancels provisioned costs, fails the run, " +
+    "and sends an admin notification.",
+  responses: {
+    200: {
+      description: "Status check complete",
+      content: { "application/json": { schema: CheckStatusResponseSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ─── Leads ──────────────────────────────────────────────────────────────────
 
 const LeadInputSchema = z.object({
