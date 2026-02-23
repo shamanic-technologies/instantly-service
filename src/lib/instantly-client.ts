@@ -151,9 +151,16 @@ async function instantlyRequest<T>(
 // ─── Campaigns ───────────────────────────────────────────────────────────────
 
 export async function createCampaign(params: CreateCampaignParams): Promise<Campaign> {
-  const instantlySteps = params.steps.map((step) => ({
+  // Instantly's `delay` on step N means "days to wait AFTER step N before
+  // sending step N+1".  Our `daysSinceLastStep` on step N means "days to
+  // wait BEFORE step N (since step N-1)".  So step[i].delay must be
+  // steps[i+1].daysSinceLastStep, and the last step gets delay 0.
+  const instantlySteps = params.steps.map((step, i) => ({
     type: "email" as const,
-    delay: step.daysSinceLastStep,
+    delay:
+      i < params.steps.length - 1
+        ? params.steps[i + 1].daysSinceLastStep
+        : 0,
     variants: [
       {
         subject: step.subject,

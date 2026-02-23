@@ -60,20 +60,72 @@ describe("instantly-client", () => {
     // Should have sequences array with steps
     expect(body.sequences).toHaveLength(1);
     expect(body.sequences[0].steps).toHaveLength(2);
+    // Instantly delay = "days after THIS step before NEXT step"
+    // Step 1 delay = step 2's daysSinceLastStep (3)
     expect(body.sequences[0].steps[0]).toEqual({
       type: "email",
-      delay: 0,
+      delay: 3,
       variants: [{ subject: "Hello", body: "<p>First</p>" }],
     });
+    // Last step delay = 0 (no next step)
     expect(body.sequences[0].steps[1]).toEqual({
       type: "email",
-      delay: 3,
+      delay: 0,
       variants: [{ subject: "Hello", body: "<p>Follow up</p>" }],
     });
 
     // Should NOT include account_ids or bcc (V2 ignores them in create)
     expect(body.account_ids).toBeUndefined();
     expect(body.bcc).toBeUndefined();
+  });
+
+  it("createCampaign should correctly shift delays for 3-step sequences", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ id: "camp-1", name: "Test", status: "draft", created_at: "", updated_at: "" }),
+    });
+
+    const { createCampaign } = await import("../../src/lib/instantly-client");
+    await createCampaign({
+      name: "Test Campaign",
+      steps: [
+        { subject: "Hello", bodyHtml: "<p>First</p>", daysSinceLastStep: 0 },
+        { subject: "Hello", bodyHtml: "<p>Follow up 1</p>", daysSinceLastStep: 3 },
+        { subject: "Hello", bodyHtml: "<p>Follow up 2</p>", daysSinceLastStep: 7 },
+      ],
+    });
+
+    const [, options] = mockFetch.mock.calls[0];
+    const body = JSON.parse(options.body);
+    const steps = body.sequences[0].steps;
+
+    // delay[0] = step 2's daysSinceLastStep = 3
+    expect(steps[0].delay).toBe(3);
+    // delay[1] = step 3's daysSinceLastStep = 7
+    expect(steps[1].delay).toBe(7);
+    // delay[2] = 0 (last step)
+    expect(steps[2].delay).toBe(0);
+  });
+
+  it("createCampaign single-step should have delay 0", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ id: "camp-1", name: "Test", status: "draft", created_at: "", updated_at: "" }),
+    });
+
+    const { createCampaign } = await import("../../src/lib/instantly-client");
+    await createCampaign({
+      name: "Test Campaign",
+      steps: [
+        { subject: "Hello", bodyHtml: "<p>Only email</p>", daysSinceLastStep: 0 },
+      ],
+    });
+
+    const [, options] = mockFetch.mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.sequences[0].steps[0].delay).toBe(0);
   });
 
   it("updateCampaign should PATCH campaign with email_list, bcc_list, and stop_on_reply", async () => {
