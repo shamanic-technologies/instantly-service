@@ -9,6 +9,7 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 COPY scripts ./scripts
+COPY drizzle ./drizzle
 RUN npm run build
 
 # Production stage
@@ -21,6 +22,7 @@ RUN npm ci --only=production
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/openapi.json ./openapi.json
+COPY --from=builder /app/drizzle ./drizzle
 
 ENV NODE_ENV=production
 ENV PORT=3011
