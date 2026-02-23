@@ -56,13 +56,6 @@ vi.mock("../../src/lib/runs-client", () => ({
   addCosts: (...args: unknown[]) => mockAddCosts(...args),
 }));
 
-// Mock campaign-error-handler
-const mockHandleCampaignError = vi.fn();
-
-vi.mock("../../src/lib/campaign-error-handler", () => ({
-  handleCampaignError: (...args: unknown[]) => mockHandleCampaignError(...args),
-}));
-
 import { buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/routes/send";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
@@ -99,14 +92,19 @@ function acct(overrides: Partial<Account> = {}): Account {
 }
 
 /**
- * Helper: set up mocks for a new campaign creation flow.
+ * Helper: set up mocks for a new campaign creation flow (happy path).
+ * getCampaign returns no not_sending_status on both verify calls.
  */
 function mockNewCampaignFlow() {
   mockDbWhere.mockReset();
   mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
-  mockDbWhere.mockResolvedValueOnce([]); // campaign-for-lead lookup (not found → create)
+  mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign (not found → create)
 
   mockCreateCampaign.mockResolvedValue({ id: "inst-camp-new", status: "draft" });
+  // getCampaign is called twice per attempt: verify after PATCH + verify after activation
+  mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], not_sending_status: null });
+  mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], status: "active", not_sending_status: null });
+
   mockDbReturning.mockResolvedValueOnce([{ id: "sub-camp-1", campaignId: "camp-1", instantlyCampaignId: "inst-camp-new" }]); // campaign insert
   mockDbReturning.mockResolvedValueOnce([{ id: "lead-1" }]); // lead insert
   mockUpdateCampaignStatus.mockResolvedValue({});
@@ -197,7 +195,6 @@ describe("POST /send", () => {
     mockListAccounts.mockResolvedValue([{ email: "sender@example.com", warmup_status: 1, status: 1, signature: "<p>Best,<br>Sender</p>" }]);
     mockUpdateCampaign.mockResolvedValue({});
     mockGetCampaign.mockResolvedValue({ email_list: [], bcc_list: [], not_sending_status: null, status: "active" });
-    mockHandleCampaignError.mockResolvedValue(undefined);
     mockDbReturning.mockResolvedValue([{ id: "lead-1" }]);
     mockDbInsertValues.mockReset();
   });
@@ -272,7 +269,7 @@ describe("POST /send", () => {
     ]);
   });
 
-  it("should store provisioned cost IDs in sequence_costs table", async () => {
+  it("should store ALL cost IDs in sequence_costs table including step 1", async () => {
     mockNewCampaignFlow();
     // Reset to track sequence_costs inserts
     mockDbReturning.mockReset();
@@ -284,14 +281,15 @@ describe("POST /send", () => {
 
     await request(app).post("/send").send(validBody);
 
-    // Check that sequence_costs were inserted for steps 2 and 3
+    // Check that sequence_costs were inserted for ALL steps (1, 2, 3)
     const insertCalls = mockDbInsertValues.mock.calls;
     const sequenceCostInserts = insertCalls.filter(
       ([v]: [any]) => v.costId && v.step,
     );
-    expect(sequenceCostInserts).toHaveLength(2);
-    expect(sequenceCostInserts[0][0]).toMatchObject({ step: 2, costId: "cost-2", status: "provisioned" });
-    expect(sequenceCostInserts[1][0]).toMatchObject({ step: 3, costId: "cost-3", status: "provisioned" });
+    expect(sequenceCostInserts).toHaveLength(3);
+    expect(sequenceCostInserts[0][0]).toMatchObject({ step: 1, costId: "cost-1", status: "actual" });
+    expect(sequenceCostInserts[1][0]).toMatchObject({ step: 2, costId: "cost-2", status: "provisioned" });
+    expect(sequenceCostInserts[2][0]).toMatchObject({ step: 3, costId: "cost-3", status: "provisioned" });
   });
 
   it("should work with a single-step sequence (no provisioned costs)", async () => {
@@ -337,8 +335,11 @@ describe("POST /send", () => {
     // Send 1: Lead A
     mockDbWhere.mockReset();
     mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]);
-    mockDbWhere.mockResolvedValueOnce([]);
+    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
     mockCreateCampaign.mockResolvedValueOnce({ id: "inst-camp-A", status: "draft" });
+    mockGetCampaign.mockReset();
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], not_sending_status: null }); // verify after PATCH
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], status: "active", not_sending_status: null }); // post-activate
     mockDbReturning.mockReset();
     mockDbReturning.mockResolvedValueOnce([{ id: "sub-A", campaignId: "camp-1", instantlyCampaignId: "inst-camp-A" }]);
     mockDbReturning.mockResolvedValueOnce([{ id: "lead-A" }]);
@@ -354,8 +355,11 @@ describe("POST /send", () => {
     // Send 2: Lead B (same campaignId, different lead)
     mockDbWhere.mockReset();
     mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]);
-    mockDbWhere.mockResolvedValueOnce([]);
+    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
     mockCreateCampaign.mockResolvedValueOnce({ id: "inst-camp-B", status: "draft" });
+    mockGetCampaign.mockReset();
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], not_sending_status: null }); // verify after PATCH
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], status: "active", not_sending_status: null }); // post-activate
     mockDbReturning.mockReset();
     mockDbReturning.mockResolvedValueOnce([{ id: "sub-B", campaignId: "camp-1", instantlyCampaignId: "inst-camp-B" }]);
     mockDbReturning.mockResolvedValueOnce([{ id: "lead-B" }]);
@@ -375,22 +379,55 @@ describe("POST /send", () => {
     expect(call2.steps[0].bodyHtml).toContain("Hi Bob");
   });
 
-  it("should detect error via not_sending_status after activation and call handleCampaignError", async () => {
-    mockNewCampaignFlow();
-    // Override getCampaign to return not_sending_status on the post-activate check
-    mockGetCampaign.mockReset();
-    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], bcc_list: [], not_sending_status: null }); // verify after PATCH
-    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], status: "active", not_sending_status: "account_disconnected" }); // post-activate check
+  it("should retry with new account when not_sending_status detected and succeed on 2nd attempt", async () => {
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
+    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
+
+    // Attempt 1: create + verify-PATCH ok + verify-activate fails
+    mockCreateCampaign.mockResolvedValueOnce({ id: "inst-camp-fail", status: "draft" });
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], not_sending_status: null }); // verify after PATCH
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], status: "active", not_sending_status: "account_disconnected" }); // post-activate
+
+    // Attempt 2: create + verify-PATCH ok + verify-activate ok
+    mockCreateCampaign.mockResolvedValueOnce({ id: "inst-camp-ok", status: "draft" });
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], not_sending_status: null }); // verify after PATCH
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], status: "active", not_sending_status: null }); // post-activate
+
+    mockDbReturning.mockResolvedValueOnce([{ id: "sub-camp-1", campaignId: "camp-1", instantlyCampaignId: "inst-camp-ok" }]);
+    mockDbReturning.mockResolvedValueOnce([{ id: "lead-1" }]);
+    mockDbReturning.mockResolvedValue([]);
 
     const app = await createSendApp();
     const res = await request(app).post("/send").send(validBody);
 
     expect(res.status).toBe(200);
-    expect(res.body.warning).toContain("not_sending_status");
-    expect(mockHandleCampaignError).toHaveBeenCalledWith(
-      "inst-camp-new",
-      expect.stringContaining("account_disconnected"),
-    );
+    expect(res.body.warning).toBeUndefined();
+    expect(mockCreateCampaign).toHaveBeenCalledTimes(2);
+    expect(mockAddCosts).toHaveBeenCalled();
+    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "completed");
+  });
+
+  it("should fail after MAX_SEND_RETRIES attempts with not_sending_status and NOT add costs", async () => {
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
+    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
+
+    // All 3 attempts fail with not_sending_status
+    for (let i = 0; i < 3; i++) {
+      mockCreateCampaign.mockResolvedValueOnce({ id: `inst-camp-fail-${i}`, status: "draft" });
+      mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], not_sending_status: null }); // verify after PATCH
+      mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], status: "active", not_sending_status: "email_gateway_fail" }); // post-activate
+    }
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").send(validBody);
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("failed after 3 retry attempts");
+    expect(mockCreateCampaign).toHaveBeenCalledTimes(3);
+    expect(mockAddCosts).not.toHaveBeenCalled();
+    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", expect.stringContaining("failed after 3 retry attempts"));
   });
 
   it("should NOT call handleCampaignError when not_sending_status is null", async () => {
@@ -401,6 +438,5 @@ describe("POST /send", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.warning).toBeUndefined();
-    expect(mockHandleCampaignError).not.toHaveBeenCalled();
   });
 });

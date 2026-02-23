@@ -23,10 +23,11 @@ import {
   updateRun,
   addCosts,
 } from "../lib/runs-client";
-import { handleCampaignError } from "../lib/campaign-error-handler";
 import { SendRequestSchema } from "../schemas";
 
 const router = Router();
+
+const MAX_SEND_RETRIES = 3;
 
 /**
  * Pick a random account from the list.
@@ -103,26 +104,9 @@ async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
 }
 
 /**
- * Create one Instantly campaign per lead with multi-step sequence.
- *
- * Each (campaignId, leadEmail) pair gets its own Instantly campaign so that
- * every lead receives its own personalised sequence.  The caller's
- * `campaignId` is stored as a grouping key — it is NOT a 1:1 mapping to a
- * single Instantly campaign.
+ * Check if a campaign already exists for this (campaignId, leadEmail) pair.
  */
-async function getOrCreateCampaignForLead(
-  campaignId: string,
-  leadEmail: string,
-  organizationId: string | null,
-  steps: SequenceStep[],
-  account: Account,
-  runId: string,
-  clerkOrgId: string | undefined,
-  brandId: string,
-  appId: string,
-): Promise<{ id: string; instantlyCampaignId: string; campaignId: string; isNew: boolean }> {
-  // Dedup: if we already created an Instantly campaign for this exact lead
-  // in this logical campaign, reuse it.
+async function findExistingCampaign(campaignId: string, leadEmail: string) {
   const [existing] = await db
     .select()
     .from(instantlyCampaigns)
@@ -132,65 +116,64 @@ async function getOrCreateCampaignForLead(
         eq(instantlyCampaigns.leadEmail, leadEmail),
       ),
     );
+  return existing ?? null;
+}
 
-  if (existing) {
-    console.log(`[send] Reusing existing campaign for ${campaignId}/${leadEmail} → instantly=${existing.instantlyCampaignId}`);
-    return {
-      id: existing.id,
-      instantlyCampaignId: existing.instantlyCampaignId,
-      campaignId,
-      isNew: false,
-    };
-  }
-
-  console.log(`[send] Picked account ${account.email} for ${campaignId}/${leadEmail}`);
-  console.log(`[send] Creating new Instantly campaign for ${campaignId}/${leadEmail} subject="${steps[0]?.subject}" steps=${steps.length}`);
+/**
+ * Create an Instantly campaign, assign an account, add a lead, and activate it.
+ * Returns the instantlyCampaignId on success, or null if not_sending_status detected.
+ */
+async function tryCreateAndActivateCampaign(
+  campaignId: string,
+  account: Account,
+  steps: SequenceStep[],
+  lead: Lead,
+): Promise<{ instantlyCampaignId: string; added: number } | null> {
+  console.log(`[send] Creating new Instantly campaign for ${campaignId} with account ${account.email}`);
   const instantlyCampaign = await createInstantlyCampaign({
     name: `Campaign ${campaignId}`,
     steps,
   });
   console.log(`[send] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`);
 
-  // Assign the single selected account via PATCH (V2 ignores account_ids in create body)
-  // Also enable stop_on_reply so Instantly stops the sequence when a lead replies
-  {
-    console.log(`[send] Assigning account ${account.email} to campaign ${instantlyCampaign.id}`);
-    await updateInstantlyCampaign(instantlyCampaign.id, {
-      email_list: [account.email],
-      bcc_list: ["kevin@mcpfactory.org"],
-      open_tracking: true,
-      link_tracking: true,
-      insert_unsubscribe_header: true,
-      stop_on_reply: true,
-    });
+  // Assign the selected account via PATCH
+  console.log(`[send] Assigning account ${account.email} to campaign ${instantlyCampaign.id}`);
+  await updateInstantlyCampaign(instantlyCampaign.id, {
+    email_list: [account.email],
+    bcc_list: ["kevin@mcpfactory.org"],
+    open_tracking: true,
+    link_tracking: true,
+    insert_unsubscribe_header: true,
+    stop_on_reply: true,
+  });
 
-    // Verify accounts were actually assigned
-    const verified = await getInstantlyCampaign(instantlyCampaign.id) as unknown as Record<string, unknown>;
-    console.log(`[send] Verify after PATCH — email_list=${JSON.stringify(verified.email_list)} bcc_list=${JSON.stringify(verified.bcc_list)} not_sending_status=${JSON.stringify(verified.not_sending_status)}`);
+  // Verify accounts were assigned
+  const verified = await getInstantlyCampaign(instantlyCampaign.id) as unknown as Record<string, unknown>;
+  console.log(`[send] Verify after PATCH — email_list=${JSON.stringify(verified.email_list)} not_sending_status=${JSON.stringify(verified.not_sending_status)}`);
+
+  // Add lead
+  console.log(`[send] Adding lead ${lead.email} to instantly campaign ${instantlyCampaign.id}`);
+  const result = await addInstantlyLeads({
+    campaign_id: instantlyCampaign.id,
+    leads: [lead],
+  });
+  console.log(`[send] addLeads result: added=${result.added}`);
+
+  // Activate
+  console.log(`[send] Activating campaign ${instantlyCampaign.id}`);
+  await updateCampaignStatus(instantlyCampaign.id, "active");
+
+  // Verify post-activation
+  const postActivate = await getInstantlyCampaign(instantlyCampaign.id) as unknown as Record<string, unknown>;
+  console.log(`[send] Post-activate — status=${postActivate.status} email_list=${JSON.stringify(postActivate.email_list)} not_sending_status=${JSON.stringify(postActivate.not_sending_status)}`);
+
+  if (postActivate.not_sending_status) {
+    const reason = `not_sending_status: ${JSON.stringify(postActivate.not_sending_status)}`;
+    console.warn(`[send] Campaign ${instantlyCampaign.id} has ${reason}`);
+    return null;
   }
 
-  const [created] = await db
-    .insert(instantlyCampaigns)
-    .values({
-      campaignId,
-      leadEmail,
-      instantlyCampaignId: instantlyCampaign.id,
-      name: `Campaign ${campaignId}`,
-      status: instantlyCampaign.status,
-      orgId: organizationId,
-      clerkOrgId,
-      brandId,
-      appId,
-      runId,
-    })
-    .returning();
-
-  return {
-    id: created.id,
-    instantlyCampaignId: created.instantlyCampaignId,
-    campaignId,
-    isNew: true,
-  };
+  return { instantlyCampaignId: instantlyCampaign.id, added: result.added };
 }
 
 /**
@@ -200,6 +183,9 @@ async function getOrCreateCampaignForLead(
  * Creates 1 actual cost (step 1 sent immediately) + N-1 provisioned costs
  * (follow-up steps). Provisioned costs are converted to actual on webhook
  * email_sent, or cancelled on reply/bounce/unsub/not_interested.
+ *
+ * If Instantly reports not_sending_status after activation, retries up to
+ * MAX_SEND_RETRIES times with a different random account before giving up.
  */
 router.post("/", async (req: Request, res: Response) => {
   const parsed = SendRequestSchema.safeParse(req.body);
@@ -234,33 +220,25 @@ router.post("/", async (req: Request, res: Response) => {
     }
 
     try {
-      // 3. Pick account and build sequence steps with signature injected
+      // 3. Check available accounts
       const accounts = await listAccounts();
       if (accounts.length === 0) {
         throw new Error("No email accounts available — cannot create campaign");
       }
-      const account = pickRandomAccount(accounts);
-      const sortedSequence = [...body.sequence].sort((a, b) => a.step - b.step);
-      const steps = buildSequenceSteps(body.subject, sortedSequence, account);
 
-      const campaign = await getOrCreateCampaignForLead(
-        body.campaignId,
-        body.to,
-        organizationId,
-        steps,
-        account,
-        body.runId,
-        body.orgId,
-        body.brandId,
-        body.appId,
-      );
+      const sortedSequence = [...body.sequence].sort((a, b) => a.step - b.step);
+
+      // 4. Dedup: check if this (campaignId, leadEmail) pair already has a campaign
+      const existing = await findExistingCampaign(body.campaignId, body.to);
 
       let savedLead: { id: string } | undefined;
       let added = 0;
-      let warning: string | undefined;
 
-      if (campaign.isNew) {
-        // 5. Add lead to the new Instantly campaign
+      if (existing) {
+        // Already processed — skip Instantly API calls
+        console.log(`[send] Lead ${body.to} already processed for campaign ${body.campaignId}, skipping`);
+      } else {
+        // New campaign — create with retry loop
         const lead: Lead = {
           email: body.to,
           first_name: body.firstName,
@@ -269,19 +247,61 @@ router.post("/", async (req: Request, res: Response) => {
           variables: body.variables,
         };
 
-        console.log(`[send] Adding lead ${body.to} to instantly campaign ${campaign.instantlyCampaignId}`);
-        const result = await addInstantlyLeads({
-          campaign_id: campaign.instantlyCampaignId,
-          leads: [lead],
-        });
-        added = result.added;
-        console.log(`[send] addLeads result: added=${added}`);
+        let result: { instantlyCampaignId: string; added: number } | null = null;
+        let lastReason: string | undefined;
 
-        // 6. Save lead to database
-        const [created] = await db
+        for (let attempt = 1; attempt <= MAX_SEND_RETRIES; attempt++) {
+          const account = pickRandomAccount(accounts);
+          const steps = buildSequenceSteps(body.subject, sortedSequence, account);
+
+          console.log(`[send] Attempt ${attempt}/${MAX_SEND_RETRIES} for ${body.campaignId}/${body.to} with account ${account.email}`);
+          result = await tryCreateAndActivateCampaign(body.campaignId, account, steps, lead);
+
+          if (result) {
+            break;
+          }
+
+          lastReason = `Attempt ${attempt}/${MAX_SEND_RETRIES} failed with not_sending_status`;
+          console.warn(`[send] ${lastReason}`);
+        }
+
+        if (!result) {
+          // All retries exhausted — fail without adding costs
+          const errorMsg = `Campaign failed after ${MAX_SEND_RETRIES} retry attempts`;
+          console.error(`[send] ${errorMsg} for ${body.campaignId}/${body.to}`);
+          if (sendRun) {
+            await updateRun(sendRun.id, "failed", errorMsg);
+          }
+          return res.status(500).json({
+            error: errorMsg,
+            details: lastReason,
+          });
+        }
+
+        added = result.added;
+
+        // Success — save campaign to DB
+        await db
+          .insert(instantlyCampaigns)
+          .values({
+            campaignId: body.campaignId,
+            leadEmail: body.to,
+            instantlyCampaignId: result.instantlyCampaignId,
+            name: `Campaign ${body.campaignId}`,
+            status: "active",
+            orgId: organizationId,
+            clerkOrgId: body.orgId,
+            brandId: body.brandId,
+            appId: body.appId,
+            runId: body.runId,
+          })
+          .returning();
+
+        // Save lead to DB
+        const [createdLead] = await db
           .insert(instantlyLeads)
           .values({
-            instantlyCampaignId: campaign.instantlyCampaignId,
+            instantlyCampaignId: result.instantlyCampaignId,
             email: body.to,
             firstName: body.firstName,
             lastName: body.lastName,
@@ -293,33 +313,10 @@ router.post("/", async (req: Request, res: Response) => {
           .onConflictDoNothing()
           .returning();
 
-        if (created) savedLead = created;
-
-        // 7. Activate the new campaign
-        console.log(`[send] Activating new campaign ${campaign.instantlyCampaignId}`);
-        await updateCampaignStatus(campaign.instantlyCampaignId, "active");
-
-        // Verify campaign state after activation
-        const postActivate = await getInstantlyCampaign(campaign.instantlyCampaignId) as unknown as Record<string, unknown>;
-        console.log(`[send] Post-activate — status=${postActivate.status} email_list=${JSON.stringify(postActivate.email_list)} not_sending_status=${JSON.stringify(postActivate.not_sending_status)}`);
-
-        // Check for sending errors (e.g. disconnected account)
-        if (postActivate.not_sending_status) {
-          const reason = `not_sending_status: ${JSON.stringify(postActivate.not_sending_status)}`;
-          console.error(`[send] Campaign ${campaign.instantlyCampaignId} has ${reason}`);
-          await handleCampaignError(campaign.instantlyCampaignId, reason);
-          warning = reason;
-        } else {
-          await db
-            .update(instantlyCampaigns)
-            .set({ status: "active", updatedAt: new Date() })
-            .where(eq(instantlyCampaigns.id, campaign.id));
-        }
-      } else {
-        console.log(`[send] Lead ${body.to} already processed for campaign ${body.campaignId}, skipping`);
+        if (createdLead) savedLead = createdLead;
       }
 
-      // 8. Log costs: 1 actual (step 1) + N-1 provisioned (follow-ups)
+      // 5. Log costs: 1 actual (step 1) + N-1 provisioned (follow-ups)
       if (sendRun) {
         const costItems = sortedSequence.map((s, i) => ({
           costName: "instantly-email-send",
@@ -329,36 +326,30 @@ router.post("/", async (req: Request, res: Response) => {
 
         const costResult = await addCosts(sendRun.id, costItems);
 
-        // Store provisioned cost IDs for follow-up steps so webhooks can
-        // convert them to actual or cancel them later
-        if (costResult.costs.length > 1) {
-          const provisionedCosts = costResult.costs
-            .filter((c) => c.id)
-            .slice(1); // skip first (actual)
-
-          for (let i = 0; i < provisionedCosts.length; i++) {
-            const stepNumber = i + 2; // steps 2, 3, ...
-            await db.insert(sequenceCosts).values({
-              campaignId: body.campaignId,
-              leadEmail: body.to,
-              step: stepNumber,
-              runId: sendRun.id,
-              costId: provisionedCosts[i].id,
-              status: "provisioned",
-            });
-          }
+        // Store ALL cost IDs (including step 1) so handleCampaignError
+        // can cancel them if the campaign fails later
+        for (let i = 0; i < costResult.costs.length; i++) {
+          const cost = costResult.costs[i];
+          if (!cost.id) continue;
+          await db.insert(sequenceCosts).values({
+            campaignId: body.campaignId,
+            leadEmail: body.to,
+            step: i + 1,
+            runId: sendRun.id,
+            costId: cost.id,
+            status: i === 0 ? "actual" : "provisioned",
+          });
         }
 
         await updateRun(sendRun.id, "completed");
       }
 
-      console.log(`[send] Done — to=${body.to} campaignId=${body.campaignId} isNew=${campaign.isNew} added=${added}${warning ? ` warning="${warning}"` : ""}`);
+      console.log(`[send] Done — to=${body.to} campaignId=${body.campaignId} added=${added}`);
       res.status(200).json({
         success: true,
         campaignId: body.campaignId,
         leadId: savedLead?.id,
         added,
-        ...(warning && { warning }),
       });
     } catch (error: any) {
       if (sendRun) {

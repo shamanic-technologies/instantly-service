@@ -176,6 +176,22 @@ describe("handleCampaignError", () => {
     expect(mockUpdateCostStatus).not.toHaveBeenCalled();
   });
 
+  it("should cancel both actual and provisioned costs", async () => {
+    mockDbWhere.mockResolvedValueOnce([baseCampaign]); // campaign lookup
+    mockDbWhere.mockResolvedValueOnce([
+      { id: "sc-1", step: 1, runId: "run-1", costId: "cost-1", status: "actual" },
+      { id: "sc-2", step: 2, runId: "run-1", costId: "cost-2", status: "provisioned" },
+      { id: "sc-3", step: 3, runId: "run-1", costId: "cost-3", status: "provisioned" },
+    ]); // mixed costs
+
+    await handleCampaignError("inst-camp-1", "email gateway fail");
+
+    expect(mockUpdateCostStatus).toHaveBeenCalledTimes(3);
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-1", "cancelled");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-2", "cancelled");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-3", "cancelled");
+  });
+
   it("should handle campaign with no runId", async () => {
     mockDbWhere.mockResolvedValueOnce([{ ...baseCampaign, runId: null }]);
     mockDbWhere.mockResolvedValueOnce([]);

@@ -11,7 +11,7 @@
 
 import { db } from "../db";
 import { instantlyCampaigns, sequenceCosts } from "../db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, or } from "drizzle-orm";
 import { updateRun } from "./runs-client";
 import { updateCostStatus } from "./runs-client";
 import { sendEmail } from "./email-client";
@@ -71,7 +71,10 @@ export async function handleCampaignError(
         and(
           eq(sequenceCosts.campaignId, campaign.campaignId),
           eq(sequenceCosts.leadEmail, campaign.leadEmail),
-          eq(sequenceCosts.status, "provisioned"),
+          or(
+            eq(sequenceCosts.status, "provisioned"),
+            eq(sequenceCosts.status, "actual"),
+          ),
         ),
       );
 
@@ -82,7 +85,7 @@ export async function handleCampaignError(
         .set({ status: "cancelled", updatedAt: new Date() })
         .where(eq(sequenceCosts.id, cost.id));
       console.log(
-        `[campaign-error] Cancelled provisioned cost ${cost.costId} for step ${cost.step}`,
+        `[campaign-error] Cancelled ${cost.status} cost ${cost.costId} for step ${cost.step}`,
       );
     }
   }
