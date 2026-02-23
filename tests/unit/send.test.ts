@@ -56,6 +56,13 @@ vi.mock("../../src/lib/runs-client", () => ({
   addCosts: (...args: unknown[]) => mockAddCosts(...args),
 }));
 
+// Mock campaign-error-handler
+const mockHandleCampaignError = vi.fn();
+
+vi.mock("../../src/lib/campaign-error-handler", () => ({
+  handleCampaignError: (...args: unknown[]) => mockHandleCampaignError(...args),
+}));
+
 import { buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/routes/send";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
@@ -190,6 +197,7 @@ describe("POST /send", () => {
     mockListAccounts.mockResolvedValue([{ email: "sender@example.com", warmup_status: 1, status: 1, signature: "<p>Best,<br>Sender</p>" }]);
     mockUpdateCampaign.mockResolvedValue({});
     mockGetCampaign.mockResolvedValue({ email_list: [], bcc_list: [], not_sending_status: null, status: "active" });
+    mockHandleCampaignError.mockResolvedValue(undefined);
     mockDbReturning.mockResolvedValue([{ id: "lead-1" }]);
     mockDbInsertValues.mockReset();
   });
@@ -365,5 +373,34 @@ describe("POST /send", () => {
     const call2 = mockCreateCampaign.mock.calls[1][0];
     expect(call1.steps[0].bodyHtml).toContain("Hi Alice");
     expect(call2.steps[0].bodyHtml).toContain("Hi Bob");
+  });
+
+  it("should detect error via not_sending_status after activation and call handleCampaignError", async () => {
+    mockNewCampaignFlow();
+    // Override getCampaign to return not_sending_status on the post-activate check
+    mockGetCampaign.mockReset();
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], bcc_list: [], not_sending_status: null }); // verify after PATCH
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], status: "active", not_sending_status: "account_disconnected" }); // post-activate check
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.warning).toContain("not_sending_status");
+    expect(mockHandleCampaignError).toHaveBeenCalledWith(
+      "inst-camp-new",
+      expect.stringContaining("account_disconnected"),
+    );
+  });
+
+  it("should NOT call handleCampaignError when not_sending_status is null", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.warning).toBeUndefined();
+    expect(mockHandleCampaignError).not.toHaveBeenCalled();
   });
 });

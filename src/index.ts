@@ -45,9 +45,37 @@ app.use("/", serviceAuth, analyticsRoutes);
 
 const PORT = process.env.PORT || 3011;
 
+async function deployEmailTemplates(): Promise<void> {
+  try {
+    const { deployTemplates } = await import("./lib/email-client");
+    await deployTemplates({
+      appId: "instantly-service",
+      templates: [
+        {
+          name: "campaign-error",
+          subject: "[Instantly] Campaign error: {{campaignId}}",
+          htmlBody: [
+            "<h2>Campaign Error Detected</h2>",
+            "<p><strong>Campaign ID:</strong> {{campaignId}}</p>",
+            "<p><strong>Lead Email:</strong> {{leadEmail}}</p>",
+            "<p><strong>Instantly Campaign ID:</strong> {{instantlyCampaignId}}</p>",
+            "<p><strong>Error:</strong></p>",
+            "<pre>{{errorReason}}</pre>",
+          ].join("\n"),
+        },
+      ],
+    });
+    console.log("[startup] Email templates deployed");
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[startup] Failed to deploy email templates (non-fatal): ${message}`);
+  }
+}
+
 async function start() {
   const { runMigrations } = await import("./db/migrate");
   await runMigrations();
+  await deployEmailTemplates();
   app.listen(PORT, () => {
     console.log(`instantly-service running on port ${PORT}`);
   });
