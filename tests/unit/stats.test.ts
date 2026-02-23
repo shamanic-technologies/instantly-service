@@ -225,6 +225,71 @@ describe("POST /stats", () => {
       .send({ appId: "test-app" });
 
     expect(response.status).toBe(500);
-    expect(response.body.error).toBe("DB connection failed");
+    expect(response.body.error).toBe("Failed to aggregate stats");
+  });
+
+  it("should return overall stats when step query fails", async () => {
+    // Aggregate stats succeed
+    mockExecute.mockResolvedValueOnce({
+      rows: [{
+        emailsSent: 50,
+        emailsDelivered: 48,
+        emailsOpened: 20,
+        emailsClicked: 2,
+        emailsReplied: 5,
+        emailsBounced: 2,
+        repliesAutoReply: 0,
+        repliesNotInterested: 1,
+        repliesOutOfOffice: 0,
+        repliesUnsubscribe: 0,
+        recipients: 40,
+      }],
+    });
+    // Step query fails
+    mockExecute.mockRejectedValueOnce(new Error("step query timeout"));
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .post("/stats")
+      .send({ appId: "test-app", clerkOrgId: "org_123" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.stats.emailsSent).toBe(50);
+    expect(response.body.stats.emailsReplied).toBe(5);
+    expect(response.body.recipients).toBe(40);
+    expect(response.body.stepStats).toBeUndefined();
+  });
+
+  it("should log cause message from DrizzleQueryError", async () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Aggregate stats succeed
+    mockExecute.mockResolvedValueOnce({
+      rows: [{
+        emailsSent: 10, emailsDelivered: 10, emailsOpened: 5,
+        emailsClicked: 0, emailsReplied: 0, emailsBounced: 0,
+        repliesAutoReply: 0, repliesNotInterested: 0,
+        repliesOutOfOffice: 0, repliesUnsubscribe: 0, recipients: 10,
+      }],
+    });
+    // Step query fails with a DrizzleQueryError-like structure
+    const pgError = new Error("canceling statement due to statement timeout");
+    const drizzleError = new Error("Failed query: SELECT ...");
+    drizzleError.cause = pgError;
+    mockExecute.mockRejectedValueOnce(drizzleError);
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .post("/stats")
+      .send({ appId: "test-app" });
+
+    expect(response.status).toBe(200);
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining("canceling statement due to statement timeout"),
+    );
+
+    consoleSpy.mockRestore();
   });
 });
