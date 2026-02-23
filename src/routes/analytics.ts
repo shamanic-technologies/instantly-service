@@ -106,30 +106,35 @@ router.post("/stats", async (req: Request, res: Response) => {
 
     const row = rows[0] as Record<string, number>;
 
-    // Per-step breakdown (secondary stats)
-    const stepResult = await db.execute(sql`
-      SELECT
-        e.step,
-        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
-        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
-        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'reply_received'), 0)::int AS "emailsReplied",
-        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced"
-      FROM instantly_events e
-      JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
-      WHERE ${whereClause}
-        AND ${internalExclusionClause()}
-        AND e.step IS NOT NULL
-      GROUP BY e.step
-      ORDER BY e.step
-    `);
-    const stepRows = Array.isArray(stepResult) ? stepResult : (stepResult as any).rows ?? [];
-    const stepStats = stepRows.map((sr: any) => ({
-      step: sr.step,
-      emailsSent: sr.emailsSent ?? 0,
-      emailsOpened: sr.emailsOpened ?? 0,
-      emailsReplied: sr.emailsReplied ?? 0,
-      emailsBounced: sr.emailsBounced ?? 0,
-    }));
+    // Per-step breakdown (secondary stats) — non-fatal; overall stats still return on failure
+    let stepStats: { step: number; emailsSent: number; emailsOpened: number; emailsReplied: number; emailsBounced: number }[] = [];
+    try {
+      const stepResult = await db.execute(sql`
+        SELECT
+          e.step,
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
+          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'reply_received'), 0)::int AS "emailsReplied",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced"
+        FROM instantly_events e
+        JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+        WHERE ${whereClause}
+          AND ${internalExclusionClause()}
+          AND e.step IS NOT NULL
+        GROUP BY e.step
+        ORDER BY e.step
+      `);
+      const stepRows = Array.isArray(stepResult) ? stepResult : (stepResult as any).rows ?? [];
+      stepStats = stepRows.map((sr: any) => ({
+        step: sr.step,
+        emailsSent: sr.emailsSent ?? 0,
+        emailsOpened: sr.emailsOpened ?? 0,
+        emailsReplied: sr.emailsReplied ?? 0,
+        emailsBounced: sr.emailsBounced ?? 0,
+      }));
+    } catch (stepError: any) {
+      console.error(`[stats] Step query failed (overall stats still returned): ${stepError.cause?.message ?? stepError.message}`);
+    }
 
     res.json({
       stats: {
@@ -148,8 +153,8 @@ router.post("/stats", async (req: Request, res: Response) => {
       ...(stepStats.length > 0 && { stepStats }),
     });
   } catch (error: any) {
-    console.error(`[stats] Failed to aggregate stats: ${error.message}`);
-    res.status(500).json({ error: error.message });
+    console.error(`[stats] Failed to aggregate stats: ${error.cause?.message ?? error.message}`);
+    res.status(500).json({ error: "Failed to aggregate stats" });
   }
 });
 
