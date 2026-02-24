@@ -48,6 +48,10 @@ function buildScopedEmailStatus(row: AggRow | undefined) {
     : emptyScopedEmail();
 }
 
+function sqlIn(values: string[]) {
+  return sql.join(values.map((v) => sql`${v}`), sql`, `);
+}
+
 /** Lead-level aggregation query */
 function leadQuery(filterClause: ReturnType<typeof sql>, leadIds: string[]) {
   return db.execute(sql`
@@ -60,7 +64,7 @@ function leadQuery(filterClause: ReturnType<typeof sql>, leadIds: string[]) {
       CAST(NULL AS boolean) AS "unsubscribed",
       MAX(CASE WHEN delivery_status IN ('sent', 'delivered', 'replied') THEN updated_at END) AS "lastDeliveredAt"
     FROM instantly_campaigns
-    WHERE lead_id = ANY(${leadIds}) AND ${filterClause}
+    WHERE lead_id IN (${sqlIn(leadIds)}) AND ${filterClause}
     GROUP BY lead_id
   `);
 }
@@ -77,7 +81,7 @@ function scopedEmailQuery(filterClause: ReturnType<typeof sql>, emails: string[]
       BOOL_OR(delivery_status = 'unsubscribed') AS "unsubscribed",
       MAX(CASE WHEN delivery_status IN ('sent', 'delivered', 'replied') THEN updated_at END) AS "lastDeliveredAt"
     FROM instantly_campaigns
-    WHERE lead_email = ANY(${emails}) AND ${filterClause}
+    WHERE lead_email IN (${sqlIn(emails)}) AND ${filterClause}
     GROUP BY lead_email
   `);
 }
@@ -117,7 +121,7 @@ router.post("/", async (req: Request, res: Response) => {
         BOOL_OR(delivery_status = 'unsubscribed') AS "unsubscribed",
         CAST(NULL AS timestamp) AS "lastDeliveredAt"
       FROM instantly_campaigns
-      WHERE lead_email = ANY(${emails})
+      WHERE lead_email IN (${sqlIn(emails)})
       GROUP BY lead_email
     `);
 
