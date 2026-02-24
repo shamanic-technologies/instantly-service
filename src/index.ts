@@ -13,6 +13,7 @@ import accountsRoutes from "./routes/accounts";
 import analyticsRoutes from "./routes/analytics";
 import webhooksRoutes from "./routes/webhooks";
 import sendRoutes from "./routes/send";
+import statusRoutes from "./routes/status";
 import { serviceAuth } from "./middleware/serviceAuth";
 
 const app = express();
@@ -38,6 +39,7 @@ app.use("/webhooks", webhooksRoutes);
 
 // Protected routes (require X-API-Key)
 app.use("/send", serviceAuth, sendRoutes);
+app.use("/status", serviceAuth, statusRoutes);
 app.use("/campaigns", serviceAuth, campaignsRoutes);
 app.use("/campaigns", serviceAuth, leadsRoutes);
 app.use("/accounts", serviceAuth, accountsRoutes);

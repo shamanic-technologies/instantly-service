@@ -121,6 +121,7 @@ export const SendRequestSchema = z
     appId: z.string(),
     runId: z.string(),
     campaignId: z.string(),
+    leadId: z.string().optional().describe("External lead ID from lead-service"),
     to: z.string(),
     firstName: z.string().optional(),
     lastName: z.string().optional(),
@@ -628,5 +629,65 @@ registry.registerPath({
   responses: {
     200: { description: "Warmup analytics" },
     401: { description: "Unauthorized" },
+  },
+});
+
+// ─── Status ──────────────────────────────────────────────────────────────────
+
+export const StatusRequestSchema = z
+  .object({
+    campaignId: z.string().optional().describe("Context campaign ID (not used for filtering)"),
+    leadId: z.string().describe("Lead-service lead ID to check across all campaigns"),
+    email: z.string().describe("Email address to check across all campaigns"),
+  })
+  .openapi("StatusRequest");
+
+export type StatusRequest = z.infer<typeof StatusRequestSchema>;
+
+const LeadStatusSchema = z.object({
+  contacted: z.boolean(),
+  delivered: z.boolean(),
+  replied: z.boolean(),
+  lastDeliveredAt: z.string().nullable(),
+});
+
+const EmailStatusSchema = z.object({
+  contacted: z.boolean(),
+  delivered: z.boolean(),
+  bounced: z.boolean(),
+  unsubscribed: z.boolean(),
+  lastDeliveredAt: z.string().nullable(),
+});
+
+const StatusResponseSchema = z
+  .object({
+    lead: LeadStatusSchema,
+    email: EmailStatusSchema,
+  })
+  .openapi("StatusResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/status",
+  summary: "Get delivery status for a lead/email across all campaigns",
+  request: {
+    body: {
+      content: { "application/json": { schema: StatusRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Delivery status",
+      content: { "application/json": { schema: StatusResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
   },
 });

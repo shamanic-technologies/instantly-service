@@ -157,6 +157,10 @@
           "campaignId": {
             "type": "string"
           },
+          "leadId": {
+            "type": "string",
+            "description": "External lead ID from lead-service"
+          },
           "to": {
             "type": "string"
           },
@@ -617,6 +621,88 @@
         },
         "required": [
           "enabled"
+        ]
+      },
+      "StatusResponse": {
+        "type": "object",
+        "properties": {
+          "lead": {
+            "type": "object",
+            "properties": {
+              "contacted": {
+                "type": "boolean"
+              },
+              "delivered": {
+                "type": "boolean"
+              },
+              "replied": {
+                "type": "boolean"
+              },
+              "lastDeliveredAt": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "contacted",
+              "delivered",
+              "replied",
+              "lastDeliveredAt"
+            ]
+          },
+          "email": {
+            "type": "object",
+            "properties": {
+              "contacted": {
+                "type": "boolean"
+              },
+              "delivered": {
+                "type": "boolean"
+              },
+              "bounced": {
+                "type": "boolean"
+              },
+              "unsubscribed": {
+                "type": "boolean"
+              },
+              "lastDeliveredAt": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "contacted",
+              "delivered",
+              "bounced",
+              "unsubscribed",
+              "lastDeliveredAt"
+            ]
+          }
+        },
+        "required": [
+          "lead",
+          "email"
+        ]
+      },
+      "StatusRequest": {
+        "type": "object",
+        "properties": {
+          "campaignId": {
+            "type": "string",
+            "description": "Context campaign ID (not used for filtering)"
+          },
+          "leadId": {
+            "type": "string",
+            "description": "Lead-service lead ID to check across all campaigns"
+          },
+          "email": {
+            "type": "string",
+            "description": "Email address to check across all campaigns"
+          }
+        },
+        "required": [
+          "leadId",
+          "email"
         ]
       }
     },
@@ -1254,6 +1340,55 @@
           },
           "401": {
             "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/status": {
+      "post": {
+        "summary": "Get delivery status for a lead/email across all campaigns",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Delivery status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }

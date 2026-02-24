@@ -108,6 +108,33 @@ async function cancelRemainingProvisions(
   }
 }
 
+/** Maps webhook event types to deliveryStatus values */
+const DELIVERY_STATUS_MAP: Record<string, string> = {
+  email_sent: "sent",
+  campaign_completed: "delivered",
+  reply_received: "replied",
+  email_bounced: "bounced",
+  lead_unsubscribed: "unsubscribed",
+};
+
+async function updateDeliveryStatus(
+  instantlyCampaignId: string,
+  eventType: string,
+): Promise<void> {
+  const newStatus = DELIVERY_STATUS_MAP[eventType];
+  if (!newStatus) return;
+
+  try {
+    await db
+      .update(instantlyCampaigns)
+      .set({ deliveryStatus: newStatus, updatedAt: new Date() })
+      .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
+    console.log(`[webhooks] Updated deliveryStatus to '${newStatus}' for campaign ${instantlyCampaignId}`);
+  } catch (error: any) {
+    console.error(`[webhooks] Failed to update deliveryStatus for ${instantlyCampaignId}: ${error.message}`);
+  }
+}
+
 /**
  * POST /webhooks/instantly
  * Receives Instantly webhook events (requires valid secret).
@@ -143,7 +170,12 @@ router.post("/instantly", async (req: Request, res: Response) => {
       rawPayload: req.body,
     });
 
-    // 2. Handle cost lifecycle based on event type
+    // 2. Update delivery status
+    if (payload.campaign_id) {
+      await updateDeliveryStatus(payload.campaign_id, payload.event_type);
+    }
+
+    // 3. Handle cost lifecycle based on event type
     if (payload.campaign_id && payload.lead_email) {
       if (payload.event_type === "email_sent" && payload.step && payload.step > 1) {
         // Follow-up sent → convert provisioned to actual

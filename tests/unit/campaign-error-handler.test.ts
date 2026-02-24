@@ -87,6 +87,7 @@ describe("handleCampaignError", () => {
     expect(mockDbSetWhere).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "error",
+        deliveryStatus: "failed",
         metadata: { errorReason: "account disconnected" },
       }),
     );
