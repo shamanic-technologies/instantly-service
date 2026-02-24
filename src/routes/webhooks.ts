@@ -3,7 +3,7 @@ import { db } from "../db";
 import { instantlyEvents, instantlyCampaigns, sequenceCosts } from "../db/schema";
 import { eq, and } from "drizzle-orm";
 import { WebhookPayloadSchema } from "../schemas";
-import { updateCostStatus } from "../lib/runs-client";
+import { updateCostStatus, updateRun } from "../lib/runs-client";
 
 const router = Router();
 
@@ -59,7 +59,8 @@ async function handleFollowUpSent(
       .update(sequenceCosts)
       .set({ status: "actual", updatedAt: new Date() })
       .where(eq(sequenceCosts.id, cost.id));
-    console.log(`[webhooks] Converted provisioned cost ${cost.costId} to actual for step ${step}`);
+    await updateRun(cost.runId, "completed");
+    console.log(`[webhooks] Converted provisioned cost ${cost.costId} to actual and completed run ${cost.runId} for step ${step}`);
   } catch (error: any) {
     console.error(`[webhooks] Failed to convert cost ${cost.costId}: ${error.message}`);
   }
@@ -72,6 +73,7 @@ async function handleFollowUpSent(
 async function cancelRemainingProvisions(
   instantlyCampaignId: string,
   leadEmail: string,
+  eventType: string,
 ): Promise<void> {
   const [campaign] = await db
     .select()
@@ -98,7 +100,8 @@ async function cancelRemainingProvisions(
         .update(sequenceCosts)
         .set({ status: "cancelled", updatedAt: new Date() })
         .where(eq(sequenceCosts.id, cost.id));
-      console.log(`[webhooks] Cancelled provisioned cost ${cost.costId} for step ${cost.step}`);
+      await updateRun(cost.runId, "failed", `Sequence stopped: ${eventType}`);
+      console.log(`[webhooks] Cancelled provisioned cost ${cost.costId} and failed run ${cost.runId} for step ${cost.step}`);
     } catch (error: any) {
       console.error(`[webhooks] Failed to cancel cost ${cost.costId}: ${error.message}`);
     }
@@ -147,7 +150,7 @@ router.post("/instantly", async (req: Request, res: Response) => {
         await handleFollowUpSent(payload.campaign_id, payload.lead_email, payload.step);
       } else if (SEQUENCE_STOP_EVENTS.has(payload.event_type)) {
         // Sequence stopped → cancel remaining provisions
-        await cancelRemainingProvisions(payload.campaign_id, payload.lead_email);
+        await cancelRemainingProvisions(payload.campaign_id, payload.lead_email, payload.event_type);
       }
     }
 

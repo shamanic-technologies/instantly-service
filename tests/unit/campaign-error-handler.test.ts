@@ -92,32 +92,35 @@ describe("handleCampaignError", () => {
     );
   });
 
-  it("should cancel all remaining provisioned costs", async () => {
+  it("should cancel all remaining provisioned costs and fail step runs", async () => {
     mockDbWhere.mockResolvedValueOnce([baseCampaign]); // campaign lookup
     mockDbWhere.mockResolvedValueOnce([
-      { id: "sc-2", step: 2, runId: "run-1", costId: "cost-2", status: "provisioned" },
-      { id: "sc-3", step: 3, runId: "run-1", costId: "cost-3", status: "provisioned" },
+      { id: "sc-2", step: 2, runId: "step-run-2", costId: "cost-2", status: "provisioned" },
+      { id: "sc-3", step: 3, runId: "step-run-3", costId: "cost-3", status: "provisioned" },
     ]); // provisioned costs
 
     await handleCampaignError("inst-camp-1", "account disconnected");
 
     expect(mockUpdateCostStatus).toHaveBeenCalledTimes(2);
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-2", "cancelled");
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-3", "cancelled");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-3", "cost-3", "cancelled");
+    // Step runs should also be failed
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", "account disconnected");
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-3", "failed", "account disconnected");
   });
 
-  it("should mark the run as failed", async () => {
+  it("should mark the parent run as failed", async () => {
     mockDbWhere.mockResolvedValueOnce([baseCampaign]);
-    mockDbWhere.mockResolvedValueOnce([]);
+    mockDbWhere.mockResolvedValueOnce([]); // no costs
 
     await handleCampaignError("inst-camp-1", "account disconnected");
 
     expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", "account disconnected");
   });
 
-  it("should throw if updateRun fails", async () => {
+  it("should throw if parent updateRun fails", async () => {
     mockDbWhere.mockResolvedValueOnce([baseCampaign]);
-    mockDbWhere.mockResolvedValueOnce([]);
+    mockDbWhere.mockResolvedValueOnce([]); // no costs
     mockUpdateRun.mockRejectedValue(new Error("runs-service down"));
 
     await expect(
@@ -176,20 +179,52 @@ describe("handleCampaignError", () => {
     expect(mockUpdateCostStatus).not.toHaveBeenCalled();
   });
 
-  it("should cancel both actual and provisioned costs", async () => {
+  it("should cancel both actual and provisioned costs, and fail all step runs", async () => {
+    // Step 1 run is already completed — updateRun may reject, should not throw
+    mockUpdateRun
+      .mockResolvedValueOnce({}) // step-run-1 fail attempt (may fail in prod, but mock accepts)
+      .mockResolvedValueOnce({}) // step-run-2
+      .mockResolvedValueOnce({}) // step-run-3
+      .mockResolvedValueOnce({}); // parent run
+
     mockDbWhere.mockResolvedValueOnce([baseCampaign]); // campaign lookup
     mockDbWhere.mockResolvedValueOnce([
-      { id: "sc-1", step: 1, runId: "run-1", costId: "cost-1", status: "actual" },
-      { id: "sc-2", step: 2, runId: "run-1", costId: "cost-2", status: "provisioned" },
-      { id: "sc-3", step: 3, runId: "run-1", costId: "cost-3", status: "provisioned" },
+      { id: "sc-1", step: 1, runId: "step-run-1", costId: "cost-1", status: "actual" },
+      { id: "sc-2", step: 2, runId: "step-run-2", costId: "cost-2", status: "provisioned" },
+      { id: "sc-3", step: 3, runId: "step-run-3", costId: "cost-3", status: "provisioned" },
     ]); // mixed costs
 
     await handleCampaignError("inst-camp-1", "email gateway fail");
 
     expect(mockUpdateCostStatus).toHaveBeenCalledTimes(3);
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-1", "cancelled");
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-2", "cancelled");
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-3", "cancelled");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-1", "cost-1", "cancelled");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-3", "cost-3", "cancelled");
+    // All step runs should be failed (including step 1)
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "failed", "email gateway fail");
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", "email gateway fail");
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-3", "failed", "email gateway fail");
+    // Plus the parent run
+    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", "email gateway fail");
+  });
+
+  it("should not throw when step 1 run fail is rejected (already completed)", async () => {
+    mockUpdateRun
+      .mockRejectedValueOnce(new Error("cannot transition completed to failed")) // step-run-1
+      .mockResolvedValueOnce({}) // parent run
+
+    mockDbWhere.mockResolvedValueOnce([baseCampaign]); // campaign lookup
+    mockDbWhere.mockResolvedValueOnce([
+      { id: "sc-1", step: 1, runId: "step-run-1", costId: "cost-1", status: "actual" },
+    ]);
+
+    // Should not throw despite step run fail rejection
+    await handleCampaignError("inst-camp-1", "email gateway fail");
+
+    // Cost should still be cancelled
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-1", "cost-1", "cancelled");
+    // Parent run should still be failed
+    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", "email gateway fail");
   });
 
   it("should handle campaign with no runId", async () => {

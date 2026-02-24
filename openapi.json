@@ -112,6 +112,25 @@
           },
           "added": {
             "type": "number"
+          },
+          "stepRuns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "step": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "runId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "step",
+                "runId"
+              ]
+            }
           }
         },
         "required": [

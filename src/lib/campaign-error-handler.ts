@@ -87,6 +87,14 @@ export async function handleCampaignError(
       console.log(
         `[campaign-error] Cancelled ${cost.status} cost ${cost.costId} for step ${cost.step}`,
       );
+      // Fail the step's run (may already be completed for step 1)
+      try {
+        await updateRun(cost.runId, "failed", reason);
+        console.log(`[campaign-error] Failed run ${cost.runId} for step ${cost.step}`);
+      } catch (runErr: unknown) {
+        const msg = runErr instanceof Error ? runErr.message : String(runErr);
+        console.warn(`[campaign-error] Could not fail run ${cost.runId}: ${msg}`);
+      }
     }
   }
 

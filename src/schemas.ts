@@ -136,12 +136,18 @@ export const SendRequestSchema = z
 
 export type SendRequest = z.infer<typeof SendRequestSchema>;
 
+const StepRunSchema = z.object({
+  step: z.number().int().min(1),
+  runId: z.string(),
+});
+
 const SendResponseSchema = z
   .object({
     success: z.boolean(),
     campaignId: z.string(),
     leadId: z.string().nullable().optional(),
     added: z.number(),
+    stepRuns: z.array(StepRunSchema).optional(),
   })
   .openapi("SendResponse");
 
