@@ -179,17 +179,21 @@ describe("buildSequenceSteps", () => {
 });
 
 describe("POST /send", () => {
+  let runCounter: number;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    runCounter = 0;
 
-    mockCreateRun.mockResolvedValue({ id: "run-1" });
+    mockCreateRun.mockImplementation(() => {
+      runCounter++;
+      return Promise.resolve({ id: `step-run-${runCounter}` });
+    });
     mockAddLeads.mockResolvedValue({ added: 1 });
-    mockAddCosts.mockResolvedValue({
-      costs: [
-        { id: "cost-1", costName: "instantly-email-send", status: "actual" },
-        { id: "cost-2", costName: "instantly-email-send", status: "provisioned" },
-        { id: "cost-3", costName: "instantly-email-send", status: "provisioned" },
-      ],
+    mockAddCosts.mockImplementation((runId: string) => {
+      return Promise.resolve({
+        costs: [{ id: `cost-${runId}`, costName: "instantly-email-send" }],
+      });
     });
     mockUpdateRun.mockResolvedValue({});
     mockListAccounts.mockResolvedValue([{ email: "sender@example.com", warmup_status: 1, status: 1, signature: "<p>Best,<br>Sender</p>" }]);
@@ -256,20 +260,24 @@ describe("POST /send", () => {
     );
   });
 
-  it("should create 1 actual + N-1 provisioned costs for a 3-step sequence", async () => {
+  it("should create per-step runs with 1 actual + N-1 provisioned costs for a 3-step sequence", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
     await request(app).post("/send").send(validBody);
 
-    expect(mockAddCosts).toHaveBeenCalledWith("run-1", [
-      { costName: "instantly-email-send", quantity: 1, status: "actual" },
-      { costName: "instantly-email-send", quantity: 1, status: "provisioned" },
-      { costName: "instantly-email-send", quantity: 1, status: "provisioned" },
-    ]);
+    expect(mockCreateRun).toHaveBeenCalledTimes(3);
+    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }));
+    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-2" }));
+    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-3" }));
+
+    expect(mockAddCosts).toHaveBeenCalledTimes(3);
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [{ costName: "instantly-email-send", quantity: 1, status: "actual" }]);
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-2", [{ costName: "instantly-email-send", quantity: 1, status: "provisioned" }]);
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-3", [{ costName: "instantly-email-send", quantity: 1, status: "provisioned" }]);
   });
 
-  it("should store ALL cost IDs in sequence_costs table including step 1", async () => {
+  it("should store per-step cost IDs in sequence_costs table with distinct runIds", async () => {
     mockNewCampaignFlow();
     // Reset to track sequence_costs inserts
     mockDbReturning.mockReset();
@@ -281,22 +289,19 @@ describe("POST /send", () => {
 
     await request(app).post("/send").send(validBody);
 
-    // Check that sequence_costs were inserted for ALL steps (1, 2, 3)
+    // Check that sequence_costs were inserted for ALL steps with distinct runIds
     const insertCalls = mockDbInsertValues.mock.calls;
     const sequenceCostInserts = insertCalls.filter(
       ([v]: [any]) => v.costId && v.step,
     );
     expect(sequenceCostInserts).toHaveLength(3);
-    expect(sequenceCostInserts[0][0]).toMatchObject({ step: 1, costId: "cost-1", status: "actual" });
-    expect(sequenceCostInserts[1][0]).toMatchObject({ step: 2, costId: "cost-2", status: "provisioned" });
-    expect(sequenceCostInserts[2][0]).toMatchObject({ step: 3, costId: "cost-3", status: "provisioned" });
+    expect(sequenceCostInserts[0][0]).toMatchObject({ step: 1, runId: "step-run-1", costId: "cost-step-run-1", status: "actual" });
+    expect(sequenceCostInserts[1][0]).toMatchObject({ step: 2, runId: "step-run-2", costId: "cost-step-run-2", status: "provisioned" });
+    expect(sequenceCostInserts[2][0]).toMatchObject({ step: 3, runId: "step-run-3", costId: "cost-step-run-3", status: "provisioned" });
   });
 
-  it("should work with a single-step sequence (no provisioned costs)", async () => {
+  it("should work with a single-step sequence (1 run, completed immediately)", async () => {
     mockNewCampaignFlow();
-    mockAddCosts.mockResolvedValue({
-      costs: [{ id: "cost-1", costName: "instantly-email-send", status: "actual" }],
-    });
     const app = await createSendApp();
 
     const singleStep = {
@@ -307,9 +312,13 @@ describe("POST /send", () => {
     const res = await request(app).post("/send").send(singleStep);
 
     expect(res.status).toBe(200);
-    expect(mockAddCosts).toHaveBeenCalledWith("run-1", [
+    expect(mockCreateRun).toHaveBeenCalledTimes(1);
+    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }));
+    expect(mockAddCosts).toHaveBeenCalledTimes(1);
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [
       { costName: "instantly-email-send", quantity: 1, status: "actual" },
     ]);
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed");
   });
 
   it("should skip Instantly API call when same lead already processed for campaign", async () => {
@@ -404,8 +413,9 @@ describe("POST /send", () => {
     expect(res.status).toBe(200);
     expect(res.body.warning).toBeUndefined();
     expect(mockCreateCampaign).toHaveBeenCalledTimes(2);
-    expect(mockAddCosts).toHaveBeenCalled();
-    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "completed");
+    expect(mockCreateRun).toHaveBeenCalledTimes(3); // 3 step runs
+    expect(mockAddCosts).toHaveBeenCalledTimes(3);
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed"); // only step 1
   });
 
   it("should fail after MAX_SEND_RETRIES attempts with not_sending_status and NOT add costs", async () => {
@@ -426,8 +436,10 @@ describe("POST /send", () => {
     expect(res.status).toBe(500);
     expect(res.body.error).toContain("failed after 3 retry attempts");
     expect(mockCreateCampaign).toHaveBeenCalledTimes(3);
+    // No step runs were created (runs are created AFTER successful activation)
+    expect(mockCreateRun).not.toHaveBeenCalled();
     expect(mockAddCosts).not.toHaveBeenCalled();
-    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", expect.stringContaining("failed after 3 retry attempts"));
+    expect(mockUpdateRun).not.toHaveBeenCalled();
   });
 
   it("should NOT call handleCampaignError when not_sending_status is null", async () => {
@@ -438,5 +450,29 @@ describe("POST /send", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.warning).toBeUndefined();
+  });
+
+  it("should only complete step 1 run, leaving follow-up step runs ongoing", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").send(validBody);
+
+    // Only step 1 should be completed
+    expect(mockUpdateRun).toHaveBeenCalledTimes(1);
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed");
+  });
+
+  it("should return stepRuns array in response", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.stepRuns).toHaveLength(3);
+    expect(res.body.stepRuns[0]).toMatchObject({ step: 1, runId: "step-run-1" });
+    expect(res.body.stepRuns[1]).toMatchObject({ step: 2, runId: "step-run-2" });
+    expect(res.body.stepRuns[2]).toMatchObject({ step: 3, runId: "step-run-3" });
   });
 });

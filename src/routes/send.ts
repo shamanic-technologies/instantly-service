@@ -180,9 +180,12 @@ async function tryCreateAndActivateCampaign(
  * POST /send
  * Add a lead to a multi-step sequence campaign via Instantly.
  *
- * Creates 1 actual cost (step 1 sent immediately) + N-1 provisioned costs
- * (follow-up steps). Provisioned costs are converted to actual on webhook
- * email_sent, or cancelled on reply/bounce/unsub/not_interested.
+ * Creates one run per sequence step:
+ * - Step 1: run completed immediately, cost = actual
+ * - Steps 2-N: runs stay ongoing, costs = provisioned
+ *
+ * Follow-up runs are completed when webhook email_sent arrives,
+ * or failed on reply/bounce/unsub/not_interested/campaign error.
  *
  * If Instantly reports not_sending_status after activation, retries up to
  * MAX_SEND_RETRIES times with a different random account before giving up.
@@ -205,19 +208,8 @@ router.post("/", async (req: Request, res: Response) => {
       organizationId = await getOrCreateOrganization(body.orgId);
     }
 
-    // 2. Create run in runs-service (only if orgId provided)
-    let sendRun: { id: string } | null = null;
-    if (body.orgId) {
-      sendRun = await createRun({
-        clerkOrgId: body.orgId,
-        appId: body.appId,
-        serviceName: "instantly-service",
-        taskName: "email-send",
-        brandId: body.brandId,
-        campaignId: body.campaignId,
-        parentRunId: body.runId,
-      });
-    }
+    // 2. Per-step runs are created AFTER successful campaign activation
+    const stepRuns: { step: number; runId: string }[] = [];
 
     try {
       // 3. Check available accounts
@@ -266,12 +258,9 @@ router.post("/", async (req: Request, res: Response) => {
         }
 
         if (!result) {
-          // All retries exhausted — fail without adding costs
+          // All retries exhausted — no step runs were created yet
           const errorMsg = `Campaign failed after ${MAX_SEND_RETRIES} retry attempts`;
           console.error(`[send] ${errorMsg} for ${body.campaignId}/${body.to}`);
-          if (sendRun) {
-            await updateRun(sendRun.id, "failed", errorMsg);
-          }
           return res.status(500).json({
             error: errorMsg,
             details: lastReason,
@@ -308,7 +297,7 @@ router.post("/", async (req: Request, res: Response) => {
             companyName: body.company,
             customVariables: body.variables,
             orgId: organizationId,
-            runId: sendRun?.id,
+            runId: null,
           })
           .onConflictDoNothing()
           .returning();
@@ -316,44 +305,62 @@ router.post("/", async (req: Request, res: Response) => {
         if (createdLead) savedLead = createdLead;
       }
 
-      // 5. Log costs: 1 actual (step 1) + N-1 provisioned (follow-ups)
-      if (sendRun) {
-        const costItems = sortedSequence.map((s, i) => ({
-          costName: "instantly-email-send",
-          quantity: 1,
-          status: i === 0 ? ("actual" as const) : ("provisioned" as const),
-        }));
-
-        const costResult = await addCosts(sendRun.id, costItems);
-
-        // Store ALL cost IDs (including step 1) so handleCampaignError
-        // can cancel them if the campaign fails later
-        for (let i = 0; i < costResult.costs.length; i++) {
-          const cost = costResult.costs[i];
-          if (!cost.id) continue;
-          await db.insert(sequenceCosts).values({
+      // 5. Create per-step runs: 1 actual+completed (step 1) + N-1 provisioned+ongoing
+      if (body.orgId) {
+        for (const s of sortedSequence) {
+          const isFirstStep = s.step === sortedSequence[0].step;
+          const stepRun = await createRun({
+            clerkOrgId: body.orgId,
+            appId: body.appId,
+            serviceName: "instantly-service",
+            taskName: `email-send-step-${s.step}`,
+            brandId: body.brandId,
             campaignId: body.campaignId,
-            leadEmail: body.to,
-            step: i + 1,
-            runId: sendRun.id,
-            costId: cost.id,
-            status: i === 0 ? "actual" : "provisioned",
+            parentRunId: body.runId,
           });
-        }
 
-        await updateRun(sendRun.id, "completed");
+          const costResult = await addCosts(stepRun.id, [{
+            costName: "instantly-email-send",
+            quantity: 1,
+            status: isFirstStep ? "actual" as const : "provisioned" as const,
+          }]);
+
+          const costId = costResult.costs[0]?.id;
+          if (costId) {
+            await db.insert(sequenceCosts).values({
+              campaignId: body.campaignId,
+              leadEmail: body.to,
+              step: s.step,
+              runId: stepRun.id,
+              costId,
+              status: isFirstStep ? "actual" : "provisioned",
+            });
+          }
+
+          if (isFirstStep) {
+            await updateRun(stepRun.id, "completed");
+          }
+
+          stepRuns.push({ step: s.step, runId: stepRun.id });
+        }
       }
 
-      console.log(`[send] Done — to=${body.to} campaignId=${body.campaignId} added=${added}`);
+      console.log(`[send] Done — to=${body.to} campaignId=${body.campaignId} added=${added} stepRuns=${stepRuns.length}`);
       res.status(200).json({
         success: true,
         campaignId: body.campaignId,
         leadId: savedLead?.id,
         added,
+        stepRuns: stepRuns.length > 0 ? stepRuns : undefined,
       });
     } catch (error: any) {
-      if (sendRun) {
-        await updateRun(sendRun.id, "failed", error.message);
+      // Fail any step runs that were already created
+      for (const sr of stepRuns) {
+        try {
+          await updateRun(sr.runId, "failed", error.message);
+        } catch {
+          // Run may already be completed (step 1) — ignore
+        }
       }
       throw error;
     }
