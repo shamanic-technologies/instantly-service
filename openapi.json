@@ -626,62 +626,151 @@
       "StatusResponse": {
         "type": "object",
         "properties": {
-          "lead": {
-            "type": "object",
-            "properties": {
-              "contacted": {
-                "type": "boolean"
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "leadId": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "campaign": {
+                  "type": "object",
+                  "properties": {
+                    "lead": {
+                      "type": "object",
+                      "properties": {
+                        "contacted": {
+                          "type": "boolean"
+                        },
+                        "delivered": {
+                          "type": "boolean"
+                        },
+                        "replied": {
+                          "type": "boolean"
+                        },
+                        "lastDeliveredAt": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      },
+                      "required": [
+                        "contacted",
+                        "delivered",
+                        "replied",
+                        "lastDeliveredAt"
+                      ]
+                    },
+                    "email": {
+                      "type": "object",
+                      "properties": {
+                        "contacted": {
+                          "type": "boolean"
+                        },
+                        "delivered": {
+                          "type": "boolean"
+                        },
+                        "bounced": {
+                          "type": "boolean"
+                        },
+                        "unsubscribed": {
+                          "type": "boolean"
+                        },
+                        "lastDeliveredAt": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      },
+                      "required": [
+                        "contacted",
+                        "delivered",
+                        "bounced",
+                        "unsubscribed",
+                        "lastDeliveredAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "lead",
+                    "email"
+                  ]
+                },
+                "global": {
+                  "type": "object",
+                  "properties": {
+                    "lead": {
+                      "type": "object",
+                      "properties": {
+                        "contacted": {
+                          "type": "boolean"
+                        },
+                        "delivered": {
+                          "type": "boolean"
+                        },
+                        "replied": {
+                          "type": "boolean"
+                        },
+                        "lastDeliveredAt": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      },
+                      "required": [
+                        "contacted",
+                        "delivered",
+                        "replied",
+                        "lastDeliveredAt"
+                      ]
+                    },
+                    "email": {
+                      "type": "object",
+                      "properties": {
+                        "contacted": {
+                          "type": "boolean"
+                        },
+                        "delivered": {
+                          "type": "boolean"
+                        },
+                        "bounced": {
+                          "type": "boolean"
+                        },
+                        "unsubscribed": {
+                          "type": "boolean"
+                        },
+                        "lastDeliveredAt": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      },
+                      "required": [
+                        "contacted",
+                        "delivered",
+                        "bounced",
+                        "unsubscribed",
+                        "lastDeliveredAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "lead",
+                    "email"
+                  ]
+                }
               },
-              "delivered": {
-                "type": "boolean"
-              },
-              "replied": {
-                "type": "boolean"
-              },
-              "lastDeliveredAt": {
-                "type": "string",
-                "nullable": true
-              }
-            },
-            "required": [
-              "contacted",
-              "delivered",
-              "replied",
-              "lastDeliveredAt"
-            ]
-          },
-          "email": {
-            "type": "object",
-            "properties": {
-              "contacted": {
-                "type": "boolean"
-              },
-              "delivered": {
-                "type": "boolean"
-              },
-              "bounced": {
-                "type": "boolean"
-              },
-              "unsubscribed": {
-                "type": "boolean"
-              },
-              "lastDeliveredAt": {
-                "type": "string",
-                "nullable": true
-              }
-            },
-            "required": [
-              "contacted",
-              "delivered",
-              "bounced",
-              "unsubscribed",
-              "lastDeliveredAt"
-            ]
+              "required": [
+                "leadId",
+                "email",
+                "campaign",
+                "global"
+              ]
+            }
           }
         },
         "required": [
-          "lead",
-          "email"
+          "results"
         ]
       },
       "StatusRequest": {
@@ -689,20 +778,34 @@
         "properties": {
           "campaignId": {
             "type": "string",
-            "description": "Context campaign ID (not used for filtering)"
+            "description": "Campaign ID to scope the campaign-level results"
           },
-          "leadId": {
-            "type": "string",
-            "description": "Lead-service lead ID to check across all campaigns"
-          },
-          "email": {
-            "type": "string",
-            "description": "Email address to check across all campaigns"
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "leadId": {
+                  "type": "string",
+                  "description": "Lead-service lead ID (human)"
+                },
+                "email": {
+                  "type": "string",
+                  "description": "Email address"
+                }
+              },
+              "required": [
+                "leadId",
+                "email"
+              ]
+            },
+            "minItems": 1,
+            "description": "Lead/email pairs to check"
           }
         },
         "required": [
-          "leadId",
-          "email"
+          "campaignId",
+          "items"
         ]
       }
     },
@@ -1346,7 +1449,8 @@
     },
     "/status": {
       "post": {
-        "summary": "Get delivery status for a lead/email across all campaigns",
+        "summary": "Batch delivery status check for leads/emails",
+        "description": "Returns campaign-scoped and global (cross-campaign) delivery status for each lead/email pair. Campaign-scoped filters by the given campaignId; global aggregates across all campaigns.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1358,7 +1462,7 @@
         },
         "responses": {
           "200": {
-            "description": "Delivery status",
+            "description": "Delivery status results",
             "content": {
               "application/json": {
                 "schema": {

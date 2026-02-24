@@ -634,11 +634,18 @@ registry.registerPath({
 
 // ─── Status ──────────────────────────────────────────────────────────────────
 
+const StatusItemSchema = z.object({
+  leadId: z.string().describe("Lead-service lead ID (human)"),
+  email: z.string().describe("Email address"),
+});
+
 export const StatusRequestSchema = z
   .object({
-    campaignId: z.string().optional().describe("Context campaign ID (not used for filtering)"),
-    leadId: z.string().describe("Lead-service lead ID to check across all campaigns"),
-    email: z.string().describe("Email address to check across all campaigns"),
+    campaignId: z.string().describe("Campaign ID to scope the campaign-level results"),
+    items: z
+      .array(StatusItemSchema)
+      .min(1)
+      .describe("Lead/email pairs to check"),
   })
   .openapi("StatusRequest");
 
@@ -659,17 +666,32 @@ const EmailStatusSchema = z.object({
   lastDeliveredAt: z.string().nullable(),
 });
 
+const ScopedStatusSchema = z.object({
+  lead: LeadStatusSchema,
+  email: EmailStatusSchema,
+});
+
+const StatusResultSchema = z.object({
+  leadId: z.string(),
+  email: z.string(),
+  campaign: ScopedStatusSchema,
+  global: ScopedStatusSchema,
+});
+
 const StatusResponseSchema = z
   .object({
-    lead: LeadStatusSchema,
-    email: EmailStatusSchema,
+    results: z.array(StatusResultSchema),
   })
   .openapi("StatusResponse");
 
 registry.registerPath({
   method: "post",
   path: "/status",
-  summary: "Get delivery status for a lead/email across all campaigns",
+  summary: "Batch delivery status check for leads/emails",
+  description:
+    "Returns campaign-scoped and global (cross-campaign) delivery status " +
+    "for each lead/email pair. Campaign-scoped filters by the given campaignId; " +
+    "global aggregates across all campaigns.",
   request: {
     body: {
       content: { "application/json": { schema: StatusRequestSchema } },
@@ -677,7 +699,7 @@ registry.registerPath({
   },
   responses: {
     200: {
-      description: "Delivery status",
+      description: "Delivery status results",
       content: { "application/json": { schema: StatusResponseSchema } },
     },
     400: {
