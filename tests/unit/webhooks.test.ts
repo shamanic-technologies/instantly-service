@@ -244,4 +244,112 @@ describe("POST /webhooks/instantly", () => {
 
     expect(mockUpdateCostStatus).not.toHaveBeenCalled();
   });
+
+  it("should update deliveryStatus to 'sent' on email_sent", async () => {
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly?secret=test-secret")
+      .send({
+        event_type: "email_sent",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 1,
+      });
+
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ deliveryStatus: "sent" }),
+    );
+  });
+
+  it("should update deliveryStatus to 'replied' on reply_received", async () => {
+    mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
+    mockDbSelect.mockResolvedValueOnce([]);
+
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly?secret=test-secret")
+      .send({
+        event_type: "reply_received",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+      });
+
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ deliveryStatus: "replied" }),
+    );
+  });
+
+  it("should update deliveryStatus to 'bounced' on email_bounced", async () => {
+    mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
+    mockDbSelect.mockResolvedValueOnce([]);
+
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly?secret=test-secret")
+      .send({
+        event_type: "email_bounced",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+      });
+
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ deliveryStatus: "bounced" }),
+    );
+  });
+
+  it("should update deliveryStatus to 'unsubscribed' on lead_unsubscribed", async () => {
+    mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
+    mockDbSelect.mockResolvedValueOnce([]);
+
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly?secret=test-secret")
+      .send({
+        event_type: "lead_unsubscribed",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+      });
+
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ deliveryStatus: "unsubscribed" }),
+    );
+  });
+
+  it("should update deliveryStatus to 'delivered' on campaign_completed", async () => {
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly?secret=test-secret")
+      .send({
+        event_type: "campaign_completed",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+      });
+
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ deliveryStatus: "delivered" }),
+    );
+  });
+
+  it("should NOT update deliveryStatus for unknown event types", async () => {
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly?secret=test-secret")
+      .send({
+        event_type: "auto_reply_received",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+      });
+
+    // mockDbUpdate should NOT have been called with deliveryStatus
+    const deliveryStatusCalls = mockDbUpdate.mock.calls.filter(
+      ([v]: [any]) => v.deliveryStatus !== undefined,
+    );
+    expect(deliveryStatusCalls).toHaveLength(0);
+  });
 });

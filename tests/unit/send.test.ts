@@ -81,6 +81,7 @@ const validBody = {
     { step: 3, bodyHtml: "<p>Last chance</p>", daysSinceLastStep: 7 },
   ],
   campaignId: "camp-1",
+  leadId: "lead-1",
   runId: "run-1",
   orgId: "org-1",
   brandId: "brand-1",
@@ -258,6 +259,22 @@ describe("POST /send", () => {
         email_list: ["sender@example.com"],
       }),
     );
+  });
+
+  it("should store leadId and deliveryStatus in campaign insert", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").send(validBody);
+
+    const campaignInsert = mockDbInsertValues.mock.calls.find(
+      ([v]: [any]) => v.campaignId === "camp-1" && v.leadEmail === "test@example.com",
+    );
+    expect(campaignInsert).toBeDefined();
+    expect(campaignInsert![0]).toMatchObject({
+      leadId: "lead-1",
+      deliveryStatus: "pending",
+    });
   });
 
   it("should create per-step runs with 1 actual + N-1 provisioned costs for a 3-step sequence", async () => {

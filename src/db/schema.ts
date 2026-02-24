@@ -45,6 +45,8 @@ export const instantlyCampaigns = pgTable(
     brandId: text("brand_id").notNull(),
     appId: text("app_id").notNull(),
     runId: text("run_id"),
+    leadId: text("lead_id"),
+    deliveryStatus: text("delivery_status").notNull().default("pending"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -55,6 +57,8 @@ export const instantlyCampaigns = pgTable(
       table.leadEmail,
     ),
     index("instantly_campaigns_campaign_id_idx").on(table.campaignId),
+    index("instantly_campaigns_lead_id_idx").on(table.leadId),
+    index("instantly_campaigns_lead_email_idx").on(table.leadEmail),
   ],
 );
 

@@ -275,9 +275,11 @@ router.post("/", async (req: Request, res: Response) => {
           .values({
             campaignId: body.campaignId,
             leadEmail: body.to,
+            leadId: body.leadId,
             instantlyCampaignId: result.instantlyCampaignId,
             name: `Campaign ${body.campaignId}`,
             status: "active",
+            deliveryStatus: "pending",
             orgId: organizationId,
             clerkOrgId: body.orgId,
             brandId: body.brandId,
