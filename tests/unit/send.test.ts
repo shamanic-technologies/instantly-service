@@ -294,6 +294,7 @@ describe("POST /send", () => {
     expect(mockAddCosts).toHaveBeenCalledWith("step-run-3", [{ costName: "instantly-email-send", quantity: 1, status: "provisioned" }]);
   });
 
+
   it("should store per-step cost IDs in sequence_costs table with distinct runIds", async () => {
     mockNewCampaignFlow();
     // Reset to track sequence_costs inserts
