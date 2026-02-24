@@ -639,6 +639,68 @@
                 },
                 "campaign": {
                   "type": "object",
+                  "nullable": true,
+                  "properties": {
+                    "lead": {
+                      "type": "object",
+                      "properties": {
+                        "contacted": {
+                          "type": "boolean"
+                        },
+                        "delivered": {
+                          "type": "boolean"
+                        },
+                        "replied": {
+                          "type": "boolean"
+                        },
+                        "lastDeliveredAt": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      },
+                      "required": [
+                        "contacted",
+                        "delivered",
+                        "replied",
+                        "lastDeliveredAt"
+                      ]
+                    },
+                    "email": {
+                      "type": "object",
+                      "properties": {
+                        "contacted": {
+                          "type": "boolean"
+                        },
+                        "delivered": {
+                          "type": "boolean"
+                        },
+                        "bounced": {
+                          "type": "boolean"
+                        },
+                        "unsubscribed": {
+                          "type": "boolean"
+                        },
+                        "lastDeliveredAt": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      },
+                      "required": [
+                        "contacted",
+                        "delivered",
+                        "bounced",
+                        "unsubscribed",
+                        "lastDeliveredAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "lead",
+                    "email"
+                  ]
+                },
+                "brand": {
+                  "type": "object",
                   "properties": {
                     "lead": {
                       "type": "object",
@@ -701,61 +763,23 @@
                 "global": {
                   "type": "object",
                   "properties": {
-                    "lead": {
-                      "type": "object",
-                      "properties": {
-                        "contacted": {
-                          "type": "boolean"
-                        },
-                        "delivered": {
-                          "type": "boolean"
-                        },
-                        "replied": {
-                          "type": "boolean"
-                        },
-                        "lastDeliveredAt": {
-                          "type": "string",
-                          "nullable": true
-                        }
-                      },
-                      "required": [
-                        "contacted",
-                        "delivered",
-                        "replied",
-                        "lastDeliveredAt"
-                      ]
-                    },
                     "email": {
                       "type": "object",
                       "properties": {
-                        "contacted": {
-                          "type": "boolean"
-                        },
-                        "delivered": {
-                          "type": "boolean"
-                        },
                         "bounced": {
                           "type": "boolean"
                         },
                         "unsubscribed": {
                           "type": "boolean"
-                        },
-                        "lastDeliveredAt": {
-                          "type": "string",
-                          "nullable": true
                         }
                       },
                       "required": [
-                        "contacted",
-                        "delivered",
                         "bounced",
-                        "unsubscribed",
-                        "lastDeliveredAt"
+                        "unsubscribed"
                       ]
                     }
                   },
                   "required": [
-                    "lead",
                     "email"
                   ]
                 }
@@ -764,6 +788,7 @@
                 "leadId",
                 "email",
                 "campaign",
+                "brand",
                 "global"
               ]
             }
@@ -776,9 +801,13 @@
       "StatusRequest": {
         "type": "object",
         "properties": {
+          "brandId": {
+            "type": "string",
+            "description": "Brand ID to scope brand-level results"
+          },
           "campaignId": {
             "type": "string",
-            "description": "Campaign ID to scope the campaign-level results"
+            "description": "Campaign ID to scope campaign-level results (omit for global-only checks)"
           },
           "items": {
             "type": "array",
@@ -804,7 +833,7 @@
           }
         },
         "required": [
-          "campaignId",
+          "brandId",
           "items"
         ]
       }
@@ -1450,7 +1479,7 @@
     "/status": {
       "post": {
         "summary": "Batch delivery status check for leads/emails",
-        "description": "Returns campaign-scoped and global (cross-campaign) delivery status for each lead/email pair. Campaign-scoped filters by the given campaignId; global aggregates across all campaigns.",
+        "description": "Returns campaign-scoped, brand-scoped, and global delivery status for each lead/email pair. Campaign filters by campaignId (null if omitted); brand filters by brandId; global aggregates across everything.",
         "requestBody": {
           "content": {
             "application/json": {

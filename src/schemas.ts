@@ -641,7 +641,11 @@ const StatusItemSchema = z.object({
 
 export const StatusRequestSchema = z
   .object({
-    campaignId: z.string().describe("Campaign ID to scope the campaign-level results"),
+    brandId: z.string().describe("Brand ID to scope brand-level results"),
+    campaignId: z
+      .string()
+      .optional()
+      .describe("Campaign ID to scope campaign-level results (omit for global-only checks)"),
     items: z
       .array(StatusItemSchema)
       .min(1)
@@ -658,7 +662,7 @@ const LeadStatusSchema = z.object({
   lastDeliveredAt: z.string().nullable(),
 });
 
-const EmailStatusSchema = z.object({
+const ScopedEmailStatusSchema = z.object({
   contacted: z.boolean(),
   delivered: z.boolean(),
   bounced: z.boolean(),
@@ -668,14 +672,24 @@ const EmailStatusSchema = z.object({
 
 const ScopedStatusSchema = z.object({
   lead: LeadStatusSchema,
-  email: EmailStatusSchema,
+  email: ScopedEmailStatusSchema,
+});
+
+const GlobalEmailStatusSchema = z.object({
+  bounced: z.boolean(),
+  unsubscribed: z.boolean(),
+});
+
+const GlobalStatusSchema = z.object({
+  email: GlobalEmailStatusSchema,
 });
 
 const StatusResultSchema = z.object({
   leadId: z.string(),
   email: z.string(),
-  campaign: ScopedStatusSchema,
-  global: ScopedStatusSchema,
+  campaign: ScopedStatusSchema.nullable(),
+  brand: ScopedStatusSchema,
+  global: GlobalStatusSchema,
 });
 
 const StatusResponseSchema = z
@@ -689,9 +703,9 @@ registry.registerPath({
   path: "/status",
   summary: "Batch delivery status check for leads/emails",
   description:
-    "Returns campaign-scoped and global (cross-campaign) delivery status " +
-    "for each lead/email pair. Campaign-scoped filters by the given campaignId; " +
-    "global aggregates across all campaigns.",
+    "Returns campaign-scoped, brand-scoped, and global delivery status " +
+    "for each lead/email pair. Campaign filters by campaignId (null if omitted); " +
+    "brand filters by brandId; global aggregates across everything.",
   request: {
     body: {
       content: { "application/json": { schema: StatusRequestSchema } },
