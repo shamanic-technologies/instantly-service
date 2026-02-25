@@ -42,6 +42,29 @@
           "service"
         ]
       },
+      "WebhookConfigResponse": {
+        "type": "object",
+        "properties": {
+          "webhookUrl": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "webhookUrl"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
       "WebhookResponse": {
         "type": "object",
         "properties": {
@@ -55,17 +78,6 @@
         "required": [
           "success",
           "eventType"
-        ]
-      },
-      "Error": {
-        "type": "object",
-        "properties": {
-          "error": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "error"
         ]
       },
       "WebhookPayload": {
@@ -875,9 +887,38 @@
         }
       }
     },
+    "/webhooks/instantly/config": {
+      "get": {
+        "summary": "Get webhook URL for BYOK configuration",
+        "description": "Returns the webhook URL that BYOK customers should paste into their Instantly dashboard webhook settings.",
+        "responses": {
+          "200": {
+            "description": "Webhook configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookConfigResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "WEBHOOK_BASE_URL not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/webhooks/instantly": {
       "post": {
         "summary": "Receive Instantly webhook events",
+        "description": "Verification: the campaign_id in the payload must exist in the database. Each campaign UUID is unguessable and stored with its org on creation.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -899,7 +940,7 @@
             }
           },
           "400": {
-            "description": "Missing event_type",
+            "description": "Missing event_type or campaign_id",
             "content": {
               "application/json": {
                 "schema": {
@@ -909,7 +950,7 @@
             }
           },
           "401": {
-            "description": "Invalid webhook secret",
+            "description": "Unknown campaign_id",
             "content": {
               "application/json": {
                 "schema": {

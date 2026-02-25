@@ -29,10 +29,18 @@ vi.mock("../../src/db/schema", () => ({
 }));
 
 // Mock key-client
-const mockDecryptAppKey = vi.fn();
+const mockResolveInstantlyApiKey = vi.fn();
 
 vi.mock("../../src/lib/key-client", () => ({
-  decryptAppKey: (...args: unknown[]) => mockDecryptAppKey(...args),
+  resolveInstantlyApiKey: (...args: unknown[]) => mockResolveInstantlyApiKey(...args),
+  KeyServiceError: class KeyServiceError extends Error {
+    statusCode: number;
+    constructor(statusCode: number, message: string) {
+      super(message);
+      this.name = "KeyServiceError";
+      this.statusCode = statusCode;
+    }
+  },
 }));
 
 // Mock instantly-client
@@ -193,7 +201,7 @@ describe("POST /send", () => {
     vi.clearAllMocks();
     runCounter = 0;
 
-    mockDecryptAppKey.mockResolvedValue("test-instantly-key");
+    mockResolveInstantlyApiKey.mockResolvedValue("test-instantly-key");
 
     mockCreateRun.mockImplementation(() => {
       runCounter++;

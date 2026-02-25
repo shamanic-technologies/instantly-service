@@ -23,7 +23,7 @@ import {
   updateRun,
   addCosts,
 } from "../lib/runs-client";
-import { decryptAppKey } from "../lib/key-client";
+import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { SendRequestSchema } from "../schemas";
 
 const router = Router();
@@ -204,8 +204,8 @@ router.post("/", async (req: Request, res: Response) => {
   console.log(`[send] POST /send to=${body.to} campaignId=${body.campaignId} subject="${body.subject}" steps=${body.sequence.length}`);
 
   try {
-    // 0. Decrypt Instantly API key from key-service
-    const apiKey = await decryptAppKey("instantly", "instantly-service", {
+    // 0. Resolve Instantly API key (BYOK per-org or shared app key)
+    const apiKey = await resolveInstantlyApiKey(body.orgId, {
       method: "POST",
       path: "/send",
     });
@@ -375,6 +375,12 @@ router.post("/", async (req: Request, res: Response) => {
       throw error;
     }
   } catch (error: any) {
+    if (error instanceof KeyServiceError && error.statusCode === 404) {
+      return res.status(422).json({
+        error: "BYOK key not configured for this organization",
+        details: "Please configure your Instantly API key before sending emails.",
+      });
+    }
     console.error(`[send] Failed to send — to=${body.to} error="${error.message}"`);
     res.status(500).json({
       error: "Failed to send email",

@@ -63,10 +63,18 @@ vi.mock("../../src/lib/runs-client", () => ({
 }));
 
 // Mock key-client
-const mockDecryptAppKey = vi.fn();
+const mockResolveInstantlyApiKey = vi.fn();
 
 vi.mock("../../src/lib/key-client", () => ({
-  decryptAppKey: (...args: unknown[]) => mockDecryptAppKey(...args),
+  resolveInstantlyApiKey: (...args: unknown[]) => mockResolveInstantlyApiKey(...args),
+  KeyServiceError: class KeyServiceError extends Error {
+    statusCode: number;
+    constructor(statusCode: number, message: string) {
+      super(message);
+      this.name = "KeyServiceError";
+      this.statusCode = statusCode;
+    }
+  },
 }));
 
 // Mock email-client
@@ -87,7 +95,7 @@ async function createCampaignsApp() {
 describe("POST /campaigns/check-status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDecryptAppKey.mockResolvedValue("test-instantly-key");
+    mockResolveInstantlyApiKey.mockResolvedValue("test-instantly-key");
     mockUpdateRun.mockResolvedValue({});
     mockUpdateCostStatus.mockResolvedValue({});
     mockSendEmail.mockResolvedValue({});
@@ -113,6 +121,7 @@ describe("POST /campaigns/check-status", () => {
         leadEmail: "lead@test.com",
         instantlyCampaignId: "inst-1",
         status: "active",
+        clerkOrgId: "org-1",
         runId: "run-1",
         metadata: null,
       },
@@ -161,6 +170,7 @@ describe("POST /campaigns/check-status", () => {
         leadEmail: "lead@test.com",
         instantlyCampaignId: "inst-1",
         status: "active",
+        clerkOrgId: "org-1",
         runId: "run-1",
       },
     ]);
@@ -187,6 +197,7 @@ describe("POST /campaigns/check-status", () => {
         leadEmail: "lead1@test.com",
         instantlyCampaignId: "inst-1",
         status: "active",
+        clerkOrgId: "org-1",
         runId: "run-1",
       },
       {
@@ -195,6 +206,7 @@ describe("POST /campaigns/check-status", () => {
         leadEmail: "lead2@test.com",
         instantlyCampaignId: "inst-2",
         status: "active",
+        clerkOrgId: "org-1",
         runId: "run-2",
       },
     ]);
