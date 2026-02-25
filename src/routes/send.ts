@@ -23,6 +23,7 @@ import {
   updateRun,
   addCosts,
 } from "../lib/runs-client";
+import { decryptAppKey } from "../lib/key-client";
 import { SendRequestSchema } from "../schemas";
 
 const router = Router();
@@ -124,13 +125,14 @@ async function findExistingCampaign(campaignId: string, leadEmail: string) {
  * Returns the instantlyCampaignId on success, or null if not_sending_status detected.
  */
 async function tryCreateAndActivateCampaign(
+  apiKey: string,
   campaignId: string,
   account: Account,
   steps: SequenceStep[],
   lead: Lead,
 ): Promise<{ instantlyCampaignId: string; added: number } | null> {
   console.log(`[send] Creating new Instantly campaign for ${campaignId} with account ${account.email}`);
-  const instantlyCampaign = await createInstantlyCampaign({
+  const instantlyCampaign = await createInstantlyCampaign(apiKey, {
     name: `Campaign ${campaignId}`,
     steps,
   });
@@ -138,7 +140,7 @@ async function tryCreateAndActivateCampaign(
 
   // Assign the selected account via PATCH
   console.log(`[send] Assigning account ${account.email} to campaign ${instantlyCampaign.id}`);
-  await updateInstantlyCampaign(instantlyCampaign.id, {
+  await updateInstantlyCampaign(apiKey, instantlyCampaign.id, {
     email_list: [account.email],
     bcc_list: ["kevin@mcpfactory.org"],
     open_tracking: true,
@@ -148,12 +150,12 @@ async function tryCreateAndActivateCampaign(
   });
 
   // Verify accounts were assigned
-  const verified = await getInstantlyCampaign(instantlyCampaign.id) as unknown as Record<string, unknown>;
+  const verified = await getInstantlyCampaign(apiKey, instantlyCampaign.id) as unknown as Record<string, unknown>;
   console.log(`[send] Verify after PATCH — email_list=${JSON.stringify(verified.email_list)} not_sending_status=${JSON.stringify(verified.not_sending_status)}`);
 
   // Add lead
   console.log(`[send] Adding lead ${lead.email} to instantly campaign ${instantlyCampaign.id}`);
-  const result = await addInstantlyLeads({
+  const result = await addInstantlyLeads(apiKey, {
     campaign_id: instantlyCampaign.id,
     leads: [lead],
   });
@@ -161,10 +163,10 @@ async function tryCreateAndActivateCampaign(
 
   // Activate
   console.log(`[send] Activating campaign ${instantlyCampaign.id}`);
-  await updateCampaignStatus(instantlyCampaign.id, "active");
+  await updateCampaignStatus(apiKey, instantlyCampaign.id, "active");
 
   // Verify post-activation
-  const postActivate = await getInstantlyCampaign(instantlyCampaign.id) as unknown as Record<string, unknown>;
+  const postActivate = await getInstantlyCampaign(apiKey, instantlyCampaign.id) as unknown as Record<string, unknown>;
   console.log(`[send] Post-activate — status=${postActivate.status} email_list=${JSON.stringify(postActivate.email_list)} not_sending_status=${JSON.stringify(postActivate.not_sending_status)}`);
 
   if (postActivate.not_sending_status) {
@@ -202,6 +204,12 @@ router.post("/", async (req: Request, res: Response) => {
   console.log(`[send] POST /send to=${body.to} campaignId=${body.campaignId} subject="${body.subject}" steps=${body.sequence.length}`);
 
   try {
+    // 0. Decrypt Instantly API key from key-service
+    const apiKey = await decryptAppKey("instantly", "instantly-service", {
+      method: "POST",
+      path: "/send",
+    });
+
     // 1. Get or create organization (only if orgId provided)
     let organizationId: string | null = null;
     if (body.orgId) {
@@ -213,7 +221,7 @@ router.post("/", async (req: Request, res: Response) => {
 
     try {
       // 3. Check available accounts
-      const accounts = await listAccounts();
+      const accounts = await listAccounts(apiKey);
       if (accounts.length === 0) {
         throw new Error("No email accounts available — cannot create campaign");
       }
@@ -247,7 +255,7 @@ router.post("/", async (req: Request, res: Response) => {
           const steps = buildSequenceSteps(body.subject, sortedSequence, account);
 
           console.log(`[send] Attempt ${attempt}/${MAX_SEND_RETRIES} for ${body.campaignId}/${body.to} with account ${account.email}`);
-          result = await tryCreateAndActivateCampaign(body.campaignId, account, steps, lead);
+          result = await tryCreateAndActivateCampaign(apiKey, body.campaignId, account, steps, lead);
 
           if (result) {
             break;

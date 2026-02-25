@@ -13,6 +13,7 @@ import {
   updateRun,
   addCosts,
 } from "../lib/runs-client";
+import { decryptAppKey } from "../lib/key-client";
 import { AddLeadsRequestSchema, DeleteLeadsRequestSchema } from "../schemas";
 
 const router = Router();
@@ -34,6 +35,12 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
   const body = parsed.data;
 
   try {
+    // Decrypt Instantly API key from key-service
+    const apiKey = await decryptAppKey("instantly", "instantly-service", {
+      method: "POST",
+      path: "/campaigns/:campaignId/leads",
+    });
+
     // Get campaign (look up by id or campaignId column)
     const [campaign] = await db
       .select()
@@ -69,7 +76,7 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
         variables: l.customVariables,
       }));
 
-      const result = await addInstantlyLeads({
+      const result = await addInstantlyLeads(apiKey, {
         campaign_id: campaign.instantlyCampaignId,
         leads: instantlyLeadsList,
       });
@@ -166,6 +173,12 @@ router.delete("/:campaignId/leads", async (req: Request, res: Response) => {
   const { emails } = parsed.data;
 
   try {
+    // Decrypt Instantly API key from key-service
+    const apiKey = await decryptAppKey("instantly", "instantly-service", {
+      method: "DELETE",
+      path: "/campaigns/:campaignId/leads",
+    });
+
     const [campaign] = await db
       .select()
       .from(instantlyCampaigns)
@@ -181,7 +194,7 @@ router.delete("/:campaignId/leads", async (req: Request, res: Response) => {
     }
 
     // Delete from Instantly
-    const result = await deleteInstantlyLeads(campaign.instantlyCampaignId, emails);
+    const result = await deleteInstantlyLeads(apiKey, campaign.instantlyCampaignId, emails);
 
     // Delete from DB
     for (const email of emails) {

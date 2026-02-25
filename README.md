@@ -75,7 +75,7 @@ npm run dev
 ## Environment Variables
 
 - `INSTANTLY_SERVICE_DATABASE_URL` - PostgreSQL connection string
-- `INSTANTLY_API_KEY` - Instantly.ai API key
+- `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` - Key service for API key decryption
 - `INSTANTLY_SERVICE_API_KEY` - Service-to-service auth secret
 - `RUNS_SERVICE_URL` / `RUNS_SERVICE_API_KEY` - Runs service integration
 - `PORT` - Server port (default: 3011)

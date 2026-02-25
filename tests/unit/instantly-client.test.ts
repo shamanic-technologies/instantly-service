@@ -4,8 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
-// Set API key for tests
-process.env.INSTANTLY_API_KEY = "test-api-key";
+const TEST_API_KEY = "test-api-key";
 
 describe("instantly-client", () => {
   beforeEach(() => {
@@ -45,7 +44,7 @@ describe("instantly-client", () => {
     });
 
     const { createCampaign } = await import("../../src/lib/instantly-client");
-    await createCampaign({
+    await createCampaign(TEST_API_KEY, {
       name: "Test Campaign",
       steps: [
         { subject: "Hello", bodyHtml: "<p>First</p>", daysSinceLastStep: 0 },
@@ -77,6 +76,9 @@ describe("instantly-client", () => {
     // Should NOT include account_ids or bcc (V2 ignores them in create)
     expect(body.account_ids).toBeUndefined();
     expect(body.bcc).toBeUndefined();
+
+    // Should use the provided API key
+    expect(options.headers.Authorization).toBe(`Bearer ${TEST_API_KEY}`);
   });
 
   it("createCampaign should correctly shift delays for 3-step sequences", async () => {
@@ -87,7 +89,7 @@ describe("instantly-client", () => {
     });
 
     const { createCampaign } = await import("../../src/lib/instantly-client");
-    await createCampaign({
+    await createCampaign(TEST_API_KEY, {
       name: "Test Campaign",
       steps: [
         { subject: "Hello", bodyHtml: "<p>First</p>", daysSinceLastStep: 0 },
@@ -116,7 +118,7 @@ describe("instantly-client", () => {
     });
 
     const { createCampaign } = await import("../../src/lib/instantly-client");
-    await createCampaign({
+    await createCampaign(TEST_API_KEY, {
       name: "Test Campaign",
       steps: [
         { subject: "Hello", bodyHtml: "<p>Only email</p>", daysSinceLastStep: 0 },
@@ -136,7 +138,7 @@ describe("instantly-client", () => {
     });
 
     const { updateCampaign } = await import("../../src/lib/instantly-client");
-    await updateCampaign("camp-1", {
+    await updateCampaign(TEST_API_KEY, "camp-1", {
       email_list: ["sender@example.com"],
       bcc_list: ["kevin@mcpfactory.org"],
       stop_on_reply: true,
@@ -160,7 +162,7 @@ describe("instantly-client", () => {
     });
 
     const { addLeads } = await import("../../src/lib/instantly-client");
-    await addLeads({
+    await addLeads(TEST_API_KEY, {
       campaign_id: "camp-123",
       leads: [{ email: "test@example.com", first_name: "Test" }],
     });
@@ -180,7 +182,7 @@ describe("instantly-client", () => {
     });
 
     const { updateCampaignStatus } = await import("../../src/lib/instantly-client");
-    await updateCampaignStatus("camp-1", "active");
+    await updateCampaignStatus(TEST_API_KEY, "camp-1", "active");
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const [url, options] = mockFetch.mock.calls[0];

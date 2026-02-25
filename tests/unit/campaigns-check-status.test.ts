@@ -62,6 +62,13 @@ vi.mock("../../src/lib/runs-client", () => ({
   updateCostStatus: (...args: unknown[]) => mockUpdateCostStatus(...args),
 }));
 
+// Mock key-client
+const mockDecryptAppKey = vi.fn();
+
+vi.mock("../../src/lib/key-client", () => ({
+  decryptAppKey: (...args: unknown[]) => mockDecryptAppKey(...args),
+}));
+
 // Mock email-client
 const mockSendEmail = vi.fn();
 
@@ -80,6 +87,7 @@ async function createCampaignsApp() {
 describe("POST /campaigns/check-status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDecryptAppKey.mockResolvedValue("test-instantly-key");
     mockUpdateRun.mockResolvedValue({});
     mockUpdateCostStatus.mockResolvedValue({});
     mockSendEmail.mockResolvedValue({});

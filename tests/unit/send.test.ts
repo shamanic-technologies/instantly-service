@@ -28,6 +28,13 @@ vi.mock("../../src/db/schema", () => ({
   sequenceCosts: {},
 }));
 
+// Mock key-client
+const mockDecryptAppKey = vi.fn();
+
+vi.mock("../../src/lib/key-client", () => ({
+  decryptAppKey: (...args: unknown[]) => mockDecryptAppKey(...args),
+}));
+
 // Mock instantly-client
 const mockAddLeads = vi.fn();
 const mockUpdateCampaignStatus = vi.fn();
@@ -186,6 +193,8 @@ describe("POST /send", () => {
     vi.clearAllMocks();
     runCounter = 0;
 
+    mockDecryptAppKey.mockResolvedValue("test-instantly-key");
+
     mockCreateRun.mockImplementation(() => {
       runCounter++;
       return Promise.resolve({ id: `step-run-${runCounter}` });
@@ -224,14 +233,17 @@ describe("POST /send", () => {
 
     await request(app).post("/send").send(validBody);
 
-    expect(mockCreateCampaign).toHaveBeenCalledWith({
-      name: "Campaign camp-1",
-      steps: expect.arrayContaining([
-        expect.objectContaining({ subject: "Hello", daysSinceLastStep: 0 }),
-        expect.objectContaining({ subject: "Hello", daysSinceLastStep: 3 }),
-        expect.objectContaining({ subject: "Hello", daysSinceLastStep: 7 }),
-      ]),
-    });
+    expect(mockCreateCampaign).toHaveBeenCalledWith(
+      "test-instantly-key",
+      {
+        name: "Campaign camp-1",
+        steps: expect.arrayContaining([
+          expect.objectContaining({ subject: "Hello", daysSinceLastStep: 0 }),
+          expect.objectContaining({ subject: "Hello", daysSinceLastStep: 3 }),
+          expect.objectContaining({ subject: "Hello", daysSinceLastStep: 7 }),
+        ]),
+      },
+    );
   });
 
   it("should inject signature into all step bodies", async () => {
@@ -240,7 +252,8 @@ describe("POST /send", () => {
 
     await request(app).post("/send").send(validBody);
 
-    const createCall = mockCreateCampaign.mock.calls[0][0];
+    // [0] = apiKey, [1] = params
+    const createCall = mockCreateCampaign.mock.calls[0][1];
     for (const step of createCall.steps) {
       expect(step.bodyHtml).toContain("<p>Best,<br>Sender</p>");
     }
@@ -253,6 +266,7 @@ describe("POST /send", () => {
     await request(app).post("/send").send(validBody);
 
     expect(mockUpdateCampaign).toHaveBeenCalledWith(
+      "test-instantly-key",
       "inst-camp-new",
       expect.objectContaining({
         stop_on_reply: true,
@@ -400,8 +414,9 @@ describe("POST /send", () => {
     expect(res2.status).toBe(200);
 
     expect(mockCreateCampaign).toHaveBeenCalledTimes(2);
-    const call1 = mockCreateCampaign.mock.calls[0][0];
-    const call2 = mockCreateCampaign.mock.calls[1][0];
+    // [0] = apiKey, [1] = params
+    const call1 = mockCreateCampaign.mock.calls[0][1];
+    const call2 = mockCreateCampaign.mock.calls[1][1];
     expect(call1.steps[0].bodyHtml).toContain("Hi Alice");
     expect(call2.steps[0].bodyHtml).toContain("Hi Bob");
   });
