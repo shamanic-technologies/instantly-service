@@ -407,18 +407,18 @@ describe("POST /webhooks/instantly", () => {
 });
 
 describe("GET /webhooks/instantly/config", () => {
-  const originalWebhookBaseUrl = process.env.WEBHOOK_BASE_URL;
+  const originalDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
 
   afterEach(() => {
-    if (originalWebhookBaseUrl !== undefined) {
-      process.env.WEBHOOK_BASE_URL = originalWebhookBaseUrl;
+    if (originalDomain !== undefined) {
+      process.env.RAILWAY_PUBLIC_DOMAIN = originalDomain;
     } else {
-      delete process.env.WEBHOOK_BASE_URL;
+      delete process.env.RAILWAY_PUBLIC_DOMAIN;
     }
   });
 
-  it("should return webhookUrl when WEBHOOK_BASE_URL is configured", async () => {
-    process.env.WEBHOOK_BASE_URL = "https://instantly-service.up.railway.app";
+  it("should return webhookUrl from RAILWAY_PUBLIC_DOMAIN", async () => {
+    process.env.RAILWAY_PUBLIC_DOMAIN = "instantly-service.up.railway.app";
 
     const app = await createWebhookApp();
 
@@ -430,14 +430,14 @@ describe("GET /webhooks/instantly/config", () => {
     );
   });
 
-  it("should return 500 when WEBHOOK_BASE_URL is not configured", async () => {
-    delete process.env.WEBHOOK_BASE_URL;
+  it("should return 500 when RAILWAY_PUBLIC_DOMAIN is not available", async () => {
+    delete process.env.RAILWAY_PUBLIC_DOMAIN;
 
     const app = await createWebhookApp();
 
     const res = await request(app).get("/webhooks/instantly/config");
 
     expect(res.status).toBe(500);
-    expect(res.body.error).toBe("WEBHOOK_BASE_URL not configured");
+    expect(res.body.error).toBe("RAILWAY_PUBLIC_DOMAIN not available");
   });
 });
