@@ -407,18 +407,18 @@ describe("POST /webhooks/instantly", () => {
 });
 
 describe("GET /webhooks/instantly/config", () => {
-  const originalDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
+  const originalDomain = process.env.INSTANTLY_SERVICE_URL;
 
   afterEach(() => {
     if (originalDomain !== undefined) {
-      process.env.RAILWAY_PUBLIC_DOMAIN = originalDomain;
+      process.env.INSTANTLY_SERVICE_URL = originalDomain;
     } else {
-      delete process.env.RAILWAY_PUBLIC_DOMAIN;
+      delete process.env.INSTANTLY_SERVICE_URL;
     }
   });
 
-  it("should return webhookUrl from RAILWAY_PUBLIC_DOMAIN", async () => {
-    process.env.RAILWAY_PUBLIC_DOMAIN = "instantly-service.up.railway.app";
+  it("should return webhookUrl from INSTANTLY_SERVICE_URL", async () => {
+    process.env.INSTANTLY_SERVICE_URL = "https://instantly.mcpfactory.org";
 
     const app = await createWebhookApp();
 
@@ -426,18 +426,18 @@ describe("GET /webhooks/instantly/config", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.webhookUrl).toBe(
-      "https://instantly-service.up.railway.app/webhooks/instantly",
+      "https://instantly.mcpfactory.org/webhooks/instantly",
     );
   });
 
-  it("should return 500 when RAILWAY_PUBLIC_DOMAIN is not available", async () => {
-    delete process.env.RAILWAY_PUBLIC_DOMAIN;
+  it("should return 500 when INSTANTLY_SERVICE_URL is not available", async () => {
+    delete process.env.INSTANTLY_SERVICE_URL;
 
     const app = await createWebhookApp();
 
     const res = await request(app).get("/webhooks/instantly/config");
 
     expect(res.status).toBe(500);
-    expect(res.body.error).toBe("RAILWAY_PUBLIC_DOMAIN not available");
+    expect(res.body.error).toBe("INSTANTLY_SERVICE_URL not configured");
   });
 });
