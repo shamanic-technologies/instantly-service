@@ -86,7 +86,6 @@ Webhook verification uses `campaign_id` DB lookup (each campaign UUID is unguess
 - `INSTANTLY_SERVICE_DATABASE_URL` - PostgreSQL connection string
 - `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` - Key service for API key decryption
 - `INSTANTLY_SERVICE_API_KEY` - Service-to-service auth secret
-- `WEBHOOK_BASE_URL` - Public base URL for webhook config endpoint
 - `RUNS_SERVICE_URL` / `RUNS_SERVICE_API_KEY` - Runs service integration
 - `PORT` - Server port (default: 3011)
 
