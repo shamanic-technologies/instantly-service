@@ -77,10 +77,37 @@ const WebhookResponseSchema = z
   })
   .openapi("WebhookResponse");
 
+const WebhookConfigResponseSchema = z
+  .object({
+    webhookUrl: z.string().url(),
+  })
+  .openapi("WebhookConfigResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/webhooks/instantly/config",
+  summary: "Get webhook URL for BYOK configuration",
+  description:
+    "Returns the webhook URL that BYOK customers should paste into their Instantly dashboard webhook settings.",
+  responses: {
+    200: {
+      description: "Webhook configuration",
+      content: { "application/json": { schema: WebhookConfigResponseSchema } },
+    },
+    500: {
+      description: "WEBHOOK_BASE_URL not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/webhooks/instantly",
   summary: "Receive Instantly webhook events",
+  description:
+    "Verification: the campaign_id in the payload must exist in the database. " +
+    "Each campaign UUID is unguessable and stored with its org on creation.",
   request: {
     body: {
       content: { "application/json": { schema: WebhookPayloadSchema } },
@@ -92,11 +119,11 @@ registry.registerPath({
       content: { "application/json": { schema: WebhookResponseSchema } },
     },
     400: {
-      description: "Missing event_type",
+      description: "Missing event_type or campaign_id",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {
-      description: "Invalid webhook secret",
+      description: "Unknown campaign_id",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },

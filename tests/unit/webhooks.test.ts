@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
 import express from "express";
 
@@ -38,14 +38,20 @@ vi.mock("../../src/lib/runs-client", () => ({
   updateRun: (...args: unknown[]) => mockUpdateRun(...args),
 }));
 
-process.env.INSTANTLY_WEBHOOK_SECRET = "test-secret";
-
 async function createWebhookApp() {
   const webhooksRouter = (await import("../../src/routes/webhooks")).default;
   const app = express();
   app.use(express.json());
   app.use("/webhooks", webhooksRouter);
   return app;
+}
+
+/** Verification mock — returns a campaign for the campaign_id DB lookup */
+function mockVerification(campaignId = "inst-camp-1") {
+  mockDbSelect.mockResolvedValueOnce([{
+    id: "camp-db-1",
+    instantlyCampaignId: campaignId,
+  }]);
 }
 
 describe("POST /webhooks/instantly", () => {
@@ -56,32 +62,53 @@ describe("POST /webhooks/instantly", () => {
     mockUpdateRun.mockResolvedValue({});
   });
 
-  it("should reject requests without valid secret", async () => {
+  // ─── Verification tests ──────────────────────────────────────────────────
+
+  it("should reject requests without campaign_id", async () => {
     const app = await createWebhookApp();
 
     const res = await request(app)
       .post("/webhooks/instantly")
       .send({ event_type: "email_sent" });
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing campaign_id");
   });
 
-  it("should accept secret in query param", async () => {
+  it("should reject requests with unknown campaign_id", async () => {
+    // Default mockDbSelect returns [] → campaign not found
     const app = await createWebhookApp();
 
     const res = await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
-      .send({ event_type: "email_sent" });
+      .post("/webhooks/instantly")
+      .send({ event_type: "email_sent", campaign_id: "unknown-camp" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("Unknown campaign_id");
+  });
+
+  it("should accept webhook with valid campaign_id", async () => {
+    mockVerification("inst-camp-1");
+
+    const app = await createWebhookApp();
+
+    const res = await request(app)
+      .post("/webhooks/instantly")
+      .send({ event_type: "email_sent", campaign_id: "inst-camp-1" });
 
     expect(res.status).toBe(200);
     expect(res.body.eventType).toBe("email_sent");
   });
 
+  // ─── Event recording tests ───────────────────────────────────────────────
+
   it("should store step and variant from webhook payload", async () => {
+    mockVerification("camp-1");
+
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "email_sent",
         campaign_id: "camp-1",
@@ -100,13 +127,17 @@ describe("POST /webhooks/instantly", () => {
     );
   });
 
+  // ─── Cost lifecycle tests ────────────────────────────────────────────────
+
   it("should convert provisioned cost to actual on email_sent for step > 1", async () => {
-    // Mock: find the campaign
+    // Mock: verification lookup
+    mockVerification("inst-camp-1");
+    // Mock: handleFollowUpSent → find the campaign
     mockDbSelect.mockResolvedValueOnce([{
       campaignId: "camp-1",
       instantlyCampaignId: "inst-camp-1",
     }]);
-    // Mock: find the provisioned cost for this step
+    // Mock: handleFollowUpSent → find the provisioned cost for this step
     mockDbSelect.mockResolvedValueOnce([{
       id: "sc-1",
       campaignId: "camp-1",
@@ -120,7 +151,7 @@ describe("POST /webhooks/instantly", () => {
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "email_sent",
         campaign_id: "inst-camp-1",
@@ -133,10 +164,12 @@ describe("POST /webhooks/instantly", () => {
   });
 
   it("should NOT convert cost on email_sent for step 1 (already actual)", async () => {
+    mockVerification("inst-camp-1");
+
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "email_sent",
         campaign_id: "inst-camp-1",
@@ -148,12 +181,14 @@ describe("POST /webhooks/instantly", () => {
   });
 
   it("should cancel remaining provisions and fail step runs on reply_received", async () => {
-    // Mock: find the campaign
+    // Mock: verification lookup
+    mockVerification("inst-camp-1");
+    // Mock: cancelRemainingProvisions → find the campaign
     mockDbSelect.mockResolvedValueOnce([{
       campaignId: "camp-1",
       instantlyCampaignId: "inst-camp-1",
     }]);
-    // Mock: find remaining provisioned costs (distinct runIds per step)
+    // Mock: cancelRemainingProvisions → find remaining provisioned costs
     mockDbSelect.mockResolvedValueOnce([
       { id: "sc-2", step: 2, runId: "step-run-2", costId: "cost-2", status: "provisioned" },
       { id: "sc-3", step: 3, runId: "step-run-3", costId: "cost-3", status: "provisioned" },
@@ -162,7 +197,7 @@ describe("POST /webhooks/instantly", () => {
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "reply_received",
         campaign_id: "inst-camp-1",
@@ -178,6 +213,7 @@ describe("POST /webhooks/instantly", () => {
   });
 
   it("should cancel provisions and fail step run on email_bounced", async () => {
+    mockVerification("inst-camp-1");
     mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
     mockDbSelect.mockResolvedValueOnce([
       { id: "sc-2", step: 2, runId: "step-run-2", costId: "cost-2", status: "provisioned" },
@@ -186,7 +222,7 @@ describe("POST /webhooks/instantly", () => {
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "email_bounced",
         campaign_id: "inst-camp-1",
@@ -198,6 +234,7 @@ describe("POST /webhooks/instantly", () => {
   });
 
   it("should cancel provisions and fail step run on lead_unsubscribed", async () => {
+    mockVerification("inst-camp-1");
     mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
     mockDbSelect.mockResolvedValueOnce([
       { id: "sc-2", step: 2, runId: "step-run-2", costId: "cost-2", status: "provisioned" },
@@ -206,7 +243,7 @@ describe("POST /webhooks/instantly", () => {
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "lead_unsubscribed",
         campaign_id: "inst-camp-1",
@@ -218,10 +255,12 @@ describe("POST /webhooks/instantly", () => {
   });
 
   it("should NOT cancel provisions on auto_reply_received (sequence continues)", async () => {
+    mockVerification("inst-camp-1");
+
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "auto_reply_received",
         campaign_id: "inst-camp-1",
@@ -232,10 +271,12 @@ describe("POST /webhooks/instantly", () => {
   });
 
   it("should NOT cancel provisions on lead_out_of_office (sequence continues)", async () => {
+    mockVerification("inst-camp-1");
+
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "lead_out_of_office",
         campaign_id: "inst-camp-1",
@@ -245,11 +286,15 @@ describe("POST /webhooks/instantly", () => {
     expect(mockUpdateCostStatus).not.toHaveBeenCalled();
   });
 
+  // ─── Delivery status tests ───────────────────────────────────────────────
+
   it("should update deliveryStatus to 'sent' on email_sent", async () => {
+    mockVerification("inst-camp-1");
+
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "email_sent",
         campaign_id: "inst-camp-1",
@@ -263,13 +308,14 @@ describe("POST /webhooks/instantly", () => {
   });
 
   it("should update deliveryStatus to 'replied' on reply_received", async () => {
+    mockVerification("inst-camp-1");
     mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
     mockDbSelect.mockResolvedValueOnce([]);
 
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "reply_received",
         campaign_id: "inst-camp-1",
@@ -282,13 +328,14 @@ describe("POST /webhooks/instantly", () => {
   });
 
   it("should update deliveryStatus to 'bounced' on email_bounced", async () => {
+    mockVerification("inst-camp-1");
     mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
     mockDbSelect.mockResolvedValueOnce([]);
 
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "email_bounced",
         campaign_id: "inst-camp-1",
@@ -301,13 +348,14 @@ describe("POST /webhooks/instantly", () => {
   });
 
   it("should update deliveryStatus to 'unsubscribed' on lead_unsubscribed", async () => {
+    mockVerification("inst-camp-1");
     mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
     mockDbSelect.mockResolvedValueOnce([]);
 
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "lead_unsubscribed",
         campaign_id: "inst-camp-1",
@@ -320,10 +368,12 @@ describe("POST /webhooks/instantly", () => {
   });
 
   it("should update deliveryStatus to 'delivered' on campaign_completed", async () => {
+    mockVerification("inst-camp-1");
+
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "campaign_completed",
         campaign_id: "inst-camp-1",
@@ -336,10 +386,12 @@ describe("POST /webhooks/instantly", () => {
   });
 
   it("should NOT update deliveryStatus for unknown event types", async () => {
+    mockVerification("inst-camp-1");
+
     const app = await createWebhookApp();
 
     await request(app)
-      .post("/webhooks/instantly?secret=test-secret")
+      .post("/webhooks/instantly")
       .send({
         event_type: "auto_reply_received",
         campaign_id: "inst-camp-1",
@@ -351,5 +403,41 @@ describe("POST /webhooks/instantly", () => {
       ([v]: [any]) => v.deliveryStatus !== undefined,
     );
     expect(deliveryStatusCalls).toHaveLength(0);
+  });
+});
+
+describe("GET /webhooks/instantly/config", () => {
+  const originalWebhookBaseUrl = process.env.WEBHOOK_BASE_URL;
+
+  afterEach(() => {
+    if (originalWebhookBaseUrl !== undefined) {
+      process.env.WEBHOOK_BASE_URL = originalWebhookBaseUrl;
+    } else {
+      delete process.env.WEBHOOK_BASE_URL;
+    }
+  });
+
+  it("should return webhookUrl when WEBHOOK_BASE_URL is configured", async () => {
+    process.env.WEBHOOK_BASE_URL = "https://instantly-service.up.railway.app";
+
+    const app = await createWebhookApp();
+
+    const res = await request(app).get("/webhooks/instantly/config");
+
+    expect(res.status).toBe(200);
+    expect(res.body.webhookUrl).toBe(
+      "https://instantly-service.up.railway.app/webhooks/instantly",
+    );
+  });
+
+  it("should return 500 when WEBHOOK_BASE_URL is not configured", async () => {
+    delete process.env.WEBHOOK_BASE_URL;
+
+    const app = await createWebhookApp();
+
+    const res = await request(app).get("/webhooks/instantly/config");
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe("WEBHOOK_BASE_URL not configured");
   });
 });

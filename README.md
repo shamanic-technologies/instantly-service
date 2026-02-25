@@ -26,7 +26,8 @@ Cold email outreach service via [Instantly.ai](https://instantly.ai/) API V2. Ha
 - **POST /stats** - Aggregated stats by runIds
 
 ### Webhooks
-- **POST /webhooks/instantly** - Receives Instantly events (public, no auth)
+- **GET /webhooks/instantly/config** - Returns webhook URL for BYOK customers (public)
+- **POST /webhooks/instantly** - Receives Instantly events (verified by campaign_id DB lookup)
 
 ### Health
 - **GET /** - Service info
@@ -72,11 +73,20 @@ npm run dev
 | `npm run db:migrate` | Run migrations |
 | `npm run db:push` | Push schema to database |
 
+## BYOK (Bring Your Own Key)
+
+Routes with `clerkOrgId` context use the org's own Instantly API key via key-service's BYOK decrypt endpoint. If the org hasn't configured their key, the request fails with 422 — no fallback to the shared app key.
+
+Account routes (`/accounts/*`) remain on the shared app key for service-level operations.
+
+Webhook verification uses `campaign_id` DB lookup (each campaign UUID is unguessable and stored with its org on creation). No webhook secret is needed.
+
 ## Environment Variables
 
 - `INSTANTLY_SERVICE_DATABASE_URL` - PostgreSQL connection string
 - `KEY_SERVICE_URL` / `KEY_SERVICE_API_KEY` - Key service for API key decryption
 - `INSTANTLY_SERVICE_API_KEY` - Service-to-service auth secret
+- `WEBHOOK_BASE_URL` - Public base URL for webhook config endpoint
 - `RUNS_SERVICE_URL` / `RUNS_SERVICE_API_KEY` - Runs service integration
 - `PORT` - Server port (default: 3011)
 
@@ -84,7 +94,7 @@ npm run dev
 
 All endpoints require `X-API-Key` header except:
 - `GET /` and `GET /health` (public)
-- `POST /webhooks/instantly` (public webhook receiver)
+- `GET /webhooks/instantly/config` and `POST /webhooks/instantly` (public webhook endpoints)
 
 ## Project Structure
 
@@ -96,6 +106,7 @@ src/
     schema.ts           # All table definitions
   lib/
     instantly-client.ts # Instantly API V2 HTTP client
+    key-client.ts       # Key service client (app keys + BYOK)
     runs-client.ts      # Runs service HTTP client (BLOCKING)
   middleware/
     serviceAuth.ts      # API key auth middleware

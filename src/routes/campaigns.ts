@@ -14,7 +14,7 @@ import {
   addCosts,
 } from "../lib/runs-client";
 import { handleCampaignError } from "../lib/campaign-error-handler";
-import { decryptAppKey } from "../lib/key-client";
+import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import {
   CreateCampaignRequestSchema,
   UpdateStatusRequestSchema,
@@ -37,8 +37,8 @@ router.post("/", async (req: Request, res: Response) => {
   const body = parsed.data;
 
   try {
-    // 0. Decrypt Instantly API key from key-service
-    const apiKey = await decryptAppKey("instantly", "instantly-service", {
+    // 0. Resolve Instantly API key (BYOK per-org)
+    const apiKey = await resolveInstantlyApiKey(body.clerkOrgId, {
       method: "POST",
       path: "/campaigns",
     });
@@ -103,6 +103,12 @@ router.post("/", async (req: Request, res: Response) => {
       throw error;
     }
   } catch (error: any) {
+    if (error instanceof KeyServiceError && error.statusCode === 404) {
+      return res.status(422).json({
+        error: "BYOK key not configured for this organization",
+        details: "Please configure your Instantly API key before creating campaigns.",
+      });
+    }
     console.error(`[campaigns] Failed to create campaign: ${error.message}`);
     res.status(500).json({
       error: "Failed to create campaign",
@@ -176,12 +182,7 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
   const { status } = parsed.data;
 
   try {
-    // Decrypt Instantly API key from key-service
-    const apiKey = await decryptAppKey("instantly", "instantly-service", {
-      method: "PATCH",
-      path: "/campaigns/:campaignId/status",
-    });
-
+    // Look up campaigns first (need clerkOrgId for key resolution)
     const campaigns = await db
       .select()
       .from(instantlyCampaigns)
@@ -195,6 +196,12 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
     if (campaigns.length === 0) {
       return res.status(404).json({ error: "Campaign not found" });
     }
+
+    // Resolve Instantly API key (BYOK per-org)
+    const apiKey = await resolveInstantlyApiKey(campaigns[0].clerkOrgId, {
+      method: "PATCH",
+      path: "/campaigns/:campaignId/status",
+    });
 
     // Update all sub-campaigns in Instantly + DB
     const updated = [];
@@ -221,12 +228,6 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
  */
 router.post("/check-status", async (_req: Request, res: Response) => {
   try {
-    // Decrypt Instantly API key from key-service
-    const apiKey = await decryptAppKey("instantly", "instantly-service", {
-      method: "POST",
-      path: "/campaigns/check-status",
-    });
-
     const activeCampaigns = await db
       .select()
       .from(instantlyCampaigns)
@@ -234,48 +235,74 @@ router.post("/check-status", async (_req: Request, res: Response) => {
 
     console.log(`[campaigns] check-status: checking ${activeCampaigns.length} active campaigns`);
 
+    // Group campaigns by clerkOrgId for per-org key resolution
+    const campaignsByOrg = new Map<string | null, typeof activeCampaigns>();
+    for (const c of activeCampaigns) {
+      const key = c.clerkOrgId ?? null;
+      if (!campaignsByOrg.has(key)) campaignsByOrg.set(key, []);
+      campaignsByOrg.get(key)!.push(c);
+    }
+
     const errors: {
       instantlyCampaignId: string;
       campaignId: string | null;
       leadEmail: string | null;
       reason: string;
     }[] = [];
+    let checked = 0;
 
-    for (const campaign of activeCampaigns) {
+    for (const [orgId, orgCampaigns] of campaignsByOrg) {
+      let apiKey: string;
       try {
-        const instantly = (await getInstantlyCampaign(
-          apiKey,
-          campaign.instantlyCampaignId,
-        )) as unknown as Record<string, unknown>;
-
-        if (instantly.not_sending_status) {
-          const reason = `not_sending_status: ${JSON.stringify(instantly.not_sending_status)}`;
-          console.error(
-            `[campaigns] check-status: ${campaign.instantlyCampaignId} error — ${reason}`,
-          );
-          await handleCampaignError(campaign.instantlyCampaignId, reason);
-          errors.push({
-            instantlyCampaignId: campaign.instantlyCampaignId,
-            campaignId: campaign.campaignId,
-            leadEmail: campaign.leadEmail,
-            reason,
-          });
-        }
+        apiKey = await resolveInstantlyApiKey(orgId, {
+          method: "POST",
+          path: "/campaigns/check-status",
+        });
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(
-          `[campaigns] check-status: failed to check ${campaign.instantlyCampaignId}: ${message}`,
+        console.warn(
+          `[campaigns] check-status: skipping ${orgCampaigns.length} campaigns for org ${orgId} — key error: ${message}`,
         );
+        continue;
       }
 
-      // Small delay to avoid rate limiting
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      for (const campaign of orgCampaigns) {
+        checked++;
+        try {
+          const instantly = (await getInstantlyCampaign(
+            apiKey,
+            campaign.instantlyCampaignId,
+          )) as unknown as Record<string, unknown>;
+
+          if (instantly.not_sending_status) {
+            const reason = `not_sending_status: ${JSON.stringify(instantly.not_sending_status)}`;
+            console.error(
+              `[campaigns] check-status: ${campaign.instantlyCampaignId} error — ${reason}`,
+            );
+            await handleCampaignError(campaign.instantlyCampaignId, reason);
+            errors.push({
+              instantlyCampaignId: campaign.instantlyCampaignId,
+              campaignId: campaign.campaignId,
+              leadEmail: campaign.leadEmail,
+              reason,
+            });
+          }
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(
+            `[campaigns] check-status: failed to check ${campaign.instantlyCampaignId}: ${message}`,
+          );
+        }
+
+        // Small delay to avoid rate limiting
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
     }
 
     console.log(
-      `[campaigns] check-status: done — checked=${activeCampaigns.length} errors=${errors.length}`,
+      `[campaigns] check-status: done — checked=${checked} errors=${errors.length}`,
     );
-    res.json({ checked: activeCampaigns.length, errors });
+    res.json({ checked, errors });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[campaigns] check-status failed: ${message}`);

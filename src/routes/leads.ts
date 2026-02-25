@@ -13,7 +13,7 @@ import {
   updateRun,
   addCosts,
 } from "../lib/runs-client";
-import { decryptAppKey } from "../lib/key-client";
+import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { AddLeadsRequestSchema, DeleteLeadsRequestSchema } from "../schemas";
 
 const router = Router();
@@ -35,13 +35,7 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
   const body = parsed.data;
 
   try {
-    // Decrypt Instantly API key from key-service
-    const apiKey = await decryptAppKey("instantly", "instantly-service", {
-      method: "POST",
-      path: "/campaigns/:campaignId/leads",
-    });
-
-    // Get campaign (look up by id or campaignId column)
+    // Get campaign first (need clerkOrgId for key resolution)
     const [campaign] = await db
       .select()
       .from(instantlyCampaigns)
@@ -55,6 +49,12 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
     if (!campaign) {
       return res.status(404).json({ error: "Campaign not found" });
     }
+
+    // Resolve Instantly API key (BYOK per-org)
+    const apiKey = await resolveInstantlyApiKey(campaign.clerkOrgId, {
+      method: "POST",
+      path: "/campaigns/:campaignId/leads",
+    });
 
     // 1. Create run in runs-service FIRST (BLOCKING)
     const run = await createRun({
@@ -114,6 +114,12 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
       throw error;
     }
   } catch (error: any) {
+    if (error instanceof KeyServiceError && error.statusCode === 404) {
+      return res.status(422).json({
+        error: "BYOK key not configured for this organization",
+        details: "Please configure your Instantly API key before adding leads.",
+      });
+    }
     console.error(`[leads] Failed to add leads: ${error.message}`);
     res.status(500).json({
       error: "Failed to add leads",
@@ -173,12 +179,7 @@ router.delete("/:campaignId/leads", async (req: Request, res: Response) => {
   const { emails } = parsed.data;
 
   try {
-    // Decrypt Instantly API key from key-service
-    const apiKey = await decryptAppKey("instantly", "instantly-service", {
-      method: "DELETE",
-      path: "/campaigns/:campaignId/leads",
-    });
-
+    // Get campaign first (need clerkOrgId for key resolution)
     const [campaign] = await db
       .select()
       .from(instantlyCampaigns)
@@ -192,6 +193,12 @@ router.delete("/:campaignId/leads", async (req: Request, res: Response) => {
     if (!campaign) {
       return res.status(404).json({ error: "Campaign not found" });
     }
+
+    // Resolve Instantly API key (BYOK per-org)
+    const apiKey = await resolveInstantlyApiKey(campaign.clerkOrgId, {
+      method: "DELETE",
+      path: "/campaigns/:campaignId/leads",
+    });
 
     // Delete from Instantly
     const result = await deleteInstantlyLeads(apiKey, campaign.instantlyCampaignId, emails);
@@ -210,6 +217,12 @@ router.delete("/:campaignId/leads", async (req: Request, res: Response) => {
 
     res.json({ success: true, deleted: result.deleted });
   } catch (error: any) {
+    if (error instanceof KeyServiceError && error.statusCode === 404) {
+      return res.status(422).json({
+        error: "BYOK key not configured for this organization",
+        details: "Please configure your Instantly API key before deleting leads.",
+      });
+    }
     res.status(500).json({ error: error.message });
   }
 });

@@ -7,14 +7,6 @@ import { updateCostStatus, updateRun } from "../lib/runs-client";
 
 const router = Router();
 
-function getWebhookSecret(): string {
-  const secret = process.env.INSTANTLY_WEBHOOK_SECRET;
-  if (!secret) {
-    throw new Error("INSTANTLY_WEBHOOK_SECRET is required");
-  }
-  return secret;
-}
-
 /** Events that indicate the sequence has stopped for this lead */
 const SEQUENCE_STOP_EVENTS = new Set([
   "reply_received",
@@ -31,7 +23,6 @@ async function handleFollowUpSent(
   leadEmail: string,
   step: number,
 ): Promise<void> {
-  // Look up our internal campaign to get the logical campaignId
   const [campaign] = await db
     .select()
     .from(instantlyCampaigns)
@@ -136,29 +127,50 @@ async function updateDeliveryStatus(
 }
 
 /**
+ * GET /webhooks/instantly/config
+ * Returns the webhook URL that BYOK customers should paste into their Instantly dashboard.
+ */
+router.get("/instantly/config", (_req: Request, res: Response) => {
+  const baseUrl = process.env.WEBHOOK_BASE_URL;
+  if (!baseUrl) {
+    return res.status(500).json({ error: "WEBHOOK_BASE_URL not configured" });
+  }
+  res.json({ webhookUrl: `${baseUrl}/webhooks/instantly` });
+});
+
+/**
  * POST /webhooks/instantly
- * Receives Instantly webhook events (requires valid secret).
+ * Receives Instantly webhook events.
+ * Verification: campaign_id must exist in our database (UUID is unguessable).
  *
  * In addition to recording the event, handles cost lifecycle:
  * - email_sent (step > 1): convert provisioned cost → actual
  * - reply/bounce/unsub/not_interested: cancel all remaining provisions
  */
 router.post("/instantly", async (req: Request, res: Response) => {
-  const WEBHOOK_SECRET = getWebhookSecret();
-  // Check secret in query param, header, or authorization
-  const secret = req.query.secret || req.headers["x-instantly-signature"] || req.headers["authorization"];
-  if (secret !== WEBHOOK_SECRET && secret !== `Bearer ${WEBHOOK_SECRET}`) {
-    return res.status(401).json({ error: "Invalid webhook secret" });
-  }
-
+  // 1. Parse payload first
   const parsed = WebhookPayloadSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Missing event_type" });
   }
   const payload = parsed.data;
 
+  // 2. Verify via campaign_id DB lookup
+  if (!payload.campaign_id) {
+    return res.status(400).json({ error: "Missing campaign_id" });
+  }
+
+  const [campaign] = await db
+    .select()
+    .from(instantlyCampaigns)
+    .where(eq(instantlyCampaigns.instantlyCampaignId, payload.campaign_id));
+
+  if (!campaign) {
+    return res.status(401).json({ error: "Unknown campaign_id" });
+  }
+
   try {
-    // 1. Record the event with step/variant
+    // 3. Record the event with step/variant
     await db.insert(instantlyEvents).values({
       eventType: payload.event_type,
       campaignId: payload.campaign_id,
@@ -170,18 +182,14 @@ router.post("/instantly", async (req: Request, res: Response) => {
       rawPayload: req.body,
     });
 
-    // 2. Update delivery status
-    if (payload.campaign_id) {
-      await updateDeliveryStatus(payload.campaign_id, payload.event_type);
-    }
+    // 4. Update delivery status
+    await updateDeliveryStatus(payload.campaign_id, payload.event_type);
 
-    // 3. Handle cost lifecycle based on event type
-    if (payload.campaign_id && payload.lead_email) {
+    // 5. Handle cost lifecycle based on event type
+    if (payload.lead_email) {
       if (payload.event_type === "email_sent" && payload.step && payload.step > 1) {
-        // Follow-up sent → convert provisioned to actual
         await handleFollowUpSent(payload.campaign_id, payload.lead_email, payload.step);
       } else if (SEQUENCE_STOP_EVENTS.has(payload.event_type)) {
-        // Sequence stopped → cancel remaining provisions
         await cancelRemainingProvisions(payload.campaign_id, payload.lead_email, payload.event_type);
       }
     }

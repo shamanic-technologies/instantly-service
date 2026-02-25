@@ -1,6 +1,6 @@
 /**
  * HTTP client for key-service
- * Decrypts app-level API keys at runtime.
+ * Decrypts app-level and BYOK (per-org) API keys at runtime.
  */
 
 const KEY_SERVICE_URL = process.env.KEY_SERVICE_URL || "http://localhost:3001";
@@ -15,9 +15,21 @@ export interface CallerInfo {
   path: string;
 }
 
-interface DecryptAppKeyResponse {
+interface DecryptKeyResponse {
   provider: string;
   key: string;
+}
+
+// ─── Errors ─────────────────────────────────────────────────────────────────
+
+export class KeyServiceError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "KeyServiceError";
+  }
 }
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
@@ -40,8 +52,9 @@ async function keyServiceRequest<T>(
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(
-      `key-service GET ${path} failed: ${response.status} - ${errorText}`
+    throw new KeyServiceError(
+      response.status,
+      `key-service GET ${path} failed: ${response.status} - ${errorText}`,
     );
   }
 
@@ -55,9 +68,36 @@ export async function decryptAppKey(
   appId: string,
   caller: CallerInfo,
 ): Promise<string> {
-  const result = await keyServiceRequest<DecryptAppKeyResponse>(
+  const result = await keyServiceRequest<DecryptKeyResponse>(
     `/internal/app-keys/${encodeURIComponent(provider)}/decrypt?appId=${encodeURIComponent(appId)}`,
     caller,
   );
   return result.key;
+}
+
+export async function decryptByokKey(
+  provider: string,
+  clerkOrgId: string,
+  caller: CallerInfo,
+): Promise<string> {
+  const result = await keyServiceRequest<DecryptKeyResponse>(
+    `/internal/keys/${encodeURIComponent(provider)}/decrypt?clerkOrgId=${encodeURIComponent(clerkOrgId)}`,
+    caller,
+  );
+  return result.key;
+}
+
+/**
+ * Resolve the Instantly API key for a request.
+ * - If clerkOrgId is provided: use the org's BYOK key (NO fallback to app key).
+ * - If clerkOrgId is null/undefined: use the shared app key (service-level ops).
+ */
+export async function resolveInstantlyApiKey(
+  clerkOrgId: string | null | undefined,
+  caller: CallerInfo,
+): Promise<string> {
+  if (clerkOrgId) {
+    return decryptByokKey("instantly", clerkOrgId, caller);
+  }
+  return decryptAppKey("instantly", "instantly-service", caller);
 }
