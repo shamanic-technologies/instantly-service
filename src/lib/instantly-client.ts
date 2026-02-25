@@ -5,14 +5,6 @@
 
 const INSTANTLY_API_URL = "https://api.instantly.ai/api/v2";
 
-function getApiKey(): string {
-  const key = process.env.INSTANTLY_API_KEY;
-  if (!key) {
-    throw new Error("INSTANTLY_API_KEY environment variable is not set");
-  }
-  return key;
-}
-
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface Campaign {
@@ -96,13 +88,14 @@ async function sleep(ms: number): Promise<void> {
 }
 
 async function instantlyRequest<T>(
+  apiKey: string,
   path: string,
   options: { method?: string; body?: unknown; retries?: number } = {}
 ): Promise<T> {
   const { method = "GET", body, retries = 3 } = options;
 
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${getApiKey()}`,
+    Authorization: `Bearer ${apiKey}`,
   };
 
   if (body !== undefined) {
@@ -150,7 +143,7 @@ async function instantlyRequest<T>(
 
 // ─── Campaigns ───────────────────────────────────────────────────────────────
 
-export async function createCampaign(params: CreateCampaignParams): Promise<Campaign> {
+export async function createCampaign(apiKey: string, params: CreateCampaignParams): Promise<Campaign> {
   // Instantly's `delay` on step N means "days to wait AFTER step N before
   // sending step N+1".  Our `daysSinceLastStep` on step N means "days to
   // wait BEFORE step N (since step N-1)".  So step[i].delay must be
@@ -184,7 +177,7 @@ export async function createCampaign(params: CreateCampaignParams): Promise<Camp
     ...(instantlySteps.length > 0 && { sequences: [{ steps: instantlySteps }] }),
   };
 
-  return instantlyRequest<Campaign>("/campaigns", {
+  return instantlyRequest<Campaign>(apiKey, "/campaigns", {
     method: "POST",
     body,
   });
@@ -195,39 +188,41 @@ export async function createCampaign(params: CreateCampaignParams): Promise<Camp
  * Instantly V2 ignores account_ids in create; accounts must be set via PATCH.
  */
 export async function updateCampaign(
+  apiKey: string,
   campaignId: string,
   params: UpdateCampaignParams
 ): Promise<Campaign> {
-  return instantlyRequest<Campaign>(`/campaigns/${campaignId}`, {
+  return instantlyRequest<Campaign>(apiKey, `/campaigns/${campaignId}`, {
     method: "PATCH",
     body: params,
   });
 }
 
-export async function getCampaign(campaignId: string): Promise<Campaign> {
-  return instantlyRequest<Campaign>(`/campaigns/${campaignId}`);
+export async function getCampaign(apiKey: string, campaignId: string): Promise<Campaign> {
+  return instantlyRequest<Campaign>(apiKey, `/campaigns/${campaignId}`);
 }
 
-export async function listCampaigns(limit = 100, skip = 0): Promise<Campaign[]> {
-  return instantlyRequest<Campaign[]>(`/campaigns?limit=${limit}&skip=${skip}`);
+export async function listCampaigns(apiKey: string, limit = 100, skip = 0): Promise<Campaign[]> {
+  return instantlyRequest<Campaign[]>(apiKey, `/campaigns?limit=${limit}&skip=${skip}`);
 }
 
 export async function updateCampaignStatus(
+  apiKey: string,
   campaignId: string,
   status: "active" | "paused" | "completed"
 ): Promise<Campaign> {
   const action = status === "active" ? "activate" : "pause";
-  return instantlyRequest<Campaign>(`/campaigns/${campaignId}/${action}`, {
+  return instantlyRequest<Campaign>(apiKey, `/campaigns/${campaignId}/${action}`, {
     method: "POST",
   });
 }
 
 // ─── Leads ───────────────────────────────────────────────────────────────────
 
-export async function addLeads(params: AddLeadsParams): Promise<{ added: number }> {
+export async function addLeads(apiKey: string, params: AddLeadsParams): Promise<{ added: number }> {
   let added = 0;
   for (const lead of params.leads) {
-    await instantlyRequest<unknown>("/leads", {
+    await instantlyRequest<unknown>(apiKey, "/leads", {
       method: "POST",
       body: {
         email: lead.email,
@@ -244,11 +239,12 @@ export async function addLeads(params: AddLeadsParams): Promise<{ added: number 
 }
 
 export async function listLeads(
+  apiKey: string,
   campaignId: string,
   limit = 100,
   skip = 0
 ): Promise<Lead[]> {
-  const response = await instantlyRequest<{ items: Lead[] }>("/leads/list", {
+  const response = await instantlyRequest<{ items: Lead[] }>(apiKey, "/leads/list", {
     method: "POST",
     body: {
       campaign: campaignId,
@@ -260,12 +256,13 @@ export async function listLeads(
 }
 
 export async function deleteLeads(
+  apiKey: string,
   campaignId: string,
   emails: string[]
 ): Promise<{ deleted: number }> {
   let deleted = 0;
   for (const email of emails) {
-    await instantlyRequest<unknown>("/leads", {
+    await instantlyRequest<unknown>(apiKey, "/leads", {
       method: "DELETE",
       body: {
         campaign_id: campaignId,
@@ -279,35 +276,36 @@ export async function deleteLeads(
 
 // ─── Accounts ────────────────────────────────────────────────────────────────
 
-export async function listAccounts(): Promise<Account[]> {
-  const response = await instantlyRequest<PaginatedResponse<Account>>("/accounts");
+export async function listAccounts(apiKey: string): Promise<Account[]> {
+  const response = await instantlyRequest<PaginatedResponse<Account>>(apiKey, "/accounts");
   return response.items;
 }
 
-export async function enableWarmup(email: string): Promise<Account> {
+export async function enableWarmup(apiKey: string, email: string): Promise<Account> {
   const encoded = encodeURIComponent(email);
-  return instantlyRequest<Account>(`/accounts/${encoded}/warmup`, {
+  return instantlyRequest<Account>(apiKey, `/accounts/${encoded}/warmup`, {
     method: "POST",
     body: { enabled: true },
   });
 }
 
-export async function disableWarmup(email: string): Promise<Account> {
+export async function disableWarmup(apiKey: string, email: string): Promise<Account> {
   const encoded = encodeURIComponent(email);
-  return instantlyRequest<Account>(`/accounts/${encoded}/warmup`, {
+  return instantlyRequest<Account>(apiKey, `/accounts/${encoded}/warmup`, {
     method: "POST",
     body: { enabled: false },
   });
 }
 
-export async function getWarmupAnalytics(): Promise<unknown> {
-  return instantlyRequest<unknown>("/accounts/warmup/analytics");
+export async function getWarmupAnalytics(apiKey: string): Promise<unknown> {
+  return instantlyRequest<unknown>(apiKey, "/accounts/warmup/analytics");
 }
 
 // ─── Analytics ───────────────────────────────────────────────────────────────
 
-export async function getCampaignAnalytics(campaignId: string): Promise<CampaignAnalytics | null> {
+export async function getCampaignAnalytics(apiKey: string, campaignId: string): Promise<CampaignAnalytics | null> {
   const results = await instantlyRequest<CampaignAnalytics[]>(
+    apiKey,
     `/campaigns/analytics?id=${encodeURIComponent(campaignId)}`
   );
   return results[0] ?? null;

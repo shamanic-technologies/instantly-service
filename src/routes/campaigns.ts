@@ -14,6 +14,7 @@ import {
   addCosts,
 } from "../lib/runs-client";
 import { handleCampaignError } from "../lib/campaign-error-handler";
+import { decryptAppKey } from "../lib/key-client";
 import {
   CreateCampaignRequestSchema,
   UpdateStatusRequestSchema,
@@ -36,6 +37,12 @@ router.post("/", async (req: Request, res: Response) => {
   const body = parsed.data;
 
   try {
+    // 0. Decrypt Instantly API key from key-service
+    const apiKey = await decryptAppKey("instantly", "instantly-service", {
+      method: "POST",
+      path: "/campaigns",
+    });
+
     // 1. Create run in runs-service FIRST (BLOCKING)
     const run = await createRun({
       clerkOrgId: body.clerkOrgId,
@@ -48,14 +55,14 @@ router.post("/", async (req: Request, res: Response) => {
 
     try {
       // 2. Create campaign in Instantly (no sequence steps — steps are added via POST /send)
-      const instantlyCampaign = await createInstantlyCampaign({
+      const instantlyCampaign = await createInstantlyCampaign(apiKey, {
         name: body.name,
         steps: [],
       });
 
       // Assign sending accounts via PATCH (V2 ignores account_ids in create body)
       if (body.accountIds && body.accountIds.length > 0) {
-        await updateInstantlyCampaign(instantlyCampaign.id, {
+        await updateInstantlyCampaign(apiKey, instantlyCampaign.id, {
           email_list: body.accountIds,
         });
       }
@@ -169,6 +176,12 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
   const { status } = parsed.data;
 
   try {
+    // Decrypt Instantly API key from key-service
+    const apiKey = await decryptAppKey("instantly", "instantly-service", {
+      method: "PATCH",
+      path: "/campaigns/:campaignId/status",
+    });
+
     const campaigns = await db
       .select()
       .from(instantlyCampaigns)
@@ -186,7 +199,7 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
     // Update all sub-campaigns in Instantly + DB
     const updated = [];
     for (const campaign of campaigns) {
-      await updateInstantlyStatus(campaign.instantlyCampaignId, status);
+      await updateInstantlyStatus(apiKey, campaign.instantlyCampaignId, status);
       const [row] = await db
         .update(instantlyCampaigns)
         .set({ status, updatedAt: new Date() })
@@ -208,6 +221,12 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
  */
 router.post("/check-status", async (_req: Request, res: Response) => {
   try {
+    // Decrypt Instantly API key from key-service
+    const apiKey = await decryptAppKey("instantly", "instantly-service", {
+      method: "POST",
+      path: "/campaigns/check-status",
+    });
+
     const activeCampaigns = await db
       .select()
       .from(instantlyCampaigns)
@@ -225,6 +244,7 @@ router.post("/check-status", async (_req: Request, res: Response) => {
     for (const campaign of activeCampaigns) {
       try {
         const instantly = (await getInstantlyCampaign(
+          apiKey,
           campaign.instantlyCampaignId,
         )) as unknown as Record<string, unknown>;
 
