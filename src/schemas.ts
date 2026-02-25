@@ -95,7 +95,7 @@ registry.registerPath({
       content: { "application/json": { schema: WebhookConfigResponseSchema } },
     },
     500: {
-      description: "RAILWAY_PUBLIC_DOMAIN not available",
+      description: "INSTANTLY_SERVICE_URL not configured",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },

@@ -903,7 +903,7 @@
             }
           },
           "500": {
-            "description": "RAILWAY_PUBLIC_DOMAIN not available",
+            "description": "INSTANTLY_SERVICE_URL not configured",
             "content": {
               "application/json": {
                 "schema": {

@@ -131,11 +131,11 @@ async function updateDeliveryStatus(
  * Returns the webhook URL that BYOK customers should paste into their Instantly dashboard.
  */
 router.get("/instantly/config", (_req: Request, res: Response) => {
-  const domain = process.env.RAILWAY_PUBLIC_DOMAIN;
-  if (!domain) {
-    return res.status(500).json({ error: "RAILWAY_PUBLIC_DOMAIN not available" });
+  const baseUrl = process.env.INSTANTLY_SERVICE_URL;
+  if (!baseUrl) {
+    return res.status(500).json({ error: "INSTANTLY_SERVICE_URL not configured" });
   }
-  res.json({ webhookUrl: `https://${domain}/webhooks/instantly` });
+  res.json({ webhookUrl: `${baseUrl}/webhooks/instantly` });
 });
 
 /**
