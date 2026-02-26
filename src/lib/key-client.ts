@@ -77,11 +77,11 @@ export async function decryptAppKey(
 
 export async function decryptByokKey(
   provider: string,
-  clerkOrgId: string,
+  orgId: string,
   caller: CallerInfo,
 ): Promise<string> {
   const result = await keyServiceRequest<DecryptKeyResponse>(
-    `/internal/keys/${encodeURIComponent(provider)}/decrypt?clerkOrgId=${encodeURIComponent(clerkOrgId)}`,
+    `/internal/keys/${encodeURIComponent(provider)}/decrypt?orgId=${encodeURIComponent(orgId)}`,
     caller,
   );
   return result.key;
@@ -89,15 +89,15 @@ export async function decryptByokKey(
 
 /**
  * Resolve the Instantly API key for a request.
- * - If clerkOrgId is provided: use the org's BYOK key (NO fallback to app key).
- * - If clerkOrgId is null/undefined: use the shared app key (service-level ops).
+ * - If orgId is provided: use the org's BYOK key (NO fallback to app key).
+ * - If orgId is null/undefined: use the shared app key (service-level ops).
  */
 export async function resolveInstantlyApiKey(
-  clerkOrgId: string | null | undefined,
+  orgId: string | null | undefined,
   caller: CallerInfo,
 ): Promise<string> {
-  if (clerkOrgId) {
-    return decryptByokKey("instantly", clerkOrgId, caller);
+  if (orgId) {
+    return decryptByokKey("instantly", orgId, caller);
   }
   return decryptAppKey("instantly", "instantly-service", caller);
 }

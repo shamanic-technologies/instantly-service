@@ -279,9 +279,6 @@
           "orgId": {
             "type": "string"
           },
-          "clerkOrgId": {
-            "type": "string"
-          },
           "brandId": {
             "type": "string"
           },
@@ -309,7 +306,6 @@
         },
         "required": [
           "orgId",
-          "clerkOrgId",
           "brandId",
           "appId",
           "name"
@@ -576,7 +572,7 @@
               "type": "string"
             }
           },
-          "clerkOrgId": {
+          "orgId": {
             "type": "string"
           },
           "brandId": {
