@@ -35,7 +35,7 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
   const body = parsed.data;
 
   try {
-    // Get campaign first (need clerkOrgId for key resolution)
+    // Get campaign first (need orgId for key resolution)
     const [campaign] = await db
       .select()
       .from(instantlyCampaigns)
@@ -51,14 +51,14 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
     }
 
     // Resolve Instantly API key (BYOK per-org)
-    const apiKey = await resolveInstantlyApiKey(campaign.clerkOrgId, {
+    const apiKey = await resolveInstantlyApiKey(campaign.orgId, {
       method: "POST",
       path: "/campaigns/:campaignId/leads",
     });
 
     // 1. Create run in runs-service FIRST (BLOCKING)
     const run = await createRun({
-      clerkOrgId: body.orgId,
+      orgId: body.orgId,
       appId: campaign.appId,
       serviceName: "instantly-service",
       taskName: "leads-add",
@@ -179,7 +179,7 @@ router.delete("/:campaignId/leads", async (req: Request, res: Response) => {
   const { emails } = parsed.data;
 
   try {
-    // Get campaign first (need clerkOrgId for key resolution)
+    // Get campaign first (need orgId for key resolution)
     const [campaign] = await db
       .select()
       .from(instantlyCampaigns)
@@ -195,7 +195,7 @@ router.delete("/:campaignId/leads", async (req: Request, res: Response) => {
     }
 
     // Resolve Instantly API key (BYOK per-org)
-    const apiKey = await resolveInstantlyApiKey(campaign.clerkOrgId, {
+    const apiKey = await resolveInstantlyApiKey(campaign.orgId, {
       method: "DELETE",
       path: "/campaigns/:campaignId/leads",
     });

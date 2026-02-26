@@ -26,7 +26,6 @@ vi.mock("../../src/db/schema", () => ({
     instantlyCampaignId: "instantly_campaign_id",
     status: "status",
     orgId: "org_id",
-    clerkOrgId: "clerk_org_id",
   },
   sequenceCosts: {
     id: "id",
@@ -121,7 +120,7 @@ describe("POST /campaigns/check-status", () => {
         leadEmail: "lead@test.com",
         instantlyCampaignId: "inst-1",
         status: "active",
-        clerkOrgId: "org-1",
+        orgId: "org-1",
         runId: "run-1",
         metadata: null,
       },
@@ -170,7 +169,7 @@ describe("POST /campaigns/check-status", () => {
         leadEmail: "lead@test.com",
         instantlyCampaignId: "inst-1",
         status: "active",
-        clerkOrgId: "org-1",
+        orgId: "org-1",
         runId: "run-1",
       },
     ]);
@@ -197,7 +196,7 @@ describe("POST /campaigns/check-status", () => {
         leadEmail: "lead1@test.com",
         instantlyCampaignId: "inst-1",
         status: "active",
-        clerkOrgId: "org-1",
+        orgId: "org-1",
         runId: "run-1",
       },
       {
@@ -206,7 +205,7 @@ describe("POST /campaigns/check-status", () => {
         leadEmail: "lead2@test.com",
         instantlyCampaignId: "inst-2",
         status: "active",
-        clerkOrgId: "org-1",
+        orgId: "org-1",
         runId: "run-2",
       },
     ]);

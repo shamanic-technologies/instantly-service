@@ -1,7 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import {
-  organizations,
   instantlyCampaigns,
   instantlyLeads,
   sequenceCosts,
@@ -84,24 +83,6 @@ export function buildSequenceSteps(
       bodyHtml: buildEmailBodyWithSignature(s.bodyHtml, account),
       daysSinceLastStep: s.daysSinceLastStep,
     }));
-}
-
-async function getOrCreateOrganization(clerkOrgId: string): Promise<string> {
-  const [existing] = await db
-    .select()
-    .from(organizations)
-    .where(eq(organizations.clerkOrgId, clerkOrgId));
-
-  if (existing) {
-    return existing.id;
-  }
-
-  const [created] = await db
-    .insert(organizations)
-    .values({ clerkOrgId })
-    .returning();
-
-  return created.id;
 }
 
 /**
@@ -210,13 +191,7 @@ router.post("/", async (req: Request, res: Response) => {
       path: "/send",
     });
 
-    // 1. Get or create organization (only if orgId provided)
-    let organizationId: string | null = null;
-    if (body.orgId) {
-      organizationId = await getOrCreateOrganization(body.orgId);
-    }
-
-    // 2. Per-step runs are created AFTER successful campaign activation
+    // 1. Per-step runs are created AFTER successful campaign activation
     const stepRuns: { step: number; runId: string }[] = [];
 
     try {
@@ -228,7 +203,7 @@ router.post("/", async (req: Request, res: Response) => {
 
       const sortedSequence = [...body.sequence].sort((a, b) => a.step - b.step);
 
-      // 4. Dedup: check if this (campaignId, leadEmail) pair already has a campaign
+      // 3. Dedup: check if this (campaignId, leadEmail) pair already has a campaign
       const existing = await findExistingCampaign(body.campaignId, body.to);
 
       let savedLead: { id: string } | undefined;
@@ -288,8 +263,7 @@ router.post("/", async (req: Request, res: Response) => {
             name: `Campaign ${body.campaignId}`,
             status: "active",
             deliveryStatus: "pending",
-            orgId: organizationId,
-            clerkOrgId: body.orgId,
+            orgId: body.orgId,
             brandId: body.brandId,
             appId: body.appId,
             runId: body.runId,
@@ -306,7 +280,7 @@ router.post("/", async (req: Request, res: Response) => {
             lastName: body.lastName,
             companyName: body.company,
             customVariables: body.variables,
-            orgId: organizationId,
+            orgId: body.orgId,
             runId: null,
           })
           .onConflictDoNothing()
@@ -315,12 +289,12 @@ router.post("/", async (req: Request, res: Response) => {
         if (createdLead) savedLead = createdLead;
       }
 
-      // 5. Create per-step runs: 1 actual+completed (step 1) + N-1 provisioned+ongoing
+      // 4. Create per-step runs: 1 actual+completed (step 1) + N-1 provisioned+ongoing
       if (body.orgId) {
         for (const s of sortedSequence) {
           const isFirstStep = s.step === sortedSequence[0].step;
           const stepRun = await createRun({
-            clerkOrgId: body.orgId,
+            orgId: body.orgId,
             appId: body.appId,
             serviceName: "instantly-service",
             taskName: `email-send-step-${s.step}`,

@@ -44,18 +44,18 @@ router.post("/stats", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds, clerkOrgId, brandId, appId, campaignId } = parsed.data;
+  const { runIds, orgId, brandId, appId, campaignId } = parsed.data;
 
   // Build WHERE clauses for campaign filters
   const conditions: SQL[] = [];
   if (runIds?.length) conditions.push(sql`c.run_id = ANY(${runIds})`);
-  if (clerkOrgId) conditions.push(sql`c.clerk_org_id = ${clerkOrgId}`);
+  if (orgId) conditions.push(sql`c.org_id = ${orgId}`);
   if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
   if (appId) conditions.push(sql`c.app_id = ${appId}`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
 
   if (conditions.length === 0) {
-    return res.status(400).json({ error: "At least one filter required: runIds, clerkOrgId, brandId, appId, campaignId" });
+    return res.status(400).json({ error: "At least one filter required: runIds, orgId, brandId, appId, campaignId" });
   }
 
   const whereClause = sql.join(conditions, sql` AND `);

@@ -17,7 +17,6 @@ vi.mock("../../src/db", () => ({
 }));
 
 vi.mock("../../src/db/schema", () => ({
-  organizations: {},
   instantlyCampaigns: {
     id: "id",
     campaignId: "campaign_id",
@@ -113,7 +112,6 @@ function acct(overrides: Partial<Account> = {}): Account {
  */
 function mockNewCampaignFlow() {
   mockDbWhere.mockReset();
-  mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
   mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign (not found → create)
 
   mockCreateCampaign.mockResolvedValue({ id: "inst-camp-new", status: "draft" });
@@ -363,7 +361,6 @@ describe("POST /send", () => {
 
   it("should skip Instantly API call when same lead already processed for campaign", async () => {
     mockDbWhere.mockReset();
-    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]);
     mockDbWhere.mockResolvedValueOnce([{
       id: "sub-camp-1",
       campaignId: "camp-1",
@@ -383,7 +380,6 @@ describe("POST /send", () => {
 
     // Send 1: Lead A
     mockDbWhere.mockReset();
-    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]);
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
     mockCreateCampaign.mockResolvedValueOnce({ id: "inst-camp-A", status: "draft" });
     mockGetCampaign.mockReset();
@@ -403,7 +399,6 @@ describe("POST /send", () => {
 
     // Send 2: Lead B (same campaignId, different lead)
     mockDbWhere.mockReset();
-    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]);
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
     mockCreateCampaign.mockResolvedValueOnce({ id: "inst-camp-B", status: "draft" });
     mockGetCampaign.mockReset();
@@ -431,7 +426,6 @@ describe("POST /send", () => {
 
   it("should retry with new account when not_sending_status detected and succeed on 2nd attempt", async () => {
     mockDbWhere.mockReset();
-    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
 
     // Attempt 1: create + verify-PATCH ok + verify-activate fails
@@ -461,7 +455,6 @@ describe("POST /send", () => {
 
   it("should fail after MAX_SEND_RETRIES attempts with not_sending_status and NOT add costs", async () => {
     mockDbWhere.mockReset();
-    mockDbWhere.mockResolvedValueOnce([{ id: "org-db-1", clerkOrgId: "org-1" }]); // org lookup
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
 
     // All 3 attempts fail with not_sending_status

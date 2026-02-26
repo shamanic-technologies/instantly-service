@@ -15,6 +15,13 @@
       "when": 1772060000000,
       "tag": "0001_add_lead_id_delivery_status",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1772150400000,
+      "tag": "0002_drop_clerk_ids",
+      "breakpoints": true
     }
   ]
 }

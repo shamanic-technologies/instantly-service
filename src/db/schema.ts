@@ -9,25 +9,6 @@ import {
   index,
 } from "drizzle-orm/pg-core";
 
-// Organizations table - maps Clerk org IDs to internal IDs
-export const organizations = pgTable("organizations", {
-  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  clerkOrgId: text("clerk_org_id").notNull().unique(),
-  name: text("name"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
-
-// Users table - maps Clerk user IDs to internal IDs
-export const users = pgTable("users", {
-  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  clerkUserId: text("clerk_user_id").notNull().unique(),
-  organizationId: text("organization_id").notNull(),
-  email: text("email"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
-
 // Campaigns table
 // Each POST /send creates its own row (one Instantly campaign per lead).
 // `campaignId` groups sub-campaigns that belong to the same logical campaign.
@@ -41,7 +22,6 @@ export const instantlyCampaigns = pgTable(
     name: text("name").notNull(),
     status: text("status").notNull().default("active"),
     orgId: text("org_id"),
-    clerkOrgId: text("clerk_org_id"),
     brandId: text("brand_id").notNull(),
     appId: text("app_id").notNull(),
     runId: text("run_id"),

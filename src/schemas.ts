@@ -210,7 +210,6 @@ registry.registerPath({
 export const CreateCampaignRequestSchema = z
   .object({
     orgId: z.string(),
-    clerkOrgId: z.string(),
     brandId: z.string(),
     appId: z.string(),
     name: z.string(),
@@ -498,7 +497,7 @@ registry.registerPath({
 export const StatsRequestSchema = z
   .object({
     runIds: z.array(z.string()).optional(),
-    clerkOrgId: z.string().optional(),
+    orgId: z.string().optional(),
     brandId: z.string().optional(),
     appId: z.string().optional(),
     campaignId: z.string().optional(),

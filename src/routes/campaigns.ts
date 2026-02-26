@@ -38,14 +38,14 @@ router.post("/", async (req: Request, res: Response) => {
 
   try {
     // 0. Resolve Instantly API key (BYOK per-org)
-    const apiKey = await resolveInstantlyApiKey(body.clerkOrgId, {
+    const apiKey = await resolveInstantlyApiKey(body.orgId, {
       method: "POST",
       path: "/campaigns",
     });
 
     // 1. Create run in runs-service FIRST (BLOCKING)
     const run = await createRun({
-      clerkOrgId: body.clerkOrgId,
+      orgId: body.orgId,
       appId: body.appId,
       serviceName: "instantly-service",
       taskName: "campaign-create",
@@ -75,7 +75,6 @@ router.post("/", async (req: Request, res: Response) => {
           name: body.name,
           status: instantlyCampaign.status,
           orgId: body.orgId,
-          clerkOrgId: body.clerkOrgId,
           brandId: body.brandId,
           appId: body.appId,
           runId: run.id,
@@ -182,7 +181,7 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
   const { status } = parsed.data;
 
   try {
-    // Look up campaigns first (need clerkOrgId for key resolution)
+    // Look up campaigns first (need orgId for key resolution)
     const campaigns = await db
       .select()
       .from(instantlyCampaigns)
@@ -198,7 +197,7 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
     }
 
     // Resolve Instantly API key (BYOK per-org)
-    const apiKey = await resolveInstantlyApiKey(campaigns[0].clerkOrgId, {
+    const apiKey = await resolveInstantlyApiKey(campaigns[0].orgId, {
       method: "PATCH",
       path: "/campaigns/:campaignId/status",
     });
@@ -235,10 +234,10 @@ router.post("/check-status", async (_req: Request, res: Response) => {
 
     console.log(`[campaigns] check-status: checking ${activeCampaigns.length} active campaigns`);
 
-    // Group campaigns by clerkOrgId for per-org key resolution
+    // Group campaigns by orgId for per-org key resolution
     const campaignsByOrg = new Map<string | null, typeof activeCampaigns>();
     for (const c of activeCampaigns) {
-      const key = c.clerkOrgId ?? null;
+      const key = c.orgId ?? null;
       if (!campaignsByOrg.has(key)) campaignsByOrg.set(key, []);
       campaignsByOrg.get(key)!.push(c);
     }

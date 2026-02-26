@@ -105,7 +105,7 @@ describe("key-client", () => {
 
   // ─── BYOK tests ───────────────────────────────────────────────────────────
 
-  it("decryptByokKey should call BYOK decrypt URL with clerkOrgId", async () => {
+  it("decryptByokKey should call BYOK decrypt URL with orgId", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({ provider: "instantly", key: "byok-key-789" }),
@@ -120,7 +120,7 @@ describe("key-client", () => {
     expect(key).toBe("byok-key-789");
     const [url, options] = mockFetch.mock.calls[0];
     expect(url).toBe(
-      "http://localhost:3001/internal/keys/instantly/decrypt?clerkOrgId=org_abc123"
+      "http://localhost:3001/internal/keys/instantly/decrypt?orgId=org_abc123"
     );
     expect(options.headers["X-Caller-Service"]).toBe("instantly");
     expect(options.headers["X-Caller-Method"]).toBe("POST");
@@ -147,7 +147,7 @@ describe("key-client", () => {
     }
   });
 
-  it("decryptByokKey should encode provider and clerkOrgId in URL", async () => {
+  it("decryptByokKey should encode provider and orgId in URL", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({ provider: "my provider", key: "key-enc" }),
@@ -161,13 +161,13 @@ describe("key-client", () => {
 
     const [url] = mockFetch.mock.calls[0];
     expect(url).toBe(
-      "http://localhost:3001/internal/keys/my%20provider/decrypt?clerkOrgId=org%20with%20spaces"
+      "http://localhost:3001/internal/keys/my%20provider/decrypt?orgId=org%20with%20spaces"
     );
   });
 
   // ─── resolveInstantlyApiKey tests ─────────────────────────────────────────
 
-  it("resolveInstantlyApiKey should use BYOK key when clerkOrgId is provided", async () => {
+  it("resolveInstantlyApiKey should use BYOK key when orgId is provided", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({ provider: "instantly", key: "byok-org-key" }),
@@ -181,10 +181,10 @@ describe("key-client", () => {
 
     expect(key).toBe("byok-org-key");
     const [url] = mockFetch.mock.calls[0];
-    expect(url).toContain("/internal/keys/instantly/decrypt?clerkOrgId=org_123");
+    expect(url).toContain("/internal/keys/instantly/decrypt?orgId=org_123");
   });
 
-  it("resolveInstantlyApiKey should use app key when clerkOrgId is null", async () => {
+  it("resolveInstantlyApiKey should use app key when orgId is null", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({ provider: "instantly", key: "shared-app-key" }),
@@ -201,7 +201,7 @@ describe("key-client", () => {
     expect(url).toContain("/internal/app-keys/instantly/decrypt?appId=instantly-service");
   });
 
-  it("resolveInstantlyApiKey should use app key when clerkOrgId is undefined", async () => {
+  it("resolveInstantlyApiKey should use app key when orgId is undefined", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({ provider: "instantly", key: "shared-app-key" }),
