@@ -46,13 +46,31 @@ describe("POST /stats", () => {
     vi.clearAllMocks();
   });
 
-  it("should return 400 when no filters provided", async () => {
+  it("should return global stats when no filters provided", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [{
+        emailsSent: 100,
+        emailsDelivered: 95,
+        emailsOpened: 50,
+        emailsClicked: 5,
+        emailsReplied: 10,
+        emailsBounced: 5,
+        repliesAutoReply: 1,
+        repliesNotInterested: 2,
+        repliesOutOfOffice: 1,
+        repliesUnsubscribe: 0,
+        recipients: 90,
+      }],
+    });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
     const app = await createStatsApp();
 
     const response = await request(app).post("/stats").send({});
 
-    expect(response.status).toBe(400);
-    expect(response.body.error).toContain("At least one filter required");
+    expect(response.status).toBe(200);
+    expect(response.body.stats.emailsSent).toBe(100);
+    expect(response.body.recipients).toBe(90);
   });
 
   it("should return zeros when no events match", async () => {
