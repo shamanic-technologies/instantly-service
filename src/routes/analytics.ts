@@ -7,7 +7,7 @@ const router = Router();
 
 // Internal emails/domains excluded from all stats.
 // Events where lead_email matches these (or equals the sender) are never counted.
-const EXCLUDED_EMAILS = ["kevin.lourd@gmail.com"];
+const EXCLUDED_EMAILS = ["kevin.lourd@gmail.com", "kevin@distribute.you"];
 const EXCLUDED_DOMAINS = [
   "distribute.you",
   "mcpfactory.org",
