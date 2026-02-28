@@ -418,7 +418,7 @@ describe("GET /webhooks/instantly/config", () => {
   });
 
   it("should return webhookUrl from INSTANTLY_SERVICE_URL", async () => {
-    process.env.INSTANTLY_SERVICE_URL = "https://instantly.distribute.org";
+    process.env.INSTANTLY_SERVICE_URL = "https://instantly.distribute.you";
 
     const app = await createWebhookApp();
 
@@ -426,7 +426,7 @@ describe("GET /webhooks/instantly/config", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.webhookUrl).toBe(
-      "https://instantly.distribute.org/webhooks/instantly",
+      "https://instantly.distribute.you/webhooks/instantly",
     );
   });
 
