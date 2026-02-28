@@ -55,11 +55,9 @@ router.post("/stats", async (req: Request, res: Response) => {
   if (appId) conditions.push(sql`c.app_id = ${appId}`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
 
-  if (conditions.length === 0) {
-    return res.status(400).json({ error: "At least one filter required: runIds, orgId, brandId, appId, campaignId" });
-  }
-
-  const whereClause = sql.join(conditions, sql` AND `);
+  const whereClause = conditions.length > 0
+    ? sql.join(conditions, sql` AND `)
+    : sql`1=1`;
 
   const zeroStats = {
     stats: {
