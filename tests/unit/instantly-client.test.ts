@@ -140,7 +140,7 @@ describe("instantly-client", () => {
     const { updateCampaign } = await import("../../src/lib/instantly-client");
     await updateCampaign(TEST_API_KEY, "camp-1", {
       email_list: ["sender@example.com"],
-      bcc_list: ["kevin@mcpfactory.org"],
+      bcc_list: ["bcc@test.com"],
       stop_on_reply: true,
     });
 
@@ -150,7 +150,7 @@ describe("instantly-client", () => {
     expect(options.method).toBe("PATCH");
     const body = JSON.parse(options.body);
     expect(body.email_list).toEqual(["sender@example.com"]);
-    expect(body.bcc_list).toEqual(["kevin@mcpfactory.org"]);
+    expect(body.bcc_list).toEqual(["bcc@test.com"]);
     expect(body.stop_on_reply).toBe(true);
   });
 

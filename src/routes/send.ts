@@ -123,7 +123,6 @@ async function tryCreateAndActivateCampaign(
   console.log(`[send] Assigning account ${account.email} to campaign ${instantlyCampaign.id}`);
   await updateInstantlyCampaign(apiKey, instantlyCampaign.id, {
     email_list: [account.email],
-    bcc_list: ["kevin@mcpfactory.org"],
     open_tracking: true,
     link_tracking: true,
     insert_unsubscribe_header: true,
