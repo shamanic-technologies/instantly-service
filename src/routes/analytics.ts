@@ -9,7 +9,7 @@ const router = Router();
 // Events where lead_email matches these (or equals the sender) are never counted.
 const EXCLUDED_EMAILS = ["kevin.lourd@gmail.com"];
 const EXCLUDED_DOMAINS = [
-  "distribute.org",
+  "distribute.you",
   "mcpfactory.org",
   "growthagency.dev",
   "growthservice.org",
