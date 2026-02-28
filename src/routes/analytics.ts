@@ -49,7 +49,7 @@ router.post("/stats", async (req: Request, res: Response) => {
 
   // Build WHERE clauses for campaign filters
   const conditions: SQL[] = [];
-  if (runIds?.length) conditions.push(sql`c.run_id = ANY(${runIds})`);
+  if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
   if (orgId) conditions.push(sql`c.org_id = ${orgId}`);
   if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
   if (appId) conditions.push(sql`c.app_id = ${appId}`);
@@ -154,7 +154,8 @@ router.post("/stats", async (req: Request, res: Response) => {
       ...(stepStats.length > 0 && { stepStats }),
     });
   } catch (error: any) {
-    console.error(`[stats] Failed to aggregate stats: ${error.cause?.message ?? error.message}`);
+    const msg = error.cause?.message ?? error.message ?? String(error);
+    console.error(`[stats] Failed to aggregate stats: ${msg}`, error);
     res.status(500).json({ error: "Failed to aggregate stats" });
   }
 });

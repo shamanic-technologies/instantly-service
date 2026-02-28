@@ -178,7 +178,7 @@ describe("POST /stats", () => {
     expect(response.body.recipients).toBe(0);
   });
 
-  it("should accept runIds filter", async () => {
+  it("should accept runIds filter and use IN clause (not ANY)", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [{
         emailsSent: 10, emailsDelivered: 10, emailsOpened: 5,
@@ -197,6 +197,12 @@ describe("POST /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(10);
+
+    // Verify SQL uses IN (not ANY) to avoid drizzle array serialization bug
+    const sqlObj = mockExecute.mock.calls[0][0];
+    const sqlText = extractSqlText(sqlObj);
+    expect(sqlText).toContain("run_id IN");
+    expect(sqlText).not.toContain("ANY");
   });
 
   it("should exclude internal emails and sender from stats query", async () => {
