@@ -10,6 +10,7 @@ const router = Router();
 const EXCLUDED_EMAILS = ["kevin.lourd@gmail.com"];
 const EXCLUDED_DOMAINS = [
   "distribute.org",
+  "mcpfactory.org",
   "growthagency.dev",
   "growthservice.org",
   "pressbeat.io",
