@@ -114,7 +114,7 @@ describe("POST /stats", () => {
 
     const response = await request(app)
       .post("/stats")
-      .send({ appId: "mcpfactory", orgId: "org_123" });
+      .send({ appId: "test-app", orgId: "org_123" });
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(80);

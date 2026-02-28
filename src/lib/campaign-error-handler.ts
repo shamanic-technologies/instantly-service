@@ -16,7 +16,7 @@ import { updateRun } from "./runs-client";
 import { updateCostStatus } from "./runs-client";
 import { sendEmail } from "./email-client";
 
-const ADMIN_EMAIL = process.env.ADMIN_NOTIFICATION_EMAIL || "kevin@mcpfactory.org";
+const ADMIN_EMAIL = process.env.ADMIN_NOTIFICATION_EMAIL || "kevin@distribute.org";
 
 /**
  * Handle a campaign that has entered an error state on Instantly's side.
