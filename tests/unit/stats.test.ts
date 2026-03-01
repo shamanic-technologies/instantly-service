@@ -41,14 +41,14 @@ async function createStatsApp() {
   return app;
 }
 
-/** Helper: full stats row with all fields including positiveReplies */
+/** Helper: full stats row with all fields */
 function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
   return {
     emailsSent: 0, emailsDelivered: 0, emailsOpened: 0,
     emailsClicked: 0, emailsReplied: 0, emailsBounced: 0,
     repliesAutoReply: 0, repliesNotInterested: 0,
     repliesOutOfOffice: 0, repliesUnsubscribe: 0,
-    positiveReplies: 0, recipients: 0,
+    recipients: 0,
     ...overrides,
   };
 }
@@ -62,9 +62,9 @@ describe("POST /stats", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 100, emailsDelivered: 95, emailsOpened: 50,
-        emailsClicked: 5, emailsReplied: 10, emailsBounced: 5,
+        emailsClicked: 5, emailsReplied: 3, emailsBounced: 5,
         repliesAutoReply: 1, repliesNotInterested: 2,
-        repliesOutOfOffice: 1, positiveReplies: 3, recipients: 90,
+        repliesOutOfOffice: 1, recipients: 90,
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [] });
@@ -75,6 +75,7 @@ describe("POST /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(100);
+    expect(response.body.stats.emailsReplied).toBe(3);
     expect(response.body.recipients).toBe(90);
   });
 
@@ -91,7 +92,7 @@ describe("POST /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(0);
-    expect(response.body.stats.positiveReplies).toBe(0);
+    expect(response.body.stats.emailsReplied).toBe(0);
     expect(response.body.recipients).toBe(0);
     // stepStats should not be present when empty
     expect(response.body.stepStats).toBeUndefined();
@@ -101,9 +102,9 @@ describe("POST /stats", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 80, emailsDelivered: 75, emailsOpened: 40,
-        emailsClicked: 3, emailsReplied: 2, emailsBounced: 5,
+        emailsClicked: 3, emailsReplied: 1, emailsBounced: 5,
         repliesAutoReply: 1, repliesNotInterested: 1,
-        repliesOutOfOffice: 2, positiveReplies: 1, recipients: 75,
+        repliesOutOfOffice: 2, recipients: 75,
       })],
     });
     // Step stats
@@ -117,18 +118,19 @@ describe("POST /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(80);
-    expect(response.body.stats.emailsReplied).toBe(2);
-    expect(response.body.stats.positiveReplies).toBe(1);
+    expect(response.body.stats.emailsReplied).toBe(1);
     expect(response.body.recipients).toBe(75);
   });
 
-  it("should return positiveReplies counting only lead_interested events", async () => {
+  it("should count only lead_interested events as emailsReplied", async () => {
+    // Simulate prod data: 18 reply_received but only 1 lead_interested
+    // emailsReplied should be 1 (only positive/interested replies)
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 500, emailsDelivered: 480, emailsOpened: 200,
-        emailsReplied: 18, repliesAutoReply: 11,
+        emailsReplied: 1, repliesAutoReply: 11,
         repliesNotInterested: 4, repliesOutOfOffice: 13,
-        positiveReplies: 1, recipients: 400,
+        recipients: 400,
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [] });
@@ -138,9 +140,7 @@ describe("POST /stats", () => {
     const response = await request(app).post("/stats").send({});
 
     expect(response.status).toBe(200);
-    // positiveReplies should only reflect lead_interested, not raw reply_received
-    expect(response.body.stats.positiveReplies).toBe(1);
-    expect(response.body.stats.emailsReplied).toBe(18);
+    expect(response.body.stats.emailsReplied).toBe(1);
   });
 
   it("should include per-step stats when step data exists", async () => {
@@ -188,7 +188,7 @@ describe("POST /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(0);
-    expect(response.body.stats.positiveReplies).toBe(0);
+    expect(response.body.stats.emailsReplied).toBe(0);
     expect(response.body.recipients).toBe(0);
   });
 
@@ -297,7 +297,7 @@ describe("POST /stats", () => {
     consoleSpy.mockRestore();
   });
 
-  it("should include positiveReplies in SQL query using lead_interested filter", async () => {
+  it("should use lead_interested (not reply_received) for emailsReplied in SQL", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     const app = await createStatsApp();
 
@@ -306,7 +306,8 @@ describe("POST /stats", () => {
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
     expect(sqlText).toContain("lead_interested");
-    expect(sqlText).toContain("positiveReplies");
+    // reply_received should NOT appear as a standalone filter (auto_reply_received is fine)
+    expect(sqlText).not.toMatch(/event_type = 'reply_received'/);
   });
 });
 
@@ -320,14 +321,14 @@ describe("POST /stats/grouped", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 800, emailsDelivered: 750, emailsOpened: 310,
-        positiveReplies: 3, emailsBounced: 20, recipients: 400,
+        emailsReplied: 3, emailsBounced: 20, recipients: 400,
       })],
     });
     // Group 2 query
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 200, emailsDelivered: 190, emailsOpened: 80,
-        positiveReplies: 1, emailsBounced: 5, recipients: 100,
+        emailsReplied: 1, emailsBounced: 5, recipients: 100,
       })],
     });
 
@@ -347,12 +348,12 @@ describe("POST /stats/grouped", () => {
 
     const alpha = response.body.groups.find((g: any) => g.key === "workflow-alpha");
     expect(alpha.stats.emailsSent).toBe(800);
-    expect(alpha.stats.positiveReplies).toBe(3);
+    expect(alpha.stats.emailsReplied).toBe(3);
     expect(alpha.recipients).toBe(400);
 
     const beta = response.body.groups.find((g: any) => g.key === "workflow-beta");
     expect(beta.stats.emailsSent).toBe(200);
-    expect(beta.stats.positiveReplies).toBe(1);
+    expect(beta.stats.emailsReplied).toBe(1);
     expect(beta.recipients).toBe(100);
   });
 
@@ -373,7 +374,7 @@ describe("POST /stats/grouped", () => {
     expect(response.body.groups).toHaveLength(1);
     expect(response.body.groups[0].key).toBe("empty-workflow");
     expect(response.body.groups[0].stats.emailsSent).toBe(0);
-    expect(response.body.groups[0].stats.positiveReplies).toBe(0);
+    expect(response.body.groups[0].stats.emailsReplied).toBe(0);
     expect(response.body.groups[0].recipients).toBe(0);
   });
 

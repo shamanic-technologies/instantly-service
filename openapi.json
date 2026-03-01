@@ -485,7 +485,7 @@
               },
               "emailsReplied": {
                 "type": "number",
-                "description": "Total reply_received events"
+                "description": "Positive replies only (lead_interested events)"
               },
               "emailsBounced": {
                 "type": "number",
@@ -506,10 +506,6 @@
               "repliesUnsubscribe": {
                 "type": "number",
                 "description": "Total lead_unsubscribed events"
-              },
-              "positiveReplies": {
-                "type": "number",
-                "description": "Positive replies only (lead_interested events)"
               }
             },
             "required": [
@@ -522,8 +518,7 @@
               "repliesAutoReply",
               "repliesNotInterested",
               "repliesOutOfOffice",
-              "repliesUnsubscribe",
-              "positiveReplies"
+              "repliesUnsubscribe"
             ]
           },
           "recipients": {
@@ -624,7 +619,7 @@
                     },
                     "emailsReplied": {
                       "type": "number",
-                      "description": "Total reply_received events"
+                      "description": "Positive replies only (lead_interested events)"
                     },
                     "emailsBounced": {
                       "type": "number",
@@ -645,10 +640,6 @@
                     "repliesUnsubscribe": {
                       "type": "number",
                       "description": "Total lead_unsubscribed events"
-                    },
-                    "positiveReplies": {
-                      "type": "number",
-                      "description": "Positive replies only (lead_interested events)"
                     }
                   },
                   "required": [
@@ -661,8 +652,7 @@
                     "repliesAutoReply",
                     "repliesNotInterested",
                     "repliesOutOfOffice",
-                    "repliesUnsubscribe",
-                    "positiveReplies"
+                    "repliesUnsubscribe"
                   ]
                 },
                 "recipients": {
