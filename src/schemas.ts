@@ -539,6 +539,9 @@ const StatsResponseSchema = z
       repliesUnsubscribe: z
         .number()
         .describe("Total lead_unsubscribed events"),
+      positiveReplies: z
+        .number()
+        .describe("Positive replies only (lead_interested events)"),
     }),
     recipients: z
       .number()
@@ -568,6 +571,59 @@ registry.registerPath({
     },
     400: {
       description: "No filter provided",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ─── Grouped Stats ──────────────────────────────────────────────────────────
+
+export const GroupedStatsRequestSchema = z
+  .object({
+    groups: z.record(
+      z.string(),
+      z.object({ runIds: z.array(z.string()).min(1) }),
+    ),
+  })
+  .openapi("GroupedStatsRequest");
+
+export type GroupedStatsRequest = z.infer<typeof GroupedStatsRequestSchema>;
+
+const GroupedStatsEntrySchema = z.object({
+  key: z.string().describe("Group key from the request"),
+  stats: StatsResponseSchema.shape.stats,
+  recipients: z.number(),
+});
+
+const GroupedStatsResponseSchema = z
+  .object({
+    groups: z.array(GroupedStatsEntrySchema),
+  })
+  .openapi("GroupedStatsResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/stats/grouped",
+  summary: "Get stats grouped by sets of run IDs",
+  description:
+    "Accepts named groups of run IDs and returns aggregated stats per group in a single call. Used by the leaderboard to fetch per-workflow stats.",
+  request: {
+    body: {
+      content: { "application/json": { schema: GroupedStatsRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Stats per group",
+      content: { "application/json": { schema: GroupedStatsResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: { description: "Unauthorized" },
