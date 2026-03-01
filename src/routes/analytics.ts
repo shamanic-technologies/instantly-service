@@ -44,7 +44,6 @@ const ZERO_STATS = {
   repliesNotInterested: 0,
   repliesOutOfOffice: 0,
   repliesUnsubscribe: 0,
-  positiveReplies: 0,
 };
 
 /** Execute the aggregate stats query and return { stats, recipients } */
@@ -58,13 +57,12 @@ async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO_STATS;
       0)::int AS "emailsDelivered",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'reply_received'), 0)::int AS "emailsReplied",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "emailsReplied",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "repliesAutoReply",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "repliesNotInterested",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "repliesOutOfOffice",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "repliesUnsubscribe",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "positiveReplies",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "recipients"
     FROM instantly_events e
     JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
@@ -90,7 +88,6 @@ async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO_STATS;
       repliesNotInterested: row.repliesNotInterested ?? 0,
       repliesOutOfOffice: row.repliesOutOfOffice ?? 0,
       repliesUnsubscribe: row.repliesUnsubscribe ?? 0,
-      positiveReplies: row.positiveReplies ?? 0,
     },
     recipients: row.recipients ?? 0,
   };
@@ -133,7 +130,7 @@ router.post("/stats", async (req: Request, res: Response) => {
           e.step,
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
           COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'reply_received'), 0)::int AS "emailsReplied",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "emailsReplied",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced"
         FROM instantly_events e
         JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id

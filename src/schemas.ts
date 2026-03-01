@@ -527,7 +527,7 @@ const StatsResponseSchema = z
           "Unique recipients who opened (COUNT DISTINCT lead_email with email_opened events)",
         ),
       emailsClicked: z.number().describe("Total link click events"),
-      emailsReplied: z.number().describe("Total reply_received events"),
+      emailsReplied: z.number().describe("Positive replies only (lead_interested events)"),
       emailsBounced: z.number().describe("Total email_bounced events"),
       repliesAutoReply: z.number().describe("Total auto_reply_received events"),
       repliesNotInterested: z
@@ -539,9 +539,6 @@ const StatsResponseSchema = z
       repliesUnsubscribe: z
         .number()
         .describe("Total lead_unsubscribed events"),
-      positiveReplies: z
-        .number()
-        .describe("Positive replies only (lead_interested events)"),
     }),
     recipients: z
       .number()
