@@ -71,6 +71,7 @@ vi.mock("../../src/lib/runs-client", () => ({
 }));
 
 import { buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/routes/send";
+import { identityHeaders } from "../../src/middleware/identityHeaders";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
 import express from "express";
@@ -79,9 +80,11 @@ async function createSendApp() {
   const sendRouter = (await import("../../src/routes/send")).default;
   const app = express();
   app.use(express.json());
-  app.use("/send", sendRouter);
+  app.use("/send", identityHeaders, sendRouter);
   return app;
 }
+
+const identityHeadersObj = { "x-org-id": "org-1", "x-user-id": "user-1" };
 
 const validBody = {
   to: "test@example.com",
@@ -97,9 +100,7 @@ const validBody = {
   campaignId: "camp-1",
   leadId: "lead-1",
   runId: "run-1",
-  orgId: "org-1",
   brandId: "brand-1",
-  appId: "app-1",
 };
 
 function acct(overrides: Partial<Account> = {}): Account {
@@ -199,7 +200,7 @@ describe("POST /send", () => {
     vi.clearAllMocks();
     runCounter = 0;
 
-    mockResolveInstantlyApiKey.mockResolvedValue("test-instantly-key");
+    mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
 
     mockCreateRun.mockImplementation(() => {
       runCounter++;
@@ -223,7 +224,7 @@ describe("POST /send", () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
-    const res = await request(app).post("/send").send({
+    const res = await request(app).post("/send").set(identityHeadersObj).send({
       ...validBody,
       subject: undefined,
       sequence: undefined,
@@ -237,7 +238,7 @@ describe("POST /send", () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
-    await request(app).post("/send").send(validBody);
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(mockCreateCampaign).toHaveBeenCalledWith(
       "test-instantly-key",
@@ -256,7 +257,7 @@ describe("POST /send", () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
-    await request(app).post("/send").send(validBody);
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     // [0] = apiKey, [1] = params
     const createCall = mockCreateCampaign.mock.calls[0][1];
@@ -269,7 +270,7 @@ describe("POST /send", () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
-    await request(app).post("/send").send(validBody);
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(mockUpdateCampaign).toHaveBeenCalledWith(
       "test-instantly-key",
@@ -285,7 +286,7 @@ describe("POST /send", () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
-    await request(app).post("/send").send(validBody);
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     const campaignInsert = mockDbInsertValues.mock.calls.find(
       ([v]: [any]) => v.campaignId === "camp-1" && v.leadEmail === "test@example.com",
@@ -301,7 +302,7 @@ describe("POST /send", () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
-    await request(app).post("/send").send(validBody);
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(mockCreateRun).toHaveBeenCalledTimes(3);
     expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }));
@@ -309,9 +310,9 @@ describe("POST /send", () => {
     expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-3" }));
 
     expect(mockAddCosts).toHaveBeenCalledTimes(3);
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [{ costName: "instantly-email-send", quantity: 1, status: "actual" }]);
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-2", [{ costName: "instantly-email-send", quantity: 1, status: "provisioned" }]);
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-3", [{ costName: "instantly-email-send", quantity: 1, status: "provisioned" }]);
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "actual" }]);
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-2", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "provisioned" }]);
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-3", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "provisioned" }]);
   });
 
 
@@ -325,7 +326,7 @@ describe("POST /send", () => {
 
     const app = await createSendApp();
 
-    await request(app).post("/send").send(validBody);
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     // Check that sequence_costs were inserted for ALL steps with distinct runIds
     const insertCalls = mockDbInsertValues.mock.calls;
@@ -347,14 +348,14 @@ describe("POST /send", () => {
       sequence: [{ step: 1, bodyHtml: "<p>Only email</p>", daysSinceLastStep: 0 }],
     };
 
-    const res = await request(app).post("/send").send(singleStep);
+    const res = await request(app).post("/send").set(identityHeadersObj).send(singleStep);
 
     expect(res.status).toBe(200);
     expect(mockCreateRun).toHaveBeenCalledTimes(1);
     expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }));
     expect(mockAddCosts).toHaveBeenCalledTimes(1);
     expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [
-      { costName: "instantly-email-send", quantity: 1, status: "actual" },
+      { costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "actual" },
     ]);
     expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed");
   });
@@ -369,7 +370,7 @@ describe("POST /send", () => {
     }]);
 
     const app = await createSendApp();
-    await request(app).post("/send").send(validBody);
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(mockCreateCampaign).not.toHaveBeenCalled();
     expect(mockAddLeads).not.toHaveBeenCalled();
@@ -390,7 +391,7 @@ describe("POST /send", () => {
     mockDbReturning.mockResolvedValueOnce([{ id: "lead-A" }]);
     mockDbReturning.mockResolvedValue([]);
 
-    const res1 = await request(app).post("/send").send({
+    const res1 = await request(app).post("/send").set(identityHeadersObj).send({
       ...validBody,
       to: "alice@example.com",
       sequence: [{ step: 1, bodyHtml: "<p>Hi Alice</p>", daysSinceLastStep: 0 }],
@@ -409,7 +410,7 @@ describe("POST /send", () => {
     mockDbReturning.mockResolvedValueOnce([{ id: "lead-B" }]);
     mockDbReturning.mockResolvedValue([]);
 
-    const res2 = await request(app).post("/send").send({
+    const res2 = await request(app).post("/send").set(identityHeadersObj).send({
       ...validBody,
       to: "bob@example.com",
       sequence: [{ step: 1, bodyHtml: "<p>Hi Bob</p>", daysSinceLastStep: 0 }],
@@ -443,7 +444,7 @@ describe("POST /send", () => {
     mockDbReturning.mockResolvedValue([]);
 
     const app = await createSendApp();
-    const res = await request(app).post("/send").send(validBody);
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(res.status).toBe(200);
     expect(res.body.warning).toBeUndefined();
@@ -465,7 +466,7 @@ describe("POST /send", () => {
     }
 
     const app = await createSendApp();
-    const res = await request(app).post("/send").send(validBody);
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(res.status).toBe(500);
     expect(res.body.error).toContain("failed after 3 retry attempts");
@@ -480,7 +481,7 @@ describe("POST /send", () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
-    const res = await request(app).post("/send").send(validBody);
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(res.status).toBe(200);
     expect(res.body.warning).toBeUndefined();
@@ -490,7 +491,7 @@ describe("POST /send", () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
-    await request(app).post("/send").send(validBody);
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     // Only step 1 should be completed
     expect(mockUpdateRun).toHaveBeenCalledTimes(1);
@@ -501,7 +502,7 @@ describe("POST /send", () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
-    const res = await request(app).post("/send").send(validBody);
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(res.status).toBe(200);
     expect(res.body.stepRuns).toHaveLength(3);

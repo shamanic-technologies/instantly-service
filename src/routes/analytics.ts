@@ -105,19 +105,16 @@ router.post("/stats", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds, orgId, brandId, appId, campaignId } = parsed.data;
+  const { runIds, brandId, campaignId } = parsed.data;
+  const orgId = res.locals.orgId as string;
 
-  // Build WHERE clauses for campaign filters
-  const conditions: SQL[] = [];
+  // Build WHERE clauses — always scope by org from header
+  const conditions: SQL[] = [sql`c.org_id = ${orgId}`];
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
-  if (orgId) conditions.push(sql`c.org_id = ${orgId}`);
   if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
-  if (appId) conditions.push(sql`c.app_id = ${appId}`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
 
-  const whereClause = conditions.length > 0
-    ? sql.join(conditions, sql` AND `)
-    : sql`1=1`;
+  const whereClause = sql.join(conditions, sql` AND `);
 
   try {
     const { stats, recipients } = await queryStats(whereClause);
@@ -185,7 +182,8 @@ router.post("/stats/grouped", async (req: Request, res: Response) => {
   try {
     const results = await Promise.all(
       entries.map(async ([key, { runIds }]) => {
-        const whereClause = sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`;
+        const orgId = res.locals.orgId as string;
+        const whereClause = sql`c.org_id = ${orgId} AND c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`;
         const { stats, recipients } = await queryStats(whereClause);
         return { key, stats, recipients };
       }),

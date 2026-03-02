@@ -35,20 +35,22 @@ router.post("/", async (req: Request, res: Response) => {
     });
   }
   const body = parsed.data;
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string;
 
   try {
-    // 0. Resolve Instantly API key (BYOK per-org)
-    const apiKey = await resolveInstantlyApiKey(body.orgId, {
+    // 0. Resolve Instantly API key (auto-resolves org vs platform key)
+    const { key: apiKey, keySource } = await resolveInstantlyApiKey(orgId, userId, {
       method: "POST",
       path: "/campaigns",
     });
 
     // 1. Create run in runs-service FIRST (BLOCKING)
     const run = await createRun({
-      orgId: body.orgId,
-      appId: body.appId,
+      orgId,
       serviceName: "instantly-service",
       taskName: "campaign-create",
+      userId,
       brandId: body.brandId,
       parentRunId: body.runId,
     });
@@ -74,9 +76,8 @@ router.post("/", async (req: Request, res: Response) => {
           instantlyCampaignId: instantlyCampaign.id,
           name: body.name,
           status: instantlyCampaign.status,
-          orgId: body.orgId,
+          orgId,
           brandId: body.brandId,
-          appId: body.appId,
           runId: run.id,
           metadata: body.metadata,
         })
@@ -84,7 +85,7 @@ router.post("/", async (req: Request, res: Response) => {
 
       // 4. Log costs and complete run
       await addCosts(run.id, [
-        { costName: "instantly-campaign-create", quantity: 1 },
+        { costName: "instantly-campaign-create", quantity: 1, costSource: keySource },
       ]);
       await updateRun(run.id, "completed");
 
@@ -104,7 +105,7 @@ router.post("/", async (req: Request, res: Response) => {
   } catch (error: any) {
     if (error instanceof KeyServiceError && error.statusCode === 404) {
       return res.status(422).json({
-        error: "BYOK key not configured for this organization",
+        error: "API key not configured for this organization",
         details: "Please configure your Instantly API key before creating campaigns.",
       });
     }
@@ -196,8 +197,10 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Campaign not found" });
     }
 
-    // Resolve Instantly API key (BYOK per-org)
-    const apiKey = await resolveInstantlyApiKey(campaigns[0].orgId, {
+    // Resolve Instantly API key using header identity
+    const orgId = res.locals.orgId as string;
+    const userId = res.locals.userId as string;
+    const { key: apiKey } = await resolveInstantlyApiKey(orgId, userId, {
       method: "PATCH",
       path: "/campaigns/:campaignId/status",
     });
@@ -253,10 +256,12 @@ router.post("/check-status", async (_req: Request, res: Response) => {
     for (const [orgId, orgCampaigns] of campaignsByOrg) {
       let apiKey: string;
       try {
-        apiKey = await resolveInstantlyApiKey(orgId, {
+        if (!orgId) throw new Error("Campaign missing orgId");
+        const keyResult = await resolveInstantlyApiKey(orgId, "system", {
           method: "POST",
           path: "/campaigns/check-status",
         });
+        apiKey = keyResult.key;
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(

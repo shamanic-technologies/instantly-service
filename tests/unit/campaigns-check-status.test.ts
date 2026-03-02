@@ -83,18 +83,22 @@ vi.mock("../../src/lib/email-client", () => ({
   sendEmail: (...args: unknown[]) => mockSendEmail(...args),
 }));
 
+import { identityHeaders } from "../../src/middleware/identityHeaders";
+
+const identityHeadersObj = { "x-org-id": "test-org", "x-user-id": "test-user" };
+
 async function createCampaignsApp() {
   const campaignsRouter = (await import("../../src/routes/campaigns")).default;
   const app = express();
   app.use(express.json());
-  app.use("/campaigns", campaignsRouter);
+  app.use("/campaigns", identityHeaders, campaignsRouter);
   return app;
 }
 
 describe("POST /campaigns/check-status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockResolveInstantlyApiKey.mockResolvedValue("test-instantly-key");
+    mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
     mockUpdateRun.mockResolvedValue({});
     mockUpdateCostStatus.mockResolvedValue({});
     mockSendEmail.mockResolvedValue({});
@@ -105,7 +109,7 @@ describe("POST /campaigns/check-status", () => {
     mockDbWhere.mockResolvedValueOnce([]);
 
     const app = await createCampaignsApp();
-    const res = await request(app).post("/campaigns/check-status");
+    const res = await request(app).post("/campaigns/check-status").set(identityHeadersObj);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ checked: 0, errors: [] });
@@ -149,7 +153,7 @@ describe("POST /campaigns/check-status", () => {
     });
 
     const app = await createCampaignsApp();
-    const res = await request(app).post("/campaigns/check-status");
+    const res = await request(app).post("/campaigns/check-status").set(identityHeadersObj);
 
     expect(res.status).toBe(200);
     expect(res.body.checked).toBe(1);
@@ -181,7 +185,7 @@ describe("POST /campaigns/check-status", () => {
     });
 
     const app = await createCampaignsApp();
-    const res = await request(app).post("/campaigns/check-status");
+    const res = await request(app).post("/campaigns/check-status").set(identityHeadersObj);
 
     expect(res.status).toBe(200);
     expect(res.body.checked).toBe(1);
@@ -220,7 +224,7 @@ describe("POST /campaigns/check-status", () => {
     });
 
     const app = await createCampaignsApp();
-    const res = await request(app).post("/campaigns/check-status");
+    const res = await request(app).post("/campaigns/check-status").set(identityHeadersObj);
 
     expect(res.status).toBe(200);
     expect(res.body.checked).toBe(2);

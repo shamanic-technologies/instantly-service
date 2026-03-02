@@ -15,6 +15,7 @@ import webhooksRoutes from "./routes/webhooks";
 import sendRoutes from "./routes/send";
 import statusRoutes from "./routes/status";
 import { serviceAuth } from "./middleware/serviceAuth";
+import { identityHeaders } from "./middleware/identityHeaders";
 
 const app = express();
 
@@ -37,13 +38,13 @@ app.get("/openapi.json", (_req, res) => {
 app.use(healthRoutes);
 app.use("/webhooks", webhooksRoutes);
 
-// Protected routes (require X-API-Key)
-app.use("/send", serviceAuth, sendRoutes);
-app.use("/status", serviceAuth, statusRoutes);
-app.use("/campaigns", serviceAuth, campaignsRoutes);
-app.use("/campaigns", serviceAuth, leadsRoutes);
-app.use("/accounts", serviceAuth, accountsRoutes);
-app.use("/", serviceAuth, analyticsRoutes);
+// Protected routes (require X-API-Key + x-org-id + x-user-id)
+app.use("/send", serviceAuth, identityHeaders, sendRoutes);
+app.use("/status", serviceAuth, identityHeaders, statusRoutes);
+app.use("/campaigns", serviceAuth, identityHeaders, campaignsRoutes);
+app.use("/campaigns", serviceAuth, identityHeaders, leadsRoutes);
+app.use("/accounts", serviceAuth, identityHeaders, accountsRoutes);
+app.use("/", serviceAuth, identityHeaders, analyticsRoutes);
 
 const PORT = process.env.PORT || 3011;
 

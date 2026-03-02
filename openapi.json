@@ -154,13 +154,7 @@
       "SendRequest": {
         "type": "object",
         "properties": {
-          "orgId": {
-            "type": "string"
-          },
           "brandId": {
-            "type": "string"
-          },
-          "appId": {
             "type": "string"
           },
           "runId": {
@@ -227,7 +221,6 @@
         },
         "required": [
           "brandId",
-          "appId",
           "runId",
           "campaignId",
           "to",
@@ -276,13 +269,7 @@
       "CreateCampaignRequest": {
         "type": "object",
         "properties": {
-          "orgId": {
-            "type": "string"
-          },
           "brandId": {
-            "type": "string"
-          },
-          "appId": {
             "type": "string"
           },
           "name": {
@@ -305,9 +292,7 @@
           }
         },
         "required": [
-          "orgId",
           "brandId",
-          "appId",
           "name"
         ]
       },
@@ -391,9 +376,6 @@
       "AddLeadsRequest": {
         "type": "object",
         "properties": {
-          "orgId": {
-            "type": "string"
-          },
           "runId": {
             "type": "string"
           },
@@ -428,7 +410,6 @@
           }
         },
         "required": [
-          "orgId",
           "leads"
         ]
       },
@@ -572,13 +553,7 @@
               "type": "string"
             }
           },
-          "orgId": {
-            "type": "string"
-          },
           "brandId": {
-            "type": "string"
-          },
-          "appId": {
             "type": "string"
           },
           "campaignId": {
