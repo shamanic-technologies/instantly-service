@@ -6,6 +6,8 @@
 const RUNS_SERVICE_URL = process.env.RUNS_SERVICE_URL || "http://localhost:3006";
 const RUNS_SERVICE_API_KEY = process.env.RUNS_SERVICE_API_KEY || "";
 
+const APP_ID = "instantly-service";
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface Run {
@@ -29,15 +31,16 @@ export interface RunCost {
   id: string;
   runId: string;
   costName: string;
+  costSource: "platform" | "org";
   quantity: string;
   unitCostInUsdCents: string;
   totalCostInUsdCents: string;
+  status: "actual" | "provisioned" | "cancelled";
   createdAt: string;
 }
 
 export interface CreateRunParams {
   orgId: string;
-  appId: string;
   serviceName: string;
   taskName: string;
   parentRunId?: string;
@@ -49,6 +52,7 @@ export interface CreateRunParams {
 export interface CostItem {
   costName: string;
   quantity: number;
+  costSource: "platform" | "org";
   status?: "actual" | "provisioned";
 }
 
@@ -86,7 +90,7 @@ async function runsRequest<T>(
 export async function createRun(params: CreateRunParams): Promise<Run> {
   return runsRequest<Run>("/v1/runs", {
     method: "POST",
-    body: params,
+    body: { ...params, appId: APP_ID },
   });
 }
 

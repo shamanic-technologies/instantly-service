@@ -33,11 +33,15 @@ vi.mock("../../src/db/schema", () => ({
 
 process.env.INSTANTLY_SERVICE_API_KEY = "test-api-key";
 
+import { identityHeaders } from "../../src/middleware/identityHeaders";
+
+const identityHeadersObj = { "x-org-id": "test-org", "x-user-id": "test-user" };
+
 async function createStatsApp() {
   const analyticsRouter = (await import("../../src/routes/analytics")).default;
   const app = express();
   app.use(express.json());
-  app.use(analyticsRouter);
+  app.use(identityHeaders, analyticsRouter);
   return app;
 }
 
@@ -71,7 +75,7 @@ describe("POST /stats", () => {
 
     const app = await createStatsApp();
 
-    const response = await request(app).post("/stats").send({});
+    const response = await request(app).post("/stats").set(identityHeadersObj).send({});
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(100);
@@ -88,7 +92,8 @@ describe("POST /stats", () => {
 
     const response = await request(app)
       .post("/stats")
-      .send({ appId: "test-app" });
+      .set(identityHeadersObj)
+      .send({});
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(0);
@@ -114,7 +119,8 @@ describe("POST /stats", () => {
 
     const response = await request(app)
       .post("/stats")
-      .send({ appId: "test-app", orgId: "org_123" });
+      .set(identityHeadersObj)
+      .send({});
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(80);
@@ -137,7 +143,7 @@ describe("POST /stats", () => {
 
     const app = await createStatsApp();
 
-    const response = await request(app).post("/stats").send({});
+    const response = await request(app).post("/stats").set(identityHeadersObj).send({});
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsReplied).toBe(1);
@@ -165,6 +171,7 @@ describe("POST /stats", () => {
 
     const response = await request(app)
       .post("/stats")
+      .set(identityHeadersObj)
       .send({ campaignId: "camp-1" });
 
     expect(response.status).toBe(200);
@@ -184,7 +191,8 @@ describe("POST /stats", () => {
 
     const response = await request(app)
       .post("/stats")
-      .send({ orgId: "org_nonexistent" });
+      .set(identityHeadersObj)
+      .send({});
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(0);
@@ -202,6 +210,7 @@ describe("POST /stats", () => {
 
     const response = await request(app)
       .post("/stats")
+      .set(identityHeadersObj)
       .send({ runIds: ["run-1", "run-2"] });
 
     expect(response.status).toBe(200);
@@ -219,7 +228,7 @@ describe("POST /stats", () => {
     mockExecute.mockResolvedValueOnce({ rows: [] }); // step query
     const app = await createStatsApp();
 
-    await request(app).post("/stats").send({ appId: "test-app" });
+    await request(app).post("/stats").set(identityHeadersObj).send({});
 
     // Stats query + step query
     expect(mockExecute).toHaveBeenCalledTimes(2);
@@ -239,7 +248,8 @@ describe("POST /stats", () => {
 
     const response = await request(app)
       .post("/stats")
-      .send({ appId: "test-app" });
+      .set(identityHeadersObj)
+      .send({});
 
     expect(response.status).toBe(500);
     expect(response.body.error).toBe("Failed to aggregate stats");
@@ -261,7 +271,8 @@ describe("POST /stats", () => {
 
     const response = await request(app)
       .post("/stats")
-      .send({ appId: "test-app", orgId: "org_123" });
+      .set(identityHeadersObj)
+      .send({});
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(50);
@@ -287,7 +298,8 @@ describe("POST /stats", () => {
 
     const response = await request(app)
       .post("/stats")
-      .send({ appId: "test-app" });
+      .set(identityHeadersObj)
+      .send({});
 
     expect(response.status).toBe(200);
     expect(consoleSpy).toHaveBeenCalledWith(
@@ -301,7 +313,7 @@ describe("POST /stats", () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     const app = await createStatsApp();
 
-    await request(app).post("/stats").send({});
+    await request(app).post("/stats").set(identityHeadersObj).send({});
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
@@ -336,6 +348,7 @@ describe("POST /stats/grouped", () => {
 
     const response = await request(app)
       .post("/stats/grouped")
+      .set(identityHeadersObj)
       .send({
         groups: {
           "workflow-alpha": { runIds: ["run-1", "run-2"] },
@@ -364,6 +377,7 @@ describe("POST /stats/grouped", () => {
 
     const response = await request(app)
       .post("/stats/grouped")
+      .set(identityHeadersObj)
       .send({
         groups: {
           "empty-workflow": { runIds: ["run-nonexistent"] },
@@ -383,6 +397,7 @@ describe("POST /stats/grouped", () => {
 
     const response = await request(app)
       .post("/stats/grouped")
+      .set(identityHeadersObj)
       .send({ groups: {} });
 
     expect(response.status).toBe(200);
@@ -395,6 +410,7 @@ describe("POST /stats/grouped", () => {
 
     const response = await request(app)
       .post("/stats/grouped")
+      .set(identityHeadersObj)
       .send({ groups: { "bad-group": { runIds: [] } } });
 
     expect(response.status).toBe(400);
@@ -406,6 +422,7 @@ describe("POST /stats/grouped", () => {
 
     const response = await request(app)
       .post("/stats/grouped")
+      .set(identityHeadersObj)
       .send({});
 
     expect(response.status).toBe(400);
@@ -419,6 +436,7 @@ describe("POST /stats/grouped", () => {
 
     const response = await request(app)
       .post("/stats/grouped")
+      .set(identityHeadersObj)
       .send({
         groups: {
           "failing-group": { runIds: ["run-1"] },
@@ -438,6 +456,7 @@ describe("POST /stats/grouped", () => {
 
     await request(app)
       .post("/stats/grouped")
+      .set(identityHeadersObj)
       .send({
         groups: {
           "test-group": { runIds: ["run-1", "run-2", "run-3"] },
@@ -458,6 +477,7 @@ describe("POST /stats/grouped", () => {
 
     await request(app)
       .post("/stats/grouped")
+      .set(identityHeadersObj)
       .send({
         groups: {
           "test-group": { runIds: ["run-1"] },

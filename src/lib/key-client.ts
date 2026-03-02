@@ -1,6 +1,7 @@
 /**
  * HTTP client for key-service
- * Decrypts app-level and BYOK (per-org) API keys at runtime.
+ * Resolves API keys at runtime via the unified GET /keys/:provider/decrypt endpoint.
+ * Returns both the key and its source ("platform" or "org") for cost tracking.
  */
 
 const KEY_SERVICE_URL = process.env.KEY_SERVICE_URL || "http://localhost:3001";
@@ -15,9 +16,15 @@ export interface CallerInfo {
   path: string;
 }
 
+export interface KeyResolution {
+  key: string;
+  keySource: "platform" | "org";
+}
+
 interface DecryptKeyResponse {
   provider: string;
   key: string;
+  keySource: "platform" | "org";
 }
 
 // ─── Errors ─────────────────────────────────────────────────────────────────
@@ -63,41 +70,25 @@ async function keyServiceRequest<T>(
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-export async function decryptAppKey(
-  provider: string,
-  appId: string,
-  caller: CallerInfo,
-): Promise<string> {
-  const result = await keyServiceRequest<DecryptKeyResponse>(
-    `/internal/app-keys/${encodeURIComponent(provider)}/decrypt?appId=${encodeURIComponent(appId)}`,
-    caller,
-  );
-  return result.key;
-}
-
-export async function decryptByokKey(
-  provider: string,
-  orgId: string,
-  caller: CallerInfo,
-): Promise<string> {
-  const result = await keyServiceRequest<DecryptKeyResponse>(
-    `/internal/keys/${encodeURIComponent(provider)}/decrypt?orgId=${encodeURIComponent(orgId)}`,
-    caller,
-  );
-  return result.key;
-}
-
 /**
  * Resolve the Instantly API key for a request.
- * - If orgId is provided: use the org's BYOK key (NO fallback to app key).
- * - If orgId is null/undefined: use the shared app key (service-level ops).
+ * Uses the unified GET /keys/:provider/decrypt endpoint which auto-resolves
+ * between org and platform keys based on the org's preference.
+ *
+ * @param orgId - Internal org UUID (required)
+ * @param userId - Internal user UUID (required for logging; use "system" for cron jobs)
+ * @param caller - Caller context for key-service tracking
+ * @returns { key, keySource } where keySource is "platform" or "org"
  */
 export async function resolveInstantlyApiKey(
-  orgId: string | null | undefined,
+  orgId: string,
+  userId: string,
   caller: CallerInfo,
-): Promise<string> {
-  if (orgId) {
-    return decryptByokKey("instantly", orgId, caller);
-  }
-  return decryptAppKey("instantly", "instantly-service", caller);
+): Promise<KeyResolution> {
+  const params = new URLSearchParams({ orgId, userId });
+  const result = await keyServiceRequest<DecryptKeyResponse>(
+    `/keys/instantly/decrypt?${params.toString()}`,
+    caller,
+  );
+  return { key: result.key, keySource: result.keySource };
 }

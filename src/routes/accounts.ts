@@ -8,7 +8,7 @@ import {
   disableWarmup as disableInstantlyWarmup,
   getWarmupAnalytics,
 } from "../lib/instantly-client";
-import { decryptAppKey } from "../lib/key-client";
+import { resolveInstantlyApiKey } from "../lib/key-client";
 import { WarmupRequestSchema } from "../schemas";
 
 const router = Router();
@@ -31,8 +31,10 @@ router.get("/", async (req: Request, res: Response) => {
  */
 router.post("/sync", async (req: Request, res: Response) => {
   try {
-    // Decrypt Instantly API key from key-service
-    const apiKey = await decryptAppKey("instantly", "instantly-service", {
+    // Resolve Instantly API key via key-service
+    const orgId = res.locals.orgId as string;
+    const userId = res.locals.userId as string;
+    const { key: apiKey } = await resolveInstantlyApiKey(orgId, userId, {
       method: "POST",
       path: "/accounts/sync",
     });
@@ -84,8 +86,10 @@ router.post("/:email/warmup", async (req: Request, res: Response) => {
   const { enabled } = parsed.data;
 
   try {
-    // Decrypt Instantly API key from key-service
-    const apiKey = await decryptAppKey("instantly", "instantly-service", {
+    // Resolve Instantly API key via key-service
+    const orgId = res.locals.orgId as string;
+    const userId = res.locals.userId as string;
+    const { key: apiKey } = await resolveInstantlyApiKey(orgId, userId, {
       method: "POST",
       path: "/accounts/:email/warmup",
     });
@@ -112,8 +116,10 @@ router.post("/:email/warmup", async (req: Request, res: Response) => {
  */
 router.get("/warmup-analytics", async (req: Request, res: Response) => {
   try {
-    // Decrypt Instantly API key from key-service
-    const apiKey = await decryptAppKey("instantly", "instantly-service", {
+    // Resolve Instantly API key via key-service
+    const orgId = res.locals.orgId as string;
+    const userId = res.locals.userId as string;
+    const { key: apiKey } = await resolveInstantlyApiKey(orgId, userId, {
       method: "GET",
       path: "/accounts/warmup-analytics",
     });

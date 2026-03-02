@@ -143,9 +143,7 @@ export const SequenceStepSchema = z.object({
 
 export const SendRequestSchema = z
   .object({
-    orgId: z.string().optional(),
     brandId: z.string(),
-    appId: z.string(),
     runId: z.string(),
     campaignId: z.string(),
     leadId: z.string().optional().describe("External lead ID from lead-service"),
@@ -209,9 +207,7 @@ registry.registerPath({
 
 export const CreateCampaignRequestSchema = z
   .object({
-    orgId: z.string(),
     brandId: z.string(),
-    appId: z.string(),
     name: z.string(),
     runId: z.string().optional(),
     accountIds: z.array(z.string()).optional(),
@@ -378,7 +374,6 @@ const LeadInputSchema = z.object({
 
 export const AddLeadsRequestSchema = z
   .object({
-    orgId: z.string(),
     runId: z.string().optional(),
     leads: z.array(LeadInputSchema),
   })
@@ -497,9 +492,7 @@ registry.registerPath({
 export const StatsRequestSchema = z
   .object({
     runIds: z.array(z.string()).optional(),
-    orgId: z.string().optional(),
     brandId: z.string().optional(),
-    appId: z.string().optional(),
     campaignId: z.string().optional(),
   })
   .openapi("StatsRequest");

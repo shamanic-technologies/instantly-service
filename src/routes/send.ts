@@ -181,11 +181,13 @@ router.post("/", async (req: Request, res: Response) => {
     });
   }
   const body = parsed.data;
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string;
   console.log(`[send] POST /send to=${body.to} campaignId=${body.campaignId} subject="${body.subject}" steps=${body.sequence.length}`);
 
   try {
-    // 0. Resolve Instantly API key (BYOK per-org or shared app key)
-    const apiKey = await resolveInstantlyApiKey(body.orgId, {
+    // 0. Resolve Instantly API key (auto-resolves org vs platform key)
+    const { key: apiKey, keySource } = await resolveInstantlyApiKey(orgId, userId, {
       method: "POST",
       path: "/send",
     });
@@ -262,9 +264,8 @@ router.post("/", async (req: Request, res: Response) => {
             name: `Campaign ${body.campaignId}`,
             status: "active",
             deliveryStatus: "pending",
-            orgId: body.orgId,
+            orgId,
             brandId: body.brandId,
-            appId: body.appId,
             runId: body.runId,
           })
           .returning();
@@ -279,7 +280,7 @@ router.post("/", async (req: Request, res: Response) => {
             lastName: body.lastName,
             companyName: body.company,
             customVariables: body.variables,
-            orgId: body.orgId,
+            orgId,
             runId: null,
           })
           .onConflictDoNothing()
@@ -289,43 +290,42 @@ router.post("/", async (req: Request, res: Response) => {
       }
 
       // 4. Create per-step runs: 1 actual+completed (step 1) + N-1 provisioned+ongoing
-      if (body.orgId) {
-        for (const s of sortedSequence) {
-          const isFirstStep = s.step === sortedSequence[0].step;
-          const stepRun = await createRun({
-            orgId: body.orgId,
-            appId: body.appId,
-            serviceName: "instantly-service",
-            taskName: `email-send-step-${s.step}`,
-            brandId: body.brandId,
+      for (const s of sortedSequence) {
+        const isFirstStep = s.step === sortedSequence[0].step;
+        const stepRun = await createRun({
+          orgId,
+          serviceName: "instantly-service",
+          taskName: `email-send-step-${s.step}`,
+          userId,
+          brandId: body.brandId,
+          campaignId: body.campaignId,
+          parentRunId: body.runId,
+        });
+
+        const costResult = await addCosts(stepRun.id, [{
+          costName: "instantly-email-send",
+          quantity: 1,
+          costSource: keySource,
+          status: isFirstStep ? "actual" as const : "provisioned" as const,
+        }]);
+
+        const costId = costResult.costs[0]?.id;
+        if (costId) {
+          await db.insert(sequenceCosts).values({
             campaignId: body.campaignId,
-            parentRunId: body.runId,
+            leadEmail: body.to,
+            step: s.step,
+            runId: stepRun.id,
+            costId,
+            status: isFirstStep ? "actual" : "provisioned",
           });
-
-          const costResult = await addCosts(stepRun.id, [{
-            costName: "instantly-email-send",
-            quantity: 1,
-            status: isFirstStep ? "actual" as const : "provisioned" as const,
-          }]);
-
-          const costId = costResult.costs[0]?.id;
-          if (costId) {
-            await db.insert(sequenceCosts).values({
-              campaignId: body.campaignId,
-              leadEmail: body.to,
-              step: s.step,
-              runId: stepRun.id,
-              costId,
-              status: isFirstStep ? "actual" : "provisioned",
-            });
-          }
-
-          if (isFirstStep) {
-            await updateRun(stepRun.id, "completed");
-          }
-
-          stepRuns.push({ step: s.step, runId: stepRun.id });
         }
+
+        if (isFirstStep) {
+          await updateRun(stepRun.id, "completed");
+        }
+
+        stepRuns.push({ step: s.step, runId: stepRun.id });
       }
 
       console.log(`[send] Done — to=${body.to} campaignId=${body.campaignId} added=${added} stepRuns=${stepRuns.length}`);
@@ -350,7 +350,7 @@ router.post("/", async (req: Request, res: Response) => {
   } catch (error: any) {
     if (error instanceof KeyServiceError && error.statusCode === 404) {
       return res.status(422).json({
-        error: "BYOK key not configured for this organization",
+        error: "API key not configured for this organization",
         details: "Please configure your Instantly API key before sending emails.",
       });
     }
