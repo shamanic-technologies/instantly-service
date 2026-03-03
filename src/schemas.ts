@@ -144,7 +144,6 @@ export const SequenceStepSchema = z.object({
 export const SendRequestSchema = z
   .object({
     brandId: z.string(),
-    runId: z.string(),
     campaignId: z.string(),
     leadId: z.string().optional().describe("External lead ID from lead-service"),
     to: z.string(),
@@ -209,7 +208,6 @@ export const CreateCampaignRequestSchema = z
   .object({
     brandId: z.string(),
     name: z.string(),
-    runId: z.string().optional(),
     accountIds: z.array(z.string()).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
   })
@@ -374,7 +372,6 @@ const LeadInputSchema = z.object({
 
 export const AddLeadsRequestSchema = z
   .object({
-    runId: z.string().optional(),
     leads: z.array(LeadInputSchema),
   })
   .openapi("AddLeadsRequest");

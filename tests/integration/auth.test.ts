@@ -41,7 +41,8 @@ describe("Auth Integration", () => {
       const response = await request(app)
         .get("/campaigns/test-id")
         .set("X-API-Key", "test-api-key")
-        .set("x-user-id", "test-user");
+        .set("x-user-id", "test-user")
+        .set("x-run-id", "test-run");
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain("x-org-id");
@@ -53,10 +54,24 @@ describe("Auth Integration", () => {
       const response = await request(app)
         .get("/campaigns/test-id")
         .set("X-API-Key", "test-api-key")
-        .set("x-org-id", "test-org");
+        .set("x-org-id", "test-org")
+        .set("x-run-id", "test-run");
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain("x-org-id");
+    });
+
+    it("should return 400 when x-run-id is missing", async () => {
+      process.env.INSTANTLY_SERVICE_API_KEY = "test-api-key";
+
+      const response = await request(app)
+        .get("/campaigns/test-id")
+        .set("X-API-Key", "test-api-key")
+        .set("x-org-id", "test-org")
+        .set("x-user-id", "test-user");
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain("x-run-id");
     });
 
     it("should not require identity headers on /health", async () => {

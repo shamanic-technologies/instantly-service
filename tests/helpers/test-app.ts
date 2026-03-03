@@ -18,7 +18,7 @@ export function createTestApp() {
   app.use(healthRoutes);
   app.use("/webhooks", webhooksRoutes);
 
-  // Protected routes (require X-API-Key + x-org-id + x-user-id)
+  // Protected routes (require X-API-Key + x-org-id + x-user-id + x-run-id)
   app.use("/send", serviceAuth, identityHeaders, sendRoutes);
   app.use("/status", serviceAuth, identityHeaders, statusRoutes);
   app.use("/campaigns", serviceAuth, identityHeaders, campaignsRoutes);
@@ -34,5 +34,6 @@ export function getAuthHeaders() {
     "X-API-Key": process.env.INSTANTLY_SERVICE_API_KEY || "test-api-key",
     "x-org-id": "test-org",
     "x-user-id": "test-user",
+    "x-run-id": "test-run",
   };
 }

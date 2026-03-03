@@ -266,7 +266,7 @@ router.post("/", async (req: Request, res: Response) => {
             deliveryStatus: "pending",
             orgId,
             brandId: body.brandId,
-            runId: body.runId,
+            runId: res.locals.runId as string,
           })
           .returning();
 
@@ -299,7 +299,7 @@ router.post("/", async (req: Request, res: Response) => {
           userId,
           brandId: body.brandId,
           campaignId: body.campaignId,
-          parentRunId: body.runId,
+          parentRunId: res.locals.runId as string,
         });
 
         const costResult = await addCosts(stepRun.id, [{

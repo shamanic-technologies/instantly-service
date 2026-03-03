@@ -157,9 +157,6 @@
           "brandId": {
             "type": "string"
           },
-          "runId": {
-            "type": "string"
-          },
           "campaignId": {
             "type": "string"
           },
@@ -221,7 +218,6 @@
         },
         "required": [
           "brandId",
-          "runId",
           "campaignId",
           "to",
           "subject",
@@ -273,9 +269,6 @@
             "type": "string"
           },
           "name": {
-            "type": "string"
-          },
-          "runId": {
             "type": "string"
           },
           "accountIds": {
@@ -376,9 +369,6 @@
       "AddLeadsRequest": {
         "type": "object",
         "properties": {
-          "runId": {
-            "type": "string"
-          },
           "leads": {
             "type": "array",
             "items": {

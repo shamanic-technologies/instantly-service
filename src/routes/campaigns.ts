@@ -52,7 +52,7 @@ router.post("/", async (req: Request, res: Response) => {
       taskName: "campaign-create",
       userId,
       brandId: body.brandId,
-      parentRunId: body.runId,
+      parentRunId: res.locals.runId as string,
     });
 
     try {

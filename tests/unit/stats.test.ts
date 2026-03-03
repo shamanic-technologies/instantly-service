@@ -35,7 +35,7 @@ process.env.INSTANTLY_SERVICE_API_KEY = "test-api-key";
 
 import { identityHeaders } from "../../src/middleware/identityHeaders";
 
-const identityHeadersObj = { "x-org-id": "test-org", "x-user-id": "test-user" };
+const identityHeadersObj = { "x-org-id": "test-org", "x-user-id": "test-user", "x-run-id": "test-run" };
 
 async function createStatsApp() {
   const analyticsRouter = (await import("../../src/routes/analytics")).default;

@@ -65,7 +65,7 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
       taskName: "leads-add",
       userId,
       brandId: campaign.brandId,
-      parentRunId: body.runId,
+      parentRunId: res.locals.runId as string,
     });
 
     try {
