@@ -38,7 +38,7 @@ app.get("/openapi.json", (_req, res) => {
 app.use(healthRoutes);
 app.use("/webhooks", webhooksRoutes);
 
-// Protected routes (require X-API-Key + x-org-id + x-user-id)
+// Protected routes (require X-API-Key + x-org-id + x-user-id + x-run-id)
 app.use("/send", serviceAuth, identityHeaders, sendRoutes);
 app.use("/status", serviceAuth, identityHeaders, statusRoutes);
 app.use("/campaigns", serviceAuth, identityHeaders, campaignsRoutes);

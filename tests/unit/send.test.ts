@@ -84,7 +84,7 @@ async function createSendApp() {
   return app;
 }
 
-const identityHeadersObj = { "x-org-id": "org-1", "x-user-id": "user-1" };
+const identityHeadersObj = { "x-org-id": "org-1", "x-user-id": "user-1", "x-run-id": "run-1" };
 
 const validBody = {
   to: "test@example.com",
@@ -99,7 +99,6 @@ const validBody = {
   ],
   campaignId: "camp-1",
   leadId: "lead-1",
-  runId: "run-1",
   brandId: "brand-1",
 };
 

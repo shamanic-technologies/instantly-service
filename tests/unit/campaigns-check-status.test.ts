@@ -85,7 +85,7 @@ vi.mock("../../src/lib/email-client", () => ({
 
 import { identityHeaders } from "../../src/middleware/identityHeaders";
 
-const identityHeadersObj = { "x-org-id": "test-org", "x-user-id": "test-user" };
+const identityHeadersObj = { "x-org-id": "test-org", "x-user-id": "test-user", "x-run-id": "test-run" };
 
 async function createCampaignsApp() {
   const campaignsRouter = (await import("../../src/routes/campaigns")).default;
