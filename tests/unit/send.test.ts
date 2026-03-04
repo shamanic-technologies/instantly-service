@@ -304,14 +304,14 @@ describe("POST /send", () => {
     await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(mockCreateRun).toHaveBeenCalledTimes(3);
-    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }));
-    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-2" }));
-    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-3" }));
+    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }), expect.objectContaining({ orgId: "org-1", userId: "user-1" }));
+    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-2" }), expect.objectContaining({ orgId: "org-1", userId: "user-1" }));
+    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-3" }), expect.objectContaining({ orgId: "org-1", userId: "user-1" }));
 
     expect(mockAddCosts).toHaveBeenCalledTimes(3);
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "actual" }]);
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-2", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "provisioned" }]);
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-3", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "provisioned" }]);
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "actual" }], expect.objectContaining({ orgId: "org-1" }));
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-2", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "provisioned" }], expect.objectContaining({ orgId: "org-1" }));
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-3", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "provisioned" }], expect.objectContaining({ orgId: "org-1" }));
   });
 
 
@@ -351,12 +351,12 @@ describe("POST /send", () => {
 
     expect(res.status).toBe(200);
     expect(mockCreateRun).toHaveBeenCalledTimes(1);
-    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }));
+    expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }), expect.objectContaining({ orgId: "org-1" }));
     expect(mockAddCosts).toHaveBeenCalledTimes(1);
     expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [
       { costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "actual" },
-    ]);
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed");
+    ], expect.objectContaining({ orgId: "org-1" }));
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" }));
   });
 
   it("should skip Instantly API call when same lead already processed for campaign", async () => {
@@ -450,7 +450,7 @@ describe("POST /send", () => {
     expect(mockCreateCampaign).toHaveBeenCalledTimes(2);
     expect(mockCreateRun).toHaveBeenCalledTimes(3); // 3 step runs
     expect(mockAddCosts).toHaveBeenCalledTimes(3);
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed"); // only step 1
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" })); // only step 1
   });
 
   it("should fail after MAX_SEND_RETRIES attempts with not_sending_status and NOT add costs", async () => {
@@ -494,7 +494,7 @@ describe("POST /send", () => {
 
     // Only step 1 should be completed
     expect(mockUpdateRun).toHaveBeenCalledTimes(1);
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed");
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" }));
   });
 
   it("should return stepRuns array in response", async () => {

@@ -66,6 +66,7 @@ const baseCampaign = {
   instantlyCampaignId: "inst-camp-1",
   name: "Campaign camp-1",
   status: "active",
+  orgId: "org-1",
   runId: "run-1",
   metadata: null,
 };
@@ -103,11 +104,11 @@ describe("handleCampaignError", () => {
     await handleCampaignError("inst-camp-1", "account disconnected");
 
     expect(mockUpdateCostStatus).toHaveBeenCalledTimes(2);
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled");
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-3", "cost-3", "cancelled");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled", expect.objectContaining({ orgId: "org-1", runId: "step-run-2" }));
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-3", "cost-3", "cancelled", expect.objectContaining({ orgId: "org-1", runId: "step-run-3" }));
     // Step runs should also be failed
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", "account disconnected");
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-3", "failed", "account disconnected");
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", expect.objectContaining({ orgId: "org-1", runId: "step-run-2" }), "account disconnected");
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-3", "failed", expect.objectContaining({ orgId: "org-1", runId: "step-run-3" }), "account disconnected");
   });
 
   it("should mark the parent run as failed", async () => {
@@ -116,7 +117,7 @@ describe("handleCampaignError", () => {
 
     await handleCampaignError("inst-camp-1", "account disconnected");
 
-    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", "account disconnected");
+    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", expect.objectContaining({ orgId: "org-1", runId: "run-1" }), "account disconnected");
   });
 
   it("should throw if parent updateRun fails", async () => {
@@ -129,7 +130,7 @@ describe("handleCampaignError", () => {
     ).rejects.toThrow("runs-service down");
   });
 
-  it("should send admin notification email", async () => {
+  it("should send admin notification email with identity context", async () => {
     mockDbWhere.mockResolvedValueOnce([baseCampaign]);
     mockDbWhere.mockResolvedValueOnce([]);
 
@@ -146,6 +147,7 @@ describe("handleCampaignError", () => {
           errorReason: "account disconnected",
         }),
       }),
+      expect.objectContaining({ orgId: "org-1", userId: "system" }),
     );
   });
 
@@ -158,7 +160,7 @@ describe("handleCampaignError", () => {
     await handleCampaignError("inst-camp-1", "account disconnected");
 
     // Run should still be marked as failed
-    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", "account disconnected");
+    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", expect.objectContaining({ orgId: "org-1" }), "account disconnected");
   });
 
   it("should skip if campaign already in error state", async () => {
@@ -198,15 +200,15 @@ describe("handleCampaignError", () => {
     await handleCampaignError("inst-camp-1", "email gateway fail");
 
     expect(mockUpdateCostStatus).toHaveBeenCalledTimes(3);
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-1", "cost-1", "cancelled");
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled");
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-3", "cost-3", "cancelled");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-1", "cost-1", "cancelled", expect.objectContaining({ orgId: "org-1", runId: "step-run-1" }));
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled", expect.objectContaining({ orgId: "org-1", runId: "step-run-2" }));
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-3", "cost-3", "cancelled", expect.objectContaining({ orgId: "org-1", runId: "step-run-3" }));
     // All step runs should be failed (including step 1)
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "failed", "email gateway fail");
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", "email gateway fail");
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-3", "failed", "email gateway fail");
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "failed", expect.objectContaining({ orgId: "org-1", runId: "step-run-1" }), "email gateway fail");
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", expect.objectContaining({ orgId: "org-1", runId: "step-run-2" }), "email gateway fail");
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-3", "failed", expect.objectContaining({ orgId: "org-1", runId: "step-run-3" }), "email gateway fail");
     // Plus the parent run
-    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", "email gateway fail");
+    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", expect.objectContaining({ orgId: "org-1", runId: "run-1" }), "email gateway fail");
   });
 
   it("should not throw when step 1 run fail is rejected (already completed)", async () => {
@@ -223,9 +225,9 @@ describe("handleCampaignError", () => {
     await handleCampaignError("inst-camp-1", "email gateway fail");
 
     // Cost should still be cancelled
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-1", "cost-1", "cancelled");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-1", "cost-1", "cancelled", expect.objectContaining({ orgId: "org-1", runId: "step-run-1" }));
     // Parent run should still be failed
-    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", "email gateway fail");
+    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", expect.objectContaining({ orgId: "org-1", runId: "run-1" }), "email gateway fail");
   });
 
   it("should handle campaign with no runId", async () => {

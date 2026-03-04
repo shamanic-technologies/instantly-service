@@ -27,27 +27,30 @@ describe("runs-client", () => {
     expect(typeof addCosts).toBe("function");
   });
 
-  it("createRun should hardcode appId as instantly-service", async () => {
+  it("createRun should send identity headers and body without orgId/userId/parentRunId", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({ id: "run-1", status: "running" }),
     });
 
     const { createRun } = await import("../../src/lib/runs-client");
-    await createRun({
-      orgId: "org-1",
-      serviceName: "instantly-service",
-      taskName: "test-task",
-    });
+    await createRun(
+      { serviceName: "instantly-service", taskName: "test-task" },
+      { orgId: "org-1", userId: "user-1", runId: "parent-run-1" },
+    );
 
     const [, options] = mockFetch.mock.calls[0];
     const body = JSON.parse(options.body);
-    expect(body.appId).toBe("instantly-service");
-    expect(body.orgId).toBe("org-1");
     expect(body.serviceName).toBe("instantly-service");
+    expect(body.orgId).toBeUndefined();
+    expect(body.userId).toBeUndefined();
+    expect(body.parentRunId).toBeUndefined();
+    expect(options.headers["x-org-id"]).toBe("org-1");
+    expect(options.headers["x-user-id"]).toBe("user-1");
+    expect(options.headers["x-run-id"]).toBe("parent-run-1");
   });
 
-  it("addCosts should include costSource on each item", async () => {
+  it("addCosts should include costSource on each item and forward identity headers", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({ costs: [{ id: "cost-1" }] }),
@@ -56,12 +59,15 @@ describe("runs-client", () => {
     const { addCosts } = await import("../../src/lib/runs-client");
     await addCosts("run-1", [
       { costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "actual" },
-    ]);
+    ], { orgId: "org-1", userId: "user-1", runId: "run-1" });
 
     const [url, options] = mockFetch.mock.calls[0];
     expect(url).toContain("/v1/runs/run-1/costs");
     const body = JSON.parse(options.body);
     expect(body.items[0].costSource).toBe("platform");
     expect(body.items[0].costName).toBe("instantly-email-send");
+    expect(options.headers["x-org-id"]).toBe("org-1");
+    expect(options.headers["x-user-id"]).toBe("user-1");
+    expect(options.headers["x-run-id"]).toBe("run-1");
   });
 });

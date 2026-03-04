@@ -17,7 +17,7 @@ describe("key-client", () => {
     expect(typeof resolveInstantlyApiKey).toBe("function");
   });
 
-  it("resolveInstantlyApiKey should call unified decrypt endpoint with orgId and userId", async () => {
+  it("resolveInstantlyApiKey should call unified decrypt endpoint with identity headers", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({ provider: "instantly", key: "resolved-key-123", keySource: "platform" }),
@@ -32,11 +32,11 @@ describe("key-client", () => {
     expect(result).toEqual({ key: "resolved-key-123", keySource: "platform" });
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const [url, options] = mockFetch.mock.calls[0];
-    expect(url).toBe(
-      "http://localhost:3001/keys/instantly/decrypt?orgId=org_123&userId=user_456"
-    );
+    expect(url).toBe("http://localhost:3001/keys/instantly/decrypt");
     expect(options.method).toBe("GET");
     expect(options.headers["x-api-key"]).toBe("test-key-service-key");
+    expect(options.headers["x-org-id"]).toBe("org_123");
+    expect(options.headers["x-user-id"]).toBe("user_456");
     expect(options.headers["X-Caller-Service"]).toBe("instantly");
     expect(options.headers["X-Caller-Method"]).toBe("POST");
     expect(options.headers["X-Caller-Path"]).toBe("/send");
@@ -103,7 +103,7 @@ describe("key-client", () => {
       path: "/campaigns/check-status",
     });
 
-    const [url] = mockFetch.mock.calls[0];
-    expect(url).toContain("userId=system");
+    const [, options] = mockFetch.mock.calls[0];
+    expect(options.headers["x-user-id"]).toBe("system");
   });
 });

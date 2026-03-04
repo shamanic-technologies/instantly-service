@@ -46,14 +46,12 @@ router.post("/", async (req: Request, res: Response) => {
     });
 
     // 1. Create run in runs-service FIRST (BLOCKING)
+    const identity = { orgId, userId, runId: res.locals.runId as string };
     const run = await createRun({
-      orgId,
       serviceName: "instantly-service",
       taskName: "campaign-create",
-      userId,
       brandId: body.brandId,
-      parentRunId: res.locals.runId as string,
-    });
+    }, identity);
 
     try {
       // 2. Create campaign in Instantly (no sequence steps — steps are added via POST /send)
@@ -84,10 +82,11 @@ router.post("/", async (req: Request, res: Response) => {
         .returning();
 
       // 4. Log costs and complete run
+      const runIdentity = { orgId, userId, runId: run.id };
       await addCosts(run.id, [
         { costName: "instantly-campaign-create", quantity: 1, costSource: keySource },
-      ]);
-      await updateRun(run.id, "completed");
+      ], runIdentity);
+      await updateRun(run.id, "completed", runIdentity);
 
       res.status(201).json({
         success: true,
@@ -99,7 +98,7 @@ router.post("/", async (req: Request, res: Response) => {
         },
       });
     } catch (error: any) {
-      await updateRun(run.id, "failed", error.message);
+      await updateRun(run.id, "failed", { orgId, userId, runId: run.id }, error.message);
       throw error;
     }
   } catch (error: any) {

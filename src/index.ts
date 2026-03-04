@@ -51,23 +51,26 @@ const PORT = process.env.PORT || 3011;
 async function deployEmailTemplates(): Promise<void> {
   try {
     const { deployTemplates } = await import("./lib/email-client");
-    await deployTemplates({
-      appId: "instantly-service",
-      templates: [
-        {
-          name: "campaign-error",
-          subject: "[Instantly] Campaign error: {{campaignId}}",
-          htmlBody: [
-            "<h2>Campaign Error Detected</h2>",
-            "<p><strong>Campaign ID:</strong> {{campaignId}}</p>",
-            "<p><strong>Lead Email:</strong> {{leadEmail}}</p>",
-            "<p><strong>Instantly Campaign ID:</strong> {{instantlyCampaignId}}</p>",
-            "<p><strong>Error:</strong></p>",
-            "<pre>{{errorReason}}</pre>",
-          ].join("\n"),
-        },
-      ],
-    });
+    await deployTemplates(
+      {
+        appId: "instantly-service",
+        templates: [
+          {
+            name: "campaign-error",
+            subject: "[Instantly] Campaign error: {{campaignId}}",
+            htmlBody: [
+              "<h2>Campaign Error Detected</h2>",
+              "<p><strong>Campaign ID:</strong> {{campaignId}}</p>",
+              "<p><strong>Lead Email:</strong> {{leadEmail}}</p>",
+              "<p><strong>Instantly Campaign ID:</strong> {{instantlyCampaignId}}</p>",
+              "<p><strong>Error:</strong></p>",
+              "<pre>{{errorReason}}</pre>",
+            ].join("\n"),
+          },
+        ],
+      },
+      { orgId: "system", userId: "system", runId: "system" },
+    );
     console.log("[startup] Email templates deployed");
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);

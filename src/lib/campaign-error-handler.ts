@@ -12,8 +12,7 @@
 import { db } from "../db";
 import { instantlyCampaigns, sequenceCosts } from "../db/schema";
 import { eq, and, or } from "drizzle-orm";
-import { updateRun } from "./runs-client";
-import { updateCostStatus } from "./runs-client";
+import { updateRun, updateCostStatus, type IdentityContext } from "./runs-client";
 import { sendEmail } from "./email-client";
 
 const ADMIN_EMAIL = process.env.ADMIN_NOTIFICATION_EMAIL || "kevin@distribute.you";
@@ -50,6 +49,13 @@ export async function handleCampaignError(
     `[campaign-error] Campaign ${instantlyCampaignId} (${campaign.campaignId}/${campaign.leadEmail}) → error: ${reason}`,
   );
 
+  // Build identity context from campaign record (automated process)
+  const identity: IdentityContext = {
+    orgId: campaign.orgId || "system",
+    userId: "system",
+    runId: campaign.runId || undefined,
+  };
+
   // 2. Update DB status to "error" with reason in metadata
   const existingMetadata =
     (campaign.metadata as Record<string, unknown>) || {};
@@ -80,7 +86,8 @@ export async function handleCampaignError(
       );
 
     for (const cost of remaining) {
-      await updateCostStatus(cost.runId, cost.costId, "cancelled");
+      const costIdentity: IdentityContext = { ...identity, runId: cost.runId };
+      await updateCostStatus(cost.runId, cost.costId, "cancelled", costIdentity);
       await db
         .update(sequenceCosts)
         .set({ status: "cancelled", updatedAt: new Date() })
@@ -90,7 +97,7 @@ export async function handleCampaignError(
       );
       // Fail the step's run (may already be completed for step 1)
       try {
-        await updateRun(cost.runId, "failed", reason);
+        await updateRun(cost.runId, "failed", costIdentity, reason);
         console.log(`[campaign-error] Failed run ${cost.runId} for step ${cost.step}`);
       } catch (runErr: unknown) {
         const msg = runErr instanceof Error ? runErr.message : String(runErr);
@@ -101,7 +108,7 @@ export async function handleCampaignError(
 
   // 4. Mark the run as failed (MUST succeed — let it throw)
   if (campaign.runId) {
-    await updateRun(campaign.runId, "failed", reason);
+    await updateRun(campaign.runId, "failed", identity, reason);
     console.log(
       `[campaign-error] Marked run ${campaign.runId} as failed`,
     );
@@ -109,17 +116,20 @@ export async function handleCampaignError(
 
   // 5. Send admin notification (non-fatal)
   try {
-    await sendEmail({
-      appId: "instantly-service",
-      eventType: "campaign-error",
-      recipientEmail: ADMIN_EMAIL,
-      metadata: {
-        campaignId: campaign.campaignId || "unknown",
-        leadEmail: campaign.leadEmail || "unknown",
-        instantlyCampaignId,
-        errorReason: reason,
+    await sendEmail(
+      {
+        appId: "instantly-service",
+        eventType: "campaign-error",
+        recipientEmail: ADMIN_EMAIL,
+        metadata: {
+          campaignId: campaign.campaignId || "unknown",
+          leadEmail: campaign.leadEmail || "unknown",
+          instantlyCampaignId,
+          errorReason: reason,
+        },
       },
-    });
+      identity,
+    );
     console.log(`[campaign-error] Admin notification sent to ${ADMIN_EMAIL}`);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);

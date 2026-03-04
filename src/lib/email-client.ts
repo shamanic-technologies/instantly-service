@@ -29,18 +29,32 @@ interface SendEmailParams {
   metadata?: Record<string, string>;
 }
 
+interface EmailIdentityContext {
+  orgId: string;
+  userId: string;
+  runId?: string;
+}
+
 async function emailServiceRequest<T>(
   path: string,
+  identity: EmailIdentityContext,
   options: { method?: string; body?: unknown } = {},
 ): Promise<T> {
   const { method = "GET", body } = options;
 
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "x-api-key": TRANSACTIONAL_EMAIL_SERVICE_API_KEY,
+    "x-org-id": identity.orgId,
+    "x-user-id": identity.userId,
+  };
+  if (identity.runId) {
+    headers["x-run-id"] = identity.runId;
+  }
+
   const response = await fetch(`${TRANSACTIONAL_EMAIL_SERVICE_URL}${path}`, {
     method,
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": TRANSACTIONAL_EMAIL_SERVICE_API_KEY,
-    },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
 
@@ -56,15 +70,19 @@ async function emailServiceRequest<T>(
 
 export async function deployTemplates(
   params: DeployTemplatesParams,
+  identity: EmailIdentityContext,
 ): Promise<void> {
-  await emailServiceRequest("/templates", {
+  await emailServiceRequest("/templates", identity, {
     method: "PUT",
     body: params,
   });
 }
 
-export async function sendEmail(params: SendEmailParams): Promise<void> {
-  await emailServiceRequest("/send", {
+export async function sendEmail(
+  params: SendEmailParams,
+  identity: EmailIdentityContext,
+): Promise<void> {
+  await emailServiceRequest("/send", identity, {
     method: "POST",
     body: params,
   });

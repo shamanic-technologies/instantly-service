@@ -59,14 +59,12 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
     });
 
     // 1. Create run in runs-service FIRST (BLOCKING)
+    const identity = { orgId, userId, runId: res.locals.runId as string };
     const run = await createRun({
-      orgId,
       serviceName: "instantly-service",
       taskName: "leads-add",
-      userId,
       brandId: campaign.brandId,
-      parentRunId: res.locals.runId as string,
-    });
+    }, identity);
 
     try {
       // 2. Add leads to Instantly
@@ -101,10 +99,11 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
         .onConflictDoNothing();
 
       // 4. Log costs and complete run
+      const runIdentity = { orgId, userId, runId: run.id };
       await addCosts(run.id, [
         { costName: "instantly-lead-add", quantity: body.leads.length, costSource: keySource },
-      ]);
-      await updateRun(run.id, "completed");
+      ], runIdentity);
+      await updateRun(run.id, "completed", runIdentity);
 
       res.status(201).json({
         success: true,
@@ -112,7 +111,7 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
         total: body.leads.length,
       });
     } catch (error: any) {
-      await updateRun(run.id, "failed", error.message);
+      await updateRun(run.id, "failed", { orgId, userId, runId: run.id }, error.message);
       throw error;
     }
   } catch (error: any) {
