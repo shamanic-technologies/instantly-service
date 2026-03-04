@@ -159,8 +159,8 @@ describe("POST /webhooks/instantly", () => {
         step: 2,
       });
 
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-2", "actual");
-    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "completed");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-2", "actual", expect.objectContaining({ orgId: expect.any(String), runId: "run-1" }));
+    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "completed", expect.objectContaining({ orgId: expect.any(String), runId: "run-1" }));
   });
 
   it("should NOT convert cost on email_sent for step 1 (already actual)", async () => {
@@ -205,11 +205,11 @@ describe("POST /webhooks/instantly", () => {
       });
 
     expect(mockUpdateCostStatus).toHaveBeenCalledTimes(2);
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled");
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-3", "cost-3", "cancelled");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled", expect.objectContaining({ runId: "step-run-2" }));
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-3", "cost-3", "cancelled", expect.objectContaining({ runId: "step-run-3" }));
     expect(mockUpdateRun).toHaveBeenCalledTimes(2);
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", "Sequence stopped: reply_received");
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-3", "failed", "Sequence stopped: reply_received");
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", expect.objectContaining({ runId: "step-run-2" }), "Sequence stopped: reply_received");
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-3", "failed", expect.objectContaining({ runId: "step-run-3" }), "Sequence stopped: reply_received");
   });
 
   it("should cancel provisions and fail step run on email_bounced", async () => {
@@ -229,8 +229,8 @@ describe("POST /webhooks/instantly", () => {
         lead_email: "lead@test.com",
       });
 
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled");
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", "Sequence stopped: email_bounced");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled", expect.objectContaining({ runId: "step-run-2" }));
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", expect.objectContaining({ runId: "step-run-2" }), "Sequence stopped: email_bounced");
   });
 
   it("should cancel provisions and fail step run on lead_unsubscribed", async () => {
@@ -250,8 +250,8 @@ describe("POST /webhooks/instantly", () => {
         lead_email: "lead@test.com",
       });
 
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled");
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", "Sequence stopped: lead_unsubscribed");
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("step-run-2", "cost-2", "cancelled", expect.objectContaining({ runId: "step-run-2" }));
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "failed", expect.objectContaining({ runId: "step-run-2" }), "Sequence stopped: lead_unsubscribed");
   });
 
   it("should NOT cancel provisions on auto_reply_received (sequence continues)", async () => {

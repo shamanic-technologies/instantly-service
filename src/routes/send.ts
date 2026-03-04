@@ -290,24 +290,23 @@ router.post("/", async (req: Request, res: Response) => {
       }
 
       // 4. Create per-step runs: 1 actual+completed (step 1) + N-1 provisioned+ongoing
+      const parentIdentity = { orgId, userId, runId: res.locals.runId as string };
       for (const s of sortedSequence) {
         const isFirstStep = s.step === sortedSequence[0].step;
         const stepRun = await createRun({
-          orgId,
           serviceName: "instantly-service",
           taskName: `email-send-step-${s.step}`,
-          userId,
           brandId: body.brandId,
           campaignId: body.campaignId,
-          parentRunId: res.locals.runId as string,
-        });
+        }, parentIdentity);
 
+        const stepIdentity = { orgId, userId, runId: stepRun.id };
         const costResult = await addCosts(stepRun.id, [{
           costName: "instantly-email-send",
           quantity: 1,
           costSource: keySource,
           status: isFirstStep ? "actual" as const : "provisioned" as const,
-        }]);
+        }], stepIdentity);
 
         const costId = costResult.costs[0]?.id;
         if (costId) {
@@ -322,7 +321,7 @@ router.post("/", async (req: Request, res: Response) => {
         }
 
         if (isFirstStep) {
-          await updateRun(stepRun.id, "completed");
+          await updateRun(stepRun.id, "completed", stepIdentity);
         }
 
         stepRuns.push({ step: s.step, runId: stepRun.id });
@@ -340,7 +339,7 @@ router.post("/", async (req: Request, res: Response) => {
       // Fail any step runs that were already created
       for (const sr of stepRuns) {
         try {
-          await updateRun(sr.runId, "failed", error.message);
+          await updateRun(sr.runId, "failed", { orgId, userId, runId: sr.runId }, error.message);
         } catch {
           // Run may already be completed (step 1) — ignore
         }

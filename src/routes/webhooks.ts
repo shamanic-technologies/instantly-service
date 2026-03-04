@@ -3,7 +3,7 @@ import { db } from "../db";
 import { instantlyEvents, instantlyCampaigns, sequenceCosts } from "../db/schema";
 import { eq, and } from "drizzle-orm";
 import { WebhookPayloadSchema } from "../schemas";
-import { updateCostStatus, updateRun } from "../lib/runs-client";
+import { updateCostStatus, updateRun, type IdentityContext } from "../lib/runs-client";
 
 const router = Router();
 
@@ -44,13 +44,19 @@ async function handleFollowUpSent(
 
   if (!cost) return;
 
+  const identity: IdentityContext = {
+    orgId: campaign.orgId || "system",
+    userId: "system",
+    runId: cost.runId,
+  };
+
   try {
-    await updateCostStatus(cost.runId, cost.costId, "actual");
+    await updateCostStatus(cost.runId, cost.costId, "actual", identity);
     await db
       .update(sequenceCosts)
       .set({ status: "actual", updatedAt: new Date() })
       .where(eq(sequenceCosts.id, cost.id));
-    await updateRun(cost.runId, "completed");
+    await updateRun(cost.runId, "completed", identity);
     console.log(`[webhooks] Converted provisioned cost ${cost.costId} to actual and completed run ${cost.runId} for step ${step}`);
   } catch (error: any) {
     console.error(`[webhooks] Failed to convert cost ${cost.costId}: ${error.message}`);
@@ -85,13 +91,18 @@ async function cancelRemainingProvisions(
     );
 
   for (const cost of remaining) {
+    const identity: IdentityContext = {
+      orgId: campaign.orgId || "system",
+      userId: "system",
+      runId: cost.runId,
+    };
     try {
-      await updateCostStatus(cost.runId, cost.costId, "cancelled");
+      await updateCostStatus(cost.runId, cost.costId, "cancelled", identity);
       await db
         .update(sequenceCosts)
         .set({ status: "cancelled", updatedAt: new Date() })
         .where(eq(sequenceCosts.id, cost.id));
-      await updateRun(cost.runId, "failed", `Sequence stopped: ${eventType}`);
+      await updateRun(cost.runId, "failed", identity, `Sequence stopped: ${eventType}`);
       console.log(`[webhooks] Cancelled provisioned cost ${cost.costId} and failed run ${cost.runId} for step ${cost.step}`);
     } catch (error: any) {
       console.error(`[webhooks] Failed to cancel cost ${cost.costId}: ${error.message}`);

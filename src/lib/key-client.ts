@@ -44,9 +44,12 @@ export class KeyServiceError extends Error {
 async function keyServiceRequest<T>(
   path: string,
   caller: CallerInfo,
+  identity: { orgId: string; userId: string },
 ): Promise<T> {
   const headers: Record<string, string> = {
     "x-api-key": KEY_SERVICE_API_KEY,
+    "x-org-id": identity.orgId,
+    "x-user-id": identity.userId,
     "X-Caller-Service": CALLER_SERVICE,
     "X-Caller-Method": caller.method,
     "X-Caller-Path": caller.path,
@@ -85,10 +88,10 @@ export async function resolveInstantlyApiKey(
   userId: string,
   caller: CallerInfo,
 ): Promise<KeyResolution> {
-  const params = new URLSearchParams({ orgId, userId });
   const result = await keyServiceRequest<DecryptKeyResponse>(
-    `/keys/instantly/decrypt?${params.toString()}`,
+    `/keys/instantly/decrypt`,
     caller,
+    { orgId, userId },
   );
   return { key: result.key, keySource: result.keySource };
 }
