@@ -568,6 +568,35 @@ registry.registerPath({
   },
 });
 
+registry.registerPath({
+  method: "post",
+  path: "/stats/public",
+  summary: "Get aggregated stats (no identity headers required)",
+  description:
+    "Same as POST /stats but without x-org-id / x-user-id / x-run-id requirements. " +
+    "Requires only X-API-Key. Used by leaderboard and landing pages with no user context.",
+  request: {
+    body: {
+      content: { "application/json": { schema: StatsRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Aggregated campaign stats",
+      content: { "application/json": { schema: StatsResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ─── Grouped Stats ──────────────────────────────────────────────────────────
 
 export const GroupedStatsRequestSchema = z
@@ -599,6 +628,35 @@ registry.registerPath({
   summary: "Get stats grouped by sets of run IDs",
   description:
     "Accepts named groups of run IDs and returns aggregated stats per group in a single call. Used by the leaderboard to fetch per-workflow stats.",
+  request: {
+    body: {
+      content: { "application/json": { schema: GroupedStatsRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Stats per group",
+      content: { "application/json": { schema: GroupedStatsResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/stats/grouped/public",
+  summary: "Get grouped stats (no identity headers required)",
+  description:
+    "Same as POST /stats/grouped but without x-org-id / x-user-id / x-run-id requirements. " +
+    "Requires only X-API-Key. Used by leaderboard and landing pages with no user context.",
   request: {
     body: {
       content: { "application/json": { schema: GroupedStatsRequestSchema } },

@@ -4,6 +4,7 @@ import campaignsRoutes from "../../src/routes/campaigns";
 import leadsRoutes from "../../src/routes/leads";
 import accountsRoutes from "../../src/routes/accounts";
 import analyticsRoutes from "../../src/routes/analytics";
+import analyticsPublicRoutes from "../../src/routes/analytics-public";
 import webhooksRoutes from "../../src/routes/webhooks";
 import sendRoutes from "../../src/routes/send";
 import statusRoutes from "../../src/routes/status";
@@ -17,6 +18,9 @@ export function createTestApp() {
   // Public routes
   app.use(healthRoutes);
   app.use("/webhooks", webhooksRoutes);
+
+  // Semi-public routes (require X-API-Key only, no identity headers)
+  app.use("/", serviceAuth, analyticsPublicRoutes);
 
   // Protected routes (require X-API-Key + x-org-id + x-user-id + x-run-id)
   app.use("/send", serviceAuth, identityHeaders, sendRoutes);

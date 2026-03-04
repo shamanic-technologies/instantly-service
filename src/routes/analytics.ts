@@ -19,7 +19,7 @@ const EXCLUDED_DOMAINS = [
 ];
 
 /** SQL fragment that filters out internal/sender events */
-function internalExclusionClause(): SQL {
+export function internalExclusionClause(): SQL {
   const domainConditions = EXCLUDED_DOMAINS.map(
     (d) => sql`e.lead_email LIKE ${"%" + d}`,
   );
@@ -47,7 +47,7 @@ const ZERO_STATS = {
 };
 
 /** Execute the aggregate stats query and return { stats, recipients } */
-async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO_STATS; recipients: number }> {
+export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO_STATS; recipients: number }> {
   const result = await db.execute(sql`
     SELECT
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",

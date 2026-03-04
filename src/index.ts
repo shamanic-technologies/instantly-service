@@ -11,6 +11,7 @@ import campaignsRoutes from "./routes/campaigns";
 import leadsRoutes from "./routes/leads";
 import accountsRoutes from "./routes/accounts";
 import analyticsRoutes from "./routes/analytics";
+import analyticsPublicRoutes from "./routes/analytics-public";
 import webhooksRoutes from "./routes/webhooks";
 import sendRoutes from "./routes/send";
 import statusRoutes from "./routes/status";
@@ -37,6 +38,9 @@ app.get("/openapi.json", (_req, res) => {
 // Public routes (no auth)
 app.use(healthRoutes);
 app.use("/webhooks", webhooksRoutes);
+
+// Semi-public routes (require X-API-Key only, no identity headers)
+app.use("/", serviceAuth, analyticsPublicRoutes);
 
 // Protected routes (require X-API-Key + x-org-id + x-user-id + x-run-id)
 app.use("/send", serviceAuth, identityHeaders, sendRoutes);
