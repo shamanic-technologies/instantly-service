@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
-import { StatsRequestSchema, GroupedStatsRequestSchema } from "../schemas";
+import { StatsRequestSchema } from "../schemas";
 import { queryStats, internalExclusionClause } from "./analytics";
 
 const router = Router();
@@ -71,42 +71,6 @@ router.post("/stats/public", async (req: Request, res: Response) => {
     const msg = error.cause?.message ?? error.message ?? String(error);
     console.error(`[stats/public] Failed to aggregate stats: ${msg}`, error);
     res.status(500).json({ error: "Failed to aggregate stats" });
-  }
-});
-
-/**
- * POST /stats/grouped/public
- * Same as POST /stats/grouped but without identity headers (no org scoping).
- * Used by leaderboard / landing pages with no user context.
- */
-router.post("/stats/grouped/public", async (req: Request, res: Response) => {
-  const parsed = GroupedStatsRequestSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({
-      error: "Invalid request",
-      details: parsed.error.flatten(),
-    });
-  }
-
-  const entries = Object.entries(parsed.data.groups);
-  if (entries.length === 0) {
-    return res.json({ groups: [] });
-  }
-
-  try {
-    const results = await Promise.all(
-      entries.map(async ([key, { runIds }]) => {
-        const whereClause = sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`;
-        const { stats, recipients } = await queryStats(whereClause);
-        return { key, stats, recipients };
-      }),
-    );
-
-    res.json({ groups: results });
-  } catch (error: any) {
-    const msg = error.cause?.message ?? error.message ?? String(error);
-    console.error(`[stats/grouped/public] Failed to aggregate grouped stats: ${msg}`, error);
-    res.status(500).json({ error: "Failed to aggregate grouped stats" });
   }
 });
 

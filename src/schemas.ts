@@ -650,35 +650,6 @@ registry.registerPath({
   },
 });
 
-registry.registerPath({
-  method: "post",
-  path: "/stats/grouped/public",
-  summary: "Get grouped stats (no identity headers required)",
-  description:
-    "Same as POST /stats/grouped but without x-org-id / x-user-id / x-run-id requirements. " +
-    "Requires only X-API-Key. Used by leaderboard and landing pages with no user context.",
-  request: {
-    body: {
-      content: { "application/json": { schema: GroupedStatsRequestSchema } },
-    },
-  },
-  responses: {
-    200: {
-      description: "Stats per group",
-      content: { "application/json": { schema: GroupedStatsResponseSchema } },
-    },
-    400: {
-      description: "Invalid request",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: { description: "Unauthorized" },
-    500: {
-      description: "Server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
 // ─── Accounts ───────────────────────────────────────────────────────────────
 
 registry.registerPath({
