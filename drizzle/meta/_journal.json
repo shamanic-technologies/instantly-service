@@ -22,6 +22,20 @@
       "when": 1772150400000,
       "tag": "0002_drop_clerk_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1772236800000,
+      "tag": "0003_drop_app_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1773532800000,
+      "tag": "0004_add_analytics_indexes",
+      "breakpoints": true
     }
   ]
 }

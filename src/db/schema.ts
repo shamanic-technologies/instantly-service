@@ -38,6 +38,9 @@ export const instantlyCampaigns = pgTable(
     index("instantly_campaigns_campaign_id_idx").on(table.campaignId),
     index("instantly_campaigns_lead_id_idx").on(table.leadId),
     index("instantly_campaigns_lead_email_idx").on(table.leadEmail),
+    index("instantly_campaigns_brand_id_idx").on(table.brandId),
+    index("instantly_campaigns_org_id_idx").on(table.orgId),
+    index("instantly_campaigns_run_id_idx").on(table.runId),
   ],
 );
 
@@ -79,18 +82,26 @@ export const instantlyAccounts = pgTable("instantly_accounts", {
 });
 
 // Events table (webhooks)
-export const instantlyEvents = pgTable("instantly_events", {
-  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  eventType: text("event_type").notNull(),
-  campaignId: text("campaign_id"),
-  leadEmail: text("lead_email"),
-  accountEmail: text("account_email"),
-  step: integer("step"),
-  variant: integer("variant"),
-  timestamp: timestamp("timestamp").notNull(),
-  rawPayload: jsonb("raw_payload").notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const instantlyEvents = pgTable(
+  "instantly_events",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    eventType: text("event_type").notNull(),
+    campaignId: text("campaign_id"),
+    leadEmail: text("lead_email"),
+    accountEmail: text("account_email"),
+    step: integer("step"),
+    variant: integer("variant"),
+    timestamp: timestamp("timestamp").notNull(),
+    rawPayload: jsonb("raw_payload").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("instantly_events_campaign_id_idx").on(table.campaignId),
+    index("instantly_events_event_type_idx").on(table.eventType),
+    index("instantly_events_lead_email_idx").on(table.leadEmail),
+  ],
+);
 
 // Sequence costs table — tracks provisioned/actual/cancelled cost items per lead step
 export const sequenceCosts = pgTable(
