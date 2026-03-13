@@ -542,37 +542,6 @@
           "recipients"
         ]
       },
-      "StatsRequest": {
-        "type": "object",
-        "properties": {
-          "runIds": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "brandId": {
-            "type": "string"
-          },
-          "campaignId": {
-            "type": "string"
-          },
-          "workflowName": {
-            "type": "string",
-            "description": "Filter by workflow name"
-          },
-          "groupBy": {
-            "type": "string",
-            "enum": [
-              "brandId",
-              "campaignId",
-              "workflowName",
-              "leadEmail"
-            ],
-            "description": "Group results by dimension"
-          }
-        }
-      },
       "GroupedStatsResponse": {
         "type": "object",
         "properties": {
@@ -1743,10 +1712,62 @@
       }
     },
     "/stats": {
-      "post": {
+      "get": {
         "summary": "Get aggregated stats by filters",
-        "description": "Aggregates stats from webhook events across campaigns matching the provided filters. At least one filter is required. Response shape aligned with Postmark stats contract.",
+        "description": "Aggregates stats from webhook events across campaigns matching the provided filters. Filters passed as query params; runIds is comma-separated.",
         "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated list of run IDs"
+            },
+            "required": false,
+            "description": "Comma-separated list of run IDs",
+            "name": "runIds",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "brandId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "campaignId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by workflow name"
+            },
+            "required": false,
+            "description": "Filter by workflow name",
+            "name": "workflowName",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "brandId",
+                "campaignId",
+                "workflowName",
+                "leadEmail"
+              ],
+              "description": "Group results by dimension"
+            },
+            "required": false,
+            "description": "Group results by dimension",
+            "name": "groupBy",
+            "in": "query"
+          },
           {
             "schema": {
               "type": "string",
@@ -1778,15 +1799,6 @@
             "in": "header"
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StatsRequest"
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Aggregated campaign stats",
@@ -1825,18 +1837,63 @@
       }
     },
     "/stats/public": {
-      "post": {
+      "get": {
         "summary": "Get aggregated stats (no identity headers required)",
-        "description": "Same as POST /stats but without x-org-id / x-user-id / x-run-id requirements. Requires only X-API-Key. Used by leaderboard and landing pages with no user context.",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StatsRequest"
-              }
-            }
+        "description": "Same as GET /stats but without x-org-id / x-user-id / x-run-id requirements. Requires only X-API-Key. Used by leaderboard and landing pages with no user context.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated list of run IDs"
+            },
+            "required": false,
+            "description": "Comma-separated list of run IDs",
+            "name": "runIds",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "brandId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "campaignId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by workflow name"
+            },
+            "required": false,
+            "description": "Filter by workflow name",
+            "name": "workflowName",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "brandId",
+                "campaignId",
+                "workflowName",
+                "leadEmail"
+              ],
+              "description": "Group results by dimension"
+            },
+            "required": false,
+            "description": "Group results by dimension",
+            "name": "groupBy",
+            "in": "query"
           }
-        },
+        ],
         "responses": {
           "200": {
             "description": "Aggregated campaign stats",
