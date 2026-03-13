@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
 import { StatsRequestSchema } from "../schemas";
-import { queryStats, internalExclusionClause } from "./analytics";
+import { queryStats, queryGroupedStats, internalExclusionClause } from "./analytics";
 
 const router = Router();
 
@@ -19,16 +19,29 @@ router.post("/stats/public", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds, brandId, campaignId } = parsed.data;
+  const { runIds, brandId, campaignId, workflowName, groupBy } = parsed.data;
 
   const conditions: SQL[] = [];
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
   if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
+  if (workflowName) conditions.push(sql`c.workflow_name = ${workflowName}`);
 
   const whereClause = conditions.length > 0
     ? sql.join(conditions, sql` AND `)
     : sql`TRUE`;
+
+  // Handle groupBy requests
+  if (groupBy) {
+    try {
+      const groups = await queryGroupedStats(whereClause, groupBy);
+      return res.json({ groups });
+    } catch (error: any) {
+      const msg = error.cause?.message ?? error.message ?? String(error);
+      console.error(`[stats/public] Failed to aggregate grouped stats: ${msg}`, error);
+      return res.status(500).json({ error: "Failed to aggregate stats" });
+    }
+  }
 
   try {
     const { stats, recipients } = await queryStats(whereClause);

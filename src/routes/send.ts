@@ -278,6 +278,7 @@ router.post("/", async (req: Request, res: Response) => {
             deliveryStatus: "pending",
             orgId,
             brandId: body.brandId,
+            workflowName: body.workflowName,
             runId: res.locals.runId as string,
           })
           .onConflictDoNothing()
