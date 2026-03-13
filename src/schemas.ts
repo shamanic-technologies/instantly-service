@@ -144,6 +144,7 @@ export const SequenceStepSchema = z.object({
 export const SendRequestSchema = z
   .object({
     brandId: z.string(),
+    workflowName: z.string().optional().describe("Workflow name for stats grouping"),
     campaignId: z.string(),
     leadId: z.string().optional().describe("External lead ID from lead-service"),
     to: z.string(),
@@ -207,6 +208,7 @@ registry.registerPath({
 export const CreateCampaignRequestSchema = z
   .object({
     brandId: z.string(),
+    workflowName: z.string().optional().describe("Workflow name for stats grouping"),
     name: z.string(),
     accountIds: z.array(z.string()).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
@@ -491,6 +493,8 @@ export const StatsRequestSchema = z
     runIds: z.array(z.string()).optional(),
     brandId: z.string().optional(),
     campaignId: z.string().optional(),
+    workflowName: z.string().optional().describe("Filter by workflow name"),
+    groupBy: z.enum(["brandId", "campaignId", "workflowName", "leadEmail"]).optional().describe("Group results by dimension"),
   })
   .openapi("StatsRequest");
 

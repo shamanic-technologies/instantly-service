@@ -46,6 +46,66 @@ const ZERO_STATS = {
   repliesUnsubscribe: 0,
 };
 
+const GROUP_BY_COLUMNS: Record<string, string> = {
+  brandId: "c.brand_id",
+  campaignId: "c.campaign_id",
+  workflowName: "c.workflow_name",
+  leadEmail: "e.lead_email",
+};
+
+/** Execute grouped stats query and return array of { key, stats, recipients } */
+export async function queryGroupedStats(
+  whereClause: SQL,
+  groupBy: string,
+): Promise<Array<{ key: string; stats: typeof ZERO_STATS; recipients: number }>> {
+  const col = GROUP_BY_COLUMNS[groupBy];
+  if (!col) return [];
+
+  const groupCol = sql.raw(col);
+  const result = await db.execute(sql`
+    SELECT
+      ${groupCol} AS "groupKey",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
+      COALESCE(
+        COUNT(*) FILTER (WHERE e.event_type = 'email_sent')
+        - COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'),
+      0)::int AS "emailsDelivered",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "emailsReplied",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "repliesAutoReply",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "repliesNotInterested",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "repliesOutOfOffice",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "repliesUnsubscribe",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "recipients"
+    FROM instantly_events e
+    JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+    WHERE ${whereClause}
+      AND ${internalExclusionClause()}
+      AND ${groupCol} IS NOT NULL
+    GROUP BY ${groupCol}
+  `);
+  const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+
+  return rows.map((row: any) => ({
+    key: row.groupKey,
+    stats: {
+      emailsSent: row.emailsSent ?? 0,
+      emailsDelivered: row.emailsDelivered ?? 0,
+      emailsOpened: row.emailsOpened ?? 0,
+      emailsClicked: row.emailsClicked ?? 0,
+      emailsReplied: row.emailsReplied ?? 0,
+      emailsBounced: row.emailsBounced ?? 0,
+      repliesAutoReply: row.repliesAutoReply ?? 0,
+      repliesNotInterested: row.repliesNotInterested ?? 0,
+      repliesOutOfOffice: row.repliesOutOfOffice ?? 0,
+      repliesUnsubscribe: row.repliesUnsubscribe ?? 0,
+    },
+    recipients: row.recipients ?? 0,
+  }));
+}
+
 /** Execute the aggregate stats query and return { stats, recipients } */
 export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO_STATS; recipients: number }> {
   const result = await db.execute(sql`
@@ -105,7 +165,7 @@ router.post("/stats", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds, brandId, campaignId } = parsed.data;
+  const { runIds, brandId, campaignId, workflowName, groupBy } = parsed.data;
   const orgId = res.locals.orgId as string;
 
   // Build WHERE clauses — always scope by org from header
@@ -113,8 +173,21 @@ router.post("/stats", async (req: Request, res: Response) => {
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
   if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
+  if (workflowName) conditions.push(sql`c.workflow_name = ${workflowName}`);
 
   const whereClause = sql.join(conditions, sql` AND `);
+
+  // Handle groupBy requests
+  if (groupBy) {
+    try {
+      const groups = await queryGroupedStats(whereClause, groupBy);
+      return res.json({ groups });
+    } catch (error: any) {
+      const msg = error.cause?.message ?? error.message ?? String(error);
+      console.error(`[stats] Failed to aggregate grouped stats: ${msg}`, error);
+      return res.status(500).json({ error: "Failed to aggregate stats" });
+    }
+  }
 
   try {
     const { stats, recipients } = await queryStats(whereClause);
