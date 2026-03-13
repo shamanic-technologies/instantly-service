@@ -8,10 +8,17 @@ const RUNS_SERVICE_API_KEY = process.env.RUNS_SERVICE_API_KEY || "";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+export interface TrackingHeaders {
+  campaignId?: string;
+  brandId?: string;
+  workflowName?: string;
+}
+
 export interface IdentityContext {
   orgId: string;
   userId: string;
   runId?: string;
+  tracking?: TrackingHeaders;
 }
 
 export interface Run {
@@ -73,6 +80,15 @@ async function runsRequest<T>(
   };
   if (identity.runId) {
     headers["x-run-id"] = identity.runId;
+  }
+  if (identity.tracking?.campaignId) {
+    headers["x-campaign-id"] = identity.tracking.campaignId;
+  }
+  if (identity.tracking?.brandId) {
+    headers["x-brand-id"] = identity.tracking.brandId;
+  }
+  if (identity.tracking?.workflowName) {
+    headers["x-workflow-name"] = identity.tracking.workflowName;
   }
 
   const response = await fetch(`${RUNS_SERVICE_URL}${path}`, {

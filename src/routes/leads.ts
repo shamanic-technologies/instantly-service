@@ -12,9 +12,19 @@ import {
   createRun,
   updateRun,
   addCosts,
+  type TrackingHeaders,
 } from "../lib/runs-client";
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { AddLeadsRequestSchema, DeleteLeadsRequestSchema } from "../schemas";
+
+/** Extract tracking headers from res.locals (set by identityHeaders middleware) */
+function getTracking(res: Response): TrackingHeaders {
+  const t: TrackingHeaders = {};
+  if (res.locals.headerCampaignId) t.campaignId = res.locals.headerCampaignId;
+  if (res.locals.headerBrandId) t.brandId = res.locals.headerBrandId;
+  if (res.locals.headerWorkflowName) t.workflowName = res.locals.headerWorkflowName;
+  return t;
+}
 
 const router = Router();
 
@@ -59,7 +69,8 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
     });
 
     // 1. Create run in runs-service FIRST (BLOCKING)
-    const identity = { orgId, userId, runId: res.locals.runId as string };
+    const tracking = getTracking(res);
+    const identity = { orgId, userId, runId: res.locals.runId as string, tracking };
     const run = await createRun({
       serviceName: "instantly-service",
       taskName: "leads-add",
@@ -99,7 +110,7 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
         .onConflictDoNothing();
 
       // 4. Log costs and complete run
-      const runIdentity = { orgId, userId, runId: run.id };
+      const runIdentity = { orgId, userId, runId: run.id, tracking };
       await addCosts(run.id, [
         { costName: "instantly-lead-add", quantity: body.leads.length, costSource: keySource },
       ], runIdentity);

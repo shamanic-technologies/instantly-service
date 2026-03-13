@@ -41,10 +41,16 @@ export class KeyServiceError extends Error {
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────────
 
+interface TrackingHeaders {
+  campaignId?: string;
+  brandId?: string;
+  workflowName?: string;
+}
+
 async function keyServiceRequest<T>(
   path: string,
   caller: CallerInfo,
-  identity: { orgId: string; userId: string },
+  identity: { orgId: string; userId: string; tracking?: TrackingHeaders },
 ): Promise<T> {
   const headers: Record<string, string> = {
     "x-api-key": KEY_SERVICE_API_KEY,
@@ -54,6 +60,15 @@ async function keyServiceRequest<T>(
     "X-Caller-Method": caller.method,
     "X-Caller-Path": caller.path,
   };
+  if (identity.tracking?.campaignId) {
+    headers["x-campaign-id"] = identity.tracking.campaignId;
+  }
+  if (identity.tracking?.brandId) {
+    headers["x-brand-id"] = identity.tracking.brandId;
+  }
+  if (identity.tracking?.workflowName) {
+    headers["x-workflow-name"] = identity.tracking.workflowName;
+  }
 
   const response = await fetch(`${KEY_SERVICE_URL}${path}`, {
     method: "GET",

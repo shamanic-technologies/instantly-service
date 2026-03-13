@@ -570,4 +570,81 @@ describe("POST /send", () => {
     expect(res.body.stepRuns[1]).toMatchObject({ step: 2, runId: "step-run-2" });
     expect(res.body.stepRuns[2]).toMatchObject({ step: 3, runId: "step-run-3" });
   });
+
+  it("should use x-brand-id and x-workflow-name headers as fallback when body fields are empty", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    const bodyWithoutBrand = {
+      ...validBody,
+      brandId: "",
+      workflowName: undefined,
+    };
+
+    await request(app)
+      .post("/send")
+      .set({
+        ...identityHeadersObj,
+        "x-brand-id": "header-brand",
+        "x-workflow-name": "header-workflow",
+        "x-campaign-id": "header-camp",
+      })
+      .send(bodyWithoutBrand);
+
+    // Campaign insert should use header fallback values
+    const campaignInsert = mockDbInsertValues.mock.calls.find(
+      ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,
+    );
+    expect(campaignInsert).toBeDefined();
+    expect(campaignInsert![0].brandId).toBe("header-brand");
+    expect(campaignInsert![0].workflowName).toBe("header-workflow");
+  });
+
+  it("should prefer body values over tracking headers", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app)
+      .post("/send")
+      .set({
+        ...identityHeadersObj,
+        "x-brand-id": "header-brand",
+        "x-workflow-name": "header-workflow",
+      })
+      .send(validBody);
+
+    // Campaign insert should use body values (brand-1 from validBody)
+    const campaignInsert = mockDbInsertValues.mock.calls.find(
+      ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,
+    );
+    expect(campaignInsert).toBeDefined();
+    expect(campaignInsert![0].brandId).toBe("brand-1");
+  });
+
+  it("should forward tracking headers to runs-service", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app)
+      .post("/send")
+      .set({
+        ...identityHeadersObj,
+        "x-brand-id": "header-brand",
+        "x-campaign-id": "header-camp",
+        "x-workflow-name": "header-wf",
+      })
+      .send(validBody);
+
+    // createRun should receive tracking in identity context
+    expect(mockCreateRun).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        tracking: expect.objectContaining({
+          brandId: "header-brand",
+          campaignId: "header-camp",
+          workflowName: "header-wf",
+        }),
+      }),
+    );
+  });
 });

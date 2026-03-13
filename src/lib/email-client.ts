@@ -29,10 +29,17 @@ interface SendEmailParams {
   metadata?: Record<string, string>;
 }
 
+interface TrackingHeaders {
+  campaignId?: string;
+  brandId?: string;
+  workflowName?: string;
+}
+
 interface EmailIdentityContext {
   orgId: string;
   userId: string;
   runId?: string;
+  tracking?: TrackingHeaders;
 }
 
 async function emailServiceRequest<T>(
@@ -50,6 +57,15 @@ async function emailServiceRequest<T>(
   };
   if (identity.runId) {
     headers["x-run-id"] = identity.runId;
+  }
+  if (identity.tracking?.campaignId) {
+    headers["x-campaign-id"] = identity.tracking.campaignId;
+  }
+  if (identity.tracking?.brandId) {
+    headers["x-brand-id"] = identity.tracking.brandId;
+  }
+  if (identity.tracking?.workflowName) {
+    headers["x-workflow-name"] = identity.tracking.workflowName;
   }
 
   const response = await fetch(`${TRANSACTIONAL_EMAIL_SERVICE_URL}${path}`, {

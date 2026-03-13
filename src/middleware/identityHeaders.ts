@@ -1,9 +1,10 @@
 import { Request, Response, NextFunction } from "express";
 
 /**
- * Middleware that extracts x-org-id, x-user-id, and x-run-id from request headers.
- * Returns 400 if any header is missing.
- * Attaches orgId, userId, and runId to res.locals for downstream handlers.
+ * Middleware that extracts identity and tracking headers from requests.
+ *
+ * Required: x-org-id, x-user-id, x-run-id (returns 400 if missing)
+ * Optional: x-campaign-id, x-brand-id, x-workflow-name (workflow tracking headers)
  */
 export function identityHeaders(
   req: Request,
@@ -23,5 +24,15 @@ export function identityHeaders(
   res.locals.orgId = orgId;
   res.locals.userId = userId;
   res.locals.runId = runId;
+
+  // Optional workflow tracking headers — injected by workflow-service on all DAG calls
+  const headerCampaignId = req.headers["x-campaign-id"] as string | undefined;
+  const headerBrandId = req.headers["x-brand-id"] as string | undefined;
+  const headerWorkflowName = req.headers["x-workflow-name"] as string | undefined;
+
+  if (headerCampaignId) res.locals.headerCampaignId = headerCampaignId;
+  if (headerBrandId) res.locals.headerBrandId = headerBrandId;
+  if (headerWorkflowName) res.locals.headerWorkflowName = headerWorkflowName;
+
   next();
 }

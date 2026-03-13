@@ -157,6 +157,10 @@
           "brandId": {
             "type": "string"
           },
+          "workflowName": {
+            "type": "string",
+            "description": "Workflow name for stats grouping"
+          },
           "campaignId": {
             "type": "string"
           },
@@ -267,6 +271,10 @@
         "properties": {
           "brandId": {
             "type": "string"
+          },
+          "workflowName": {
+            "type": "string",
+            "description": "Workflow name for stats grouping"
           },
           "name": {
             "type": "string"
@@ -548,6 +556,20 @@
           },
           "campaignId": {
             "type": "string"
+          },
+          "workflowName": {
+            "type": "string",
+            "description": "Filter by workflow name"
+          },
+          "groupBy": {
+            "type": "string",
+            "enum": [
+              "brandId",
+              "campaignId",
+              "workflowName",
+              "leadEmail"
+            ],
+            "description": "Group results by dimension"
           }
         }
       },
@@ -1037,6 +1059,38 @@
     "/send": {
       "post": {
         "summary": "Send email via Instantly campaign",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1086,6 +1140,38 @@
     "/campaigns": {
       "post": {
         "summary": "Create a campaign",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1143,6 +1229,36 @@
             "required": true,
             "name": "campaignId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
           }
         ],
         "responses": {
@@ -1176,6 +1292,36 @@
             "required": true,
             "name": "orgId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
           }
         ],
         "responses": {
@@ -1199,6 +1345,36 @@
             "required": true,
             "name": "campaignId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -1244,6 +1420,38 @@
       "post": {
         "summary": "Poll active campaigns for errors",
         "description": "Checks all active campaigns against the Instantly API to detect error states. For each errored campaign: updates DB status, cancels provisioned costs, fails the run, and sends an admin notification.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Status check complete",
@@ -1282,6 +1490,36 @@
             "required": true,
             "name": "campaignId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -1365,6 +1603,36 @@
             "required": false,
             "name": "skip",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
           }
         ],
         "responses": {
@@ -1396,6 +1664,36 @@
             "required": true,
             "name": "campaignId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -1448,6 +1746,38 @@
       "post": {
         "summary": "Get aggregated stats by filters",
         "description": "Aggregates stats from webhook events across campaigns matching the provided filters. At least one filter is required. Response shape aligned with Postmark stats contract.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1548,6 +1878,38 @@
       "post": {
         "summary": "Get stats grouped by sets of run IDs",
         "description": "Accepts named groups of run IDs and returns aggregated stats per group in a single call. Used by the leaderboard to fetch per-workflow stats.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1597,6 +1959,38 @@
     "/accounts": {
       "get": {
         "summary": "List email accounts",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Accounts list"
@@ -1610,6 +2004,38 @@
     "/accounts/sync": {
       "post": {
         "summary": "Sync accounts from Instantly",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Sync complete",
@@ -1638,6 +2064,36 @@
             "required": true,
             "name": "email",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -1679,6 +2135,38 @@
     "/accounts/warmup-analytics": {
       "get": {
         "summary": "Get warmup analytics",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Warmup analytics"
@@ -1693,6 +2181,38 @@
       "post": {
         "summary": "Batch delivery status check for leads/emails",
         "description": "Returns campaign-scoped, brand-scoped, and global delivery status for each lead/email pair. Campaign filters by campaignId (null if omitted); brand filters by brandId; global aggregates across everything.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow name — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow name — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-name",
+            "in": "header"
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {

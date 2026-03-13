@@ -8,6 +8,14 @@ extendZodWithOpenApi(z);
 
 export const registry = new OpenAPIRegistry();
 
+// ─── Tracking Headers (optional, injected by workflow-service) ─────────────
+
+export const TrackingHeadersSchema = z.object({
+  "x-campaign-id": z.string().optional().describe("Campaign ID — automatically injected by workflow-service on all DAG calls"),
+  "x-brand-id": z.string().optional().describe("Brand ID — automatically injected by workflow-service on all DAG calls"),
+  "x-workflow-name": z.string().optional().describe("Workflow name — automatically injected by workflow-service on all DAG calls"),
+});
+
 // ─── Error ──────────────────────────────────────────────────────────────────
 
 export const ErrorSchema = z
@@ -182,6 +190,7 @@ registry.registerPath({
   path: "/send",
   summary: "Send email via Instantly campaign",
   request: {
+    headers: TrackingHeadersSchema,
     body: {
       content: { "application/json": { schema: SendRequestSchema } },
     },
@@ -238,6 +247,7 @@ registry.registerPath({
   path: "/campaigns",
   summary: "Create a campaign",
   request: {
+    headers: TrackingHeadersSchema,
     body: {
       content: {
         "application/json": { schema: CreateCampaignRequestSchema },
@@ -268,6 +278,7 @@ registry.registerPath({
   path: "/campaigns/{campaignId}",
   summary: "Get a campaign",
   request: {
+    headers: TrackingHeadersSchema,
     params: z.object({ campaignId: z.string() }),
   },
   responses: {
@@ -285,6 +296,7 @@ registry.registerPath({
   path: "/campaigns/by-org/{orgId}",
   summary: "List campaigns by organization",
   request: {
+    headers: TrackingHeadersSchema,
     params: z.object({ orgId: z.string() }),
   },
   responses: {
@@ -306,6 +318,7 @@ registry.registerPath({
   path: "/campaigns/{campaignId}/status",
   summary: "Update campaign status",
   request: {
+    headers: TrackingHeadersSchema,
     params: z.object({ campaignId: z.string() }),
     body: {
       content: {
@@ -345,6 +358,7 @@ registry.registerPath({
   method: "post",
   path: "/campaigns/check-status",
   summary: "Poll active campaigns for errors",
+  request: { headers: TrackingHeadersSchema },
   description:
     "Checks all active campaigns against the Instantly API to detect error states. " +
     "For each errored campaign: updates DB status, cancels provisioned costs, fails the run, " +
@@ -393,6 +407,7 @@ registry.registerPath({
   path: "/campaigns/{campaignId}/leads",
   summary: "Add leads to a campaign",
   request: {
+    headers: TrackingHeadersSchema,
     params: z.object({ campaignId: z.string() }),
     body: {
       content: { "application/json": { schema: AddLeadsRequestSchema } },
@@ -424,6 +439,7 @@ registry.registerPath({
   path: "/campaigns/{campaignId}/leads",
   summary: "List campaign leads",
   request: {
+    headers: TrackingHeadersSchema,
     params: z.object({ campaignId: z.string() }),
     query: z.object({
       limit: z.string().optional(),
@@ -460,6 +476,7 @@ registry.registerPath({
   path: "/campaigns/{campaignId}/leads",
   summary: "Delete leads from a campaign",
   request: {
+    headers: TrackingHeadersSchema,
     params: z.object({ campaignId: z.string() }),
     body: {
       content: {
@@ -551,6 +568,7 @@ registry.registerPath({
   description:
     "Aggregates stats from webhook events across campaigns matching the provided filters. At least one filter is required. Response shape aligned with Postmark stats contract.",
   request: {
+    headers: TrackingHeadersSchema,
     body: {
       content: { "application/json": { schema: StatsRequestSchema } },
     },
@@ -633,6 +651,7 @@ registry.registerPath({
   description:
     "Accepts named groups of run IDs and returns aggregated stats per group in a single call. Used by the leaderboard to fetch per-workflow stats.",
   request: {
+    headers: TrackingHeadersSchema,
     body: {
       content: { "application/json": { schema: GroupedStatsRequestSchema } },
     },
@@ -660,6 +679,7 @@ registry.registerPath({
   method: "get",
   path: "/accounts",
   summary: "List email accounts",
+  request: { headers: TrackingHeadersSchema },
   responses: {
     200: { description: "Accounts list" },
     401: { description: "Unauthorized" },
@@ -670,6 +690,7 @@ registry.registerPath({
   method: "post",
   path: "/accounts/sync",
   summary: "Sync accounts from Instantly",
+  request: { headers: TrackingHeadersSchema },
   responses: {
     200: {
       description: "Sync complete",
@@ -706,6 +727,7 @@ registry.registerPath({
   path: "/accounts/{email}/warmup",
   summary: "Enable or disable warmup for an account",
   request: {
+    headers: TrackingHeadersSchema,
     params: z.object({ email: z.string() }),
     body: {
       content: { "application/json": { schema: WarmupRequestSchema } },
@@ -728,6 +750,7 @@ registry.registerPath({
   method: "get",
   path: "/accounts/warmup-analytics",
   summary: "Get warmup analytics",
+  request: { headers: TrackingHeadersSchema },
   responses: {
     200: { description: "Warmup analytics" },
     401: { description: "Unauthorized" },
@@ -809,6 +832,7 @@ registry.registerPath({
     "for each lead/email pair. Campaign filters by campaignId (null if omitted); " +
     "brand filters by brandId; global aggregates across everything.",
   request: {
+    headers: TrackingHeadersSchema,
     body: {
       content: { "application/json": { schema: StatusRequestSchema } },
     },
