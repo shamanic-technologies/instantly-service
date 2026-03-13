@@ -1,25 +1,26 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
-import { StatsRequestSchema } from "../schemas";
+import { StatsQuerySchema } from "../schemas";
 import { queryStats, queryGroupedStats, internalExclusionClause } from "./analytics";
 
 const router = Router();
 
 /**
- * POST /stats/public
- * Same as POST /stats but without identity headers (no org scoping).
+ * GET /stats/public
+ * Same as GET /stats but without identity headers (no org scoping).
  * Used by leaderboard / landing pages with no user context.
  */
-router.post("/stats/public", async (req: Request, res: Response) => {
-  const parsed = StatsRequestSchema.safeParse(req.body);
+router.get("/stats/public", async (req: Request, res: Response) => {
+  const parsed = StatsQuerySchema.safeParse(req.query);
   if (!parsed.success) {
     return res.status(400).json({
       error: "Invalid request",
       details: parsed.error.flatten(),
     });
   }
-  const { runIds, brandId, campaignId, workflowName, groupBy } = parsed.data;
+  const { runIds: runIdsRaw, brandId, campaignId, workflowName, groupBy } = parsed.data;
+  const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
 
   const conditions: SQL[] = [];
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);

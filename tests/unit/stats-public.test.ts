@@ -49,7 +49,7 @@ function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
   };
 }
 
-describe("POST /stats/public", () => {
+describe("GET /stats/public", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -65,7 +65,7 @@ describe("POST /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    const response = await request(app).post("/stats/public").send({});
+    const response = await request(app).get("/stats/public");
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(100);
@@ -79,7 +79,7 @@ describe("POST /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    await request(app).post("/stats/public").send({ runIds: ["run-1"] });
+    await request(app).get("/stats/public").query({ runIds: "run-1" });
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
@@ -96,8 +96,8 @@ describe("POST /stats/public", () => {
     const app = await createPublicStatsApp();
 
     const response = await request(app)
-      .post("/stats/public")
-      .send({ runIds: ["run-1"], brandId: "brand-1", campaignId: "camp-1" });
+      .get("/stats/public")
+      .query({ runIds: "run-1", brandId: "brand-1", campaignId: "camp-1" });
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(10);
@@ -114,7 +114,7 @@ describe("POST /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    await request(app).post("/stats/public").send({});
+    await request(app).get("/stats/public");
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
@@ -135,7 +135,7 @@ describe("POST /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    const response = await request(app).post("/stats/public").send({});
+    const response = await request(app).get("/stats/public");
 
     expect(response.status).toBe(200);
     expect(response.body.stepStats).toHaveLength(2);
@@ -148,7 +148,7 @@ describe("POST /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    await request(app).post("/stats/public").send({});
+    await request(app).get("/stats/public");
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
@@ -161,7 +161,7 @@ describe("POST /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    const response = await request(app).post("/stats/public").send({});
+    const response = await request(app).get("/stats/public");
 
     expect(response.status).toBe(500);
     expect(response.body.error).toBe("Failed to aggregate stats");
@@ -175,11 +175,10 @@ describe("POST /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    const response = await request(app).post("/stats/public").send({});
+    const response = await request(app).get("/stats/public");
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(50);
     expect(response.body.stepStats).toBeUndefined();
   });
 });
-

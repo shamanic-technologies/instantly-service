@@ -505,17 +505,17 @@ registry.registerPath({
 
 // ─── Stats ──────────────────────────────────────────────────────────────────
 
-export const StatsRequestSchema = z
+export const StatsQuerySchema = z
   .object({
-    runIds: z.array(z.string()).optional(),
+    runIds: z.string().optional().describe("Comma-separated list of run IDs"),
     brandId: z.string().optional(),
     campaignId: z.string().optional(),
     workflowName: z.string().optional().describe("Filter by workflow name"),
     groupBy: z.enum(["brandId", "campaignId", "workflowName", "leadEmail"]).optional().describe("Group results by dimension"),
   })
-  .openapi("StatsRequest");
+  .openapi("StatsQuery");
 
-export type StatsRequest = z.infer<typeof StatsRequestSchema>;
+export type StatsQuery = z.infer<typeof StatsQuerySchema>;
 
 const StepStatsSchema = z.object({
   step: z.number().describe("Step number (1-based)"),
@@ -562,16 +562,14 @@ const StatsResponseSchema = z
   .openapi("StatsResponse");
 
 registry.registerPath({
-  method: "post",
+  method: "get",
   path: "/stats",
   summary: "Get aggregated stats by filters",
   description:
-    "Aggregates stats from webhook events across campaigns matching the provided filters. At least one filter is required. Response shape aligned with Postmark stats contract.",
+    "Aggregates stats from webhook events across campaigns matching the provided filters. Filters passed as query params; runIds is comma-separated.",
   request: {
     headers: TrackingHeadersSchema,
-    body: {
-      content: { "application/json": { schema: StatsRequestSchema } },
-    },
+    query: StatsQuerySchema,
   },
   responses: {
     200: {
@@ -591,16 +589,14 @@ registry.registerPath({
 });
 
 registry.registerPath({
-  method: "post",
+  method: "get",
   path: "/stats/public",
   summary: "Get aggregated stats (no identity headers required)",
   description:
-    "Same as POST /stats but without x-org-id / x-user-id / x-run-id requirements. " +
+    "Same as GET /stats but without x-org-id / x-user-id / x-run-id requirements. " +
     "Requires only X-API-Key. Used by leaderboard and landing pages with no user context.",
   request: {
-    body: {
-      content: { "application/json": { schema: StatsRequestSchema } },
-    },
+    query: StatsQuerySchema,
   },
   responses: {
     200: {

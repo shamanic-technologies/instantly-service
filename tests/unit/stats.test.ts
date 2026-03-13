@@ -57,7 +57,7 @@ function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
   };
 }
 
-describe("POST /stats", () => {
+describe("GET /stats", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -75,7 +75,7 @@ describe("POST /stats", () => {
 
     const app = await createStatsApp();
 
-    const response = await request(app).post("/stats").set(identityHeadersObj).send({});
+    const response = await request(app).get("/stats").set(identityHeadersObj);
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(100);
@@ -91,9 +91,8 @@ describe("POST /stats", () => {
     const app = await createStatsApp();
 
     const response = await request(app)
-      .post("/stats")
-      .set(identityHeadersObj)
-      .send({});
+      .get("/stats")
+      .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(0);
@@ -118,9 +117,8 @@ describe("POST /stats", () => {
     const app = await createStatsApp();
 
     const response = await request(app)
-      .post("/stats")
-      .set(identityHeadersObj)
-      .send({});
+      .get("/stats")
+      .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(80);
@@ -129,8 +127,6 @@ describe("POST /stats", () => {
   });
 
   it("should count only lead_interested events as emailsReplied", async () => {
-    // Simulate prod data: 18 reply_received but only 1 lead_interested
-    // emailsReplied should be 1 (only positive/interested replies)
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 500, emailsDelivered: 480, emailsOpened: 200,
@@ -143,7 +139,7 @@ describe("POST /stats", () => {
 
     const app = await createStatsApp();
 
-    const response = await request(app).post("/stats").set(identityHeadersObj).send({});
+    const response = await request(app).get("/stats").set(identityHeadersObj);
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsReplied).toBe(1);
@@ -170,9 +166,9 @@ describe("POST /stats", () => {
     const app = await createStatsApp();
 
     const response = await request(app)
-      .post("/stats")
-      .set(identityHeadersObj)
-      .send({ campaignId: "camp-1" });
+      .get("/stats")
+      .query({ campaignId: "camp-1" })
+      .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
     expect(response.body.stepStats).toHaveLength(3);
@@ -190,9 +186,8 @@ describe("POST /stats", () => {
     const app = await createStatsApp();
 
     const response = await request(app)
-      .post("/stats")
-      .set(identityHeadersObj)
-      .send({});
+      .get("/stats")
+      .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(0);
@@ -209,9 +204,9 @@ describe("POST /stats", () => {
     const app = await createStatsApp();
 
     const response = await request(app)
-      .post("/stats")
-      .set(identityHeadersObj)
-      .send({ runIds: ["run-1", "run-2"] });
+      .get("/stats")
+      .query({ runIds: "run-1,run-2" })
+      .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(10);
@@ -228,7 +223,7 @@ describe("POST /stats", () => {
     mockExecute.mockResolvedValueOnce({ rows: [] }); // step query
     const app = await createStatsApp();
 
-    await request(app).post("/stats").set(identityHeadersObj).send({});
+    await request(app).get("/stats").set(identityHeadersObj);
 
     // Stats query + step query
     expect(mockExecute).toHaveBeenCalledTimes(2);
@@ -247,9 +242,8 @@ describe("POST /stats", () => {
     const app = await createStatsApp();
 
     const response = await request(app)
-      .post("/stats")
-      .set(identityHeadersObj)
-      .send({});
+      .get("/stats")
+      .set(identityHeadersObj);
 
     expect(response.status).toBe(500);
     expect(response.body.error).toBe("Failed to aggregate stats");
@@ -270,9 +264,8 @@ describe("POST /stats", () => {
     const app = await createStatsApp();
 
     const response = await request(app)
-      .post("/stats")
-      .set(identityHeadersObj)
-      .send({});
+      .get("/stats")
+      .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(50);
@@ -297,9 +290,8 @@ describe("POST /stats", () => {
     const app = await createStatsApp();
 
     const response = await request(app)
-      .post("/stats")
-      .set(identityHeadersObj)
-      .send({});
+      .get("/stats")
+      .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
     expect(consoleSpy).toHaveBeenCalledWith(
@@ -313,7 +305,7 @@ describe("POST /stats", () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     const app = await createStatsApp();
 
-    await request(app).post("/stats").set(identityHeadersObj).send({});
+    await request(app).get("/stats").set(identityHeadersObj);
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);

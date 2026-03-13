@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
-import { StatsRequestSchema, GroupedStatsRequestSchema } from "../schemas";
+import { StatsQuerySchema, GroupedStatsRequestSchema } from "../schemas";
 
 const router = Router();
 
@@ -154,18 +154,19 @@ export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO
 }
 
 /**
- * POST /stats
- * Aggregated stats from webhook events (mirrors postmark /stats pattern)
+ * GET /stats
+ * Aggregated stats from webhook events. Filters via query params; runIds comma-separated.
  */
-router.post("/stats", async (req: Request, res: Response) => {
-  const parsed = StatsRequestSchema.safeParse(req.body);
+router.get("/stats", async (req: Request, res: Response) => {
+  const parsed = StatsQuerySchema.safeParse(req.query);
   if (!parsed.success) {
     return res.status(400).json({
       error: "Invalid request",
       details: parsed.error.flatten(),
     });
   }
-  const { runIds, brandId, campaignId, workflowName, groupBy } = parsed.data;
+  const { runIds: runIdsRaw, brandId, campaignId, workflowName, groupBy } = parsed.data;
+  const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
   const orgId = res.locals.orgId as string;
 
   // Build WHERE clauses — always scope by org from header
