@@ -196,11 +196,17 @@ router.post("/", async (req: Request, res: Response) => {
     const stepRuns: { step: number; runId: string }[] = [];
 
     try {
-      // 3. Check available accounts
-      const accounts = await listAccounts(apiKey);
+      // 3. Check available accounts — only use active ones (status === 1)
+      const allAccounts = await listAccounts(apiKey);
+      const accounts = allAccounts.filter((a) => a.status === 1);
       if (accounts.length === 0) {
-        throw new Error("No email accounts available — cannot create campaign");
+        const total = allAccounts.length;
+        const msg = total === 0
+          ? "No email accounts found in Instantly"
+          : `Found ${total} email account(s) but none are active — please check your Instantly subscriptions`;
+        throw new Error(msg);
       }
+      console.log(`[send] ${accounts.length}/${allAccounts.length} accounts are active`);
 
       const sortedSequence = [...body.sequence].sort((a, b) => a.step - b.step);
 

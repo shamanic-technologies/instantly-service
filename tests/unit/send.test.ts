@@ -219,6 +219,39 @@ describe("POST /send", () => {
     mockDbInsertValues.mockReset();
   });
 
+  it("should return 500 when all accounts are inactive", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "inactive1@test.com", warmup_status: 0, status: 0 },
+      { email: "inactive2@test.com", warmup_status: 0, status: 0 },
+    ]);
+    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(500);
+    expect(res.body.details).toContain("none are active");
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+
+  it("should only use active accounts and ignore inactive ones", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "inactive@test.com", warmup_status: 0, status: 0 },
+      { email: "active@test.com", warmup_status: 1, status: 1, signature: "<p>Sig</p>" },
+    ]);
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    // The campaign should be assigned to the active account only
+    expect(mockUpdateCampaign).toHaveBeenCalledWith(
+      "test-instantly-key",
+      "inst-camp-new",
+      expect.objectContaining({ email_list: ["active@test.com"] }),
+    );
+  });
+
   it("should reject the old email format", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
