@@ -392,7 +392,7 @@ describe("POST /send", () => {
     expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" }));
   });
 
-  it("should skip Instantly API call when same lead already processed for campaign", async () => {
+  it("should skip Instantly API call and step runs when same lead already processed for campaign", async () => {
     mockDbWhere.mockReset();
     mockDbWhere.mockResolvedValueOnce([{
       id: "sub-camp-1",
@@ -402,10 +402,16 @@ describe("POST /send", () => {
     }]);
 
     const app = await createSendApp();
-    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
+    expect(res.status).toBe(200);
+    expect(res.body.duplicate).toBe(true);
+    expect(res.body.added).toBe(0);
     expect(mockCreateCampaign).not.toHaveBeenCalled();
     expect(mockAddLeads).not.toHaveBeenCalled();
+    // No step runs or costs should be created for duplicates
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockAddCosts).not.toHaveBeenCalled();
   });
 
   it("should create separate campaigns for different leads in the same campaign", async () => {
