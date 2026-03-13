@@ -70,4 +70,49 @@ describe("runs-client", () => {
     expect(options.headers["x-user-id"]).toBe("user-1");
     expect(options.headers["x-run-id"]).toBe("run-1");
   });
+
+  it("should forward tracking headers when present in identity context", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: "run-1", status: "running" }),
+    });
+
+    const { createRun } = await import("../../src/lib/runs-client");
+    await createRun(
+      { serviceName: "instantly-service", taskName: "test-task" },
+      {
+        orgId: "org-1",
+        userId: "user-1",
+        runId: "parent-run-1",
+        tracking: {
+          campaignId: "camp-1",
+          brandId: "brand-1",
+          workflowName: "wf-1",
+        },
+      },
+    );
+
+    const [, options] = mockFetch.mock.calls[0];
+    expect(options.headers["x-campaign-id"]).toBe("camp-1");
+    expect(options.headers["x-brand-id"]).toBe("brand-1");
+    expect(options.headers["x-workflow-name"]).toBe("wf-1");
+  });
+
+  it("should not include tracking headers when not present in identity context", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: "run-1", status: "running" }),
+    });
+
+    const { createRun } = await import("../../src/lib/runs-client");
+    await createRun(
+      { serviceName: "instantly-service", taskName: "test-task" },
+      { orgId: "org-1", userId: "user-1" },
+    );
+
+    const [, options] = mockFetch.mock.calls[0];
+    expect(options.headers["x-campaign-id"]).toBeUndefined();
+    expect(options.headers["x-brand-id"]).toBeUndefined();
+    expect(options.headers["x-workflow-name"]).toBeUndefined();
+  });
 });

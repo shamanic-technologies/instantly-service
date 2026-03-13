@@ -21,9 +21,19 @@ import {
   createRun,
   updateRun,
   addCosts,
+  type TrackingHeaders,
 } from "../lib/runs-client";
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { SendRequestSchema } from "../schemas";
+
+/** Extract tracking headers from res.locals (set by identityHeaders middleware) */
+function getTracking(res: Response): TrackingHeaders {
+  const t: TrackingHeaders = {};
+  if (res.locals.headerCampaignId) t.campaignId = res.locals.headerCampaignId;
+  if (res.locals.headerBrandId) t.brandId = res.locals.headerBrandId;
+  if (res.locals.headerWorkflowName) t.workflowName = res.locals.headerWorkflowName;
+  return t;
+}
 
 const router = Router();
 
@@ -183,7 +193,14 @@ router.post("/", async (req: Request, res: Response) => {
   const body = parsed.data;
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
-  console.log(`[send] POST /send to=${body.to} campaignId=${body.campaignId} subject="${body.subject}" steps=${body.sequence.length}`);
+  const tracking = getTracking(res);
+
+  // Use header values as fallback when body fields are missing
+  const brandId = body.brandId || tracking.brandId || "";
+  const campaignId = body.campaignId || tracking.campaignId || "";
+  const workflowName = body.workflowName || tracking.workflowName;
+
+  console.log(`[send] POST /send to=${body.to} campaignId=${campaignId} subject="${body.subject}" steps=${body.sequence.length}`);
 
   try {
     // 0. Resolve Instantly API key (auto-resolves org vs platform key)
@@ -211,17 +228,17 @@ router.post("/", async (req: Request, res: Response) => {
       const sortedSequence = [...body.sequence].sort((a, b) => a.step - b.step);
 
       // 3. Dedup: check if this (campaignId, leadEmail) pair already has a campaign
-      const existing = await findExistingCampaign(body.campaignId, body.to);
+      const existing = await findExistingCampaign(campaignId, body.to);
 
       let savedLead: { id: string } | undefined;
       let added = 0;
 
       if (existing) {
         // Already processed — return early, no new step runs or costs
-        console.log(`[send] Lead ${body.to} already processed for campaign ${body.campaignId}, skipping`);
+        console.log(`[send] Lead ${body.to} already processed for campaign ${campaignId}, skipping`);
         return res.status(200).json({
           success: true,
-          campaignId: body.campaignId,
+          campaignId,
           added: 0,
           duplicate: true,
         });
@@ -242,8 +259,8 @@ router.post("/", async (req: Request, res: Response) => {
           const account = pickRandomAccount(accounts);
           const steps = buildSequenceSteps(body.subject, sortedSequence, account);
 
-          console.log(`[send] Attempt ${attempt}/${MAX_SEND_RETRIES} for ${body.campaignId}/${body.to} with account ${account.email}`);
-          result = await tryCreateAndActivateCampaign(apiKey, body.campaignId, account, steps, lead);
+          console.log(`[send] Attempt ${attempt}/${MAX_SEND_RETRIES} for ${campaignId}/${body.to} with account ${account.email}`);
+          result = await tryCreateAndActivateCampaign(apiKey, campaignId, account, steps, lead);
 
           if (result) {
             break;
@@ -256,7 +273,7 @@ router.post("/", async (req: Request, res: Response) => {
         if (!result) {
           // All retries exhausted — no step runs were created yet
           const errorMsg = `Campaign failed after ${MAX_SEND_RETRIES} retry attempts`;
-          console.error(`[send] ${errorMsg} for ${body.campaignId}/${body.to}`);
+          console.error(`[send] ${errorMsg} for ${campaignId}/${body.to}`);
           return res.status(500).json({
             error: errorMsg,
             details: lastReason,
@@ -269,16 +286,16 @@ router.post("/", async (req: Request, res: Response) => {
         const [insertedCampaign] = await db
           .insert(instantlyCampaigns)
           .values({
-            campaignId: body.campaignId,
+            campaignId,
             leadEmail: body.to,
             leadId: body.leadId,
             instantlyCampaignId: result.instantlyCampaignId,
-            name: `Campaign ${body.campaignId}`,
+            name: `Campaign ${campaignId}`,
             status: "active",
             deliveryStatus: "pending",
             orgId,
-            brandId: body.brandId,
-            workflowName: body.workflowName,
+            brandId,
+            workflowName,
             runId: res.locals.runId as string,
           })
           .onConflictDoNothing()
@@ -286,10 +303,10 @@ router.post("/", async (req: Request, res: Response) => {
 
         if (!insertedCampaign) {
           // A concurrent request already claimed this (campaignId, leadEmail) pair
-          console.warn(`[send] Race condition: lead ${body.to} for campaign ${body.campaignId} was already claimed by a concurrent request`);
+          console.warn(`[send] Race condition: lead ${body.to} for campaign ${campaignId} was already claimed by a concurrent request`);
           return res.status(409).json({
             error: "Lead was not added to campaign (possibly duplicate)",
-            details: `Lead ${body.to} is already being processed for campaign ${body.campaignId}`,
+            details: `Lead ${body.to} is already being processed for campaign ${campaignId}`,
           });
         }
 
@@ -313,17 +330,17 @@ router.post("/", async (req: Request, res: Response) => {
       }
 
       // 4. Create per-step runs: 1 actual+completed (step 1) + N-1 provisioned+ongoing
-      const parentIdentity = { orgId, userId, runId: res.locals.runId as string };
+      const parentIdentity = { orgId, userId, runId: res.locals.runId as string, tracking };
       for (const s of sortedSequence) {
         const isFirstStep = s.step === sortedSequence[0].step;
         const stepRun = await createRun({
           serviceName: "instantly-service",
           taskName: `email-send-step-${s.step}`,
-          brandId: body.brandId,
-          campaignId: body.campaignId,
+          brandId,
+          campaignId,
         }, parentIdentity);
 
-        const stepIdentity = { orgId, userId, runId: stepRun.id };
+        const stepIdentity = { orgId, userId, runId: stepRun.id, tracking };
         const costResult = await addCosts(stepRun.id, [{
           costName: "instantly-email-send",
           quantity: 1,
@@ -334,7 +351,7 @@ router.post("/", async (req: Request, res: Response) => {
         const costId = costResult.costs[0]?.id;
         if (costId) {
           await db.insert(sequenceCosts).values({
-            campaignId: body.campaignId,
+            campaignId,
             leadEmail: body.to,
             step: s.step,
             runId: stepRun.id,
@@ -350,10 +367,10 @@ router.post("/", async (req: Request, res: Response) => {
         stepRuns.push({ step: s.step, runId: stepRun.id });
       }
 
-      console.log(`[send] Done — to=${body.to} campaignId=${body.campaignId} added=${added} stepRuns=${stepRuns.length}`);
+      console.log(`[send] Done — to=${body.to} campaignId=${campaignId} added=${added} stepRuns=${stepRuns.length}`);
       res.status(200).json({
         success: true,
-        campaignId: body.campaignId,
+        campaignId,
         leadId: savedLead?.id,
         added,
         stepRuns: stepRuns.length > 0 ? stepRuns : undefined,

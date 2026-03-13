@@ -12,6 +12,7 @@ import {
   createRun,
   updateRun,
   addCosts,
+  type TrackingHeaders,
 } from "../lib/runs-client";
 import { handleCampaignError } from "../lib/campaign-error-handler";
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
@@ -19,6 +20,15 @@ import {
   CreateCampaignRequestSchema,
   UpdateStatusRequestSchema,
 } from "../schemas";
+
+/** Extract tracking headers from res.locals (set by identityHeaders middleware) */
+function getTracking(res: Response): TrackingHeaders {
+  const t: TrackingHeaders = {};
+  if (res.locals.headerCampaignId) t.campaignId = res.locals.headerCampaignId;
+  if (res.locals.headerBrandId) t.brandId = res.locals.headerBrandId;
+  if (res.locals.headerWorkflowName) t.workflowName = res.locals.headerWorkflowName;
+  return t;
+}
 
 const router = Router();
 
@@ -37,6 +47,11 @@ router.post("/", async (req: Request, res: Response) => {
   const body = parsed.data;
   const orgId = res.locals.orgId as string;
   const userId = res.locals.userId as string;
+  const tracking = getTracking(res);
+
+  // Use header values as fallback when body fields are missing
+  const brandId = body.brandId || tracking.brandId || "";
+  const workflowName = body.workflowName || tracking.workflowName;
 
   try {
     // 0. Resolve Instantly API key (auto-resolves org vs platform key)
@@ -46,11 +61,11 @@ router.post("/", async (req: Request, res: Response) => {
     });
 
     // 1. Create run in runs-service FIRST (BLOCKING)
-    const identity = { orgId, userId, runId: res.locals.runId as string };
+    const identity = { orgId, userId, runId: res.locals.runId as string, tracking };
     const run = await createRun({
       serviceName: "instantly-service",
       taskName: "campaign-create",
-      brandId: body.brandId,
+      brandId,
     }, identity);
 
     try {
@@ -75,14 +90,15 @@ router.post("/", async (req: Request, res: Response) => {
           name: body.name,
           status: instantlyCampaign.status,
           orgId,
-          brandId: body.brandId,
+          brandId,
+          workflowName,
           runId: run.id,
           metadata: body.metadata,
         })
         .returning();
 
       // 4. Log costs and complete run
-      const runIdentity = { orgId, userId, runId: run.id };
+      const runIdentity = { orgId, userId, runId: run.id, tracking };
       await addCosts(run.id, [
         { costName: "instantly-campaign-create", quantity: 1, costSource: keySource },
       ], runIdentity);
