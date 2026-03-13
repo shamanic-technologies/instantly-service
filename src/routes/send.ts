@@ -217,8 +217,14 @@ router.post("/", async (req: Request, res: Response) => {
       let added = 0;
 
       if (existing) {
-        // Already processed — skip Instantly API calls
+        // Already processed — return early, no new step runs or costs
         console.log(`[send] Lead ${body.to} already processed for campaign ${body.campaignId}, skipping`);
+        return res.status(200).json({
+          success: true,
+          campaignId: body.campaignId,
+          added: 0,
+          duplicate: true,
+        });
       } else {
         // New campaign — create with retry loop
         const lead: Lead = {
