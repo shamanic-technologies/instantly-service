@@ -530,6 +530,28 @@ describe("POST /send", () => {
     expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" }));
   });
 
+  it("should return 409 when concurrent request already claimed the lead", async () => {
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign — not found (race condition: both requests pass this check)
+
+    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-race", status: "draft" });
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], not_sending_status: null });
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], status: "active", not_sending_status: null });
+    mockUpdateCampaignStatus.mockResolvedValue({});
+
+    // Campaign insert returns empty array — ON CONFLICT DO NOTHING (concurrent request won)
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([]); // campaign insert → conflict, no row returned
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("possibly duplicate");
+    // No step runs should be created for the losing request
+    expect(mockCreateRun).not.toHaveBeenCalled();
+  });
+
   it("should return stepRuns array in response", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();

@@ -259,8 +259,8 @@ router.post("/", async (req: Request, res: Response) => {
 
         added = result.added;
 
-        // Success — save campaign to DB
-        await db
+        // Success — save campaign to DB (atomic dedup via unique index)
+        const [insertedCampaign] = await db
           .insert(instantlyCampaigns)
           .values({
             campaignId: body.campaignId,
@@ -274,7 +274,17 @@ router.post("/", async (req: Request, res: Response) => {
             brandId: body.brandId,
             runId: res.locals.runId as string,
           })
+          .onConflictDoNothing()
           .returning();
+
+        if (!insertedCampaign) {
+          // A concurrent request already claimed this (campaignId, leadEmail) pair
+          console.warn(`[send] Race condition: lead ${body.to} for campaign ${body.campaignId} was already claimed by a concurrent request`);
+          return res.status(409).json({
+            error: "Lead was not added to campaign (possibly duplicate)",
+            details: `Lead ${body.to} is already being processed for campaign ${body.campaignId}`,
+          });
+        }
 
         // Save lead to DB
         const [createdLead] = await db
