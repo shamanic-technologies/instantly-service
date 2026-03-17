@@ -61,6 +61,8 @@ describe("GET /stats/public", () => {
         emailsReplied: 3, recipients: 90,
       })],
     });
+    // Contacted count
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 110 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createPublicStatsApp();
@@ -68,6 +70,7 @@ describe("GET /stats/public", () => {
     const response = await request(app).get("/stats/public");
 
     expect(response.status).toBe(200);
+    expect(response.body.stats.emailsContacted).toBe(110);
     expect(response.body.stats.emailsSent).toBe(100);
     expect(response.body.stats.emailsReplied).toBe(3);
     expect(response.body.recipients).toBe(90);
@@ -75,6 +78,8 @@ describe("GET /stats/public", () => {
 
   it("should NOT include org_id in WHERE clause", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
+    // Contacted count
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createPublicStatsApp();
@@ -91,6 +96,8 @@ describe("GET /stats/public", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({ emailsSent: 10, recipients: 5 })],
     });
+    // Contacted count
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 5 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createPublicStatsApp();
@@ -110,6 +117,8 @@ describe("GET /stats/public", () => {
 
   it("should use TRUE when no filters provided", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
+    // Contacted count
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createPublicStatsApp();
@@ -126,6 +135,8 @@ describe("GET /stats/public", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({ emailsSent: 30, recipients: 10 })],
     });
+    // Contacted count
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 10 }] });
     mockExecute.mockResolvedValueOnce({
       rows: [
         { step: 1, emailsSent: 10, emailsOpened: 8, emailsReplied: 1, emailsBounced: 1 },
@@ -144,6 +155,8 @@ describe("GET /stats/public", () => {
 
   it("should exclude internal emails from stats query", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
+    // Contacted count
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createPublicStatsApp();
@@ -171,6 +184,8 @@ describe("GET /stats/public", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({ emailsSent: 50, emailsReplied: 5, recipients: 40 })],
     });
+    // Contacted count
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 50 }] });
     mockExecute.mockRejectedValueOnce(new Error("step query timeout"));
 
     const app = await createPublicStatsApp();

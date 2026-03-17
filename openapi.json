@@ -446,9 +446,13 @@
           "stats": {
             "type": "object",
             "properties": {
+              "emailsContacted": {
+                "type": "number",
+                "description": "Leads added to a campaign (row exists in instantly_campaigns, immediate)"
+              },
               "emailsSent": {
                 "type": "number",
-                "description": "Total email_sent events"
+                "description": "Total email_sent events (confirmed by Instantly webhook)"
               },
               "emailsDelivered": {
                 "type": "number",
@@ -488,6 +492,7 @@
               }
             },
             "required": [
+              "emailsContacted",
               "emailsSent",
               "emailsDelivered",
               "emailsOpened",
@@ -557,9 +562,13 @@
                 "stats": {
                   "type": "object",
                   "properties": {
+                    "emailsContacted": {
+                      "type": "number",
+                      "description": "Leads added to a campaign (row exists in instantly_campaigns, immediate)"
+                    },
                     "emailsSent": {
                       "type": "number",
-                      "description": "Total email_sent events"
+                      "description": "Total email_sent events (confirmed by Instantly webhook)"
                     },
                     "emailsDelivered": {
                       "type": "number",
@@ -599,6 +608,7 @@
                     }
                   },
                   "required": [
+                    "emailsContacted",
                     "emailsSent",
                     "emailsDelivered",
                     "emailsOpened",
