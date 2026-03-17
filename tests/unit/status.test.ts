@@ -221,6 +221,46 @@ describe("POST /status", () => {
     expect(mockExecute).toHaveBeenCalledTimes(3);
   });
 
+  it("should return contacted=true even when deliveryStatus is still pending", async () => {
+    // Regression: contacted means "we have a record" regardless of delivery_status.
+    // A lead with delivery_status=pending has been sent to Instantly but hasn't
+    // received the email_sent webhook yet — it's still "contacted".
+    // Brand lead — row exists with contacted=true (from TRUE AS "contacted")
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "lead-1", contacted: true, delivered: false, replied: false, bounced: null, unsubscribed: null, lastDeliveredAt: null }],
+    });
+    // Brand email
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", contacted: true, delivered: false, replied: null, bounced: false, unsubscribed: false, lastDeliveredAt: null }],
+    });
+    // Global email
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", contacted: null, delivered: null, replied: null, bounced: false, unsubscribed: false, lastDeliveredAt: null }],
+    });
+    // Campaign lead
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "lead-1", contacted: true, delivered: false, replied: false, bounced: null, unsubscribed: null, lastDeliveredAt: null }],
+    });
+    // Campaign email
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", contacted: true, delivered: false, replied: null, bounced: false, unsubscribed: false, lastDeliveredAt: null }],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send(validBody);
+
+    expect(res.status).toBe(200);
+    const r = res.body.results[0];
+    // contacted=true even though delivery hasn't happened yet
+    expect(r.campaign.lead.contacted).toBe(true);
+    expect(r.campaign.email.contacted).toBe(true);
+    expect(r.brand.lead.contacted).toBe(true);
+    expect(r.brand.email.contacted).toBe(true);
+    // but delivered=false since no email_sent webhook yet
+    expect(r.campaign.lead.delivered).toBe(false);
+    expect(r.brand.lead.delivered).toBe(false);
+  });
+
   it("should return 500 on DB error", async () => {
     mockExecute.mockRejectedValueOnce(new Error("DB connection failed"));
 
