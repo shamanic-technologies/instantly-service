@@ -57,7 +57,7 @@ function leadQuery(filterClause: ReturnType<typeof sql>, leadIds: string[]) {
   return db.execute(sql`
     SELECT
       lead_id AS "key",
-      BOOL_OR(delivery_status != 'pending') AS "contacted",
+      TRUE AS "contacted",
       BOOL_OR(delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
       BOOL_OR(delivery_status = 'replied') AS "replied",
       CAST(NULL AS boolean) AS "bounced",
@@ -74,7 +74,7 @@ function scopedEmailQuery(filterClause: ReturnType<typeof sql>, emails: string[]
   return db.execute(sql`
     SELECT
       lead_email AS "key",
-      BOOL_OR(delivery_status != 'pending') AS "contacted",
+      TRUE AS "contacted",
       BOOL_OR(delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
       CAST(NULL AS boolean) AS "replied",
       BOOL_OR(delivery_status = 'bounced') AS "bounced",

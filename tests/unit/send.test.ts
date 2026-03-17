@@ -326,7 +326,7 @@ describe("POST /send", () => {
     expect(campaignInsert).toBeDefined();
     expect(campaignInsert![0]).toMatchObject({
       leadId: "lead-1",
-      deliveryStatus: "sent",
+      deliveryStatus: "pending",
     });
   });
 
