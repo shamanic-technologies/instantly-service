@@ -528,7 +528,10 @@ const StepStatsSchema = z.object({
 const StatsResponseSchema = z
   .object({
     stats: z.object({
-      emailsSent: z.number().describe("Total email_sent events"),
+      emailsContacted: z
+        .number()
+        .describe("Leads added to a campaign (row exists in instantly_campaigns, immediate)"),
+      emailsSent: z.number().describe("Total email_sent events (confirmed by Instantly webhook)"),
       emailsDelivered: z
         .number()
         .describe("emailsSent minus emailsBounced"),

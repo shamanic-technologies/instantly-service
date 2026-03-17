@@ -34,6 +34,7 @@ export function internalExclusionClause(): SQL {
 }
 
 const ZERO_STATS = {
+  emailsContacted: 0,
   emailsSent: 0,
   emailsDelivered: 0,
   emailsOpened: 0,
@@ -45,6 +46,55 @@ const ZERO_STATS = {
   repliesOutOfOffice: 0,
   repliesUnsubscribe: 0,
 };
+
+/** SQL fragment that filters out internal emails on the campaigns table (uses c.lead_email) */
+export function campaignExclusionClause(): SQL {
+  const domainConditions = EXCLUDED_DOMAINS.map(
+    (d) => sql`c.lead_email LIKE ${"%" + d}`,
+  );
+  return sql`
+    c.lead_email NOT IN (${sql.join(
+      EXCLUDED_EMAILS.map((e) => sql`${e}`),
+      sql`, `,
+    )})
+    AND NOT (${sql.join(domainConditions, sql` OR `)})
+  `;
+}
+
+/** Count contacted leads from instantly_campaigns (row exists = contacted) */
+export async function queryContactedCount(whereClause: SQL): Promise<number> {
+  const result = await db.execute(sql`
+    SELECT COUNT(*)::int AS "emailsContacted"
+    FROM instantly_campaigns c
+    WHERE ${whereClause}
+      AND ${campaignExclusionClause()}
+  `);
+  const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+  return (rows[0] as any)?.emailsContacted ?? 0;
+}
+
+/** Count contacted leads grouped by dimension */
+export async function queryGroupedContactedCount(
+  whereClause: SQL,
+  groupBy: string,
+): Promise<Map<string, number>> {
+  const col = GROUP_BY_COLUMNS[groupBy];
+  if (!col) return new Map();
+
+  const groupCol = sql.raw(col);
+  const result = await db.execute(sql`
+    SELECT
+      ${groupCol} AS "groupKey",
+      COUNT(*)::int AS "emailsContacted"
+    FROM instantly_campaigns c
+    WHERE ${whereClause}
+      AND ${campaignExclusionClause()}
+      AND ${groupCol} IS NOT NULL
+    GROUP BY ${groupCol}
+  `);
+  const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+  return new Map(rows.map((r: any) => [r.groupKey, r.emailsContacted ?? 0]));
+}
 
 const GROUP_BY_COLUMNS: Record<string, string> = {
   brandId: "c.brand_id",
@@ -88,9 +138,13 @@ export async function queryGroupedStats(
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
+  // Fetch contacted counts in parallel (from campaigns table, not events)
+  const contactedMap = await queryGroupedContactedCount(whereClause, groupBy);
+
   return rows.map((row: any) => ({
     key: row.groupKey,
     stats: {
+      emailsContacted: contactedMap.get(row.groupKey) ?? 0,
       emailsSent: row.emailsSent ?? 0,
       emailsDelivered: row.emailsDelivered ?? 0,
       emailsOpened: row.emailsOpened ?? 0,
@@ -131,13 +185,17 @@ export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
+  // Fetch contacted count in parallel (from campaigns table, not events)
+  const emailsContacted = await queryContactedCount(whereClause);
+
   if (!rows.length) {
-    return { stats: { ...ZERO_STATS }, recipients: 0 };
+    return { stats: { ...ZERO_STATS, emailsContacted }, recipients: 0 };
   }
 
   const row = rows[0] as Record<string, number>;
   return {
     stats: {
+      emailsContacted,
       emailsSent: row.emailsSent ?? 0,
       emailsDelivered: row.emailsDelivered ?? 0,
       emailsOpened: row.emailsOpened ?? 0,
