@@ -175,11 +175,7 @@ router.post("/", async (req: Request, res: Response) => {
       };
     });
 
-    for (const r of results) {
-      const camp = r.campaign?.lead;
-      const brand = r.brand.lead;
-      console.log(`[status] leadId=${r.leadId} email=${r.email} campaign.contacted=${camp?.contacted ?? "n/a"} campaign.delivered=${camp?.delivered ?? "n/a"} brand.contacted=${brand.contacted} brand.delivered=${brand.delivered}`);
-    }
+    console.log(`[status] Returned ${results.length} results for brandId=${brandId}${campaignId ? ` campaignId=${campaignId}` : ""}`);
 
     res.json({ results });
   } catch (error: any) {
