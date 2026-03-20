@@ -16,7 +16,7 @@ import {
 } from "../lib/runs-client";
 import { handleCampaignError } from "../lib/campaign-error-handler";
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
-import { authorizeCreditSpend, COST_ESTIMATES } from "../lib/billing-client";
+import { authorizeCreditSpend } from "../lib/billing-client";
 import {
   CreateCampaignRequestSchema,
   UpdateStatusRequestSchema,
@@ -63,20 +63,23 @@ router.post("/", async (req: Request, res: Response) => {
 
     // 1. Credit authorization (platform keys only)
     if (keySource === "platform") {
-      const estimatedCents = COST_ESTIMATES["instantly-campaign-create"];
-      const auth = await authorizeCreditSpend(estimatedCents, "instantly-campaign-create", {
-        orgId,
-        userId,
-        runId: res.locals.runId as string,
-        campaignId: tracking.campaignId,
-        brandId,
-        workflowName,
-      });
+      const auth = await authorizeCreditSpend(
+        [{ costName: "instantly-campaign-create", quantity: 1 }],
+        "instantly-campaign-create",
+        {
+          orgId,
+          userId,
+          runId: res.locals.runId as string,
+          campaignId: tracking.campaignId,
+          brandId,
+          workflowName,
+        },
+      );
       if (!auth.sufficient) {
         return res.status(402).json({
           error: "Insufficient credits",
           balance_cents: auth.balance_cents,
-          required_cents: estimatedCents,
+          required_cents: auth.required_cents,
         });
       }
     }

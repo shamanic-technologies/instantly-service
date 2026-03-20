@@ -24,7 +24,7 @@ import {
   type TrackingHeaders,
 } from "../lib/runs-client";
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
-import { authorizeCreditSpend, COST_ESTIMATES } from "../lib/billing-client";
+import { authorizeCreditSpend } from "../lib/billing-client";
 import { SendRequestSchema } from "../schemas";
 
 /** Extract tracking headers from res.locals (set by identityHeaders middleware) */
@@ -212,20 +212,23 @@ router.post("/", async (req: Request, res: Response) => {
 
     // 1. Credit authorization (platform keys only)
     if (keySource === "platform") {
-      const estimatedCents = body.sequence.length * COST_ESTIMATES["instantly-email-send"];
-      const auth = await authorizeCreditSpend(estimatedCents, "instantly-email-send", {
-        orgId,
-        userId,
-        runId: res.locals.runId as string,
-        campaignId,
-        brandId,
-        workflowName,
-      });
+      const auth = await authorizeCreditSpend(
+        [{ costName: "instantly-email-send", quantity: body.sequence.length }],
+        "instantly-email-send",
+        {
+          orgId,
+          userId,
+          runId: res.locals.runId as string,
+          campaignId,
+          brandId,
+          workflowName,
+        },
+      );
       if (!auth.sufficient) {
         return res.status(402).json({
           error: "Insufficient credits",
           balance_cents: auth.balance_cents,
-          required_cents: estimatedCents,
+          required_cents: auth.required_cents,
         });
       }
     }
