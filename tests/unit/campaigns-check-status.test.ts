@@ -76,6 +76,18 @@ vi.mock("../../src/lib/key-client", () => ({
   },
 }));
 
+// Mock billing-client
+const mockAuthorizeCreditSpend = vi.fn();
+
+vi.mock("../../src/lib/billing-client", () => ({
+  authorizeCreditSpend: (...args: unknown[]) => mockAuthorizeCreditSpend(...args),
+  COST_ESTIMATES: {
+    "instantly-email-send": 5,
+    "instantly-campaign-create": 1,
+    "instantly-lead-add": 1,
+  },
+}));
+
 // Mock email-client
 const mockSendEmail = vi.fn();
 
@@ -99,6 +111,7 @@ describe("POST /campaigns/check-status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
+    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: true, balance_cents: 1000 });
     mockUpdateRun.mockResolvedValue({});
     mockUpdateCostStatus.mockResolvedValue({});
     mockSendEmail.mockResolvedValue({});
@@ -229,5 +242,46 @@ describe("POST /campaigns/check-status", () => {
     expect(res.status).toBe(200);
     expect(res.body.checked).toBe(2);
     expect(res.body.errors).toHaveLength(0);
+  });
+});
+
+describe("POST /campaigns (credit authorization)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
+    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: true, balance_cents: 1000 });
+    mockCreateRun.mockResolvedValue({ id: "run-1" });
+    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-1", status: "draft" });
+    mockUpdateRun.mockResolvedValue({});
+    mockAddCosts.mockResolvedValue({ costs: [] });
+  });
+
+  it("should return 402 when credit authorization fails for platform keySource", async () => {
+    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: false, balance_cents: 0 });
+
+    const app = await createCampaignsApp();
+    const res = await request(app)
+      .post("/campaigns")
+      .set(identityHeadersObj)
+      .send({ name: "Test Campaign", brandId: "brand-1" });
+
+    expect(res.status).toBe(402);
+    expect(res.body.error).toBe("Insufficient credits");
+    expect(res.body.required_cents).toBe(1);
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+
+  it("should skip credit authorization when keySource is org (BYOK)", async () => {
+    mockResolveInstantlyApiKey.mockResolvedValue({ key: "org-key", keySource: "org" });
+
+    const app = await createCampaignsApp();
+    // Will fail on DB insert (mock not set up for full flow), but we only care that billing was skipped
+    await request(app)
+      .post("/campaigns")
+      .set(identityHeadersObj)
+      .send({ name: "Test Campaign", brandId: "brand-1" });
+
+    expect(mockAuthorizeCreditSpend).not.toHaveBeenCalled();
   });
 });

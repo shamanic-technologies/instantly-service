@@ -16,6 +16,7 @@ import {
 } from "../lib/runs-client";
 import { handleCampaignError } from "../lib/campaign-error-handler";
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
+import { authorizeCreditSpend, COST_ESTIMATES } from "../lib/billing-client";
 import {
   CreateCampaignRequestSchema,
   UpdateStatusRequestSchema,
@@ -60,7 +61,27 @@ router.post("/", async (req: Request, res: Response) => {
       path: "/campaigns",
     });
 
-    // 1. Create run in runs-service FIRST (BLOCKING)
+    // 1. Credit authorization (platform keys only)
+    if (keySource === "platform") {
+      const estimatedCents = COST_ESTIMATES["instantly-campaign-create"];
+      const auth = await authorizeCreditSpend(estimatedCents, "instantly-campaign-create", {
+        orgId,
+        userId,
+        runId: res.locals.runId as string,
+        campaignId: tracking.campaignId,
+        brandId,
+        workflowName,
+      });
+      if (!auth.sufficient) {
+        return res.status(402).json({
+          error: "Insufficient credits",
+          balance_cents: auth.balance_cents,
+          required_cents: estimatedCents,
+        });
+      }
+    }
+
+    // 2. Create run in runs-service FIRST (BLOCKING)
     const identity = { orgId, userId, runId: res.locals.runId as string, tracking };
     const run = await createRun({
       serviceName: "instantly-service",

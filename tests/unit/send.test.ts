@@ -70,6 +70,18 @@ vi.mock("../../src/lib/runs-client", () => ({
   addCosts: (...args: unknown[]) => mockAddCosts(...args),
 }));
 
+// Mock billing-client
+const mockAuthorizeCreditSpend = vi.fn();
+
+vi.mock("../../src/lib/billing-client", () => ({
+  authorizeCreditSpend: (...args: unknown[]) => mockAuthorizeCreditSpend(...args),
+  COST_ESTIMATES: {
+    "instantly-email-send": 5,
+    "instantly-campaign-create": 1,
+    "instantly-lead-add": 1,
+  },
+}));
+
 import { buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/routes/send";
 import { identityHeaders } from "../../src/middleware/identityHeaders";
 import type { Account } from "../../src/lib/instantly-client";
@@ -200,6 +212,7 @@ describe("POST /send", () => {
     runCounter = 0;
 
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
+    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: true, balance_cents: 1000 });
 
     mockCreateRun.mockImplementation(() => {
       runCounter++;
@@ -646,5 +659,47 @@ describe("POST /send", () => {
         }),
       }),
     );
+  });
+
+  it("should return 402 when credit authorization fails for platform keySource", async () => {
+    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: false, balance_cents: 2 });
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(402);
+    expect(res.body.error).toBe("Insufficient credits");
+    expect(res.body.balance_cents).toBe(2);
+    expect(res.body.required_cents).toBe(15); // 3 steps × 5 cents
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
+  });
+
+  it("should call authorizeCreditSpend with correct cost estimate for all steps", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(mockAuthorizeCreditSpend).toHaveBeenCalledWith(
+      15, // 3 steps × 5 cents
+      "instantly-email-send",
+      expect.objectContaining({
+        orgId: "org-1",
+        userId: "user-1",
+        runId: "run-1",
+      }),
+    );
+  });
+
+  it("should skip credit authorization when keySource is org (BYOK)", async () => {
+    mockResolveInstantlyApiKey.mockResolvedValue({ key: "org-key", keySource: "org" });
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(mockAuthorizeCreditSpend).not.toHaveBeenCalled();
+    expect(mockCreateCampaign).toHaveBeenCalled();
   });
 });
