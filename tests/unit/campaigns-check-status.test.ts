@@ -81,11 +81,6 @@ const mockAuthorizeCreditSpend = vi.fn();
 
 vi.mock("../../src/lib/billing-client", () => ({
   authorizeCreditSpend: (...args: unknown[]) => mockAuthorizeCreditSpend(...args),
-  COST_ESTIMATES: {
-    "instantly-email-send": 5,
-    "instantly-campaign-create": 1,
-    "instantly-lead-add": 1,
-  },
 }));
 
 // Mock email-client
@@ -257,7 +252,7 @@ describe("POST /campaigns (credit authorization)", () => {
   });
 
   it("should return 402 when credit authorization fails for platform keySource", async () => {
-    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: false, balance_cents: 0 });
+    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: false, balance_cents: 0, required_cents: 1 });
 
     const app = await createCampaignsApp();
     const res = await request(app)

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { authorizeCreditSpend, COST_ESTIMATES } from "../../src/lib/billing-client";
+import { authorizeCreditSpend } from "../../src/lib/billing-client";
 
 describe("billing-client", () => {
   const mockFetch = vi.fn();
@@ -22,20 +22,22 @@ describe("billing-client", () => {
     workflowName: "wf-1",
   };
 
-  it("should return sufficient: true when balance is enough", async () => {
+  const items = [{ costName: "instantly-email-send", quantity: 3 }];
+
+  it("should send items array and return authorization result", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ sufficient: true, balance_cents: 500 }),
+      json: () => Promise.resolve({ sufficient: true, balance_cents: 500, required_cents: 15 }),
     });
 
-    const result = await authorizeCreditSpend(10, "test-cost", identity);
+    const result = await authorizeCreditSpend(items, "test-cost", identity);
 
-    expect(result).toEqual({ sufficient: true, balance_cents: 500 });
+    expect(result).toEqual({ sufficient: true, balance_cents: 500, required_cents: 15 });
     expect(mockFetch).toHaveBeenCalledWith(
       expect.stringContaining("/v1/credits/authorize"),
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ required_cents: 10, description: "test-cost" }),
+        body: JSON.stringify({ items, description: "test-cost" }),
       }),
     );
   });
@@ -43,21 +45,21 @@ describe("billing-client", () => {
   it("should return sufficient: false when balance is insufficient", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ sufficient: false, balance_cents: 3 }),
+      json: () => Promise.resolve({ sufficient: false, balance_cents: 3, required_cents: 15 }),
     });
 
-    const result = await authorizeCreditSpend(10, "test-cost", identity);
+    const result = await authorizeCreditSpend(items, "test-cost", identity);
 
-    expect(result).toEqual({ sufficient: false, balance_cents: 3 });
+    expect(result).toEqual({ sufficient: false, balance_cents: 3, required_cents: 15 });
   });
 
   it("should forward all identity headers", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ sufficient: true, balance_cents: 100 }),
+      json: () => Promise.resolve({ sufficient: true, balance_cents: 100, required_cents: 5 }),
     });
 
-    await authorizeCreditSpend(5, "desc", identity);
+    await authorizeCreditSpend(items, "desc", identity);
 
     const [, options] = mockFetch.mock.calls[0];
     expect(options.headers).toMatchObject({
@@ -73,10 +75,10 @@ describe("billing-client", () => {
   it("should omit optional headers when not provided", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ sufficient: true, balance_cents: 100 }),
+      json: () => Promise.resolve({ sufficient: true, balance_cents: 100, required_cents: 5 }),
     });
 
-    await authorizeCreditSpend(5, "desc", {
+    await authorizeCreditSpend(items, "desc", {
       orgId: "org-1",
       userId: "user-1",
       runId: "run-1",
@@ -95,14 +97,28 @@ describe("billing-client", () => {
       text: () => Promise.resolve("Internal Server Error"),
     });
 
-    await expect(authorizeCreditSpend(10, "test", identity)).rejects.toThrow(
+    await expect(authorizeCreditSpend(items, "test", identity)).rejects.toThrow(
       "billing-service POST /v1/credits/authorize failed: 500",
     );
   });
 
-  it("should export cost estimates", () => {
-    expect(COST_ESTIMATES["instantly-email-send"]).toBeGreaterThan(0);
-    expect(COST_ESTIMATES["instantly-campaign-create"]).toBeGreaterThan(0);
-    expect(COST_ESTIMATES["instantly-lead-add"]).toBeGreaterThan(0);
+  it("should support multiple cost items", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ sufficient: true, balance_cents: 1000, required_cents: 20 }),
+    });
+
+    const multiItems = [
+      { costName: "instantly-email-send", quantity: 3 },
+      { costName: "instantly-campaign-create", quantity: 1 },
+    ];
+
+    await authorizeCreditSpend(multiItems, "multi", identity);
+
+    const [, options] = mockFetch.mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.items).toHaveLength(2);
+    expect(body.items[0]).toEqual({ costName: "instantly-email-send", quantity: 3 });
+    expect(body.items[1]).toEqual({ costName: "instantly-campaign-create", quantity: 1 });
   });
 });
