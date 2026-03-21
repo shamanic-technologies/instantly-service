@@ -239,6 +239,7 @@ router.post("/", async (req: Request, res: Response) => {
     try {
       // 3. Check available accounts — only use active ones (status === 1)
       const allAccounts = await listAccounts(apiKey);
+      console.log(`[send] Account statuses: ${JSON.stringify(allAccounts.map((a) => ({ email: a.email, status: a.status, warmup_status: a.warmup_status })))}`);
       const accounts = allAccounts.filter((a) => a.status === 1);
       if (accounts.length === 0) {
         const total = allAccounts.length;
