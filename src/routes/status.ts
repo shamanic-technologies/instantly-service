@@ -175,8 +175,6 @@ router.post("/", async (req: Request, res: Response) => {
       };
     });
 
-    console.log(`[status] Returned ${results.length} results for brandId=${brandId}${campaignId ? ` campaignId=${campaignId}` : ""}`);
-
     res.json({ results });
   } catch (error: any) {
     console.error(`[status] Failed to get status: ${error.message}`);
