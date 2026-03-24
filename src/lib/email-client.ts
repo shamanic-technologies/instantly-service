@@ -33,6 +33,7 @@ interface TrackingHeaders {
   campaignId?: string;
   brandId?: string;
   workflowName?: string;
+  featureSlug?: string;
 }
 
 interface EmailIdentityContext {
@@ -66,6 +67,9 @@ async function emailServiceRequest<T>(
   }
   if (identity.tracking?.workflowName) {
     headers["x-workflow-name"] = identity.tracking.workflowName;
+  }
+  if (identity.tracking?.featureSlug) {
+    headers["x-feature-slug"] = identity.tracking.featureSlug;
   }
 
   const response = await fetch(`${TRANSACTIONAL_EMAIL_SERVICE_URL}${path}`, {

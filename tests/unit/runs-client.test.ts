@@ -88,6 +88,7 @@ describe("runs-client", () => {
           campaignId: "camp-1",
           brandId: "brand-1",
           workflowName: "wf-1",
+          featureSlug: "cold-outreach",
         },
       },
     );
@@ -96,6 +97,7 @@ describe("runs-client", () => {
     expect(options.headers["x-campaign-id"]).toBe("camp-1");
     expect(options.headers["x-brand-id"]).toBe("brand-1");
     expect(options.headers["x-workflow-name"]).toBe("wf-1");
+    expect(options.headers["x-feature-slug"]).toBe("cold-outreach");
   });
 
   it("should not include tracking headers when not present in identity context", async () => {
@@ -114,5 +116,6 @@ describe("runs-client", () => {
     expect(options.headers["x-campaign-id"]).toBeUndefined();
     expect(options.headers["x-brand-id"]).toBeUndefined();
     expect(options.headers["x-workflow-name"]).toBeUndefined();
+    expect(options.headers["x-feature-slug"]).toBeUndefined();
   });
 });

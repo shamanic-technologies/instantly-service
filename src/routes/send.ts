@@ -33,6 +33,7 @@ function getTracking(res: Response): TrackingHeaders {
   if (res.locals.headerCampaignId) t.campaignId = res.locals.headerCampaignId;
   if (res.locals.headerBrandId) t.brandId = res.locals.headerBrandId;
   if (res.locals.headerWorkflowName) t.workflowName = res.locals.headerWorkflowName;
+  if (res.locals.headerFeatureSlug) t.featureSlug = res.locals.headerFeatureSlug;
   return t;
 }
 
@@ -222,6 +223,7 @@ router.post("/", async (req: Request, res: Response) => {
           campaignId,
           brandId,
           workflowName,
+          featureSlug: tracking.featureSlug,
         },
       );
       if (!auth.sufficient) {
@@ -321,6 +323,7 @@ router.post("/", async (req: Request, res: Response) => {
             orgId,
             brandId,
             workflowName,
+            featureSlug: tracking.featureSlug,
             runId: res.locals.runId as string,
           })
           .onConflictDoNothing()
