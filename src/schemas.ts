@@ -14,6 +14,7 @@ export const TrackingHeadersSchema = z.object({
   "x-campaign-id": z.string().optional().describe("Campaign ID — automatically injected by workflow-service on all DAG calls"),
   "x-brand-id": z.string().optional().describe("Brand ID — automatically injected by workflow-service on all DAG calls"),
   "x-workflow-name": z.string().optional().describe("Workflow name — automatically injected by workflow-service on all DAG calls"),
+  "x-feature-slug": z.string().optional().describe("Feature slug — propagated through the full call chain for tracking"),
 });
 
 // ─── Error ──────────────────────────────────────────────────────────────────

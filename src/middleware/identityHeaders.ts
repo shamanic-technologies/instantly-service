@@ -4,7 +4,7 @@ import { Request, Response, NextFunction } from "express";
  * Middleware that extracts identity and tracking headers from requests.
  *
  * Required: x-org-id, x-user-id, x-run-id (returns 400 if missing)
- * Optional: x-campaign-id, x-brand-id, x-workflow-name (workflow tracking headers)
+ * Optional: x-campaign-id, x-brand-id, x-workflow-name, x-feature-slug (workflow tracking headers)
  */
 export function identityHeaders(
   req: Request,
@@ -29,10 +29,12 @@ export function identityHeaders(
   const headerCampaignId = req.headers["x-campaign-id"] as string | undefined;
   const headerBrandId = req.headers["x-brand-id"] as string | undefined;
   const headerWorkflowName = req.headers["x-workflow-name"] as string | undefined;
+  const headerFeatureSlug = req.headers["x-feature-slug"] as string | undefined;
 
   if (headerCampaignId) res.locals.headerCampaignId = headerCampaignId;
   if (headerBrandId) res.locals.headerBrandId = headerBrandId;
   if (headerWorkflowName) res.locals.headerWorkflowName = headerWorkflowName;
+  if (headerFeatureSlug) res.locals.headerFeatureSlug = headerFeatureSlug;
 
   next();
 }

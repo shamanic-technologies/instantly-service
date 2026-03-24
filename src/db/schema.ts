@@ -24,6 +24,7 @@ export const instantlyCampaigns = pgTable(
     orgId: text("org_id"),
     brandId: text("brand_id").notNull(),
     workflowName: text("workflow_name"),
+    featureSlug: text("feature_slug"),
     runId: text("run_id"),
     leadId: text("lead_id"),
     deliveryStatus: text("delivery_status").notNull().default("pending"),

@@ -45,6 +45,7 @@ interface TrackingHeaders {
   campaignId?: string;
   brandId?: string;
   workflowName?: string;
+  featureSlug?: string;
 }
 
 async function keyServiceRequest<T>(
@@ -68,6 +69,9 @@ async function keyServiceRequest<T>(
   }
   if (identity.tracking?.workflowName) {
     headers["x-workflow-name"] = identity.tracking.workflowName;
+  }
+  if (identity.tracking?.featureSlug) {
+    headers["x-feature-slug"] = identity.tracking.featureSlug;
   }
 
   const response = await fetch(`${KEY_SERVICE_URL}${path}`, {

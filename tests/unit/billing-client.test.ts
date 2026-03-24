@@ -20,6 +20,7 @@ describe("billing-client", () => {
     campaignId: "camp-1",
     brandId: "brand-1",
     workflowName: "wf-1",
+    featureSlug: "cold-outreach",
   };
 
   const items = [{ costName: "instantly-email-send", quantity: 3 }];
@@ -69,6 +70,7 @@ describe("billing-client", () => {
       "x-campaign-id": "camp-1",
       "x-brand-id": "brand-1",
       "x-workflow-name": "wf-1",
+      "x-feature-slug": "cold-outreach",
     });
   });
 
@@ -88,6 +90,7 @@ describe("billing-client", () => {
     expect(options.headers).not.toHaveProperty("x-campaign-id");
     expect(options.headers).not.toHaveProperty("x-brand-id");
     expect(options.headers).not.toHaveProperty("x-workflow-name");
+    expect(options.headers).not.toHaveProperty("x-feature-slug");
   });
 
   it("should throw on non-ok response", async () => {
