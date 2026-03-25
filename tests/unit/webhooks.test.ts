@@ -129,6 +129,76 @@ describe("POST /webhooks/instantly", () => {
 
   // ─── Cost lifecycle tests ────────────────────────────────────────────────
 
+  it("should pass campaign userId (not hardcoded 'system') in identity when converting costs", async () => {
+    // Mock: verification lookup
+    mockVerification("inst-camp-1");
+    // Mock: handleFollowUpSent → find the campaign with userId
+    mockDbSelect.mockResolvedValueOnce([{
+      campaignId: "camp-1",
+      instantlyCampaignId: "inst-camp-1",
+      orgId: "org-uuid",
+      userId: "real-user-uuid",
+    }]);
+    // Mock: handleFollowUpSent → find the provisioned cost
+    mockDbSelect.mockResolvedValueOnce([{
+      id: "sc-1",
+      campaignId: "camp-1",
+      leadEmail: "lead@test.com",
+      step: 2,
+      runId: "run-1",
+      costId: "cost-2",
+      status: "provisioned",
+    }]);
+
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly")
+      .send({
+        event_type: "email_sent",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 2,
+      });
+
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-2", "actual", expect.objectContaining({ userId: "real-user-uuid" }));
+    expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "completed", expect.objectContaining({ userId: "real-user-uuid" }));
+  });
+
+  it("should fallback to nil UUID when campaign has no userId (legacy rows)", async () => {
+    // Mock: verification lookup
+    mockVerification("inst-camp-1");
+    // Mock: handleFollowUpSent → find the campaign WITHOUT userId
+    mockDbSelect.mockResolvedValueOnce([{
+      campaignId: "camp-1",
+      instantlyCampaignId: "inst-camp-1",
+      orgId: "org-uuid",
+    }]);
+    // Mock: handleFollowUpSent → find the provisioned cost
+    mockDbSelect.mockResolvedValueOnce([{
+      id: "sc-1",
+      campaignId: "camp-1",
+      leadEmail: "lead@test.com",
+      step: 2,
+      runId: "run-1",
+      costId: "cost-2",
+      status: "provisioned",
+    }]);
+
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly")
+      .send({
+        event_type: "email_sent",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 2,
+      });
+
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "cost-2", "actual", expect.objectContaining({ userId: "00000000-0000-0000-0000-000000000000" }));
+  });
+
   it("should convert provisioned cost to actual on email_sent for step > 1", async () => {
     // Mock: verification lookup
     mockVerification("inst-camp-1");

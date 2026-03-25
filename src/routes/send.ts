@@ -321,6 +321,7 @@ router.post("/", async (req: Request, res: Response) => {
             status: "active",
             deliveryStatus: "sent",
             orgId,
+            userId,
             brandId,
             workflowName,
             featureSlug: tracking.featureSlug,

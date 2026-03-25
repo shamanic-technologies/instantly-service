@@ -67,6 +67,7 @@ const baseCampaign = {
   name: "Campaign camp-1",
   status: "active",
   orgId: "org-1",
+  userId: "user-uuid-1",
   runId: "run-1",
   metadata: null,
 };
@@ -147,7 +148,7 @@ describe("handleCampaignError", () => {
           errorReason: "account disconnected",
         }),
       }),
-      expect.objectContaining({ orgId: "org-1", userId: "system" }),
+      expect.objectContaining({ orgId: "org-1", userId: "user-uuid-1" }),
     );
   });
 

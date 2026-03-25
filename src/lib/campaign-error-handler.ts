@@ -52,7 +52,7 @@ export async function handleCampaignError(
   // Build identity context from campaign record (automated process)
   const identity: IdentityContext = {
     orgId: campaign.orgId || "system",
-    userId: "system",
+    userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
     runId: campaign.runId || undefined,
   };
 

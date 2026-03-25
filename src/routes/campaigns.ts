@@ -116,6 +116,7 @@ router.post("/", async (req: Request, res: Response) => {
           name: body.name,
           status: instantlyCampaign.status,
           orgId,
+          userId,
           brandId,
           workflowName,
           featureSlug: tracking.featureSlug,
