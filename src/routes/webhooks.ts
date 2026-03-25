@@ -46,7 +46,7 @@ async function handleFollowUpSent(
 
   const identity: IdentityContext = {
     orgId: campaign.orgId || "system",
-    userId: "system",
+    userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
     runId: cost.runId,
   };
 
@@ -93,7 +93,7 @@ async function cancelRemainingProvisions(
   for (const cost of remaining) {
     const identity: IdentityContext = {
       orgId: campaign.orgId || "system",
-      userId: "system",
+      userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
       runId: cost.runId,
     };
     try {
