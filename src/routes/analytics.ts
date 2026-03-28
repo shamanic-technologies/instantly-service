@@ -2,6 +2,13 @@ import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
 import { StatsQuerySchema, GroupedStatsRequestSchema } from "../schemas";
+import {
+  resolveWorkflowDynastySlugs,
+  resolveFeatureDynastySlugs,
+  fetchWorkflowDynasties,
+  fetchFeatureDynasties,
+  buildSlugToDynastyMap,
+} from "../lib/dynasty-client";
 
 const router = Router();
 
@@ -100,13 +107,18 @@ const GROUP_BY_COLUMNS: Record<string, string> = {
   brandId: "c.brand_id",
   campaignId: "c.campaign_id",
   workflowSlug: "c.workflow_slug",
+  featureSlug: "c.feature_slug",
   leadEmail: "e.lead_email",
+  // Dynasty groupBy uses the underlying slug column; re-keying happens post-query
+  workflowDynastySlug: "c.workflow_slug",
+  featureDynastySlug: "c.feature_slug",
 };
 
 /** Execute grouped stats query and return array of { key, stats, recipients } */
 export async function queryGroupedStats(
   whereClause: SQL,
   groupBy: string,
+  dynastyMap?: Map<string, string>,
 ): Promise<Array<{ key: string; stats: typeof ZERO_STATS; recipients: number }>> {
   const col = GROUP_BY_COLUMNS[groupBy];
   if (!col) return [];
@@ -139,10 +151,14 @@ export async function queryGroupedStats(
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
   // Fetch contacted counts in parallel (from campaigns table, not events)
-  const contactedMap = await queryGroupedContactedCount(whereClause, groupBy);
+  // For dynasty groupBy, use the underlying slug column for contacted counts too
+  const underlyingGroupBy = groupBy === "workflowDynastySlug" ? "workflowSlug"
+    : groupBy === "featureDynastySlug" ? "featureSlug"
+    : groupBy;
+  const contactedMap = await queryGroupedContactedCount(whereClause, underlyingGroupBy);
 
-  return rows.map((row: any) => ({
-    key: row.groupKey,
+  const rawGroups = rows.map((row: any) => ({
+    key: row.groupKey as string,
     stats: {
       emailsContacted: contactedMap.get(row.groupKey) ?? 0,
       emailsSent: row.emailsSent ?? 0,
@@ -157,6 +173,48 @@ export async function queryGroupedStats(
       repliesUnsubscribe: row.repliesUnsubscribe ?? 0,
     },
     recipients: row.recipients ?? 0,
+  }));
+
+  // If dynasty groupBy, re-key and merge by dynasty slug
+  if (dynastyMap && (groupBy === "workflowDynastySlug" || groupBy === "featureDynastySlug")) {
+    return mergeDynastyGroups(rawGroups, dynastyMap);
+  }
+
+  return rawGroups;
+}
+
+/** Merge per-slug groups into dynasty groups using the reverse map */
+function mergeDynastyGroups(
+  groups: Array<{ key: string; stats: typeof ZERO_STATS; recipients: number }>,
+  dynastyMap: Map<string, string>,
+): Array<{ key: string; stats: typeof ZERO_STATS; recipients: number }> {
+  const merged = new Map<string, { stats: typeof ZERO_STATS; recipients: number }>();
+
+  for (const group of groups) {
+    // Fall back to the raw slug if not found in the dynasty map
+    const dynastyKey = dynastyMap.get(group.key) ?? group.key;
+    const existing = merged.get(dynastyKey);
+    if (existing) {
+      existing.stats.emailsContacted += group.stats.emailsContacted;
+      existing.stats.emailsSent += group.stats.emailsSent;
+      existing.stats.emailsDelivered += group.stats.emailsDelivered;
+      existing.stats.emailsOpened += group.stats.emailsOpened;
+      existing.stats.emailsClicked += group.stats.emailsClicked;
+      existing.stats.emailsReplied += group.stats.emailsReplied;
+      existing.stats.emailsBounced += group.stats.emailsBounced;
+      existing.stats.repliesAutoReply += group.stats.repliesAutoReply;
+      existing.stats.repliesNotInterested += group.stats.repliesNotInterested;
+      existing.stats.repliesOutOfOffice += group.stats.repliesOutOfOffice;
+      existing.stats.repliesUnsubscribe += group.stats.repliesUnsubscribe;
+      existing.recipients += group.recipients;
+    } else {
+      merged.set(dynastyKey, { stats: { ...group.stats }, recipients: group.recipients });
+    }
+  }
+
+  return Array.from(merged.entries()).map(([key, value]) => ({
+    key,
+    ...value,
   }));
 }
 
@@ -211,6 +269,54 @@ export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO
   };
 }
 
+/** Build optional headers for inter-service calls from request context */
+function buildInterServiceHeaders(req: Request, res: Response): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const orgId = res.locals.orgId as string | undefined;
+  const userId = res.locals.userId as string | undefined;
+  const runId = res.locals.runId as string | undefined;
+  if (orgId) headers["x-org-id"] = orgId;
+  if (userId) headers["x-user-id"] = userId;
+  if (runId) headers["x-run-id"] = runId;
+  return headers;
+}
+
+/**
+ * Resolve dynasty slug filters into slug arrays and add conditions.
+ * Dynasty filters take priority over exact slug filters for the same dimension.
+ * Returns true if a dynasty resolved to empty (= zero results), meaning we should short-circuit.
+ */
+export async function addDynastyConditions(
+  conditions: SQL[],
+  data: {
+    workflowSlug?: string;
+    featureSlug?: string;
+    workflowDynastySlug?: string;
+    featureDynastySlug?: string;
+  },
+  headers?: Record<string, string>,
+): Promise<boolean> {
+  // Workflow dimension: dynasty takes priority over exact slug
+  if (data.workflowDynastySlug) {
+    const slugs = await resolveWorkflowDynastySlugs(data.workflowDynastySlug, headers);
+    if (slugs.length === 0) return true; // empty dynasty → zero stats
+    conditions.push(sql`c.workflow_slug IN (${sql.join(slugs.map((s) => sql`${s}`), sql`, `)})`);
+  } else if (data.workflowSlug) {
+    conditions.push(sql`c.workflow_slug = ${data.workflowSlug}`);
+  }
+
+  // Feature dimension: dynasty takes priority over exact slug
+  if (data.featureDynastySlug) {
+    const slugs = await resolveFeatureDynastySlugs(data.featureDynastySlug, headers);
+    if (slugs.length === 0) return true; // empty dynasty → zero stats
+    conditions.push(sql`c.feature_slug IN (${sql.join(slugs.map((s) => sql`${s}`), sql`, `)})`);
+  } else if (data.featureSlug) {
+    conditions.push(sql`c.feature_slug = ${data.featureSlug}`);
+  }
+
+  return false;
+}
+
 /**
  * GET /stats
  * Aggregated stats from webhook events. Filters via query params; runIds comma-separated.
@@ -223,7 +329,7 @@ router.get("/stats", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds: runIdsRaw, brandId, campaignId, workflowSlug, groupBy } = parsed.data;
+  const { runIds: runIdsRaw, brandId, campaignId, workflowSlug, featureSlug, workflowDynastySlug, featureDynastySlug, groupBy } = parsed.data;
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
   const orgId = res.locals.orgId as string;
 
@@ -232,14 +338,33 @@ router.get("/stats", async (req: Request, res: Response) => {
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
   if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
-  if (workflowSlug) conditions.push(sql`c.workflow_slug = ${workflowSlug}`);
+
+  const interServiceHeaders = buildInterServiceHeaders(req, res);
+  const emptyDynasty = await addDynastyConditions(
+    conditions,
+    { workflowSlug, featureSlug, workflowDynastySlug, featureDynastySlug },
+    interServiceHeaders,
+  );
+
+  if (emptyDynasty) {
+    if (groupBy) return res.json({ groups: [] });
+    return res.json({ stats: { ...ZERO_STATS }, recipients: 0 });
+  }
 
   const whereClause = sql.join(conditions, sql` AND `);
 
   // Handle groupBy requests
   if (groupBy) {
     try {
-      const groups = await queryGroupedStats(whereClause, groupBy);
+      let dynastyMap: Map<string, string> | undefined;
+      if (groupBy === "workflowDynastySlug") {
+        const dynasties = await fetchWorkflowDynasties(interServiceHeaders);
+        dynastyMap = buildSlugToDynastyMap(dynasties);
+      } else if (groupBy === "featureDynastySlug") {
+        const dynasties = await fetchFeatureDynasties(interServiceHeaders);
+        dynastyMap = buildSlugToDynastyMap(dynasties);
+      }
+      const groups = await queryGroupedStats(whereClause, groupBy, dynastyMap);
       return res.json({ groups });
     } catch (error: any) {
       const msg = error.cause?.message ?? error.message ?? String(error);

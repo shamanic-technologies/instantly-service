@@ -2,9 +2,28 @@ import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
 import { StatsQuerySchema } from "../schemas";
-import { queryStats, queryGroupedStats, internalExclusionClause } from "./analytics";
+import { queryStats, queryGroupedStats, internalExclusionClause, addDynastyConditions } from "./analytics";
+import {
+  fetchWorkflowDynasties,
+  fetchFeatureDynasties,
+  buildSlugToDynastyMap,
+} from "../lib/dynasty-client";
 
 const router = Router();
+
+const ZERO_STATS = {
+  emailsContacted: 0,
+  emailsSent: 0,
+  emailsDelivered: 0,
+  emailsOpened: 0,
+  emailsClicked: 0,
+  emailsReplied: 0,
+  emailsBounced: 0,
+  repliesAutoReply: 0,
+  repliesNotInterested: 0,
+  repliesOutOfOffice: 0,
+  repliesUnsubscribe: 0,
+};
 
 /**
  * GET /stats/public
@@ -19,14 +38,33 @@ router.get("/stats/public", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds: runIdsRaw, brandId, campaignId, workflowSlug, groupBy } = parsed.data;
+  const { runIds: runIdsRaw, brandId, campaignId, workflowSlug, featureSlug, workflowDynastySlug, featureDynastySlug, groupBy } = parsed.data;
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
 
   const conditions: SQL[] = [];
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
   if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
-  if (workflowSlug) conditions.push(sql`c.workflow_slug = ${workflowSlug}`);
+
+  // Public endpoint — pass available headers but don't require them
+  const headers: Record<string, string> = {};
+  const orgId = req.headers["x-org-id"] as string | undefined;
+  const userId = req.headers["x-user-id"] as string | undefined;
+  const runId = req.headers["x-run-id"] as string | undefined;
+  if (orgId) headers["x-org-id"] = orgId;
+  if (userId) headers["x-user-id"] = userId;
+  if (runId) headers["x-run-id"] = runId;
+
+  const emptyDynasty = await addDynastyConditions(
+    conditions,
+    { workflowSlug, featureSlug, workflowDynastySlug, featureDynastySlug },
+    headers,
+  );
+
+  if (emptyDynasty) {
+    if (groupBy) return res.json({ groups: [] });
+    return res.json({ stats: { ...ZERO_STATS }, recipients: 0 });
+  }
 
   const whereClause = conditions.length > 0
     ? sql.join(conditions, sql` AND `)
@@ -35,7 +73,15 @@ router.get("/stats/public", async (req: Request, res: Response) => {
   // Handle groupBy requests
   if (groupBy) {
     try {
-      const groups = await queryGroupedStats(whereClause, groupBy);
+      let dynastyMap: Map<string, string> | undefined;
+      if (groupBy === "workflowDynastySlug") {
+        const dynasties = await fetchWorkflowDynasties(headers);
+        dynastyMap = buildSlugToDynastyMap(dynasties);
+      } else if (groupBy === "featureDynastySlug") {
+        const dynasties = await fetchFeatureDynasties(headers);
+        dynastyMap = buildSlugToDynastyMap(dynasties);
+      }
+      const groups = await queryGroupedStats(whereClause, groupBy, dynastyMap);
       return res.json({ groups });
     } catch (error: any) {
       const msg = error.cause?.message ?? error.message ?? String(error);
