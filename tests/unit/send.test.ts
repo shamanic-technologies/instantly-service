@@ -579,14 +579,14 @@ describe("POST /send", () => {
     expect(res.body.stepRuns[2]).toMatchObject({ step: 3, runId: "step-run-3" });
   });
 
-  it("should use x-brand-id and x-workflow-name headers as fallback when body fields are empty", async () => {
+  it("should use x-brand-id and x-workflow-slug headers as fallback when body fields are empty", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
     const bodyWithoutBrand = {
       ...validBody,
       brandId: "",
-      workflowName: undefined,
+      workflowSlug: undefined,
     };
 
     await request(app)
@@ -594,7 +594,7 @@ describe("POST /send", () => {
       .set({
         ...identityHeadersObj,
         "x-brand-id": "header-brand",
-        "x-workflow-name": "header-workflow",
+        "x-workflow-slug": "header-workflow",
         "x-campaign-id": "header-camp",
       })
       .send(bodyWithoutBrand);
@@ -605,7 +605,7 @@ describe("POST /send", () => {
     );
     expect(campaignInsert).toBeDefined();
     expect(campaignInsert![0].brandId).toBe("header-brand");
-    expect(campaignInsert![0].workflowName).toBe("header-workflow");
+    expect(campaignInsert![0].workflowSlug).toBe("header-workflow");
   });
 
   it("should prefer body values over tracking headers", async () => {
@@ -617,7 +617,7 @@ describe("POST /send", () => {
       .set({
         ...identityHeadersObj,
         "x-brand-id": "header-brand",
-        "x-workflow-name": "header-workflow",
+        "x-workflow-slug": "header-workflow",
       })
       .send(validBody);
 
@@ -639,7 +639,7 @@ describe("POST /send", () => {
         ...identityHeadersObj,
         "x-brand-id": "header-brand",
         "x-campaign-id": "header-camp",
-        "x-workflow-name": "header-wf",
+        "x-workflow-slug": "header-wf",
       })
       .send(validBody);
 
@@ -650,7 +650,7 @@ describe("POST /send", () => {
         tracking: expect.objectContaining({
           brandId: "header-brand",
           campaignId: "header-camp",
-          workflowName: "header-wf",
+          workflowSlug: "header-wf",
         }),
       }),
     );

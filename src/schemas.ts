@@ -13,7 +13,7 @@ export const registry = new OpenAPIRegistry();
 export const TrackingHeadersSchema = z.object({
   "x-campaign-id": z.string().optional().describe("Campaign ID — automatically injected by workflow-service on all DAG calls"),
   "x-brand-id": z.string().optional().describe("Brand ID — automatically injected by workflow-service on all DAG calls"),
-  "x-workflow-name": z.string().optional().describe("Workflow name — automatically injected by workflow-service on all DAG calls"),
+  "x-workflow-slug": z.string().optional().describe("Workflow slug — automatically injected by workflow-service on all DAG calls"),
   "x-feature-slug": z.string().optional().describe("Feature slug — propagated through the full call chain for tracking"),
 });
 
@@ -153,7 +153,7 @@ export const SequenceStepSchema = z.object({
 export const SendRequestSchema = z
   .object({
     brandId: z.string(),
-    workflowName: z.string().optional().describe("Workflow name for stats grouping"),
+    workflowSlug: z.string().optional().describe("Workflow slug for stats grouping"),
     campaignId: z.string(),
     leadId: z.string().optional().describe("External lead ID from lead-service"),
     to: z.string(),
@@ -218,7 +218,7 @@ registry.registerPath({
 export const CreateCampaignRequestSchema = z
   .object({
     brandId: z.string(),
-    workflowName: z.string().optional().describe("Workflow name for stats grouping"),
+    workflowSlug: z.string().optional().describe("Workflow slug for stats grouping"),
     name: z.string(),
     accountIds: z.array(z.string()).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
@@ -511,8 +511,8 @@ export const StatsQuerySchema = z
     runIds: z.string().optional().describe("Comma-separated list of run IDs"),
     brandId: z.string().optional(),
     campaignId: z.string().optional(),
-    workflowName: z.string().optional().describe("Filter by workflow name"),
-    groupBy: z.enum(["brandId", "campaignId", "workflowName", "leadEmail"]).optional().describe("Group results by dimension"),
+    workflowSlug: z.string().optional().describe("Filter by workflow slug"),
+    groupBy: z.enum(["brandId", "campaignId", "workflowSlug", "leadEmail"]).optional().describe("Group results by dimension"),
   })
   .openapi("StatsQuery");
 

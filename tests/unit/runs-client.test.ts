@@ -87,7 +87,7 @@ describe("runs-client", () => {
         tracking: {
           campaignId: "camp-1",
           brandId: "brand-1",
-          workflowName: "wf-1",
+          workflowSlug: "wf-1",
           featureSlug: "cold-outreach",
         },
       },
@@ -96,7 +96,7 @@ describe("runs-client", () => {
     const [, options] = mockFetch.mock.calls[0];
     expect(options.headers["x-campaign-id"]).toBe("camp-1");
     expect(options.headers["x-brand-id"]).toBe("brand-1");
-    expect(options.headers["x-workflow-name"]).toBe("wf-1");
+    expect(options.headers["x-workflow-slug"]).toBe("wf-1");
     expect(options.headers["x-feature-slug"]).toBe("cold-outreach");
   });
 
@@ -115,7 +115,7 @@ describe("runs-client", () => {
     const [, options] = mockFetch.mock.calls[0];
     expect(options.headers["x-campaign-id"]).toBeUndefined();
     expect(options.headers["x-brand-id"]).toBeUndefined();
-    expect(options.headers["x-workflow-name"]).toBeUndefined();
+    expect(options.headers["x-workflow-slug"]).toBeUndefined();
     expect(options.headers["x-feature-slug"]).toBeUndefined();
   });
 });

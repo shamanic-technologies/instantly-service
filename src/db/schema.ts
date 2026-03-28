@@ -24,7 +24,7 @@ export const instantlyCampaigns = pgTable(
     orgId: text("org_id"),
     userId: text("user_id"),
     brandId: text("brand_id").notNull(),
-    workflowName: text("workflow_name"),
+    workflowSlug: text("workflow_slug"),
     featureSlug: text("feature_slug"),
     runId: text("run_id"),
     leadId: text("lead_id"),
@@ -44,7 +44,7 @@ export const instantlyCampaigns = pgTable(
     index("instantly_campaigns_brand_id_idx").on(table.brandId),
     index("instantly_campaigns_org_id_idx").on(table.orgId),
     index("instantly_campaigns_run_id_idx").on(table.runId),
-    index("instantly_campaigns_workflow_name_idx").on(table.workflowName),
+    index("instantly_campaigns_workflow_slug_idx").on(table.workflowSlug),
   ],
 );
 

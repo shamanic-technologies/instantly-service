@@ -23,7 +23,7 @@ function getTracking(res: Response): TrackingHeaders {
   const t: TrackingHeaders = {};
   if (res.locals.headerCampaignId) t.campaignId = res.locals.headerCampaignId;
   if (res.locals.headerBrandId) t.brandId = res.locals.headerBrandId;
-  if (res.locals.headerWorkflowName) t.workflowName = res.locals.headerWorkflowName;
+  if (res.locals.headerWorkflowSlug) t.workflowSlug = res.locals.headerWorkflowSlug;
   if (res.locals.headerFeatureSlug) t.featureSlug = res.locals.headerFeatureSlug;
   return t;
 }
@@ -82,7 +82,7 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
           runId: res.locals.runId as string,
           campaignId: tracking.campaignId,
           brandId: campaign.brandId ?? undefined,
-          workflowName: tracking.workflowName,
+          workflowSlug: tracking.workflowSlug,
           featureSlug: tracking.featureSlug,
         },
       );

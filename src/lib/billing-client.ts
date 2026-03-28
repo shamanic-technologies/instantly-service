@@ -27,7 +27,7 @@ export interface BillingIdentity {
   runId: string;
   campaignId?: string;
   brandId?: string;
-  workflowName?: string;
+  workflowSlug?: string;
   featureSlug?: string;
 }
 
@@ -62,7 +62,7 @@ export async function authorizeCreditSpend(
   };
   if (identity.campaignId) headers["x-campaign-id"] = identity.campaignId;
   if (identity.brandId) headers["x-brand-id"] = identity.brandId;
-  if (identity.workflowName) headers["x-workflow-name"] = identity.workflowName;
+  if (identity.workflowSlug) headers["x-workflow-slug"] = identity.workflowSlug;
   if (identity.featureSlug) headers["x-feature-slug"] = identity.featureSlug;
 
   const response = await fetch(`${BILLING_SERVICE_URL}/v1/credits/authorize`, {

@@ -19,7 +19,7 @@ describe("billing-client", () => {
     runId: "run-1",
     campaignId: "camp-1",
     brandId: "brand-1",
-    workflowName: "wf-1",
+    workflowSlug: "wf-1",
     featureSlug: "cold-outreach",
   };
 
@@ -69,7 +69,7 @@ describe("billing-client", () => {
       "x-run-id": "run-1",
       "x-campaign-id": "camp-1",
       "x-brand-id": "brand-1",
-      "x-workflow-name": "wf-1",
+      "x-workflow-slug": "wf-1",
       "x-feature-slug": "cold-outreach",
     });
   });
@@ -89,7 +89,7 @@ describe("billing-client", () => {
     const [, options] = mockFetch.mock.calls[0];
     expect(options.headers).not.toHaveProperty("x-campaign-id");
     expect(options.headers).not.toHaveProperty("x-brand-id");
-    expect(options.headers).not.toHaveProperty("x-workflow-name");
+    expect(options.headers).not.toHaveProperty("x-workflow-slug");
     expect(options.headers).not.toHaveProperty("x-feature-slug");
   });
 
