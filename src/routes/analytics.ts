@@ -99,7 +99,7 @@ export async function queryGroupedContactedCount(
 const GROUP_BY_COLUMNS: Record<string, string> = {
   brandId: "c.brand_id",
   campaignId: "c.campaign_id",
-  workflowName: "c.workflow_name",
+  workflowSlug: "c.workflow_slug",
   leadEmail: "e.lead_email",
 };
 
@@ -223,7 +223,7 @@ router.get("/stats", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds: runIdsRaw, brandId, campaignId, workflowName, groupBy } = parsed.data;
+  const { runIds: runIdsRaw, brandId, campaignId, workflowSlug, groupBy } = parsed.data;
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
   const orgId = res.locals.orgId as string;
 
@@ -232,7 +232,7 @@ router.get("/stats", async (req: Request, res: Response) => {
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
   if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
-  if (workflowName) conditions.push(sql`c.workflow_name = ${workflowName}`);
+  if (workflowSlug) conditions.push(sql`c.workflow_slug = ${workflowSlug}`);
 
   const whereClause = sql.join(conditions, sql` AND `);
 

@@ -11,7 +11,7 @@ const RUNS_SERVICE_API_KEY = process.env.RUNS_SERVICE_API_KEY || "";
 export interface TrackingHeaders {
   campaignId?: string;
   brandId?: string;
-  workflowName?: string;
+  workflowSlug?: string;
   featureSlug?: string;
 }
 
@@ -88,8 +88,8 @@ async function runsRequest<T>(
   if (identity.tracking?.brandId) {
     headers["x-brand-id"] = identity.tracking.brandId;
   }
-  if (identity.tracking?.workflowName) {
-    headers["x-workflow-name"] = identity.tracking.workflowName;
+  if (identity.tracking?.workflowSlug) {
+    headers["x-workflow-slug"] = identity.tracking.workflowSlug;
   }
   if (identity.tracking?.featureSlug) {
     headers["x-feature-slug"] = identity.tracking.featureSlug;

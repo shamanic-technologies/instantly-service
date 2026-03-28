@@ -19,14 +19,14 @@ router.get("/stats/public", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds: runIdsRaw, brandId, campaignId, workflowName, groupBy } = parsed.data;
+  const { runIds: runIdsRaw, brandId, campaignId, workflowSlug, groupBy } = parsed.data;
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
 
   const conditions: SQL[] = [];
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
   if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
-  if (workflowName) conditions.push(sql`c.workflow_name = ${workflowName}`);
+  if (workflowSlug) conditions.push(sql`c.workflow_slug = ${workflowSlug}`);
 
   const whereClause = conditions.length > 0
     ? sql.join(conditions, sql` AND `)

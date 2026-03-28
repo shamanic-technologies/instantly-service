@@ -32,7 +32,7 @@ function getTracking(res: Response): TrackingHeaders {
   const t: TrackingHeaders = {};
   if (res.locals.headerCampaignId) t.campaignId = res.locals.headerCampaignId;
   if (res.locals.headerBrandId) t.brandId = res.locals.headerBrandId;
-  if (res.locals.headerWorkflowName) t.workflowName = res.locals.headerWorkflowName;
+  if (res.locals.headerWorkflowSlug) t.workflowSlug = res.locals.headerWorkflowSlug;
   if (res.locals.headerFeatureSlug) t.featureSlug = res.locals.headerFeatureSlug;
   return t;
 }
@@ -200,7 +200,7 @@ router.post("/", async (req: Request, res: Response) => {
   // Use header values as fallback when body fields are missing
   const brandId = body.brandId || tracking.brandId || "";
   const campaignId = body.campaignId || tracking.campaignId || "";
-  const workflowName = body.workflowName || tracking.workflowName;
+  const workflowSlug = body.workflowSlug || tracking.workflowSlug;
 
   console.log(`[send] POST /send to=${body.to} campaignId=${campaignId} subject="${body.subject}" steps=${body.sequence.length}`);
 
@@ -222,7 +222,7 @@ router.post("/", async (req: Request, res: Response) => {
           runId: res.locals.runId as string,
           campaignId,
           brandId,
-          workflowName,
+          workflowSlug,
           featureSlug: tracking.featureSlug,
         },
       );
@@ -323,7 +323,7 @@ router.post("/", async (req: Request, res: Response) => {
             orgId,
             userId,
             brandId,
-            workflowName,
+            workflowSlug,
             featureSlug: tracking.featureSlug,
             runId: res.locals.runId as string,
           })

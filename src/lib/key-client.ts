@@ -44,7 +44,7 @@ export class KeyServiceError extends Error {
 interface TrackingHeaders {
   campaignId?: string;
   brandId?: string;
-  workflowName?: string;
+  workflowSlug?: string;
   featureSlug?: string;
 }
 
@@ -67,8 +67,8 @@ async function keyServiceRequest<T>(
   if (identity.tracking?.brandId) {
     headers["x-brand-id"] = identity.tracking.brandId;
   }
-  if (identity.tracking?.workflowName) {
-    headers["x-workflow-name"] = identity.tracking.workflowName;
+  if (identity.tracking?.workflowSlug) {
+    headers["x-workflow-slug"] = identity.tracking.workflowSlug;
   }
   if (identity.tracking?.featureSlug) {
     headers["x-feature-slug"] = identity.tracking.featureSlug;
