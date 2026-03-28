@@ -1845,11 +1845,41 @@
           {
             "schema": {
               "type": "string",
-              "description": "Filter by workflow slug"
+              "description": "Filter by exact workflow slug"
             },
             "required": false,
-            "description": "Filter by workflow slug",
+            "description": "Filter by exact workflow slug",
             "name": "workflowSlug",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by exact feature slug"
+            },
+            "required": false,
+            "description": "Filter by exact feature slug",
+            "name": "featureSlug",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by workflow dynasty slug (resolved to all versioned slugs)"
+            },
+            "required": false,
+            "description": "Filter by workflow dynasty slug (resolved to all versioned slugs)",
+            "name": "workflowDynastySlug",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by feature dynasty slug (resolved to all versioned slugs)"
+            },
+            "required": false,
+            "description": "Filter by feature dynasty slug (resolved to all versioned slugs)",
+            "name": "featureDynastySlug",
             "in": "query"
           },
           {
@@ -1859,7 +1889,10 @@
                 "brandId",
                 "campaignId",
                 "workflowSlug",
-                "leadEmail"
+                "featureSlug",
+                "leadEmail",
+                "workflowDynastySlug",
+                "featureDynastySlug"
               ],
               "description": "Group results by dimension"
             },
@@ -1980,11 +2013,41 @@
           {
             "schema": {
               "type": "string",
-              "description": "Filter by workflow slug"
+              "description": "Filter by exact workflow slug"
             },
             "required": false,
-            "description": "Filter by workflow slug",
+            "description": "Filter by exact workflow slug",
             "name": "workflowSlug",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by exact feature slug"
+            },
+            "required": false,
+            "description": "Filter by exact feature slug",
+            "name": "featureSlug",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by workflow dynasty slug (resolved to all versioned slugs)"
+            },
+            "required": false,
+            "description": "Filter by workflow dynasty slug (resolved to all versioned slugs)",
+            "name": "workflowDynastySlug",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by feature dynasty slug (resolved to all versioned slugs)"
+            },
+            "required": false,
+            "description": "Filter by feature dynasty slug (resolved to all versioned slugs)",
+            "name": "featureDynastySlug",
             "in": "query"
           },
           {
@@ -1994,7 +2057,10 @@
                 "brandId",
                 "campaignId",
                 "workflowSlug",
-                "leadEmail"
+                "featureSlug",
+                "leadEmail",
+                "workflowDynastySlug",
+                "featureDynastySlug"
               ],
               "description": "Group results by dimension"
             },
