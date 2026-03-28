@@ -174,6 +174,34 @@ describe("instantly-client", () => {
     expect(body.campaign_id).toBeUndefined();
   });
 
+  it("should include response body in error when all retries fail with 429/500", async () => {
+    // All 3 attempts return 429 with a body
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        text: () => Promise.resolve('{"error":"rate_limit","message":"Too many requests"}'),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('{"error":"internal","message":"Campaign limit reached"}'),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('{"error":"internal","message":"Campaign limit reached"}'),
+      });
+
+    const { createCampaign } = await import("../../src/lib/instantly-client");
+    await expect(
+      createCampaign(TEST_API_KEY, {
+        name: "Test Campaign",
+        steps: [{ subject: "Hello", bodyHtml: "<p>Hi</p>", daysSinceLastStep: 0 }],
+      }),
+    ).rejects.toThrow(/Campaign limit reached/);
+  });
+
   it("updateCampaignStatus should not send Content-Type without a body", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,

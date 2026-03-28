@@ -113,8 +113,15 @@ async function instantlyRequest<T>(
       });
 
       if (response.status === 429 || response.status >= 500) {
-        const delay = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 10000);
-        await sleep(delay);
+        const errorText = await response.text().catch(() => "");
+        console.warn(`[instantly-api] ${method} ${path} → ${response.status} (attempt ${attempt + 1}/${retries}): ${errorText.slice(0, 500)}`);
+        lastError = new Error(
+          `instantly-api ${method} ${path} failed: ${response.status} - ${errorText.slice(0, 500)}`
+        );
+        if (attempt < retries - 1) {
+          const delay = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 10000);
+          await sleep(delay);
+        }
         continue;
       }
 
