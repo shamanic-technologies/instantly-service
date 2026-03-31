@@ -134,7 +134,7 @@ describe("GET /stats/public", () => {
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
     expect(sqlText).toContain("run_id IN");
-    expect(sqlText).toContain("brand_id");
+    expect(sqlText).toContain("brand_ids");
   });
 
   it("should use TRUE when no filters provided", async () => {

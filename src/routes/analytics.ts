@@ -104,7 +104,7 @@ export async function queryGroupedContactedCount(
 }
 
 const GROUP_BY_COLUMNS: Record<string, string> = {
-  brandId: "c.brand_id",
+  brandId: "unnest(c.brand_ids)",
   campaignId: "c.campaign_id",
   workflowSlug: "c.workflow_slug",
   featureSlug: "c.feature_slug",
@@ -336,7 +336,7 @@ router.get("/stats", async (req: Request, res: Response) => {
   // Build WHERE clauses — always scope by org from header
   const conditions: SQL[] = [sql`c.org_id = ${orgId}`];
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
-  if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
+  if (brandId) conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
 
   const interServiceHeaders = buildInterServiceHeaders(req, res);

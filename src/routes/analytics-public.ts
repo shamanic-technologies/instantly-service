@@ -43,7 +43,7 @@ router.get("/stats/public", async (req: Request, res: Response) => {
 
   const conditions: SQL[] = [];
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
-  if (brandId) conditions.push(sql`c.brand_id = ${brandId}`);
+  if (brandId) conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
 
   // Public endpoint — pass available headers but don't require them

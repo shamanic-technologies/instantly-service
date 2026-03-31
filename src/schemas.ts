@@ -12,7 +12,7 @@ export const registry = new OpenAPIRegistry();
 
 export const TrackingHeadersSchema = z.object({
   "x-campaign-id": z.string().optional().describe("Campaign ID — automatically injected by workflow-service on all DAG calls"),
-  "x-brand-id": z.string().optional().describe("Brand ID — automatically injected by workflow-service on all DAG calls"),
+  "x-brand-id": z.string().optional().describe("Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"),
   "x-workflow-slug": z.string().optional().describe("Workflow slug — automatically injected by workflow-service on all DAG calls"),
   "x-feature-slug": z.string().optional().describe("Feature slug — propagated through the full call chain for tracking"),
 });
@@ -152,7 +152,7 @@ export const SequenceStepSchema = z.object({
 
 export const SendRequestSchema = z
   .object({
-    brandId: z.string(),
+    brandIds: z.array(z.string()).describe("Brand IDs associated with this campaign"),
     workflowSlug: z.string().optional().describe("Workflow slug for stats grouping"),
     campaignId: z.string(),
     leadId: z.string().optional().describe("External lead ID from lead-service"),
@@ -217,7 +217,7 @@ registry.registerPath({
 
 export const CreateCampaignRequestSchema = z
   .object({
-    brandId: z.string(),
+    brandIds: z.array(z.string()).describe("Brand IDs associated with this campaign"),
     workflowSlug: z.string().optional().describe("Workflow slug for stats grouping"),
     name: z.string(),
     accountIds: z.array(z.string()).optional(),
@@ -509,7 +509,7 @@ registry.registerPath({
 export const StatsQuerySchema = z
   .object({
     runIds: z.string().optional().describe("Comma-separated list of run IDs"),
-    brandId: z.string().optional(),
+    brandId: z.string().optional().describe("Filter by brand ID (matches campaigns containing this brand)"),
     campaignId: z.string().optional(),
     workflowSlug: z.string().optional().describe("Filter by exact workflow slug"),
     featureSlug: z.string().optional().describe("Filter by exact feature slug"),
@@ -769,7 +769,7 @@ const StatusItemSchema = z.object({
 
 export const StatusRequestSchema = z
   .object({
-    brandId: z.string().describe("Brand ID to scope brand-level results"),
+    brandId: z.string().describe("Brand ID to scope brand-level results (matches campaigns containing this brand)"),
     campaignId: z
       .string()
       .optional()

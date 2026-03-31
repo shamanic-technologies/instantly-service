@@ -490,6 +490,29 @@ describe("GET /stats", () => {
     expect(sqlText).toContain("workflow_slug IN");
   });
 
+  // ─── brandId filter uses ANY(brand_ids) for multi-brand support ─────────────
+
+  it("should filter brandId using ANY(c.brand_ids) for multi-brand campaigns", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [makeStatsRow({ emailsSent: 10, recipients: 5 })],
+    });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 5 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .query({ brandId: "brand-1" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+
+    const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("ANY");
+    expect(sqlText).toContain("brand_ids");
+  });
+
   // ─── Combined dynasty + other filters ────────────────────────────────────────
 
   it("should combine workflowDynastySlug with brandId filter", async () => {
@@ -512,7 +535,7 @@ describe("GET /stats", () => {
 
     const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
     expect(sqlText).toContain("workflow_slug IN");
-    expect(sqlText).toContain("brand_id");
+    expect(sqlText).toContain("brand_ids");
   });
 
   // ─── groupBy: workflowDynastySlug ───────────────────────────────────────────

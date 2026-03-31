@@ -258,7 +258,7 @@ describe("POST /campaigns (credit authorization)", () => {
     const res = await request(app)
       .post("/campaigns")
       .set(identityHeadersObj)
-      .send({ name: "Test Campaign", brandId: "brand-1" });
+      .send({ name: "Test Campaign", brandIds: ["brand-1"] });
 
     expect(res.status).toBe(402);
     expect(res.body.error).toBe("Insufficient credits");
@@ -275,7 +275,7 @@ describe("POST /campaigns (credit authorization)", () => {
     await request(app)
       .post("/campaigns")
       .set(identityHeadersObj)
-      .send({ name: "Test Campaign", brandId: "brand-1" });
+      .send({ name: "Test Campaign", brandIds: ["brand-1"] });
 
     expect(mockAuthorizeCreditSpend).not.toHaveBeenCalled();
   });

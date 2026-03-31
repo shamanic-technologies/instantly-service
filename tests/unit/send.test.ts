@@ -106,7 +106,7 @@ const validBody = {
   ],
   campaignId: "camp-1",
   leadId: "lead-1",
-  brandId: "brand-1",
+  brandIds: ["brand-1"],
 };
 
 function acct(overrides: Partial<Account> = {}): Account {
@@ -585,7 +585,7 @@ describe("POST /send", () => {
 
     const bodyWithoutBrand = {
       ...validBody,
-      brandId: "",
+      brandIds: [],
       workflowSlug: undefined,
     };
 
@@ -604,7 +604,7 @@ describe("POST /send", () => {
       ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,
     );
     expect(campaignInsert).toBeDefined();
-    expect(campaignInsert![0].brandId).toBe("header-brand");
+    expect(campaignInsert![0].brandIds).toEqual(["header-brand"]);
     expect(campaignInsert![0].workflowSlug).toBe("header-workflow");
   });
 
@@ -626,7 +626,32 @@ describe("POST /send", () => {
       ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,
     );
     expect(campaignInsert).toBeDefined();
-    expect(campaignInsert![0].brandId).toBe("brand-1");
+    expect(campaignInsert![0].brandIds).toEqual(["brand-1"]);
+  });
+
+  it("should parse multi-brand CSV header into brandIds array when body is empty", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    const bodyWithoutBrands = {
+      ...validBody,
+      brandIds: [],
+      workflowSlug: undefined,
+    };
+
+    await request(app)
+      .post("/send")
+      .set({
+        ...identityHeadersObj,
+        "x-brand-id": "brand-a,brand-b,brand-c",
+      })
+      .send(bodyWithoutBrands);
+
+    const campaignInsert = mockDbInsertValues.mock.calls.find(
+      ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,
+    );
+    expect(campaignInsert).toBeDefined();
+    expect(campaignInsert![0].brandIds).toEqual(["brand-a", "brand-b", "brand-c"]);
   });
 
   it("should forward tracking headers to runs-service", async () => {
