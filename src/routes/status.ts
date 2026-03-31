@@ -92,6 +92,11 @@ function scopedEmailQuery(filterClause: ReturnType<typeof sql>, emails: string[]
  * Returns campaign-scoped (if campaignId provided), brand-scoped, and global results.
  */
 router.post("/", async (req: Request, res: Response) => {
+  const brandId = req.headers["x-brand-id"] as string | undefined;
+  if (!brandId) {
+    return res.status(400).json({ error: "x-brand-id header is required" });
+  }
+
   const parsed = StatusRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -99,7 +104,7 @@ router.post("/", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { brandId, campaignId, items } = parsed.data;
+  const { campaignId, items } = parsed.data;
 
   const leadIds = items.map((i) => i.leadId);
   const emails = items.map((i) => i.email);

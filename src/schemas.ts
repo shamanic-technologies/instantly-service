@@ -769,7 +769,6 @@ const StatusItemSchema = z.object({
 
 export const StatusRequestSchema = z
   .object({
-    brandId: z.string().describe("Brand ID to scope brand-level results (matches campaigns containing this brand)"),
     campaignId: z
       .string()
       .optional()
@@ -833,9 +832,11 @@ registry.registerPath({
   description:
     "Returns campaign-scoped, brand-scoped, and global delivery status " +
     "for each lead/email pair. Campaign filters by campaignId (null if omitted); " +
-    "brand filters by brandId; global aggregates across everything.",
+    "brand filters by x-brand-id header; global aggregates across everything.",
   request: {
-    headers: TrackingHeadersSchema,
+    headers: TrackingHeadersSchema.extend({
+      "x-brand-id": z.string().describe("Brand ID to scope brand-level results (required for this endpoint)"),
+    }),
     body: {
       content: { "application/json": { schema: StatusRequestSchema } },
     },

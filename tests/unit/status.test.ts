@@ -23,10 +23,14 @@ async function createStatusApp() {
 }
 
 const validBody = {
-  brandId: "brand-1",
   campaignId: "camp-1",
   items: [{ leadId: "lead-1", email: "john@acme.com" }],
 };
+
+/** Send POST /status with x-brand-id header */
+function postStatus(app: express.Express) {
+  return request(app).post("/").set("x-brand-id", "brand-1");
+}
 
 /** Mock all 5 queries (brand lead, brand email, global email, camp lead, camp email) returning empty */
 function mockEmptyResults() {
@@ -49,23 +53,23 @@ describe("POST /status", () => {
 
   it("should return 400 when missing required fields", async () => {
     const app = await createStatusApp();
-    const res = await request(app).post("/").send({});
+    const res = await postStatus(app).send({});
     expect(res.status).toBe(400);
   });
 
-  it("should return 400 when brandId is missing", async () => {
+  it("should return 400 when x-brand-id header is missing", async () => {
     const app = await createStatusApp();
     const res = await request(app).post("/").send({
       campaignId: "camp-1",
       items: [{ leadId: "lead-1", email: "john@acme.com" }],
     });
     expect(res.status).toBe(400);
+    expect(res.body.error).toBe("x-brand-id header is required");
   });
 
   it("should return 400 when items is empty", async () => {
     const app = await createStatusApp();
-    const res = await request(app).post("/").send({
-      brandId: "brand-1",
+    const res = await postStatus(app).send({
       items: [],
     });
     expect(res.status).toBe(400);
@@ -75,7 +79,7 @@ describe("POST /status", () => {
     mockEmptyResults();
     const app = await createStatusApp();
 
-    const res = await request(app).post("/").send(validBody);
+    const res = await postStatus(app).send(validBody);
 
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(1);
@@ -99,8 +103,7 @@ describe("POST /status", () => {
     mockEmptyResultsNoCampaign();
     const app = await createStatusApp();
 
-    const res = await request(app).post("/").send({
-      brandId: "brand-1",
+    const res = await postStatus(app).send({
       items: [{ leadId: "lead-1", email: "john@acme.com" }],
     });
 
@@ -133,7 +136,7 @@ describe("POST /status", () => {
     });
 
     const app = await createStatusApp();
-    const res = await request(app).post("/").send(validBody);
+    const res = await postStatus(app).send(validBody);
 
     expect(res.status).toBe(200);
     const r = res.body.results[0];
@@ -160,7 +163,7 @@ describe("POST /status", () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatusApp();
-    const res = await request(app).post("/").send(validBody);
+    const res = await postStatus(app).send(validBody);
 
     expect(res.status).toBe(200);
     const r = res.body.results[0];
@@ -187,8 +190,7 @@ describe("POST /status", () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatusApp();
-    const res = await request(app).post("/").send({
-      brandId: "brand-1",
+    const res = await postStatus(app).send({
       campaignId: "camp-1",
       items: [
         { leadId: "lead-1", email: "john@acme.com" },
@@ -208,14 +210,13 @@ describe("POST /status", () => {
     mockEmptyResults();
     const app = await createStatusApp();
 
-    await request(app).post("/").send(validBody);
+    await postStatus(app).send(validBody);
     expect(mockExecute).toHaveBeenCalledTimes(5);
 
     vi.clearAllMocks();
     mockEmptyResultsNoCampaign();
 
-    await request(app).post("/").send({
-      brandId: "brand-1",
+    await postStatus(app).send({
       items: [{ leadId: "lead-1", email: "a@test.com" }],
     });
     expect(mockExecute).toHaveBeenCalledTimes(3);
@@ -247,7 +248,7 @@ describe("POST /status", () => {
     });
 
     const app = await createStatusApp();
-    const res = await request(app).post("/").send(validBody);
+    const res = await postStatus(app).send(validBody);
 
     expect(res.status).toBe(200);
     const r = res.body.results[0];
@@ -265,7 +266,7 @@ describe("POST /status", () => {
     mockExecute.mockRejectedValueOnce(new Error("DB connection failed"));
 
     const app = await createStatusApp();
-    const res = await request(app).post("/").send(validBody);
+    const res = await postStatus(app).send(validBody);
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("Failed to get delivery status");
