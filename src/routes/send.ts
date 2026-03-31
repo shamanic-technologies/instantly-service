@@ -198,11 +198,13 @@ router.post("/", async (req: Request, res: Response) => {
   const tracking = getTracking(res);
 
   // Use header values as fallback when body fields are missing
-  const brandId = body.brandId || tracking.brandId || "";
+  const brandIds: string[] = body.brandIds.length > 0
+    ? body.brandIds
+    : (res.locals.headerBrandIds as string[] | undefined) ?? [];
   const campaignId = body.campaignId || tracking.campaignId || "";
   const workflowSlug = body.workflowSlug || tracking.workflowSlug;
 
-  console.log(`[send] POST /send to=${body.to} campaignId=${campaignId} subject="${body.subject}" steps=${body.sequence.length}`);
+  console.log(`[send] POST /send to=${body.to} campaignId=${campaignId} brandIds=${brandIds.join(",")} subject="${body.subject}" steps=${body.sequence.length}`);
 
   try {
     // 0. Resolve Instantly API key (auto-resolves org vs platform key)
@@ -221,7 +223,7 @@ router.post("/", async (req: Request, res: Response) => {
           userId,
           runId: res.locals.runId as string,
           campaignId,
-          brandId,
+          brandId: brandIds.join(","),
           workflowSlug,
           featureSlug: tracking.featureSlug,
         },
@@ -322,7 +324,7 @@ router.post("/", async (req: Request, res: Response) => {
             deliveryStatus: "sent",
             orgId,
             userId,
-            brandId,
+            brandIds,
             workflowSlug,
             featureSlug: tracking.featureSlug,
             runId: res.locals.runId as string,
@@ -365,7 +367,7 @@ router.post("/", async (req: Request, res: Response) => {
         const stepRun = await createRun({
           serviceName: "instantly-service",
           taskName: `email-send-step-${s.step}`,
-          brandId,
+          brandId: brandIds.join(","),
           campaignId,
         }, parentIdentity);
 

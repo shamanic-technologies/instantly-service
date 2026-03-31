@@ -154,8 +154,12 @@
       "SendRequest": {
         "type": "object",
         "properties": {
-          "brandId": {
-            "type": "string"
+          "brandIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Brand IDs associated with this campaign"
           },
           "workflowSlug": {
             "type": "string",
@@ -221,7 +225,7 @@
           }
         },
         "required": [
-          "brandId",
+          "brandIds",
           "campaignId",
           "to",
           "subject",
@@ -269,8 +273,12 @@
       "CreateCampaignRequest": {
         "type": "object",
         "properties": {
-          "brandId": {
-            "type": "string"
+          "brandIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Brand IDs associated with this campaign"
           },
           "workflowSlug": {
             "type": "string",
@@ -293,7 +301,7 @@
           }
         },
         "required": [
-          "brandId",
+          "brandIds",
           "name"
         ]
       },
@@ -888,7 +896,7 @@
         "properties": {
           "brandId": {
             "type": "string",
-            "description": "Brand ID to scope brand-level results"
+            "description": "Brand ID to scope brand-level results (matches campaigns containing this brand)"
           },
           "campaignId": {
             "type": "string",
@@ -1052,10 +1060,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -1143,10 +1151,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -1242,10 +1250,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -1315,10 +1323,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -1378,10 +1386,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -1463,10 +1471,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -1543,10 +1551,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -1666,10 +1674,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -1737,10 +1745,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -1828,9 +1836,11 @@
           },
           {
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "Filter by brand ID (matches campaigns containing this brand)"
             },
             "required": false,
+            "description": "Filter by brand ID (matches campaigns containing this brand)",
             "name": "brandId",
             "in": "query"
           },
@@ -1914,10 +1924,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -1996,9 +2006,11 @@
           },
           {
             "schema": {
-              "type": "string"
+              "type": "string",
+              "description": "Filter by brand ID (matches campaigns containing this brand)"
             },
             "required": false,
+            "description": "Filter by brand ID (matches campaigns containing this brand)",
             "name": "brandId",
             "in": "query"
           },
@@ -2125,10 +2137,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -2216,10 +2228,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -2271,10 +2283,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -2341,10 +2353,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -2422,10 +2434,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
@@ -2478,10 +2490,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID — automatically injected by workflow-service on all DAG calls"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
             "required": false,
-            "description": "Brand ID — automatically injected by workflow-service on all DAG calls",
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },

@@ -106,7 +106,7 @@ router.post("/", async (req: Request, res: Response) => {
 
   try {
     // Build queries: brand (2) + global (1) + optional campaign (2)
-    const brandFilter = sql`brand_id = ${brandId}`;
+    const brandFilter = sql`${brandId} = ANY(brand_ids)`;
     const brandLeadPromise = leadQuery(brandFilter, leadIds);
     const brandEmailPromise = scopedEmailQuery(brandFilter, emails);
 

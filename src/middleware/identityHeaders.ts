@@ -32,7 +32,10 @@ export function identityHeaders(
   const headerFeatureSlug = req.headers["x-feature-slug"] as string | undefined;
 
   if (headerCampaignId) res.locals.headerCampaignId = headerCampaignId;
-  if (headerBrandId) res.locals.headerBrandId = headerBrandId;
+  if (headerBrandId) {
+    res.locals.headerBrandId = headerBrandId; // raw CSV for downstream forwarding
+    res.locals.headerBrandIds = String(headerBrandId).split(",").map((s) => s.trim()).filter(Boolean);
+  }
   if (headerWorkflowSlug) res.locals.headerWorkflowSlug = headerWorkflowSlug;
   if (headerFeatureSlug) res.locals.headerFeatureSlug = headerFeatureSlug;
 

@@ -52,7 +52,9 @@ router.post("/", async (req: Request, res: Response) => {
   const tracking = getTracking(res);
 
   // Use header values as fallback when body fields are missing
-  const brandId = body.brandId || tracking.brandId || "";
+  const brandIds: string[] = body.brandIds.length > 0
+    ? body.brandIds
+    : (res.locals.headerBrandIds as string[] | undefined) ?? [];
   const workflowSlug = body.workflowSlug || tracking.workflowSlug;
 
   try {
@@ -72,7 +74,7 @@ router.post("/", async (req: Request, res: Response) => {
           userId,
           runId: res.locals.runId as string,
           campaignId: tracking.campaignId,
-          brandId,
+          brandId: brandIds.join(","),
           workflowSlug,
           featureSlug: tracking.featureSlug,
         },
@@ -91,7 +93,7 @@ router.post("/", async (req: Request, res: Response) => {
     const run = await createRun({
       serviceName: "instantly-service",
       taskName: "campaign-create",
-      brandId,
+      brandId: brandIds.join(","),
     }, identity);
 
     try {
@@ -117,7 +119,7 @@ router.post("/", async (req: Request, res: Response) => {
           status: instantlyCampaign.status,
           orgId,
           userId,
-          brandId,
+          brandIds,
           workflowSlug,
           featureSlug: tracking.featureSlug,
           runId: run.id,

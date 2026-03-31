@@ -81,7 +81,7 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
           userId,
           runId: res.locals.runId as string,
           campaignId: tracking.campaignId,
-          brandId: campaign.brandId ?? undefined,
+          brandId: campaign.brandIds?.join(",") ?? undefined,
           workflowSlug: tracking.workflowSlug,
           featureSlug: tracking.featureSlug,
         },
@@ -101,7 +101,7 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
     const run = await createRun({
       serviceName: "instantly-service",
       taskName: "leads-add",
-      brandId: campaign.brandId,
+      brandId: campaign.brandIds?.join(","),
     }, identity);
 
     try {
