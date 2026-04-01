@@ -782,10 +782,13 @@ export const StatusRequestSchema = z
 
 export type StatusRequest = z.infer<typeof StatusRequestSchema>;
 
+const ReplyClassificationSchema = z.enum(["positive", "negative", "neutral"]);
+
 const LeadStatusSchema = z.object({
   contacted: z.boolean(),
   delivered: z.boolean(),
   replied: z.boolean(),
+  replyClassification: ReplyClassificationSchema.nullable().describe("Reply classification based on Instantly interest status. null = no reply"),
   lastDeliveredAt: z.string().nullable(),
 });
 

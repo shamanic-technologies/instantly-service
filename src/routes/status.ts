@@ -10,6 +10,7 @@ interface AggRow {
   contacted: boolean | null;
   delivered: boolean | null;
   replied: boolean | null;
+  replyClassification: string | null;
   bounced: boolean | null;
   unsubscribed: boolean | null;
   lastDeliveredAt: string | null;
@@ -21,7 +22,7 @@ function extractRows(result: unknown): AggRow[] {
 }
 
 function emptyLead() {
-  return { contacted: false, delivered: false, replied: false, lastDeliveredAt: null };
+  return { contacted: false, delivered: false, replied: false, replyClassification: null, lastDeliveredAt: null };
 }
 
 function emptyScopedEmail() {
@@ -38,7 +39,7 @@ function formatTimestamp(val: string | null | undefined): string | null {
 
 function buildLeadStatus(row: AggRow | undefined) {
   return row
-    ? { contacted: row.contacted === true, delivered: row.delivered === true, replied: row.replied === true, lastDeliveredAt: formatTimestamp(row.lastDeliveredAt) }
+    ? { contacted: row.contacted === true, delivered: row.delivered === true, replied: row.replied === true, replyClassification: row.replyClassification ?? null, lastDeliveredAt: formatTimestamp(row.lastDeliveredAt) }
     : emptyLead();
 }
 
@@ -60,6 +61,7 @@ function leadQuery(filterClause: ReturnType<typeof sql>, leadIds: string[]) {
       TRUE AS "contacted",
       BOOL_OR(delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
       BOOL_OR(delivery_status = 'replied') AS "replied",
+      (array_agg(reply_classification ORDER BY updated_at DESC) FILTER (WHERE reply_classification IS NOT NULL))[1] AS "replyClassification",
       CAST(NULL AS boolean) AS "bounced",
       CAST(NULL AS boolean) AS "unsubscribed",
       MAX(CASE WHEN delivery_status IN ('sent', 'delivered', 'replied') THEN updated_at END) AS "lastDeliveredAt"

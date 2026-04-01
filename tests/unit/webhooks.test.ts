@@ -455,6 +455,84 @@ describe("POST /webhooks/instantly", () => {
     );
   });
 
+  // ─── Reply classification tests ──────────────────────────────────────────
+
+  it("should update replyClassification to 'positive' on lead_interested", async () => {
+    mockVerification("inst-camp-1");
+
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly")
+      .send({
+        event_type: "lead_interested",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+      });
+
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ replyClassification: "positive" }),
+    );
+  });
+
+  it("should update replyClassification to 'negative' on lead_not_interested", async () => {
+    mockVerification("inst-camp-1");
+    mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
+    mockDbSelect.mockResolvedValueOnce([]);
+
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly")
+      .send({
+        event_type: "lead_not_interested",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+      });
+
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ replyClassification: "negative" }),
+    );
+  });
+
+  it("should update replyClassification to 'neutral' on lead_out_of_office", async () => {
+    mockVerification("inst-camp-1");
+
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly")
+      .send({
+        event_type: "lead_out_of_office",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+      });
+
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ replyClassification: "neutral" }),
+    );
+  });
+
+  it("should NOT update replyClassification for email_sent", async () => {
+    mockVerification("inst-camp-1");
+
+    const app = await createWebhookApp();
+
+    await request(app)
+      .post("/webhooks/instantly")
+      .send({
+        event_type: "email_sent",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 1,
+      });
+
+    const classificationCalls = mockDbUpdate.mock.calls.filter(
+      ([v]: [any]) => v.replyClassification !== undefined,
+    );
+    expect(classificationCalls).toHaveLength(0);
+  });
+
   it("should NOT update deliveryStatus for unknown event types", async () => {
     mockVerification("inst-camp-1");
 

@@ -71,6 +71,13 @@
       "when": 1774310400000,
       "tag": "0009_brand_id_to_brand_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1774396800000,
+      "tag": "0010_add_reply_classification",
+      "breakpoints": true
     }
   ]
 }
