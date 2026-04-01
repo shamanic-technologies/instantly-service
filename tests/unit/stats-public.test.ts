@@ -239,6 +239,65 @@ describe("GET /stats/public", () => {
     expect(sqlText).toContain("feature_slug");
   });
 
+  // ─── workflowSlugs (plural, comma-separated) filter ─────────────────────────
+
+  it("should filter by workflowSlugs (comma-separated)", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [makeStatsRow({ emailsSent: 35, recipients: 15 })],
+    });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 15 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createPublicStatsApp();
+
+    const response = await request(app)
+      .get("/stats/public")
+      .query({ workflowSlugs: "cold-email-v1,cold-email-v2" });
+
+    expect(response.status).toBe(200);
+    const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("workflow_slug IN");
+  });
+
+  // ─── featureSlugs (plural, comma-separated) filter ─────────────────────────
+
+  it("should filter by featureSlugs (comma-separated)", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [makeStatsRow({ emailsSent: 25, recipients: 12 })],
+    });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 12 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createPublicStatsApp();
+
+    const response = await request(app)
+      .get("/stats/public")
+      .query({ featureSlugs: "feat-a,feat-b" });
+
+    expect(response.status).toBe(200);
+    const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("feature_slug IN");
+  });
+
+  it("should prefer workflowSlugs over workflowSlug when both provided", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [makeStatsRow({ emailsSent: 10, recipients: 5 })],
+    });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 5 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createPublicStatsApp();
+
+    const response = await request(app)
+      .get("/stats/public")
+      .query({ workflowSlug: "single-slug", workflowSlugs: "slug-a,slug-b" });
+
+    expect(response.status).toBe(200);
+    const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("workflow_slug IN");
+    expect(sqlText).not.toContain("workflow_slug =");
+  });
+
   // ─── workflowDynastySlug filter ──────────────────────────────────────────────
 
   it("should resolve workflowDynastySlug and use IN clause", async () => {
