@@ -289,8 +289,6 @@ function buildInterServiceHeaders(req: Request, res: Response): Record<string, s
 export async function addDynastyConditions(
   conditions: SQL[],
   data: {
-    workflowSlug?: string;
-    featureSlug?: string;
     workflowSlugs?: string;
     featureSlugs?: string;
     workflowDynastySlug?: string;
@@ -298,7 +296,7 @@ export async function addDynastyConditions(
   },
   headers?: Record<string, string>,
 ): Promise<boolean> {
-  // Workflow dimension: dynasty takes priority, then plural slugs, then exact slug
+  // Workflow dimension: dynasty takes priority over plural slugs
   if (data.workflowDynastySlug) {
     const slugs = await resolveWorkflowDynastySlugs(data.workflowDynastySlug, headers);
     if (slugs.length === 0) return true; // empty dynasty → zero stats
@@ -308,11 +306,9 @@ export async function addDynastyConditions(
     if (slugs.length > 0) {
       conditions.push(sql`c.workflow_slug IN (${sql.join(slugs.map((s) => sql`${s}`), sql`, `)})`);
     }
-  } else if (data.workflowSlug) {
-    conditions.push(sql`c.workflow_slug = ${data.workflowSlug}`);
   }
 
-  // Feature dimension: dynasty takes priority, then plural slugs, then exact slug
+  // Feature dimension: dynasty takes priority over plural slugs
   if (data.featureDynastySlug) {
     const slugs = await resolveFeatureDynastySlugs(data.featureDynastySlug, headers);
     if (slugs.length === 0) return true; // empty dynasty → zero stats
@@ -322,8 +318,6 @@ export async function addDynastyConditions(
     if (slugs.length > 0) {
       conditions.push(sql`c.feature_slug IN (${sql.join(slugs.map((s) => sql`${s}`), sql`, `)})`);
     }
-  } else if (data.featureSlug) {
-    conditions.push(sql`c.feature_slug = ${data.featureSlug}`);
   }
 
   return false;
@@ -341,7 +335,7 @@ router.get("/stats", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds: runIdsRaw, brandId, campaignId, workflowSlug, featureSlug, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy } = parsed.data;
+  const { runIds: runIdsRaw, brandId, campaignId, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy } = parsed.data;
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
   const orgId = res.locals.orgId as string;
 
@@ -354,7 +348,7 @@ router.get("/stats", async (req: Request, res: Response) => {
   const interServiceHeaders = buildInterServiceHeaders(req, res);
   const emptyDynasty = await addDynastyConditions(
     conditions,
-    { workflowSlug, featureSlug, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug },
+    { workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug },
     interServiceHeaders,
   );
 

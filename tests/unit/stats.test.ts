@@ -362,7 +362,7 @@ describe("GET /stats", () => {
 
   // ─── featureSlug filter ──────────────────────────────────────────────────────
 
-  it("should filter by featureSlug", async () => {
+  it("should filter by featureSlugs (comma-separated)", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({ emailsSent: 20, recipients: 10 })],
     });
@@ -373,12 +373,12 @@ describe("GET /stats", () => {
 
     const response = await request(app)
       .get("/stats")
-      .query({ featureSlug: "cold-email-sophia" })
+      .query({ featureSlugs: "cold-email-sophia,cold-email-beta" })
       .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
     const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
-    expect(sqlText).toContain("feature_slug");
+    expect(sqlText).toContain("feature_slug IN");
   });
 
   // ─── workflowDynastySlug filter ──────────────────────────────────────────────
@@ -480,7 +480,7 @@ describe("GET /stats", () => {
 
     const response = await request(app)
       .get("/stats")
-      .query({ workflowSlug: "cold-email", workflowDynastySlug: "cold-email" })
+      .query({ workflowSlugs: "cold-email", workflowDynastySlug: "cold-email" })
       .set(identityHeadersObj);
 
     expect(response.status).toBe(200);

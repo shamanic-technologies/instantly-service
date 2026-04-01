@@ -511,8 +511,6 @@ export const StatsQuerySchema = z
     runIds: z.string().optional().describe("Comma-separated list of run IDs"),
     brandId: z.string().optional().describe("Filter by brand ID (matches campaigns containing this brand)"),
     campaignId: z.string().optional(),
-    workflowSlug: z.string().optional().describe("Filter by exact workflow slug"),
-    featureSlug: z.string().optional().describe("Filter by exact feature slug"),
     workflowSlugs: z.string().optional().describe("Comma-separated list of workflow slugs to filter by"),
     featureSlugs: z.string().optional().describe("Comma-separated list of feature slugs to filter by"),
     workflowDynastySlug: z.string().optional().describe("Filter by workflow dynasty slug (resolved to all versioned slugs)"),
