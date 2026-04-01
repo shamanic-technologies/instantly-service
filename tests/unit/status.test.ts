@@ -87,11 +87,11 @@ describe("POST /status", () => {
     expect(r.leadId).toBe("lead-1");
     expect(r.email).toBe("john@acme.com");
     expect(r.campaign).toEqual({
-      lead: { contacted: false, delivered: false, replied: false, lastDeliveredAt: null },
+      lead: { contacted: false, delivered: false, replied: false, replyClassification: null, lastDeliveredAt: null },
       email: { contacted: false, delivered: false, bounced: false, unsubscribed: false, lastDeliveredAt: null },
     });
     expect(r.brand).toEqual({
-      lead: { contacted: false, delivered: false, replied: false, lastDeliveredAt: null },
+      lead: { contacted: false, delivered: false, replied: false, replyClassification: null, lastDeliveredAt: null },
       email: { contacted: false, delivered: false, bounced: false, unsubscribed: false, lastDeliveredAt: null },
     });
     expect(r.global).toEqual({
@@ -260,6 +260,51 @@ describe("POST /status", () => {
     // but delivered=false since no email_sent webhook yet
     expect(r.campaign.lead.delivered).toBe(false);
     expect(r.brand.lead.delivered).toBe(false);
+  });
+
+  it("should return replyClassification from lead query results", async () => {
+    // Brand lead — has positive classification
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "lead-1", contacted: true, delivered: true, replied: true, replyClassification: "positive", bounced: null, unsubscribed: null, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
+    });
+    // Brand email
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+    // Global email
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+    // Campaign lead — has negative classification
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "lead-1", contacted: true, delivered: true, replied: true, replyClassification: "negative", bounced: null, unsubscribed: null, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
+    });
+    // Campaign email
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatusApp();
+    const res = await postStatus(app).send(validBody);
+
+    expect(res.status).toBe(200);
+    const r = res.body.results[0];
+    expect(r.brand.lead.replyClassification).toBe("positive");
+    expect(r.campaign.lead.replyClassification).toBe("negative");
+  });
+
+  it("should return replyClassification as null when no classification exists", async () => {
+    // Brand lead — no classification
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "lead-1", contacted: true, delivered: true, replied: false, replyClassification: null, bounced: null, unsubscribed: null, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
+    });
+    // Brand email
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+    // Global email
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatusApp();
+    const res = await postStatus(app).send({
+      items: [{ leadId: "lead-1", email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    const r = res.body.results[0];
+    expect(r.brand.lead.replyClassification).toBeNull();
   });
 
   it("should return 500 on DB error", async () => {
