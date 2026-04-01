@@ -38,7 +38,7 @@ router.get("/stats/public", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds: runIdsRaw, brandId, campaignId, workflowSlug, featureSlug, workflowDynastySlug, featureDynastySlug, groupBy } = parsed.data;
+  const { runIds: runIdsRaw, brandId, campaignId, workflowSlug, featureSlug, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy } = parsed.data;
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
 
   const conditions: SQL[] = [];
@@ -57,7 +57,7 @@ router.get("/stats/public", async (req: Request, res: Response) => {
 
   const emptyDynasty = await addDynastyConditions(
     conditions,
-    { workflowSlug, featureSlug, workflowDynastySlug, featureDynastySlug },
+    { workflowSlug, featureSlug, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug },
     headers,
   );
 

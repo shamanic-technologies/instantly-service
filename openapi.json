@@ -1894,6 +1894,26 @@
           {
             "schema": {
               "type": "string",
+              "description": "Comma-separated list of workflow slugs to filter by"
+            },
+            "required": false,
+            "description": "Comma-separated list of workflow slugs to filter by",
+            "name": "workflowSlugs",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated list of feature slugs to filter by"
+            },
+            "required": false,
+            "description": "Comma-separated list of feature slugs to filter by",
+            "name": "featureSlugs",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "description": "Filter by workflow dynasty slug (resolved to all versioned slugs)"
             },
             "required": false,
@@ -2059,6 +2079,26 @@
             "required": false,
             "description": "Filter by exact feature slug",
             "name": "featureSlug",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated list of workflow slugs to filter by"
+            },
+            "required": false,
+            "description": "Comma-separated list of workflow slugs to filter by",
+            "name": "workflowSlugs",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated list of feature slugs to filter by"
+            },
+            "required": false,
+            "description": "Comma-separated list of feature slugs to filter by",
+            "name": "featureSlugs",
             "in": "query"
           },
           {
