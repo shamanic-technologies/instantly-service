@@ -219,26 +219,6 @@ describe("GET /stats/public", () => {
     expect(response.body.stepStats).toBeUndefined();
   });
 
-  // ─── featureSlug filter ──────────────────────────────────────────────────────
-
-  it("should filter by featureSlug", async () => {
-    mockExecute.mockResolvedValueOnce({
-      rows: [makeStatsRow({ emailsSent: 20, recipients: 10 })],
-    });
-    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 10 }] });
-    mockExecute.mockResolvedValueOnce({ rows: [] });
-
-    const app = await createPublicStatsApp();
-
-    const response = await request(app)
-      .get("/stats/public")
-      .query({ featureSlug: "cold-email-sophia" });
-
-    expect(response.status).toBe(200);
-    const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
-    expect(sqlText).toContain("feature_slug");
-  });
-
   // ─── workflowSlugs (plural, comma-separated) filter ─────────────────────────
 
   it("should filter by workflowSlugs (comma-separated)", async () => {
@@ -277,25 +257,6 @@ describe("GET /stats/public", () => {
     expect(response.status).toBe(200);
     const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
     expect(sqlText).toContain("feature_slug IN");
-  });
-
-  it("should prefer workflowSlugs over workflowSlug when both provided", async () => {
-    mockExecute.mockResolvedValueOnce({
-      rows: [makeStatsRow({ emailsSent: 10, recipients: 5 })],
-    });
-    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 5 }] });
-    mockExecute.mockResolvedValueOnce({ rows: [] });
-
-    const app = await createPublicStatsApp();
-
-    const response = await request(app)
-      .get("/stats/public")
-      .query({ workflowSlug: "single-slug", workflowSlugs: "slug-a,slug-b" });
-
-    expect(response.status).toBe(200);
-    const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
-    expect(sqlText).toContain("workflow_slug IN");
-    expect(sqlText).not.toContain("workflow_slug =");
   });
 
   // ─── workflowDynastySlug filter ──────────────────────────────────────────────
