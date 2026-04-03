@@ -43,7 +43,7 @@ router.post("/sync", async (req: Request, res: Response) => {
 
     for (const account of instantlyAccountsList) {
       const warmupEnabled = account.warmup_status === 1;
-      const status = account.status === 1 ? "active" : "inactive";
+      const status = account.status > 0 ? "active" : "inactive";
 
       await db
         .insert(instantlyAccounts)
