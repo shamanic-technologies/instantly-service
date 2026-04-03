@@ -141,6 +141,35 @@ describe("pickRandomAccount", () => {
     const picked = pickRandomAccount(accounts);
     expect(accounts).toContainEqual(picked);
   });
+
+  it("should prioritize kevin@growthagency.dev when available", () => {
+    const accounts = [
+      acct({ email: "random@test.com" }),
+      acct({ email: "kevin@growthagency.dev" }),
+      acct({ email: "kevin@distribute.you" }),
+    ];
+    const picked = pickRandomAccount(accounts);
+    expect(picked.email).toBe("kevin@growthagency.dev");
+  });
+
+  it("should fall back to kevin@distribute.you when growthagency is unavailable", () => {
+    const accounts = [
+      acct({ email: "random@test.com" }),
+      acct({ email: "kevin@distribute.you" }),
+      acct({ email: "other@test.com" }),
+    ];
+    const picked = pickRandomAccount(accounts);
+    expect(picked.email).toBe("kevin@distribute.you");
+  });
+
+  it("should pick randomly when neither priority account is available", () => {
+    const accounts = [
+      acct({ email: "a@test.com" }),
+      acct({ email: "b@test.com" }),
+    ];
+    const picked = pickRandomAccount(accounts);
+    expect(accounts).toContainEqual(picked);
+  });
 });
 
 describe("buildEmailBodyWithSignature", () => {

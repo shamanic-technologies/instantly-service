@@ -42,12 +42,24 @@ const router = Router();
 const MAX_SEND_RETRIES = 3;
 
 /**
- * Pick a random account from the list.
+ * Pick an account from the list with priority order:
+ * 1. kevin@growthagency.dev (if available)
+ * 2. kevin@distribute.you (if available)
+ * 3. Random from the remaining accounts
  *
- * Each per-lead campaign is assigned a single random account so the
+ * Each per-lead campaign is assigned a single account so the
  * signature in the email body always matches the actual sender.
  */
+const PRIORITY_ACCOUNTS = [
+  "kevin@growthagency.dev",
+  "kevin@distribute.you",
+];
+
 export function pickRandomAccount(accounts: Account[]): Account {
+  for (const preferred of PRIORITY_ACCOUNTS) {
+    const match = accounts.find((a) => a.email === preferred);
+    if (match) return match;
+  }
   return accounts[Math.floor(Math.random() * accounts.length)];
 }
 
