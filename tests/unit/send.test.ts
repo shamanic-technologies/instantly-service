@@ -271,6 +271,35 @@ describe("POST /send", () => {
     expect(mockCreateCampaign).not.toHaveBeenCalled();
   });
 
+  it("should treat status 2 (active+warming) accounts as active", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "warming@test.com", warmup_status: 1, status: 2, signature: "<p>Sig</p>" },
+    ]);
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(mockUpdateCampaign).toHaveBeenCalledWith(
+      "test-instantly-key",
+      "inst-camp-new",
+      expect.objectContaining({ email_list: ["warming@test.com"] }),
+    );
+  });
+
+  it("should reject accounts with negative status", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "suspended@test.com", warmup_status: 0, status: -3 },
+    ]);
+    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(500);
+    expect(res.body.details).toContain("none are active");
+  });
+
   it("should only use active accounts and ignore inactive ones", async () => {
     mockListAccounts.mockResolvedValue([
       { email: "inactive@test.com", warmup_status: 0, status: 0 },

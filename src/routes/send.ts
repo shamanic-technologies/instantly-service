@@ -253,10 +253,10 @@ router.post("/", async (req: Request, res: Response) => {
     const stepRuns: { step: number; runId: string }[] = [];
 
     try {
-      // 3. Check available accounts — only use active ones (status === 1)
+      // 3. Check available accounts — status > 0 means active (1 = active, 2 = active+warming)
       const allAccounts = await listAccounts(apiKey);
       console.log(`[send] Account statuses: ${JSON.stringify(allAccounts.map((a) => ({ email: a.email, status: a.status, warmup_status: a.warmup_status })))}`);
-      const accounts = allAccounts.filter((a) => a.status === 1);
+      const accounts = allAccounts.filter((a) => a.status > 0);
       if (accounts.length === 0) {
         const total = allAccounts.length;
         const msg = total === 0
