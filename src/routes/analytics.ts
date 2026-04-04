@@ -359,6 +359,9 @@ router.get("/stats", async (req: Request, res: Response) => {
 
   const whereClause = sql.join(conditions, sql` AND `);
 
+  const filters = { orgId, runIds, brandId, campaignId, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy };
+  console.log(`[instantly-service] GET /stats inputs: ${JSON.stringify(filters)}`);
+
   // Handle groupBy requests
   if (groupBy) {
     try {
@@ -371,16 +374,19 @@ router.get("/stats", async (req: Request, res: Response) => {
         dynastyMap = buildSlugToDynastyMap(dynasties);
       }
       const groups = await queryGroupedStats(whereClause, groupBy, dynastyMap);
+      console.log(`[instantly-service] GET /stats grouped result: ${groups.length} groups, opens=[${groups.map((g) => `${g.key}:${g.stats.emailsOpened}`).join(",")}]`);
       return res.json({ groups });
     } catch (error: any) {
       const msg = error.cause?.message ?? error.message ?? String(error);
-      console.error(`[stats] Failed to aggregate grouped stats: ${msg}`, error);
+      console.error(`[instantly-service] Failed to aggregate grouped stats: ${msg}`, error);
       return res.status(500).json({ error: "Failed to aggregate stats" });
     }
   }
 
   try {
     const { stats, recipients } = await queryStats(whereClause);
+
+    console.log(`[instantly-service] GET /stats result: emailsOpened=${stats.emailsOpened}, emailsSent=${stats.emailsSent}, recipients=${recipients}, orgId=${orgId}`);
 
     // Per-step breakdown (secondary stats) — non-fatal; overall stats still return on failure
     let stepStats: { step: number; emailsSent: number; emailsOpened: number; emailsReplied: number; emailsBounced: number }[] = [];
@@ -409,7 +415,7 @@ router.get("/stats", async (req: Request, res: Response) => {
         emailsBounced: sr.emailsBounced ?? 0,
       }));
     } catch (stepError: any) {
-      console.error(`[stats] Step query failed (overall stats still returned): ${stepError.cause?.message ?? stepError.message}`);
+      console.error(`[instantly-service] Step query failed (overall stats still returned): ${stepError.cause?.message ?? stepError.message}`);
     }
 
     res.json({
@@ -419,7 +425,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     const msg = error.cause?.message ?? error.message ?? String(error);
-    console.error(`[stats] Failed to aggregate stats: ${msg}`, error);
+    console.error(`[instantly-service] Failed to aggregate stats: ${msg}`, error);
     res.status(500).json({ error: "Failed to aggregate stats" });
   }
 });
