@@ -87,12 +87,12 @@ describe("POST /status", () => {
     expect(r.leadId).toBe("lead-1");
     expect(r.email).toBe("john@acme.com");
     expect(r.campaign).toEqual({
-      lead: { contacted: false, delivered: false, replied: false, replyClassification: null, lastDeliveredAt: null },
-      email: { contacted: false, delivered: false, bounced: false, unsubscribed: false, lastDeliveredAt: null },
+      lead: { contacted: false, delivered: false, opened: false, replied: false, replyClassification: null, lastDeliveredAt: null },
+      email: { contacted: false, delivered: false, opened: false, bounced: false, unsubscribed: false, lastDeliveredAt: null },
     });
     expect(r.brand).toEqual({
-      lead: { contacted: false, delivered: false, replied: false, replyClassification: null, lastDeliveredAt: null },
-      email: { contacted: false, delivered: false, bounced: false, unsubscribed: false, lastDeliveredAt: null },
+      lead: { contacted: false, delivered: false, opened: false, replied: false, replyClassification: null, lastDeliveredAt: null },
+      email: { contacted: false, delivered: false, opened: false, bounced: false, unsubscribed: false, lastDeliveredAt: null },
     });
     expect(r.global).toEqual({
       email: { bounced: false, unsubscribed: false },
@@ -315,5 +315,63 @@ describe("POST /status", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("Failed to get delivery status");
+  });
+
+  it("should return opened=true when email_opened event exists", async () => {
+    // Brand lead — opened=true (from LEFT JOIN on instantly_events)
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "lead-1", contacted: true, delivered: true, opened: true, replied: false, replyClassification: null, bounced: null, unsubscribed: null, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
+    });
+    // Brand email — opened=true
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", contacted: true, delivered: true, opened: true, replied: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
+    });
+    // Global email
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", contacted: null, delivered: null, replied: null, bounced: false, unsubscribed: false, lastDeliveredAt: null }],
+    });
+    // Campaign lead — not opened
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "lead-1", contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: null, unsubscribed: null, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
+    });
+    // Campaign email — not opened
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", contacted: true, delivered: true, opened: false, replied: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
+    });
+
+    const app = await createStatusApp();
+    const res = await postStatus(app).send(validBody);
+
+    expect(res.status).toBe(200);
+    const r = res.body.results[0];
+    // Brand: opened (from another campaign in same brand)
+    expect(r.brand.lead.opened).toBe(true);
+    expect(r.brand.email.opened).toBe(true);
+    // Campaign: not opened in this specific campaign
+    expect(r.campaign.lead.opened).toBe(false);
+    expect(r.campaign.email.opened).toBe(false);
+  });
+
+  it("should return opened=false when no email_opened event exists", async () => {
+    // Brand lead — no opened event
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "lead-1", contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: null, unsubscribed: null, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
+    });
+    // Brand email — no opened event
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", contacted: true, delivered: true, opened: false, replied: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
+    });
+    // Global email
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatusApp();
+    const res = await postStatus(app).send({
+      items: [{ leadId: "lead-1", email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    const r = res.body.results[0];
+    expect(r.brand.lead.opened).toBe(false);
+    expect(r.brand.email.opened).toBe(false);
   });
 });

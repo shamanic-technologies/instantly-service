@@ -9,6 +9,7 @@ interface AggRow {
   key: string;
   contacted: boolean | null;
   delivered: boolean | null;
+  opened: boolean | null;
   replied: boolean | null;
   replyClassification: string | null;
   bounced: boolean | null;
@@ -22,11 +23,11 @@ function extractRows(result: unknown): AggRow[] {
 }
 
 function emptyLead() {
-  return { contacted: false, delivered: false, replied: false, replyClassification: null, lastDeliveredAt: null };
+  return { contacted: false, delivered: false, opened: false, replied: false, replyClassification: null, lastDeliveredAt: null };
 }
 
 function emptyScopedEmail() {
-  return { contacted: false, delivered: false, bounced: false, unsubscribed: false, lastDeliveredAt: null };
+  return { contacted: false, delivered: false, opened: false, bounced: false, unsubscribed: false, lastDeliveredAt: null };
 }
 
 function emptyGlobalEmail() {
@@ -39,13 +40,13 @@ function formatTimestamp(val: string | null | undefined): string | null {
 
 function buildLeadStatus(row: AggRow | undefined) {
   return row
-    ? { contacted: row.contacted === true, delivered: row.delivered === true, replied: row.replied === true, replyClassification: row.replyClassification ?? null, lastDeliveredAt: formatTimestamp(row.lastDeliveredAt) }
+    ? { contacted: row.contacted === true, delivered: row.delivered === true, opened: row.opened === true, replied: row.replied === true, replyClassification: row.replyClassification ?? null, lastDeliveredAt: formatTimestamp(row.lastDeliveredAt) }
     : emptyLead();
 }
 
 function buildScopedEmailStatus(row: AggRow | undefined) {
   return row
-    ? { contacted: row.contacted === true, delivered: row.delivered === true, bounced: row.bounced === true, unsubscribed: row.unsubscribed === true, lastDeliveredAt: formatTimestamp(row.lastDeliveredAt) }
+    ? { contacted: row.contacted === true, delivered: row.delivered === true, opened: row.opened === true, bounced: row.bounced === true, unsubscribed: row.unsubscribed === true, lastDeliveredAt: formatTimestamp(row.lastDeliveredAt) }
     : emptyScopedEmail();
 }
 
@@ -57,17 +58,22 @@ function sqlIn(values: string[]) {
 function leadQuery(filterClause: ReturnType<typeof sql>, leadIds: string[]) {
   return db.execute(sql`
     SELECT
-      lead_id AS "key",
+      c.lead_id AS "key",
       TRUE AS "contacted",
-      BOOL_OR(delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
-      BOOL_OR(delivery_status = 'replied') AS "replied",
-      (array_agg(reply_classification ORDER BY updated_at DESC) FILTER (WHERE reply_classification IS NOT NULL))[1] AS "replyClassification",
+      BOOL_OR(c.delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
+      BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
+      BOOL_OR(c.delivery_status = 'replied') AS "replied",
+      (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
       CAST(NULL AS boolean) AS "bounced",
       CAST(NULL AS boolean) AS "unsubscribed",
-      MAX(CASE WHEN delivery_status IN ('sent', 'delivered', 'replied') THEN updated_at END) AS "lastDeliveredAt"
-    FROM instantly_campaigns
-    WHERE lead_id IN (${sqlIn(leadIds)}) AND ${filterClause}
-    GROUP BY lead_id
+      MAX(CASE WHEN c.delivery_status IN ('sent', 'delivered', 'replied') THEN c.updated_at END) AS "lastDeliveredAt"
+    FROM instantly_campaigns c
+    LEFT JOIN instantly_events oe
+      ON oe.campaign_id = c.instantly_campaign_id
+      AND oe.lead_email = c.lead_email
+      AND oe.event_type = 'email_opened'
+    WHERE c.lead_id IN (${sqlIn(leadIds)}) AND ${filterClause}
+    GROUP BY c.lead_id
   `);
 }
 
@@ -75,16 +81,21 @@ function leadQuery(filterClause: ReturnType<typeof sql>, leadIds: string[]) {
 function scopedEmailQuery(filterClause: ReturnType<typeof sql>, emails: string[]) {
   return db.execute(sql`
     SELECT
-      lead_email AS "key",
+      c.lead_email AS "key",
       TRUE AS "contacted",
-      BOOL_OR(delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
+      BOOL_OR(c.delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
+      BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
       CAST(NULL AS boolean) AS "replied",
-      BOOL_OR(delivery_status = 'bounced') AS "bounced",
-      BOOL_OR(delivery_status = 'unsubscribed') AS "unsubscribed",
-      MAX(CASE WHEN delivery_status IN ('sent', 'delivered', 'replied') THEN updated_at END) AS "lastDeliveredAt"
-    FROM instantly_campaigns
-    WHERE lead_email IN (${sqlIn(emails)}) AND ${filterClause}
-    GROUP BY lead_email
+      BOOL_OR(c.delivery_status = 'bounced') AS "bounced",
+      BOOL_OR(c.delivery_status = 'unsubscribed') AS "unsubscribed",
+      MAX(CASE WHEN c.delivery_status IN ('sent', 'delivered', 'replied') THEN c.updated_at END) AS "lastDeliveredAt"
+    FROM instantly_campaigns c
+    LEFT JOIN instantly_events oe
+      ON oe.campaign_id = c.instantly_campaign_id
+      AND oe.lead_email = c.lead_email
+      AND oe.event_type = 'email_opened'
+    WHERE c.lead_email IN (${sqlIn(emails)}) AND ${filterClause}
+    GROUP BY c.lead_email
   `);
 }
 
@@ -113,7 +124,7 @@ router.post("/", async (req: Request, res: Response) => {
 
   try {
     // Build queries: brand (2) + global (1) + optional campaign (2)
-    const brandFilter = sql`${brandId} = ANY(brand_ids)`;
+    const brandFilter = sql`${brandId} = ANY(c.brand_ids)`;
     const brandLeadPromise = leadQuery(brandFilter, leadIds);
     const brandEmailPromise = scopedEmailQuery(brandFilter, emails);
 
@@ -135,7 +146,7 @@ router.post("/", async (req: Request, res: Response) => {
     let campLeadPromise: Promise<unknown> | null = null;
     let campEmailPromise: Promise<unknown> | null = null;
     if (campaignId) {
-      const campFilter = sql`campaign_id = ${campaignId}`;
+      const campFilter = sql`c.campaign_id = ${campaignId}`;
       campLeadPromise = leadQuery(campFilter, leadIds);
       campEmailPromise = scopedEmailQuery(campFilter, emails);
     }

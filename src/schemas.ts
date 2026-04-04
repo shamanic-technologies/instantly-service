@@ -787,6 +787,7 @@ const ReplyClassificationSchema = z.enum(["positive", "negative", "neutral"]);
 const LeadStatusSchema = z.object({
   contacted: z.boolean(),
   delivered: z.boolean(),
+  opened: z.boolean(),
   replied: z.boolean(),
   replyClassification: ReplyClassificationSchema.nullable().describe("Reply classification based on Instantly interest status. null = no reply"),
   lastDeliveredAt: z.string().nullable(),
@@ -795,6 +796,7 @@ const LeadStatusSchema = z.object({
 const ScopedEmailStatusSchema = z.object({
   contacted: z.boolean(),
   delivered: z.boolean(),
+  opened: z.boolean(),
   bounced: z.boolean(),
   unsubscribed: z.boolean(),
   lastDeliveredAt: z.string().nullable(),
