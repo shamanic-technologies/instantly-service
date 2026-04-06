@@ -9,7 +9,7 @@ import webhooksRoutes from "../../src/routes/webhooks";
 import sendRoutes from "../../src/routes/send";
 import statusRoutes from "../../src/routes/status";
 import { serviceAuth } from "../../src/middleware/serviceAuth";
-import { identityHeaders } from "../../src/middleware/identityHeaders";
+import { requireOrgId } from "../../src/middleware/requireOrgId";
 
 export function createTestApp() {
   const app = express();
@@ -19,16 +19,20 @@ export function createTestApp() {
   app.use(healthRoutes);
   app.use("/webhooks", webhooksRoutes);
 
-  // Semi-public routes (require X-API-Key only, no identity headers)
-  app.use("/", serviceAuth, analyticsPublicRoutes);
+  // Protected public routes (x-api-key only)
+  app.use("/public", serviceAuth, analyticsPublicRoutes);
 
-  // Protected routes (require X-API-Key + x-org-id + x-user-id + x-run-id)
-  app.use("/send", serviceAuth, identityHeaders, sendRoutes);
-  app.use("/status", serviceAuth, identityHeaders, statusRoutes);
-  app.use("/campaigns", serviceAuth, identityHeaders, campaignsRoutes);
-  app.use("/campaigns", serviceAuth, identityHeaders, leadsRoutes);
-  app.use("/accounts", serviceAuth, identityHeaders, accountsRoutes);
-  app.use(serviceAuth, identityHeaders, analyticsRoutes);
+  // Internal routes (x-api-key only)
+  app.use("/internal/campaigns", serviceAuth, campaignsRoutes);
+  app.use("/internal/accounts", serviceAuth, accountsRoutes);
+
+  // Org-scoped routes (x-api-key + x-org-id required)
+  app.use("/orgs/send", serviceAuth, requireOrgId, sendRoutes);
+  app.use("/orgs/status", serviceAuth, requireOrgId, statusRoutes);
+  app.use("/orgs/campaigns", serviceAuth, requireOrgId, campaignsRoutes);
+  app.use("/orgs/campaigns", serviceAuth, requireOrgId, leadsRoutes);
+  app.use("/orgs/accounts", serviceAuth, requireOrgId, accountsRoutes);
+  app.use("/orgs", serviceAuth, requireOrgId, analyticsRoutes);
 
   return app;
 }

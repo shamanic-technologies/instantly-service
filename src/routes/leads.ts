@@ -18,7 +18,7 @@ import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { authorizeCreditSpend } from "../lib/billing-client";
 import { AddLeadsRequestSchema, DeleteLeadsRequestSchema } from "../schemas";
 
-/** Extract tracking headers from res.locals (set by identityHeaders middleware) */
+/** Extract tracking headers from res.locals (set by requireOrgId middleware) */
 function getTracking(res: Response): TrackingHeaders {
   const t: TrackingHeaders = {};
   if (res.locals.headerCampaignId) t.campaignId = res.locals.headerCampaignId;

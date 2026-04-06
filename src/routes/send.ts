@@ -27,7 +27,7 @@ import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { authorizeCreditSpend } from "../lib/billing-client";
 import { SendRequestSchema } from "../schemas";
 
-/** Extract tracking headers from res.locals (set by identityHeaders middleware) */
+/** Extract tracking headers from res.locals (set by requireOrgId middleware) */
 function getTracking(res: Response): TrackingHeaders {
   const t: TrackingHeaders = {};
   if (res.locals.headerCampaignId) t.campaignId = res.locals.headerCampaignId;
@@ -209,12 +209,10 @@ router.post("/", async (req: Request, res: Response) => {
   const userId = res.locals.userId as string;
   const tracking = getTracking(res);
 
-  // Use header values as fallback when body fields are missing
-  const brandIds: string[] = body.brandIds.length > 0
-    ? body.brandIds
-    : (res.locals.headerBrandIds as string[] | undefined) ?? [];
-  const campaignId = body.campaignId || tracking.campaignId || "";
-  const workflowSlug = body.workflowSlug || tracking.workflowSlug;
+  // Read from headers only (no body duplication)
+  const brandIds: string[] = (res.locals.headerBrandIds as string[] | undefined) ?? [];
+  const campaignId = tracking.campaignId || "";
+  const workflowSlug = tracking.workflowSlug;
 
   console.log(`[send] POST /send to=${body.to} campaignId=${campaignId} brandIds=${brandIds.join(",")} subject="${body.subject}" steps=${body.sequence.length}`);
 
