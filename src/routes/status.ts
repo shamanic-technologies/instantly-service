@@ -106,9 +106,6 @@ function scopedEmailQuery(filterClause: ReturnType<typeof sql>, emails: string[]
  */
 router.post("/", async (req: Request, res: Response) => {
   const brandId = req.headers["x-brand-id"] as string | undefined;
-  if (!brandId) {
-    return res.status(400).json({ error: "x-brand-id header is required" });
-  }
 
   const parsed = StatusRequestSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -123,10 +120,14 @@ router.post("/", async (req: Request, res: Response) => {
   const emails = items.map((i) => i.email);
 
   try {
-    // Build queries: brand (2) + global (1) + optional campaign (2)
-    const brandFilter = sql`${brandId} = ANY(c.brand_ids)`;
-    const brandLeadPromise = leadQuery(brandFilter, leadIds);
-    const brandEmailPromise = scopedEmailQuery(brandFilter, emails);
+    // Build queries: brand (2, optional) + global (1) + optional campaign (2)
+    let brandLeadPromise: Promise<unknown> | null = null;
+    let brandEmailPromise: Promise<unknown> | null = null;
+    if (brandId) {
+      const brandFilter = sql`${brandId} = ANY(c.brand_ids)`;
+      brandLeadPromise = leadQuery(brandFilter, leadIds);
+      brandEmailPromise = scopedEmailQuery(brandFilter, emails);
+    }
 
     // Global: only bounced + unsubscribed on email
     const globalEmailPromise = db.execute(sql`
@@ -154,16 +155,16 @@ router.post("/", async (req: Request, res: Response) => {
     // Execute all in parallel
     const [brandLeadResult, brandEmailResult, globalEmailResult, campLeadResult, campEmailResult] =
       await Promise.all([
-        brandLeadPromise,
-        brandEmailPromise,
+        brandLeadPromise ?? Promise.resolve(null),
+        brandEmailPromise ?? Promise.resolve(null),
         globalEmailPromise,
         campLeadPromise ?? Promise.resolve(null),
         campEmailPromise ?? Promise.resolve(null),
       ]);
 
     // Index rows by key
-    const brandLeadMap = new Map(extractRows(brandLeadResult).map((r) => [r.key, r]));
-    const brandEmailMap = new Map(extractRows(brandEmailResult).map((r) => [r.key, r]));
+    const brandLeadMap = brandLeadResult ? new Map(extractRows(brandLeadResult).map((r) => [r.key, r])) : null;
+    const brandEmailMap = brandEmailResult ? new Map(extractRows(brandEmailResult).map((r) => [r.key, r])) : null;
     const globalEmailMap = new Map(extractRows(globalEmailResult).map((r) => [r.key, r]));
     const campLeadMap = campLeadResult ? new Map(extractRows(campLeadResult).map((r) => [r.key, r])) : null;
     const campEmailMap = campEmailResult ? new Map(extractRows(campEmailResult).map((r) => [r.key, r])) : null;
@@ -180,10 +181,12 @@ router.post("/", async (req: Request, res: Response) => {
               email: buildScopedEmailStatus(campEmailMap.get(item.email)),
             }
           : null,
-        brand: {
-          lead: buildLeadStatus(brandLeadMap.get(item.leadId)),
-          email: buildScopedEmailStatus(brandEmailMap.get(item.email)),
-        },
+        brand: brandLeadMap && brandEmailMap
+          ? {
+              lead: buildLeadStatus(brandLeadMap.get(item.leadId)),
+              email: buildScopedEmailStatus(brandEmailMap.get(item.email)),
+            }
+          : null,
         global: {
           email: {
             bounced: ge?.bounced === true,

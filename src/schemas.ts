@@ -818,7 +818,7 @@ const StatusResultSchema = z.object({
   leadId: z.string(),
   email: z.string(),
   campaign: ScopedStatusSchema.nullable(),
-  brand: ScopedStatusSchema,
+  brand: ScopedStatusSchema.nullable(),
   global: GlobalStatusSchema,
 });
 
@@ -834,12 +834,10 @@ registry.registerPath({
   summary: "Batch delivery status check for leads/emails",
   description:
     "Returns campaign-scoped, brand-scoped, and global delivery status " +
-    "for each lead/email pair. Campaign filters by campaignId (null if omitted); " +
-    "brand filters by x-brand-id header; global aggregates across everything.",
+    "for each lead/email pair. Campaign scope is null if campaignId omitted; " +
+    "brand scope is null if x-brand-id header omitted; global aggregates across everything.",
   request: {
-    headers: TrackingHeadersSchema.extend({
-      "x-brand-id": z.string().describe("Brand ID to scope brand-level results (required for this endpoint)"),
-    }),
+    headers: TrackingHeadersSchema,
     body: {
       content: { "application/json": { schema: StatusRequestSchema } },
     },
