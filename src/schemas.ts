@@ -804,7 +804,7 @@ const GlobalStatusSchema = z.object({
 
 const StatusResultSchema = z.object({
   email: z.string(),
-  leadIds: z.array(z.string()).describe("Lead IDs found in instantly_campaigns for this email"),
+  leadId: z.string().nullable().describe("Lead ID found in instantly_campaigns for this email"),
   campaign: ScopedStatusFieldsSchema.nullable(),
   brand: ScopedStatusFieldsSchema.nullable(),
   global: GlobalStatusSchema,
@@ -824,7 +824,7 @@ registry.registerPath({
     "Returns campaign-scoped, brand-scoped, and global delivery status " +
     "for each email. Campaign scope is null if campaignId omitted; " +
     "brand scope is null if x-brand-id header omitted; global aggregates across everything. " +
-    "Each result includes leadIds found in the database for that email.",
+    "Each result includes the leadId found in the database for that email.",
   request: {
     headers: TrackingHeadersSchema,
     body: {

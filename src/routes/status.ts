@@ -7,7 +7,7 @@ const router = Router();
 
 interface AggRow {
   key: string;
-  leadIds: string[] | null;
+  leadId: string | null;
   contacted: boolean | null;
   delivered: boolean | null;
   opened: boolean | null;
@@ -50,12 +50,12 @@ function sqlIn(values: string[]) {
   return sql.join(values.map((v) => sql`${v}`), sql`, `);
 }
 
-/** Unified scoped query — groups by lead_email, returns all status fields + aggregated leadIds */
+/** Unified scoped query — groups by lead_email, returns all status fields + leadId */
 function scopedQuery(filterClause: ReturnType<typeof sql>, emails: string[]) {
   return db.execute(sql`
     SELECT
       c.lead_email AS "key",
-      array_agg(DISTINCT c.lead_id) FILTER (WHERE c.lead_id IS NOT NULL) AS "leadIds",
+      MAX(c.lead_id) AS "leadId",
       TRUE AS "contacted",
       BOOL_OR(c.delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
       BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
@@ -139,15 +139,12 @@ router.post("/", async (req: Request, res: Response) => {
       const brandRow = brandMap?.get(item.email);
       const campRow = campMap?.get(item.email);
 
-      // Collect leadIds from all scopes + input
-      const leadIdSet = new Set<string>();
-      if (item.leadId) leadIdSet.add(item.leadId);
-      for (const id of brandRow?.leadIds ?? []) leadIdSet.add(id);
-      for (const id of campRow?.leadIds ?? []) leadIdSet.add(id);
+      // Pick leadId: prefer input, then campaign, then brand
+      const leadId = item.leadId ?? campRow?.leadId ?? brandRow?.leadId ?? null;
 
       return {
         email: item.email,
-        leadIds: [...leadIdSet],
+        leadId,
         campaign: campMap ? buildScopedStatus(campRow) : null,
         brand: brandMap ? buildScopedStatus(brandRow) : null,
         global: {

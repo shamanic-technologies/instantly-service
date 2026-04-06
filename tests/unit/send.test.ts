@@ -7,7 +7,7 @@ const mockDbInsertValues = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
-    select: () => ({ from: (table: unknown) => ({ where: mockDbWhere }) }),
+    select: () => ({ from: (table: unknown) => ({ where: (...args: unknown[]) => { const result = mockDbWhere(...args); return Object.assign(result, { limit: () => result }); } }) }),
     insert: () => ({ values: (v: unknown) => {
       mockDbInsertValues(v);
       return { onConflictDoNothing: () => ({ returning: mockDbReturning }), returning: mockDbReturning };
@@ -123,6 +123,7 @@ function acct(overrides: Partial<Account> = {}): Account {
  */
 function mockNewCampaignFlow() {
   mockDbWhere.mockReset();
+  mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check (no conflict)
   mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign (not found → create)
 
   mockCreateCampaign.mockResolvedValue({ id: "inst-camp-new", status: "draft" });
@@ -265,6 +266,7 @@ describe("POST /send", () => {
       { email: "inactive1@test.com", warmup_status: 0, status: 0 },
       { email: "inactive2@test.com", warmup_status: 0, status: 0 },
     ]);
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
 
     const app = await createSendApp();
@@ -295,6 +297,7 @@ describe("POST /send", () => {
     mockListAccounts.mockResolvedValue([
       { email: "suspended@test.com", warmup_status: 0, status: -3 },
     ]);
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
 
     const app = await createSendApp();
@@ -464,6 +467,7 @@ describe("POST /send", () => {
 
   it("should skip Instantly API call and step runs when same lead already processed for campaign", async () => {
     mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
     mockDbWhere.mockResolvedValueOnce([{
       id: "sub-camp-1",
       campaignId: "camp-1",
@@ -489,6 +493,7 @@ describe("POST /send", () => {
 
     // Send 1: Lead A
     mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
     mockCreateCampaign.mockResolvedValueOnce({ id: "inst-camp-A", status: "draft" });
     mockGetCampaign.mockReset();
@@ -508,6 +513,7 @@ describe("POST /send", () => {
 
     // Send 2: Lead B (same campaignId, different lead)
     mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
     mockCreateCampaign.mockResolvedValueOnce({ id: "inst-camp-B", status: "draft" });
     mockGetCampaign.mockReset();
@@ -535,6 +541,7 @@ describe("POST /send", () => {
 
   it("should retry with new account when not_sending_status detected and succeed on 2nd attempt", async () => {
     mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
 
     // Attempt 1: create + verify-PATCH ok + verify-activate fails
@@ -564,6 +571,7 @@ describe("POST /send", () => {
 
   it("should fail after MAX_SEND_RETRIES attempts with not_sending_status and NOT add costs", async () => {
     mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
 
     // All 3 attempts fail with not_sending_status
@@ -608,6 +616,7 @@ describe("POST /send", () => {
 
   it("should return 409 when concurrent request already claimed the lead", async () => {
     mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign — not found (race condition: both requests pass this check)
 
     mockCreateCampaign.mockResolvedValue({ id: "inst-camp-race", status: "draft" });
@@ -749,5 +758,22 @@ describe("POST /send", () => {
 
     expect(mockAuthorizeCreditSpend).not.toHaveBeenCalled();
     expect(mockCreateCampaign).toHaveBeenCalled();
+  });
+
+  it("should return 409 when email already exists with a different leadId", async () => {
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([{ leadId: "existing-lead-99" }]); // lead_id conflict found
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send({
+      ...validBody,
+      leadId: "different-lead-1",
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Lead ID conflict");
+    expect(res.body.details).toContain("existing-lead-99");
+    expect(res.body.details).toContain("different-lead-1");
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
   });
 });

@@ -699,12 +699,10 @@
                 "email": {
                   "type": "string"
                 },
-                "leadIds": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "description": "Lead IDs found in instantly_campaigns for this email"
+                "leadId": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "Lead ID found in instantly_campaigns for this email"
                 },
                 "campaign": {
                   "type": "object",
@@ -830,7 +828,7 @@
               },
               "required": [
                 "email",
-                "leadIds",
+                "leadId",
                 "campaign",
                 "brand",
                 "global"
@@ -2328,7 +2326,7 @@
     "/orgs/status": {
       "post": {
         "summary": "Batch delivery status check for leads/emails",
-        "description": "Returns campaign-scoped, brand-scoped, and global delivery status for each email. Campaign scope is null if campaignId omitted; brand scope is null if x-brand-id header omitted; global aggregates across everything. Each result includes leadIds found in the database for that email.",
+        "description": "Returns campaign-scoped, brand-scoped, and global delivery status for each email. Campaign scope is null if campaignId omitted; brand scope is null if x-brand-id header omitted; global aggregates across everything. Each result includes the leadId found in the database for that email.",
         "parameters": [
           {
             "schema": {
