@@ -5,7 +5,7 @@ import {
   instantlyLeads,
   sequenceCosts,
 } from "../db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, ne, isNotNull } from "drizzle-orm";
 import {
   createCampaign as createInstantlyCampaign,
   updateCampaign as updateInstantlyCampaign,
@@ -266,7 +266,30 @@ router.post("/", async (req: Request, res: Response) => {
 
       const sortedSequence = [...body.sequence].sort((a, b) => a.step - b.step);
 
-      // 3. Dedup: check if this (campaignId, leadEmail) pair already has a campaign
+      // 3a. Lead ID conflict check: if this email already exists with a different lead_id, reject
+      if (body.leadId) {
+        const [conflict] = await db
+          .select({ leadId: instantlyCampaigns.leadId })
+          .from(instantlyCampaigns)
+          .where(
+            and(
+              eq(instantlyCampaigns.leadEmail, body.to),
+              isNotNull(instantlyCampaigns.leadId),
+              ne(instantlyCampaigns.leadId, body.leadId),
+            ),
+          )
+          .limit(1);
+
+        if (conflict) {
+          console.error(`[send] Lead ID conflict: email=${body.to} existing=${conflict.leadId} received=${body.leadId}`);
+          return res.status(409).json({
+            error: "Lead ID conflict",
+            details: `Email ${body.to} already exists with lead_id ${conflict.leadId}, received ${body.leadId}`,
+          });
+        }
+      }
+
+      // 3b. Dedup: check if this (campaignId, leadEmail) pair already has a campaign
       const existing = await findExistingCampaign(campaignId, body.to);
 
       let savedLead: { id: string } | undefined;

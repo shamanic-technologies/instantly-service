@@ -93,7 +93,7 @@ describe("POST /status", () => {
     expect(res.body.results).toHaveLength(1);
     const r = res.body.results[0];
     expect(r.email).toBe("john@acme.com");
-    expect(r.leadIds).toEqual(["lead-1"]); // from input only
+    expect(r.leadId).toBe("lead-1"); // from input
     expect(r.campaign).toEqual(emptyScoped);
     expect(r.brand).toEqual(emptyScoped);
     expect(r.global).toEqual({
@@ -118,7 +118,7 @@ describe("POST /status", () => {
   it("should return brand-scoped and campaign-scoped results separately", async () => {
     // Brand
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", leadIds: ["lead-1"], contacted: true, delivered: true, opened: false, replied: true, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
+      rows: [{ key: "john@acme.com", leadId: "lead-1", contacted: true, delivered: true, opened: false, replied: true, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
     });
     // Global
     mockExecute.mockResolvedValueOnce({
@@ -126,7 +126,7 @@ describe("POST /status", () => {
     });
     // Campaign
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", leadIds: ["lead-1"], contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
+      rows: [{ key: "john@acme.com", leadId: "lead-1", contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
     });
 
     const app = await createStatusApp();
@@ -164,7 +164,7 @@ describe("POST /status", () => {
   it("should handle batch with multiple items", async () => {
     // Brand
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", leadIds: ["lead-1"], contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
+      rows: [{ key: "john@acme.com", leadId: "lead-1", contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
     });
     // Global
     mockExecute.mockResolvedValueOnce({
@@ -185,10 +185,10 @@ describe("POST /status", () => {
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(2);
     expect(res.body.results[0].email).toBe("john@acme.com");
-    expect(res.body.results[0].leadIds).toEqual(["lead-1"]);
+    expect(res.body.results[0].leadId).toBe("lead-1");
     expect(res.body.results[0].brand.delivered).toBe(true);
     expect(res.body.results[1].email).toBe("jane@acme.com");
-    expect(res.body.results[1].leadIds).toEqual([]);
+    expect(res.body.results[1].leadId).toBeNull();
     expect(res.body.results[1].brand.contacted).toBe(false);
   });
 
@@ -222,7 +222,7 @@ describe("POST /status", () => {
   it("should return contacted=true even when deliveryStatus is still pending", async () => {
     // Brand — row exists with contacted=true (from TRUE AS "contacted")
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", leadIds: ["lead-1"], contacted: true, delivered: false, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null }],
+      rows: [{ key: "john@acme.com", leadId: "lead-1", contacted: true, delivered: false, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null }],
     });
     // Global
     mockExecute.mockResolvedValueOnce({
@@ -230,7 +230,7 @@ describe("POST /status", () => {
     });
     // Campaign
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", leadIds: ["lead-1"], contacted: true, delivered: false, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null }],
+      rows: [{ key: "john@acme.com", leadId: "lead-1", contacted: true, delivered: false, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null }],
     });
 
     const app = await createStatusApp();
@@ -249,13 +249,13 @@ describe("POST /status", () => {
   it("should return replyClassification from scoped query results", async () => {
     // Brand — has positive classification
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", leadIds: ["lead-1"], contacted: true, delivered: true, opened: false, replied: true, replyClassification: "positive", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
+      rows: [{ key: "john@acme.com", leadId: "lead-1", contacted: true, delivered: true, opened: false, replied: true, replyClassification: "positive", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
     });
     // Global
     mockExecute.mockResolvedValueOnce({ rows: [] });
     // Campaign — has negative classification
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", leadIds: ["lead-1"], contacted: true, delivered: true, opened: false, replied: true, replyClassification: "negative", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
+      rows: [{ key: "john@acme.com", leadId: "lead-1", contacted: true, delivered: true, opened: false, replied: true, replyClassification: "negative", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
     });
 
     const app = await createStatusApp();
@@ -270,7 +270,7 @@ describe("POST /status", () => {
   it("should return replyClassification as null when no classification exists", async () => {
     // Brand — no classification
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", leadIds: ["lead-1"], contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
+      rows: [{ key: "john@acme.com", leadId: "lead-1", contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
     });
     // Global
     mockExecute.mockResolvedValueOnce({ rows: [] });
@@ -298,7 +298,7 @@ describe("POST /status", () => {
   it("should return opened=true when email_opened event exists", async () => {
     // Brand — opened=true
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", leadIds: ["lead-1"], contacted: true, delivered: true, opened: true, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
+      rows: [{ key: "john@acme.com", leadId: "lead-1", contacted: true, delivered: true, opened: true, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
     });
     // Global
     mockExecute.mockResolvedValueOnce({
@@ -306,7 +306,7 @@ describe("POST /status", () => {
     });
     // Campaign — not opened
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", leadIds: ["lead-1"], contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
+      rows: [{ key: "john@acme.com", leadId: "lead-1", contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
     });
 
     const app = await createStatusApp();
@@ -323,7 +323,7 @@ describe("POST /status", () => {
   it("should return opened=false when no email_opened event exists", async () => {
     // Brand — no opened event
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", leadIds: ["lead-1"], contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
+      rows: [{ key: "john@acme.com", leadId: "lead-1", contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-22T10:00:00.000Z" }],
     });
     // Global
     mockExecute.mockResolvedValueOnce({ rows: [] });
@@ -341,7 +341,7 @@ describe("POST /status", () => {
   it("should accept items without leadId (email-only)", async () => {
     // Brand
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "sarah@test.com", leadIds: ["db-lead-1", "db-lead-2"], contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" }],
+      rows: [{ key: "sarah@test.com", leadId: "db-lead-1", contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" }],
     });
     // Global
     mockExecute.mockResolvedValueOnce({ rows: [] });
@@ -354,7 +354,7 @@ describe("POST /status", () => {
     expect(res.status).toBe(200);
     const r = res.body.results[0];
     expect(r.email).toBe("sarah@test.com");
-    expect(r.leadIds).toEqual(["db-lead-1", "db-lead-2"]);
+    expect(r.leadId).toBe("db-lead-1");
     expect(r.brand.contacted).toBe(true);
     expect(r.brand.delivered).toBe(true);
     expect(r.campaign).toBeNull();
