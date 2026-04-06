@@ -761,7 +761,7 @@ registry.registerPath({
 // ─── Status ──────────────────────────────────────────────────────────────────
 
 const StatusItemSchema = z.object({
-  leadId: z.string().describe("Lead-service lead ID (human)"),
+  leadId: z.string().optional().describe("Lead-service lead ID (optional)"),
   email: z.string().describe("Email address"),
 });
 
@@ -782,27 +782,15 @@ export type StatusRequest = z.infer<typeof StatusRequestSchema>;
 
 const ReplyClassificationSchema = z.enum(["positive", "negative", "neutral"]);
 
-const LeadStatusSchema = z.object({
+const ScopedStatusFieldsSchema = z.object({
   contacted: z.boolean(),
   delivered: z.boolean(),
   opened: z.boolean(),
   replied: z.boolean(),
   replyClassification: ReplyClassificationSchema.nullable().describe("Reply classification based on Instantly interest status. null = no reply"),
-  lastDeliveredAt: z.string().nullable(),
-});
-
-const ScopedEmailStatusSchema = z.object({
-  contacted: z.boolean(),
-  delivered: z.boolean(),
-  opened: z.boolean(),
   bounced: z.boolean(),
   unsubscribed: z.boolean(),
   lastDeliveredAt: z.string().nullable(),
-});
-
-const ScopedStatusSchema = z.object({
-  lead: LeadStatusSchema,
-  email: ScopedEmailStatusSchema,
 });
 
 const GlobalEmailStatusSchema = z.object({
@@ -815,10 +803,10 @@ const GlobalStatusSchema = z.object({
 });
 
 const StatusResultSchema = z.object({
-  leadId: z.string(),
   email: z.string(),
-  campaign: ScopedStatusSchema.nullable(),
-  brand: ScopedStatusSchema.nullable(),
+  leadIds: z.array(z.string()).describe("Lead IDs found in instantly_campaigns for this email"),
+  campaign: ScopedStatusFieldsSchema.nullable(),
+  brand: ScopedStatusFieldsSchema.nullable(),
   global: GlobalStatusSchema,
 });
 
@@ -834,8 +822,9 @@ registry.registerPath({
   summary: "Batch delivery status check for leads/emails",
   description:
     "Returns campaign-scoped, brand-scoped, and global delivery status " +
-    "for each lead/email pair. Campaign scope is null if campaignId omitted; " +
-    "brand scope is null if x-brand-id header omitted; global aggregates across everything.",
+    "for each email. Campaign scope is null if campaignId omitted; " +
+    "brand scope is null if x-brand-id header omitted; global aggregates across everything. " +
+    "Each result includes leadIds found in the database for that email.",
   request: {
     headers: TrackingHeadersSchema,
     body: {
