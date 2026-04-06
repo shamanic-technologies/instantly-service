@@ -696,174 +696,112 @@
             "items": {
               "type": "object",
               "properties": {
-                "leadId": {
-                  "type": "string"
-                },
                 "email": {
                   "type": "string"
+                },
+                "leadIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Lead IDs found in instantly_campaigns for this email"
                 },
                 "campaign": {
                   "type": "object",
                   "nullable": true,
                   "properties": {
-                    "lead": {
-                      "type": "object",
-                      "properties": {
-                        "contacted": {
-                          "type": "boolean"
-                        },
-                        "delivered": {
-                          "type": "boolean"
-                        },
-                        "opened": {
-                          "type": "boolean"
-                        },
-                        "replied": {
-                          "type": "boolean"
-                        },
-                        "replyClassification": {
-                          "type": "string",
-                          "nullable": true,
-                          "enum": [
-                            "positive",
-                            "negative",
-                            "neutral",
-                            null
-                          ],
-                          "description": "Reply classification based on Instantly interest status. null = no reply"
-                        },
-                        "lastDeliveredAt": {
-                          "type": "string",
-                          "nullable": true
-                        }
-                      },
-                      "required": [
-                        "contacted",
-                        "delivered",
-                        "opened",
-                        "replied",
-                        "replyClassification",
-                        "lastDeliveredAt"
-                      ]
+                    "contacted": {
+                      "type": "boolean"
                     },
-                    "email": {
-                      "type": "object",
-                      "properties": {
-                        "contacted": {
-                          "type": "boolean"
-                        },
-                        "delivered": {
-                          "type": "boolean"
-                        },
-                        "opened": {
-                          "type": "boolean"
-                        },
-                        "bounced": {
-                          "type": "boolean"
-                        },
-                        "unsubscribed": {
-                          "type": "boolean"
-                        },
-                        "lastDeliveredAt": {
-                          "type": "string",
-                          "nullable": true
-                        }
-                      },
-                      "required": [
-                        "contacted",
-                        "delivered",
-                        "opened",
-                        "bounced",
-                        "unsubscribed",
-                        "lastDeliveredAt"
-                      ]
+                    "delivered": {
+                      "type": "boolean"
+                    },
+                    "opened": {
+                      "type": "boolean"
+                    },
+                    "replied": {
+                      "type": "boolean"
+                    },
+                    "replyClassification": {
+                      "type": "string",
+                      "nullable": true,
+                      "enum": [
+                        "positive",
+                        "negative",
+                        "neutral",
+                        null
+                      ],
+                      "description": "Reply classification based on Instantly interest status. null = no reply"
+                    },
+                    "bounced": {
+                      "type": "boolean"
+                    },
+                    "unsubscribed": {
+                      "type": "boolean"
+                    },
+                    "lastDeliveredAt": {
+                      "type": "string",
+                      "nullable": true
                     }
                   },
                   "required": [
-                    "lead",
-                    "email"
+                    "contacted",
+                    "delivered",
+                    "opened",
+                    "replied",
+                    "replyClassification",
+                    "bounced",
+                    "unsubscribed",
+                    "lastDeliveredAt"
                   ]
                 },
                 "brand": {
                   "type": "object",
                   "nullable": true,
                   "properties": {
-                    "lead": {
-                      "type": "object",
-                      "properties": {
-                        "contacted": {
-                          "type": "boolean"
-                        },
-                        "delivered": {
-                          "type": "boolean"
-                        },
-                        "opened": {
-                          "type": "boolean"
-                        },
-                        "replied": {
-                          "type": "boolean"
-                        },
-                        "replyClassification": {
-                          "type": "string",
-                          "nullable": true,
-                          "enum": [
-                            "positive",
-                            "negative",
-                            "neutral",
-                            null
-                          ],
-                          "description": "Reply classification based on Instantly interest status. null = no reply"
-                        },
-                        "lastDeliveredAt": {
-                          "type": "string",
-                          "nullable": true
-                        }
-                      },
-                      "required": [
-                        "contacted",
-                        "delivered",
-                        "opened",
-                        "replied",
-                        "replyClassification",
-                        "lastDeliveredAt"
-                      ]
+                    "contacted": {
+                      "type": "boolean"
                     },
-                    "email": {
-                      "type": "object",
-                      "properties": {
-                        "contacted": {
-                          "type": "boolean"
-                        },
-                        "delivered": {
-                          "type": "boolean"
-                        },
-                        "opened": {
-                          "type": "boolean"
-                        },
-                        "bounced": {
-                          "type": "boolean"
-                        },
-                        "unsubscribed": {
-                          "type": "boolean"
-                        },
-                        "lastDeliveredAt": {
-                          "type": "string",
-                          "nullable": true
-                        }
-                      },
-                      "required": [
-                        "contacted",
-                        "delivered",
-                        "opened",
-                        "bounced",
-                        "unsubscribed",
-                        "lastDeliveredAt"
-                      ]
+                    "delivered": {
+                      "type": "boolean"
+                    },
+                    "opened": {
+                      "type": "boolean"
+                    },
+                    "replied": {
+                      "type": "boolean"
+                    },
+                    "replyClassification": {
+                      "type": "string",
+                      "nullable": true,
+                      "enum": [
+                        "positive",
+                        "negative",
+                        "neutral",
+                        null
+                      ],
+                      "description": "Reply classification based on Instantly interest status. null = no reply"
+                    },
+                    "bounced": {
+                      "type": "boolean"
+                    },
+                    "unsubscribed": {
+                      "type": "boolean"
+                    },
+                    "lastDeliveredAt": {
+                      "type": "string",
+                      "nullable": true
                     }
                   },
                   "required": [
-                    "lead",
-                    "email"
+                    "contacted",
+                    "delivered",
+                    "opened",
+                    "replied",
+                    "replyClassification",
+                    "bounced",
+                    "unsubscribed",
+                    "lastDeliveredAt"
                   ]
                 },
                 "global": {
@@ -891,8 +829,8 @@
                 }
               },
               "required": [
-                "leadId",
                 "email",
+                "leadIds",
                 "campaign",
                 "brand",
                 "global"
@@ -918,7 +856,7 @@
               "properties": {
                 "leadId": {
                   "type": "string",
-                  "description": "Lead-service lead ID (human)"
+                  "description": "Lead-service lead ID (optional)"
                 },
                 "email": {
                   "type": "string",
@@ -926,7 +864,6 @@
                 }
               },
               "required": [
-                "leadId",
                 "email"
               ]
             },
@@ -2391,7 +2328,7 @@
     "/orgs/status": {
       "post": {
         "summary": "Batch delivery status check for leads/emails",
-        "description": "Returns campaign-scoped, brand-scoped, and global delivery status for each lead/email pair. Campaign scope is null if campaignId omitted; brand scope is null if x-brand-id header omitted; global aggregates across everything.",
+        "description": "Returns campaign-scoped, brand-scoped, and global delivery status for each email. Campaign scope is null if campaignId omitted; brand scope is null if x-brand-id header omitted; global aggregates across everything. Each result includes leadIds found in the database for that email.",
         "parameters": [
           {
             "schema": {
