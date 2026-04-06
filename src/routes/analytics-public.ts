@@ -26,11 +26,11 @@ const ZERO_STATS = {
 };
 
 /**
- * GET /stats/public
+ * GET /public/stats
  * Same as GET /stats but without identity headers (no org scoping).
  * Used by leaderboard / landing pages with no user context.
  */
-router.get("/stats/public", async (req: Request, res: Response) => {
+router.get("/stats", async (req: Request, res: Response) => {
   const parsed = StatsQuerySchema.safeParse(req.query);
   if (!parsed.success) {
     return res.status(400).json({
@@ -71,7 +71,7 @@ router.get("/stats/public", async (req: Request, res: Response) => {
     : sql`TRUE`;
 
   const filters = { runIds, brandId, campaignId, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy };
-  console.log(`[instantly-service] GET /stats/public inputs: ${JSON.stringify(filters)}`);
+  console.log(`[instantly-service] GET /public/stats inputs: ${JSON.stringify(filters)}`);
 
   // Handle groupBy requests
   if (groupBy) {
@@ -85,7 +85,7 @@ router.get("/stats/public", async (req: Request, res: Response) => {
         dynastyMap = buildSlugToDynastyMap(dynasties);
       }
       const groups = await queryGroupedStats(whereClause, groupBy, dynastyMap);
-      console.log(`[instantly-service] GET /stats/public grouped result: ${groups.length} groups, opens=[${groups.map((g) => `${g.key}:${g.stats.emailsOpened}`).join(",")}]`);
+      console.log(`[instantly-service] GET /public/stats grouped result: ${groups.length} groups, opens=[${groups.map((g) => `${g.key}:${g.stats.emailsOpened}`).join(",")}]`);
       return res.json({ groups });
     } catch (error: any) {
       const msg = error.cause?.message ?? error.message ?? String(error);
@@ -97,7 +97,7 @@ router.get("/stats/public", async (req: Request, res: Response) => {
   try {
     const { stats, recipients } = await queryStats(whereClause);
 
-    console.log(`[instantly-service] GET /stats/public result: emailsOpened=${stats.emailsOpened}, emailsSent=${stats.emailsSent}, recipients=${recipients}`);
+    console.log(`[instantly-service] GET /public/stats result: emailsOpened=${stats.emailsOpened}, emailsSent=${stats.emailsSent}, recipients=${recipients}`);
 
     let stepStats: { step: number; emailsSent: number; emailsOpened: number; emailsReplied: number; emailsBounced: number }[] = [];
     try {

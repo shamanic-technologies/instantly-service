@@ -51,7 +51,7 @@ vi.mock("../../src/lib/dynasty-client", () => ({
 
 process.env.INSTANTLY_SERVICE_API_KEY = "test-api-key";
 
-import { identityHeaders } from "../../src/middleware/identityHeaders";
+import { requireOrgId } from "../../src/middleware/requireOrgId";
 
 const identityHeadersObj = { "x-org-id": "test-org", "x-user-id": "test-user", "x-run-id": "test-run" };
 
@@ -59,7 +59,7 @@ async function createStatsApp() {
   const analyticsRouter = (await import("../../src/routes/analytics")).default;
   const app = express();
   app.use(express.json());
-  app.use(identityHeaders, analyticsRouter);
+  app.use(requireOrgId, analyticsRouter);
   return app;
 }
 

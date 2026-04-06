@@ -152,9 +152,6 @@ export const SequenceStepSchema = z.object({
 
 export const SendRequestSchema = z
   .object({
-    brandIds: z.array(z.string()).describe("Brand IDs associated with this campaign"),
-    workflowSlug: z.string().optional().describe("Workflow slug for stats grouping"),
-    campaignId: z.string(),
     leadId: z.string().optional().describe("External lead ID from lead-service"),
     to: z.string(),
     firstName: z.string().optional(),
@@ -188,8 +185,10 @@ const SendResponseSchema = z
 
 registry.registerPath({
   method: "post",
-  path: "/send",
+  path: "/orgs/send",
   summary: "Send email via Instantly campaign",
+  description:
+    "Brand IDs, campaign ID, and workflow slug are read from headers (x-brand-id, x-campaign-id, x-workflow-slug) — do NOT pass them in the body.",
   request: {
     headers: TrackingHeadersSchema,
     body: {
@@ -217,8 +216,6 @@ registry.registerPath({
 
 export const CreateCampaignRequestSchema = z
   .object({
-    brandIds: z.array(z.string()).describe("Brand IDs associated with this campaign"),
-    workflowSlug: z.string().optional().describe("Workflow slug for stats grouping"),
     name: z.string(),
     accountIds: z.array(z.string()).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
@@ -245,8 +242,10 @@ const CreateCampaignResponseSchema = z
 
 registry.registerPath({
   method: "post",
-  path: "/campaigns",
+  path: "/orgs/campaigns",
   summary: "Create a campaign",
+  description:
+    "Brand IDs and workflow slug are read from headers (x-brand-id, x-workflow-slug) — do NOT pass them in the body.",
   request: {
     headers: TrackingHeadersSchema,
     body: {
@@ -276,7 +275,7 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
-  path: "/campaigns/{campaignId}",
+  path: "/orgs/campaigns/{campaignId}",
   summary: "Get a campaign",
   request: {
     headers: TrackingHeadersSchema,
@@ -294,11 +293,10 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
-  path: "/campaigns/by-org/{orgId}",
-  summary: "List campaigns by organization",
+  path: "/orgs/campaigns",
+  summary: "List campaigns for the authenticated org",
   request: {
     headers: TrackingHeadersSchema,
-    params: z.object({ orgId: z.string() }),
   },
   responses: {
     200: { description: "Campaigns list" },
@@ -316,7 +314,7 @@ export type UpdateStatusRequest = z.infer<typeof UpdateStatusRequestSchema>;
 
 registry.registerPath({
   method: "patch",
-  path: "/campaigns/{campaignId}/status",
+  path: "/orgs/campaigns/{campaignId}/status",
   summary: "Update campaign status",
   request: {
     headers: TrackingHeadersSchema,
@@ -357,9 +355,9 @@ const CheckStatusResponseSchema = z
 
 registry.registerPath({
   method: "post",
-  path: "/campaigns/check-status",
+  path: "/internal/campaigns/check-status",
   summary: "Poll active campaigns for errors",
-  request: { headers: TrackingHeadersSchema },
+  request: {},
   description:
     "Checks all active campaigns against the Instantly API to detect error states. " +
     "For each errored campaign: updates DB status, cancels provisioned costs, fails the run, " +
@@ -405,7 +403,7 @@ const AddLeadsResponseSchema = z
 
 registry.registerPath({
   method: "post",
-  path: "/campaigns/{campaignId}/leads",
+  path: "/orgs/campaigns/{campaignId}/leads",
   summary: "Add leads to a campaign",
   request: {
     headers: TrackingHeadersSchema,
@@ -437,7 +435,7 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
-  path: "/campaigns/{campaignId}/leads",
+  path: "/orgs/campaigns/{campaignId}/leads",
   summary: "List campaign leads",
   request: {
     headers: TrackingHeadersSchema,
@@ -474,7 +472,7 @@ const DeleteLeadsResponseSchema = z
 
 registry.registerPath({
   method: "delete",
-  path: "/campaigns/{campaignId}/leads",
+  path: "/orgs/campaigns/{campaignId}/leads",
   summary: "Delete leads from a campaign",
   request: {
     headers: TrackingHeadersSchema,
@@ -570,7 +568,7 @@ const StatsResponseSchema = z
 
 registry.registerPath({
   method: "get",
-  path: "/stats",
+  path: "/orgs/stats",
   summary: "Get aggregated stats by filters",
   description:
     "Aggregates stats from webhook events across campaigns matching the provided filters. Filters passed as query params; runIds is comma-separated.",
@@ -597,10 +595,10 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
-  path: "/stats/public",
+  path: "/public/stats",
   summary: "Get aggregated stats (no identity headers required)",
   description:
-    "Same as GET /stats but without x-org-id / x-user-id / x-run-id requirements. " +
+    "Same as GET /orgs/stats but without x-org-id requirement. " +
     "Requires only X-API-Key. Used by leaderboard and landing pages with no user context.",
   request: {
     query: StatsQuerySchema,
@@ -649,7 +647,7 @@ const GroupedStatsResponseSchema = z
 
 registry.registerPath({
   method: "post",
-  path: "/stats/grouped",
+  path: "/orgs/stats/grouped",
   summary: "Get stats grouped by sets of run IDs",
   description:
     "Accepts named groups of run IDs and returns aggregated stats per group in a single call. Used by the leaderboard to fetch per-workflow stats.",
@@ -680,9 +678,9 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
-  path: "/accounts",
-  summary: "List email accounts",
-  request: { headers: TrackingHeadersSchema },
+  path: "/internal/accounts",
+  summary: "List all email accounts",
+  request: {},
   responses: {
     200: { description: "Accounts list" },
     401: { description: "Unauthorized" },
@@ -691,7 +689,7 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
-  path: "/accounts/sync",
+  path: "/orgs/accounts/sync",
   summary: "Sync accounts from Instantly",
   request: { headers: TrackingHeadersSchema },
   responses: {
@@ -727,7 +725,7 @@ const WarmupResponseSchema = z
 
 registry.registerPath({
   method: "post",
-  path: "/accounts/{email}/warmup",
+  path: "/orgs/accounts/{email}/warmup",
   summary: "Enable or disable warmup for an account",
   request: {
     headers: TrackingHeadersSchema,
@@ -751,7 +749,7 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
-  path: "/accounts/warmup-analytics",
+  path: "/orgs/accounts/warmup-analytics",
   summary: "Get warmup analytics",
   request: { headers: TrackingHeadersSchema },
   responses: {
@@ -832,7 +830,7 @@ const StatusResponseSchema = z
 
 registry.registerPath({
   method: "post",
-  path: "/status",
+  path: "/orgs/status",
   summary: "Batch delivery status check for leads/emails",
   description:
     "Returns campaign-scoped, brand-scoped, and global delivery status " +

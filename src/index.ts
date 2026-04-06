@@ -16,7 +16,7 @@ import webhooksRoutes from "./routes/webhooks";
 import sendRoutes from "./routes/send";
 import statusRoutes from "./routes/status";
 import { serviceAuth } from "./middleware/serviceAuth";
-import { identityHeaders } from "./middleware/identityHeaders";
+import { requireOrgId } from "./middleware/requireOrgId";
 
 const app = express();
 
@@ -35,20 +35,24 @@ app.get("/openapi.json", (_req, res) => {
   }
 });
 
-// Public routes (no auth)
+// ─── Public routes (no auth) ────────────────────────────────────────────────
 app.use(healthRoutes);
 app.use("/webhooks", webhooksRoutes);
 
-// Semi-public routes (require X-API-Key only, no identity headers)
-app.use("/", serviceAuth, analyticsPublicRoutes);
+// ─── Protected public routes (x-api-key only) ──────────────────────────────
+app.use("/public", serviceAuth, analyticsPublicRoutes);
 
-// Protected routes (require X-API-Key + x-org-id + x-user-id + x-run-id)
-app.use("/send", serviceAuth, identityHeaders, sendRoutes);
-app.use("/status", serviceAuth, identityHeaders, statusRoutes);
-app.use("/campaigns", serviceAuth, identityHeaders, campaignsRoutes);
-app.use("/campaigns", serviceAuth, identityHeaders, leadsRoutes);
-app.use("/accounts", serviceAuth, identityHeaders, accountsRoutes);
-app.use("/", serviceAuth, identityHeaders, analyticsRoutes);
+// ─── Internal routes (x-api-key only, no org context) ───────────────────────
+app.use("/internal/campaigns", serviceAuth, campaignsRoutes);  // check-status
+app.use("/internal/accounts", serviceAuth, accountsRoutes);    // list all accounts
+
+// ─── Org-scoped routes (x-api-key + x-org-id required, rest optional) ───────
+app.use("/orgs/send", serviceAuth, requireOrgId, sendRoutes);
+app.use("/orgs/status", serviceAuth, requireOrgId, statusRoutes);
+app.use("/orgs/campaigns", serviceAuth, requireOrgId, campaignsRoutes);
+app.use("/orgs/campaigns", serviceAuth, requireOrgId, leadsRoutes);
+app.use("/orgs/accounts", serviceAuth, requireOrgId, accountsRoutes);
+app.use("/orgs", serviceAuth, requireOrgId, analyticsRoutes);
 
 const PORT = process.env.PORT || 3011;
 

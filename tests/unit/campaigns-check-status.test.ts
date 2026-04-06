@@ -90,7 +90,7 @@ vi.mock("../../src/lib/email-client", () => ({
   sendEmail: (...args: unknown[]) => mockSendEmail(...args),
 }));
 
-import { identityHeaders } from "../../src/middleware/identityHeaders";
+import { requireOrgId } from "../../src/middleware/requireOrgId";
 
 const identityHeadersObj = { "x-org-id": "test-org", "x-user-id": "test-user", "x-run-id": "test-run" };
 
@@ -98,7 +98,10 @@ async function createCampaignsApp() {
   const campaignsRouter = (await import("../../src/routes/campaigns")).default;
   const app = express();
   app.use(express.json());
-  app.use("/campaigns", identityHeaders, campaignsRouter);
+  // Internal routes (check-status) mounted without org middleware
+  app.use("/internal/campaigns", campaignsRouter);
+  // Org-scoped routes mounted with requireOrgId
+  app.use("/campaigns", requireOrgId, campaignsRouter);
   return app;
 }
 
@@ -117,7 +120,7 @@ describe("POST /campaigns/check-status", () => {
     mockDbWhere.mockResolvedValueOnce([]);
 
     const app = await createCampaignsApp();
-    const res = await request(app).post("/campaigns/check-status").set(identityHeadersObj);
+    const res = await request(app).post("/internal/campaigns/check-status");
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ checked: 0, errors: [] });
@@ -161,7 +164,7 @@ describe("POST /campaigns/check-status", () => {
     });
 
     const app = await createCampaignsApp();
-    const res = await request(app).post("/campaigns/check-status").set(identityHeadersObj);
+    const res = await request(app).post("/internal/campaigns/check-status");
 
     expect(res.status).toBe(200);
     expect(res.body.checked).toBe(1);
@@ -193,7 +196,7 @@ describe("POST /campaigns/check-status", () => {
     });
 
     const app = await createCampaignsApp();
-    const res = await request(app).post("/campaigns/check-status").set(identityHeadersObj);
+    const res = await request(app).post("/internal/campaigns/check-status");
 
     expect(res.status).toBe(200);
     expect(res.body.checked).toBe(1);
@@ -232,7 +235,7 @@ describe("POST /campaigns/check-status", () => {
     });
 
     const app = await createCampaignsApp();
-    const res = await request(app).post("/campaigns/check-status").set(identityHeadersObj);
+    const res = await request(app).post("/internal/campaigns/check-status");
 
     expect(res.status).toBe(200);
     expect(res.body.checked).toBe(2);
@@ -257,8 +260,8 @@ describe("POST /campaigns (credit authorization)", () => {
     const app = await createCampaignsApp();
     const res = await request(app)
       .post("/campaigns")
-      .set(identityHeadersObj)
-      .send({ name: "Test Campaign", brandIds: ["brand-1"] });
+      .set({ ...identityHeadersObj, "x-brand-id": "brand-1" })
+      .send({ name: "Test Campaign" });
 
     expect(res.status).toBe(402);
     expect(res.body.error).toBe("Insufficient credits");
@@ -274,8 +277,8 @@ describe("POST /campaigns (credit authorization)", () => {
     // Will fail on DB insert (mock not set up for full flow), but we only care that billing was skipped
     await request(app)
       .post("/campaigns")
-      .set(identityHeadersObj)
-      .send({ name: "Test Campaign", brandIds: ["brand-1"] });
+      .set({ ...identityHeadersObj, "x-brand-id": "brand-1" })
+      .send({ name: "Test Campaign" });
 
     expect(mockAuthorizeCreditSpend).not.toHaveBeenCalled();
   });

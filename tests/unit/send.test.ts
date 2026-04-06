@@ -78,7 +78,7 @@ vi.mock("../../src/lib/billing-client", () => ({
 }));
 
 import { buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/routes/send";
-import { identityHeaders } from "../../src/middleware/identityHeaders";
+import { requireOrgId } from "../../src/middleware/requireOrgId";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
 import express from "express";
@@ -87,11 +87,17 @@ async function createSendApp() {
   const sendRouter = (await import("../../src/routes/send")).default;
   const app = express();
   app.use(express.json());
-  app.use("/send", identityHeaders, sendRouter);
+  app.use("/send", requireOrgId, sendRouter);
   return app;
 }
 
-const identityHeadersObj = { "x-org-id": "org-1", "x-user-id": "user-1", "x-run-id": "run-1" };
+const identityHeadersObj = {
+  "x-org-id": "org-1",
+  "x-user-id": "user-1",
+  "x-run-id": "run-1",
+  "x-campaign-id": "camp-1",
+  "x-brand-id": "brand-1",
+};
 
 const validBody = {
   to: "test@example.com",
@@ -104,9 +110,7 @@ const validBody = {
     { step: 2, bodyHtml: "<p>Follow up</p>", daysSinceLastStep: 3 },
     { step: 3, bodyHtml: "<p>Last chance</p>", daysSinceLastStep: 7 },
   ],
-  campaignId: "camp-1",
   leadId: "lead-1",
-  brandIds: ["brand-1"],
 };
 
 function acct(overrides: Partial<Account> = {}): Account {
@@ -637,36 +641,7 @@ describe("POST /send", () => {
     expect(res.body.stepRuns[2]).toMatchObject({ step: 3, runId: "step-run-3" });
   });
 
-  it("should use x-brand-id and x-workflow-slug headers as fallback when body fields are empty", async () => {
-    mockNewCampaignFlow();
-    const app = await createSendApp();
-
-    const bodyWithoutBrand = {
-      ...validBody,
-      brandIds: [],
-      workflowSlug: undefined,
-    };
-
-    await request(app)
-      .post("/send")
-      .set({
-        ...identityHeadersObj,
-        "x-brand-id": "header-brand",
-        "x-workflow-slug": "header-workflow",
-        "x-campaign-id": "header-camp",
-      })
-      .send(bodyWithoutBrand);
-
-    // Campaign insert should use header fallback values
-    const campaignInsert = mockDbInsertValues.mock.calls.find(
-      ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,
-    );
-    expect(campaignInsert).toBeDefined();
-    expect(campaignInsert![0].brandIds).toEqual(["header-brand"]);
-    expect(campaignInsert![0].workflowSlug).toBe("header-workflow");
-  });
-
-  it("should prefer body values over tracking headers", async () => {
+  it("should read brandIds and workflowSlug from headers only", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
@@ -679,23 +654,18 @@ describe("POST /send", () => {
       })
       .send(validBody);
 
-    // Campaign insert should use body values (brand-1 from validBody)
+    // Campaign insert should use header values
     const campaignInsert = mockDbInsertValues.mock.calls.find(
       ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,
     );
     expect(campaignInsert).toBeDefined();
-    expect(campaignInsert![0].brandIds).toEqual(["brand-1"]);
+    expect(campaignInsert![0].brandIds).toEqual(["header-brand"]);
+    expect(campaignInsert![0].workflowSlug).toBe("header-workflow");
   });
 
-  it("should parse multi-brand CSV header into brandIds array when body is empty", async () => {
+  it("should parse multi-brand CSV header into brandIds array", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
-
-    const bodyWithoutBrands = {
-      ...validBody,
-      brandIds: [],
-      workflowSlug: undefined,
-    };
 
     await request(app)
       .post("/send")
@@ -703,7 +673,7 @@ describe("POST /send", () => {
         ...identityHeadersObj,
         "x-brand-id": "brand-a,brand-b,brand-c",
       })
-      .send(bodyWithoutBrands);
+      .send(validBody);
 
     const campaignInsert = mockDbInsertValues.mock.calls.find(
       ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,

@@ -67,7 +67,7 @@ function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
   };
 }
 
-describe("GET /stats/public", () => {
+describe("GET /stats", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockResolveWorkflow.mockResolvedValue([]);
@@ -89,7 +89,7 @@ describe("GET /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    const response = await request(app).get("/stats/public");
+    const response = await request(app).get("/stats");
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsContacted).toBe(110);
@@ -106,7 +106,7 @@ describe("GET /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    await request(app).get("/stats/public").query({ runIds: "run-1" });
+    await request(app).get("/stats").query({ runIds: "run-1" });
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
@@ -125,7 +125,7 @@ describe("GET /stats/public", () => {
     const app = await createPublicStatsApp();
 
     const response = await request(app)
-      .get("/stats/public")
+      .get("/stats")
       .query({ runIds: "run-1", brandId: "brand-1", campaignId: "camp-1" });
 
     expect(response.status).toBe(200);
@@ -145,7 +145,7 @@ describe("GET /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    await request(app).get("/stats/public");
+    await request(app).get("/stats");
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
@@ -168,7 +168,7 @@ describe("GET /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    const response = await request(app).get("/stats/public");
+    const response = await request(app).get("/stats");
 
     expect(response.status).toBe(200);
     expect(response.body.stepStats).toHaveLength(2);
@@ -183,7 +183,7 @@ describe("GET /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    await request(app).get("/stats/public");
+    await request(app).get("/stats");
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
@@ -196,7 +196,7 @@ describe("GET /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    const response = await request(app).get("/stats/public");
+    const response = await request(app).get("/stats");
 
     expect(response.status).toBe(500);
     expect(response.body.error).toBe("Failed to aggregate stats");
@@ -212,7 +212,7 @@ describe("GET /stats/public", () => {
 
     const app = await createPublicStatsApp();
 
-    const response = await request(app).get("/stats/public");
+    const response = await request(app).get("/stats");
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(50);
@@ -231,7 +231,7 @@ describe("GET /stats/public", () => {
     const app = await createPublicStatsApp();
 
     const response = await request(app)
-      .get("/stats/public")
+      .get("/stats")
       .query({ workflowSlugs: "cold-email-v1,cold-email-v2" });
 
     expect(response.status).toBe(200);
@@ -251,7 +251,7 @@ describe("GET /stats/public", () => {
     const app = await createPublicStatsApp();
 
     const response = await request(app)
-      .get("/stats/public")
+      .get("/stats")
       .query({ featureSlugs: "feat-a,feat-b" });
 
     expect(response.status).toBe(200);
@@ -273,7 +273,7 @@ describe("GET /stats/public", () => {
     const app = await createPublicStatsApp();
 
     const response = await request(app)
-      .get("/stats/public")
+      .get("/stats")
       .query({ workflowDynastySlug: "cold-email" });
 
     expect(response.status).toBe(200);
@@ -289,7 +289,7 @@ describe("GET /stats/public", () => {
     const app = await createPublicStatsApp();
 
     const response = await request(app)
-      .get("/stats/public")
+      .get("/stats")
       .query({ workflowDynastySlug: "nonexistent-dynasty" });
 
     expect(response.status).toBe(200);
@@ -312,7 +312,7 @@ describe("GET /stats/public", () => {
     const app = await createPublicStatsApp();
 
     const response = await request(app)
-      .get("/stats/public")
+      .get("/stats")
       .query({ featureDynastySlug: "feat-alpha" });
 
     expect(response.status).toBe(200);
@@ -328,7 +328,7 @@ describe("GET /stats/public", () => {
     const app = await createPublicStatsApp();
 
     const response = await request(app)
-      .get("/stats/public")
+      .get("/stats")
       .query({ featureDynastySlug: "nonexistent" });
 
     expect(response.status).toBe(200);
@@ -359,7 +359,7 @@ describe("GET /stats/public", () => {
     const app = await createPublicStatsApp();
 
     const response = await request(app)
-      .get("/stats/public")
+      .get("/stats")
       .query({ groupBy: "workflowDynastySlug" });
 
     expect(response.status).toBe(200);
@@ -391,7 +391,7 @@ describe("GET /stats/public", () => {
     const app = await createPublicStatsApp();
 
     const response = await request(app)
-      .get("/stats/public")
+      .get("/stats")
       .query({ groupBy: "featureDynastySlug" });
 
     expect(response.status).toBe(200);
@@ -423,7 +423,7 @@ describe("GET /stats/public", () => {
     const app = await createPublicStatsApp();
 
     const response = await request(app)
-      .get("/stats/public")
+      .get("/stats")
       .query({ groupBy: "workflowDynastySlug" });
 
     expect(response.status).toBe(200);

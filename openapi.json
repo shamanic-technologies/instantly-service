@@ -154,20 +154,6 @@
       "SendRequest": {
         "type": "object",
         "properties": {
-          "brandIds": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Brand IDs associated with this campaign"
-          },
-          "workflowSlug": {
-            "type": "string",
-            "description": "Workflow slug for stats grouping"
-          },
-          "campaignId": {
-            "type": "string"
-          },
           "leadId": {
             "type": "string",
             "description": "External lead ID from lead-service"
@@ -225,8 +211,6 @@
           }
         },
         "required": [
-          "brandIds",
-          "campaignId",
           "to",
           "subject",
           "sequence"
@@ -273,17 +257,6 @@
       "CreateCampaignRequest": {
         "type": "object",
         "properties": {
-          "brandIds": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Brand IDs associated with this campaign"
-          },
-          "workflowSlug": {
-            "type": "string",
-            "description": "Workflow slug for stats grouping"
-          },
           "name": {
             "type": "string"
           },
@@ -301,7 +274,6 @@
           }
         },
         "required": [
-          "brandIds",
           "name"
         ]
       },
@@ -1078,9 +1050,10 @@
         }
       }
     },
-    "/send": {
+    "/orgs/send": {
       "post": {
         "summary": "Send email via Instantly campaign",
+        "description": "Brand IDs, campaign ID, and workflow slug are read from headers (x-brand-id, x-campaign-id, x-workflow-slug) — do NOT pass them in the body.",
         "parameters": [
           {
             "schema": {
@@ -1169,9 +1142,10 @@
         }
       }
     },
-    "/campaigns": {
+    "/orgs/campaigns": {
       "post": {
         "summary": "Create a campaign",
+        "description": "Brand IDs and workflow slug are read from headers (x-brand-id, x-workflow-slug) — do NOT pass them in the body.",
         "parameters": [
           {
             "schema": {
@@ -1258,9 +1232,62 @@
             }
           }
         }
+      },
+      "get": {
+        "summary": "List campaigns for the authenticated org",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Campaigns list"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
       }
     },
-    "/campaigns/{campaignId}": {
+    "/orgs/campaigns/{campaignId}": {
       "get": {
         "summary": "Get a campaign",
         "parameters": [
@@ -1333,70 +1360,7 @@
         }
       }
     },
-    "/campaigns/by-org/{orgId}": {
-      "get": {
-        "summary": "List campaigns by organization",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "orgId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
-            "name": "x-campaign-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
-            },
-            "required": false,
-            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
-            "name": "x-brand-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
-            "name": "x-workflow-slug",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Feature slug — propagated through the full call chain for tracking"
-            },
-            "required": false,
-            "description": "Feature slug — propagated through the full call chain for tracking",
-            "name": "x-feature-slug",
-            "in": "header"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Campaigns list"
-          },
-          "401": {
-            "description": "Unauthorized"
-          }
-        }
-      }
-    },
-    "/campaigns/{campaignId}/status": {
+    "/orgs/campaigns/{campaignId}/status": {
       "patch": {
         "summary": "Update campaign status",
         "parameters": [
@@ -1488,52 +1452,10 @@
         }
       }
     },
-    "/campaigns/check-status": {
+    "/internal/campaigns/check-status": {
       "post": {
         "summary": "Poll active campaigns for errors",
         "description": "Checks all active campaigns against the Instantly API to detect error states. For each errored campaign: updates DB status, cancels provisioned costs, fails the run, and sends an admin notification.",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
-            "name": "x-campaign-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
-            },
-            "required": false,
-            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
-            "name": "x-brand-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
-            "name": "x-workflow-slug",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Feature slug — propagated through the full call chain for tracking"
-            },
-            "required": false,
-            "description": "Feature slug — propagated through the full call chain for tracking",
-            "name": "x-feature-slug",
-            "in": "header"
-          }
-        ],
         "responses": {
           "200": {
             "description": "Status check complete",
@@ -1561,7 +1483,7 @@
         }
       }
     },
-    "/campaigns/{campaignId}/leads": {
+    "/orgs/campaigns/{campaignId}/leads": {
       "post": {
         "summary": "Add leads to a campaign",
         "parameters": [
@@ -1854,7 +1776,7 @@
         }
       }
     },
-    "/stats": {
+    "/orgs/stats": {
       "get": {
         "summary": "Get aggregated stats by filters",
         "description": "Aggregates stats from webhook events across campaigns matching the provided filters. Filters passed as query params; runIds is comma-separated.",
@@ -2024,10 +1946,10 @@
         }
       }
     },
-    "/stats/public": {
+    "/public/stats": {
       "get": {
         "summary": "Get aggregated stats (no identity headers required)",
-        "description": "Same as GET /stats but without x-org-id / x-user-id / x-run-id requirements. Requires only X-API-Key. Used by leaderboard and landing pages with no user context.",
+        "description": "Same as GET /orgs/stats but without x-org-id requirement. Requires only X-API-Key. Used by leaderboard and landing pages with no user context.",
         "parameters": [
           {
             "schema": {
@@ -2154,7 +2076,7 @@
         }
       }
     },
-    "/stats/grouped": {
+    "/orgs/stats/grouped": {
       "post": {
         "summary": "Get stats grouped by sets of run IDs",
         "description": "Accepts named groups of run IDs and returns aggregated stats per group in a single call. Used by the leaderboard to fetch per-workflow stats.",
@@ -2246,51 +2168,9 @@
         }
       }
     },
-    "/accounts": {
+    "/internal/accounts": {
       "get": {
-        "summary": "List email accounts",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
-            "name": "x-campaign-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
-            },
-            "required": false,
-            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
-            "name": "x-brand-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
-            "name": "x-workflow-slug",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Feature slug — propagated through the full call chain for tracking"
-            },
-            "required": false,
-            "description": "Feature slug — propagated through the full call chain for tracking",
-            "name": "x-feature-slug",
-            "in": "header"
-          }
-        ],
+        "summary": "List all email accounts",
         "responses": {
           "200": {
             "description": "Accounts list"
@@ -2301,7 +2181,7 @@
         }
       }
     },
-    "/accounts/sync": {
+    "/orgs/accounts/sync": {
       "post": {
         "summary": "Sync accounts from Instantly",
         "parameters": [
@@ -2363,7 +2243,7 @@
         }
       }
     },
-    "/accounts/{email}/warmup": {
+    "/orgs/accounts/{email}/warmup": {
       "post": {
         "summary": "Enable or disable warmup for an account",
         "parameters": [
@@ -2452,7 +2332,7 @@
         }
       }
     },
-    "/accounts/warmup-analytics": {
+    "/orgs/accounts/warmup-analytics": {
       "get": {
         "summary": "Get warmup analytics",
         "parameters": [
@@ -2507,7 +2387,7 @@
         }
       }
     },
-    "/status": {
+    "/orgs/status": {
       "post": {
         "summary": "Batch delivery status check for leads/emails",
         "description": "Returns campaign-scoped, brand-scoped, and global delivery status for each lead/email pair. Campaign filters by campaignId (null if omitted); brand filters by x-brand-id header; global aggregates across everything.",
