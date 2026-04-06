@@ -57,14 +57,21 @@ describe("POST /status", () => {
     expect(res.status).toBe(400);
   });
 
-  it("should return 400 when x-brand-id header is missing", async () => {
+  it("should return brand as null when x-brand-id header is missing", async () => {
+    // global (1) + campaign lead (1) + campaign email (1) = 3 queries (no brand)
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // campaign lead
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // campaign email
+
     const app = await createStatusApp();
     const res = await request(app).post("/").send({
       campaignId: "camp-1",
       items: [{ leadId: "lead-1", email: "john@acme.com" }],
     });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("x-brand-id header is required");
+    expect(res.status).toBe(200);
+    expect(res.body.results[0].brand).toBeNull();
+    expect(res.body.results[0].campaign).toBeDefined();
+    expect(res.body.results[0].global).toBeDefined();
   });
 
   it("should return 400 when items is empty", async () => {
@@ -206,20 +213,31 @@ describe("POST /status", () => {
     expect(res.body.results[1].brand.lead.contacted).toBe(false);
   });
 
-  it("should execute 5 queries with campaignId and 3 without", async () => {
+  it("should execute 5 queries with brandId+campaignId, 3 with brandId only, 1 with neither", async () => {
     mockEmptyResults();
     const app = await createStatusApp();
 
+    // brandId + campaignId = 5 queries (brand lead, brand email, global, camp lead, camp email)
     await postStatus(app).send(validBody);
     expect(mockExecute).toHaveBeenCalledTimes(5);
 
     vi.clearAllMocks();
     mockEmptyResultsNoCampaign();
 
+    // brandId, no campaignId = 3 queries (brand lead, brand email, global)
     await postStatus(app).send({
       items: [{ leadId: "lead-1", email: "a@test.com" }],
     });
     expect(mockExecute).toHaveBeenCalledTimes(3);
+
+    vi.clearAllMocks();
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global only
+
+    // no brandId, no campaignId = 1 query (global)
+    await request(app).post("/").send({
+      items: [{ leadId: "lead-1", email: "a@test.com" }],
+    });
+    expect(mockExecute).toHaveBeenCalledTimes(1);
   });
 
   it("should return contacted=true even when deliveryStatus is still pending", async () => {

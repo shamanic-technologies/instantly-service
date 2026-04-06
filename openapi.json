@@ -786,6 +786,7 @@
                 },
                 "brand": {
                   "type": "object",
+                  "nullable": true,
                   "properties": {
                     "lead": {
                       "type": "object",
@@ -2390,7 +2391,7 @@
     "/orgs/status": {
       "post": {
         "summary": "Batch delivery status check for leads/emails",
-        "description": "Returns campaign-scoped, brand-scoped, and global delivery status for each lead/email pair. Campaign filters by campaignId (null if omitted); brand filters by x-brand-id header; global aggregates across everything.",
+        "description": "Returns campaign-scoped, brand-scoped, and global delivery status for each lead/email pair. Campaign scope is null if campaignId omitted; brand scope is null if x-brand-id header omitted; global aggregates across everything.",
         "parameters": [
           {
             "schema": {
@@ -2405,10 +2406,10 @@
           {
             "schema": {
               "type": "string",
-              "description": "Brand ID to scope brand-level results (required for this endpoint)"
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
             },
-            "required": true,
-            "description": "Brand ID to scope brand-level results (required for this endpoint)",
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
             "name": "x-brand-id",
             "in": "header"
           },
