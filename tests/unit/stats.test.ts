@@ -662,6 +662,39 @@ describe("GET /stats", () => {
     expect(mockExecute).not.toHaveBeenCalled();
   });
 
+  // ─── groupBy: brandId (lateral unnest) ──────────────────────────────────────
+
+  it("should use CROSS JOIN LATERAL unnest for groupBy brandId instead of inline unnest in WHERE", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { groupKey: "brand-1", emailsSent: 10, emailsDelivered: 10, emailsOpened: 5, emailsClicked: 0, emailsReplied: 1, emailsBounced: 0, repliesAutoReply: 0, repliesNotInterested: 0, repliesOutOfOffice: 0, repliesUnsubscribe: 0, recipients: 5 },
+      ],
+    });
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ groupKey: "brand-1", emailsContacted: 5 }],
+    });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .query({ groupBy: "brandId" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    expect(response.body.groups).toHaveLength(1);
+    expect(response.body.groups[0].key).toBe("brand-1");
+
+    // Both queries (events + contacted) must use LATERAL unnest and reference
+    // the alias "brand_id" for GROUP BY / IS NOT NULL — not inline unnest()
+    for (const call of mockExecute.mock.calls) {
+      const sqlText = extractSqlText(call[0]);
+      expect(sqlText).toContain("CROSS JOIN LATERAL unnest");
+      expect(sqlText).toContain("brand_id IS NOT NULL");
+      expect(sqlText).not.toContain("unnest(c.brand_ids) IS NOT NULL");
+    }
+  });
+
   // ─── groupBy: featureSlug ───────────────────────────────────────────────────
 
   it("should support groupBy featureSlug", async () => {

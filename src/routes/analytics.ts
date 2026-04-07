@@ -89,11 +89,13 @@ export async function queryGroupedContactedCount(
   if (!col) return new Map();
 
   const groupCol = sql.raw(col);
+  const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
   const result = await db.execute(sql`
     SELECT
       ${groupCol} AS "groupKey",
       COUNT(*)::int AS "emailsContacted"
     FROM instantly_campaigns c
+    ${lateralJoin}
     WHERE ${whereClause}
       AND ${campaignExclusionClause()}
       AND ${groupCol} IS NOT NULL
@@ -104,7 +106,7 @@ export async function queryGroupedContactedCount(
 }
 
 const GROUP_BY_COLUMNS: Record<string, string> = {
-  brandId: "unnest(c.brand_ids)",
+  brandId: "brand_id",
   campaignId: "c.campaign_id",
   workflowSlug: "c.workflow_slug",
   featureSlug: "c.feature_slug",
@@ -113,6 +115,9 @@ const GROUP_BY_COLUMNS: Record<string, string> = {
   workflowDynastySlug: "c.workflow_slug",
   featureDynastySlug: "c.feature_slug",
 };
+
+/** SQL fragment for LATERAL unnest of brand_ids, used when groupBy=brandId */
+const BRAND_LATERAL_JOIN = sql`CROSS JOIN LATERAL unnest(c.brand_ids) AS brand_id`;
 
 /** Execute grouped stats query and return array of { key, stats, recipients } */
 export async function queryGroupedStats(
@@ -124,6 +129,7 @@ export async function queryGroupedStats(
   if (!col) return [];
 
   const groupCol = sql.raw(col);
+  const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
   const result = await db.execute(sql`
     SELECT
       ${groupCol} AS "groupKey",
@@ -143,6 +149,7 @@ export async function queryGroupedStats(
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "recipients"
     FROM instantly_events e
     JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+    ${lateralJoin}
     WHERE ${whereClause}
       AND ${internalExclusionClause()}
       AND ${groupCol} IS NOT NULL
