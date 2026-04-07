@@ -366,9 +366,6 @@ router.get("/stats", async (req: Request, res: Response) => {
 
   const whereClause = sql.join(conditions, sql` AND `);
 
-  const filters = { orgId, runIds, brandId, campaignId, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy };
-  console.log(`[instantly-service] GET /stats inputs: ${JSON.stringify(filters)}`);
-
   // Handle groupBy requests
   if (groupBy) {
     try {
@@ -381,7 +378,6 @@ router.get("/stats", async (req: Request, res: Response) => {
         dynastyMap = buildSlugToDynastyMap(dynasties);
       }
       const groups = await queryGroupedStats(whereClause, groupBy, dynastyMap);
-      console.log(`[instantly-service] GET /stats grouped result: ${groups.length} groups, opens=[${groups.map((g) => `${g.key}:${g.stats.emailsOpened}`).join(",")}]`);
       return res.json({ groups });
     } catch (error: any) {
       const msg = error.cause?.message ?? error.message ?? String(error);
@@ -392,8 +388,6 @@ router.get("/stats", async (req: Request, res: Response) => {
 
   try {
     const { stats, recipients } = await queryStats(whereClause);
-
-    console.log(`[instantly-service] GET /stats result: emailsOpened=${stats.emailsOpened}, emailsSent=${stats.emailsSent}, recipients=${recipients}, orgId=${orgId}`);
 
     // Per-step breakdown (secondary stats) — non-fatal; overall stats still return on failure
     let stepStats: { step: number; emailsSent: number; emailsOpened: number; emailsReplied: number; emailsBounced: number }[] = [];
