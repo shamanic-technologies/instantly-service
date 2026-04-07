@@ -70,9 +70,6 @@ router.get("/stats", async (req: Request, res: Response) => {
     ? sql.join(conditions, sql` AND `)
     : sql`TRUE`;
 
-  const filters = { runIds, brandId, campaignId, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy };
-  console.log(`[instantly-service] GET /public/stats inputs: ${JSON.stringify(filters)}`);
-
   // Handle groupBy requests
   if (groupBy) {
     try {
@@ -85,7 +82,6 @@ router.get("/stats", async (req: Request, res: Response) => {
         dynastyMap = buildSlugToDynastyMap(dynasties);
       }
       const groups = await queryGroupedStats(whereClause, groupBy, dynastyMap);
-      console.log(`[instantly-service] GET /public/stats grouped result: ${groups.length} groups, opens=[${groups.map((g) => `${g.key}:${g.stats.emailsOpened}`).join(",")}]`);
       return res.json({ groups });
     } catch (error: any) {
       const msg = error.cause?.message ?? error.message ?? String(error);
@@ -96,8 +92,6 @@ router.get("/stats", async (req: Request, res: Response) => {
 
   try {
     const { stats, recipients } = await queryStats(whereClause);
-
-    console.log(`[instantly-service] GET /public/stats result: emailsOpened=${stats.emailsOpened}, emailsSent=${stats.emailsSent}, recipients=${recipients}`);
 
     let stepStats: { step: number; emailsSent: number; emailsOpened: number; emailsReplied: number; emailsBounced: number }[] = [];
     try {
