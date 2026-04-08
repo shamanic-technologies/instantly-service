@@ -761,20 +761,23 @@ registry.registerPath({
 // ─── Status ──────────────────────────────────────────────────────────────────
 
 const StatusItemSchema = z.object({
-  leadId: z.string().optional().describe("Lead-service lead ID (optional)"),
   email: z.string().describe("Email address"),
 });
 
 export const StatusRequestSchema = z
   .object({
+    brandId: z
+      .string()
+      .optional()
+      .describe("Brand ID — when provided without campaignId, returns per-campaign breakdown + aggregated brand status"),
     campaignId: z
       .string()
       .optional()
-      .describe("Campaign ID to scope campaign-level results (omit for global-only checks)"),
+      .describe("Campaign ID — when provided, returns campaign-scoped status (brandId is ignored)"),
     items: z
       .array(StatusItemSchema)
       .min(1)
-      .describe("Lead/email pairs to check"),
+      .describe("Emails to check"),
   })
   .openapi("StatusRequest");
 
@@ -804,9 +807,9 @@ const GlobalStatusSchema = z.object({
 
 const StatusResultSchema = z.object({
   email: z.string(),
-  leadId: z.string().nullable().describe("Lead ID found in instantly_campaigns for this email"),
-  campaign: ScopedStatusFieldsSchema.nullable(),
-  brand: ScopedStatusFieldsSchema.nullable(),
+  byCampaign: z.record(z.string(), ScopedStatusFieldsSchema).nullable().describe("Per-campaign breakdown — present only when brandId is provided without campaignId"),
+  brand: ScopedStatusFieldsSchema.nullable().describe("Aggregated brand status (most advanced across campaigns) — present only when brandId is provided without campaignId"),
+  campaign: ScopedStatusFieldsSchema.nullable().describe("Campaign-scoped status — present only when campaignId is provided"),
   global: GlobalStatusSchema,
 });
 
@@ -819,12 +822,13 @@ const StatusResponseSchema = z
 registry.registerPath({
   method: "post",
   path: "/orgs/status",
-  summary: "Batch delivery status check for leads/emails",
+  summary: "Batch delivery status check for emails",
   description:
-    "Returns campaign-scoped, brand-scoped, and global delivery status " +
-    "for each email. Campaign scope is null if campaignId omitted; " +
-    "brand scope is null if x-brand-id header omitted; global aggregates across everything. " +
-    "Each result includes the leadId found in the database for that email.",
+    "Two modes:\n" +
+    "- **Brand mode** (brandId, no campaignId): returns `byCampaign` per-campaign breakdown + aggregated `brand` status + `global`.\n" +
+    "- **Campaign mode** (campaignId, with or without brandId): returns `campaign` status + `global`.\n" +
+    "- **Global only** (neither): returns only `global`.\n" +
+    "Headers (x-brand-id, x-campaign-id, etc.) are for tracing/logging only — filters are in the body.",
   request: {
     headers: TrackingHeadersSchema,
     body: {

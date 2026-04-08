@@ -7,7 +7,7 @@ const router = Router();
 
 interface AggRow {
   key: string;
-  leadId: string | null;
+  campaignId: string | null;
   contacted: boolean | null;
   delivered: boolean | null;
   opened: boolean | null;
@@ -50,12 +50,12 @@ function sqlIn(values: string[]) {
   return sql.join(values.map((v) => sql`${v}`), sql`, `);
 }
 
-/** Unified scoped query — groups by lead_email, returns all status fields + leadId */
-function scopedQuery(filterClause: ReturnType<typeof sql>, emails: string[]) {
+/** Scoped query grouped by email only — used for campaign mode */
+function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string[]) {
   return db.execute(sql`
     SELECT
       c.lead_email AS "key",
-      MAX(c.lead_id) AS "leadId",
+      CAST(NULL AS text) AS "campaignId",
       TRUE AS "contacted",
       BOOL_OR(c.delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
       BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
@@ -74,14 +74,77 @@ function scopedQuery(filterClause: ReturnType<typeof sql>, emails: string[]) {
   `);
 }
 
+/** Brand breakdown query — grouped by (email, campaign_id) for per-campaign detail */
+function brandBreakdownQuery(brandId: string, emails: string[]) {
+  return db.execute(sql`
+    SELECT
+      c.lead_email AS "key",
+      c.campaign_id AS "campaignId",
+      TRUE AS "contacted",
+      BOOL_OR(c.delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
+      BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
+      BOOL_OR(c.delivery_status = 'replied') AS "replied",
+      (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
+      BOOL_OR(c.delivery_status = 'bounced') AS "bounced",
+      BOOL_OR(c.delivery_status = 'unsubscribed') AS "unsubscribed",
+      MAX(CASE WHEN c.delivery_status IN ('sent', 'delivered', 'replied') THEN c.updated_at END) AS "lastDeliveredAt"
+    FROM instantly_campaigns c
+    LEFT JOIN instantly_events oe
+      ON oe.campaign_id = c.instantly_campaign_id
+      AND oe.lead_email = c.lead_email
+      AND oe.event_type = 'email_opened'
+    WHERE c.lead_email IN (${sqlIn(emails)}) AND ${brandId} = ANY(c.brand_ids)
+    GROUP BY c.lead_email, c.campaign_id
+  `);
+}
+
+/** Aggregate brand status from per-campaign breakdown rows (BOOL_OR logic) */
+function aggregateBrandStatus(rows: AggRow[]) {
+  if (rows.length === 0) return emptyScoped();
+
+  // Pick the most recent non-null replyClassification
+  let replyClassification: string | null = null;
+  let latestReplyAt: Date | null = null;
+  for (const row of rows) {
+    if (row.replyClassification != null) {
+      const ts = row.lastDeliveredAt ? new Date(row.lastDeliveredAt) : null;
+      if (!latestReplyAt || (ts && ts > latestReplyAt)) {
+        replyClassification = row.replyClassification;
+        latestReplyAt = ts;
+      }
+    }
+  }
+
+  // Pick the latest lastDeliveredAt across all campaigns
+  let maxDeliveredAt: string | null = null;
+  for (const row of rows) {
+    if (row.lastDeliveredAt) {
+      if (!maxDeliveredAt || new Date(row.lastDeliveredAt) > new Date(maxDeliveredAt)) {
+        maxDeliveredAt = row.lastDeliveredAt;
+      }
+    }
+  }
+
+  return {
+    contacted: rows.some((r) => r.contacted === true),
+    delivered: rows.some((r) => r.delivered === true),
+    opened: rows.some((r) => r.opened === true),
+    replied: rows.some((r) => r.replied === true),
+    replyClassification,
+    bounced: rows.some((r) => r.bounced === true),
+    unsubscribed: rows.some((r) => r.unsubscribed === true),
+    lastDeliveredAt: formatTimestamp(maxDeliveredAt),
+  };
+}
+
 /**
  * POST /status
  * Batch delivery status check.
- * Returns campaign-scoped (if campaignId provided), brand-scoped, and global results.
+ * - Brand mode (brandId, no campaignId): byCampaign breakdown + aggregated brand + global
+ * - Campaign mode (campaignId present): campaign-scoped + global
+ * - Global only: just global
  */
 router.post("/", async (req: Request, res: Response) => {
-  const brandId = req.headers["x-brand-id"] as string | undefined;
-
   const parsed = StatusRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -89,21 +152,18 @@ router.post("/", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { campaignId, items } = parsed.data;
+  const { brandId, campaignId, items } = parsed.data;
 
   const emails = items.map((i) => i.email);
+  const isBrandMode = !!brandId && !campaignId;
+  const isCampaignMode = !!campaignId;
 
   try {
-    let brandPromise: Promise<unknown> | null = null;
-    if (brandId) {
-      const brandFilter = sql`${brandId} = ANY(c.brand_ids)`;
-      brandPromise = scopedQuery(brandFilter, emails);
-    }
-
     // Global: only bounced + unsubscribed on email
     const globalEmailPromise = db.execute(sql`
       SELECT
         lead_email AS "key",
+        CAST(NULL AS text) AS "campaignId",
         CAST(NULL AS boolean) AS "contacted",
         CAST(NULL AS boolean) AS "delivered",
         CAST(NULL AS boolean) AS "replied",
@@ -115,38 +175,46 @@ router.post("/", async (req: Request, res: Response) => {
       GROUP BY lead_email
     `);
 
-    let campPromise: Promise<unknown> | null = null;
-    if (campaignId) {
-      const campFilter = sql`c.campaign_id = ${campaignId}`;
-      campPromise = scopedQuery(campFilter, emails);
+    let brandBreakdownPromise: Promise<unknown> | null = null;
+    if (isBrandMode) {
+      brandBreakdownPromise = brandBreakdownQuery(brandId, emails);
     }
 
-    // Execute all in parallel
-    const [brandResult, globalEmailResult, campResult] =
+    let campPromise: Promise<unknown> | null = null;
+    if (isCampaignMode) {
+      const campFilter = sql`c.campaign_id = ${campaignId}`;
+      campPromise = scopedQueryByEmail(campFilter, emails);
+    }
+
+    const [globalEmailResult, brandBreakdownResult, campResult] =
       await Promise.all([
-        brandPromise ?? Promise.resolve(null),
         globalEmailPromise,
+        brandBreakdownPromise ?? Promise.resolve(null),
         campPromise ?? Promise.resolve(null),
       ]);
 
-    // Index rows by key (email)
-    const brandMap = brandResult ? new Map(extractRows(brandResult).map((r) => [r.key, r])) : null;
     const globalEmailMap = new Map(extractRows(globalEmailResult).map((r) => [r.key, r]));
     const campMap = campResult ? new Map(extractRows(campResult).map((r) => [r.key, r])) : null;
 
+    // For brand mode, index breakdown rows by email
+    let brandBreakdownMap: Map<string, AggRow[]> | null = null;
+    if (brandBreakdownResult) {
+      brandBreakdownMap = new Map();
+      for (const row of extractRows(brandBreakdownResult)) {
+        const existing = brandBreakdownMap.get(row.key) ?? [];
+        existing.push(row);
+        brandBreakdownMap.set(row.key, existing);
+      }
+    }
+
     const results = items.map((item) => {
       const ge = globalEmailMap.get(item.email);
-      const brandRow = brandMap?.get(item.email);
-      const campRow = campMap?.get(item.email);
 
-      // Pick leadId: prefer input, then campaign, then brand
-      const leadId = item.leadId ?? campRow?.leadId ?? brandRow?.leadId ?? null;
-
-      return {
+      const result: Record<string, unknown> = {
         email: item.email,
-        leadId,
-        campaign: campMap ? buildScopedStatus(campRow) : null,
-        brand: brandMap ? buildScopedStatus(brandRow) : null,
+        byCampaign: null,
+        brand: null,
+        campaign: null,
         global: {
           email: {
             bounced: ge?.bounced === true,
@@ -154,11 +222,30 @@ router.post("/", async (req: Request, res: Response) => {
           },
         },
       };
+
+      if (isBrandMode && brandBreakdownMap) {
+        const rows = brandBreakdownMap.get(item.email) ?? [];
+        const byCampaign: Record<string, ReturnType<typeof buildScopedStatus>> = {};
+        for (const row of rows) {
+          if (row.campaignId) {
+            byCampaign[row.campaignId] = buildScopedStatus(row);
+          }
+        }
+        result.byCampaign = byCampaign;
+        result.brand = aggregateBrandStatus(rows);
+      }
+
+      if (isCampaignMode && campMap) {
+        const campRow = campMap.get(item.email);
+        result.campaign = buildScopedStatus(campRow);
+      }
+
+      return result;
     });
 
     res.json({ results });
   } catch (error: any) {
-    console.error(`[status] Failed to get status: ${error.message}`);
+    console.error(`[instantly-service] Failed to get status: ${error.message}`);
     res.status(500).json({ error: "Failed to get delivery status" });
   }
 });
