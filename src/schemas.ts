@@ -779,26 +779,31 @@ export const StatusRequestSchema = z
       .min(1)
       .describe("Emails to check"),
   })
-  .openapi("StatusRequest");
+  .openapi("StatusRequest", {
+    example: {
+      brandId: "b8f0e2a1-1234-4abc-9def-000000000001",
+      items: [{ email: "alice@media.com" }, { email: "bob@test.com" }],
+    },
+  });
 
 export type StatusRequest = z.infer<typeof StatusRequestSchema>;
 
 const ReplyClassificationSchema = z.enum(["positive", "negative", "neutral"]);
 
 const ScopedStatusFieldsSchema = z.object({
-  contacted: z.boolean(),
-  delivered: z.boolean(),
-  opened: z.boolean(),
-  replied: z.boolean(),
+  contacted: z.boolean().describe("true if the lead was added to this campaign/brand"),
+  delivered: z.boolean().describe("true if at least one email was delivered (sent/delivered/replied status)"),
+  opened: z.boolean().describe("true if at least one email_opened event exists"),
+  replied: z.boolean().describe("true if at least one reply was received"),
   replyClassification: ReplyClassificationSchema.nullable().describe("Reply classification based on Instantly interest status. null = no reply"),
-  bounced: z.boolean(),
-  unsubscribed: z.boolean(),
-  lastDeliveredAt: z.string().nullable(),
+  bounced: z.boolean().describe("true if at least one email bounced"),
+  unsubscribed: z.boolean().describe("true if lead unsubscribed"),
+  lastDeliveredAt: z.string().nullable().describe("ISO 8601 timestamp of the most recent delivery. null if never delivered"),
 });
 
 const GlobalEmailStatusSchema = z.object({
-  bounced: z.boolean(),
-  unsubscribed: z.boolean(),
+  bounced: z.boolean().describe("true if this email bounced in ANY campaign across the entire org (not scoped to brand)"),
+  unsubscribed: z.boolean().describe("true if this email unsubscribed in ANY campaign across the entire org (not scoped to brand)"),
 });
 
 const GlobalStatusSchema = z.object({
@@ -817,18 +822,51 @@ const StatusResponseSchema = z
   .object({
     results: z.array(StatusResultSchema),
   })
-  .openapi("StatusResponse");
+  .openapi("StatusResponse", {
+    example: {
+      results: [
+        {
+          email: "alice@media.com",
+          byCampaign: {
+            "c1a2b3c4-0000-0000-0000-000000000001": {
+              contacted: true, delivered: true, opened: true, replied: false,
+              replyClassification: null, bounced: false, unsubscribed: false,
+              lastDeliveredAt: "2026-03-01T10:00:00.000Z",
+            },
+            "c1a2b3c4-0000-0000-0000-000000000002": {
+              contacted: true, delivered: true, opened: false, replied: true,
+              replyClassification: "positive", bounced: false, unsubscribed: false,
+              lastDeliveredAt: "2026-03-02T12:00:00.000Z",
+            },
+          },
+          brand: {
+            contacted: true, delivered: true, opened: true, replied: true,
+            replyClassification: "positive", bounced: false, unsubscribed: false,
+            lastDeliveredAt: "2026-03-02T12:00:00.000Z",
+          },
+          campaign: null,
+          global: { email: { bounced: false, unsubscribed: false } },
+        },
+      ],
+    },
+  });
 
 registry.registerPath({
   method: "post",
   path: "/orgs/status",
   summary: "Batch delivery status check for emails",
   description:
-    "Two modes:\n" +
-    "- **Brand mode** (brandId, no campaignId): returns `byCampaign` per-campaign breakdown + aggregated `brand` status + `global`.\n" +
-    "- **Campaign mode** (campaignId, with or without brandId): returns `campaign` status + `global`.\n" +
-    "- **Global only** (neither): returns only `global`.\n" +
-    "Headers (x-brand-id, x-campaign-id, etc.) are for tracing/logging only — filters are in the body.",
+    "Batch delivery status check. Filters are in the body — headers are tracing/logging only.\n\n" +
+    "**Modes:**\n" +
+    "- **Brand mode** (`brandId` set, no `campaignId`): returns `byCampaign` (per-campaign breakdown keyed by campaign UUID), `brand` (aggregated), and `global`.\n" +
+    "- **Campaign mode** (`campaignId` set, with or without `brandId`): returns `campaign` (single campaign status) and `global`. When both are provided, `brandId` is ignored.\n" +
+    "- **Global only** (neither): returns only `global`.\n\n" +
+    "**Aggregation rules for `brand`:**\n" +
+    "- Boolean fields (`contacted`, `delivered`, `opened`, `replied`, `bounced`, `unsubscribed`): `true` if true in at least one campaign (BOOL_OR).\n" +
+    "- `replyClassification`: from the campaign with the most recent `lastDeliveredAt` that has a non-null classification.\n" +
+    "- `lastDeliveredAt`: MAX across all campaigns.\n\n" +
+    "**`global.email`** aggregates `bounced`/`unsubscribed` across ALL campaigns in the org, regardless of brand or campaign filters.\n\n" +
+    "Fields not applicable to the active mode are always present but set to `null`.",
   request: {
     headers: TrackingHeadersSchema,
     body: {
