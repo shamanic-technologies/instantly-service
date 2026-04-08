@@ -699,59 +699,58 @@
                 "email": {
                   "type": "string"
                 },
-                "leadId": {
-                  "type": "string",
-                  "nullable": true,
-                  "description": "Lead ID found in instantly_campaigns for this email"
-                },
-                "campaign": {
+                "byCampaign": {
                   "type": "object",
                   "nullable": true,
-                  "properties": {
-                    "contacted": {
-                      "type": "boolean"
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "contacted": {
+                        "type": "boolean"
+                      },
+                      "delivered": {
+                        "type": "boolean"
+                      },
+                      "opened": {
+                        "type": "boolean"
+                      },
+                      "replied": {
+                        "type": "boolean"
+                      },
+                      "replyClassification": {
+                        "type": "string",
+                        "nullable": true,
+                        "enum": [
+                          "positive",
+                          "negative",
+                          "neutral",
+                          null
+                        ],
+                        "description": "Reply classification based on Instantly interest status. null = no reply"
+                      },
+                      "bounced": {
+                        "type": "boolean"
+                      },
+                      "unsubscribed": {
+                        "type": "boolean"
+                      },
+                      "lastDeliveredAt": {
+                        "type": "string",
+                        "nullable": true
+                      }
                     },
-                    "delivered": {
-                      "type": "boolean"
-                    },
-                    "opened": {
-                      "type": "boolean"
-                    },
-                    "replied": {
-                      "type": "boolean"
-                    },
-                    "replyClassification": {
-                      "type": "string",
-                      "nullable": true,
-                      "enum": [
-                        "positive",
-                        "negative",
-                        "neutral",
-                        null
-                      ],
-                      "description": "Reply classification based on Instantly interest status. null = no reply"
-                    },
-                    "bounced": {
-                      "type": "boolean"
-                    },
-                    "unsubscribed": {
-                      "type": "boolean"
-                    },
-                    "lastDeliveredAt": {
-                      "type": "string",
-                      "nullable": true
-                    }
+                    "required": [
+                      "contacted",
+                      "delivered",
+                      "opened",
+                      "replied",
+                      "replyClassification",
+                      "bounced",
+                      "unsubscribed",
+                      "lastDeliveredAt"
+                    ]
                   },
-                  "required": [
-                    "contacted",
-                    "delivered",
-                    "opened",
-                    "replied",
-                    "replyClassification",
-                    "bounced",
-                    "unsubscribed",
-                    "lastDeliveredAt"
-                  ]
+                  "description": "Per-campaign breakdown — present only when brandId is provided without campaignId"
                 },
                 "brand": {
                   "type": "object",
@@ -800,7 +799,58 @@
                     "bounced",
                     "unsubscribed",
                     "lastDeliveredAt"
-                  ]
+                  ],
+                  "description": "Aggregated brand status (most advanced across campaigns) — present only when brandId is provided without campaignId"
+                },
+                "campaign": {
+                  "type": "object",
+                  "nullable": true,
+                  "properties": {
+                    "contacted": {
+                      "type": "boolean"
+                    },
+                    "delivered": {
+                      "type": "boolean"
+                    },
+                    "opened": {
+                      "type": "boolean"
+                    },
+                    "replied": {
+                      "type": "boolean"
+                    },
+                    "replyClassification": {
+                      "type": "string",
+                      "nullable": true,
+                      "enum": [
+                        "positive",
+                        "negative",
+                        "neutral",
+                        null
+                      ],
+                      "description": "Reply classification based on Instantly interest status. null = no reply"
+                    },
+                    "bounced": {
+                      "type": "boolean"
+                    },
+                    "unsubscribed": {
+                      "type": "boolean"
+                    },
+                    "lastDeliveredAt": {
+                      "type": "string",
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "contacted",
+                    "delivered",
+                    "opened",
+                    "replied",
+                    "replyClassification",
+                    "bounced",
+                    "unsubscribed",
+                    "lastDeliveredAt"
+                  ],
+                  "description": "Campaign-scoped status — present only when campaignId is provided"
                 },
                 "global": {
                   "type": "object",
@@ -828,9 +878,9 @@
               },
               "required": [
                 "email",
-                "leadId",
-                "campaign",
+                "byCampaign",
                 "brand",
+                "campaign",
                 "global"
               ]
             }
@@ -843,19 +893,19 @@
       "StatusRequest": {
         "type": "object",
         "properties": {
+          "brandId": {
+            "type": "string",
+            "description": "Brand ID — when provided without campaignId, returns per-campaign breakdown + aggregated brand status"
+          },
           "campaignId": {
             "type": "string",
-            "description": "Campaign ID to scope campaign-level results (omit for global-only checks)"
+            "description": "Campaign ID — when provided, returns campaign-scoped status (brandId is ignored)"
           },
           "items": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "leadId": {
-                  "type": "string",
-                  "description": "Lead-service lead ID (optional)"
-                },
                 "email": {
                   "type": "string",
                   "description": "Email address"
@@ -866,7 +916,7 @@
               ]
             },
             "minItems": 1,
-            "description": "Lead/email pairs to check"
+            "description": "Emails to check"
           }
         },
         "required": [
@@ -2325,8 +2375,8 @@
     },
     "/orgs/status": {
       "post": {
-        "summary": "Batch delivery status check for leads/emails",
-        "description": "Returns campaign-scoped, brand-scoped, and global delivery status for each email. Campaign scope is null if campaignId omitted; brand scope is null if x-brand-id header omitted; global aggregates across everything. Each result includes the leadId found in the database for that email.",
+        "summary": "Batch delivery status check for emails",
+        "description": "Two modes:\n- **Brand mode** (brandId, no campaignId): returns `byCampaign` per-campaign breakdown + aggregated `brand` status + `global`.\n- **Campaign mode** (campaignId, with or without brandId): returns `campaign` status + `global`.\n- **Global only** (neither): returns only `global`.\nHeaders (x-brand-id, x-campaign-id, etc.) are for tracing/logging only — filters are in the body.",
         "parameters": [
           {
             "schema": {
