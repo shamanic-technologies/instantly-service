@@ -706,16 +706,20 @@
                     "type": "object",
                     "properties": {
                       "contacted": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "true if the lead was added to this campaign/brand"
                       },
                       "delivered": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "true if at least one email was delivered (sent/delivered/replied status)"
                       },
                       "opened": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "true if at least one email_opened event exists"
                       },
                       "replied": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "true if at least one reply was received"
                       },
                       "replyClassification": {
                         "type": "string",
@@ -729,14 +733,17 @@
                         "description": "Reply classification based on Instantly interest status. null = no reply"
                       },
                       "bounced": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "true if at least one email bounced"
                       },
                       "unsubscribed": {
-                        "type": "boolean"
+                        "type": "boolean",
+                        "description": "true if lead unsubscribed"
                       },
                       "lastDeliveredAt": {
                         "type": "string",
-                        "nullable": true
+                        "nullable": true,
+                        "description": "ISO 8601 timestamp of the most recent delivery. null if never delivered"
                       }
                     },
                     "required": [
@@ -757,16 +764,20 @@
                   "nullable": true,
                   "properties": {
                     "contacted": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if the lead was added to this campaign/brand"
                     },
                     "delivered": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if at least one email was delivered (sent/delivered/replied status)"
                     },
                     "opened": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if at least one email_opened event exists"
                     },
                     "replied": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if at least one reply was received"
                     },
                     "replyClassification": {
                       "type": "string",
@@ -780,14 +791,17 @@
                       "description": "Reply classification based on Instantly interest status. null = no reply"
                     },
                     "bounced": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if at least one email bounced"
                     },
                     "unsubscribed": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if lead unsubscribed"
                     },
                     "lastDeliveredAt": {
                       "type": "string",
-                      "nullable": true
+                      "nullable": true,
+                      "description": "ISO 8601 timestamp of the most recent delivery. null if never delivered"
                     }
                   },
                   "required": [
@@ -807,16 +821,20 @@
                   "nullable": true,
                   "properties": {
                     "contacted": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if the lead was added to this campaign/brand"
                     },
                     "delivered": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if at least one email was delivered (sent/delivered/replied status)"
                     },
                     "opened": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if at least one email_opened event exists"
                     },
                     "replied": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if at least one reply was received"
                     },
                     "replyClassification": {
                       "type": "string",
@@ -830,14 +848,17 @@
                       "description": "Reply classification based on Instantly interest status. null = no reply"
                     },
                     "bounced": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if at least one email bounced"
                     },
                     "unsubscribed": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "true if lead unsubscribed"
                     },
                     "lastDeliveredAt": {
                       "type": "string",
-                      "nullable": true
+                      "nullable": true,
+                      "description": "ISO 8601 timestamp of the most recent delivery. null if never delivered"
                     }
                   },
                   "required": [
@@ -859,10 +880,12 @@
                       "type": "object",
                       "properties": {
                         "bounced": {
-                          "type": "boolean"
+                          "type": "boolean",
+                          "description": "true if this email bounced in ANY campaign across the entire org (not scoped to brand)"
                         },
                         "unsubscribed": {
-                          "type": "boolean"
+                          "type": "boolean",
+                          "description": "true if this email unsubscribed in ANY campaign across the entire org (not scoped to brand)"
                         }
                       },
                       "required": [
@@ -888,7 +911,53 @@
         },
         "required": [
           "results"
-        ]
+        ],
+        "example": {
+          "results": [
+            {
+              "email": "alice@media.com",
+              "byCampaign": {
+                "c1a2b3c4-0000-0000-0000-000000000001": {
+                  "contacted": true,
+                  "delivered": true,
+                  "opened": true,
+                  "replied": false,
+                  "replyClassification": null,
+                  "bounced": false,
+                  "unsubscribed": false,
+                  "lastDeliveredAt": "2026-03-01T10:00:00.000Z"
+                },
+                "c1a2b3c4-0000-0000-0000-000000000002": {
+                  "contacted": true,
+                  "delivered": true,
+                  "opened": false,
+                  "replied": true,
+                  "replyClassification": "positive",
+                  "bounced": false,
+                  "unsubscribed": false,
+                  "lastDeliveredAt": "2026-03-02T12:00:00.000Z"
+                }
+              },
+              "brand": {
+                "contacted": true,
+                "delivered": true,
+                "opened": true,
+                "replied": true,
+                "replyClassification": "positive",
+                "bounced": false,
+                "unsubscribed": false,
+                "lastDeliveredAt": "2026-03-02T12:00:00.000Z"
+              },
+              "campaign": null,
+              "global": {
+                "email": {
+                  "bounced": false,
+                  "unsubscribed": false
+                }
+              }
+            }
+          ]
+        }
       },
       "StatusRequest": {
         "type": "object",
@@ -921,7 +990,18 @@
         },
         "required": [
           "items"
-        ]
+        ],
+        "example": {
+          "brandId": "b8f0e2a1-1234-4abc-9def-000000000001",
+          "items": [
+            {
+              "email": "alice@media.com"
+            },
+            {
+              "email": "bob@test.com"
+            }
+          ]
+        }
       }
     },
     "parameters": {}
@@ -2376,7 +2456,7 @@
     "/orgs/status": {
       "post": {
         "summary": "Batch delivery status check for emails",
-        "description": "Two modes:\n- **Brand mode** (brandId, no campaignId): returns `byCampaign` per-campaign breakdown + aggregated `brand` status + `global`.\n- **Campaign mode** (campaignId, with or without brandId): returns `campaign` status + `global`.\n- **Global only** (neither): returns only `global`.\nHeaders (x-brand-id, x-campaign-id, etc.) are for tracing/logging only — filters are in the body.",
+        "description": "Batch delivery status check. Filters are in the body — headers are tracing/logging only.\n\n**Modes:**\n- **Brand mode** (`brandId` set, no `campaignId`): returns `byCampaign` (per-campaign breakdown keyed by campaign UUID), `brand` (aggregated), and `global`.\n- **Campaign mode** (`campaignId` set, with or without `brandId`): returns `campaign` (single campaign status) and `global`. When both are provided, `brandId` is ignored.\n- **Global only** (neither): returns only `global`.\n\n**Aggregation rules for `brand`:**\n- Boolean fields (`contacted`, `delivered`, `opened`, `replied`, `bounced`, `unsubscribed`): `true` if true in at least one campaign (BOOL_OR).\n- `replyClassification`: from the campaign with the most recent `lastDeliveredAt` that has a non-null classification.\n- `lastDeliveredAt`: MAX across all campaigns.\n\n**`global.email`** aggregates `bounced`/`unsubscribed` across ALL campaigns in the org, regardless of brand or campaign filters.\n\nFields not applicable to the active mode are always present but set to `null`.",
         "parameters": [
           {
             "schema": {
