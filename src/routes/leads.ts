@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { instantlyLeads, instantlyCampaigns } from "../db/schema";
-import { eq, and, or, inArray } from "drizzle-orm";
+import { eq, and, or, inArray, count } from "drizzle-orm";
 import {
   addLeads as addInstantlyLeads,
   listLeads as listInstantlyLeads,
@@ -173,7 +173,7 @@ router.post("/:campaignId/leads", async (req: Request, res: Response) => {
  */
 router.get("/:campaignId/leads", async (req: Request, res: Response) => {
   const { campaignId } = req.params;
-  const limit = parseInt(req.query.limit as string) || 100;
+  const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
   const skip = parseInt(req.query.skip as string) || 0;
 
   try {
@@ -192,14 +192,24 @@ router.get("/:campaignId/leads", async (req: Request, res: Response) => {
     }
 
     const instantlyIds = campaigns.map((c) => c.instantlyCampaignId);
-    const leads = await db
+    const whereClause = inArray(instantlyLeads.instantlyCampaignId, instantlyIds);
+
+    const [{ totalCount }] = await db
+      .select({ totalCount: count() })
+      .from(instantlyLeads)
+      .where(whereClause);
+
+    let query = db
       .select()
       .from(instantlyLeads)
-      .where(inArray(instantlyLeads.instantlyCampaignId, instantlyIds))
-      .limit(limit)
+      .where(whereClause)
       .offset(skip);
 
-    res.json({ leads, count: leads.length });
+    const leads = limit !== undefined
+      ? await query.limit(limit)
+      : await query;
+
+    res.json({ leads, count: leads.length, totalCount });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
