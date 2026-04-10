@@ -448,19 +448,35 @@
               },
               "emailsReplied": {
                 "type": "number",
-                "description": "Positive replies only (lead_interested events)"
+                "description": "All human replies (reply_received events)"
               },
               "emailsBounced": {
                 "type": "number",
                 "description": "Total email_bounced events"
               },
-              "repliesAutoReply": {
+              "repliesInterested": {
                 "type": "number",
-                "description": "Total auto_reply_received events"
+                "description": "Total lead_interested events"
+              },
+              "repliesMeetingBooked": {
+                "type": "number",
+                "description": "Total lead_meeting_booked events"
+              },
+              "repliesClosed": {
+                "type": "number",
+                "description": "Total lead_closed events"
               },
               "repliesNotInterested": {
                 "type": "number",
                 "description": "Total lead_not_interested events"
+              },
+              "repliesNeutral": {
+                "type": "number",
+                "description": "Total lead_neutral events"
+              },
+              "repliesAutoReply": {
+                "type": "number",
+                "description": "Total auto_reply_received events"
               },
               "repliesOutOfOffice": {
                 "type": "number",
@@ -479,8 +495,12 @@
               "emailsClicked",
               "emailsReplied",
               "emailsBounced",
-              "repliesAutoReply",
+              "repliesInterested",
+              "repliesMeetingBooked",
+              "repliesClosed",
               "repliesNotInterested",
+              "repliesNeutral",
+              "repliesAutoReply",
               "repliesOutOfOffice",
               "repliesUnsubscribe"
             ]
@@ -505,7 +525,20 @@
                   "type": "number"
                 },
                 "emailsReplied": {
-                  "type": "number"
+                  "type": "number",
+                  "description": "All human replies (reply_received events)"
+                },
+                "repliesInterested": {
+                  "type": "number",
+                  "description": "lead_interested events"
+                },
+                "repliesNeutral": {
+                  "type": "number",
+                  "description": "lead_neutral events"
+                },
+                "repliesNotInterested": {
+                  "type": "number",
+                  "description": "lead_not_interested events"
                 },
                 "emailsBounced": {
                   "type": "number"
@@ -516,6 +549,9 @@
                 "emailsSent",
                 "emailsOpened",
                 "emailsReplied",
+                "repliesInterested",
+                "repliesNeutral",
+                "repliesNotInterested",
                 "emailsBounced"
               ]
             },
@@ -564,19 +600,35 @@
                     },
                     "emailsReplied": {
                       "type": "number",
-                      "description": "Positive replies only (lead_interested events)"
+                      "description": "All human replies (reply_received events)"
                     },
                     "emailsBounced": {
                       "type": "number",
                       "description": "Total email_bounced events"
                     },
-                    "repliesAutoReply": {
+                    "repliesInterested": {
                       "type": "number",
-                      "description": "Total auto_reply_received events"
+                      "description": "Total lead_interested events"
+                    },
+                    "repliesMeetingBooked": {
+                      "type": "number",
+                      "description": "Total lead_meeting_booked events"
+                    },
+                    "repliesClosed": {
+                      "type": "number",
+                      "description": "Total lead_closed events"
                     },
                     "repliesNotInterested": {
                       "type": "number",
                       "description": "Total lead_not_interested events"
+                    },
+                    "repliesNeutral": {
+                      "type": "number",
+                      "description": "Total lead_neutral events"
+                    },
+                    "repliesAutoReply": {
+                      "type": "number",
+                      "description": "Total auto_reply_received events"
                     },
                     "repliesOutOfOffice": {
                       "type": "number",
@@ -595,8 +647,12 @@
                     "emailsClicked",
                     "emailsReplied",
                     "emailsBounced",
-                    "repliesAutoReply",
+                    "repliesInterested",
+                    "repliesMeetingBooked",
+                    "repliesClosed",
                     "repliesNotInterested",
+                    "repliesNeutral",
+                    "repliesAutoReply",
                     "repliesOutOfOffice",
                     "repliesUnsubscribe"
                   ]

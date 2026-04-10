@@ -19,8 +19,12 @@ const ZERO_STATS = {
   emailsClicked: 0,
   emailsReplied: 0,
   emailsBounced: 0,
-  repliesAutoReply: 0,
+  repliesInterested: 0,
+  repliesMeetingBooked: 0,
+  repliesClosed: 0,
   repliesNotInterested: 0,
+  repliesNeutral: 0,
+  repliesAutoReply: 0,
   repliesOutOfOffice: 0,
   repliesUnsubscribe: 0,
 };
@@ -93,14 +97,17 @@ router.get("/stats", async (req: Request, res: Response) => {
   try {
     const { stats, recipients } = await queryStats(whereClause);
 
-    let stepStats: { step: number; emailsSent: number; emailsOpened: number; emailsReplied: number; emailsBounced: number }[] = [];
+    let stepStats: { step: number; emailsSent: number; emailsOpened: number; emailsReplied: number; repliesInterested: number; repliesNeutral: number; repliesNotInterested: number; emailsBounced: number }[] = [];
     try {
       const stepResult = await db.execute(sql`
         SELECT
           e.step,
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
           COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "emailsReplied",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'reply_received'), 0)::int AS "emailsReplied",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "repliesInterested",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "repliesNeutral",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "repliesNotInterested",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced"
         FROM instantly_events e
         JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
@@ -116,6 +123,9 @@ router.get("/stats", async (req: Request, res: Response) => {
         emailsSent: sr.emailsSent ?? 0,
         emailsOpened: sr.emailsOpened ?? 0,
         emailsReplied: sr.emailsReplied ?? 0,
+        repliesInterested: sr.repliesInterested ?? 0,
+        repliesNeutral: sr.repliesNeutral ?? 0,
+        repliesNotInterested: sr.repliesNotInterested ?? 0,
         emailsBounced: sr.emailsBounced ?? 0,
       }));
     } catch (stepError: any) {
