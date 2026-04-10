@@ -523,7 +523,10 @@ const StepStatsSchema = z.object({
   step: z.number().describe("Step number (1-based)"),
   emailsSent: z.number(),
   emailsOpened: z.number(),
-  emailsReplied: z.number(),
+  emailsReplied: z.number().describe("All human replies (reply_received events)"),
+  repliesInterested: z.number().describe("lead_interested events"),
+  repliesNeutral: z.number().describe("lead_neutral events"),
+  repliesNotInterested: z.number().describe("lead_not_interested events"),
   emailsBounced: z.number(),
 });
 
@@ -543,12 +546,16 @@ const StatsResponseSchema = z
           "Unique recipients who opened (COUNT DISTINCT lead_email with email_opened events)",
         ),
       emailsClicked: z.number().describe("Total link click events"),
-      emailsReplied: z.number().describe("Positive replies only (lead_interested events)"),
+      emailsReplied: z.number().describe("All human replies (reply_received events)"),
       emailsBounced: z.number().describe("Total email_bounced events"),
-      repliesAutoReply: z.number().describe("Total auto_reply_received events"),
+      repliesInterested: z.number().describe("Total lead_interested events"),
+      repliesMeetingBooked: z.number().describe("Total lead_meeting_booked events"),
+      repliesClosed: z.number().describe("Total lead_closed events"),
       repliesNotInterested: z
         .number()
         .describe("Total lead_not_interested events"),
+      repliesNeutral: z.number().describe("Total lead_neutral events"),
+      repliesAutoReply: z.number().describe("Total auto_reply_received events"),
       repliesOutOfOffice: z
         .number()
         .describe("Total lead_out_of_office events"),
