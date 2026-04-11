@@ -105,6 +105,8 @@ router.post("/", async (req: Request, res: Response) => {
       if (body.accountIds && body.accountIds.length > 0) {
         await updateInstantlyCampaign(apiKey, instantlyCampaign.id, {
           email_list: body.accountIds,
+          open_tracking: true,
+          link_tracking: true,
         });
       }
 

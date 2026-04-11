@@ -519,13 +519,32 @@ export const StatsQuerySchema = z
 
 export type StatsQuery = z.infer<typeof StatsQuerySchema>;
 
+const RepliesDetailSchema = z.object({
+  interested: z.number().describe("lead_interested events"),
+  meetingBooked: z.number().describe("lead_meeting_booked events"),
+  closed: z.number().describe("lead_closed events"),
+  notInterested: z.number().describe("lead_not_interested events"),
+  wrongPerson: z.number().describe("lead_wrong_person events"),
+  unsubscribe: z.number().describe("lead_unsubscribed events"),
+  neutral: z.number().describe("lead_neutral events"),
+  autoReply: z.number().describe("auto_reply_received events"),
+  outOfOffice: z.number().describe("lead_out_of_office events"),
+});
+
+const RepliesAggregatesSchema = z.object({
+  repliesPositive: z.number().describe("interested + meetingBooked + closed"),
+  repliesNegative: z.number().describe("notInterested + wrongPerson + unsubscribe"),
+  repliesNeutral: z.number().describe("neutral (lead_neutral events only)"),
+  repliesAutoReply: z.number().describe("autoReply + outOfOffice"),
+  repliesDetail: RepliesDetailSchema,
+});
+
 const StepStatsSchema = z.object({
   step: z.number().describe("Step number (1-based)"),
   emailsSent: z.number(),
   emailsOpened: z.number(),
-  emailsReplied: z.number(),
   emailsBounced: z.number(),
-});
+}).merge(RepliesAggregatesSchema);
 
 const StatsResponseSchema = z
   .object({
@@ -543,19 +562,8 @@ const StatsResponseSchema = z
           "Unique recipients who opened (COUNT DISTINCT lead_email with email_opened events)",
         ),
       emailsClicked: z.number().describe("Total link click events"),
-      emailsReplied: z.number().describe("Positive replies only (lead_interested events)"),
       emailsBounced: z.number().describe("Total email_bounced events"),
-      repliesAutoReply: z.number().describe("Total auto_reply_received events"),
-      repliesNotInterested: z
-        .number()
-        .describe("Total lead_not_interested events"),
-      repliesOutOfOffice: z
-        .number()
-        .describe("Total lead_out_of_office events"),
-      repliesUnsubscribe: z
-        .number()
-        .describe("Total lead_unsubscribed events"),
-    }),
+    }).merge(RepliesAggregatesSchema),
     recipients: z
       .number()
       .describe("Unique recipients (COUNT DISTINCT lead_email with email_sent events)"),

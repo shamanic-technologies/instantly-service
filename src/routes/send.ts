@@ -393,7 +393,8 @@ router.post("/", async (req: Request, res: Response) => {
         if (createdLead) savedLead = createdLead;
       }
 
-      // 4. Create per-step runs: 1 actual+completed (step 1) + N-1 provisioned+ongoing
+      // 4. Create per-step runs: step 1 = actual cost, steps 2-N = provisioned cost
+      //    All runs are completed immediately — the webhook updates costs later.
       const parentIdentity = { orgId, userId, runId: res.locals.runId as string, tracking };
       for (const s of sortedSequence) {
         const isFirstStep = s.step === sortedSequence[0].step;
@@ -424,9 +425,7 @@ router.post("/", async (req: Request, res: Response) => {
           });
         }
 
-        if (isFirstStep) {
-          await updateRun(stepRun.id, "completed", stepIdentity);
-        }
+        await updateRun(stepRun.id, "completed", stepIdentity);
 
         stepRuns.push({ step: s.step, runId: stepRun.id });
       }
