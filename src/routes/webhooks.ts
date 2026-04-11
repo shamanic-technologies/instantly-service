@@ -3,7 +3,7 @@ import { db } from "../db";
 import { instantlyEvents, instantlyCampaigns, sequenceCosts } from "../db/schema";
 import { eq, and } from "drizzle-orm";
 import { WebhookPayloadSchema } from "../schemas";
-import { updateCostStatus, updateRun, type IdentityContext } from "../lib/runs-client";
+import { updateCostStatus, type IdentityContext } from "../lib/runs-client";
 
 const router = Router();
 
@@ -56,8 +56,7 @@ async function handleFollowUpSent(
       .update(sequenceCosts)
       .set({ status: "actual", updatedAt: new Date() })
       .where(eq(sequenceCosts.id, cost.id));
-    await updateRun(cost.runId, "completed", identity);
-    console.log(`[webhooks] Converted provisioned cost ${cost.costId} to actual and completed run ${cost.runId} for step ${step}`);
+    console.log(`[webhooks] Converted provisioned cost ${cost.costId} to actual for step ${step}`);
   } catch (error: any) {
     console.error(`[webhooks] Failed to convert cost ${cost.costId}: ${error.message}`);
   }
@@ -102,8 +101,7 @@ async function cancelRemainingProvisions(
         .update(sequenceCosts)
         .set({ status: "cancelled", updatedAt: new Date() })
         .where(eq(sequenceCosts.id, cost.id));
-      await updateRun(cost.runId, "failed", identity, `Sequence stopped: ${eventType}`);
-      console.log(`[webhooks] Cancelled provisioned cost ${cost.costId} and failed run ${cost.runId} for step ${cost.step}`);
+      console.log(`[webhooks] Cancelled provisioned cost ${cost.costId} for step ${cost.step}`);
     } catch (error: any) {
       console.error(`[webhooks] Failed to cancel cost ${cost.costId}: ${error.message}`);
     }

@@ -566,7 +566,7 @@ describe("POST /send", () => {
     expect(mockCreateCampaign).toHaveBeenCalledTimes(2);
     expect(mockCreateRun).toHaveBeenCalledTimes(3); // 3 step runs
     expect(mockAddCosts).toHaveBeenCalledTimes(3);
-    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" })); // only step 1
+    expect(mockUpdateRun).toHaveBeenCalledTimes(3); // all steps completed immediately
   });
 
   it("should fail after MAX_SEND_RETRIES attempts with not_sending_status and NOT add costs", async () => {
@@ -603,15 +603,17 @@ describe("POST /send", () => {
     expect(res.body.warning).toBeUndefined();
   });
 
-  it("should only complete step 1 run, leaving follow-up step runs ongoing", async () => {
+  it("should complete all step runs immediately (not just step 1)", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
     await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
-    // Only step 1 should be completed
-    expect(mockUpdateRun).toHaveBeenCalledTimes(1);
+    // All 3 step runs should be completed immediately
+    expect(mockUpdateRun).toHaveBeenCalledTimes(3);
     expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" }));
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-2", "completed", expect.objectContaining({ orgId: "org-1" }));
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-3", "completed", expect.objectContaining({ orgId: "org-1" }));
   });
 
   it("should return 409 when concurrent request already claimed the lead", async () => {
