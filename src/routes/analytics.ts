@@ -31,7 +31,7 @@ export function internalExclusionClause(): SQL {
     (d) => sql`e.lead_email LIKE ${"%" + d}`,
   );
   return sql`
-    e.lead_email != e.account_email
+    (e.account_email IS NULL OR e.lead_email != e.account_email)
     AND e.lead_email NOT IN (${sql.join(
       EXCLUDED_EMAILS.map((e) => sql`${e}`),
       sql`, `,
