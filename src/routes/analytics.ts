@@ -40,19 +40,42 @@ export function internalExclusionClause(): SQL {
   `;
 }
 
+export const ZERO_REPLIES_DETAIL = {
+  interested: 0,
+  meetingBooked: 0,
+  closed: 0,
+  notInterested: 0,
+  wrongPerson: 0,
+  unsubscribe: 0,
+  neutral: 0,
+  autoReply: 0,
+  outOfOffice: 0,
+};
+
 const ZERO_STATS = {
   emailsContacted: 0,
   emailsSent: 0,
   emailsDelivered: 0,
   emailsOpened: 0,
   emailsClicked: 0,
-  emailsReplied: 0,
   emailsBounced: 0,
+  repliesPositive: 0,
+  repliesNegative: 0,
+  repliesNeutral: 0,
   repliesAutoReply: 0,
-  repliesNotInterested: 0,
-  repliesOutOfOffice: 0,
-  repliesUnsubscribe: 0,
+  repliesDetail: { ...ZERO_REPLIES_DETAIL },
 };
+
+/** Compute reply aggregates from detail counts */
+export function buildRepliesFromDetail(detail: typeof ZERO_REPLIES_DETAIL) {
+  return {
+    repliesPositive: detail.interested + detail.meetingBooked + detail.closed,
+    repliesNegative: detail.notInterested + detail.wrongPerson + detail.unsubscribe,
+    repliesNeutral: detail.neutral,
+    repliesAutoReply: detail.autoReply + detail.outOfOffice,
+    repliesDetail: detail,
+  };
+}
 
 /** SQL fragment that filters out internal emails on the campaigns table (uses c.lead_email) */
 export function campaignExclusionClause(): SQL {
@@ -140,12 +163,16 @@ export async function queryGroupedStats(
       0)::int AS "emailsDelivered",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "emailsReplied",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "repliesAutoReply",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "repliesNotInterested",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "repliesOutOfOffice",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "repliesUnsubscribe",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "rdNotInterested",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_wrong_person'), 0)::int AS "rdWrongPerson",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "recipients"
     FROM instantly_events e
     JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
@@ -164,23 +191,32 @@ export async function queryGroupedStats(
     : groupBy;
   const contactedMap = await queryGroupedContactedCount(whereClause, underlyingGroupBy);
 
-  const rawGroups = rows.map((row: any) => ({
-    key: row.groupKey as string,
-    stats: {
-      emailsContacted: contactedMap.get(row.groupKey) ?? 0,
-      emailsSent: row.emailsSent ?? 0,
-      emailsDelivered: row.emailsDelivered ?? 0,
-      emailsOpened: row.emailsOpened ?? 0,
-      emailsClicked: row.emailsClicked ?? 0,
-      emailsReplied: row.emailsReplied ?? 0,
-      emailsBounced: row.emailsBounced ?? 0,
-      repliesAutoReply: row.repliesAutoReply ?? 0,
-      repliesNotInterested: row.repliesNotInterested ?? 0,
-      repliesOutOfOffice: row.repliesOutOfOffice ?? 0,
-      repliesUnsubscribe: row.repliesUnsubscribe ?? 0,
-    },
-    recipients: row.recipients ?? 0,
-  }));
+  const rawGroups = rows.map((row: any) => {
+    const detail = {
+      interested: row.rdInterested ?? 0,
+      meetingBooked: row.rdMeetingBooked ?? 0,
+      closed: row.rdClosed ?? 0,
+      notInterested: row.rdNotInterested ?? 0,
+      wrongPerson: row.rdWrongPerson ?? 0,
+      unsubscribe: row.rdUnsubscribe ?? 0,
+      neutral: row.rdNeutral ?? 0,
+      autoReply: row.rdAutoReply ?? 0,
+      outOfOffice: row.rdOutOfOffice ?? 0,
+    };
+    return {
+      key: row.groupKey as string,
+      stats: {
+        emailsContacted: contactedMap.get(row.groupKey) ?? 0,
+        emailsSent: row.emailsSent ?? 0,
+        emailsDelivered: row.emailsDelivered ?? 0,
+        emailsOpened: row.emailsOpened ?? 0,
+        emailsClicked: row.emailsClicked ?? 0,
+        emailsBounced: row.emailsBounced ?? 0,
+        ...buildRepliesFromDetail(detail),
+      },
+      recipients: row.recipients ?? 0,
+    };
+  });
 
   // If dynasty groupBy, re-key and merge by dynasty slug
   if (dynastyMap && (groupBy === "workflowDynastySlug" || groupBy === "featureDynastySlug")) {
@@ -207,15 +243,30 @@ function mergeDynastyGroups(
       existing.stats.emailsDelivered += group.stats.emailsDelivered;
       existing.stats.emailsOpened += group.stats.emailsOpened;
       existing.stats.emailsClicked += group.stats.emailsClicked;
-      existing.stats.emailsReplied += group.stats.emailsReplied;
       existing.stats.emailsBounced += group.stats.emailsBounced;
-      existing.stats.repliesAutoReply += group.stats.repliesAutoReply;
-      existing.stats.repliesNotInterested += group.stats.repliesNotInterested;
-      existing.stats.repliesOutOfOffice += group.stats.repliesOutOfOffice;
-      existing.stats.repliesUnsubscribe += group.stats.repliesUnsubscribe;
+      // Merge reply detail counts, then recompute aggregates
+      const ed = existing.stats.repliesDetail;
+      const gd = group.stats.repliesDetail;
+      ed.interested += gd.interested;
+      ed.meetingBooked += gd.meetingBooked;
+      ed.closed += gd.closed;
+      ed.notInterested += gd.notInterested;
+      ed.wrongPerson += gd.wrongPerson;
+      ed.unsubscribe += gd.unsubscribe;
+      ed.neutral += gd.neutral;
+      ed.autoReply += gd.autoReply;
+      ed.outOfOffice += gd.outOfOffice;
+      const merged_replies = buildRepliesFromDetail(ed);
+      existing.stats.repliesPositive = merged_replies.repliesPositive;
+      existing.stats.repliesNegative = merged_replies.repliesNegative;
+      existing.stats.repliesNeutral = merged_replies.repliesNeutral;
+      existing.stats.repliesAutoReply = merged_replies.repliesAutoReply;
       existing.recipients += group.recipients;
     } else {
-      merged.set(dynastyKey, { stats: { ...group.stats }, recipients: group.recipients });
+      merged.set(dynastyKey, {
+        stats: { ...group.stats, repliesDetail: { ...group.stats.repliesDetail } },
+        recipients: group.recipients,
+      });
     }
   }
 
@@ -236,12 +287,16 @@ export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO
       0)::int AS "emailsDelivered",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "emailsReplied",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "repliesAutoReply",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "repliesNotInterested",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "repliesOutOfOffice",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "repliesUnsubscribe",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "rdNotInterested",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_wrong_person'), 0)::int AS "rdWrongPerson",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "recipients"
     FROM instantly_events e
     JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
@@ -254,10 +309,21 @@ export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO
   const emailsContacted = await queryContactedCount(whereClause);
 
   if (!rows.length) {
-    return { stats: { ...ZERO_STATS, emailsContacted }, recipients: 0 };
+    return { stats: { ...ZERO_STATS, emailsContacted, repliesDetail: { ...ZERO_REPLIES_DETAIL } }, recipients: 0 };
   }
 
   const row = rows[0] as Record<string, number>;
+  const detail = {
+    interested: row.rdInterested ?? 0,
+    meetingBooked: row.rdMeetingBooked ?? 0,
+    closed: row.rdClosed ?? 0,
+    notInterested: row.rdNotInterested ?? 0,
+    wrongPerson: row.rdWrongPerson ?? 0,
+    unsubscribe: row.rdUnsubscribe ?? 0,
+    neutral: row.rdNeutral ?? 0,
+    autoReply: row.rdAutoReply ?? 0,
+    outOfOffice: row.rdOutOfOffice ?? 0,
+  };
   return {
     stats: {
       emailsContacted,
@@ -265,12 +331,8 @@ export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO
       emailsDelivered: row.emailsDelivered ?? 0,
       emailsOpened: row.emailsOpened ?? 0,
       emailsClicked: row.emailsClicked ?? 0,
-      emailsReplied: row.emailsReplied ?? 0,
       emailsBounced: row.emailsBounced ?? 0,
-      repliesAutoReply: row.repliesAutoReply ?? 0,
-      repliesNotInterested: row.repliesNotInterested ?? 0,
-      repliesOutOfOffice: row.repliesOutOfOffice ?? 0,
-      repliesUnsubscribe: row.repliesUnsubscribe ?? 0,
+      ...buildRepliesFromDetail(detail),
     },
     recipients: row.recipients ?? 0,
   };
@@ -390,15 +452,27 @@ router.get("/stats", async (req: Request, res: Response) => {
     const { stats, recipients } = await queryStats(whereClause);
 
     // Per-step breakdown (secondary stats) — non-fatal; overall stats still return on failure
-    let stepStats: { step: number; emailsSent: number; emailsOpened: number; emailsReplied: number; emailsBounced: number }[] = [];
+    let stepStats: Array<{
+      step: number; emailsSent: number; emailsOpened: number; emailsBounced: number;
+      repliesPositive: number; repliesNegative: number; repliesNeutral: number; repliesAutoReply: number;
+      repliesDetail: typeof ZERO_REPLIES_DETAIL;
+    }> = [];
     try {
       const stepResult = await db.execute(sql`
         SELECT
           e.step,
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
           COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "emailsReplied",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced"
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "rdNotInterested",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_wrong_person'), 0)::int AS "rdWrongPerson",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice"
         FROM instantly_events e
         JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
         WHERE ${whereClause}
@@ -408,13 +482,26 @@ router.get("/stats", async (req: Request, res: Response) => {
         ORDER BY e.step
       `);
       const stepRows = Array.isArray(stepResult) ? stepResult : (stepResult as any).rows ?? [];
-      stepStats = stepRows.map((sr: any) => ({
-        step: sr.step,
-        emailsSent: sr.emailsSent ?? 0,
-        emailsOpened: sr.emailsOpened ?? 0,
-        emailsReplied: sr.emailsReplied ?? 0,
-        emailsBounced: sr.emailsBounced ?? 0,
-      }));
+      stepStats = stepRows.map((sr: any) => {
+        const detail = {
+          interested: sr.rdInterested ?? 0,
+          meetingBooked: sr.rdMeetingBooked ?? 0,
+          closed: sr.rdClosed ?? 0,
+          notInterested: sr.rdNotInterested ?? 0,
+          wrongPerson: sr.rdWrongPerson ?? 0,
+          unsubscribe: sr.rdUnsubscribe ?? 0,
+          neutral: sr.rdNeutral ?? 0,
+          autoReply: sr.rdAutoReply ?? 0,
+          outOfOffice: sr.rdOutOfOffice ?? 0,
+        };
+        return {
+          step: sr.step,
+          emailsSent: sr.emailsSent ?? 0,
+          emailsOpened: sr.emailsOpened ?? 0,
+          emailsBounced: sr.emailsBounced ?? 0,
+          ...buildRepliesFromDetail(detail),
+        };
+      });
     } catch (stepError: any) {
       console.error(`[instantly-service] Step query failed (overall stats still returned): ${stepError.cause?.message ?? stepError.message}`);
     }

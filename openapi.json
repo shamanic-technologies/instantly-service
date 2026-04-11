@@ -446,29 +446,77 @@
                 "type": "number",
                 "description": "Total link click events"
               },
-              "emailsReplied": {
-                "type": "number",
-                "description": "Positive replies only (lead_interested events)"
-              },
               "emailsBounced": {
                 "type": "number",
                 "description": "Total email_bounced events"
               },
+              "repliesPositive": {
+                "type": "number",
+                "description": "interested + meetingBooked + closed"
+              },
+              "repliesNegative": {
+                "type": "number",
+                "description": "notInterested + wrongPerson + unsubscribe"
+              },
+              "repliesNeutral": {
+                "type": "number",
+                "description": "neutral (lead_neutral events only)"
+              },
               "repliesAutoReply": {
                 "type": "number",
-                "description": "Total auto_reply_received events"
+                "description": "autoReply + outOfOffice"
               },
-              "repliesNotInterested": {
-                "type": "number",
-                "description": "Total lead_not_interested events"
-              },
-              "repliesOutOfOffice": {
-                "type": "number",
-                "description": "Total lead_out_of_office events"
-              },
-              "repliesUnsubscribe": {
-                "type": "number",
-                "description": "Total lead_unsubscribed events"
+              "repliesDetail": {
+                "type": "object",
+                "properties": {
+                  "interested": {
+                    "type": "number",
+                    "description": "lead_interested events"
+                  },
+                  "meetingBooked": {
+                    "type": "number",
+                    "description": "lead_meeting_booked events"
+                  },
+                  "closed": {
+                    "type": "number",
+                    "description": "lead_closed events"
+                  },
+                  "notInterested": {
+                    "type": "number",
+                    "description": "lead_not_interested events"
+                  },
+                  "wrongPerson": {
+                    "type": "number",
+                    "description": "lead_wrong_person events"
+                  },
+                  "unsubscribe": {
+                    "type": "number",
+                    "description": "lead_unsubscribed events"
+                  },
+                  "neutral": {
+                    "type": "number",
+                    "description": "lead_neutral events"
+                  },
+                  "autoReply": {
+                    "type": "number",
+                    "description": "auto_reply_received events"
+                  },
+                  "outOfOffice": {
+                    "type": "number",
+                    "description": "lead_out_of_office events"
+                  }
+                },
+                "required": [
+                  "interested",
+                  "meetingBooked",
+                  "closed",
+                  "notInterested",
+                  "wrongPerson",
+                  "unsubscribe",
+                  "neutral",
+                  "autoReply",
+                  "outOfOffice"
+                ]
               }
             },
             "required": [
@@ -477,12 +525,12 @@
               "emailsDelivered",
               "emailsOpened",
               "emailsClicked",
-              "emailsReplied",
               "emailsBounced",
+              "repliesPositive",
+              "repliesNegative",
+              "repliesNeutral",
               "repliesAutoReply",
-              "repliesNotInterested",
-              "repliesOutOfOffice",
-              "repliesUnsubscribe"
+              "repliesDetail"
             ]
           },
           "recipients": {
@@ -504,19 +552,88 @@
                 "emailsOpened": {
                   "type": "number"
                 },
-                "emailsReplied": {
-                  "type": "number"
-                },
                 "emailsBounced": {
                   "type": "number"
+                },
+                "repliesPositive": {
+                  "type": "number",
+                  "description": "interested + meetingBooked + closed"
+                },
+                "repliesNegative": {
+                  "type": "number",
+                  "description": "notInterested + wrongPerson + unsubscribe"
+                },
+                "repliesNeutral": {
+                  "type": "number",
+                  "description": "neutral (lead_neutral events only)"
+                },
+                "repliesAutoReply": {
+                  "type": "number",
+                  "description": "autoReply + outOfOffice"
+                },
+                "repliesDetail": {
+                  "type": "object",
+                  "properties": {
+                    "interested": {
+                      "type": "number",
+                      "description": "lead_interested events"
+                    },
+                    "meetingBooked": {
+                      "type": "number",
+                      "description": "lead_meeting_booked events"
+                    },
+                    "closed": {
+                      "type": "number",
+                      "description": "lead_closed events"
+                    },
+                    "notInterested": {
+                      "type": "number",
+                      "description": "lead_not_interested events"
+                    },
+                    "wrongPerson": {
+                      "type": "number",
+                      "description": "lead_wrong_person events"
+                    },
+                    "unsubscribe": {
+                      "type": "number",
+                      "description": "lead_unsubscribed events"
+                    },
+                    "neutral": {
+                      "type": "number",
+                      "description": "lead_neutral events"
+                    },
+                    "autoReply": {
+                      "type": "number",
+                      "description": "auto_reply_received events"
+                    },
+                    "outOfOffice": {
+                      "type": "number",
+                      "description": "lead_out_of_office events"
+                    }
+                  },
+                  "required": [
+                    "interested",
+                    "meetingBooked",
+                    "closed",
+                    "notInterested",
+                    "wrongPerson",
+                    "unsubscribe",
+                    "neutral",
+                    "autoReply",
+                    "outOfOffice"
+                  ]
                 }
               },
               "required": [
                 "step",
                 "emailsSent",
                 "emailsOpened",
-                "emailsReplied",
-                "emailsBounced"
+                "emailsBounced",
+                "repliesPositive",
+                "repliesNegative",
+                "repliesNeutral",
+                "repliesAutoReply",
+                "repliesDetail"
               ]
             },
             "description": "Per-step breakdown (only present when step data exists)"
@@ -562,29 +679,77 @@
                       "type": "number",
                       "description": "Total link click events"
                     },
-                    "emailsReplied": {
-                      "type": "number",
-                      "description": "Positive replies only (lead_interested events)"
-                    },
                     "emailsBounced": {
                       "type": "number",
                       "description": "Total email_bounced events"
                     },
+                    "repliesPositive": {
+                      "type": "number",
+                      "description": "interested + meetingBooked + closed"
+                    },
+                    "repliesNegative": {
+                      "type": "number",
+                      "description": "notInterested + wrongPerson + unsubscribe"
+                    },
+                    "repliesNeutral": {
+                      "type": "number",
+                      "description": "neutral (lead_neutral events only)"
+                    },
                     "repliesAutoReply": {
                       "type": "number",
-                      "description": "Total auto_reply_received events"
+                      "description": "autoReply + outOfOffice"
                     },
-                    "repliesNotInterested": {
-                      "type": "number",
-                      "description": "Total lead_not_interested events"
-                    },
-                    "repliesOutOfOffice": {
-                      "type": "number",
-                      "description": "Total lead_out_of_office events"
-                    },
-                    "repliesUnsubscribe": {
-                      "type": "number",
-                      "description": "Total lead_unsubscribed events"
+                    "repliesDetail": {
+                      "type": "object",
+                      "properties": {
+                        "interested": {
+                          "type": "number",
+                          "description": "lead_interested events"
+                        },
+                        "meetingBooked": {
+                          "type": "number",
+                          "description": "lead_meeting_booked events"
+                        },
+                        "closed": {
+                          "type": "number",
+                          "description": "lead_closed events"
+                        },
+                        "notInterested": {
+                          "type": "number",
+                          "description": "lead_not_interested events"
+                        },
+                        "wrongPerson": {
+                          "type": "number",
+                          "description": "lead_wrong_person events"
+                        },
+                        "unsubscribe": {
+                          "type": "number",
+                          "description": "lead_unsubscribed events"
+                        },
+                        "neutral": {
+                          "type": "number",
+                          "description": "lead_neutral events"
+                        },
+                        "autoReply": {
+                          "type": "number",
+                          "description": "auto_reply_received events"
+                        },
+                        "outOfOffice": {
+                          "type": "number",
+                          "description": "lead_out_of_office events"
+                        }
+                      },
+                      "required": [
+                        "interested",
+                        "meetingBooked",
+                        "closed",
+                        "notInterested",
+                        "wrongPerson",
+                        "unsubscribe",
+                        "neutral",
+                        "autoReply",
+                        "outOfOffice"
+                      ]
                     }
                   },
                   "required": [
@@ -593,12 +758,12 @@
                     "emailsDelivered",
                     "emailsOpened",
                     "emailsClicked",
-                    "emailsReplied",
                     "emailsBounced",
+                    "repliesPositive",
+                    "repliesNegative",
+                    "repliesNeutral",
                     "repliesAutoReply",
-                    "repliesNotInterested",
-                    "repliesOutOfOffice",
-                    "repliesUnsubscribe"
+                    "repliesDetail"
                   ]
                 },
                 "recipients": {
