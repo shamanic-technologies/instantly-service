@@ -67,10 +67,10 @@ async function createStatsApp() {
 function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
   return {
     emailsSent: 0, emailsDelivered: 0, emailsOpened: 0,
-    emailsClicked: 0, emailsReplied: 0, emailsBounced: 0,
-    repliesInterested: 0, repliesMeetingBooked: 0, repliesClosed: 0,
-    repliesNotInterested: 0, repliesNeutral: 0,
-    repliesAutoReply: 0, repliesOutOfOffice: 0, repliesUnsubscribe: 0,
+    emailsClicked: 0, emailsBounced: 0,
+    rdInterested: 0, rdMeetingBooked: 0, rdClosed: 0,
+    rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0,
+    rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0,
     recipients: 0,
     ...overrides,
   };
@@ -89,9 +89,9 @@ describe("GET /stats", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 100, emailsDelivered: 95, emailsOpened: 50,
-        emailsClicked: 5, emailsReplied: 3, emailsBounced: 5,
-        repliesAutoReply: 1, repliesNotInterested: 2,
-        repliesOutOfOffice: 1, recipients: 90,
+        emailsClicked: 5, emailsBounced: 5,
+        rdInterested: 3, rdAutoReply: 1, rdNotInterested: 2,
+        rdOutOfOffice: 1, recipients: 90,
       })],
     });
     // Contacted count query
@@ -105,7 +105,8 @@ describe("GET /stats", () => {
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsContacted).toBe(120);
     expect(response.body.stats.emailsSent).toBe(100);
-    expect(response.body.stats.emailsReplied).toBe(3);
+    expect(response.body.stats.repliesPositive).toBe(3);
+    expect(response.body.stats.repliesDetail.interested).toBe(3);
     expect(response.body.recipients).toBe(90);
   });
 
@@ -124,7 +125,10 @@ describe("GET /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(0);
-    expect(response.body.stats.emailsReplied).toBe(0);
+    expect(response.body.stats.repliesPositive).toBe(0);
+    expect(response.body.stats.repliesNegative).toBe(0);
+    expect(response.body.stats.repliesNeutral).toBe(0);
+    expect(response.body.stats.repliesAutoReply).toBe(0);
     expect(response.body.recipients).toBe(0);
     // stepStats should not be present when empty
     expect(response.body.stepStats).toBeUndefined();
@@ -134,9 +138,9 @@ describe("GET /stats", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 80, emailsDelivered: 75, emailsOpened: 40,
-        emailsClicked: 3, emailsReplied: 1, emailsBounced: 5,
-        repliesAutoReply: 1, repliesNotInterested: 1,
-        repliesOutOfOffice: 2, recipients: 75,
+        emailsClicked: 3, emailsBounced: 5,
+        rdInterested: 1, rdAutoReply: 1, rdNotInterested: 1,
+        rdOutOfOffice: 2, recipients: 75,
       })],
     });
     // Contacted count
@@ -152,16 +156,19 @@ describe("GET /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(80);
-    expect(response.body.stats.emailsReplied).toBe(1);
+    expect(response.body.stats.repliesPositive).toBe(1);
+    expect(response.body.stats.repliesAutoReply).toBe(3); // autoReply(1) + outOfOffice(2)
     expect(response.body.recipients).toBe(75);
   });
 
-  it("should count reply_received events as emailsReplied and breakdown by classification", async () => {
+  it("should compute reply aggregates from detail correctly", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 500, emailsDelivered: 480, emailsOpened: 200,
-        emailsReplied: 5, repliesInterested: 1, repliesNotInterested: 4,
-        repliesAutoReply: 11, repliesOutOfOffice: 13,
+        rdInterested: 3, rdMeetingBooked: 2, rdClosed: 1,
+        rdNotInterested: 4, rdWrongPerson: 1, rdUnsubscribe: 2,
+        rdNeutral: 5,
+        rdAutoReply: 11, rdOutOfOffice: 13,
         recipients: 400,
       })],
     });
@@ -174,9 +181,15 @@ describe("GET /stats", () => {
     const response = await request(app).get("/stats").set(identityHeadersObj);
 
     expect(response.status).toBe(200);
-    expect(response.body.stats.emailsReplied).toBe(5);
-    expect(response.body.stats.repliesInterested).toBe(1);
-    expect(response.body.stats.repliesNotInterested).toBe(4);
+    expect(response.body.stats.repliesPositive).toBe(6);  // 3+2+1
+    expect(response.body.stats.repliesNegative).toBe(7);  // 4+1+2
+    expect(response.body.stats.repliesNeutral).toBe(5);
+    expect(response.body.stats.repliesAutoReply).toBe(24); // 11+13
+    expect(response.body.stats.repliesDetail.interested).toBe(3);
+    expect(response.body.stats.repliesDetail.meetingBooked).toBe(2);
+    expect(response.body.stats.repliesDetail.closed).toBe(1);
+    expect(response.body.stats.repliesDetail.wrongPerson).toBe(1);
+    expect(response.body.stats.repliesDetail.neutral).toBe(5);
   });
 
   it("should include per-step stats when step data exists", async () => {
@@ -184,7 +197,7 @@ describe("GET /stats", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 30, emailsDelivered: 28, emailsOpened: 15,
-        emailsClicked: 1, emailsReplied: 3, emailsBounced: 2,
+        emailsClicked: 1, emailsBounced: 2, rdInterested: 3,
         recipients: 10,
       })],
     });
@@ -193,9 +206,9 @@ describe("GET /stats", () => {
     // Step stats
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { step: 1, emailsSent: 10, emailsOpened: 8, emailsReplied: 1, repliesInterested: 1, repliesNeutral: 0, repliesNotInterested: 0, emailsBounced: 1 },
-        { step: 2, emailsSent: 10, emailsOpened: 5, emailsReplied: 1, repliesInterested: 0, repliesNeutral: 1, repliesNotInterested: 0, emailsBounced: 1 },
-        { step: 3, emailsSent: 10, emailsOpened: 2, emailsReplied: 1, repliesInterested: 0, repliesNeutral: 0, repliesNotInterested: 1, emailsBounced: 0 },
+        { step: 1, emailsSent: 10, emailsOpened: 8, emailsBounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+        { step: 2, emailsSent: 10, emailsOpened: 5, emailsBounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+        { step: 3, emailsSent: 10, emailsOpened: 2, emailsBounced: 0, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
       ],
     });
 
@@ -208,12 +221,13 @@ describe("GET /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.stepStats).toHaveLength(3);
-    expect(response.body.stepStats[0]).toEqual({
-      step: 1, emailsSent: 10, emailsOpened: 8, emailsReplied: 1, repliesInterested: 1, repliesNeutral: 0, repliesNotInterested: 0, emailsBounced: 1,
-    });
-    expect(response.body.stepStats[2]).toEqual({
-      step: 3, emailsSent: 10, emailsOpened: 2, emailsReplied: 1, repliesInterested: 0, repliesNeutral: 0, repliesNotInterested: 1, emailsBounced: 0,
-    });
+    expect(response.body.stepStats[0].step).toBe(1);
+    expect(response.body.stepStats[0].emailsSent).toBe(10);
+    expect(response.body.stepStats[0].repliesPositive).toBe(1);
+    expect(response.body.stepStats[0].repliesDetail.interested).toBe(1);
+    expect(response.body.stepStats[2].step).toBe(3);
+    expect(response.body.stepStats[2].emailsBounced).toBe(0);
+    expect(response.body.stepStats[2].repliesPositive).toBe(1);
   });
 
   it("should return zero stats when db returns empty rows", async () => {
@@ -230,7 +244,7 @@ describe("GET /stats", () => {
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsContacted).toBe(0);
     expect(response.body.stats.emailsSent).toBe(0);
-    expect(response.body.stats.emailsReplied).toBe(0);
+    expect(response.body.stats.repliesPositive).toBe(0);
     expect(response.body.recipients).toBe(0);
   });
 
@@ -297,8 +311,8 @@ describe("GET /stats", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 50, emailsDelivered: 48, emailsOpened: 20,
-        emailsClicked: 2, emailsReplied: 5, emailsBounced: 2,
-        repliesNotInterested: 1, recipients: 40,
+        emailsClicked: 2, emailsBounced: 2,
+        rdInterested: 5, rdNotInterested: 1, recipients: 40,
       })],
     });
     // Contacted count
@@ -314,7 +328,7 @@ describe("GET /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(50);
-    expect(response.body.stats.emailsReplied).toBe(5);
+    expect(response.body.stats.repliesPositive).toBe(5);
     expect(response.body.recipients).toBe(40);
     expect(response.body.stepStats).toBeUndefined();
   });
@@ -348,7 +362,7 @@ describe("GET /stats", () => {
     consoleSpy.mockRestore();
   });
 
-  it("should use reply_received for emailsReplied and lead_interested for repliesInterested in SQL", async () => {
+  it("should query all 9 reply event types in SQL", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     // Contacted count
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
@@ -358,8 +372,17 @@ describe("GET /stats", () => {
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
-    expect(sqlText).toContain("reply_received");
     expect(sqlText).toContain("lead_interested");
+    expect(sqlText).toContain("lead_meeting_booked");
+    expect(sqlText).toContain("lead_closed");
+    expect(sqlText).toContain("lead_not_interested");
+    expect(sqlText).toContain("lead_wrong_person");
+    expect(sqlText).toContain("lead_unsubscribed");
+    expect(sqlText).toContain("lead_neutral");
+    expect(sqlText).toContain("auto_reply_received");
+    expect(sqlText).toContain("lead_out_of_office");
+    // reply_received should NOT appear as a standalone filter (auto_reply_received is fine)
+    expect(sqlText).not.toMatch(/event_type = 'reply_received'/);
   });
 
   // ─── featureSlug filter ──────────────────────────────────────────────────────
@@ -550,8 +573,8 @@ describe("GET /stats", () => {
     // Events grouped by workflow_slug
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { groupKey: "cold-email", emailsSent: 30, emailsDelivered: 28, emailsOpened: 10, emailsClicked: 1, emailsReplied: 2, emailsBounced: 2, repliesInterested: 0, repliesMeetingBooked: 0, repliesClosed: 0, repliesNotInterested: 0, repliesNeutral: 0, repliesAutoReply: 0, repliesOutOfOffice: 0, repliesUnsubscribe: 0, recipients: 15 },
-        { groupKey: "cold-email-v2", emailsSent: 20, emailsDelivered: 18, emailsOpened: 8, emailsClicked: 0, emailsReplied: 1, emailsBounced: 2, repliesInterested: 0, repliesMeetingBooked: 0, repliesClosed: 0, repliesNotInterested: 0, repliesNeutral: 0, repliesAutoReply: 0, repliesOutOfOffice: 0, repliesUnsubscribe: 0, recipients: 10 },
+        { groupKey: "cold-email", emailsSent: 30, emailsDelivered: 28, emailsOpened: 10, emailsClicked: 1, emailsBounced: 2, rdInterested: 2, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0, recipients: 15 },
+        { groupKey: "cold-email-v2", emailsSent: 20, emailsDelivered: 18, emailsOpened: 8, emailsClicked: 0, emailsBounced: 2, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0, recipients: 10 },
       ],
     });
     // Contacted counts grouped
@@ -587,8 +610,8 @@ describe("GET /stats", () => {
 
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { groupKey: "feat-alpha", emailsSent: 20, emailsDelivered: 18, emailsOpened: 5, emailsClicked: 0, emailsReplied: 1, emailsBounced: 2, repliesInterested: 0, repliesMeetingBooked: 0, repliesClosed: 0, repliesNotInterested: 0, repliesNeutral: 0, repliesAutoReply: 0, repliesOutOfOffice: 0, repliesUnsubscribe: 0, recipients: 10 },
-        { groupKey: "feat-alpha-v2", emailsSent: 10, emailsDelivered: 9, emailsOpened: 3, emailsClicked: 0, emailsReplied: 0, emailsBounced: 1, repliesInterested: 0, repliesMeetingBooked: 0, repliesClosed: 0, repliesNotInterested: 0, repliesNeutral: 0, repliesAutoReply: 0, repliesOutOfOffice: 0, repliesUnsubscribe: 0, recipients: 5 },
+        { groupKey: "feat-alpha", emailsSent: 20, emailsDelivered: 18, emailsOpened: 5, emailsClicked: 0, emailsBounced: 2, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0, recipients: 10 },
+        { groupKey: "feat-alpha-v2", emailsSent: 10, emailsDelivered: 9, emailsOpened: 3, emailsClicked: 0, emailsBounced: 1, rdInterested: 0, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0, recipients: 5 },
       ],
     });
     mockExecute.mockResolvedValueOnce({
@@ -621,8 +644,8 @@ describe("GET /stats", () => {
 
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { groupKey: "cold-email", emailsSent: 10, emailsDelivered: 10, emailsOpened: 5, emailsClicked: 0, emailsReplied: 1, emailsBounced: 0, repliesInterested: 0, repliesMeetingBooked: 0, repliesClosed: 0, repliesNotInterested: 0, repliesNeutral: 0, repliesAutoReply: 0, repliesOutOfOffice: 0, repliesUnsubscribe: 0, recipients: 5 },
-        { groupKey: "orphan-workflow", emailsSent: 5, emailsDelivered: 5, emailsOpened: 2, emailsClicked: 0, emailsReplied: 0, emailsBounced: 0, repliesInterested: 0, repliesMeetingBooked: 0, repliesClosed: 0, repliesNotInterested: 0, repliesNeutral: 0, repliesAutoReply: 0, repliesOutOfOffice: 0, repliesUnsubscribe: 0, recipients: 3 },
+        { groupKey: "cold-email", emailsSent: 10, emailsDelivered: 10, emailsOpened: 5, emailsClicked: 0, emailsBounced: 0, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0, recipients: 5 },
+        { groupKey: "orphan-workflow", emailsSent: 5, emailsDelivered: 5, emailsOpened: 2, emailsClicked: 0, emailsBounced: 0, rdInterested: 0, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0, recipients: 3 },
       ],
     });
     mockExecute.mockResolvedValueOnce({
@@ -669,7 +692,7 @@ describe("GET /stats", () => {
   it("should use CROSS JOIN LATERAL unnest for groupBy brandId instead of inline unnest in WHERE", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { groupKey: "brand-1", emailsSent: 10, emailsDelivered: 10, emailsOpened: 5, emailsClicked: 0, emailsReplied: 1, emailsBounced: 0, repliesInterested: 0, repliesMeetingBooked: 0, repliesClosed: 0, repliesNotInterested: 0, repliesNeutral: 0, repliesAutoReply: 0, repliesOutOfOffice: 0, repliesUnsubscribe: 0, recipients: 5 },
+        { groupKey: "brand-1", emailsSent: 10, emailsDelivered: 10, emailsOpened: 5, emailsClicked: 0, emailsBounced: 0, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0, recipients: 5 },
       ],
     });
     mockExecute.mockResolvedValueOnce({
@@ -702,7 +725,7 @@ describe("GET /stats", () => {
   it("should support groupBy featureSlug", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { groupKey: "feat-1", emailsSent: 10, emailsDelivered: 10, emailsOpened: 5, emailsClicked: 0, emailsReplied: 1, emailsBounced: 0, repliesInterested: 0, repliesMeetingBooked: 0, repliesClosed: 0, repliesNotInterested: 0, repliesNeutral: 0, repliesAutoReply: 0, repliesOutOfOffice: 0, repliesUnsubscribe: 0, recipients: 5 },
+        { groupKey: "feat-1", emailsSent: 10, emailsDelivered: 10, emailsOpened: 5, emailsClicked: 0, emailsBounced: 0, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0, recipients: 5 },
       ],
     });
     mockExecute.mockResolvedValueOnce({
@@ -733,14 +756,14 @@ describe("POST /stats/grouped", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 800, emailsDelivered: 750, emailsOpened: 310,
-        emailsReplied: 3, emailsBounced: 20, recipients: 400,
+        rdInterested: 3, emailsBounced: 20, recipients: 400,
       })],
     });
     // Group 2 events query
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         emailsSent: 200, emailsDelivered: 190, emailsOpened: 80,
-        emailsReplied: 1, emailsBounced: 5, recipients: 100,
+        rdInterested: 1, emailsBounced: 5, recipients: 100,
       })],
     });
     // Group 1 contacted count
@@ -765,12 +788,12 @@ describe("POST /stats/grouped", () => {
 
     const alpha = response.body.groups.find((g: any) => g.key === "workflow-alpha");
     expect(alpha.stats.emailsSent).toBe(800);
-    expect(alpha.stats.emailsReplied).toBe(3);
+    expect(alpha.stats.repliesPositive).toBe(3);
     expect(alpha.recipients).toBe(400);
 
     const beta = response.body.groups.find((g: any) => g.key === "workflow-beta");
     expect(beta.stats.emailsSent).toBe(200);
-    expect(beta.stats.emailsReplied).toBe(1);
+    expect(beta.stats.repliesPositive).toBe(1);
     expect(beta.recipients).toBe(100);
   });
 
@@ -794,7 +817,7 @@ describe("POST /stats/grouped", () => {
     expect(response.body.groups).toHaveLength(1);
     expect(response.body.groups[0].key).toBe("empty-workflow");
     expect(response.body.groups[0].stats.emailsSent).toBe(0);
-    expect(response.body.groups[0].stats.emailsReplied).toBe(0);
+    expect(response.body.groups[0].stats.repliesPositive).toBe(0);
     expect(response.body.groups[0].recipients).toBe(0);
   });
 

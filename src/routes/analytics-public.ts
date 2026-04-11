@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
 import { StatsQuerySchema } from "../schemas";
-import { queryStats, queryGroupedStats, internalExclusionClause, addDynastyConditions } from "./analytics";
+import { queryStats, queryGroupedStats, internalExclusionClause, addDynastyConditions, buildRepliesFromDetail, ZERO_REPLIES_DETAIL } from "./analytics";
 import {
   fetchWorkflowDynasties,
   fetchFeatureDynasties,
@@ -17,16 +17,12 @@ const ZERO_STATS = {
   emailsDelivered: 0,
   emailsOpened: 0,
   emailsClicked: 0,
-  emailsReplied: 0,
   emailsBounced: 0,
-  repliesInterested: 0,
-  repliesMeetingBooked: 0,
-  repliesClosed: 0,
-  repliesNotInterested: 0,
+  repliesPositive: 0,
+  repliesNegative: 0,
   repliesNeutral: 0,
   repliesAutoReply: 0,
-  repliesOutOfOffice: 0,
-  repliesUnsubscribe: 0,
+  repliesDetail: { ...ZERO_REPLIES_DETAIL },
 };
 
 /**
@@ -97,18 +93,27 @@ router.get("/stats", async (req: Request, res: Response) => {
   try {
     const { stats, recipients } = await queryStats(whereClause);
 
-    let stepStats: { step: number; emailsSent: number; emailsOpened: number; emailsReplied: number; repliesInterested: number; repliesNeutral: number; repliesNotInterested: number; emailsBounced: number }[] = [];
+    let stepStats: Array<{
+      step: number; emailsSent: number; emailsOpened: number; emailsBounced: number;
+      repliesPositive: number; repliesNegative: number; repliesNeutral: number; repliesAutoReply: number;
+      repliesDetail: typeof ZERO_REPLIES_DETAIL;
+    }> = [];
     try {
       const stepResult = await db.execute(sql`
         SELECT
           e.step,
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
           COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'reply_received'), 0)::int AS "emailsReplied",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "repliesInterested",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "repliesNeutral",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "repliesNotInterested",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced"
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "rdNotInterested",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_wrong_person'), 0)::int AS "rdWrongPerson",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice"
         FROM instantly_events e
         JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
         WHERE ${whereClause}
@@ -118,16 +123,26 @@ router.get("/stats", async (req: Request, res: Response) => {
         ORDER BY e.step
       `);
       const stepRows = Array.isArray(stepResult) ? stepResult : (stepResult as any).rows ?? [];
-      stepStats = stepRows.map((sr: any) => ({
-        step: sr.step,
-        emailsSent: sr.emailsSent ?? 0,
-        emailsOpened: sr.emailsOpened ?? 0,
-        emailsReplied: sr.emailsReplied ?? 0,
-        repliesInterested: sr.repliesInterested ?? 0,
-        repliesNeutral: sr.repliesNeutral ?? 0,
-        repliesNotInterested: sr.repliesNotInterested ?? 0,
-        emailsBounced: sr.emailsBounced ?? 0,
-      }));
+      stepStats = stepRows.map((sr: any) => {
+        const detail = {
+          interested: sr.rdInterested ?? 0,
+          meetingBooked: sr.rdMeetingBooked ?? 0,
+          closed: sr.rdClosed ?? 0,
+          notInterested: sr.rdNotInterested ?? 0,
+          wrongPerson: sr.rdWrongPerson ?? 0,
+          unsubscribe: sr.rdUnsubscribe ?? 0,
+          neutral: sr.rdNeutral ?? 0,
+          autoReply: sr.rdAutoReply ?? 0,
+          outOfOffice: sr.rdOutOfOffice ?? 0,
+        };
+        return {
+          step: sr.step,
+          emailsSent: sr.emailsSent ?? 0,
+          emailsOpened: sr.emailsOpened ?? 0,
+          emailsBounced: sr.emailsBounced ?? 0,
+          ...buildRepliesFromDetail(detail),
+        };
+      });
     } catch (stepError: any) {
       console.error(`[instantly-service] Step query failed (overall stats still returned): ${stepError.cause?.message ?? stepError.message}`);
     }
