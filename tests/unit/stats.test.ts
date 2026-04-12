@@ -278,12 +278,13 @@ describe("GET /stats", () => {
     // Contacted count
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] }); // step query
+    mockExecute.mockResolvedValueOnce({ rows: [{ cnt: 0 }] }); // debug count
     const app = await createStatsApp();
 
     await request(app).get("/stats").set(identityHeadersObj);
 
-    // Stats query + contacted count + step query
-    expect(mockExecute).toHaveBeenCalledTimes(3);
+    // Stats query + contacted count + step query + debug count
+    expect(mockExecute).toHaveBeenCalledTimes(4);
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
