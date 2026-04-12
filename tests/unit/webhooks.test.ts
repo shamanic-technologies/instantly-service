@@ -447,7 +447,7 @@ describe("POST /webhooks/instantly", () => {
 
   // ─── Reply classification tests ──────────────────────────────────────────
 
-  it("should update replyClassification to 'positive' on lead_interested", async () => {
+  it("should update replyClassification to 'interested' on lead_interested", async () => {
     mockVerification("inst-camp-1");
 
     const app = await createWebhookApp();
@@ -461,11 +461,11 @@ describe("POST /webhooks/instantly", () => {
       });
 
     expect(mockDbUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ replyClassification: "positive" }),
+      expect.objectContaining({ replyClassification: "interested" }),
     );
   });
 
-  it("should update replyClassification to 'negative' on lead_not_interested", async () => {
+  it("should update replyClassification to 'notInterested' on lead_not_interested", async () => {
     mockVerification("inst-camp-1");
     mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
     mockDbSelect.mockResolvedValueOnce([]);
@@ -481,11 +481,11 @@ describe("POST /webhooks/instantly", () => {
       });
 
     expect(mockDbUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ replyClassification: "negative" }),
+      expect.objectContaining({ replyClassification: "notInterested" }),
     );
   });
 
-  it("should update replyClassification to 'neutral' on lead_out_of_office", async () => {
+  it("should update replyClassification to 'outOfOffice' on lead_out_of_office", async () => {
     mockVerification("inst-camp-1");
 
     const app = await createWebhookApp();
@@ -499,7 +499,7 @@ describe("POST /webhooks/instantly", () => {
       });
 
     expect(mockDbUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ replyClassification: "neutral" }),
+      expect.objectContaining({ replyClassification: "outOfOffice" }),
     );
   });
 

@@ -134,7 +134,7 @@ describe("POST /status", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [
         { key: "alice@media.com", campaignId: "camp-1", contacted: true, delivered: true, opened: true, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
-        { key: "alice@media.com", campaignId: "camp-2", contacted: true, delivered: true, opened: false, replied: true, replyClassification: "positive", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-02T12:00:00.000Z" },
+        { key: "alice@media.com", campaignId: "camp-2", contacted: true, delivered: true, opened: false, replied: true, replyClassification: "interested", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-02T12:00:00.000Z" },
       ],
     });
 
@@ -153,7 +153,7 @@ describe("POST /status", () => {
     expect(r.byCampaign["camp-1"].opened).toBe(true);
     expect(r.byCampaign["camp-1"].replied).toBe(false);
     expect(r.byCampaign["camp-2"].replied).toBe(true);
-    expect(r.byCampaign["camp-2"].replyClassification).toBe("positive");
+    expect(r.byCampaign["camp-2"].replyClassification).toBe("interested");
     expect(r.byCampaign["camp-2"].opened).toBe(false);
 
     // brand aggregate = most advanced across campaigns
@@ -161,7 +161,7 @@ describe("POST /status", () => {
     expect(r.brand.delivered).toBe(true);
     expect(r.brand.opened).toBe(true);  // opened in camp-1
     expect(r.brand.replied).toBe(true); // replied in camp-2
-    expect(r.brand.replyClassification).toBe("positive"); // from camp-2 (most recent)
+    expect(r.brand.replyClassification).toBe("interested"); // from camp-2 (most recent)
     expect(r.brand.lastDeliveredAt).toBe("2026-03-02T12:00:00.000Z"); // max
     expect(r.brand.bounced).toBe(false);
 
@@ -275,8 +275,8 @@ describe("POST /status", () => {
     mockExecute.mockResolvedValueOnce({ rows: [] }); // global
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { key: "john@acme.com", campaignId: "camp-1", contacted: true, delivered: true, opened: false, replied: true, replyClassification: "negative", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
-        { key: "john@acme.com", campaignId: "camp-2", contacted: true, delivered: true, opened: false, replied: true, replyClassification: "positive", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-05T10:00:00.000Z" },
+        { key: "john@acme.com", campaignId: "camp-1", contacted: true, delivered: true, opened: false, replied: true, replyClassification: "notInterested", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
+        { key: "john@acme.com", campaignId: "camp-2", contacted: true, delivered: true, opened: false, replied: true, replyClassification: "interested", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-05T10:00:00.000Z" },
       ],
     });
 
@@ -288,10 +288,10 @@ describe("POST /status", () => {
 
     expect(res.status).toBe(200);
     const r = res.body.results[0];
-    // camp-2 is more recent, so brand picks "positive"
-    expect(r.brand.replyClassification).toBe("positive");
-    expect(r.byCampaign["camp-1"].replyClassification).toBe("negative");
-    expect(r.byCampaign["camp-2"].replyClassification).toBe("positive");
+    // camp-2 is more recent, so brand picks "interested"
+    expect(r.brand.replyClassification).toBe("interested");
+    expect(r.byCampaign["camp-1"].replyClassification).toBe("notInterested");
+    expect(r.byCampaign["camp-2"].replyClassification).toBe("interested");
   });
 
   // ── Query count ────────────────────────────────────────────────────────
