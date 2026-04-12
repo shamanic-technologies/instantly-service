@@ -407,8 +407,6 @@ router.get("/stats", async (req: Request, res: Response) => {
   const { runIds: runIdsRaw, brandId, campaignId, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy } = parsed.data;
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
   const orgId = res.locals.orgId as string;
-  // TEMPORARY DEBUG
-  console.log(`[instantly-service] /orgs/stats orgId=${JSON.stringify(orgId)} type=${typeof orgId} raw-header=${JSON.stringify(req.headers["x-org-id"])}`);
 
   // Build WHERE clauses — always scope by org from header
   const conditions: SQL[] = [sql`c.org_id = ${orgId}`];
@@ -508,19 +506,10 @@ router.get("/stats", async (req: Request, res: Response) => {
       console.error(`[instantly-service] Step query failed (overall stats still returned): ${stepError.cause?.message ?? stepError.message}`);
     }
 
-    // TEMPORARY DEBUG: raw count to verify DB query works
-    let _debugCount: number | null = null;
-    try {
-      const debugResult = await db.execute(sql`SELECT COUNT(*)::int AS cnt FROM instantly_campaigns WHERE org_id = ${orgId}`);
-      const debugRows = Array.isArray(debugResult) ? debugResult : (debugResult as any).rows ?? [];
-      _debugCount = (debugRows[0] as any)?.cnt ?? null;
-    } catch { /* ignore */ }
-
     res.json({
       stats,
       recipients,
       ...(stepStats.length > 0 && { stepStats }),
-      _debug: { orgId, rawHeader: req.headers["x-org-id"], campaignCount: _debugCount },
     });
   } catch (error: any) {
     const msg = error.cause?.message ?? error.message ?? String(error);
