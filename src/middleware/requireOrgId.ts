@@ -1,12 +1,5 @@
 import { Request, Response, NextFunction } from "express";
 
-/** Strip trailing commas and whitespace from a header value */
-function cleanHeader(value: string | undefined): string | undefined {
-  if (!value) return value;
-  const cleaned = value.replace(/,+$/, "").trim();
-  return cleaned || undefined;
-}
-
 /**
  * Middleware for /orgs/* routes.
  *
@@ -18,7 +11,7 @@ export function requireOrgId(
   res: Response,
   next: NextFunction,
 ) {
-  const orgId = cleanHeader(req.headers["x-org-id"] as string | undefined);
+  const orgId = req.headers["x-org-id"] as string | undefined;
 
   if (!orgId) {
     return res
@@ -29,17 +22,17 @@ export function requireOrgId(
   res.locals.orgId = orgId;
 
   // Optional identity headers
-  const userId = cleanHeader(req.headers["x-user-id"] as string | undefined);
-  const runId = cleanHeader(req.headers["x-run-id"] as string | undefined);
+  const userId = req.headers["x-user-id"] as string | undefined;
+  const runId = req.headers["x-run-id"] as string | undefined;
 
   if (userId) res.locals.userId = userId;
   if (runId) res.locals.runId = runId;
 
   // Optional workflow tracking headers — injected by workflow-service on all DAG calls
-  const headerCampaignId = cleanHeader(req.headers["x-campaign-id"] as string | undefined);
+  const headerCampaignId = req.headers["x-campaign-id"] as string | undefined;
   const headerBrandId = req.headers["x-brand-id"] as string | undefined;
-  const headerWorkflowSlug = cleanHeader(req.headers["x-workflow-slug"] as string | undefined);
-  const headerFeatureSlug = cleanHeader(req.headers["x-feature-slug"] as string | undefined);
+  const headerWorkflowSlug = req.headers["x-workflow-slug"] as string | undefined;
+  const headerFeatureSlug = req.headers["x-feature-slug"] as string | undefined;
 
   if (headerCampaignId) res.locals.headerCampaignId = headerCampaignId;
   if (headerBrandId) {

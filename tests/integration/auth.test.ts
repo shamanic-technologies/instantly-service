@@ -77,19 +77,6 @@ describe("Auth Integration", () => {
       expect(response.status).not.toBe(401);
     });
 
-    it("should strip trailing commas from x-org-id header", async () => {
-      process.env.INSTANTLY_SERVICE_API_KEY = "test-api-key";
-
-      const response = await request(app)
-        .get("/orgs/campaigns/test-id")
-        .set("X-API-Key", "test-api-key")
-        .set("x-org-id", "test-org,");
-
-      // Should not be 400 — trailing comma should be stripped
-      expect(response.status).not.toBe(400);
-      expect(response.status).not.toBe(401);
-    });
-
     it("should not require x-org-id on /internal routes", async () => {
       process.env.INSTANTLY_SERVICE_API_KEY = "test-api-key";
 
