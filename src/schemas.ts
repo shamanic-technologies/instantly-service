@@ -796,11 +796,7 @@ export const StatusRequestSchema = z
 
 export type StatusRequest = z.infer<typeof StatusRequestSchema>;
 
-const ReplyClassificationSchema = z.enum([
-  "interested", "meetingBooked", "closed",
-  "notInterested", "wrongPerson",
-  "neutral", "outOfOffice", "autoReply",
-]);
+const ReplyClassificationSchema = z.enum(["positive", "negative", "neutral"]);
 
 const ScopedStatusFieldsSchema = z.object({
   contacted: z.boolean().describe("true if the lead was added to this campaign/brand"),
@@ -847,13 +843,13 @@ const StatusResponseSchema = z
             },
             "c1a2b3c4-0000-0000-0000-000000000002": {
               contacted: true, delivered: true, opened: false, replied: true,
-              replyClassification: "interested", bounced: false, unsubscribed: false,
+              replyClassification: "positive", bounced: false, unsubscribed: false,
               lastDeliveredAt: "2026-03-02T12:00:00.000Z",
             },
           },
           brand: {
             contacted: true, delivered: true, opened: true, replied: true,
-            replyClassification: "interested", bounced: false, unsubscribed: false,
+            replyClassification: "positive", bounced: false, unsubscribed: false,
             lastDeliveredAt: "2026-03-02T12:00:00.000Z",
           },
           campaign: null,
