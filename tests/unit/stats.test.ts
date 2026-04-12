@@ -85,6 +85,29 @@ describe("GET /stats", () => {
     mockFetchFeatureDynasties.mockResolvedValue([]);
   });
 
+  it("should strip trailing commas from x-org-id before querying", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow({ emailsSent: 5 })] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 2 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .set({ ...identityHeadersObj, "x-org-id": "test-org," });
+
+    expect(response.status).toBe(200);
+
+    // Verify the SQL uses the cleaned org_id (no trailing comma)
+    const sqlObj = mockExecute.mock.calls[0][0];
+    const sqlText = extractSqlText(sqlObj);
+    expect(sqlText).toContain("c.org_id =");
+    // The parameterized value should NOT contain a trailing comma
+    const params = sqlObj.queryChunks || [];
+    const flatParams = JSON.stringify(params);
+    expect(flatParams).not.toContain("test-org,");
+  });
+
   it("should return global stats when no filters provided", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
@@ -278,13 +301,12 @@ describe("GET /stats", () => {
     // Contacted count
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] }); // step query
-    mockExecute.mockResolvedValueOnce({ rows: [{ cnt: 0 }] }); // debug count
     const app = await createStatsApp();
 
     await request(app).get("/stats").set(identityHeadersObj);
 
-    // Stats query + contacted count + step query + debug count
-    expect(mockExecute).toHaveBeenCalledTimes(4);
+    // Stats query + contacted count + step query
+    expect(mockExecute).toHaveBeenCalledTimes(3);
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
