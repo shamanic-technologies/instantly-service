@@ -890,9 +890,14 @@
                         "type": "string",
                         "nullable": true,
                         "enum": [
-                          "positive",
-                          "negative",
+                          "interested",
+                          "meetingBooked",
+                          "closed",
+                          "notInterested",
+                          "wrongPerson",
                           "neutral",
+                          "outOfOffice",
+                          "autoReply",
                           null
                         ],
                         "description": "Reply classification based on Instantly interest status. null = no reply"
@@ -948,9 +953,14 @@
                       "type": "string",
                       "nullable": true,
                       "enum": [
-                        "positive",
-                        "negative",
+                        "interested",
+                        "meetingBooked",
+                        "closed",
+                        "notInterested",
+                        "wrongPerson",
                         "neutral",
+                        "outOfOffice",
+                        "autoReply",
                         null
                       ],
                       "description": "Reply classification based on Instantly interest status. null = no reply"
@@ -1005,9 +1015,14 @@
                       "type": "string",
                       "nullable": true,
                       "enum": [
-                        "positive",
-                        "negative",
+                        "interested",
+                        "meetingBooked",
+                        "closed",
+                        "notInterested",
+                        "wrongPerson",
                         "neutral",
+                        "outOfOffice",
+                        "autoReply",
                         null
                       ],
                       "description": "Reply classification based on Instantly interest status. null = no reply"
@@ -1097,7 +1112,7 @@
                   "delivered": true,
                   "opened": false,
                   "replied": true,
-                  "replyClassification": "positive",
+                  "replyClassification": "interested",
                   "bounced": false,
                   "unsubscribed": false,
                   "lastDeliveredAt": "2026-03-02T12:00:00.000Z"
@@ -1108,7 +1123,7 @@
                 "delivered": true,
                 "opened": true,
                 "replied": true,
-                "replyClassification": "positive",
+                "replyClassification": "interested",
                 "bounced": false,
                 "unsubscribed": false,
                 "lastDeliveredAt": "2026-03-02T12:00:00.000Z"

@@ -117,16 +117,16 @@ const DELIVERY_STATUS_MAP: Record<string, string> = {
   lead_unsubscribed: "unsubscribed",
 };
 
-/** Maps webhook event types to reply classification values */
-const REPLY_CLASSIFICATION_MAP: Record<string, "positive" | "negative" | "neutral"> = {
-  lead_interested: "positive",
-  lead_meeting_booked: "positive",
-  lead_closed: "positive",
-  lead_not_interested: "negative",
-  lead_wrong_person: "negative",
+/** Maps webhook event types to granular reply classification values (aligned with RepliesDetailSchema keys) */
+const REPLY_CLASSIFICATION_MAP: Record<string, string> = {
+  lead_interested: "interested",
+  lead_meeting_booked: "meetingBooked",
+  lead_closed: "closed",
+  lead_not_interested: "notInterested",
+  lead_wrong_person: "wrongPerson",
   lead_neutral: "neutral",
-  lead_out_of_office: "neutral",
-  auto_reply_received: "neutral",
+  lead_out_of_office: "outOfOffice",
+  auto_reply_received: "autoReply",
 };
 
 async function updateDeliveryStatus(
