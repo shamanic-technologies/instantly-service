@@ -206,9 +206,9 @@ describe("GET /stats", () => {
     // Step stats
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { step: 1, emailsSent: 10, emailsOpened: 8, emailsBounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
-        { step: 2, emailsSent: 10, emailsOpened: 5, emailsBounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
-        { step: 3, emailsSent: 10, emailsOpened: 2, emailsBounced: 0, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+        { step: 1, emailsSent: 10, emailsOpened: 8, emailsClicked: 3, emailsBounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+        { step: 2, emailsSent: 10, emailsOpened: 5, emailsClicked: 1, emailsBounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+        { step: 3, emailsSent: 10, emailsOpened: 2, emailsClicked: 0, emailsBounced: 0, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
       ],
     });
 
@@ -223,9 +223,11 @@ describe("GET /stats", () => {
     expect(response.body.stepStats).toHaveLength(3);
     expect(response.body.stepStats[0].step).toBe(1);
     expect(response.body.stepStats[0].emailsSent).toBe(10);
+    expect(response.body.stepStats[0].emailsClicked).toBe(3);
     expect(response.body.stepStats[0].repliesPositive).toBe(1);
     expect(response.body.stepStats[0].repliesDetail.interested).toBe(1);
     expect(response.body.stepStats[2].step).toBe(3);
+    expect(response.body.stepStats[2].emailsClicked).toBe(0);
     expect(response.body.stepStats[2].emailsBounced).toBe(0);
     expect(response.body.stepStats[2].repliesPositive).toBe(1);
   });

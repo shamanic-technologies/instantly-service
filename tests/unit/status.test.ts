@@ -22,7 +22,7 @@ async function createStatusApp() {
   return app;
 }
 
-const emptyScoped = { contacted: false, delivered: false, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null };
+const emptyScoped = { contacted: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null };
 
 describe("POST /status", () => {
   beforeEach(() => {
@@ -70,7 +70,7 @@ describe("POST /status", () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     // Campaign
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", campaignId: null, contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
+      rows: [{ key: "john@acme.com", campaignId: null, contacted: true, delivered: true, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-02-20T14:30:00.000Z" }],
     });
 
     const app = await createStatusApp();
@@ -84,6 +84,7 @@ describe("POST /status", () => {
     const r = res.body.results[0];
     expect(r.campaign.contacted).toBe(true);
     expect(r.campaign.delivered).toBe(true);
+    expect(r.campaign.clicked).toBe(false);
     expect(r.campaign.lastDeliveredAt).toBe("2026-02-20T14:30:00.000Z");
     expect(r.byCampaign).toBeNull();
     expect(r.brand).toBeNull();
@@ -133,8 +134,8 @@ describe("POST /status", () => {
     // Brand breakdown (2 campaigns)
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { key: "alice@media.com", campaignId: "camp-1", contacted: true, delivered: true, opened: true, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
-        { key: "alice@media.com", campaignId: "camp-2", contacted: true, delivered: true, opened: false, replied: true, replyClassification: "positive", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-02T12:00:00.000Z" },
+        { key: "alice@media.com", campaignId: "camp-1", contacted: true, delivered: true, opened: true, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
+        { key: "alice@media.com", campaignId: "camp-2", contacted: true, delivered: true, opened: false, clicked: true, replied: true, replyClassification: "positive", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-02T12:00:00.000Z" },
       ],
     });
 
@@ -154,12 +155,15 @@ describe("POST /status", () => {
     expect(r.byCampaign["camp-1"].replied).toBe(false);
     expect(r.byCampaign["camp-2"].replied).toBe(true);
     expect(r.byCampaign["camp-2"].replyClassification).toBe("positive");
+    expect(r.byCampaign["camp-1"].clicked).toBe(false);
     expect(r.byCampaign["camp-2"].opened).toBe(false);
+    expect(r.byCampaign["camp-2"].clicked).toBe(true);
 
     // brand aggregate = most advanced across campaigns
     expect(r.brand.contacted).toBe(true);
     expect(r.brand.delivered).toBe(true);
     expect(r.brand.opened).toBe(true);  // opened in camp-1
+    expect(r.brand.clicked).toBe(true); // clicked in camp-2
     expect(r.brand.replied).toBe(true); // replied in camp-2
     expect(r.brand.replyClassification).toBe("positive"); // from camp-2 (most recent)
     expect(r.brand.lastDeliveredAt).toBe("2026-03-02T12:00:00.000Z"); // max
@@ -192,8 +196,8 @@ describe("POST /status", () => {
     mockExecute.mockResolvedValueOnce({ rows: [] }); // global
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { key: "john@acme.com", campaignId: "camp-1", contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
-        { key: "john@acme.com", campaignId: "camp-2", contacted: true, delivered: false, opened: false, replied: false, replyClassification: null, bounced: true, unsubscribed: false, lastDeliveredAt: null },
+        { key: "john@acme.com", campaignId: "camp-1", contacted: true, delivered: true, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
+        { key: "john@acme.com", campaignId: "camp-2", contacted: true, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: true, unsubscribed: false, lastDeliveredAt: null },
       ],
     });
 
@@ -222,7 +226,7 @@ describe("POST /status", () => {
     // Brand breakdown
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { key: "alice@media.com", campaignId: "camp-1", contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
+        { key: "alice@media.com", campaignId: "camp-1", contacted: true, delivered: true, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
       ],
     });
 
@@ -254,7 +258,7 @@ describe("POST /status", () => {
     });
     // Brand breakdown: clean
     mockExecute.mockResolvedValueOnce({
-      rows: [{ key: "john@acme.com", campaignId: "camp-1", contacted: true, delivered: true, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" }],
+      rows: [{ key: "john@acme.com", campaignId: "camp-1", contacted: true, delivered: true, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" }],
     });
 
     const app = await createStatusApp();
@@ -275,8 +279,8 @@ describe("POST /status", () => {
     mockExecute.mockResolvedValueOnce({ rows: [] }); // global
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { key: "john@acme.com", campaignId: "camp-1", contacted: true, delivered: true, opened: false, replied: true, replyClassification: "negative", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
-        { key: "john@acme.com", campaignId: "camp-2", contacted: true, delivered: true, opened: false, replied: true, replyClassification: "positive", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-05T10:00:00.000Z" },
+        { key: "john@acme.com", campaignId: "camp-1", contacted: true, delivered: true, opened: false, clicked: false, replied: true, replyClassification: "negative", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
+        { key: "john@acme.com", campaignId: "camp-2", contacted: true, delivered: true, opened: false, clicked: false, replied: true, replyClassification: "positive", bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-05T10:00:00.000Z" },
       ],
     });
 
@@ -341,6 +345,48 @@ describe("POST /status", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe("Failed to get delivery status");
+  });
+
+  // ── Clicked field ────────────────────────────────────────────────────────
+
+  it("should return clicked=true when email_link_clicked event exists (campaign mode)", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", campaignId: null, contacted: true, delivered: true, opened: true, clicked: true, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" }],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      campaignId: "camp-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    const r = res.body.results[0];
+    expect(r.campaign.clicked).toBe(true);
+    expect(r.campaign.opened).toBe(true);
+  });
+
+  it("should aggregate clicked at brand level via BOOL_OR", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { key: "john@acme.com", campaignId: "camp-1", contacted: true, delivered: true, opened: true, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
+        { key: "john@acme.com", campaignId: "camp-2", contacted: true, delivered: true, opened: false, clicked: true, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: "2026-03-02T10:00:00.000Z" },
+      ],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      brandId: "brand-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    const r = res.body.results[0];
+    expect(r.byCampaign["camp-1"].clicked).toBe(false);
+    expect(r.byCampaign["camp-2"].clicked).toBe(true);
+    expect(r.brand.clicked).toBe(true); // BOOL_OR
   });
 
   // ── No leadId in response ──────────────────────────────────────────────
