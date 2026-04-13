@@ -354,7 +354,6 @@ router.post("/", async (req: Request, res: Response) => {
             instantlyCampaignId: result.instantlyCampaignId,
             name: `Campaign ${campaignId}`,
             status: "active",
-            deliveryStatus: "sent",
             orgId,
             userId,
             brandIds,

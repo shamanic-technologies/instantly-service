@@ -108,63 +108,6 @@ async function cancelRemainingProvisions(
   }
 }
 
-/** Maps webhook event types to deliveryStatus values */
-const DELIVERY_STATUS_MAP: Record<string, string> = {
-  email_sent: "sent",
-  campaign_completed: "delivered",
-  reply_received: "replied",
-  email_bounced: "bounced",
-  lead_unsubscribed: "unsubscribed",
-};
-
-/** Maps webhook event types to reply classification values */
-const REPLY_CLASSIFICATION_MAP: Record<string, "positive" | "negative" | "neutral"> = {
-  lead_interested: "positive",
-  lead_meeting_booked: "positive",
-  lead_closed: "positive",
-  lead_not_interested: "negative",
-  lead_wrong_person: "negative",
-  lead_neutral: "neutral",
-  lead_out_of_office: "neutral",
-  auto_reply_received: "neutral",
-};
-
-async function updateDeliveryStatus(
-  instantlyCampaignId: string,
-  eventType: string,
-): Promise<void> {
-  const newStatus = DELIVERY_STATUS_MAP[eventType];
-  if (!newStatus) return;
-
-  try {
-    await db
-      .update(instantlyCampaigns)
-      .set({ deliveryStatus: newStatus, updatedAt: new Date() })
-      .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
-    console.log(`[webhooks] Updated deliveryStatus to '${newStatus}' for campaign ${instantlyCampaignId}`);
-  } catch (error: any) {
-    console.error(`[webhooks] Failed to update deliveryStatus for ${instantlyCampaignId}: ${error.message}`);
-  }
-}
-
-async function updateReplyClassification(
-  instantlyCampaignId: string,
-  eventType: string,
-): Promise<void> {
-  const classification = REPLY_CLASSIFICATION_MAP[eventType];
-  if (!classification) return;
-
-  try {
-    await db
-      .update(instantlyCampaigns)
-      .set({ replyClassification: classification, updatedAt: new Date() })
-      .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
-    console.log(`[webhooks] Updated replyClassification to '${classification}' for campaign ${instantlyCampaignId}`);
-  } catch (error: any) {
-    console.error(`[webhooks] Failed to update replyClassification for ${instantlyCampaignId}: ${error.message}`);
-  }
-}
-
 /**
  * GET /webhooks/instantly/config
  * Returns the webhook URL that BYOK customers should paste into their Instantly dashboard.
@@ -221,11 +164,7 @@ router.post("/instantly", async (req: Request, res: Response) => {
       rawPayload: req.body,
     });
 
-    // 4. Update delivery status + reply classification
-    await updateDeliveryStatus(payload.campaign_id, payload.event_type);
-    await updateReplyClassification(payload.campaign_id, payload.event_type);
-
-    // 5. Handle cost lifecycle based on event type
+    // 4. Handle cost lifecycle based on event type
     if (payload.lead_email) {
       if (payload.event_type === "email_sent" && payload.step && payload.step > 1) {
         await handleFollowUpSent(payload.campaign_id, payload.lead_email, payload.step);

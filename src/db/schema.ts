@@ -28,8 +28,6 @@ export const instantlyCampaigns = pgTable(
     featureSlug: text("feature_slug"),
     runId: text("run_id"),
     leadId: text("lead_id"),
-    deliveryStatus: text("delivery_status").notNull().default("pending"),
-    replyClassification: text("reply_classification"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),

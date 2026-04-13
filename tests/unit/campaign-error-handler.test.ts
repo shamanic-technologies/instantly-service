@@ -89,10 +89,12 @@ describe("handleCampaignError", () => {
     expect(mockDbSetWhere).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "error",
-        deliveryStatus: "failed",
         metadata: { errorReason: "account disconnected" },
       }),
     );
+    // deliveryStatus should NOT be present
+    const updateCall = mockDbSetWhere.mock.calls[0][0];
+    expect(updateCall).not.toHaveProperty("deliveryStatus");
   });
 
   it("should cancel all remaining provisioned costs and fail step runs", async () => {

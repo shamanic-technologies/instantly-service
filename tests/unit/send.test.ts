@@ -387,7 +387,7 @@ describe("POST /send", () => {
     );
   });
 
-  it("should store leadId and deliveryStatus in campaign insert", async () => {
+  it("should store leadId in campaign insert without deliveryStatus", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
@@ -399,8 +399,8 @@ describe("POST /send", () => {
     expect(campaignInsert).toBeDefined();
     expect(campaignInsert![0]).toMatchObject({
       leadId: "lead-1",
-      deliveryStatus: "sent",
     });
+    expect(campaignInsert![0]).not.toHaveProperty("deliveryStatus");
   });
 
   it("should create per-step runs with 1 actual + N-1 provisioned costs for a 3-step sequence", async () => {

@@ -879,6 +879,10 @@
                         "type": "boolean",
                         "description": "true if the lead was added to this campaign/brand"
                       },
+                      "sent": {
+                        "type": "boolean",
+                        "description": "true if at least one email_sent event exists, or implied by downstream events"
+                      },
                       "delivered": {
                         "type": "boolean",
                         "description": "true if at least one email was delivered (sent/delivered/replied status)"
@@ -902,6 +906,7 @@
                           "positive",
                           "negative",
                           "neutral",
+                          "auto_reply",
                           null
                         ],
                         "description": "Reply classification based on Instantly interest status. null = no reply"
@@ -922,6 +927,7 @@
                     },
                     "required": [
                       "contacted",
+                      "sent",
                       "delivered",
                       "opened",
                       "clicked",
@@ -942,6 +948,10 @@
                       "type": "boolean",
                       "description": "true if the lead was added to this campaign/brand"
                     },
+                    "sent": {
+                      "type": "boolean",
+                      "description": "true if at least one email_sent event exists, or implied by downstream events"
+                    },
                     "delivered": {
                       "type": "boolean",
                       "description": "true if at least one email was delivered (sent/delivered/replied status)"
@@ -965,6 +975,7 @@
                         "positive",
                         "negative",
                         "neutral",
+                        "auto_reply",
                         null
                       ],
                       "description": "Reply classification based on Instantly interest status. null = no reply"
@@ -985,6 +996,7 @@
                   },
                   "required": [
                     "contacted",
+                    "sent",
                     "delivered",
                     "opened",
                     "clicked",
@@ -1004,6 +1016,10 @@
                       "type": "boolean",
                       "description": "true if the lead was added to this campaign/brand"
                     },
+                    "sent": {
+                      "type": "boolean",
+                      "description": "true if at least one email_sent event exists, or implied by downstream events"
+                    },
                     "delivered": {
                       "type": "boolean",
                       "description": "true if at least one email was delivered (sent/delivered/replied status)"
@@ -1027,6 +1043,7 @@
                         "positive",
                         "negative",
                         "neutral",
+                        "auto_reply",
                         null
                       ],
                       "description": "Reply classification based on Instantly interest status. null = no reply"
@@ -1047,6 +1064,7 @@
                   },
                   "required": [
                     "contacted",
+                    "sent",
                     "delivered",
                     "opened",
                     "clicked",
@@ -1104,6 +1122,7 @@
               "byCampaign": {
                 "c1a2b3c4-0000-0000-0000-000000000001": {
                   "contacted": true,
+                  "sent": true,
                   "delivered": true,
                   "opened": true,
                   "clicked": false,
@@ -1115,6 +1134,7 @@
                 },
                 "c1a2b3c4-0000-0000-0000-000000000002": {
                   "contacted": true,
+                  "sent": true,
                   "delivered": true,
                   "opened": false,
                   "clicked": true,
@@ -1127,6 +1147,7 @@
               },
               "brand": {
                 "contacted": true,
+                "sent": true,
                 "delivered": true,
                 "opened": true,
                 "clicked": true,

@@ -328,6 +328,8 @@ describe("POST /webhooks/instantly", () => {
       });
 
     expect(mockUpdateCostStatus).not.toHaveBeenCalled();
+    // No db.update calls at all (delivery status removed)
+    expect(mockDbUpdate).not.toHaveBeenCalled();
   });
 
   it("should NOT cancel provisions on lead_out_of_office (sequence continues)", async () => {
@@ -344,11 +346,11 @@ describe("POST /webhooks/instantly", () => {
       });
 
     expect(mockUpdateCostStatus).not.toHaveBeenCalled();
+    // No db.update calls at all (delivery status removed)
+    expect(mockDbUpdate).not.toHaveBeenCalled();
   });
 
-  // ─── Delivery status tests ───────────────────────────────────────────────
-
-  it("should update deliveryStatus to 'sent' on email_sent", async () => {
+  it("should NOT call db.update for any event type (delivery status removed)", async () => {
     mockVerification("inst-camp-1");
 
     const app = await createWebhookApp();
@@ -362,185 +364,8 @@ describe("POST /webhooks/instantly", () => {
         step: 1,
       });
 
-    expect(mockDbUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ deliveryStatus: "sent" }),
-    );
-  });
-
-  it("should update deliveryStatus to 'replied' on reply_received", async () => {
-    mockVerification("inst-camp-1");
-    mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
-    mockDbSelect.mockResolvedValueOnce([]);
-
-    const app = await createWebhookApp();
-
-    await request(app)
-      .post("/webhooks/instantly")
-      .send({
-        event_type: "reply_received",
-        campaign_id: "inst-camp-1",
-        lead_email: "lead@test.com",
-      });
-
-    expect(mockDbUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ deliveryStatus: "replied" }),
-    );
-  });
-
-  it("should update deliveryStatus to 'bounced' on email_bounced", async () => {
-    mockVerification("inst-camp-1");
-    mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
-    mockDbSelect.mockResolvedValueOnce([]);
-
-    const app = await createWebhookApp();
-
-    await request(app)
-      .post("/webhooks/instantly")
-      .send({
-        event_type: "email_bounced",
-        campaign_id: "inst-camp-1",
-        lead_email: "lead@test.com",
-      });
-
-    expect(mockDbUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ deliveryStatus: "bounced" }),
-    );
-  });
-
-  it("should update deliveryStatus to 'unsubscribed' on lead_unsubscribed", async () => {
-    mockVerification("inst-camp-1");
-    mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
-    mockDbSelect.mockResolvedValueOnce([]);
-
-    const app = await createWebhookApp();
-
-    await request(app)
-      .post("/webhooks/instantly")
-      .send({
-        event_type: "lead_unsubscribed",
-        campaign_id: "inst-camp-1",
-        lead_email: "lead@test.com",
-      });
-
-    expect(mockDbUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ deliveryStatus: "unsubscribed" }),
-    );
-  });
-
-  it("should update deliveryStatus to 'delivered' on campaign_completed", async () => {
-    mockVerification("inst-camp-1");
-
-    const app = await createWebhookApp();
-
-    await request(app)
-      .post("/webhooks/instantly")
-      .send({
-        event_type: "campaign_completed",
-        campaign_id: "inst-camp-1",
-        lead_email: "lead@test.com",
-      });
-
-    expect(mockDbUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ deliveryStatus: "delivered" }),
-    );
-  });
-
-  // ─── Reply classification tests ──────────────────────────────────────────
-
-  it("should update replyClassification to 'positive' on lead_interested", async () => {
-    mockVerification("inst-camp-1");
-
-    const app = await createWebhookApp();
-
-    await request(app)
-      .post("/webhooks/instantly")
-      .send({
-        event_type: "lead_interested",
-        campaign_id: "inst-camp-1",
-        lead_email: "lead@test.com",
-      });
-
-    expect(mockDbUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ replyClassification: "positive" }),
-    );
-  });
-
-  it("should update replyClassification to 'negative' on lead_not_interested", async () => {
-    mockVerification("inst-camp-1");
-    mockDbSelect.mockResolvedValueOnce([{ campaignId: "camp-1" }]);
-    mockDbSelect.mockResolvedValueOnce([]);
-
-    const app = await createWebhookApp();
-
-    await request(app)
-      .post("/webhooks/instantly")
-      .send({
-        event_type: "lead_not_interested",
-        campaign_id: "inst-camp-1",
-        lead_email: "lead@test.com",
-      });
-
-    expect(mockDbUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ replyClassification: "negative" }),
-    );
-  });
-
-  it("should update replyClassification to 'neutral' on lead_out_of_office", async () => {
-    mockVerification("inst-camp-1");
-
-    const app = await createWebhookApp();
-
-    await request(app)
-      .post("/webhooks/instantly")
-      .send({
-        event_type: "lead_out_of_office",
-        campaign_id: "inst-camp-1",
-        lead_email: "lead@test.com",
-      });
-
-    expect(mockDbUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ replyClassification: "neutral" }),
-    );
-  });
-
-  it("should NOT update replyClassification for email_sent", async () => {
-    mockVerification("inst-camp-1");
-
-    const app = await createWebhookApp();
-
-    await request(app)
-      .post("/webhooks/instantly")
-      .send({
-        event_type: "email_sent",
-        campaign_id: "inst-camp-1",
-        lead_email: "lead@test.com",
-        step: 1,
-      });
-
-    const classificationCalls = mockDbUpdate.mock.calls.filter(
-      ([v]: [any]) => v.replyClassification !== undefined,
-    );
-    expect(classificationCalls).toHaveLength(0);
-  });
-
-  it("should NOT update deliveryStatus for unknown event types", async () => {
-    mockVerification("inst-camp-1");
-
-    const app = await createWebhookApp();
-
-    await request(app)
-      .post("/webhooks/instantly")
-      .send({
-        event_type: "auto_reply_received",
-        campaign_id: "inst-camp-1",
-        lead_email: "lead@test.com",
-      });
-
-    // mockDbUpdate should NOT have been called with deliveryStatus
-    const deliveryStatusCalls = mockDbUpdate.mock.calls.filter(
-      ([v]: [any]) => v.deliveryStatus !== undefined,
-    );
-    expect(deliveryStatusCalls).toHaveLength(0);
+    // No db.update calls — delivery status and reply classification updates removed
+    expect(mockDbUpdate).not.toHaveBeenCalled();
   });
 });
 

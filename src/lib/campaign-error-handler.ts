@@ -63,7 +63,6 @@ export async function handleCampaignError(
     .update(instantlyCampaigns)
     .set({
       status: "error",
-      deliveryStatus: "failed",
       metadata: { ...existingMetadata, errorReason: reason },
       updatedAt: new Date(),
     })

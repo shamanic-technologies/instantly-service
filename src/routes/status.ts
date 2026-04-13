@@ -9,6 +9,7 @@ interface AggRow {
   key: string;
   campaignId: string | null;
   contacted: boolean | null;
+  sent: boolean | null;
   delivered: boolean | null;
   opened: boolean | null;
   clicked: boolean | null;
@@ -25,7 +26,7 @@ function extractRows(result: unknown): AggRow[] {
 }
 
 function emptyScoped() {
-  return { contacted: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null };
+  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null };
 }
 
 function formatTimestamp(val: string | null | undefined): string | null {
@@ -36,6 +37,7 @@ function buildScopedStatus(row: AggRow | undefined) {
   return row
     ? {
         contacted: row.contacted === true,
+        sent: row.sent === true,
         delivered: row.delivered === true,
         opened: row.opened === true,
         clicked: row.clicked === true,
@@ -59,23 +61,36 @@ function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string
       c.lead_email AS "key",
       CAST(NULL AS text) AS "campaignId",
       TRUE AS "contacted",
-      BOOL_OR(c.delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
-      BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
-      BOOL_OR(ce.campaign_id IS NOT NULL) AS "clicked",
-      BOOL_OR(c.delivery_status = 'replied') AS "replied",
-      (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
-      BOOL_OR(c.delivery_status = 'bounced') AS "bounced",
-      BOOL_OR(c.delivery_status = 'unsubscribed') AS "unsubscribed",
-      MAX(CASE WHEN c.delivery_status IN ('sent', 'delivered', 'replied') THEN c.updated_at END) AS "lastDeliveredAt"
+      COALESCE(BOOL_OR(e.event_type IS NOT NULL), false) AS "sent",
+      COALESCE(BOOL_OR(e.event_type IS NOT NULL), false) AND NOT COALESCE(BOOL_OR(e.event_type = 'email_bounced'), false) AS "delivered",
+      COALESCE(BOOL_OR(e.event_type IN ('email_opened', 'email_link_clicked', 'reply_received', 'lead_interested', 'lead_meeting_booked', 'lead_closed', 'lead_not_interested', 'lead_wrong_person', 'lead_neutral')), false) AS "opened",
+      COALESCE(BOOL_OR(e.event_type = 'email_link_clicked'), false) AS "clicked",
+      COALESCE(BOOL_OR(e.event_type IN ('reply_received', 'lead_interested', 'lead_meeting_booked', 'lead_closed', 'lead_not_interested', 'lead_wrong_person', 'lead_neutral', 'auto_reply_received', 'lead_out_of_office')), false) AS "replied",
+      COALESCE(
+        (array_agg(
+          CASE e.event_type
+            WHEN 'lead_interested' THEN 'positive'
+            WHEN 'lead_meeting_booked' THEN 'positive'
+            WHEN 'lead_closed' THEN 'positive'
+            WHEN 'lead_not_interested' THEN 'negative'
+            WHEN 'lead_wrong_person' THEN 'negative'
+            WHEN 'lead_unsubscribed' THEN 'negative'
+            WHEN 'lead_neutral' THEN 'neutral'
+          END
+          ORDER BY e.timestamp DESC
+        ) FILTER (WHERE e.event_type IN ('lead_interested', 'lead_meeting_booked', 'lead_closed', 'lead_not_interested', 'lead_wrong_person', 'lead_unsubscribed', 'lead_neutral')))[1],
+        (array_agg(
+          'auto_reply'
+          ORDER BY e.timestamp DESC
+        ) FILTER (WHERE e.event_type IN ('auto_reply_received', 'lead_out_of_office')))[1]
+      ) AS "replyClassification",
+      COALESCE(BOOL_OR(e.event_type = 'email_bounced'), false) AS "bounced",
+      COALESCE(BOOL_OR(e.event_type = 'lead_unsubscribed'), false) AS "unsubscribed",
+      MAX(e.timestamp) FILTER (WHERE e.event_type = 'email_sent') AS "lastDeliveredAt"
     FROM instantly_campaigns c
-    LEFT JOIN instantly_events oe
-      ON oe.campaign_id = c.instantly_campaign_id
-      AND oe.lead_email = c.lead_email
-      AND oe.event_type = 'email_opened'
-    LEFT JOIN instantly_events ce
-      ON ce.campaign_id = c.instantly_campaign_id
-      AND ce.lead_email = c.lead_email
-      AND ce.event_type = 'email_link_clicked'
+    LEFT JOIN instantly_events e
+      ON e.campaign_id = c.instantly_campaign_id
+      AND e.lead_email = c.lead_email
     WHERE c.lead_email IN (${sqlIn(emails)}) AND ${filterClause}
     GROUP BY c.lead_email
   `);
@@ -88,46 +103,60 @@ function brandBreakdownQuery(brandId: string, emails: string[]) {
       c.lead_email AS "key",
       c.campaign_id AS "campaignId",
       TRUE AS "contacted",
-      BOOL_OR(c.delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
-      BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
-      BOOL_OR(ce.campaign_id IS NOT NULL) AS "clicked",
-      BOOL_OR(c.delivery_status = 'replied') AS "replied",
-      (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
-      BOOL_OR(c.delivery_status = 'bounced') AS "bounced",
-      BOOL_OR(c.delivery_status = 'unsubscribed') AS "unsubscribed",
-      MAX(CASE WHEN c.delivery_status IN ('sent', 'delivered', 'replied') THEN c.updated_at END) AS "lastDeliveredAt"
+      COALESCE(BOOL_OR(e.event_type IS NOT NULL), false) AS "sent",
+      COALESCE(BOOL_OR(e.event_type IS NOT NULL), false) AND NOT COALESCE(BOOL_OR(e.event_type = 'email_bounced'), false) AS "delivered",
+      COALESCE(BOOL_OR(e.event_type IN ('email_opened', 'email_link_clicked', 'reply_received', 'lead_interested', 'lead_meeting_booked', 'lead_closed', 'lead_not_interested', 'lead_wrong_person', 'lead_neutral')), false) AS "opened",
+      COALESCE(BOOL_OR(e.event_type = 'email_link_clicked'), false) AS "clicked",
+      COALESCE(BOOL_OR(e.event_type IN ('reply_received', 'lead_interested', 'lead_meeting_booked', 'lead_closed', 'lead_not_interested', 'lead_wrong_person', 'lead_neutral', 'auto_reply_received', 'lead_out_of_office')), false) AS "replied",
+      COALESCE(
+        (array_agg(
+          CASE e.event_type
+            WHEN 'lead_interested' THEN 'positive'
+            WHEN 'lead_meeting_booked' THEN 'positive'
+            WHEN 'lead_closed' THEN 'positive'
+            WHEN 'lead_not_interested' THEN 'negative'
+            WHEN 'lead_wrong_person' THEN 'negative'
+            WHEN 'lead_unsubscribed' THEN 'negative'
+            WHEN 'lead_neutral' THEN 'neutral'
+          END
+          ORDER BY e.timestamp DESC
+        ) FILTER (WHERE e.event_type IN ('lead_interested', 'lead_meeting_booked', 'lead_closed', 'lead_not_interested', 'lead_wrong_person', 'lead_unsubscribed', 'lead_neutral')))[1],
+        (array_agg(
+          'auto_reply'
+          ORDER BY e.timestamp DESC
+        ) FILTER (WHERE e.event_type IN ('auto_reply_received', 'lead_out_of_office')))[1]
+      ) AS "replyClassification",
+      COALESCE(BOOL_OR(e.event_type = 'email_bounced'), false) AS "bounced",
+      COALESCE(BOOL_OR(e.event_type = 'lead_unsubscribed'), false) AS "unsubscribed",
+      MAX(e.timestamp) FILTER (WHERE e.event_type = 'email_sent') AS "lastDeliveredAt"
     FROM instantly_campaigns c
-    LEFT JOIN instantly_events oe
-      ON oe.campaign_id = c.instantly_campaign_id
-      AND oe.lead_email = c.lead_email
-      AND oe.event_type = 'email_opened'
-    LEFT JOIN instantly_events ce
-      ON ce.campaign_id = c.instantly_campaign_id
-      AND ce.lead_email = c.lead_email
-      AND ce.event_type = 'email_link_clicked'
+    LEFT JOIN instantly_events e
+      ON e.campaign_id = c.instantly_campaign_id
+      AND e.lead_email = c.lead_email
     WHERE c.lead_email IN (${sqlIn(emails)}) AND ${brandId} = ANY(c.brand_ids)
     GROUP BY c.lead_email, c.campaign_id
   `);
 }
 
-/** Aggregate brand status from per-campaign breakdown rows (BOOL_OR logic) */
+/** Aggregate brand status from per-campaign breakdown rows */
 function aggregateBrandStatus(rows: AggRow[]) {
   if (rows.length === 0) return emptyScoped();
 
-  // Pick the most recent non-null replyClassification
-  let replyClassification: string | null = null;
-  let latestReplyAt: Date | null = null;
+  // Reply classification: most positive HUMAN classification across campaigns
+  // Positivity order: positive > neutral > negative > auto_reply > null
+  const POSITIVITY_ORDER: Record<string, number> = { positive: 4, neutral: 3, negative: 2, auto_reply: 1 };
+  let bestClassification: string | null = null;
+  let bestScore = 0;
   for (const row of rows) {
     if (row.replyClassification != null) {
-      const ts = row.lastDeliveredAt ? new Date(row.lastDeliveredAt) : null;
-      if (!latestReplyAt || (ts && ts > latestReplyAt)) {
-        replyClassification = row.replyClassification;
-        latestReplyAt = ts;
+      const score = POSITIVITY_ORDER[row.replyClassification] ?? 0;
+      if (score > bestScore) {
+        bestScore = score;
+        bestClassification = row.replyClassification;
       }
     }
   }
 
-  // Pick the latest lastDeliveredAt across all campaigns
   let maxDeliveredAt: string | null = null;
   for (const row of rows) {
     if (row.lastDeliveredAt) {
@@ -139,11 +168,12 @@ function aggregateBrandStatus(rows: AggRow[]) {
 
   return {
     contacted: rows.some((r) => r.contacted === true),
+    sent: rows.some((r) => r.sent === true),
     delivered: rows.some((r) => r.delivered === true),
     opened: rows.some((r) => r.opened === true),
     clicked: rows.some((r) => r.clicked === true),
     replied: rows.some((r) => r.replied === true),
-    replyClassification,
+    replyClassification: bestClassification,
     bounced: rows.some((r) => r.bounced === true),
     unsubscribed: rows.some((r) => r.unsubscribed === true),
     lastDeliveredAt: formatTimestamp(maxDeliveredAt),
@@ -172,20 +202,15 @@ router.post("/", async (req: Request, res: Response) => {
   const isCampaignMode = !!campaignId;
 
   try {
-    // Global: only bounced + unsubscribed on email
+    // Global: only bounced + unsubscribed on email (derived from events)
     const globalEmailPromise = db.execute(sql`
       SELECT
-        lead_email AS "key",
-        CAST(NULL AS text) AS "campaignId",
-        CAST(NULL AS boolean) AS "contacted",
-        CAST(NULL AS boolean) AS "delivered",
-        CAST(NULL AS boolean) AS "replied",
-        BOOL_OR(delivery_status = 'bounced') AS "bounced",
-        BOOL_OR(delivery_status = 'unsubscribed') AS "unsubscribed",
-        CAST(NULL AS timestamp) AS "lastDeliveredAt"
-      FROM instantly_campaigns
-      WHERE lead_email IN (${sqlIn(emails)})
-      GROUP BY lead_email
+        e.lead_email AS "key",
+        COALESCE(BOOL_OR(e.event_type = 'email_bounced'), false) AS "bounced",
+        COALESCE(BOOL_OR(e.event_type = 'lead_unsubscribed'), false) AS "unsubscribed"
+      FROM instantly_events e
+      WHERE e.lead_email IN (${sqlIn(emails)})
+      GROUP BY e.lead_email
     `);
 
     let brandBreakdownPromise: Promise<unknown> | null = null;
