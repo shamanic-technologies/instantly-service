@@ -17,7 +17,7 @@ export const instantlyCampaigns = pgTable(
   {
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     campaignId: text("campaign_id"),
-    leadEmail: text("lead_email"),
+    recipientEmail: text("recipient_email"),
     instantlyCampaignId: text("instantly_campaign_id").notNull().unique(),
     name: text("name").notNull(),
     status: text("status").notNull().default("active"),
@@ -33,13 +33,13 @@ export const instantlyCampaigns = pgTable(
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (table) => [
-    uniqueIndex("instantly_campaigns_campaign_lead_idx").on(
+    uniqueIndex("instantly_campaigns_campaign_recipient_idx").on(
       table.campaignId,
-      table.leadEmail,
+      table.recipientEmail,
     ),
     index("instantly_campaigns_campaign_id_idx").on(table.campaignId),
     index("instantly_campaigns_lead_id_idx").on(table.leadId),
-    index("instantly_campaigns_lead_email_idx").on(table.leadEmail),
+    index("instantly_campaigns_recipient_email_idx").on(table.recipientEmail),
     index("instantly_campaigns_brand_ids_idx").using("gin", table.brandIds),
     index("instantly_campaigns_org_id_idx").on(table.orgId),
     index("instantly_campaigns_run_id_idx").on(table.runId),
@@ -91,7 +91,7 @@ export const instantlyEvents = pgTable(
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     eventType: text("event_type").notNull(),
     campaignId: text("campaign_id"),
-    leadEmail: text("lead_email"),
+    recipientEmail: text("recipient_email"),
     accountEmail: text("account_email"),
     step: integer("step"),
     variant: integer("variant"),
@@ -102,7 +102,7 @@ export const instantlyEvents = pgTable(
   (table) => [
     index("instantly_events_campaign_id_idx").on(table.campaignId),
     index("instantly_events_event_type_idx").on(table.eventType),
-    index("instantly_events_lead_email_idx").on(table.leadEmail),
+    index("instantly_events_recipient_email_idx").on(table.recipientEmail),
   ],
 );
 
@@ -112,7 +112,7 @@ export const sequenceCosts = pgTable(
   {
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     campaignId: text("campaign_id").notNull(),
-    leadEmail: text("lead_email").notNull(),
+    recipientEmail: text("recipient_email").notNull(),
     step: integer("step").notNull(),
     runId: text("run_id").notNull(),
     costId: text("cost_id").notNull(),
@@ -121,9 +121,9 @@ export const sequenceCosts = pgTable(
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (table) => [
-    index("sequence_costs_campaign_lead_idx").on(
+    index("sequence_costs_campaign_recipient_idx").on(
       table.campaignId,
-      table.leadEmail,
+      table.recipientEmail,
     ),
     uniqueIndex("sequence_costs_cost_id_idx").on(table.costId),
   ],

@@ -58,7 +58,7 @@ function sqlIn(values: string[]) {
 function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string[]) {
   return db.execute(sql`
     SELECT
-      c.lead_email AS "key",
+      c.recipient_email AS "key",
       CAST(NULL AS text) AS "campaignId",
       TRUE AS "contacted",
       COALESCE(BOOL_OR(e.event_type IS NOT NULL), false) AS "sent",
@@ -90,9 +90,9 @@ function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string
     FROM instantly_campaigns c
     LEFT JOIN instantly_events e
       ON e.campaign_id = c.instantly_campaign_id
-      AND e.lead_email = c.lead_email
-    WHERE c.lead_email IN (${sqlIn(emails)}) AND ${filterClause}
-    GROUP BY c.lead_email
+      AND e.recipient_email = c.recipient_email
+    WHERE c.recipient_email IN (${sqlIn(emails)}) AND ${filterClause}
+    GROUP BY c.recipient_email
   `);
 }
 
@@ -100,7 +100,7 @@ function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string
 function brandBreakdownQuery(brandId: string, emails: string[]) {
   return db.execute(sql`
     SELECT
-      c.lead_email AS "key",
+      c.recipient_email AS "key",
       c.campaign_id AS "campaignId",
       TRUE AS "contacted",
       COALESCE(BOOL_OR(e.event_type IS NOT NULL), false) AS "sent",
@@ -132,9 +132,9 @@ function brandBreakdownQuery(brandId: string, emails: string[]) {
     FROM instantly_campaigns c
     LEFT JOIN instantly_events e
       ON e.campaign_id = c.instantly_campaign_id
-      AND e.lead_email = c.lead_email
-    WHERE c.lead_email IN (${sqlIn(emails)}) AND ${brandId} = ANY(c.brand_ids)
-    GROUP BY c.lead_email, c.campaign_id
+      AND e.recipient_email = c.recipient_email
+    WHERE c.recipient_email IN (${sqlIn(emails)}) AND ${brandId} = ANY(c.brand_ids)
+    GROUP BY c.recipient_email, c.campaign_id
   `);
 }
 
@@ -205,12 +205,12 @@ router.post("/", async (req: Request, res: Response) => {
     // Global: only bounced + unsubscribed on email (derived from events)
     const globalEmailPromise = db.execute(sql`
       SELECT
-        e.lead_email AS "key",
+        e.recipient_email AS "key",
         COALESCE(BOOL_OR(e.event_type = 'email_bounced'), false) AS "bounced",
         COALESCE(BOOL_OR(e.event_type = 'lead_unsubscribed'), false) AS "unsubscribed"
       FROM instantly_events e
-      WHERE e.lead_email IN (${sqlIn(emails)})
-      GROUP BY e.lead_email
+      WHERE e.recipient_email IN (${sqlIn(emails)})
+      GROUP BY e.recipient_email
     `);
 
     let brandBreakdownPromise: Promise<unknown> | null = null;

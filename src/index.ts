@@ -69,7 +69,7 @@ async function deployEmailTemplates(): Promise<void> {
             htmlBody: [
               "<h2>Campaign Error Detected</h2>",
               "<p><strong>Campaign ID:</strong> {{campaignId}}</p>",
-              "<p><strong>Lead Email:</strong> {{leadEmail}}</p>",
+              "<p><strong>Recipient Email:</strong> {{recipientEmail}}</p>",
               "<p><strong>Instantly Campaign ID:</strong> {{instantlyCampaignId}}</p>",
               "<p><strong>Error:</strong></p>",
               "<pre>{{errorReason}}</pre>",

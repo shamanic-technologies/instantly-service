@@ -312,7 +312,7 @@
                   "type": "string",
                   "nullable": true
                 },
-                "leadEmail": {
+                "recipientEmail": {
                   "type": "string",
                   "nullable": true
                 },
@@ -323,7 +323,7 @@
               "required": [
                 "instantlyCampaignId",
                 "campaignId",
-                "leadEmail",
+                "recipientEmail",
                 "reason"
               ]
             },
@@ -432,15 +432,15 @@
               },
               "emailsSent": {
                 "type": "number",
-                "description": "Total email_sent events (confirmed by Instantly webhook)"
+                "description": "Unique recipients with any event (any event implies sent)"
               },
               "emailsDelivered": {
                 "type": "number",
-                "description": "emailsSent minus emailsBounced"
+                "description": "emailsSent minus unique bounced recipients"
               },
               "emailsOpened": {
                 "type": "number",
-                "description": "Unique recipients who opened (COUNT DISTINCT lead_email with email_opened events)"
+                "description": "Unique recipients who opened, clicked, or received a human reply (implication-aware)"
               },
               "emailsClicked": {
                 "type": "number",
@@ -535,7 +535,7 @@
           },
           "recipients": {
             "type": "number",
-            "description": "Unique recipients (COUNT DISTINCT lead_email with email_sent events)"
+            "description": "Unique recipients with any event (same as emailsSent)"
           },
           "stepStats": {
             "type": "array",
@@ -670,15 +670,15 @@
                     },
                     "emailsSent": {
                       "type": "number",
-                      "description": "Total email_sent events (confirmed by Instantly webhook)"
+                      "description": "Unique recipients with any event (any event implies sent)"
                     },
                     "emailsDelivered": {
                       "type": "number",
-                      "description": "emailsSent minus emailsBounced"
+                      "description": "emailsSent minus unique bounced recipients"
                     },
                     "emailsOpened": {
                       "type": "number",
-                      "description": "Unique recipients who opened (COUNT DISTINCT lead_email with email_opened events)"
+                      "description": "Unique recipients who opened, clicked, or received a human reply (implication-aware)"
                     },
                     "emailsClicked": {
                       "type": "number",
@@ -2132,7 +2132,7 @@
                 "campaignId",
                 "workflowSlug",
                 "featureSlug",
-                "leadEmail",
+                "recipientEmail",
                 "workflowDynastySlug",
                 "featureDynastySlug"
               ],
@@ -2302,7 +2302,7 @@
                 "campaignId",
                 "workflowSlug",
                 "featureSlug",
-                "leadEmail",
+                "recipientEmail",
                 "workflowDynastySlug",
                 "featureDynastySlug"
               ],

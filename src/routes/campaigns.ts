@@ -294,7 +294,7 @@ router.post("/check-status", async (_req: Request, res: Response) => {
     const errors: {
       instantlyCampaignId: string;
       campaignId: string | null;
-      leadEmail: string | null;
+      recipientEmail: string | null;
       reason: string;
     }[] = [];
     let checked = 0;
@@ -333,7 +333,7 @@ router.post("/check-status", async (_req: Request, res: Response) => {
             errors.push({
               instantlyCampaignId: campaign.instantlyCampaignId,
               campaignId: campaign.campaignId,
-              leadEmail: campaign.leadEmail,
+              recipientEmail: campaign.recipientEmail,
               reason,
             });
           }

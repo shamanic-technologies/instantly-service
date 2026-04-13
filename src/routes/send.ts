@@ -119,7 +119,7 @@ async function findExistingCampaign(campaignId: string, leadEmail: string) {
     .where(
       and(
         eq(instantlyCampaigns.campaignId, campaignId),
-        eq(instantlyCampaigns.leadEmail, leadEmail),
+        eq(instantlyCampaigns.recipientEmail, leadEmail),
       ),
     );
   return existing ?? null;
@@ -273,7 +273,7 @@ router.post("/", async (req: Request, res: Response) => {
           .from(instantlyCampaigns)
           .where(
             and(
-              eq(instantlyCampaigns.leadEmail, body.to),
+              eq(instantlyCampaigns.recipientEmail, body.to),
               isNotNull(instantlyCampaigns.leadId),
               ne(instantlyCampaigns.leadId, body.leadId),
             ),
@@ -349,7 +349,7 @@ router.post("/", async (req: Request, res: Response) => {
           .insert(instantlyCampaigns)
           .values({
             campaignId,
-            leadEmail: body.to,
+            recipientEmail: body.to,
             leadId: body.leadId,
             instantlyCampaignId: result.instantlyCampaignId,
             name: `Campaign ${campaignId}`,
@@ -416,7 +416,7 @@ router.post("/", async (req: Request, res: Response) => {
         if (costId) {
           await db.insert(sequenceCosts).values({
             campaignId,
-            leadEmail: body.to,
+            recipientEmail: body.to,
             step: s.step,
             runId: stepRun.id,
             costId,

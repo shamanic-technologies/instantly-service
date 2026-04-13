@@ -36,7 +36,7 @@ vi.mock("../../src/db/schema", () => ({
   sequenceCosts: {
     id: "id",
     campaignId: "campaign_id",
-    leadEmail: "lead_email",
+    recipientEmail: "recipient_email",
     status: "status",
   },
 }));
@@ -62,7 +62,7 @@ import { handleCampaignError } from "../../src/lib/campaign-error-handler";
 const baseCampaign = {
   id: "db-1",
   campaignId: "camp-1",
-  leadEmail: "lead@test.com",
+  recipientEmail: "lead@test.com",
   instantlyCampaignId: "inst-camp-1",
   name: "Campaign camp-1",
   status: "active",
@@ -145,7 +145,7 @@ describe("handleCampaignError", () => {
         eventType: "campaign-error",
         metadata: expect.objectContaining({
           campaignId: "camp-1",
-          leadEmail: "lead@test.com",
+          recipientEmail: "lead@test.com",
           instantlyCampaignId: "inst-camp-1",
           errorReason: "account disconnected",
         }),

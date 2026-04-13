@@ -36,7 +36,7 @@ async function handleFollowUpSent(
     .where(
       and(
         eq(sequenceCosts.campaignId, campaign.campaignId),
-        eq(sequenceCosts.leadEmail, leadEmail),
+        eq(sequenceCosts.recipientEmail, leadEmail),
         eq(sequenceCosts.step, step),
         eq(sequenceCosts.status, "provisioned"),
       ),
@@ -84,7 +84,7 @@ async function cancelRemainingProvisions(
     .where(
       and(
         eq(sequenceCosts.campaignId, campaign.campaignId),
-        eq(sequenceCosts.leadEmail, leadEmail),
+        eq(sequenceCosts.recipientEmail, leadEmail),
         eq(sequenceCosts.status, "provisioned"),
       ),
     );
@@ -156,7 +156,7 @@ router.post("/instantly", async (req: Request, res: Response) => {
     await db.insert(instantlyEvents).values({
       eventType: payload.event_type,
       campaignId: payload.campaign_id,
-      leadEmail: payload.lead_email,
+      recipientEmail: payload.lead_email,
       accountEmail: payload.email_account,
       step: payload.step,
       variant: payload.variant,

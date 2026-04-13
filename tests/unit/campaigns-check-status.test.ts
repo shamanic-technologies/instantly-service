@@ -22,7 +22,7 @@ vi.mock("../../src/db/schema", () => ({
   instantlyCampaigns: {
     id: "id",
     campaignId: "campaign_id",
-    leadEmail: "lead_email",
+    recipientEmail: "recipient_email",
     instantlyCampaignId: "instantly_campaign_id",
     status: "status",
     orgId: "org_id",
@@ -30,7 +30,7 @@ vi.mock("../../src/db/schema", () => ({
   sequenceCosts: {
     id: "id",
     campaignId: "campaign_id",
-    leadEmail: "lead_email",
+    recipientEmail: "recipient_email",
     status: "status",
   },
 }));
@@ -132,7 +132,7 @@ describe("POST /campaigns/check-status", () => {
       {
         id: "db-1",
         campaignId: "camp-1",
-        leadEmail: "lead@test.com",
+        recipientEmail: "lead@test.com",
         instantlyCampaignId: "inst-1",
         status: "active",
         orgId: "org-1",
@@ -146,7 +146,7 @@ describe("POST /campaigns/check-status", () => {
       {
         id: "db-1",
         campaignId: "camp-1",
-        leadEmail: "lead@test.com",
+        recipientEmail: "lead@test.com",
         instantlyCampaignId: "inst-1",
         status: "active",
         runId: "run-1",
@@ -172,7 +172,7 @@ describe("POST /campaigns/check-status", () => {
     expect(res.body.errors[0]).toMatchObject({
       instantlyCampaignId: "inst-1",
       campaignId: "camp-1",
-      leadEmail: "lead@test.com",
+      recipientEmail: "lead@test.com",
     });
   });
 
@@ -181,7 +181,7 @@ describe("POST /campaigns/check-status", () => {
       {
         id: "db-1",
         campaignId: "camp-1",
-        leadEmail: "lead@test.com",
+        recipientEmail: "lead@test.com",
         instantlyCampaignId: "inst-1",
         status: "active",
         orgId: "org-1",
@@ -208,7 +208,7 @@ describe("POST /campaigns/check-status", () => {
       {
         id: "db-1",
         campaignId: "camp-1",
-        leadEmail: "lead1@test.com",
+        recipientEmail: "lead1@test.com",
         instantlyCampaignId: "inst-1",
         status: "active",
         orgId: "org-1",
@@ -217,7 +217,7 @@ describe("POST /campaigns/check-status", () => {
       {
         id: "db-2",
         campaignId: "camp-1",
-        leadEmail: "lead2@test.com",
+        recipientEmail: "lead2@test.com",
         instantlyCampaignId: "inst-2",
         status: "active",
         orgId: "org-1",

@@ -342,7 +342,7 @@ registry.registerPath({
 const CheckStatusErrorSchema = z.object({
   instantlyCampaignId: z.string(),
   campaignId: z.string().nullable(),
-  leadEmail: z.string().nullable(),
+  recipientEmail: z.string().nullable(),
   reason: z.string(),
 });
 
@@ -513,7 +513,7 @@ export const StatsQuerySchema = z
     featureSlugs: z.string().optional().describe("Comma-separated list of feature slugs to filter by"),
     workflowDynastySlug: z.string().optional().describe("Filter by workflow dynasty slug (resolved to all versioned slugs)"),
     featureDynastySlug: z.string().optional().describe("Filter by feature dynasty slug (resolved to all versioned slugs)"),
-    groupBy: z.enum(["brandId", "campaignId", "workflowSlug", "featureSlug", "leadEmail", "workflowDynastySlug", "featureDynastySlug"]).optional().describe("Group results by dimension"),
+    groupBy: z.enum(["brandId", "campaignId", "workflowSlug", "featureSlug", "recipientEmail", "workflowDynastySlug", "featureDynastySlug"]).optional().describe("Group results by dimension"),
   })
   .openapi("StatsQuery");
 
@@ -553,21 +553,21 @@ const StatsResponseSchema = z
       emailsContacted: z
         .number()
         .describe("Leads added to a campaign (row exists in instantly_campaigns, immediate)"),
-      emailsSent: z.number().describe("Total email_sent events (confirmed by Instantly webhook)"),
+      emailsSent: z.number().describe("Unique recipients with any event (any event implies sent)"),
       emailsDelivered: z
         .number()
-        .describe("emailsSent minus emailsBounced"),
+        .describe("emailsSent minus unique bounced recipients"),
       emailsOpened: z
         .number()
         .describe(
-          "Unique recipients who opened (COUNT DISTINCT lead_email with email_opened events)",
+          "Unique recipients who opened, clicked, or received a human reply (implication-aware)",
         ),
       emailsClicked: z.number().describe("Total link click events"),
       emailsBounced: z.number().describe("Total email_bounced events"),
     }).merge(RepliesAggregatesSchema),
     recipients: z
       .number()
-      .describe("Unique recipients (COUNT DISTINCT lead_email with email_sent events)"),
+      .describe("Unique recipients with any event (same as emailsSent)"),
     stepStats: z
       .array(StepStatsSchema)
       .optional()

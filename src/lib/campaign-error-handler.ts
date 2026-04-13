@@ -46,7 +46,7 @@ export async function handleCampaignError(
   }
 
   console.error(
-    `[campaign-error] Campaign ${instantlyCampaignId} (${campaign.campaignId}/${campaign.leadEmail}) → error: ${reason}`,
+    `[campaign-error] Campaign ${instantlyCampaignId} (${campaign.campaignId}/${campaign.recipientEmail}) → error: ${reason}`,
   );
 
   // Build identity context from campaign record (automated process)
@@ -69,14 +69,14 @@ export async function handleCampaignError(
     .where(eq(instantlyCampaigns.id, campaign.id));
 
   // 3. Cancel all remaining provisioned costs
-  if (campaign.campaignId && campaign.leadEmail) {
+  if (campaign.campaignId && campaign.recipientEmail) {
     const remaining = await db
       .select()
       .from(sequenceCosts)
       .where(
         and(
           eq(sequenceCosts.campaignId, campaign.campaignId),
-          eq(sequenceCosts.leadEmail, campaign.leadEmail),
+          eq(sequenceCosts.recipientEmail, campaign.recipientEmail),
           or(
             eq(sequenceCosts.status, "provisioned"),
             eq(sequenceCosts.status, "actual"),
@@ -122,7 +122,7 @@ export async function handleCampaignError(
         recipientEmail: ADMIN_EMAIL,
         metadata: {
           campaignId: campaign.campaignId || "unknown",
-          leadEmail: campaign.leadEmail || "unknown",
+          recipientEmail: campaign.recipientEmail || "unknown",
           instantlyCampaignId,
           errorReason: reason,
         },

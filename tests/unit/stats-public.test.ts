@@ -188,8 +188,8 @@ describe("GET /stats", () => {
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
-    expect(sqlText).toContain("account_email IS NULL OR e.lead_email != e.account_email");
-    expect(sqlText).toContain("lead_email NOT IN");
+    expect(sqlText).toContain("account_email IS NULL OR e.recipient_email != e.account_email");
+    expect(sqlText).toContain("recipient_email NOT IN");
   });
 
   it("should return 500 on db error", async () => {

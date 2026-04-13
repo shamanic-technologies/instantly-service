@@ -23,7 +23,7 @@ vi.mock("../../src/db/schema", () => ({
   sequenceCosts: {
     id: "id",
     campaignId: "campaign_id",
-    leadEmail: "lead_email",
+    recipientEmail: "recipient_email",
     step: "step",
     status: "status",
   },
@@ -140,7 +140,7 @@ describe("POST /webhooks/instantly", () => {
     mockDbSelect.mockResolvedValueOnce([{
       id: "sc-1",
       campaignId: "camp-1",
-      leadEmail: "lead@test.com",
+      recipientEmail: "lead@test.com",
       step: 2,
       runId: "run-1",
       costId: "cost-2",
@@ -174,7 +174,7 @@ describe("POST /webhooks/instantly", () => {
     mockDbSelect.mockResolvedValueOnce([{
       id: "sc-1",
       campaignId: "camp-1",
-      leadEmail: "lead@test.com",
+      recipientEmail: "lead@test.com",
       step: 2,
       runId: "run-1",
       costId: "cost-2",
@@ -207,7 +207,7 @@ describe("POST /webhooks/instantly", () => {
     mockDbSelect.mockResolvedValueOnce([{
       id: "sc-1",
       campaignId: "camp-1",
-      leadEmail: "lead@test.com",
+      recipientEmail: "lead@test.com",
       step: 2,
       runId: "run-1",
       costId: "cost-2",

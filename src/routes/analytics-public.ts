@@ -102,8 +102,8 @@ router.get("/stats", async (req: Request, res: Response) => {
       const stepResult = await db.execute(sql`
         SELECT
           e.step,
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
-          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
+          COALESCE(COUNT(DISTINCT e.recipient_email), 0)::int AS "emailsSent",
+          COALESCE(COUNT(DISTINCT e.recipient_email) FILTER (WHERE e.event_type IN ('email_opened', 'email_link_clicked', 'reply_received', 'lead_interested', 'lead_meeting_booked', 'lead_closed', 'lead_not_interested', 'lead_wrong_person', 'lead_neutral')), 0)::int AS "emailsOpened",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",

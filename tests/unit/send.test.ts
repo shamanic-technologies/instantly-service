@@ -20,7 +20,7 @@ vi.mock("../../src/db/schema", () => ({
   instantlyCampaigns: {
     id: "id",
     campaignId: "campaign_id",
-    leadEmail: "lead_email",
+    recipientEmail: "recipient_email",
     instantlyCampaignId: "instantly_campaign_id",
   },
   instantlyLeads: { instantlyCampaignId: "instantly_campaign_id", email: "email" },
@@ -394,7 +394,7 @@ describe("POST /send", () => {
     await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     const campaignInsert = mockDbInsertValues.mock.calls.find(
-      ([v]: [any]) => v.campaignId === "camp-1" && v.leadEmail === "test@example.com",
+      ([v]: [any]) => v.campaignId === "camp-1" && v.recipientEmail === "test@example.com",
     );
     expect(campaignInsert).toBeDefined();
     expect(campaignInsert![0]).toMatchObject({
@@ -471,7 +471,7 @@ describe("POST /send", () => {
     mockDbWhere.mockResolvedValueOnce([{
       id: "sub-camp-1",
       campaignId: "camp-1",
-      leadEmail: "test@example.com",
+      recipientEmail: "test@example.com",
       instantlyCampaignId: "inst-camp-1",
     }]);
 
@@ -667,7 +667,7 @@ describe("POST /send", () => {
 
     // Campaign insert should use header values
     const campaignInsert = mockDbInsertValues.mock.calls.find(
-      ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,
+      ([v]: [any]) => v.recipientEmail === "test@example.com" && v.instantlyCampaignId,
     );
     expect(campaignInsert).toBeDefined();
     expect(campaignInsert![0].brandIds).toEqual(["header-brand"]);
@@ -687,7 +687,7 @@ describe("POST /send", () => {
       .send(validBody);
 
     const campaignInsert = mockDbInsertValues.mock.calls.find(
-      ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,
+      ([v]: [any]) => v.recipientEmail === "test@example.com" && v.instantlyCampaignId,
     );
     expect(campaignInsert).toBeDefined();
     expect(campaignInsert![0].brandIds).toEqual(["brand-a", "brand-b", "brand-c"]);

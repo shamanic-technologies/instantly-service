@@ -13,7 +13,7 @@ import {
 const router = Router();
 
 // Internal emails/domains excluded from all stats.
-// Events where lead_email matches these (or equals the sender) are never counted.
+// Events where recipient_email matches these (or equals the sender) are never counted.
 const EXCLUDED_EMAILS = ["kevin.lourd@gmail.com", "kevin@distribute.you"];
 const EXCLUDED_DOMAINS = [
   "distribute.you",
@@ -28,11 +28,11 @@ const EXCLUDED_DOMAINS = [
 /** SQL fragment that filters out internal/sender events */
 export function internalExclusionClause(): SQL {
   const domainConditions = EXCLUDED_DOMAINS.map(
-    (d) => sql`e.lead_email LIKE ${"%" + d}`,
+    (d) => sql`e.recipient_email LIKE ${"%" + d}`,
   );
   return sql`
-    (e.account_email IS NULL OR e.lead_email != e.account_email)
-    AND e.lead_email NOT IN (${sql.join(
+    (e.account_email IS NULL OR e.recipient_email != e.account_email)
+    AND e.recipient_email NOT IN (${sql.join(
       EXCLUDED_EMAILS.map((e) => sql`${e}`),
       sql`, `,
     )})
@@ -77,13 +77,13 @@ export function buildRepliesFromDetail(detail: typeof ZERO_REPLIES_DETAIL) {
   };
 }
 
-/** SQL fragment that filters out internal emails on the campaigns table (uses c.lead_email) */
+/** SQL fragment that filters out internal emails on the campaigns table (uses c.recipient_email) */
 export function campaignExclusionClause(): SQL {
   const domainConditions = EXCLUDED_DOMAINS.map(
-    (d) => sql`c.lead_email LIKE ${"%" + d}`,
+    (d) => sql`c.recipient_email LIKE ${"%" + d}`,
   );
   return sql`
-    c.lead_email NOT IN (${sql.join(
+    c.recipient_email NOT IN (${sql.join(
       EXCLUDED_EMAILS.map((e) => sql`${e}`),
       sql`, `,
     )})
@@ -133,7 +133,7 @@ const GROUP_BY_COLUMNS: Record<string, string> = {
   campaignId: "c.campaign_id",
   workflowSlug: "c.workflow_slug",
   featureSlug: "c.feature_slug",
-  leadEmail: "e.lead_email",
+  recipientEmail: "e.recipient_email",
   // Dynasty groupBy uses the underlying slug column; re-keying happens post-query
   workflowDynastySlug: "c.workflow_slug",
   featureDynastySlug: "c.feature_slug",
@@ -156,14 +156,14 @@ export async function queryGroupedStats(
   const result = await db.execute(sql`
     SELECT
       ${groupCol} AS "groupKey",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
+      COALESCE(COUNT(DISTINCT e.recipient_email), 0)::int AS "emailsSent",
       COALESCE(
-        COUNT(*) FILTER (WHERE e.event_type = 'email_sent')
-        - COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'),
+        COUNT(DISTINCT e.recipient_email)
+        - COUNT(DISTINCT e.recipient_email) FILTER (WHERE e.event_type = 'email_bounced'),
       0)::int AS "emailsDelivered",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
+      COALESCE(COUNT(DISTINCT e.recipient_email) FILTER (WHERE e.event_type IN ('email_opened', 'email_link_clicked', 'reply_received', 'lead_interested', 'lead_meeting_booked', 'lead_closed', 'lead_not_interested', 'lead_wrong_person', 'lead_neutral')), 0)::int AS "emailsOpened",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
+      COALESCE(COUNT(DISTINCT e.recipient_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
@@ -173,7 +173,7 @@ export async function queryGroupedStats(
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "recipients"
+      COALESCE(COUNT(DISTINCT e.recipient_email), 0)::int AS "recipients"
     FROM instantly_events e
     JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
     ${lateralJoin}
@@ -280,14 +280,14 @@ function mergeDynastyGroups(
 export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO_STATS; recipients: number }> {
   const result = await db.execute(sql`
     SELECT
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
+      COALESCE(COUNT(DISTINCT e.recipient_email), 0)::int AS "emailsSent",
       COALESCE(
-        COUNT(*) FILTER (WHERE e.event_type = 'email_sent')
-        - COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'),
+        COUNT(DISTINCT e.recipient_email)
+        - COUNT(DISTINCT e.recipient_email) FILTER (WHERE e.event_type = 'email_bounced'),
       0)::int AS "emailsDelivered",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
+      COALESCE(COUNT(DISTINCT e.recipient_email) FILTER (WHERE e.event_type IN ('email_opened', 'email_link_clicked', 'reply_received', 'lead_interested', 'lead_meeting_booked', 'lead_closed', 'lead_not_interested', 'lead_wrong_person', 'lead_neutral')), 0)::int AS "emailsOpened",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
+      COALESCE(COUNT(DISTINCT e.recipient_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
@@ -297,7 +297,7 @@ export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "recipients"
+      COALESCE(COUNT(DISTINCT e.recipient_email), 0)::int AS "recipients"
     FROM instantly_events e
     JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
     WHERE ${whereClause}
@@ -461,8 +461,8 @@ router.get("/stats", async (req: Request, res: Response) => {
       const stepResult = await db.execute(sql`
         SELECT
           e.step,
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
-          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
+          COALESCE(COUNT(DISTINCT e.recipient_email), 0)::int AS "emailsSent",
+          COALESCE(COUNT(DISTINCT e.recipient_email) FILTER (WHERE e.event_type IN ('email_opened', 'email_link_clicked', 'reply_received', 'lead_interested', 'lead_meeting_booked', 'lead_closed', 'lead_not_interested', 'lead_wrong_person', 'lead_neutral')), 0)::int AS "emailsOpened",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
