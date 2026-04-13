@@ -543,6 +543,7 @@ const StepStatsSchema = z.object({
   step: z.number().describe("Step number (1-based)"),
   emailsSent: z.number(),
   emailsOpened: z.number(),
+  emailsClicked: z.number().describe("Total link click events for this step"),
   emailsBounced: z.number(),
 }).merge(RepliesAggregatesSchema);
 
@@ -802,6 +803,7 @@ const ScopedStatusFieldsSchema = z.object({
   contacted: z.boolean().describe("true if the lead was added to this campaign/brand"),
   delivered: z.boolean().describe("true if at least one email was delivered (sent/delivered/replied status)"),
   opened: z.boolean().describe("true if at least one email_opened event exists"),
+  clicked: z.boolean().describe("true if at least one email_link_clicked event exists"),
   replied: z.boolean().describe("true if at least one reply was received"),
   replyClassification: ReplyClassificationSchema.nullable().describe("Reply classification based on Instantly interest status. null = no reply"),
   bounced: z.boolean().describe("true if at least one email bounced"),
@@ -837,19 +839,19 @@ const StatusResponseSchema = z
           email: "alice@media.com",
           byCampaign: {
             "c1a2b3c4-0000-0000-0000-000000000001": {
-              contacted: true, delivered: true, opened: true, replied: false,
-              replyClassification: null, bounced: false, unsubscribed: false,
+              contacted: true, delivered: true, opened: true, clicked: false,
+              replied: false, replyClassification: null, bounced: false, unsubscribed: false,
               lastDeliveredAt: "2026-03-01T10:00:00.000Z",
             },
             "c1a2b3c4-0000-0000-0000-000000000002": {
-              contacted: true, delivered: true, opened: false, replied: true,
-              replyClassification: "positive", bounced: false, unsubscribed: false,
+              contacted: true, delivered: true, opened: false, clicked: true,
+              replied: true, replyClassification: "positive", bounced: false, unsubscribed: false,
               lastDeliveredAt: "2026-03-02T12:00:00.000Z",
             },
           },
           brand: {
-            contacted: true, delivered: true, opened: true, replied: true,
-            replyClassification: "positive", bounced: false, unsubscribed: false,
+            contacted: true, delivered: true, opened: true, clicked: true,
+            replied: true, replyClassification: "positive", bounced: false, unsubscribed: false,
             lastDeliveredAt: "2026-03-02T12:00:00.000Z",
           },
           campaign: null,

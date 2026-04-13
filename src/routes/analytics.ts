@@ -453,7 +453,7 @@ router.get("/stats", async (req: Request, res: Response) => {
 
     // Per-step breakdown (secondary stats) — non-fatal; overall stats still return on failure
     let stepStats: Array<{
-      step: number; emailsSent: number; emailsOpened: number; emailsBounced: number;
+      step: number; emailsSent: number; emailsOpened: number; emailsClicked: number; emailsBounced: number;
       repliesPositive: number; repliesNegative: number; repliesNeutral: number; repliesAutoReply: number;
       repliesDetail: typeof ZERO_REPLIES_DETAIL;
     }> = [];
@@ -463,6 +463,7 @@ router.get("/stats", async (req: Request, res: Response) => {
           e.step,
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
           COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
@@ -498,6 +499,7 @@ router.get("/stats", async (req: Request, res: Response) => {
           step: sr.step,
           emailsSent: sr.emailsSent ?? 0,
           emailsOpened: sr.emailsOpened ?? 0,
+          emailsClicked: sr.emailsClicked ?? 0,
           emailsBounced: sr.emailsBounced ?? 0,
           ...buildRepliesFromDetail(detail),
         };

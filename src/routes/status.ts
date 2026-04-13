@@ -11,6 +11,7 @@ interface AggRow {
   contacted: boolean | null;
   delivered: boolean | null;
   opened: boolean | null;
+  clicked: boolean | null;
   replied: boolean | null;
   replyClassification: string | null;
   bounced: boolean | null;
@@ -24,7 +25,7 @@ function extractRows(result: unknown): AggRow[] {
 }
 
 function emptyScoped() {
-  return { contacted: false, delivered: false, opened: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null };
+  return { contacted: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null };
 }
 
 function formatTimestamp(val: string | null | undefined): string | null {
@@ -37,6 +38,7 @@ function buildScopedStatus(row: AggRow | undefined) {
         contacted: row.contacted === true,
         delivered: row.delivered === true,
         opened: row.opened === true,
+        clicked: row.clicked === true,
         replied: row.replied === true,
         replyClassification: row.replyClassification ?? null,
         bounced: row.bounced === true,
@@ -59,6 +61,7 @@ function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string
       TRUE AS "contacted",
       BOOL_OR(c.delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
       BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
+      BOOL_OR(ce.campaign_id IS NOT NULL) AS "clicked",
       BOOL_OR(c.delivery_status = 'replied') AS "replied",
       (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
       BOOL_OR(c.delivery_status = 'bounced') AS "bounced",
@@ -69,6 +72,10 @@ function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string
       ON oe.campaign_id = c.instantly_campaign_id
       AND oe.lead_email = c.lead_email
       AND oe.event_type = 'email_opened'
+    LEFT JOIN instantly_events ce
+      ON ce.campaign_id = c.instantly_campaign_id
+      AND ce.lead_email = c.lead_email
+      AND ce.event_type = 'email_link_clicked'
     WHERE c.lead_email IN (${sqlIn(emails)}) AND ${filterClause}
     GROUP BY c.lead_email
   `);
@@ -83,6 +90,7 @@ function brandBreakdownQuery(brandId: string, emails: string[]) {
       TRUE AS "contacted",
       BOOL_OR(c.delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
       BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
+      BOOL_OR(ce.campaign_id IS NOT NULL) AS "clicked",
       BOOL_OR(c.delivery_status = 'replied') AS "replied",
       (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
       BOOL_OR(c.delivery_status = 'bounced') AS "bounced",
@@ -93,6 +101,10 @@ function brandBreakdownQuery(brandId: string, emails: string[]) {
       ON oe.campaign_id = c.instantly_campaign_id
       AND oe.lead_email = c.lead_email
       AND oe.event_type = 'email_opened'
+    LEFT JOIN instantly_events ce
+      ON ce.campaign_id = c.instantly_campaign_id
+      AND ce.lead_email = c.lead_email
+      AND ce.event_type = 'email_link_clicked'
     WHERE c.lead_email IN (${sqlIn(emails)}) AND ${brandId} = ANY(c.brand_ids)
     GROUP BY c.lead_email, c.campaign_id
   `);
@@ -129,6 +141,7 @@ function aggregateBrandStatus(rows: AggRow[]) {
     contacted: rows.some((r) => r.contacted === true),
     delivered: rows.some((r) => r.delivered === true),
     opened: rows.some((r) => r.opened === true),
+    clicked: rows.some((r) => r.clicked === true),
     replied: rows.some((r) => r.replied === true),
     replyClassification,
     bounced: rows.some((r) => r.bounced === true),
