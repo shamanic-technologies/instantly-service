@@ -552,6 +552,10 @@
                 "emailsOpened": {
                   "type": "number"
                 },
+                "emailsClicked": {
+                  "type": "number",
+                  "description": "Total link click events for this step"
+                },
                 "emailsBounced": {
                   "type": "number"
                 },
@@ -628,6 +632,7 @@
                 "step",
                 "emailsSent",
                 "emailsOpened",
+                "emailsClicked",
                 "emailsBounced",
                 "repliesPositive",
                 "repliesNegative",
@@ -882,6 +887,10 @@
                         "type": "boolean",
                         "description": "true if at least one email_opened event exists"
                       },
+                      "clicked": {
+                        "type": "boolean",
+                        "description": "true if at least one email_link_clicked event exists"
+                      },
                       "replied": {
                         "type": "boolean",
                         "description": "true if at least one reply was received"
@@ -915,6 +924,7 @@
                       "contacted",
                       "delivered",
                       "opened",
+                      "clicked",
                       "replied",
                       "replyClassification",
                       "bounced",
@@ -940,6 +950,10 @@
                       "type": "boolean",
                       "description": "true if at least one email_opened event exists"
                     },
+                    "clicked": {
+                      "type": "boolean",
+                      "description": "true if at least one email_link_clicked event exists"
+                    },
                     "replied": {
                       "type": "boolean",
                       "description": "true if at least one reply was received"
@@ -973,6 +987,7 @@
                     "contacted",
                     "delivered",
                     "opened",
+                    "clicked",
                     "replied",
                     "replyClassification",
                     "bounced",
@@ -997,6 +1012,10 @@
                       "type": "boolean",
                       "description": "true if at least one email_opened event exists"
                     },
+                    "clicked": {
+                      "type": "boolean",
+                      "description": "true if at least one email_link_clicked event exists"
+                    },
                     "replied": {
                       "type": "boolean",
                       "description": "true if at least one reply was received"
@@ -1030,6 +1049,7 @@
                     "contacted",
                     "delivered",
                     "opened",
+                    "clicked",
                     "replied",
                     "replyClassification",
                     "bounced",
@@ -1086,6 +1106,7 @@
                   "contacted": true,
                   "delivered": true,
                   "opened": true,
+                  "clicked": false,
                   "replied": false,
                   "replyClassification": null,
                   "bounced": false,
@@ -1096,6 +1117,7 @@
                   "contacted": true,
                   "delivered": true,
                   "opened": false,
+                  "clicked": true,
                   "replied": true,
                   "replyClassification": "positive",
                   "bounced": false,
@@ -1107,6 +1129,7 @@
                 "contacted": true,
                 "delivered": true,
                 "opened": true,
+                "clicked": true,
                 "replied": true,
                 "replyClassification": "positive",
                 "bounced": false,

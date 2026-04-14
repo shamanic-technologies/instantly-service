@@ -15,5 +15,4 @@ router.get("/health", (req, res) => {
     service: "instantly-service",
   });
 });
-
 export default router;

@@ -85,6 +85,29 @@ describe("GET /stats", () => {
     mockFetchFeatureDynasties.mockResolvedValue([]);
   });
 
+  it("should strip trailing commas from x-org-id before querying", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow({ emailsSent: 5 })] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 2 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .set({ ...identityHeadersObj, "x-org-id": "test-org," });
+
+    expect(response.status).toBe(200);
+
+    // Verify the SQL uses the cleaned org_id (no trailing comma)
+    const sqlObj = mockExecute.mock.calls[0][0];
+    const sqlText = extractSqlText(sqlObj);
+    expect(sqlText).toContain("c.org_id =");
+    // The parameterized value should NOT contain a trailing comma
+    const params = sqlObj.queryChunks || [];
+    const flatParams = JSON.stringify(params);
+    expect(flatParams).not.toContain("test-org,");
+  });
+
   it("should return global stats when no filters provided", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
@@ -206,9 +229,9 @@ describe("GET /stats", () => {
     // Step stats
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { step: 1, emailsSent: 10, emailsOpened: 8, emailsBounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
-        { step: 2, emailsSent: 10, emailsOpened: 5, emailsBounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
-        { step: 3, emailsSent: 10, emailsOpened: 2, emailsBounced: 0, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+        { step: 1, emailsSent: 10, emailsOpened: 8, emailsClicked: 3, emailsBounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+        { step: 2, emailsSent: 10, emailsOpened: 5, emailsClicked: 1, emailsBounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+        { step: 3, emailsSent: 10, emailsOpened: 2, emailsClicked: 0, emailsBounced: 0, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
       ],
     });
 
@@ -223,9 +246,11 @@ describe("GET /stats", () => {
     expect(response.body.stepStats).toHaveLength(3);
     expect(response.body.stepStats[0].step).toBe(1);
     expect(response.body.stepStats[0].emailsSent).toBe(10);
+    expect(response.body.stepStats[0].emailsClicked).toBe(3);
     expect(response.body.stepStats[0].repliesPositive).toBe(1);
     expect(response.body.stepStats[0].repliesDetail.interested).toBe(1);
     expect(response.body.stepStats[2].step).toBe(3);
+    expect(response.body.stepStats[2].emailsClicked).toBe(0);
     expect(response.body.stepStats[2].emailsBounced).toBe(0);
     expect(response.body.stepStats[2].repliesPositive).toBe(1);
   });
