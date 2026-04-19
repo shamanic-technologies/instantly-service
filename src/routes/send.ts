@@ -42,24 +42,33 @@ const router = Router();
 const MAX_SEND_RETRIES = 3;
 
 /**
- * Pick an account from the list with priority order:
- * 1. kevin@growthagency.dev (if available)
- * 2. kevin@distribute.you (if available)
- * 3. Random from the remaining accounts
- *
- * Each per-lead campaign is assigned a single account so the
- * signature in the email body always matches the actual sender.
+ * Pick an account from the list using a two-pool strategy:
+ * Pool A (priority): accounts on preferred domains — random pick among available
+ * Pool B (fallback): all other accounts — random pick if Pool A is empty
+ * Error if neither pool has any account.
  */
-const PRIORITY_ACCOUNTS = [
-  "kevin@growthagency.dev",
-  "kevin@distribute.you",
+const POOL_A_DOMAINS = [
+  "pressbeat.io",
+  "growthagency.dev",
+  "distribute.you",
+  "growthservice.org",
+  "salescoldemails.com",
 ];
 
 export function pickRandomAccount(accounts: Account[]): Account {
-  for (const preferred of PRIORITY_ACCOUNTS) {
-    const match = accounts.find((a) => a.email === preferred);
-    if (match) return match;
+  if (accounts.length === 0) {
+    throw new Error("No accounts available");
   }
+
+  const poolA = accounts.filter((a) => {
+    const domain = a.email.split("@")[1];
+    return POOL_A_DOMAINS.includes(domain);
+  });
+
+  if (poolA.length > 0) {
+    return poolA[Math.floor(Math.random() * poolA.length)];
+  }
+
   return accounts[Math.floor(Math.random() * accounts.length)];
 }
 
