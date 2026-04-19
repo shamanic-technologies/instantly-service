@@ -216,67 +216,6 @@
           "sequence"
         ]
       },
-      "CreateCampaignResponse": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "campaign": {
-            "$ref": "#/components/schemas/CampaignSummary"
-          }
-        },
-        "required": [
-          "success",
-          "campaign"
-        ]
-      },
-      "CampaignSummary": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "instantlyCampaignId": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "instantlyCampaignId",
-          "name",
-          "status"
-        ]
-      },
-      "CreateCampaignRequest": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "accountIds": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "metadata": {
-            "type": "object",
-            "additionalProperties": {
-              "nullable": true
-            }
-          }
-        },
-        "required": [
-          "name"
-        ]
-      },
       "UpdateStatusRequest": {
         "type": "object",
         "properties": {
@@ -333,91 +272,6 @@
         "required": [
           "checked",
           "errors"
-        ]
-      },
-      "AddLeadsResponse": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "added": {
-            "type": "number"
-          },
-          "total": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "success",
-          "added",
-          "total"
-        ]
-      },
-      "AddLeadsRequest": {
-        "type": "object",
-        "properties": {
-          "leads": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "email": {
-                  "type": "string"
-                },
-                "firstName": {
-                  "type": "string"
-                },
-                "lastName": {
-                  "type": "string"
-                },
-                "companyName": {
-                  "type": "string"
-                },
-                "customVariables": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "email"
-              ]
-            }
-          }
-        },
-        "required": [
-          "leads"
-        ]
-      },
-      "DeleteLeadsResponse": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "deleted": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "success",
-          "deleted"
-        ]
-      },
-      "DeleteLeadsRequest": {
-        "type": "object",
-        "properties": {
-          "emails": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "required": [
-          "emails"
         ]
       },
       "StatsResponse": {
@@ -1396,151 +1250,6 @@
         }
       }
     },
-    "/orgs/campaigns": {
-      "post": {
-        "summary": "Create a campaign",
-        "description": "Brand IDs and workflow slug are read from headers (x-brand-id, x-workflow-slug) — do NOT pass them in the body.",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
-            "name": "x-campaign-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
-            },
-            "required": false,
-            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
-            "name": "x-brand-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
-            "name": "x-workflow-slug",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Feature slug — propagated through the full call chain for tracking"
-            },
-            "required": false,
-            "description": "Feature slug — propagated through the full call chain for tracking",
-            "name": "x-feature-slug",
-            "in": "header"
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateCampaignRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Campaign created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreateCampaignResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing required fields",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "500": {
-            "description": "Failed to create campaign",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      },
-      "get": {
-        "summary": "List campaigns for the authenticated org",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
-            "name": "x-campaign-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
-            },
-            "required": false,
-            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
-            "name": "x-brand-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
-            "name": "x-workflow-slug",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Feature slug — propagated through the full call chain for tracking"
-            },
-            "required": false,
-            "description": "Feature slug — propagated through the full call chain for tracking",
-            "name": "x-feature-slug",
-            "in": "header"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Campaigns list"
-          },
-          "401": {
-            "description": "Unauthorized"
-          }
-        }
-      }
-    },
     "/orgs/campaigns/{campaignId}": {
       "get": {
         "summary": "Get a campaign",
@@ -1610,6 +1319,61 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/orgs/campaigns": {
+      "get": {
+        "summary": "List campaigns for the authenticated org",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Campaigns list"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         }
       }
@@ -1738,113 +1502,6 @@
       }
     },
     "/orgs/campaigns/{campaignId}/leads": {
-      "post": {
-        "summary": "Add leads to a campaign",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "campaignId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
-            "name": "x-campaign-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
-            },
-            "required": false,
-            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
-            "name": "x-brand-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
-            "name": "x-workflow-slug",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Feature slug — propagated through the full call chain for tracking"
-            },
-            "required": false,
-            "description": "Feature slug — propagated through the full call chain for tracking",
-            "name": "x-feature-slug",
-            "in": "header"
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AddLeadsRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Leads added",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AddLeadsResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing required fields",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "404": {
-            "description": "Campaign not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Failed to add leads",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      },
       "get": {
         "summary": "List campaign leads",
         "parameters": [
@@ -1916,103 +1573,6 @@
         "responses": {
           "200": {
             "description": "Leads list"
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "404": {
-            "description": "Campaign not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "summary": "Delete leads from a campaign",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "campaignId",
-            "in": "path"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
-            "name": "x-campaign-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
-            },
-            "required": false,
-            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
-            "name": "x-brand-id",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
-            },
-            "required": false,
-            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
-            "name": "x-workflow-slug",
-            "in": "header"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Feature slug — propagated through the full call chain for tracking"
-            },
-            "required": false,
-            "description": "Feature slug — propagated through the full call chain for tracking",
-            "name": "x-feature-slug",
-            "in": "header"
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DeleteLeadsRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Leads deleted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeleteLeadsResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Missing emails",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
           },
           "401": {
             "description": "Unauthorized"
