@@ -16,7 +16,8 @@ const SEQUENCE_STOP_EVENTS = new Set([
 ]);
 
 /**
- * When a follow-up email is sent, convert the matching provisioned cost to actual.
+ * When a follow-up email is sent, convert all matching provisioned costs to actual.
+ * Each step has 2 email costs (account + domain).
  */
 async function handleFollowUpSent(
   instantlyCampaignId: string,
@@ -30,7 +31,7 @@ async function handleFollowUpSent(
 
   if (!campaign?.campaignId) return;
 
-  const [cost] = await db
+  const costs = await db
     .select()
     .from(sequenceCosts)
     .where(
@@ -42,23 +43,25 @@ async function handleFollowUpSent(
       ),
     );
 
-  if (!cost) return;
+  if (costs.length === 0) return;
 
-  const identity: IdentityContext = {
-    orgId: campaign.orgId || "system",
-    userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
-    runId: cost.runId,
-  };
+  for (const cost of costs) {
+    const identity: IdentityContext = {
+      orgId: campaign.orgId || "system",
+      userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
+      runId: cost.runId,
+    };
 
-  try {
-    await updateCostStatus(cost.runId, cost.costId, "actual", identity);
-    await db
-      .update(sequenceCosts)
-      .set({ status: "actual", updatedAt: new Date() })
-      .where(eq(sequenceCosts.id, cost.id));
-    console.log(`[webhooks] Converted provisioned cost ${cost.costId} to actual for step ${step}`);
-  } catch (error: any) {
-    console.error(`[webhooks] Failed to convert cost ${cost.costId}: ${error.message}`);
+    try {
+      await updateCostStatus(cost.runId, cost.costId, "actual", identity);
+      await db
+        .update(sequenceCosts)
+        .set({ status: "actual", updatedAt: new Date() })
+        .where(eq(sequenceCosts.id, cost.id));
+      console.log(`[webhooks] Converted provisioned cost ${cost.costId} to actual for step ${step}`);
+    } catch (error: any) {
+      console.error(`[webhooks] Failed to convert cost ${cost.costId}: ${error.message}`);
+    }
   }
 }
 

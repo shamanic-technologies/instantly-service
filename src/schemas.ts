@@ -214,65 +214,6 @@ registry.registerPath({
 
 // ─── Campaigns ──────────────────────────────────────────────────────────────
 
-export const CreateCampaignRequestSchema = z
-  .object({
-    name: z.string(),
-    accountIds: z.array(z.string()).optional(),
-    metadata: z.record(z.string(), z.unknown()).optional(),
-  })
-  .openapi("CreateCampaignRequest");
-
-export type CreateCampaignRequest = z.infer<typeof CreateCampaignRequestSchema>;
-
-const CampaignSummarySchema = z
-  .object({
-    id: z.string(),
-    instantlyCampaignId: z.string(),
-    name: z.string(),
-    status: z.string(),
-  })
-  .openapi("CampaignSummary");
-
-const CreateCampaignResponseSchema = z
-  .object({
-    success: z.boolean(),
-    campaign: CampaignSummarySchema,
-  })
-  .openapi("CreateCampaignResponse");
-
-registry.registerPath({
-  method: "post",
-  path: "/orgs/campaigns",
-  summary: "Create a campaign",
-  description:
-    "Brand IDs and workflow slug are read from headers (x-brand-id, x-workflow-slug) — do NOT pass them in the body.",
-  request: {
-    headers: TrackingHeadersSchema,
-    body: {
-      content: {
-        "application/json": { schema: CreateCampaignRequestSchema },
-      },
-    },
-  },
-  responses: {
-    201: {
-      description: "Campaign created",
-      content: {
-        "application/json": { schema: CreateCampaignResponseSchema },
-      },
-    },
-    400: {
-      description: "Missing required fields",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: { description: "Unauthorized" },
-    500: {
-      description: "Failed to create campaign",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
 registry.registerPath({
   method: "get",
   path: "/orgs/campaigns/{campaignId}",
@@ -377,62 +318,6 @@ registry.registerPath({
 
 // ─── Leads ──────────────────────────────────────────────────────────────────
 
-const LeadInputSchema = z.object({
-  email: z.string(),
-  firstName: z.string().optional(),
-  lastName: z.string().optional(),
-  companyName: z.string().optional(),
-  customVariables: z.record(z.string(), z.string()).optional(),
-});
-
-export const AddLeadsRequestSchema = z
-  .object({
-    leads: z.array(LeadInputSchema),
-  })
-  .openapi("AddLeadsRequest");
-
-export type AddLeadsRequest = z.infer<typeof AddLeadsRequestSchema>;
-
-const AddLeadsResponseSchema = z
-  .object({
-    success: z.boolean(),
-    added: z.number(),
-    total: z.number(),
-  })
-  .openapi("AddLeadsResponse");
-
-registry.registerPath({
-  method: "post",
-  path: "/orgs/campaigns/{campaignId}/leads",
-  summary: "Add leads to a campaign",
-  request: {
-    headers: TrackingHeadersSchema,
-    params: z.object({ campaignId: z.string() }),
-    body: {
-      content: { "application/json": { schema: AddLeadsRequestSchema } },
-    },
-  },
-  responses: {
-    201: {
-      description: "Leads added",
-      content: { "application/json": { schema: AddLeadsResponseSchema } },
-    },
-    400: {
-      description: "Missing required fields",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    404: {
-      description: "Campaign not found",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: { description: "Unauthorized" },
-    500: {
-      description: "Failed to add leads",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
 registry.registerPath({
   method: "get",
   path: "/orgs/campaigns/{campaignId}/leads",
@@ -447,53 +332,6 @@ registry.registerPath({
   },
   responses: {
     200: { description: "Leads list" },
-    404: {
-      description: "Campaign not found",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: { description: "Unauthorized" },
-  },
-});
-
-export const DeleteLeadsRequestSchema = z
-  .object({
-    emails: z.array(z.string()),
-  })
-  .openapi("DeleteLeadsRequest");
-
-export type DeleteLeadsRequest = z.infer<typeof DeleteLeadsRequestSchema>;
-
-const DeleteLeadsResponseSchema = z
-  .object({
-    success: z.boolean(),
-    deleted: z.number(),
-  })
-  .openapi("DeleteLeadsResponse");
-
-registry.registerPath({
-  method: "delete",
-  path: "/orgs/campaigns/{campaignId}/leads",
-  summary: "Delete leads from a campaign",
-  request: {
-    headers: TrackingHeadersSchema,
-    params: z.object({ campaignId: z.string() }),
-    body: {
-      content: {
-        "application/json": { schema: DeleteLeadsRequestSchema },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: "Leads deleted",
-      content: {
-        "application/json": { schema: DeleteLeadsResponseSchema },
-      },
-    },
-    400: {
-      description: "Missing emails",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
     404: {
       description: "Campaign not found",
       content: { "application/json": { schema: ErrorSchema } },

@@ -249,9 +249,9 @@ describe("POST /send", () => {
       return Promise.resolve({ id: `step-run-${runCounter}` });
     });
     mockAddLeads.mockResolvedValue({ added: 1 });
-    mockAddCosts.mockImplementation((runId: string) => {
+    mockAddCosts.mockImplementation((runId: string, items: { costName: string }[]) => {
       return Promise.resolve({
-        costs: [{ id: `cost-${runId}`, costName: "instantly-email-send" }],
+        costs: items.map((item, i) => ({ id: `cost-${runId}-${item.costName}`, costName: item.costName })),
       });
     });
     mockUpdateRun.mockResolvedValue({});
@@ -404,7 +404,7 @@ describe("POST /send", () => {
     });
   });
 
-  it("should create per-step runs with 1 actual + N-1 provisioned costs for a 3-step sequence", async () => {
+  it("should create per-step runs with correct cost items: contact upload (step 1 only) + 2 email costs per step", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
@@ -416,13 +416,25 @@ describe("POST /send", () => {
     expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-3" }), expect.objectContaining({ orgId: "org-1", userId: "user-1" }));
 
     expect(mockAddCosts).toHaveBeenCalledTimes(3);
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "actual" }], expect.objectContaining({ orgId: "org-1" }));
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-2", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "provisioned" }], expect.objectContaining({ orgId: "org-1" }));
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-3", [{ costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "provisioned" }], expect.objectContaining({ orgId: "org-1" }));
+    // Step 1: 2 email costs (actual) + contact upload (actual)
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [
+      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "actual" },
+      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "actual" },
+      { costName: "instantly-contact-uploaded", quantity: 1, costSource: "platform", status: "actual" },
+    ], expect.objectContaining({ orgId: "org-1" }));
+    // Steps 2-3: 2 email costs (provisioned), no contact upload
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-2", [
+      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
+      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
+    ], expect.objectContaining({ orgId: "org-1" }));
+    expect(mockAddCosts).toHaveBeenCalledWith("step-run-3", [
+      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
+      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
+    ], expect.objectContaining({ orgId: "org-1" }));
   });
 
 
-  it("should store per-step cost IDs in sequence_costs table with distinct runIds", async () => {
+  it("should store per-step email cost IDs in sequence_costs table (2 per step, excluding contact upload)", async () => {
     mockNewCampaignFlow();
     // Reset to track sequence_costs inserts
     mockDbReturning.mockReset();
@@ -434,18 +446,25 @@ describe("POST /send", () => {
 
     await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
-    // Check that sequence_costs were inserted for ALL steps with distinct runIds
+    // Check that sequence_costs were inserted for ALL steps with 2 rows per step (account + domain)
+    // Contact upload cost should NOT be in sequence_costs
     const insertCalls = mockDbInsertValues.mock.calls;
     const sequenceCostInserts = insertCalls.filter(
       ([v]: [any]) => v.costId && v.step,
     );
-    expect(sequenceCostInserts).toHaveLength(3);
-    expect(sequenceCostInserts[0][0]).toMatchObject({ step: 1, runId: "step-run-1", costId: "cost-step-run-1", status: "actual" });
-    expect(sequenceCostInserts[1][0]).toMatchObject({ step: 2, runId: "step-run-2", costId: "cost-step-run-2", status: "provisioned" });
-    expect(sequenceCostInserts[2][0]).toMatchObject({ step: 3, runId: "step-run-3", costId: "cost-step-run-3", status: "provisioned" });
+    expect(sequenceCostInserts).toHaveLength(6); // 2 costs × 3 steps
+    // Step 1: 2 actual costs
+    expect(sequenceCostInserts[0][0]).toMatchObject({ step: 1, runId: "step-run-1", status: "actual" });
+    expect(sequenceCostInserts[1][0]).toMatchObject({ step: 1, runId: "step-run-1", status: "actual" });
+    // Step 2: 2 provisioned costs
+    expect(sequenceCostInserts[2][0]).toMatchObject({ step: 2, runId: "step-run-2", status: "provisioned" });
+    expect(sequenceCostInserts[3][0]).toMatchObject({ step: 2, runId: "step-run-2", status: "provisioned" });
+    // Step 3: 2 provisioned costs
+    expect(sequenceCostInserts[4][0]).toMatchObject({ step: 3, runId: "step-run-3", status: "provisioned" });
+    expect(sequenceCostInserts[5][0]).toMatchObject({ step: 3, runId: "step-run-3", status: "provisioned" });
   });
 
-  it("should work with a single-step sequence (1 run, completed immediately)", async () => {
+  it("should work with a single-step sequence (1 run, 3 costs: account + domain + contact upload)", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
@@ -461,7 +480,9 @@ describe("POST /send", () => {
     expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }), expect.objectContaining({ orgId: "org-1" }));
     expect(mockAddCosts).toHaveBeenCalledTimes(1);
     expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [
-      { costName: "instantly-email-send", quantity: 1, costSource: "platform", status: "actual" },
+      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "actual" },
+      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "actual" },
+      { costName: "instantly-contact-uploaded", quantity: 1, costSource: "platform", status: "actual" },
     ], expect.objectContaining({ orgId: "org-1" }));
     expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" }));
   });
@@ -566,7 +587,7 @@ describe("POST /send", () => {
     expect(res.body.warning).toBeUndefined();
     expect(mockCreateCampaign).toHaveBeenCalledTimes(2);
     expect(mockCreateRun).toHaveBeenCalledTimes(3); // 3 step runs
-    expect(mockAddCosts).toHaveBeenCalledTimes(3);
+    expect(mockAddCosts).toHaveBeenCalledTimes(3); // 1 addCosts call per step
     expect(mockUpdateRun).toHaveBeenCalledTimes(3); // all steps completed immediately
   });
 
@@ -735,15 +756,19 @@ describe("POST /send", () => {
     expect(mockCreateRun).not.toHaveBeenCalled();
   });
 
-  it("should call authorizeCreditSpend with costName + quantity items", async () => {
+  it("should call authorizeCreditSpend with 3 cost items (contact + account + domain)", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
     await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(mockAuthorizeCreditSpend).toHaveBeenCalledWith(
-      [{ costName: "instantly-email-send", quantity: 3 }],
-      "instantly-email-send",
+      [
+        { costName: "instantly-contact-uploaded", quantity: 1 },
+        { costName: "instantly-account-email-sent", quantity: 3 },
+        { costName: "instantly-domain-email-sent", quantity: 3 },
+      ],
+      "instantly-send",
       expect.objectContaining({
         orgId: "org-1",
         userId: "user-1",
