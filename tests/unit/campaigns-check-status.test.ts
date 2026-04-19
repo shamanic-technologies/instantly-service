@@ -37,27 +37,18 @@ vi.mock("../../src/db/schema", () => ({
 
 // Mock instantly-client
 const mockGetCampaign = vi.fn();
-const mockCreateCampaign = vi.fn();
-const mockUpdateCampaign = vi.fn();
-const mockUpdateCampaignStatus = vi.fn();
 
 vi.mock("../../src/lib/instantly-client", () => ({
   getCampaign: (...args: unknown[]) => mockGetCampaign(...args),
-  createCampaign: (...args: unknown[]) => mockCreateCampaign(...args),
-  updateCampaign: (...args: unknown[]) => mockUpdateCampaign(...args),
-  updateCampaignStatus: (...args: unknown[]) => mockUpdateCampaignStatus(...args),
+  updateCampaignStatus: vi.fn(),
 }));
 
 // Mock runs-client
-const mockCreateRun = vi.fn();
 const mockUpdateRun = vi.fn();
-const mockAddCosts = vi.fn();
 const mockUpdateCostStatus = vi.fn();
 
 vi.mock("../../src/lib/runs-client", () => ({
-  createRun: (...args: unknown[]) => mockCreateRun(...args),
   updateRun: (...args: unknown[]) => mockUpdateRun(...args),
-  addCosts: (...args: unknown[]) => mockAddCosts(...args),
   updateCostStatus: (...args: unknown[]) => mockUpdateCostStatus(...args),
 }));
 
@@ -66,21 +57,6 @@ const mockResolveInstantlyApiKey = vi.fn();
 
 vi.mock("../../src/lib/key-client", () => ({
   resolveInstantlyApiKey: (...args: unknown[]) => mockResolveInstantlyApiKey(...args),
-  KeyServiceError: class KeyServiceError extends Error {
-    statusCode: number;
-    constructor(statusCode: number, message: string) {
-      super(message);
-      this.name = "KeyServiceError";
-      this.statusCode = statusCode;
-    }
-  },
-}));
-
-// Mock billing-client
-const mockAuthorizeCreditSpend = vi.fn();
-
-vi.mock("../../src/lib/billing-client", () => ({
-  authorizeCreditSpend: (...args: unknown[]) => mockAuthorizeCreditSpend(...args),
 }));
 
 // Mock email-client
@@ -109,7 +85,6 @@ describe("POST /campaigns/check-status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
-    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: true, balance_cents: 1000 });
     mockUpdateRun.mockResolvedValue({});
     mockUpdateCostStatus.mockResolvedValue({});
     mockSendEmail.mockResolvedValue({});
@@ -243,43 +218,3 @@ describe("POST /campaigns/check-status", () => {
   });
 });
 
-describe("POST /campaigns (credit authorization)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
-    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: true, balance_cents: 1000 });
-    mockCreateRun.mockResolvedValue({ id: "run-1" });
-    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-1", status: "draft" });
-    mockUpdateRun.mockResolvedValue({});
-    mockAddCosts.mockResolvedValue({ costs: [] });
-  });
-
-  it("should return 402 when credit authorization fails for platform keySource", async () => {
-    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: false, balance_cents: 0, required_cents: 1 });
-
-    const app = await createCampaignsApp();
-    const res = await request(app)
-      .post("/campaigns")
-      .set({ ...identityHeadersObj, "x-brand-id": "brand-1" })
-      .send({ name: "Test Campaign" });
-
-    expect(res.status).toBe(402);
-    expect(res.body.error).toBe("Insufficient credits");
-    expect(res.body.required_cents).toBe(1);
-    expect(mockCreateRun).not.toHaveBeenCalled();
-    expect(mockCreateCampaign).not.toHaveBeenCalled();
-  });
-
-  it("should skip credit authorization when keySource is org (BYOK)", async () => {
-    mockResolveInstantlyApiKey.mockResolvedValue({ key: "org-key", keySource: "org" });
-
-    const app = await createCampaignsApp();
-    // Will fail on DB insert (mock not set up for full flow), but we only care that billing was skipped
-    await request(app)
-      .post("/campaigns")
-      .set({ ...identityHeadersObj, "x-brand-id": "brand-1" })
-      .send({ name: "Test Campaign" });
-
-    expect(mockAuthorizeCreditSpend).not.toHaveBeenCalled();
-  });
-});

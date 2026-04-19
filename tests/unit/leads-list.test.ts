@@ -58,9 +58,12 @@ vi.mock("../../src/lib/billing-client", () => ({
 }));
 
 vi.mock("../../src/lib/instantly-client", () => ({
-  addLeads: vi.fn(),
-  listLeads: vi.fn(),
-  deleteLeads: vi.fn(),
+  getCampaign: vi.fn(),
+  updateCampaignStatus: vi.fn(),
+}));
+
+vi.mock("../../src/lib/campaign-error-handler", () => ({
+  handleCampaignError: vi.fn(),
 }));
 
 process.env.INSTANTLY_SERVICE_API_KEY = "test-api-key";

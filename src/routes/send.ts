@@ -235,8 +235,12 @@ router.post("/", async (req: Request, res: Response) => {
     // 1. Credit authorization (platform keys only)
     if (keySource === "platform") {
       const auth = await authorizeCreditSpend(
-        [{ costName: "instantly-email-send", quantity: body.sequence.length }],
-        "instantly-email-send",
+        [
+          { costName: "instantly-contact-uploaded", quantity: 1 },
+          { costName: "instantly-account-email-sent", quantity: body.sequence.length },
+          { costName: "instantly-domain-email-sent", quantity: body.sequence.length },
+        ],
+        "instantly-send",
         {
           orgId,
           userId,
@@ -404,9 +408,15 @@ router.post("/", async (req: Request, res: Response) => {
 
       // 4. Create per-step runs: step 1 = actual cost, steps 2-N = provisioned cost
       //    All runs are completed immediately — the webhook updates costs later.
+      //
+      //    Cost model:
+      //    - instantly-contact-uploaded: 1× on first step, always actual (not cancellable)
+      //    - instantly-account-email-sent: 1× per step, actual/provisioned
+      //    - instantly-domain-email-sent: 1× per step, actual/provisioned
       const parentIdentity = { orgId, userId, runId: res.locals.runId as string, tracking };
       for (const s of sortedSequence) {
         const isFirstStep = s.step === sortedSequence[0].step;
+        const emailCostStatus = isFirstStep ? "actual" as const : "provisioned" as const;
         const stepRun = await createRun({
           serviceName: "instantly-service",
           taskName: `email-send-step-${s.step}`,
@@ -415,21 +425,28 @@ router.post("/", async (req: Request, res: Response) => {
         }, parentIdentity);
 
         const stepIdentity = { orgId, userId, runId: stepRun.id, tracking };
-        const costResult = await addCosts(stepRun.id, [{
-          costName: "instantly-email-send",
-          quantity: 1,
-          costSource: keySource,
-          status: isFirstStep ? "actual" as const : "provisioned" as const,
-        }], stepIdentity);
 
-        const costId = costResult.costs[0]?.id;
-        if (costId) {
+        const costItems: { costName: string; quantity: number; costSource: "platform" | "org"; status: "actual" | "provisioned" }[] = [
+          { costName: "instantly-account-email-sent", quantity: 1, costSource: keySource, status: emailCostStatus },
+          { costName: "instantly-domain-email-sent", quantity: 1, costSource: keySource, status: emailCostStatus },
+        ];
+        // Contact upload cost: once per send, always actual, not tracked in sequence_costs
+        if (isFirstStep) {
+          costItems.push({ costName: "instantly-contact-uploaded", quantity: 1, costSource: keySource, status: "actual" });
+        }
+
+        const costResult = await addCosts(stepRun.id, costItems, stepIdentity);
+
+        // Store email costs in sequence_costs for webhook lifecycle management
+        // Contact upload cost is NOT stored here — it is never cancelled
+        for (const cost of costResult.costs) {
+          if (cost.costName === "instantly-contact-uploaded") continue;
           await db.insert(sequenceCosts).values({
             campaignId,
             leadEmail: body.to,
             step: s.step,
             runId: stepRun.id,
-            costId,
+            costId: cost.id,
             status: isFirstStep ? "actual" : "provisioned",
           });
         }
