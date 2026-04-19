@@ -137,43 +137,44 @@ function mockNewCampaignFlow() {
 }
 
 describe("pickRandomAccount", () => {
-  it("should return one of the provided accounts", () => {
+  it("should pick from Pool A when Pool A accounts are available", () => {
     const accounts = [
-      acct({ email: "a@test.com" }),
-      acct({ email: "b@test.com" }),
-      acct({ email: "c@test.com" }),
+      acct({ email: "random@otherdomain.com" }),
+      acct({ email: "alice@growthagency.dev" }),
+      acct({ email: "bob@distribute.you" }),
+    ];
+    const picked = pickRandomAccount(accounts);
+    const domain = picked.email.split("@")[1];
+    expect(["growthagency.dev", "distribute.you"]).toContain(domain);
+  });
+
+  it("should pick randomly among all Pool A accounts", () => {
+    const accounts = [
+      acct({ email: "alice@pressbeat.io" }),
+      acct({ email: "bob@growthservice.org" }),
+      acct({ email: "carol@salescoldemails.com" }),
+      acct({ email: "random@otherdomain.com" }),
+    ];
+    const poolADomains = ["pressbeat.io", "growthservice.org", "salescoldemails.com"];
+    // Run multiple times to verify it stays within Pool A
+    for (let i = 0; i < 20; i++) {
+      const picked = pickRandomAccount(accounts);
+      const domain = picked.email.split("@")[1];
+      expect(poolADomains).toContain(domain);
+    }
+  });
+
+  it("should fall back to Pool B when no Pool A accounts are available", () => {
+    const accounts = [
+      acct({ email: "a@otherdomain.com" }),
+      acct({ email: "b@anotherdomain.com" }),
     ];
     const picked = pickRandomAccount(accounts);
     expect(accounts).toContainEqual(picked);
   });
 
-  it("should prioritize kevin@growthagency.dev when available", () => {
-    const accounts = [
-      acct({ email: "random@test.com" }),
-      acct({ email: "kevin@growthagency.dev" }),
-      acct({ email: "kevin@distribute.you" }),
-    ];
-    const picked = pickRandomAccount(accounts);
-    expect(picked.email).toBe("kevin@growthagency.dev");
-  });
-
-  it("should fall back to kevin@distribute.you when growthagency is unavailable", () => {
-    const accounts = [
-      acct({ email: "random@test.com" }),
-      acct({ email: "kevin@distribute.you" }),
-      acct({ email: "other@test.com" }),
-    ];
-    const picked = pickRandomAccount(accounts);
-    expect(picked.email).toBe("kevin@distribute.you");
-  });
-
-  it("should pick randomly when neither priority account is available", () => {
-    const accounts = [
-      acct({ email: "a@test.com" }),
-      acct({ email: "b@test.com" }),
-    ];
-    const picked = pickRandomAccount(accounts);
-    expect(accounts).toContainEqual(picked);
+  it("should throw when no accounts are available", () => {
+    expect(() => pickRandomAccount([])).toThrow("No accounts available");
   });
 });
 
