@@ -345,7 +345,7 @@ registry.registerPath({
 export const StatsQuerySchema = z
   .object({
     runIds: z.string().optional().describe("Comma-separated list of run IDs"),
-    brandIds: z.string().optional().describe("Comma-separated brand IDs to filter by (matches campaigns containing any of these brands)"),
+    brandId: z.string().optional().describe("Filter by brand ID (matches campaigns containing this brand)"),
     campaignId: z.string().optional(),
     workflowSlugs: z.string().optional().describe("Comma-separated list of workflow slugs to filter by"),
     featureSlugs: z.string().optional().describe("Comma-separated list of feature slugs to filter by"),
@@ -613,14 +613,14 @@ const StatusItemSchema = z.object({
 
 export const StatusRequestSchema = z
   .object({
-    brandIds: z
+    brandId: z
       .string()
       .optional()
-      .describe("Comma-separated brand IDs — when provided without campaignId, returns per-campaign breakdown + aggregated brand status"),
+      .describe("Brand ID — when provided without campaignId, returns per-campaign breakdown + aggregated brand status"),
     campaignId: z
       .string()
       .optional()
-      .describe("Campaign ID — when provided, returns campaign-scoped status (brandIds is ignored)"),
+      .describe("Campaign ID — when provided, returns campaign-scoped status (brandId is ignored)"),
     items: z
       .array(StatusItemSchema)
       .min(1)
@@ -628,7 +628,7 @@ export const StatusRequestSchema = z
   })
   .openapi("StatusRequest", {
     example: {
-      brandIds: "b8f0e2a1-1234-4abc-9def-000000000001",
+      brandId: "b8f0e2a1-1234-4abc-9def-000000000001",
       items: [{ email: "alice@media.com" }, { email: "bob@test.com" }],
     },
   });
@@ -660,8 +660,8 @@ const GlobalStatusSchema = z.object({
 
 const StatusResultSchema = z.object({
   email: z.string(),
-  byCampaign: z.record(z.string(), ScopedStatusFieldsSchema).nullable().describe("Per-campaign breakdown — present only when brandIds is provided without campaignId"),
-  brand: ScopedStatusFieldsSchema.nullable().describe("Aggregated brand status (most advanced across campaigns) — present only when brandIds is provided without campaignId"),
+  byCampaign: z.record(z.string(), ScopedStatusFieldsSchema).nullable().describe("Per-campaign breakdown — present only when brandId is provided without campaignId"),
+  brand: ScopedStatusFieldsSchema.nullable().describe("Aggregated brand status (most advanced across campaigns) — present only when brandId is provided without campaignId"),
   campaign: ScopedStatusFieldsSchema.nullable().describe("Campaign-scoped status — present only when campaignId is provided"),
   global: GlobalStatusSchema,
 });
@@ -706,8 +706,8 @@ registry.registerPath({
   description:
     "Batch delivery status check. Filters are in the body — headers are tracing/logging only.\n\n" +
     "**Modes:**\n" +
-    "- **Brand mode** (`brandIds` set, no `campaignId`): returns `byCampaign` (per-campaign breakdown keyed by campaign UUID), `brand` (aggregated), and `global`.\n" +
-    "- **Campaign mode** (`campaignId` set, with or without `brandIds`): returns `campaign` (single campaign status) and `global`. When both are provided, `brandIds` is ignored.\n" +
+    "- **Brand mode** (`brandId` set, no `campaignId`): returns `byCampaign` (per-campaign breakdown keyed by campaign UUID), `brand` (aggregated), and `global`.\n" +
+    "- **Campaign mode** (`campaignId` set, with or without `brandId`): returns `campaign` (single campaign status) and `global`. When both are provided, `brandId` is ignored.\n" +
     "- **Global only** (neither): returns only `global`.\n\n" +
     "**Aggregation rules for `brand`:**\n" +
     "- Boolean fields (`contacted`, `delivered`, `opened`, `replied`, `bounced`, `unsubscribed`): `true` if true in at least one campaign (BOOL_OR).\n" +
