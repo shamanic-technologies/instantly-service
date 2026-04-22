@@ -115,7 +115,7 @@ describe("GET /stats", () => {
     expect(sqlText).toContain("run_id IN");
   });
 
-  it("should accept runIds, brandIds, and campaignId filters", async () => {
+  it("should accept runIds, brandId, and campaignId filters", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({ emailsSent: 10, recipients: 5 })],
     });
@@ -127,7 +127,7 @@ describe("GET /stats", () => {
 
     const response = await request(app)
       .get("/stats")
-      .query({ runIds: "run-1", brandIds: "brand-1", campaignId: "camp-1" });
+      .query({ runIds: "run-1", brandId: "brand-1", campaignId: "camp-1" });
 
     expect(response.status).toBe(200);
     expect(response.body.stats.emailsSent).toBe(10);

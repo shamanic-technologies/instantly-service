@@ -43,9 +43,9 @@ describe("POST /status", () => {
     expect(res.status).toBe(400);
   });
 
-  // ── Global-only mode (no brandIds, no campaignId) ───────────────────────
+  // ── Global-only mode (no brandId, no campaignId) ───────────────────────
 
-  it("should return only global when neither brandIds nor campaignId provided", async () => {
+  it("should return only global when neither brandId nor campaignId provided", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [{ key: "john@acme.com", campaignId: null, bounced: true, unsubscribed: false }] });
 
     const app = await createStatusApp();
@@ -104,13 +104,13 @@ describe("POST /status", () => {
     expect(res.body.results[0].campaign).toEqual(emptyScoped);
   });
 
-  it("should treat brandIds + campaignId as campaign mode (brandIds ignored)", async () => {
+  it("should treat brandId + campaignId as campaign mode (brandId ignored)", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] }); // global
     mockExecute.mockResolvedValueOnce({ rows: [] }); // campaign
 
     const app = await createStatusApp();
     const res = await request(app).post("/").send({
-      brandIds: "brand-1",
+      brandId: "brand-1",
       campaignId: "camp-1",
       items: [{ email: "john@acme.com" }],
     });
@@ -124,9 +124,9 @@ describe("POST /status", () => {
     expect(r.campaign).toBeDefined();
   });
 
-  // ── Brand mode (brandIds, no campaignId) ────────────────────────────────
+  // ── Brand mode (brandId, no campaignId) ────────────────────────────────
 
-  it("should return byCampaign breakdown and aggregated brand when brandIds provided", async () => {
+  it("should return byCampaign breakdown and aggregated brand when brandId provided", async () => {
     // Global
     mockExecute.mockResolvedValueOnce({
       rows: [{ key: "alice@media.com", campaignId: null, bounced: false, unsubscribed: false }],
@@ -141,7 +141,7 @@ describe("POST /status", () => {
 
     const app = await createStatusApp();
     const res = await request(app).post("/").send({
-      brandIds: "brand-1",
+      brandId: "brand-1",
       items: [{ email: "alice@media.com" }],
     });
 
@@ -182,7 +182,7 @@ describe("POST /status", () => {
 
     const app = await createStatusApp();
     const res = await request(app).post("/").send({
-      brandIds: "brand-1",
+      brandId: "brand-1",
       items: [{ email: "john@acme.com" }],
     });
 
@@ -203,7 +203,7 @@ describe("POST /status", () => {
 
     const app = await createStatusApp();
     const res = await request(app).post("/").send({
-      brandIds: "brand-1",
+      brandId: "brand-1",
       items: [{ email: "john@acme.com" }],
     });
 
@@ -232,7 +232,7 @@ describe("POST /status", () => {
 
     const app = await createStatusApp();
     const res = await request(app).post("/").send({
-      brandIds: "brand-1",
+      brandId: "brand-1",
       items: [
         { email: "alice@media.com" },
         { email: "bob@test.com" },
@@ -263,7 +263,7 @@ describe("POST /status", () => {
 
     const app = await createStatusApp();
     const res = await request(app).post("/").send({
-      brandIds: "brand-1",
+      brandId: "brand-1",
       items: [{ email: "john@acme.com" }],
     });
 
@@ -286,7 +286,7 @@ describe("POST /status", () => {
 
     const app = await createStatusApp();
     const res = await request(app).post("/").send({
-      brandIds: "brand-1",
+      brandId: "brand-1",
       items: [{ email: "john@acme.com" }],
     });
 
@@ -306,7 +306,7 @@ describe("POST /status", () => {
     // Brand mode: 2 queries (global + brand breakdown)
     mockExecute.mockResolvedValueOnce({ rows: [] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
-    await request(app).post("/").send({ brandIds: "b-1", items: [{ email: "a@test.com" }] });
+    await request(app).post("/").send({ brandId: "b-1", items: [{ email: "a@test.com" }] });
     expect(mockExecute).toHaveBeenCalledTimes(2);
 
     vi.clearAllMocks();
@@ -326,10 +326,10 @@ describe("POST /status", () => {
 
     vi.clearAllMocks();
 
-    // brandIds + campaignId = campaign mode: 2 queries
+    // brandId + campaignId = campaign mode: 2 queries
     mockExecute.mockResolvedValueOnce({ rows: [] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
-    await request(app).post("/").send({ brandIds: "b-1", campaignId: "c-1", items: [{ email: "a@test.com" }] });
+    await request(app).post("/").send({ brandId: "b-1", campaignId: "c-1", items: [{ email: "a@test.com" }] });
     expect(mockExecute).toHaveBeenCalledTimes(2);
   });
 
@@ -378,7 +378,7 @@ describe("POST /status", () => {
 
     const app = await createStatusApp();
     const res = await request(app).post("/").send({
-      brandIds: "brand-1",
+      brandId: "brand-1",
       items: [{ email: "john@acme.com" }],
     });
 
