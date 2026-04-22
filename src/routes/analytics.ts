@@ -404,15 +404,14 @@ router.get("/stats", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds: runIdsRaw, brandIds: brandIdsRaw, campaignId, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy } = parsed.data;
+  const { runIds: runIdsRaw, brandId, campaignId, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy } = parsed.data;
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
-  const brandIds = brandIdsRaw ? brandIdsRaw.split(",").filter(Boolean) : undefined;
   const orgId = res.locals.orgId as string;
 
   // Build WHERE clauses — always scope by org from header
   const conditions: SQL[] = [sql`c.org_id = ${orgId}`];
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
-  if (brandIds?.length) conditions.push(sql`c.brand_ids && ARRAY[${sql.join(brandIds.map((id) => sql`${id}`), sql`, `)}]::text[]`);
+  if (brandId) conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
 
   const interServiceHeaders = buildInterServiceHeaders(req, res);

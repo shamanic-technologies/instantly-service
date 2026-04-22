@@ -82,7 +82,7 @@ function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string
 }
 
 /** Brand breakdown query — grouped by (email, campaign_id) for per-campaign detail */
-function brandBreakdownQuery(brandIds: string[], emails: string[]) {
+function brandBreakdownQuery(brandId: string, emails: string[]) {
   return db.execute(sql`
     SELECT
       c.lead_email AS "key",
@@ -105,7 +105,7 @@ function brandBreakdownQuery(brandIds: string[], emails: string[]) {
       ON ce.campaign_id = c.instantly_campaign_id
       AND ce.lead_email = c.lead_email
       AND ce.event_type = 'email_link_clicked'
-    WHERE c.lead_email IN (${sqlIn(emails)}) AND c.brand_ids && ARRAY[${sql.join(brandIds.map((id) => sql`${id}`), sql`, `)}]::text[]
+    WHERE c.lead_email IN (${sqlIn(emails)}) AND ${brandId} = ANY(c.brand_ids)
     GROUP BY c.lead_email, c.campaign_id
   `);
 }
@@ -153,7 +153,7 @@ function aggregateBrandStatus(rows: AggRow[]) {
 /**
  * POST /status
  * Batch delivery status check.
- * - Brand mode (brandIds, no campaignId): byCampaign breakdown + aggregated brand + global
+ * - Brand mode (brandId, no campaignId): byCampaign breakdown + aggregated brand + global
  * - Campaign mode (campaignId present): campaign-scoped + global
  * - Global only: just global
  */
@@ -165,11 +165,10 @@ router.post("/", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { brandIds: brandIdsRaw, campaignId, items } = parsed.data;
-  const brandIds = brandIdsRaw ? brandIdsRaw.split(",").filter(Boolean) : undefined;
+  const { brandId, campaignId, items } = parsed.data;
 
   const emails = items.map((i) => i.email);
-  const isBrandMode = !!brandIds?.length && !campaignId;
+  const isBrandMode = !!brandId && !campaignId;
   const isCampaignMode = !!campaignId;
 
   try {
@@ -191,7 +190,7 @@ router.post("/", async (req: Request, res: Response) => {
 
     let brandBreakdownPromise: Promise<unknown> | null = null;
     if (isBrandMode) {
-      brandBreakdownPromise = brandBreakdownQuery(brandIds!, emails);
+      brandBreakdownPromise = brandBreakdownQuery(brandId, emails);
     }
 
     let campPromise: Promise<unknown> | null = null;

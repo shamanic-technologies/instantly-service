@@ -540,9 +540,9 @@ describe("GET /stats", () => {
     expect(sqlText).toContain("workflow_slug IN");
   });
 
-  // ─── brandIds filter uses array overlap for multi-brand support ─────────────
+  // ─── brandId filter uses ANY(brand_ids) for multi-brand support ─────────────
 
-  it("should filter brandIds using array overlap for multi-brand campaigns", async () => {
+  it("should filter brandId using ANY(c.brand_ids) for multi-brand campaigns", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({ emailsSent: 10, recipients: 5 })],
     });
@@ -553,19 +553,19 @@ describe("GET /stats", () => {
 
     const response = await request(app)
       .get("/stats")
-      .query({ brandIds: "brand-1" })
+      .query({ brandId: "brand-1" })
       .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
 
     const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("ANY");
     expect(sqlText).toContain("brand_ids");
-    expect(sqlText).toContain("&&");
   });
 
   // ─── Combined dynasty + other filters ────────────────────────────────────────
 
-  it("should combine workflowDynastySlug with brandIds filter", async () => {
+  it("should combine workflowDynastySlug with brandId filter", async () => {
     mockResolveWorkflow.mockResolvedValueOnce(["cold-email", "cold-email-v2"]);
 
     mockExecute.mockResolvedValueOnce({
@@ -578,7 +578,7 @@ describe("GET /stats", () => {
 
     const response = await request(app)
       .get("/stats")
-      .query({ workflowDynastySlug: "cold-email", brandIds: "brand-1" })
+      .query({ workflowDynastySlug: "cold-email", brandId: "brand-1" })
       .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
