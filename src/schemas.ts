@@ -562,6 +562,58 @@ export const WarmupRequestSchema = z
 
 export type WarmupRequest = z.infer<typeof WarmupRequestSchema>;
 
+// ─── Transfer Brand ─────────────────────────────────────────────────────────
+
+export const TransferBrandRequestSchema = z
+  .object({
+    brandId: z.string().describe("Brand UUID to transfer"),
+    sourceOrgId: z.string().describe("Current org UUID that owns the brand"),
+    targetOrgId: z.string().describe("Destination org UUID"),
+  })
+  .openapi("TransferBrandRequest");
+
+export type TransferBrandRequest = z.infer<typeof TransferBrandRequestSchema>;
+
+const TransferBrandUpdatedTableSchema = z.object({
+  tableName: z.string(),
+  count: z.number(),
+});
+
+export const TransferBrandResponseSchema = z
+  .object({
+    updatedTables: z.array(TransferBrandUpdatedTableSchema),
+  })
+  .openapi("TransferBrandResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/transfer-brand",
+  summary: "Transfer solo-brand rows from one org to another",
+  description:
+    "Re-assigns org_id on all rows that reference exactly one brand matching brandId. " +
+    "Skips co-branding rows (multiple brand IDs). Idempotent.",
+  request: {
+    body: {
+      content: { "application/json": { schema: TransferBrandRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Transfer complete",
+      content: { "application/json": { schema: TransferBrandResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 const WarmupResponseSchema = z
   .object({
     success: z.boolean(),
