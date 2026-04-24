@@ -15,6 +15,7 @@ import analyticsPublicRoutes from "./routes/analytics-public";
 import webhooksRoutes from "./routes/webhooks";
 import sendRoutes from "./routes/send";
 import statusRoutes from "./routes/status";
+import transferBrandRoutes from "./routes/transfer-brand";
 import { serviceAuth } from "./middleware/serviceAuth";
 import { requireOrgId } from "./middleware/requireOrgId";
 
@@ -45,6 +46,7 @@ app.use("/public", serviceAuth, analyticsPublicRoutes);
 // ─── Internal routes (x-api-key only, no org context) ───────────────────────
 app.use("/internal/campaigns", serviceAuth, campaignsRoutes);  // check-status
 app.use("/internal/accounts", serviceAuth, accountsRoutes);    // list all accounts
+app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 
 // ─── Org-scoped routes (x-api-key + x-org-id required, rest optional) ───────
 app.use("/orgs/send", serviceAuth, requireOrgId, sendRoutes);
