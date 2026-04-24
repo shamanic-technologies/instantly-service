@@ -8,7 +8,6 @@ import analyticsPublicRoutes from "../../src/routes/analytics-public";
 import webhooksRoutes from "../../src/routes/webhooks";
 import sendRoutes from "../../src/routes/send";
 import statusRoutes from "../../src/routes/status";
-import transferBrandRoutes from "../../src/routes/transfer-brand";
 import { serviceAuth } from "../../src/middleware/serviceAuth";
 import { requireOrgId } from "../../src/middleware/requireOrgId";
 
@@ -26,7 +25,6 @@ export function createTestApp() {
   // Internal routes (x-api-key only)
   app.use("/internal/campaigns", serviceAuth, campaignsRoutes);
   app.use("/internal/accounts", serviceAuth, accountsRoutes);
-  app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 
   // Org-scoped routes (x-api-key + x-org-id required)
   app.use("/orgs/send", serviceAuth, requireOrgId, sendRoutes);
