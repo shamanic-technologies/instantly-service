@@ -11,16 +11,26 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: parsed.error.message });
   }
 
-  const { brandId, sourceOrgId, targetOrgId } = parsed.data;
+  const { sourceBrandId, sourceOrgId, targetOrgId, targetBrandId } = parsed.data;
 
   // instantly_campaigns: brand_ids is text[], update solo-brand rows only
-  const campaignsResult = await db.execute(sql`
-    UPDATE instantly_campaigns
-    SET org_id = ${targetOrgId}, updated_at = now()
-    WHERE org_id = ${sourceOrgId}
-      AND array_length(brand_ids, 1) = 1
-      AND brand_ids[1] = ${brandId}
-  `);
+  const campaignsResult = targetBrandId
+    ? await db.execute(sql`
+        UPDATE instantly_campaigns
+        SET org_id = ${targetOrgId},
+            brand_ids = ARRAY[${targetBrandId}],
+            updated_at = now()
+        WHERE org_id = ${sourceOrgId}
+          AND array_length(brand_ids, 1) = 1
+          AND brand_ids[1] = ${sourceBrandId}
+      `)
+    : await db.execute(sql`
+        UPDATE instantly_campaigns
+        SET org_id = ${targetOrgId}, updated_at = now()
+        WHERE org_id = ${sourceOrgId}
+          AND array_length(brand_ids, 1) = 1
+          AND brand_ids[1] = ${sourceBrandId}
+      `);
 
   const campaignsCount = Number(campaignsResult.rowCount ?? 0);
 

@@ -566,9 +566,10 @@ export type WarmupRequest = z.infer<typeof WarmupRequestSchema>;
 
 export const TransferBrandRequestSchema = z
   .object({
-    brandId: z.string().describe("Brand UUID to transfer"),
+    sourceBrandId: z.string().describe("Brand UUID to transfer from the source org"),
     sourceOrgId: z.string().describe("Current org UUID that owns the brand"),
     targetOrgId: z.string().describe("Destination org UUID"),
+    targetBrandId: z.string().optional().describe("Brand UUID in the target org — when present, rewrites brand_id references to this value"),
   })
   .openapi("TransferBrandRequest");
 
@@ -590,7 +591,8 @@ registry.registerPath({
   path: "/internal/transfer-brand",
   summary: "Transfer solo-brand rows from one org to another",
   description:
-    "Re-assigns org_id on all rows that reference exactly one brand matching brandId. " +
+    "Re-assigns org_id (and optionally brand_id) on all rows that reference exactly one brand matching sourceBrandId. " +
+    "When targetBrandId is present, also rewrites brand references to the target brand. " +
     "Skips co-branding rows (multiple brand IDs). Idempotent.",
   request: {
     body: {
