@@ -25,7 +25,7 @@ describe("POST /internal/transfer-brand", () => {
 
   it("returns 400 for invalid body (missing fields)", async () => {
     const app = await createApp();
-    const res = await request(app).post("/").send({ brandId: "b1" });
+    const res = await request(app).post("/").send({ sourceBrandId: "b1" });
 
     expect(res.status).toBe(400);
     expect(mockExecute).not.toHaveBeenCalled();
@@ -39,17 +39,47 @@ describe("POST /internal/transfer-brand", () => {
     expect(mockExecute).not.toHaveBeenCalled();
   });
 
-  it("transfers solo-brand rows and returns count", async () => {
-    mockExecute.mockResolvedValueOnce({ rowCount: 3 });
-
+  it("returns 400 when using old brandId field", async () => {
     const app = await createApp();
     const res = await request(app)
       .post("/")
       .send({ brandId: "brand-1", sourceOrgId: "org-a", targetOrgId: "org-b" });
 
+    expect(res.status).toBe(400);
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it("transfers solo-brand rows without targetBrandId (no conflict)", async () => {
+    mockExecute.mockResolvedValueOnce({ rowCount: 3 });
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/")
+      .send({ sourceBrandId: "brand-1", sourceOrgId: "org-a", targetOrgId: "org-b" });
+
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       updatedTables: [{ tableName: "instantly_campaigns", count: 3 }],
+    });
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("transfers and rewrites brand_id when targetBrandId is present (conflict)", async () => {
+    mockExecute.mockResolvedValueOnce({ rowCount: 2 });
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/")
+      .send({
+        sourceBrandId: "brand-1",
+        sourceOrgId: "org-a",
+        targetOrgId: "org-b",
+        targetBrandId: "brand-2",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      updatedTables: [{ tableName: "instantly_campaigns", count: 2 }],
     });
     expect(mockExecute).toHaveBeenCalledTimes(1);
   });
@@ -60,7 +90,7 @@ describe("POST /internal/transfer-brand", () => {
     const app = await createApp();
     const res = await request(app)
       .post("/")
-      .send({ brandId: "brand-1", sourceOrgId: "org-a", targetOrgId: "org-b" });
+      .send({ sourceBrandId: "brand-1", sourceOrgId: "org-a", targetOrgId: "org-b" });
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
@@ -74,7 +104,7 @@ describe("POST /internal/transfer-brand", () => {
     const app = await createApp();
     const res = await request(app)
       .post("/")
-      .send({ brandId: "brand-1", sourceOrgId: "org-a", targetOrgId: "org-b" });
+      .send({ sourceBrandId: "brand-1", sourceOrgId: "org-a", targetOrgId: "org-b" });
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({

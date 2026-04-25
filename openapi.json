@@ -711,9 +711,9 @@
       "TransferBrandRequest": {
         "type": "object",
         "properties": {
-          "brandId": {
+          "sourceBrandId": {
             "type": "string",
-            "description": "Brand UUID to transfer"
+            "description": "Brand UUID to transfer from the source org"
           },
           "sourceOrgId": {
             "type": "string",
@@ -722,10 +722,14 @@
           "targetOrgId": {
             "type": "string",
             "description": "Destination org UUID"
+          },
+          "targetBrandId": {
+            "type": "string",
+            "description": "Brand UUID in the target org — when present, rewrites brand_id references to this value"
           }
         },
         "required": [
-          "brandId",
+          "sourceBrandId",
           "sourceOrgId",
           "targetOrgId"
         ]
@@ -2108,7 +2112,7 @@
     "/internal/transfer-brand": {
       "post": {
         "summary": "Transfer solo-brand rows from one org to another",
-        "description": "Re-assigns org_id on all rows that reference exactly one brand matching brandId. Skips co-branding rows (multiple brand IDs). Idempotent.",
+        "description": "Re-assigns org_id (and optionally brand_id) on all rows that reference exactly one brand matching sourceBrandId. When targetBrandId is present, also rewrites brand references to the target brand. Skips co-branding rows (multiple brand IDs). Idempotent.",
         "requestBody": {
           "content": {
             "application/json": {
