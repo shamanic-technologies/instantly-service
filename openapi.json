@@ -277,32 +277,32 @@
       "StatsResponse": {
         "type": "object",
         "properties": {
-          "stats": {
+          "recipientStats": {
             "type": "object",
             "properties": {
-              "emailsContacted": {
+              "contacted": {
                 "type": "number",
-                "description": "Leads added to a campaign (row exists in instantly_campaigns, immediate)"
+                "description": "Leads added to a campaign (row exists in instantly_campaigns)"
               },
-              "emailsSent": {
+              "sent": {
                 "type": "number",
-                "description": "Total email_sent events (confirmed by Instantly webhook)"
+                "description": "Leads with at least one email sent (COUNT DISTINCT lead_email)"
               },
-              "emailsDelivered": {
+              "delivered": {
                 "type": "number",
-                "description": "emailsSent minus emailsBounced"
+                "description": "sent minus bounced (leads)"
               },
-              "emailsOpened": {
+              "opened": {
                 "type": "number",
-                "description": "Unique recipients who opened (COUNT DISTINCT lead_email with email_opened events)"
+                "description": "Leads who opened at least one email (COUNT DISTINCT lead_email)"
               },
-              "emailsClicked": {
+              "bounced": {
                 "type": "number",
-                "description": "Total link click events"
+                "description": "Leads with at least one bounce (COUNT DISTINCT lead_email)"
               },
-              "emailsBounced": {
+              "clicked": {
                 "type": "number",
-                "description": "Total email_bounced events"
+                "description": "Leads who clicked at least one link (COUNT DISTINCT lead_email)"
               },
               "repliesPositive": {
                 "type": "number",
@@ -374,12 +374,12 @@
               }
             },
             "required": [
-              "emailsContacted",
-              "emailsSent",
-              "emailsDelivered",
-              "emailsOpened",
-              "emailsClicked",
-              "emailsBounced",
+              "contacted",
+              "sent",
+              "delivered",
+              "opened",
+              "bounced",
+              "clicked",
               "repliesPositive",
               "repliesNegative",
               "repliesNeutral",
@@ -387,160 +387,57 @@
               "repliesDetail"
             ]
           },
-          "recipients": {
-            "type": "number",
-            "description": "Unique recipients (COUNT DISTINCT lead_email with email_sent events)"
-          },
-          "stepStats": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "step": {
-                  "type": "number",
-                  "description": "Step number (1-based)"
-                },
-                "emailsSent": {
-                  "type": "number"
-                },
-                "emailsOpened": {
-                  "type": "number"
-                },
-                "emailsClicked": {
-                  "type": "number",
-                  "description": "Total link click events for this step"
-                },
-                "emailsBounced": {
-                  "type": "number"
-                },
-                "repliesPositive": {
-                  "type": "number",
-                  "description": "interested + meetingBooked + closed"
-                },
-                "repliesNegative": {
-                  "type": "number",
-                  "description": "notInterested + wrongPerson + unsubscribe"
-                },
-                "repliesNeutral": {
-                  "type": "number",
-                  "description": "neutral (lead_neutral events only)"
-                },
-                "repliesAutoReply": {
-                  "type": "number",
-                  "description": "autoReply + outOfOffice"
-                },
-                "repliesDetail": {
-                  "type": "object",
-                  "properties": {
-                    "interested": {
-                      "type": "number",
-                      "description": "lead_interested events"
-                    },
-                    "meetingBooked": {
-                      "type": "number",
-                      "description": "lead_meeting_booked events"
-                    },
-                    "closed": {
-                      "type": "number",
-                      "description": "lead_closed events"
-                    },
-                    "notInterested": {
-                      "type": "number",
-                      "description": "lead_not_interested events"
-                    },
-                    "wrongPerson": {
-                      "type": "number",
-                      "description": "lead_wrong_person events"
-                    },
-                    "unsubscribe": {
-                      "type": "number",
-                      "description": "lead_unsubscribed events"
-                    },
-                    "neutral": {
-                      "type": "number",
-                      "description": "lead_neutral events"
-                    },
-                    "autoReply": {
-                      "type": "number",
-                      "description": "auto_reply_received events"
-                    },
-                    "outOfOffice": {
-                      "type": "number",
-                      "description": "lead_out_of_office events"
-                    }
-                  },
-                  "required": [
-                    "interested",
-                    "meetingBooked",
-                    "closed",
-                    "notInterested",
-                    "wrongPerson",
-                    "unsubscribe",
-                    "neutral",
-                    "autoReply",
-                    "outOfOffice"
-                  ]
-                }
+          "emailStats": {
+            "type": "object",
+            "properties": {
+              "sent": {
+                "type": "number",
+                "description": "Total email_sent events (all steps)"
               },
-              "required": [
-                "step",
-                "emailsSent",
-                "emailsOpened",
-                "emailsClicked",
-                "emailsBounced",
-                "repliesPositive",
-                "repliesNegative",
-                "repliesNeutral",
-                "repliesAutoReply",
-                "repliesDetail"
-              ]
-            },
-            "description": "Per-step breakdown (only present when step data exists)"
-          }
-        },
-        "required": [
-          "stats",
-          "recipients"
-        ]
-      },
-      "GroupedStatsResponse": {
-        "type": "object",
-        "properties": {
-          "groups": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "key": {
-                  "type": "string",
-                  "description": "Group key from the request"
-                },
-                "stats": {
+              "delivered": {
+                "type": "number",
+                "description": "sent minus bounced (emails)"
+              },
+              "opened": {
+                "type": "number",
+                "description": "Total email_opened events"
+              },
+              "clicked": {
+                "type": "number",
+                "description": "Total email_link_clicked events"
+              },
+              "bounced": {
+                "type": "number",
+                "description": "Total email_bounced events"
+              },
+              "stepStats": {
+                "type": "array",
+                "items": {
                   "type": "object",
                   "properties": {
-                    "emailsContacted": {
+                    "step": {
                       "type": "number",
-                      "description": "Leads added to a campaign (row exists in instantly_campaigns, immediate)"
+                      "description": "Step number (1-based)"
                     },
-                    "emailsSent": {
+                    "sent": {
                       "type": "number",
-                      "description": "Total email_sent events (confirmed by Instantly webhook)"
+                      "description": "Emails sent at this step"
                     },
-                    "emailsDelivered": {
+                    "delivered": {
                       "type": "number",
-                      "description": "emailsSent minus emailsBounced"
+                      "description": "sent minus bounced at this step"
                     },
-                    "emailsOpened": {
+                    "opened": {
                       "type": "number",
-                      "description": "Unique recipients who opened (COUNT DISTINCT lead_email with email_opened events)"
+                      "description": "Emails opened at this step"
                     },
-                    "emailsClicked": {
+                    "bounced": {
                       "type": "number",
-                      "description": "Total link click events"
+                      "description": "Emails bounced at this step"
                     },
-                    "emailsBounced": {
+                    "clicked": {
                       "type": "number",
-                      "description": "Total email_bounced events"
+                      "description": "Link clicks at this step"
                     },
                     "repliesPositive": {
                       "type": "number",
@@ -612,12 +509,12 @@
                     }
                   },
                   "required": [
-                    "emailsContacted",
-                    "emailsSent",
-                    "emailsDelivered",
-                    "emailsOpened",
-                    "emailsClicked",
-                    "emailsBounced",
+                    "step",
+                    "sent",
+                    "delivered",
+                    "opened",
+                    "bounced",
+                    "clicked",
                     "repliesPositive",
                     "repliesNegative",
                     "repliesNeutral",
@@ -625,14 +522,296 @@
                     "repliesDetail"
                   ]
                 },
-                "recipients": {
-                  "type": "number"
+                "description": "Per-step breakdown"
+              }
+            },
+            "required": [
+              "sent",
+              "delivered",
+              "opened",
+              "clicked",
+              "bounced"
+            ]
+          }
+        },
+        "required": [
+          "recipientStats",
+          "emailStats"
+        ]
+      },
+      "GroupedStatsResponse": {
+        "type": "object",
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "description": "Group key from the request"
+                },
+                "recipientStats": {
+                  "type": "object",
+                  "properties": {
+                    "contacted": {
+                      "type": "number",
+                      "description": "Leads added to a campaign (row exists in instantly_campaigns)"
+                    },
+                    "sent": {
+                      "type": "number",
+                      "description": "Leads with at least one email sent (COUNT DISTINCT lead_email)"
+                    },
+                    "delivered": {
+                      "type": "number",
+                      "description": "sent minus bounced (leads)"
+                    },
+                    "opened": {
+                      "type": "number",
+                      "description": "Leads who opened at least one email (COUNT DISTINCT lead_email)"
+                    },
+                    "bounced": {
+                      "type": "number",
+                      "description": "Leads with at least one bounce (COUNT DISTINCT lead_email)"
+                    },
+                    "clicked": {
+                      "type": "number",
+                      "description": "Leads who clicked at least one link (COUNT DISTINCT lead_email)"
+                    },
+                    "repliesPositive": {
+                      "type": "number",
+                      "description": "interested + meetingBooked + closed"
+                    },
+                    "repliesNegative": {
+                      "type": "number",
+                      "description": "notInterested + wrongPerson + unsubscribe"
+                    },
+                    "repliesNeutral": {
+                      "type": "number",
+                      "description": "neutral (lead_neutral events only)"
+                    },
+                    "repliesAutoReply": {
+                      "type": "number",
+                      "description": "autoReply + outOfOffice"
+                    },
+                    "repliesDetail": {
+                      "type": "object",
+                      "properties": {
+                        "interested": {
+                          "type": "number",
+                          "description": "lead_interested events"
+                        },
+                        "meetingBooked": {
+                          "type": "number",
+                          "description": "lead_meeting_booked events"
+                        },
+                        "closed": {
+                          "type": "number",
+                          "description": "lead_closed events"
+                        },
+                        "notInterested": {
+                          "type": "number",
+                          "description": "lead_not_interested events"
+                        },
+                        "wrongPerson": {
+                          "type": "number",
+                          "description": "lead_wrong_person events"
+                        },
+                        "unsubscribe": {
+                          "type": "number",
+                          "description": "lead_unsubscribed events"
+                        },
+                        "neutral": {
+                          "type": "number",
+                          "description": "lead_neutral events"
+                        },
+                        "autoReply": {
+                          "type": "number",
+                          "description": "auto_reply_received events"
+                        },
+                        "outOfOffice": {
+                          "type": "number",
+                          "description": "lead_out_of_office events"
+                        }
+                      },
+                      "required": [
+                        "interested",
+                        "meetingBooked",
+                        "closed",
+                        "notInterested",
+                        "wrongPerson",
+                        "unsubscribe",
+                        "neutral",
+                        "autoReply",
+                        "outOfOffice"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "contacted",
+                    "sent",
+                    "delivered",
+                    "opened",
+                    "bounced",
+                    "clicked",
+                    "repliesPositive",
+                    "repliesNegative",
+                    "repliesNeutral",
+                    "repliesAutoReply",
+                    "repliesDetail"
+                  ]
+                },
+                "emailStats": {
+                  "type": "object",
+                  "properties": {
+                    "sent": {
+                      "type": "number",
+                      "description": "Total email_sent events (all steps)"
+                    },
+                    "delivered": {
+                      "type": "number",
+                      "description": "sent minus bounced (emails)"
+                    },
+                    "opened": {
+                      "type": "number",
+                      "description": "Total email_opened events"
+                    },
+                    "clicked": {
+                      "type": "number",
+                      "description": "Total email_link_clicked events"
+                    },
+                    "bounced": {
+                      "type": "number",
+                      "description": "Total email_bounced events"
+                    },
+                    "stepStats": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "step": {
+                            "type": "number",
+                            "description": "Step number (1-based)"
+                          },
+                          "sent": {
+                            "type": "number",
+                            "description": "Emails sent at this step"
+                          },
+                          "delivered": {
+                            "type": "number",
+                            "description": "sent minus bounced at this step"
+                          },
+                          "opened": {
+                            "type": "number",
+                            "description": "Emails opened at this step"
+                          },
+                          "bounced": {
+                            "type": "number",
+                            "description": "Emails bounced at this step"
+                          },
+                          "clicked": {
+                            "type": "number",
+                            "description": "Link clicks at this step"
+                          },
+                          "repliesPositive": {
+                            "type": "number",
+                            "description": "interested + meetingBooked + closed"
+                          },
+                          "repliesNegative": {
+                            "type": "number",
+                            "description": "notInterested + wrongPerson + unsubscribe"
+                          },
+                          "repliesNeutral": {
+                            "type": "number",
+                            "description": "neutral (lead_neutral events only)"
+                          },
+                          "repliesAutoReply": {
+                            "type": "number",
+                            "description": "autoReply + outOfOffice"
+                          },
+                          "repliesDetail": {
+                            "type": "object",
+                            "properties": {
+                              "interested": {
+                                "type": "number",
+                                "description": "lead_interested events"
+                              },
+                              "meetingBooked": {
+                                "type": "number",
+                                "description": "lead_meeting_booked events"
+                              },
+                              "closed": {
+                                "type": "number",
+                                "description": "lead_closed events"
+                              },
+                              "notInterested": {
+                                "type": "number",
+                                "description": "lead_not_interested events"
+                              },
+                              "wrongPerson": {
+                                "type": "number",
+                                "description": "lead_wrong_person events"
+                              },
+                              "unsubscribe": {
+                                "type": "number",
+                                "description": "lead_unsubscribed events"
+                              },
+                              "neutral": {
+                                "type": "number",
+                                "description": "lead_neutral events"
+                              },
+                              "autoReply": {
+                                "type": "number",
+                                "description": "auto_reply_received events"
+                              },
+                              "outOfOffice": {
+                                "type": "number",
+                                "description": "lead_out_of_office events"
+                              }
+                            },
+                            "required": [
+                              "interested",
+                              "meetingBooked",
+                              "closed",
+                              "notInterested",
+                              "wrongPerson",
+                              "unsubscribe",
+                              "neutral",
+                              "autoReply",
+                              "outOfOffice"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "step",
+                          "sent",
+                          "delivered",
+                          "opened",
+                          "bounced",
+                          "clicked",
+                          "repliesPositive",
+                          "repliesNegative",
+                          "repliesNeutral",
+                          "repliesAutoReply",
+                          "repliesDetail"
+                        ]
+                      },
+                      "description": "Per-step breakdown"
+                    }
+                  },
+                  "required": [
+                    "sent",
+                    "delivered",
+                    "opened",
+                    "clicked",
+                    "bounced"
+                  ]
                 }
               },
               "required": [
                 "key",
-                "stats",
-                "recipients"
+                "recipientStats",
+                "emailStats"
               ]
             }
           }

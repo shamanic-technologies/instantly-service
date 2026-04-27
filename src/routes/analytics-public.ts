@@ -11,18 +11,26 @@ import {
 
 const router = Router();
 
-const ZERO_STATS = {
-  emailsContacted: 0,
-  emailsSent: 0,
-  emailsDelivered: 0,
-  emailsOpened: 0,
-  emailsClicked: 0,
-  emailsBounced: 0,
+const ZERO_RECIPIENT_STATS = {
+  contacted: 0,
+  sent: 0,
+  delivered: 0,
+  opened: 0,
+  bounced: 0,
+  clicked: 0,
   repliesPositive: 0,
   repliesNegative: 0,
   repliesNeutral: 0,
   repliesAutoReply: 0,
   repliesDetail: { ...ZERO_REPLIES_DETAIL },
+};
+
+const ZERO_EMAIL_STATS = {
+  sent: 0,
+  delivered: 0,
+  opened: 0,
+  clicked: 0,
+  bounced: 0,
 };
 
 /**
@@ -63,7 +71,7 @@ router.get("/stats", async (req: Request, res: Response) => {
 
   if (emptyDynasty) {
     if (groupBy) return res.json({ groups: [] });
-    return res.json({ stats: { ...ZERO_STATS }, recipients: 0 });
+    return res.json({ recipientStats: { ...ZERO_RECIPIENT_STATS }, emailStats: { ...ZERO_EMAIL_STATS } });
   }
 
   const whereClause = conditions.length > 0
@@ -91,10 +99,10 @@ router.get("/stats", async (req: Request, res: Response) => {
   }
 
   try {
-    const { stats, recipients } = await queryStats(whereClause);
+    const { recipientStats, emailStats } = await queryStats(whereClause);
 
     let stepStats: Array<{
-      step: number; emailsSent: number; emailsOpened: number; emailsClicked: number; emailsBounced: number;
+      step: number; sent: number; delivered: number; opened: number; bounced: number; clicked: number;
       repliesPositive: number; repliesNegative: number; repliesNeutral: number; repliesAutoReply: number;
       repliesDetail: typeof ZERO_REPLIES_DETAIL;
     }> = [];
@@ -102,10 +110,10 @@ router.get("/stats", async (req: Request, res: Response) => {
       const stepResult = await db.execute(sql`
         SELECT
           e.step,
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
-          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "sent",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "opened",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "bounced",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
@@ -136,12 +144,15 @@ router.get("/stats", async (req: Request, res: Response) => {
           autoReply: sr.rdAutoReply ?? 0,
           outOfOffice: sr.rdOutOfOffice ?? 0,
         };
+        const sent = sr.sent ?? 0;
+        const bounced = sr.bounced ?? 0;
         return {
           step: sr.step,
-          emailsSent: sr.emailsSent ?? 0,
-          emailsOpened: sr.emailsOpened ?? 0,
-          emailsClicked: sr.emailsClicked ?? 0,
-          emailsBounced: sr.emailsBounced ?? 0,
+          sent,
+          delivered: sent - bounced,
+          opened: sr.opened ?? 0,
+          bounced,
+          clicked: sr.clicked ?? 0,
           ...buildRepliesFromDetail(detail),
         };
       });
@@ -150,9 +161,11 @@ router.get("/stats", async (req: Request, res: Response) => {
     }
 
     res.json({
-      stats,
-      recipients,
-      ...(stepStats.length > 0 && { stepStats }),
+      recipientStats,
+      emailStats: {
+        ...emailStats,
+        ...(stepStats.length > 0 && { stepStats }),
+      },
     });
   } catch (error: any) {
     const msg = error.cause?.message ?? error.message ?? String(error);

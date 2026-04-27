@@ -52,18 +52,26 @@ export const ZERO_REPLIES_DETAIL = {
   outOfOffice: 0,
 };
 
-const ZERO_STATS = {
-  emailsContacted: 0,
-  emailsSent: 0,
-  emailsDelivered: 0,
-  emailsOpened: 0,
-  emailsClicked: 0,
-  emailsBounced: 0,
+const ZERO_RECIPIENT_STATS = {
+  contacted: 0,
+  sent: 0,
+  delivered: 0,
+  opened: 0,
+  bounced: 0,
+  clicked: 0,
   repliesPositive: 0,
   repliesNegative: 0,
   repliesNeutral: 0,
   repliesAutoReply: 0,
   repliesDetail: { ...ZERO_REPLIES_DETAIL },
+};
+
+const ZERO_EMAIL_STATS = {
+  sent: 0,
+  delivered: 0,
+  opened: 0,
+  clicked: 0,
+  bounced: 0,
 };
 
 /** Compute reply aggregates from detail counts */
@@ -142,12 +150,12 @@ const GROUP_BY_COLUMNS: Record<string, string> = {
 /** SQL fragment for LATERAL unnest of brand_ids, used when groupBy=brandId */
 const BRAND_LATERAL_JOIN = sql`CROSS JOIN LATERAL unnest(c.brand_ids) AS brand_id`;
 
-/** Execute grouped stats query and return array of { key, stats, recipients } */
+/** Execute grouped stats query and return array of { key, recipientStats, emailStats } */
 export async function queryGroupedStats(
   whereClause: SQL,
   groupBy: string,
   dynastyMap?: Map<string, string>,
-): Promise<Array<{ key: string; stats: typeof ZERO_STATS; recipients: number }>> {
+): Promise<Array<{ key: string; recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }>> {
   const col = GROUP_BY_COLUMNS[groupBy];
   if (!col) return [];
 
@@ -156,14 +164,14 @@ export async function queryGroupedStats(
   const result = await db.execute(sql`
     SELECT
       ${groupCol} AS "groupKey",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
-      COALESCE(
-        COUNT(*) FILTER (WHERE e.event_type = 'email_sent')
-        - COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'),
-      0)::int AS "emailsDelivered",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "rsSent",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "rsOpened",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "rsClicked",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "rsBounced",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
@@ -172,8 +180,7 @@ export async function queryGroupedStats(
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "recipients"
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice"
     FROM instantly_events e
     JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
     ${lateralJoin}
@@ -203,18 +210,28 @@ export async function queryGroupedStats(
       autoReply: row.rdAutoReply ?? 0,
       outOfOffice: row.rdOutOfOffice ?? 0,
     };
+    const rsSent = row.rsSent ?? 0;
+    const rsBounced = row.rsBounced ?? 0;
+    const esSent = row.esSent ?? 0;
+    const esBounced = row.esBounced ?? 0;
     return {
       key: row.groupKey as string,
-      stats: {
-        emailsContacted: contactedMap.get(row.groupKey) ?? 0,
-        emailsSent: row.emailsSent ?? 0,
-        emailsDelivered: row.emailsDelivered ?? 0,
-        emailsOpened: row.emailsOpened ?? 0,
-        emailsClicked: row.emailsClicked ?? 0,
-        emailsBounced: row.emailsBounced ?? 0,
+      recipientStats: {
+        contacted: contactedMap.get(row.groupKey) ?? 0,
+        sent: rsSent,
+        delivered: rsSent - rsBounced,
+        opened: row.rsOpened ?? 0,
+        bounced: rsBounced,
+        clicked: row.rsClicked ?? 0,
         ...buildRepliesFromDetail(detail),
       },
-      recipients: row.recipients ?? 0,
+      emailStats: {
+        sent: esSent,
+        delivered: esSent - esBounced,
+        opened: row.esOpened ?? 0,
+        clicked: row.esClicked ?? 0,
+        bounced: esBounced,
+      },
     };
   });
 
@@ -228,25 +245,23 @@ export async function queryGroupedStats(
 
 /** Merge per-slug groups into dynasty groups using the reverse map */
 function mergeDynastyGroups(
-  groups: Array<{ key: string; stats: typeof ZERO_STATS; recipients: number }>,
+  groups: Array<{ key: string; recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }>,
   dynastyMap: Map<string, string>,
-): Array<{ key: string; stats: typeof ZERO_STATS; recipients: number }> {
-  const merged = new Map<string, { stats: typeof ZERO_STATS; recipients: number }>();
+): Array<{ key: string; recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }> {
+  const merged = new Map<string, { recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }>();
 
   for (const group of groups) {
-    // Fall back to the raw slug if not found in the dynasty map
     const dynastyKey = dynastyMap.get(group.key) ?? group.key;
     const existing = merged.get(dynastyKey);
     if (existing) {
-      existing.stats.emailsContacted += group.stats.emailsContacted;
-      existing.stats.emailsSent += group.stats.emailsSent;
-      existing.stats.emailsDelivered += group.stats.emailsDelivered;
-      existing.stats.emailsOpened += group.stats.emailsOpened;
-      existing.stats.emailsClicked += group.stats.emailsClicked;
-      existing.stats.emailsBounced += group.stats.emailsBounced;
-      // Merge reply detail counts, then recompute aggregates
-      const ed = existing.stats.repliesDetail;
-      const gd = group.stats.repliesDetail;
+      existing.recipientStats.contacted += group.recipientStats.contacted;
+      existing.recipientStats.sent += group.recipientStats.sent;
+      existing.recipientStats.delivered += group.recipientStats.delivered;
+      existing.recipientStats.opened += group.recipientStats.opened;
+      existing.recipientStats.bounced += group.recipientStats.bounced;
+      existing.recipientStats.clicked += group.recipientStats.clicked;
+      const ed = existing.recipientStats.repliesDetail;
+      const gd = group.recipientStats.repliesDetail;
       ed.interested += gd.interested;
       ed.meetingBooked += gd.meetingBooked;
       ed.closed += gd.closed;
@@ -257,15 +272,19 @@ function mergeDynastyGroups(
       ed.autoReply += gd.autoReply;
       ed.outOfOffice += gd.outOfOffice;
       const merged_replies = buildRepliesFromDetail(ed);
-      existing.stats.repliesPositive = merged_replies.repliesPositive;
-      existing.stats.repliesNegative = merged_replies.repliesNegative;
-      existing.stats.repliesNeutral = merged_replies.repliesNeutral;
-      existing.stats.repliesAutoReply = merged_replies.repliesAutoReply;
-      existing.recipients += group.recipients;
+      existing.recipientStats.repliesPositive = merged_replies.repliesPositive;
+      existing.recipientStats.repliesNegative = merged_replies.repliesNegative;
+      existing.recipientStats.repliesNeutral = merged_replies.repliesNeutral;
+      existing.recipientStats.repliesAutoReply = merged_replies.repliesAutoReply;
+      existing.emailStats.sent += group.emailStats.sent;
+      existing.emailStats.delivered += group.emailStats.delivered;
+      existing.emailStats.opened += group.emailStats.opened;
+      existing.emailStats.clicked += group.emailStats.clicked;
+      existing.emailStats.bounced += group.emailStats.bounced;
     } else {
       merged.set(dynastyKey, {
-        stats: { ...group.stats, repliesDetail: { ...group.stats.repliesDetail } },
-        recipients: group.recipients,
+        recipientStats: { ...group.recipientStats, repliesDetail: { ...group.recipientStats.repliesDetail } },
+        emailStats: { ...group.emailStats },
       });
     }
   }
@@ -276,18 +295,18 @@ function mergeDynastyGroups(
   }));
 }
 
-/** Execute the aggregate stats query and return { stats, recipients } */
-export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO_STATS; recipients: number }> {
+/** Execute the aggregate stats query and return { recipientStats, emailStats } */
+export async function queryStats(whereClause: SQL): Promise<{ recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }> {
   const result = await db.execute(sql`
     SELECT
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
-      COALESCE(
-        COUNT(*) FILTER (WHERE e.event_type = 'email_sent')
-        - COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'),
-      0)::int AS "emailsDelivered",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "rsSent",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "rsOpened",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "rsClicked",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "rsBounced",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
@@ -296,8 +315,7 @@ export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "recipients"
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice"
     FROM instantly_events e
     JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
     WHERE ${whereClause}
@@ -305,11 +323,13 @@ export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
-  // Fetch contacted count in parallel (from campaigns table, not events)
-  const emailsContacted = await queryContactedCount(whereClause);
+  const contacted = await queryContactedCount(whereClause);
 
   if (!rows.length) {
-    return { stats: { ...ZERO_STATS, emailsContacted, repliesDetail: { ...ZERO_REPLIES_DETAIL } }, recipients: 0 };
+    return {
+      recipientStats: { ...ZERO_RECIPIENT_STATS, contacted, repliesDetail: { ...ZERO_REPLIES_DETAIL } },
+      emailStats: { ...ZERO_EMAIL_STATS },
+    };
   }
 
   const row = rows[0] as Record<string, number>;
@@ -324,17 +344,27 @@ export async function queryStats(whereClause: SQL): Promise<{ stats: typeof ZERO
     autoReply: row.rdAutoReply ?? 0,
     outOfOffice: row.rdOutOfOffice ?? 0,
   };
+  const rsSent = row.rsSent ?? 0;
+  const rsBounced = row.rsBounced ?? 0;
+  const esSent = row.esSent ?? 0;
+  const esBounced = row.esBounced ?? 0;
   return {
-    stats: {
-      emailsContacted,
-      emailsSent: row.emailsSent ?? 0,
-      emailsDelivered: row.emailsDelivered ?? 0,
-      emailsOpened: row.emailsOpened ?? 0,
-      emailsClicked: row.emailsClicked ?? 0,
-      emailsBounced: row.emailsBounced ?? 0,
+    recipientStats: {
+      contacted,
+      sent: rsSent,
+      delivered: rsSent - rsBounced,
+      opened: row.rsOpened ?? 0,
+      bounced: rsBounced,
+      clicked: row.rsClicked ?? 0,
       ...buildRepliesFromDetail(detail),
     },
-    recipients: row.recipients ?? 0,
+    emailStats: {
+      sent: esSent,
+      delivered: esSent - esBounced,
+      opened: row.esOpened ?? 0,
+      clicked: row.esClicked ?? 0,
+      bounced: esBounced,
+    },
   };
 }
 
@@ -423,7 +453,7 @@ router.get("/stats", async (req: Request, res: Response) => {
 
   if (emptyDynasty) {
     if (groupBy) return res.json({ groups: [] });
-    return res.json({ stats: { ...ZERO_STATS }, recipients: 0 });
+    return res.json({ recipientStats: { ...ZERO_RECIPIENT_STATS }, emailStats: { ...ZERO_EMAIL_STATS } });
   }
 
   const whereClause = sql.join(conditions, sql` AND `);
@@ -449,11 +479,11 @@ router.get("/stats", async (req: Request, res: Response) => {
   }
 
   try {
-    const { stats, recipients } = await queryStats(whereClause);
+    const { recipientStats, emailStats } = await queryStats(whereClause);
 
     // Per-step breakdown (secondary stats) — non-fatal; overall stats still return on failure
     let stepStats: Array<{
-      step: number; emailsSent: number; emailsOpened: number; emailsClicked: number; emailsBounced: number;
+      step: number; sent: number; delivered: number; opened: number; bounced: number; clicked: number;
       repliesPositive: number; repliesNegative: number; repliesNeutral: number; repliesAutoReply: number;
       repliesDetail: typeof ZERO_REPLIES_DETAIL;
     }> = [];
@@ -461,10 +491,10 @@ router.get("/stats", async (req: Request, res: Response) => {
       const stepResult = await db.execute(sql`
         SELECT
           e.step,
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "emailsSent",
-          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "emailsOpened",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "emailsClicked",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "emailsBounced",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "sent",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "opened",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "bounced",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
@@ -495,12 +525,15 @@ router.get("/stats", async (req: Request, res: Response) => {
           autoReply: sr.rdAutoReply ?? 0,
           outOfOffice: sr.rdOutOfOffice ?? 0,
         };
+        const sent = sr.sent ?? 0;
+        const bounced = sr.bounced ?? 0;
         return {
           step: sr.step,
-          emailsSent: sr.emailsSent ?? 0,
-          emailsOpened: sr.emailsOpened ?? 0,
-          emailsClicked: sr.emailsClicked ?? 0,
-          emailsBounced: sr.emailsBounced ?? 0,
+          sent,
+          delivered: sent - bounced,
+          opened: sr.opened ?? 0,
+          bounced,
+          clicked: sr.clicked ?? 0,
           ...buildRepliesFromDetail(detail),
         };
       });
@@ -509,9 +542,11 @@ router.get("/stats", async (req: Request, res: Response) => {
     }
 
     res.json({
-      stats,
-      recipients,
-      ...(stepStats.length > 0 && { stepStats }),
+      recipientStats,
+      emailStats: {
+        ...emailStats,
+        ...(stepStats.length > 0 && { stepStats }),
+      },
     });
   } catch (error: any) {
     const msg = error.cause?.message ?? error.message ?? String(error);
@@ -543,8 +578,8 @@ router.post("/stats/grouped", async (req: Request, res: Response) => {
       entries.map(async ([key, { runIds }]) => {
         const orgId = res.locals.orgId as string;
         const whereClause = sql`c.org_id = ${orgId} AND c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`;
-        const { stats, recipients } = await queryStats(whereClause);
-        return { key, stats, recipients };
+        const { recipientStats, emailStats } = await queryStats(whereClause);
+        return { key, recipientStats, emailStats };
       }),
     );
 
