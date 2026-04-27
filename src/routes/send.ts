@@ -47,6 +47,10 @@ const MAX_SEND_RETRIES = 3;
  * Pool B (fallback): all other accounts — random pick if Pool A is empty
  * Error if neither pool has any account.
  */
+const BLOCKED_DOMAINS = [
+  "arcadiaquest.org",
+];
+
 const POOL_A_DOMAINS = [
   "pressbeat.io",
   "growthagency.dev",
@@ -267,7 +271,15 @@ router.post("/", async (req: Request, res: Response) => {
       // 3. Check available accounts — status > 0 means active (1 = active, 2 = active+warming)
       const allAccounts = await listAccounts(apiKey);
       console.log(`[send] Account statuses: ${JSON.stringify(allAccounts.map((a) => ({ email: a.email, status: a.status, warmup_status: a.warmup_status })))}`);
-      const accounts = allAccounts.filter((a) => a.status > 0);
+      const accounts = allAccounts.filter((a) => {
+        if (a.status <= 0) return false;
+        const domain = a.email.split("@")[1];
+        if (BLOCKED_DOMAINS.includes(domain)) {
+          console.log(`[send] Skipping blocked domain account: ${a.email}`);
+          return false;
+        }
+        return true;
+      });
       if (accounts.length === 0) {
         const total = allAccounts.length;
         const msg = total === 0
