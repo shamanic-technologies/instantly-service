@@ -262,6 +262,39 @@ describe("POST /send", () => {
     mockDbInsertValues.mockReset();
   });
 
+  it("should exclude @arcadiaquest.org accounts from new campaign creation", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "blocked@arcadiaquest.org", warmup_status: 1, status: 1, signature: "<p>Sig</p>" },
+      { email: "active@growthagency.dev", warmup_status: 1, status: 1, signature: "<p>Sig</p>" },
+    ]);
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(mockUpdateCampaign).toHaveBeenCalledWith(
+      "test-instantly-key",
+      "inst-camp-new",
+      expect.objectContaining({ email_list: ["active@growthagency.dev"] }),
+    );
+  });
+
+  it("should return 500 when only blocked-domain accounts are available", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "a@arcadiaquest.org", warmup_status: 1, status: 1 },
+      { email: "b@arcadiaquest.org", warmup_status: 1, status: 2 },
+    ]);
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
+    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(500);
+    expect(res.body.details).toContain("none are active");
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+
   it("should return 500 when all accounts are inactive", async () => {
     mockListAccounts.mockResolvedValue([
       { email: "inactive1@test.com", warmup_status: 0, status: 0 },
