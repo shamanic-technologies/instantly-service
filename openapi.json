@@ -304,6 +304,10 @@
                 "type": "number",
                 "description": "Leads who clicked at least one link (COUNT DISTINCT lead_email)"
               },
+              "unsubscribed": {
+                "type": "number",
+                "description": "Leads who unsubscribed (COUNT DISTINCT lead_email)"
+              },
               "repliesPositive": {
                 "type": "number",
                 "description": "interested + meetingBooked + closed"
@@ -380,6 +384,7 @@
               "opened",
               "bounced",
               "clicked",
+              "unsubscribed",
               "repliesPositive",
               "repliesNegative",
               "repliesNeutral",
@@ -392,7 +397,7 @@
             "properties": {
               "sent": {
                 "type": "number",
-                "description": "Total email_sent events (all steps)"
+                "description": "Total emails sent (all steps)"
               },
               "delivered": {
                 "type": "number",
@@ -400,15 +405,19 @@
               },
               "opened": {
                 "type": "number",
-                "description": "Total email_opened events"
+                "description": "Unique emails opened at least once"
               },
               "clicked": {
                 "type": "number",
-                "description": "Total email_link_clicked events"
+                "description": "Unique emails with at least one link click"
               },
               "bounced": {
                 "type": "number",
-                "description": "Total email_bounced events"
+                "description": "Total emails bounced"
+              },
+              "unsubscribed": {
+                "type": "number",
+                "description": "Total unsubscribe events"
               },
               "stepStats": {
                 "type": "array",
@@ -438,6 +447,10 @@
                     "clicked": {
                       "type": "number",
                       "description": "Link clicks at this step"
+                    },
+                    "unsubscribed": {
+                      "type": "number",
+                      "description": "Unsubscribes at this step"
                     },
                     "repliesPositive": {
                       "type": "number",
@@ -515,6 +528,7 @@
                     "opened",
                     "bounced",
                     "clicked",
+                    "unsubscribed",
                     "repliesPositive",
                     "repliesNegative",
                     "repliesNeutral",
@@ -530,7 +544,8 @@
               "delivered",
               "opened",
               "clicked",
-              "bounced"
+              "bounced",
+              "unsubscribed"
             ]
           }
         },
@@ -577,6 +592,10 @@
                     "clicked": {
                       "type": "number",
                       "description": "Leads who clicked at least one link (COUNT DISTINCT lead_email)"
+                    },
+                    "unsubscribed": {
+                      "type": "number",
+                      "description": "Leads who unsubscribed (COUNT DISTINCT lead_email)"
                     },
                     "repliesPositive": {
                       "type": "number",
@@ -654,6 +673,7 @@
                     "opened",
                     "bounced",
                     "clicked",
+                    "unsubscribed",
                     "repliesPositive",
                     "repliesNegative",
                     "repliesNeutral",
@@ -666,7 +686,7 @@
                   "properties": {
                     "sent": {
                       "type": "number",
-                      "description": "Total email_sent events (all steps)"
+                      "description": "Total emails sent (all steps)"
                     },
                     "delivered": {
                       "type": "number",
@@ -674,15 +694,19 @@
                     },
                     "opened": {
                       "type": "number",
-                      "description": "Total email_opened events"
+                      "description": "Unique emails opened at least once"
                     },
                     "clicked": {
                       "type": "number",
-                      "description": "Total email_link_clicked events"
+                      "description": "Unique emails with at least one link click"
                     },
                     "bounced": {
                       "type": "number",
-                      "description": "Total email_bounced events"
+                      "description": "Total emails bounced"
+                    },
+                    "unsubscribed": {
+                      "type": "number",
+                      "description": "Total unsubscribe events"
                     },
                     "stepStats": {
                       "type": "array",
@@ -712,6 +736,10 @@
                           "clicked": {
                             "type": "number",
                             "description": "Link clicks at this step"
+                          },
+                          "unsubscribed": {
+                            "type": "number",
+                            "description": "Unsubscribes at this step"
                           },
                           "repliesPositive": {
                             "type": "number",
@@ -789,6 +817,7 @@
                           "opened",
                           "bounced",
                           "clicked",
+                          "unsubscribed",
                           "repliesPositive",
                           "repliesNegative",
                           "repliesNeutral",
@@ -804,7 +833,8 @@
                     "delivered",
                     "opened",
                     "clicked",
-                    "bounced"
+                    "bounced",
+                    "unsubscribed"
                   ]
                 }
               },
