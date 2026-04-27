@@ -40,8 +40,8 @@ async function createPublicStatsApp() {
 
 function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
   return {
-    esSent: 0, esOpened: 0, esClicked: 0, esBounced: 0,
-    rsSent: 0, rsOpened: 0, rsClicked: 0, rsBounced: 0,
+    esSent: 0, esOpened: 0, esClicked: 0, esBounced: 0, esUnsubscribed: 0,
+    rsSent: 0, rsOpened: 0, rsClicked: 0, rsBounced: 0, rsUnsubscribed: 0,
     rdInterested: 0, rdMeetingBooked: 0, rdClosed: 0,
     rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0,
     rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0,

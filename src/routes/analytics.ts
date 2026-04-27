@@ -52,6 +52,7 @@ const ZERO_RECIPIENT_STATS = {
   opened: 0,
   bounced: 0,
   clicked: 0,
+  unsubscribed: 0,
   repliesPositive: 0,
   repliesNegative: 0,
   repliesNeutral: 0,
@@ -65,6 +66,7 @@ const ZERO_EMAIL_STATS = {
   opened: 0,
   clicked: 0,
   bounced: 0,
+  unsubscribed: 0,
 };
 
 /** Compute reply aggregates from detail counts */
@@ -154,13 +156,15 @@ export async function queryGroupedStats(
     SELECT
       ${groupCol} AS "groupKey",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
+      COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
+      COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "esUnsubscribed",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "rsSent",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "rsOpened",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "rsClicked",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "rsBounced",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rsUnsubscribed",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
@@ -208,6 +212,7 @@ export async function queryGroupedStats(
         opened: row.rsOpened ?? 0,
         bounced: rsBounced,
         clicked: row.rsClicked ?? 0,
+        unsubscribed: row.rsUnsubscribed ?? 0,
         ...buildRepliesFromDetail(detail),
       },
       emailStats: {
@@ -216,6 +221,7 @@ export async function queryGroupedStats(
         opened: row.esOpened ?? 0,
         clicked: row.esClicked ?? 0,
         bounced: esBounced,
+        unsubscribed: row.esUnsubscribed ?? 0,
       },
     };
   });
@@ -228,13 +234,15 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
   const result = await db.execute(sql`
     SELECT
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
+      COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
+      COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "esUnsubscribed",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "rsSent",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "rsOpened",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "rsClicked",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "rsBounced",
+      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rsUnsubscribed",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
       COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
@@ -284,6 +292,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
       opened: row.rsOpened ?? 0,
       bounced: rsBounced,
       clicked: row.rsClicked ?? 0,
+      unsubscribed: row.rsUnsubscribed ?? 0,
       ...buildRepliesFromDetail(detail),
     },
     emailStats: {
@@ -292,6 +301,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
       opened: row.esOpened ?? 0,
       clicked: row.esClicked ?? 0,
       bounced: esBounced,
+      unsubscribed: row.esUnsubscribed ?? 0,
     },
   };
 }
@@ -362,7 +372,7 @@ router.get("/stats", async (req: Request, res: Response) => {
 
     // Per-step breakdown (secondary stats) — non-fatal; overall stats still return on failure
     let stepStats: Array<{
-      step: number; sent: number; delivered: number; opened: number; bounced: number; clicked: number;
+      step: number; sent: number; delivered: number; opened: number; bounced: number; clicked: number; unsubscribed: number;
       repliesPositive: number; repliesNegative: number; repliesNeutral: number; repliesAutoReply: number;
       repliesDetail: typeof ZERO_REPLIES_DETAIL;
     }> = [];
@@ -371,9 +381,10 @@ router.get("/stats", async (req: Request, res: Response) => {
         SELECT
           e.step,
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "sent",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "opened",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
+          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "opened",
+          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "bounced",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "unsubscribed",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
@@ -413,6 +424,7 @@ router.get("/stats", async (req: Request, res: Response) => {
           opened: sr.opened ?? 0,
           bounced,
           clicked: sr.clicked ?? 0,
+          unsubscribed: sr.unsubscribed ?? 0,
           ...buildRepliesFromDetail(detail),
         };
       });

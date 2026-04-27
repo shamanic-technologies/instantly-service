@@ -382,6 +382,7 @@ const RecipientStatsSchema = z.object({
   opened: z.number().describe("Leads who opened at least one email (COUNT DISTINCT lead_email)"),
   bounced: z.number().describe("Leads with at least one bounce (COUNT DISTINCT lead_email)"),
   clicked: z.number().describe("Leads who clicked at least one link (COUNT DISTINCT lead_email)"),
+  unsubscribed: z.number().describe("Leads who unsubscribed (COUNT DISTINCT lead_email)"),
 }).merge(RepliesAggregatesSchema);
 
 const StepStatsSchema = z.object({
@@ -391,14 +392,16 @@ const StepStatsSchema = z.object({
   opened: z.number().describe("Emails opened at this step"),
   bounced: z.number().describe("Emails bounced at this step"),
   clicked: z.number().describe("Link clicks at this step"),
+  unsubscribed: z.number().describe("Unsubscribes at this step"),
 }).merge(RepliesAggregatesSchema);
 
 const EmailStatsSchema = z.object({
-  sent: z.number().describe("Total email_sent events (all steps)"),
+  sent: z.number().describe("Total emails sent (all steps)"),
   delivered: z.number().describe("sent minus bounced (emails)"),
-  opened: z.number().describe("Total email_opened events"),
-  clicked: z.number().describe("Total email_link_clicked events"),
-  bounced: z.number().describe("Total email_bounced events"),
+  opened: z.number().describe("Unique emails opened at least once"),
+  clicked: z.number().describe("Unique emails with at least one link click"),
+  bounced: z.number().describe("Total emails bounced"),
+  unsubscribed: z.number().describe("Total unsubscribe events"),
   stepStats: z.array(StepStatsSchema).optional().describe("Per-step breakdown"),
 });
 

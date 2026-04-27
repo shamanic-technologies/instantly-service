@@ -13,6 +13,7 @@ const ZERO_RECIPIENT_STATS = {
   opened: 0,
   bounced: 0,
   clicked: 0,
+  unsubscribed: 0,
   repliesPositive: 0,
   repliesNegative: 0,
   repliesNeutral: 0,
@@ -26,6 +27,7 @@ const ZERO_EMAIL_STATS = {
   opened: 0,
   clicked: 0,
   bounced: 0,
+  unsubscribed: 0,
 };
 
 /**
@@ -71,7 +73,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     const { recipientStats, emailStats } = await queryStats(whereClause);
 
     let stepStats: Array<{
-      step: number; sent: number; delivered: number; opened: number; bounced: number; clicked: number;
+      step: number; sent: number; delivered: number; opened: number; bounced: number; clicked: number; unsubscribed: number;
       repliesPositive: number; repliesNegative: number; repliesNeutral: number; repliesAutoReply: number;
       repliesDetail: typeof ZERO_REPLIES_DETAIL;
     }> = [];
@@ -80,9 +82,10 @@ router.get("/stats", async (req: Request, res: Response) => {
         SELECT
           e.step,
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "sent",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "opened",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
+          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "opened",
+          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "bounced",
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "unsubscribed",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
@@ -122,6 +125,7 @@ router.get("/stats", async (req: Request, res: Response) => {
           opened: sr.opened ?? 0,
           bounced,
           clicked: sr.clicked ?? 0,
+          unsubscribed: sr.unsubscribed ?? 0,
           ...buildRepliesFromDetail(detail),
         };
       });
