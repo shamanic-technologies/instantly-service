@@ -2,12 +2,7 @@ import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
 import { StatsQuerySchema } from "../schemas";
-import { queryStats, queryGroupedStats, internalExclusionClause, addDynastyConditions, buildRepliesFromDetail, ZERO_REPLIES_DETAIL } from "./analytics";
-import {
-  fetchWorkflowDynasties,
-  fetchFeatureDynasties,
-  buildSlugToDynastyMap,
-} from "../lib/dynasty-client";
+import { queryStats, queryGroupedStats, internalExclusionClause, addSlugConditions, buildRepliesFromDetail, ZERO_REPLIES_DETAIL } from "./analytics";
 
 const router = Router();
 
@@ -46,7 +41,7 @@ router.get("/stats", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds: runIdsRaw, brandId, campaignId, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy } = parsed.data;
+  const { runIds: runIdsRaw, brandId, campaignId, workflowSlugs, featureSlugs, groupBy } = parsed.data;
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
 
   const conditions: SQL[] = [];
@@ -54,25 +49,7 @@ router.get("/stats", async (req: Request, res: Response) => {
   if (brandId) conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
 
-  // Public endpoint — pass available headers but don't require them
-  const headers: Record<string, string> = {};
-  const orgId = req.headers["x-org-id"] as string | undefined;
-  const userId = req.headers["x-user-id"] as string | undefined;
-  const runId = req.headers["x-run-id"] as string | undefined;
-  if (orgId) headers["x-org-id"] = orgId;
-  if (userId) headers["x-user-id"] = userId;
-  if (runId) headers["x-run-id"] = runId;
-
-  const emptyDynasty = await addDynastyConditions(
-    conditions,
-    { workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug },
-    headers,
-  );
-
-  if (emptyDynasty) {
-    if (groupBy) return res.json({ groups: [] });
-    return res.json({ recipientStats: { ...ZERO_RECIPIENT_STATS }, emailStats: { ...ZERO_EMAIL_STATS } });
-  }
+  addSlugConditions(conditions, { workflowSlugs, featureSlugs });
 
   const whereClause = conditions.length > 0
     ? sql.join(conditions, sql` AND `)
@@ -81,15 +58,7 @@ router.get("/stats", async (req: Request, res: Response) => {
   // Handle groupBy requests
   if (groupBy) {
     try {
-      let dynastyMap: Map<string, string> | undefined;
-      if (groupBy === "workflowDynastySlug") {
-        const dynasties = await fetchWorkflowDynasties(headers);
-        dynastyMap = buildSlugToDynastyMap(dynasties);
-      } else if (groupBy === "featureDynastySlug") {
-        const dynasties = await fetchFeatureDynasties(headers);
-        dynastyMap = buildSlugToDynastyMap(dynasties);
-      }
-      const groups = await queryGroupedStats(whereClause, groupBy, dynastyMap);
+      const groups = await queryGroupedStats(whereClause, groupBy);
       return res.json({ groups });
     } catch (error: any) {
       const msg = error.cause?.message ?? error.message ?? String(error);

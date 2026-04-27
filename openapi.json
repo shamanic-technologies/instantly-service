@@ -1877,34 +1877,12 @@
           {
             "schema": {
               "type": "string",
-              "description": "Filter by workflow dynasty slug (resolved to all versioned slugs)"
-            },
-            "required": false,
-            "description": "Filter by workflow dynasty slug (resolved to all versioned slugs)",
-            "name": "workflowDynastySlug",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Filter by feature dynasty slug (resolved to all versioned slugs)"
-            },
-            "required": false,
-            "description": "Filter by feature dynasty slug (resolved to all versioned slugs)",
-            "name": "featureDynastySlug",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string",
               "enum": [
                 "brandId",
                 "campaignId",
                 "workflowSlug",
                 "featureSlug",
-                "leadEmail",
-                "workflowDynastySlug",
-                "featureDynastySlug"
+                "leadEmail"
               ],
               "description": "Group results by dimension"
             },
@@ -2047,34 +2025,12 @@
           {
             "schema": {
               "type": "string",
-              "description": "Filter by workflow dynasty slug (resolved to all versioned slugs)"
-            },
-            "required": false,
-            "description": "Filter by workflow dynasty slug (resolved to all versioned slugs)",
-            "name": "workflowDynastySlug",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Filter by feature dynasty slug (resolved to all versioned slugs)"
-            },
-            "required": false,
-            "description": "Filter by feature dynasty slug (resolved to all versioned slugs)",
-            "name": "featureDynastySlug",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string",
               "enum": [
                 "brandId",
                 "campaignId",
                 "workflowSlug",
                 "featureSlug",
-                "leadEmail",
-                "workflowDynastySlug",
-                "featureDynastySlug"
+                "leadEmail"
               ],
               "description": "Group results by dimension"
             },

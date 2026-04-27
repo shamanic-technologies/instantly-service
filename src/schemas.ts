@@ -349,9 +349,7 @@ export const StatsQuerySchema = z
     campaignId: z.string().optional(),
     workflowSlugs: z.string().optional().describe("Comma-separated list of workflow slugs to filter by"),
     featureSlugs: z.string().optional().describe("Comma-separated list of feature slugs to filter by"),
-    workflowDynastySlug: z.string().optional().describe("Filter by workflow dynasty slug (resolved to all versioned slugs)"),
-    featureDynastySlug: z.string().optional().describe("Filter by feature dynasty slug (resolved to all versioned slugs)"),
-    groupBy: z.enum(["brandId", "campaignId", "workflowSlug", "featureSlug", "leadEmail", "workflowDynastySlug", "featureDynastySlug"]).optional().describe("Group results by dimension"),
+    groupBy: z.enum(["brandId", "campaignId", "workflowSlug", "featureSlug", "leadEmail"]).optional().describe("Group results by dimension"),
   })
   .openapi("StatsQuery");
 

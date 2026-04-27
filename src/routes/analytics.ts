@@ -2,13 +2,6 @@ import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
 import { StatsQuerySchema, GroupedStatsRequestSchema } from "../schemas";
-import {
-  resolveWorkflowDynastySlugs,
-  resolveFeatureDynastySlugs,
-  fetchWorkflowDynasties,
-  fetchFeatureDynasties,
-  buildSlugToDynastyMap,
-} from "../lib/dynasty-client";
 
 const router = Router();
 
@@ -142,9 +135,6 @@ const GROUP_BY_COLUMNS: Record<string, string> = {
   workflowSlug: "c.workflow_slug",
   featureSlug: "c.feature_slug",
   leadEmail: "e.lead_email",
-  // Dynasty groupBy uses the underlying slug column; re-keying happens post-query
-  workflowDynastySlug: "c.workflow_slug",
-  featureDynastySlug: "c.feature_slug",
 };
 
 /** SQL fragment for LATERAL unnest of brand_ids, used when groupBy=brandId */
@@ -154,7 +144,6 @@ const BRAND_LATERAL_JOIN = sql`CROSS JOIN LATERAL unnest(c.brand_ids) AS brand_i
 export async function queryGroupedStats(
   whereClause: SQL,
   groupBy: string,
-  dynastyMap?: Map<string, string>,
 ): Promise<Array<{ key: string; recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }>> {
   const col = GROUP_BY_COLUMNS[groupBy];
   if (!col) return [];
@@ -192,11 +181,7 @@ export async function queryGroupedStats(
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
   // Fetch contacted counts in parallel (from campaigns table, not events)
-  // For dynasty groupBy, use the underlying slug column for contacted counts too
-  const underlyingGroupBy = groupBy === "workflowDynastySlug" ? "workflowSlug"
-    : groupBy === "featureDynastySlug" ? "featureSlug"
-    : groupBy;
-  const contactedMap = await queryGroupedContactedCount(whereClause, underlyingGroupBy);
+  const contactedMap = await queryGroupedContactedCount(whereClause, groupBy);
 
   const rawGroups = rows.map((row: any) => {
     const detail = {
@@ -235,64 +220,7 @@ export async function queryGroupedStats(
     };
   });
 
-  // If dynasty groupBy, re-key and merge by dynasty slug
-  if (dynastyMap && (groupBy === "workflowDynastySlug" || groupBy === "featureDynastySlug")) {
-    return mergeDynastyGroups(rawGroups, dynastyMap);
-  }
-
   return rawGroups;
-}
-
-/** Merge per-slug groups into dynasty groups using the reverse map */
-function mergeDynastyGroups(
-  groups: Array<{ key: string; recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }>,
-  dynastyMap: Map<string, string>,
-): Array<{ key: string; recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }> {
-  const merged = new Map<string, { recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }>();
-
-  for (const group of groups) {
-    const dynastyKey = dynastyMap.get(group.key) ?? group.key;
-    const existing = merged.get(dynastyKey);
-    if (existing) {
-      existing.recipientStats.contacted += group.recipientStats.contacted;
-      existing.recipientStats.sent += group.recipientStats.sent;
-      existing.recipientStats.delivered += group.recipientStats.delivered;
-      existing.recipientStats.opened += group.recipientStats.opened;
-      existing.recipientStats.bounced += group.recipientStats.bounced;
-      existing.recipientStats.clicked += group.recipientStats.clicked;
-      const ed = existing.recipientStats.repliesDetail;
-      const gd = group.recipientStats.repliesDetail;
-      ed.interested += gd.interested;
-      ed.meetingBooked += gd.meetingBooked;
-      ed.closed += gd.closed;
-      ed.notInterested += gd.notInterested;
-      ed.wrongPerson += gd.wrongPerson;
-      ed.unsubscribe += gd.unsubscribe;
-      ed.neutral += gd.neutral;
-      ed.autoReply += gd.autoReply;
-      ed.outOfOffice += gd.outOfOffice;
-      const merged_replies = buildRepliesFromDetail(ed);
-      existing.recipientStats.repliesPositive = merged_replies.repliesPositive;
-      existing.recipientStats.repliesNegative = merged_replies.repliesNegative;
-      existing.recipientStats.repliesNeutral = merged_replies.repliesNeutral;
-      existing.recipientStats.repliesAutoReply = merged_replies.repliesAutoReply;
-      existing.emailStats.sent += group.emailStats.sent;
-      existing.emailStats.delivered += group.emailStats.delivered;
-      existing.emailStats.opened += group.emailStats.opened;
-      existing.emailStats.clicked += group.emailStats.clicked;
-      existing.emailStats.bounced += group.emailStats.bounced;
-    } else {
-      merged.set(dynastyKey, {
-        recipientStats: { ...group.recipientStats, repliesDetail: { ...group.recipientStats.repliesDetail } },
-        emailStats: { ...group.emailStats },
-      });
-    }
-  }
-
-  return Array.from(merged.entries()).map(([key, value]) => ({
-    key,
-    ...value,
-  }));
 }
 
 /** Execute the aggregate stats query and return { recipientStats, emailStats } */
@@ -368,58 +296,27 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
   };
 }
 
-/** Build optional headers for inter-service calls from request context */
-function buildInterServiceHeaders(req: Request, res: Response): Record<string, string> {
-  const headers: Record<string, string> = {};
-  const orgId = res.locals.orgId as string | undefined;
-  const userId = res.locals.userId as string | undefined;
-  const runId = res.locals.runId as string | undefined;
-  if (orgId) headers["x-org-id"] = orgId;
-  if (userId) headers["x-user-id"] = userId;
-  if (runId) headers["x-run-id"] = runId;
-  return headers;
-}
-
-/**
- * Resolve dynasty slug filters into slug arrays and add conditions.
- * Dynasty filters take priority over exact slug filters for the same dimension.
- * Returns true if a dynasty resolved to empty (= zero results), meaning we should short-circuit.
- */
-export async function addDynastyConditions(
+/** Add optional slug filter conditions. */
+export function addSlugConditions(
   conditions: SQL[],
   data: {
     workflowSlugs?: string;
     featureSlugs?: string;
-    workflowDynastySlug?: string;
-    featureDynastySlug?: string;
   },
-  headers?: Record<string, string>,
-): Promise<boolean> {
-  // Workflow dimension: dynasty takes priority over plural slugs
-  if (data.workflowDynastySlug) {
-    const slugs = await resolveWorkflowDynastySlugs(data.workflowDynastySlug, headers);
-    if (slugs.length === 0) return true; // empty dynasty → zero stats
-    conditions.push(sql`c.workflow_slug IN (${sql.join(slugs.map((s) => sql`${s}`), sql`, `)})`);
-  } else if (data.workflowSlugs) {
+): void {
+  if (data.workflowSlugs) {
     const slugs = data.workflowSlugs.split(",").filter(Boolean);
     if (slugs.length > 0) {
       conditions.push(sql`c.workflow_slug IN (${sql.join(slugs.map((s) => sql`${s}`), sql`, `)})`);
     }
   }
 
-  // Feature dimension: dynasty takes priority over plural slugs
-  if (data.featureDynastySlug) {
-    const slugs = await resolveFeatureDynastySlugs(data.featureDynastySlug, headers);
-    if (slugs.length === 0) return true; // empty dynasty → zero stats
-    conditions.push(sql`c.feature_slug IN (${sql.join(slugs.map((s) => sql`${s}`), sql`, `)})`);
-  } else if (data.featureSlugs) {
+  if (data.featureSlugs) {
     const slugs = data.featureSlugs.split(",").filter(Boolean);
     if (slugs.length > 0) {
       conditions.push(sql`c.feature_slug IN (${sql.join(slugs.map((s) => sql`${s}`), sql`, `)})`);
     }
   }
-
-  return false;
 }
 
 /**
@@ -434,7 +331,7 @@ router.get("/stats", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds: runIdsRaw, brandId, campaignId, workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug, groupBy } = parsed.data;
+  const { runIds: runIdsRaw, brandId, campaignId, workflowSlugs, featureSlugs, groupBy } = parsed.data;
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
   const orgId = res.locals.orgId as string;
 
@@ -444,32 +341,14 @@ router.get("/stats", async (req: Request, res: Response) => {
   if (brandId) conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
 
-  const interServiceHeaders = buildInterServiceHeaders(req, res);
-  const emptyDynasty = await addDynastyConditions(
-    conditions,
-    { workflowSlugs, featureSlugs, workflowDynastySlug, featureDynastySlug },
-    interServiceHeaders,
-  );
-
-  if (emptyDynasty) {
-    if (groupBy) return res.json({ groups: [] });
-    return res.json({ recipientStats: { ...ZERO_RECIPIENT_STATS }, emailStats: { ...ZERO_EMAIL_STATS } });
-  }
+  addSlugConditions(conditions, { workflowSlugs, featureSlugs });
 
   const whereClause = sql.join(conditions, sql` AND `);
 
   // Handle groupBy requests
   if (groupBy) {
     try {
-      let dynastyMap: Map<string, string> | undefined;
-      if (groupBy === "workflowDynastySlug") {
-        const dynasties = await fetchWorkflowDynasties(interServiceHeaders);
-        dynastyMap = buildSlugToDynastyMap(dynasties);
-      } else if (groupBy === "featureDynastySlug") {
-        const dynasties = await fetchFeatureDynasties(interServiceHeaders);
-        dynastyMap = buildSlugToDynastyMap(dynasties);
-      }
-      const groups = await queryGroupedStats(whereClause, groupBy, dynastyMap);
+      const groups = await queryGroupedStats(whereClause, groupBy);
       return res.json({ groups });
     } catch (error: any) {
       const msg = error.cause?.message ?? error.message ?? String(error);
