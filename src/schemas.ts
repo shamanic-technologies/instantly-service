@@ -349,9 +349,7 @@ export const StatsQuerySchema = z
     campaignId: z.string().optional(),
     workflowSlugs: z.string().optional().describe("Comma-separated list of workflow slugs to filter by"),
     featureSlugs: z.string().optional().describe("Comma-separated list of feature slugs to filter by"),
-    workflowDynastySlug: z.string().optional().describe("Filter by workflow dynasty slug (resolved to all versioned slugs)"),
-    featureDynastySlug: z.string().optional().describe("Filter by feature dynasty slug (resolved to all versioned slugs)"),
-    groupBy: z.enum(["brandId", "campaignId", "workflowSlug", "featureSlug", "leadEmail", "workflowDynastySlug", "featureDynastySlug"]).optional().describe("Group results by dimension"),
+    groupBy: z.enum(["brandId", "campaignId", "workflowSlug", "featureSlug", "leadEmail"]).optional().describe("Group results by dimension"),
   })
   .openapi("StatsQuery");
 
@@ -377,39 +375,40 @@ const RepliesAggregatesSchema = z.object({
   repliesDetail: RepliesDetailSchema,
 });
 
+const RecipientStatsSchema = z.object({
+  contacted: z.number().describe("Leads added to a campaign (row exists in instantly_campaigns)"),
+  sent: z.number().describe("Leads with at least one email sent (COUNT DISTINCT lead_email)"),
+  delivered: z.number().describe("sent minus bounced (leads)"),
+  opened: z.number().describe("Leads who opened at least one email (COUNT DISTINCT lead_email)"),
+  bounced: z.number().describe("Leads with at least one bounce (COUNT DISTINCT lead_email)"),
+  clicked: z.number().describe("Leads who clicked at least one link (COUNT DISTINCT lead_email)"),
+  unsubscribed: z.number().describe("Leads who unsubscribed (COUNT DISTINCT lead_email)"),
+}).merge(RepliesAggregatesSchema);
+
 const StepStatsSchema = z.object({
   step: z.number().describe("Step number (1-based)"),
-  emailsSent: z.number(),
-  emailsOpened: z.number(),
-  emailsClicked: z.number().describe("Total link click events for this step"),
-  emailsBounced: z.number(),
+  sent: z.number().describe("Emails sent at this step"),
+  delivered: z.number().describe("sent minus bounced at this step"),
+  opened: z.number().describe("Emails opened at this step"),
+  bounced: z.number().describe("Emails bounced at this step"),
+  clicked: z.number().describe("Link clicks at this step"),
+  unsubscribed: z.number().describe("Unsubscribes at this step"),
 }).merge(RepliesAggregatesSchema);
+
+const EmailStatsSchema = z.object({
+  sent: z.number().describe("Total emails sent (all steps)"),
+  delivered: z.number().describe("sent minus bounced (emails)"),
+  opened: z.number().describe("Unique emails opened at least once"),
+  clicked: z.number().describe("Unique emails with at least one link click"),
+  bounced: z.number().describe("Total emails bounced"),
+  unsubscribed: z.number().describe("Total unsubscribe events"),
+  stepStats: z.array(StepStatsSchema).optional().describe("Per-step breakdown"),
+});
 
 const StatsResponseSchema = z
   .object({
-    stats: z.object({
-      emailsContacted: z
-        .number()
-        .describe("Leads added to a campaign (row exists in instantly_campaigns, immediate)"),
-      emailsSent: z.number().describe("Total email_sent events (confirmed by Instantly webhook)"),
-      emailsDelivered: z
-        .number()
-        .describe("emailsSent minus emailsBounced"),
-      emailsOpened: z
-        .number()
-        .describe(
-          "Unique recipients who opened (COUNT DISTINCT lead_email with email_opened events)",
-        ),
-      emailsClicked: z.number().describe("Total link click events"),
-      emailsBounced: z.number().describe("Total email_bounced events"),
-    }).merge(RepliesAggregatesSchema),
-    recipients: z
-      .number()
-      .describe("Unique recipients (COUNT DISTINCT lead_email with email_sent events)"),
-    stepStats: z
-      .array(StepStatsSchema)
-      .optional()
-      .describe("Per-step breakdown (only present when step data exists)"),
+    recipientStats: RecipientStatsSchema,
+    emailStats: EmailStatsSchema,
   })
   .openapi("StatsResponse");
 
@@ -482,8 +481,8 @@ export type GroupedStatsRequest = z.infer<typeof GroupedStatsRequestSchema>;
 
 const GroupedStatsEntrySchema = z.object({
   key: z.string().describe("Group key from the request"),
-  stats: StatsResponseSchema.shape.stats,
-  recipients: z.number(),
+  recipientStats: RecipientStatsSchema,
+  emailStats: EmailStatsSchema,
 });
 
 const GroupedStatsResponseSchema = z
