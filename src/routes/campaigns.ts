@@ -9,6 +9,7 @@ import {
 import { handleCampaignError } from "../lib/campaign-error-handler";
 import { resolveInstantlyApiKey } from "../lib/key-client";
 import { UpdateStatusRequestSchema } from "../schemas";
+import { traceEvent } from "../lib/trace-event";
 
 const router = Router();
 
@@ -113,6 +114,7 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
       updated.push(row);
     }
 
+    traceEvent(res.locals.runId as string || "unknown", { service: "instantly-service", event: "campaign-status-update", detail: `campaignId=${campaignId}, status=${status}, count=${updated.length}` }, req.headers).catch(() => {});
     res.json({ campaign: updated[0], campaigns: updated });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
