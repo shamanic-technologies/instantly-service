@@ -4,6 +4,7 @@ import { instantlyEvents, instantlyCampaigns, sequenceCosts } from "../db/schema
 import { eq, and } from "drizzle-orm";
 import { WebhookPayloadSchema } from "../schemas";
 import { updateCostStatus, type IdentityContext } from "../lib/runs-client";
+import { traceEvent } from "../lib/trace-event";
 
 const router = Router();
 
@@ -212,6 +213,8 @@ router.post("/instantly", async (req: Request, res: Response) => {
   }
 
   try {
+    traceEvent(campaign.runId || "unknown", { service: "instantly-service", event: "webhook-received", detail: `type=${payload.event_type}, campaign=${payload.campaign_id}, lead=${payload.lead_email ?? "none"}, step=${payload.step ?? "none"}` }, req.headers).catch(() => {});
+
     // 3. Record the event with step/variant
     await db.insert(instantlyEvents).values({
       eventType: payload.event_type,
@@ -232,8 +235,10 @@ router.post("/instantly", async (req: Request, res: Response) => {
     if (payload.lead_email) {
       if (payload.event_type === "email_sent" && payload.step && payload.step > 1) {
         await handleFollowUpSent(payload.campaign_id, payload.lead_email, payload.step);
+        traceEvent(campaign.runId || "unknown", { service: "instantly-service", event: "webhook-cost-updated", detail: `action=follow-up-sent, step=${payload.step}, lead=${payload.lead_email}` }, req.headers).catch(() => {});
       } else if (SEQUENCE_STOP_EVENTS.has(payload.event_type)) {
         await cancelRemainingProvisions(payload.campaign_id, payload.lead_email, payload.event_type);
+        traceEvent(campaign.runId || "unknown", { service: "instantly-service", event: "webhook-cost-updated", detail: `action=cancelled-provisions, reason=${payload.event_type}, lead=${payload.lead_email}` }, req.headers).catch(() => {});
       }
     }
 
@@ -242,6 +247,7 @@ router.post("/instantly", async (req: Request, res: Response) => {
       eventType: payload.event_type,
     });
   } catch (error: any) {
+    traceEvent(campaign.runId || "unknown", { service: "instantly-service", event: "webhook-error", detail: error.message, level: "error" }, req.headers).catch(() => {});
     console.error(`[webhooks] Failed to process webhook: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
