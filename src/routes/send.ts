@@ -26,6 +26,7 @@ import {
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { authorizeCreditSpend } from "../lib/billing-client";
 import { SendRequestSchema } from "../schemas";
+import { traceEvent } from "../lib/trace-event";
 
 /** Extract tracking headers from res.locals (set by requireOrgId middleware) */
 function getTracking(res: Response): TrackingHeaders {
@@ -228,6 +229,7 @@ router.post("/", async (req: Request, res: Response) => {
   const workflowSlug = tracking.workflowSlug;
 
   console.log(`[send] POST /send to=${body.to} campaignId=${campaignId} brandIds=${brandIds.join(",")} subject="${body.subject}" steps=${body.sequence.length}`);
+    traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-start", detail: `to=${body.to}, campaignId=${campaignId}, steps=${body.sequence.length}` }, req.headers).catch(() => {});
 
   try {
     // 0. Resolve Instantly API key (auto-resolves org vs platform key)
@@ -235,6 +237,7 @@ router.post("/", async (req: Request, res: Response) => {
       method: "POST",
       path: "/send",
     });
+    traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-key-resolved", detail: `keySource=${keySource}` }, req.headers).catch(() => {});
 
     // 1. Credit authorization (platform keys only)
     if (keySource === "platform") {
@@ -350,6 +353,7 @@ router.post("/", async (req: Request, res: Response) => {
           result = await tryCreateAndActivateCampaign(apiKey, campaignId, account, steps, lead);
 
           if (result) {
+            traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-campaign-created", detail: `instantlyCampaignId=${result.instantlyCampaignId}, added=${result.added}, attempt=${attempt}` }, req.headers).catch(() => {});
             break;
           }
 
@@ -468,6 +472,7 @@ router.post("/", async (req: Request, res: Response) => {
         stepRuns.push({ step: s.step, runId: stepRun.id });
       }
 
+      traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-done", detail: `to=${body.to}, campaignId=${campaignId}, added=${added}, stepRuns=${stepRuns.length}` }, req.headers).catch(() => {});
       console.log(`[send] Done — to=${body.to} campaignId=${campaignId} added=${added} stepRuns=${stepRuns.length}`);
       res.status(200).json({
         success: true,
@@ -494,6 +499,7 @@ router.post("/", async (req: Request, res: Response) => {
         details: "Please configure your Instantly API key before sending emails.",
       });
     }
+    traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-error", detail: error.message, level: "error" }, req.headers).catch(() => {});
     console.error(`[send] Failed to send — to=${body.to} error="${error.message}"`);
     res.status(500).json({
       error: "Failed to send email",
