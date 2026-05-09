@@ -43,21 +43,14 @@ const router = Router();
 const MAX_SEND_RETRIES = 3;
 
 /**
- * Pick an account from the list using a two-pool strategy:
- * Pool A (priority): accounts on preferred domains — random pick among available
- * Pool B (fallback): all other accounts — random pick if Pool A is empty
- * Error if neither pool has any account.
+ * Pick an account from the list using a single-pool weighted random:
+ * weight = max(1, stat_warmup_score ?? 0). Accounts without a score still
+ * get a baseline weight of 1, so they remain eligible while warmer accounts
+ * are favoured proportionally. Falls back to uniform random when no account
+ * has a score (all weights collapse to 1).
  */
 const BLOCKED_DOMAINS = [
   "arcadiaquest.org",
-];
-
-const POOL_A_DOMAINS = [
-  "pressbeat.io",
-  "growthagency.dev",
-  "distribute.you",
-  "growthservice.org",
-  "salescoldemails.com",
 ];
 
 export function pickRandomAccount(accounts: Account[]): Account {
@@ -65,16 +58,17 @@ export function pickRandomAccount(accounts: Account[]): Account {
     throw new Error("No accounts available");
   }
 
-  const poolA = accounts.filter((a) => {
-    const domain = a.email.split("@")[1];
-    return POOL_A_DOMAINS.includes(domain);
-  });
+  const weights = accounts.map((a) => Math.max(1, a.stat_warmup_score ?? 0));
+  const total = weights.reduce((sum, w) => sum + w, 0);
+  const target = Math.random() * total;
 
-  if (poolA.length > 0) {
-    return poolA[Math.floor(Math.random() * poolA.length)];
+  let acc = 0;
+  for (let i = 0; i < accounts.length; i++) {
+    acc += weights[i];
+    if (target < acc) return accounts[i];
   }
 
-  return accounts[Math.floor(Math.random() * accounts.length)];
+  return accounts[accounts.length - 1];
 }
 
 /**

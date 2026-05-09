@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock DB
 const mockDbWhere = vi.fn();
@@ -137,44 +137,68 @@ function mockNewCampaignFlow() {
 }
 
 describe("pickRandomAccount", () => {
-  it("should pick from Pool A when Pool A accounts are available", () => {
-    const accounts = [
-      acct({ email: "random@otherdomain.com" }),
-      acct({ email: "alice@growthagency.dev" }),
-      acct({ email: "bob@distribute.you" }),
-    ];
-    const picked = pickRandomAccount(accounts);
-    const domain = picked.email.split("@")[1];
-    expect(["growthagency.dev", "distribute.you"]).toContain(domain);
-  });
-
-  it("should pick randomly among all Pool A accounts", () => {
-    const accounts = [
-      acct({ email: "alice@pressbeat.io" }),
-      acct({ email: "bob@growthservice.org" }),
-      acct({ email: "carol@salescoldemails.com" }),
-      acct({ email: "random@otherdomain.com" }),
-    ];
-    const poolADomains = ["pressbeat.io", "growthservice.org", "salescoldemails.com"];
-    // Run multiple times to verify it stays within Pool A
-    for (let i = 0; i < 20; i++) {
-      const picked = pickRandomAccount(accounts);
-      const domain = picked.email.split("@")[1];
-      expect(poolADomains).toContain(domain);
-    }
-  });
-
-  it("should fall back to Pool B when no Pool A accounts are available", () => {
-    const accounts = [
-      acct({ email: "a@otherdomain.com" }),
-      acct({ email: "b@anotherdomain.com" }),
-    ];
-    const picked = pickRandomAccount(accounts);
-    expect(accounts).toContainEqual(picked);
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("should throw when no accounts are available", () => {
     expect(() => pickRandomAccount([])).toThrow("No accounts available");
+  });
+
+  it("should return the only account when only one is available", () => {
+    const a = acct({ email: "only@x.com" });
+    expect(pickRandomAccount([a])).toBe(a);
+  });
+
+  it("should weight pick by stat_warmup_score", () => {
+    const accounts = [
+      acct({ email: "low@x.com", stat_warmup_score: 1 }),
+      acct({ email: "high@x.com", stat_warmup_score: 99 }),
+    ];
+    // total weight = 100. target = random * 100. low wins on [0, 1), high on [1, 100).
+    const randomSpy = vi.spyOn(Math, "random");
+
+    randomSpy.mockReturnValueOnce(0.005); // 0.5 → low
+    expect(pickRandomAccount(accounts).email).toBe("low@x.com");
+
+    randomSpy.mockReturnValueOnce(0.5); // 50 → high
+    expect(pickRandomAccount(accounts).email).toBe("high@x.com");
+  });
+
+  it("should treat absent stat_warmup_score as weight 1", () => {
+    const accounts = [
+      acct({ email: "noscore@x.com" }),
+      acct({ email: "scored@x.com", stat_warmup_score: 9 }),
+    ];
+    // weights = [1, 9], total = 10. noscore wins on [0, 1), scored on [1, 10).
+    const randomSpy = vi.spyOn(Math, "random");
+
+    randomSpy.mockReturnValueOnce(0.05); // 0.5 → noscore
+    expect(pickRandomAccount(accounts).email).toBe("noscore@x.com");
+
+    randomSpy.mockReturnValueOnce(0.5); // 5 → scored
+    expect(pickRandomAccount(accounts).email).toBe("scored@x.com");
+  });
+
+  it("should fall back to uniform pick when no account has a score", () => {
+    const accounts = [
+      acct({ email: "a@x.com" }),
+      acct({ email: "b@x.com" }),
+      acct({ email: "c@x.com" }),
+    ];
+    // all weights = 1, total = 3. random = 0.5 → target = 1.5 → index 1
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    expect(pickRandomAccount(accounts).email).toBe("b@x.com");
+  });
+
+  it("should pick across all accounts regardless of domain", () => {
+    const accounts = [
+      acct({ email: "alice@growthagency.dev", stat_warmup_score: 1 }),
+      acct({ email: "bob@randomdomain.com", stat_warmup_score: 1 }),
+    ];
+    // equal weights → each domain equally likely; pool whitelisting is gone
+    vi.spyOn(Math, "random").mockReturnValue(0.75); // target = 1.5 → bob
+    expect(pickRandomAccount(accounts).email).toBe("bob@randomdomain.com");
   });
 });
 
