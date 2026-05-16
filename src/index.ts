@@ -22,7 +22,7 @@ import { requireOrgId } from "./middleware/requireOrgId";
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
 // OpenAPI spec endpoint
 const openapiPath = path.join(__dirname, "..", "openapi.json");
