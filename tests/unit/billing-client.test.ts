@@ -35,7 +35,7 @@ describe("billing-client", () => {
 
     expect(result).toEqual({ sufficient: true, balance_cents: 500, required_cents: 15 });
     expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining("/v1/credits/authorize"),
+      expect.stringContaining("/v1/customer_balance/authorize"),
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ items, description: "test-cost" }),
@@ -101,7 +101,7 @@ describe("billing-client", () => {
     });
 
     await expect(authorizeCreditSpend(items, "test", identity)).rejects.toThrow(
-      "billing-service POST /v1/credits/authorize failed: 500",
+      "billing-service POST /v1/customer_balance/authorize failed: 500",
     );
   });
 
