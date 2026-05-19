@@ -56,6 +56,53 @@ export interface CampaignAnalytics {
   completed_count: number;
 }
 
+export interface CampaignStepAnalytics {
+  step: string | null;
+  variant: string | null;
+  sent: number;
+  opened: number;
+  unique_opened: number;
+  replies: number;
+  unique_replies: number;
+  replies_automatic: number;
+  unique_replies_automatic: number;
+  clicks: number;
+  unique_clicks: number;
+}
+
+export interface LeadFull {
+  id: string;
+  email: string;
+  campaign?: string;
+  status?: number;
+  email_open_count?: number;
+  email_reply_count?: number;
+  email_click_count?: number;
+  email_opened_step?: number | null;
+  email_opened_variant?: number | null;
+  email_replied_step?: number | null;
+  email_clicked_step?: number | null;
+  timestamp_last_contact?: string | null;
+  timestamp_last_open?: string | null;
+  timestamp_last_reply?: string | null;
+  lt_interest_status?: number | null;
+  [key: string]: unknown;
+}
+
+export interface EmailRecord {
+  id: string;
+  campaign_id: string | null;
+  lead: string | null;
+  lead_id: string | null;
+  eaccount: string;
+  ue_type: 1 | 2 | 3 | 4;
+  step: string | null;
+  subject?: string;
+  timestamp_email: string;
+  timestamp_created?: string;
+  [key: string]: unknown;
+}
+
 export interface SequenceStep {
   subject: string;
   bodyHtml: string;
@@ -316,4 +363,76 @@ export async function getCampaignAnalytics(apiKey: string, campaignId: string): 
     `/campaigns/analytics?id=${encodeURIComponent(campaignId)}`
   );
   return results[0] ?? null;
+}
+
+export async function getCampaignStepsAnalytics(
+  apiKey: string,
+  campaignId: string,
+): Promise<CampaignStepAnalytics[]> {
+  return instantlyRequest<CampaignStepAnalytics[]>(
+    apiKey,
+    `/campaigns/analytics/steps?campaign_id=${encodeURIComponent(campaignId)}`,
+  );
+}
+
+/**
+ * POST /leads/list — returns full Lead objects (status, engagement counts,
+ * last-step engaged, last reply/open timestamps). Paginates via starting_after.
+ */
+export async function listLeadsFull(
+  apiKey: string,
+  campaignId: string,
+  limit = 100,
+): Promise<LeadFull[]> {
+  const results: LeadFull[] = [];
+  let startingAfter: string | undefined;
+  for (;;) {
+    const body: Record<string, unknown> = { campaign: campaignId, limit };
+    if (startingAfter) body.starting_after = startingAfter;
+    const response = await instantlyRequest<{ items: LeadFull[]; next_starting_after?: string }>(
+      apiKey,
+      "/leads/list",
+      { method: "POST", body },
+    );
+    const items = response.items ?? [];
+    results.push(...items);
+    if (!response.next_starting_after || items.length === 0) break;
+    startingAfter = response.next_starting_after;
+  }
+  return results;
+}
+
+/**
+ * GET /emails — paginated list of individual email records with `step` field.
+ * Rate-limited to 20 req/min per workspace by Instantly. Caller responsible for
+ * pacing. `min_timestamp_created` filters to emails created after a cursor.
+ */
+export async function listEmails(
+  apiKey: string,
+  params: {
+    campaignId: string;
+    minTimestampCreated?: string;
+    limit?: number;
+  },
+): Promise<EmailRecord[]> {
+  const { campaignId, minTimestampCreated, limit = 100 } = params;
+  const results: EmailRecord[] = [];
+  let startingAfter: string | undefined;
+  for (;;) {
+    const query = new URLSearchParams({
+      campaign_id: campaignId,
+      limit: String(limit),
+    });
+    if (minTimestampCreated) query.set("min_timestamp_created", minTimestampCreated);
+    if (startingAfter) query.set("starting_after", startingAfter);
+    const response = await instantlyRequest<{ items: EmailRecord[]; next_starting_after?: string }>(
+      apiKey,
+      `/emails?${query.toString()}`,
+    );
+    const items = response.items ?? [];
+    results.push(...items);
+    if (!response.next_starting_after || items.length === 0) break;
+    startingAfter = response.next_starting_after;
+  }
+  return results;
 }

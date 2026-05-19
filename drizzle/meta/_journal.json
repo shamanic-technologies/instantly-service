@@ -78,6 +78,13 @@
       "when": 1774396800000,
       "tag": "0010_add_reply_classification",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1774483200000,
+      "tag": "0011_add_bronze_tables_and_silver_dedup",
+      "breakpoints": true
     }
   ]
 }

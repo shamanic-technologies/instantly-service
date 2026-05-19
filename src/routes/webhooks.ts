@@ -1,173 +1,13 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db";
-import { instantlyEvents, instantlyCampaigns, sequenceCosts } from "../db/schema";
-import { eq, and } from "drizzle-orm";
+import { instantlyCampaigns } from "../db/schema";
+import { eq } from "drizzle-orm";
 import { WebhookPayloadSchema } from "../schemas";
-import { updateCostStatus, type IdentityContext } from "../lib/runs-client";
 import { traceEvent } from "../lib/trace-event";
+import { insertWebhookPayload } from "../lib/bronze";
+import { promoteFromWebhookPayload } from "../lib/silver-promote";
 
 const router = Router();
-
-/** Events that indicate the sequence has stopped for this lead */
-const SEQUENCE_STOP_EVENTS = new Set([
-  "reply_received",
-  "email_bounced",
-  "lead_unsubscribed",
-  "lead_not_interested",
-]);
-
-/**
- * When a follow-up email is sent, convert all matching provisioned costs to actual.
- * Each step has 2 email costs (account + domain).
- */
-async function handleFollowUpSent(
-  instantlyCampaignId: string,
-  leadEmail: string,
-  step: number,
-): Promise<void> {
-  const [campaign] = await db
-    .select()
-    .from(instantlyCampaigns)
-    .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
-
-  if (!campaign?.campaignId) return;
-
-  const costs = await db
-    .select()
-    .from(sequenceCosts)
-    .where(
-      and(
-        eq(sequenceCosts.campaignId, campaign.campaignId),
-        eq(sequenceCosts.leadEmail, leadEmail),
-        eq(sequenceCosts.step, step),
-        eq(sequenceCosts.status, "provisioned"),
-      ),
-    );
-
-  if (costs.length === 0) return;
-
-  for (const cost of costs) {
-    const identity: IdentityContext = {
-      orgId: campaign.orgId || "system",
-      userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
-      runId: cost.runId,
-    };
-
-    try {
-      await updateCostStatus(cost.runId, cost.costId, "actual", identity);
-      await db
-        .update(sequenceCosts)
-        .set({ status: "actual", updatedAt: new Date() })
-        .where(eq(sequenceCosts.id, cost.id));
-      console.log(`[webhooks] Converted provisioned cost ${cost.costId} to actual for step ${step}`);
-    } catch (error: any) {
-      console.error(`[webhooks] Failed to convert cost ${cost.costId}: ${error.message}`);
-    }
-  }
-}
-
-/**
- * When the sequence stops (reply, bounce, unsub, not_interested),
- * cancel all remaining provisioned costs for this lead.
- */
-async function cancelRemainingProvisions(
-  instantlyCampaignId: string,
-  leadEmail: string,
-  eventType: string,
-): Promise<void> {
-  const [campaign] = await db
-    .select()
-    .from(instantlyCampaigns)
-    .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
-
-  if (!campaign?.campaignId) return;
-
-  const remaining = await db
-    .select()
-    .from(sequenceCosts)
-    .where(
-      and(
-        eq(sequenceCosts.campaignId, campaign.campaignId),
-        eq(sequenceCosts.leadEmail, leadEmail),
-        eq(sequenceCosts.status, "provisioned"),
-      ),
-    );
-
-  for (const cost of remaining) {
-    const identity: IdentityContext = {
-      orgId: campaign.orgId || "system",
-      userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
-      runId: cost.runId,
-    };
-    try {
-      await updateCostStatus(cost.runId, cost.costId, "cancelled", identity);
-      await db
-        .update(sequenceCosts)
-        .set({ status: "cancelled", updatedAt: new Date() })
-        .where(eq(sequenceCosts.id, cost.id));
-      console.log(`[webhooks] Cancelled provisioned cost ${cost.costId} for step ${cost.step}`);
-    } catch (error: any) {
-      console.error(`[webhooks] Failed to cancel cost ${cost.costId}: ${error.message}`);
-    }
-  }
-}
-
-/** Maps webhook event types to deliveryStatus values */
-const DELIVERY_STATUS_MAP: Record<string, string> = {
-  email_sent: "sent",
-  campaign_completed: "delivered",
-  reply_received: "replied",
-  email_bounced: "bounced",
-  lead_unsubscribed: "unsubscribed",
-};
-
-/** Maps webhook event types to reply classification values */
-const REPLY_CLASSIFICATION_MAP: Record<string, "positive" | "negative" | "neutral"> = {
-  lead_interested: "positive",
-  lead_meeting_booked: "positive",
-  lead_closed: "positive",
-  lead_not_interested: "negative",
-  lead_wrong_person: "negative",
-  lead_neutral: "neutral",
-  lead_out_of_office: "neutral",
-  auto_reply_received: "neutral",
-};
-
-async function updateDeliveryStatus(
-  instantlyCampaignId: string,
-  eventType: string,
-): Promise<void> {
-  const newStatus = DELIVERY_STATUS_MAP[eventType];
-  if (!newStatus) return;
-
-  try {
-    await db
-      .update(instantlyCampaigns)
-      .set({ deliveryStatus: newStatus, updatedAt: new Date() })
-      .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
-    console.log(`[webhooks] Updated deliveryStatus to '${newStatus}' for campaign ${instantlyCampaignId}`);
-  } catch (error: any) {
-    console.error(`[webhooks] Failed to update deliveryStatus for ${instantlyCampaignId}: ${error.message}`);
-  }
-}
-
-async function updateReplyClassification(
-  instantlyCampaignId: string,
-  eventType: string,
-): Promise<void> {
-  const classification = REPLY_CLASSIFICATION_MAP[eventType];
-  if (!classification) return;
-
-  try {
-    await db
-      .update(instantlyCampaigns)
-      .set({ replyClassification: classification, updatedAt: new Date() })
-      .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
-    console.log(`[webhooks] Updated replyClassification to '${classification}' for campaign ${instantlyCampaignId}`);
-  } catch (error: any) {
-    console.error(`[webhooks] Failed to update replyClassification for ${instantlyCampaignId}: ${error.message}`);
-  }
-}
 
 /**
  * GET /webhooks/instantly/config
@@ -184,21 +24,22 @@ router.get("/instantly/config", (_req: Request, res: Response) => {
 /**
  * POST /webhooks/instantly
  * Receives Instantly webhook events.
- * Verification: campaign_id must exist in our database (UUID is unguessable).
  *
- * In addition to recording the event, handles cost lifecycle:
- * - email_sent (step > 1): convert provisioned cost → actual
- * - reply/bounce/unsub/not_interested: cancel all remaining provisions
+ * Flow (bronze → silver):
+ *   1. Parse + validate payload (Zod).
+ *   2. Verify via campaign_id DB lookup (UUID is unguessable).
+ *   3. Insert raw payload into bronze (instantly_webhook_payloads_raw).
+ *   4. Promote to silver (instantly_events) — idempotent via dedupe index.
+ *      Silver promotion fires side effects (delivery_status update, reply
+ *      classification, sequence cost lifecycle) ONLY on first insert.
  */
 router.post("/instantly", async (req: Request, res: Response) => {
-  // 1. Parse payload first
   const parsed = WebhookPayloadSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Missing event_type" });
   }
   const payload = parsed.data;
 
-  // 2. Verify via campaign_id DB lookup
   if (!payload.campaign_id) {
     return res.status(400).json({ error: "Missing campaign_id" });
   }
@@ -213,43 +54,68 @@ router.post("/instantly", async (req: Request, res: Response) => {
   }
 
   try {
-    traceEvent(campaign.runId || "unknown", { service: "instantly-service", event: "webhook-received", detail: `type=${payload.event_type}, campaign=${payload.campaign_id}, lead=${payload.lead_email ?? "none"}, step=${payload.step ?? "none"}` }, req.headers).catch(() => {});
+    traceEvent(
+      campaign.runId || "unknown",
+      {
+        service: "instantly-service",
+        event: "webhook-received",
+        detail: `type=${payload.event_type}, campaign=${payload.campaign_id}, lead=${payload.lead_email ?? "none"}, step=${payload.step ?? "none"}`,
+      },
+      req.headers,
+    ).catch(() => {});
 
-    // 3. Record the event with step/variant
-    await db.insert(instantlyEvents).values({
-      eventType: payload.event_type,
-      campaignId: payload.campaign_id,
-      leadEmail: payload.lead_email,
-      accountEmail: payload.email_account,
-      step: payload.step,
-      variant: payload.variant,
-      timestamp: payload.timestamp ? new Date(payload.timestamp) : new Date(),
+    const bronzeRef = await insertWebhookPayload(
+      payload.campaign_id,
+      campaign.orgId,
+      req.body,
+    );
+
+    const result = await promoteFromWebhookPayload({
+      bronzeRowId: bronzeRef.id,
+      payload: {
+        event_type: payload.event_type,
+        campaign_id: payload.campaign_id,
+        lead_email: payload.lead_email,
+        email_account: payload.email_account,
+        step: payload.step,
+        variant: payload.variant,
+        timestamp: payload.timestamp,
+      },
       rawPayload: req.body,
     });
 
-    // 4. Update delivery status + reply classification
-    await updateDeliveryStatus(payload.campaign_id, payload.event_type);
-    await updateReplyClassification(payload.campaign_id, payload.event_type);
-
-    // 5. Handle cost lifecycle based on event type
-    if (payload.lead_email) {
-      if (payload.event_type === "email_sent" && payload.step && payload.step > 1) {
-        await handleFollowUpSent(payload.campaign_id, payload.lead_email, payload.step);
-        traceEvent(campaign.runId || "unknown", { service: "instantly-service", event: "webhook-cost-updated", detail: `action=follow-up-sent, step=${payload.step}, lead=${payload.lead_email}` }, req.headers).catch(() => {});
-      } else if (SEQUENCE_STOP_EVENTS.has(payload.event_type)) {
-        await cancelRemainingProvisions(payload.campaign_id, payload.lead_email, payload.event_type);
-        traceEvent(campaign.runId || "unknown", { service: "instantly-service", event: "webhook-cost-updated", detail: `action=cancelled-provisions, reason=${payload.event_type}, lead=${payload.lead_email}` }, req.headers).catch(() => {});
-      }
+    if (result.promoted) {
+      traceEvent(
+        campaign.runId || "unknown",
+        {
+          service: "instantly-service",
+          event: "webhook-promoted",
+          detail: `type=${payload.event_type}, silverEventId=${result.silverEventId}`,
+        },
+        req.headers,
+      ).catch(() => {});
     }
 
     res.json({
       success: true,
       eventType: payload.event_type,
+      bronzeRowId: bronzeRef.id,
+      promoted: result.promoted,
     });
-  } catch (error: any) {
-    traceEvent(campaign.runId || "unknown", { service: "instantly-service", event: "webhook-error", detail: error.message, level: "error" }, req.headers).catch(() => {});
-    console.error(`[webhooks] Failed to process webhook: ${error.message}`);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    traceEvent(
+      campaign.runId || "unknown",
+      {
+        service: "instantly-service",
+        event: "webhook-error",
+        detail: message,
+        level: "error",
+      },
+      req.headers,
+    ).catch(() => {});
+    console.error(`[instantly-service] webhook failed: ${message}`);
+    res.status(500).json({ error: message });
   }
 });
 
