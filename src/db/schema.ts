@@ -86,7 +86,10 @@ export const instantlyAccounts = pgTable("instantly_accounts", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-// Events table (webhooks)
+// Silver: canonical event log derived from bronze sources (webhooks + reconcile polls).
+// raw_payload kept nullable for backwards compat; new rows store source attribution
+// pointing to bronze instead. Unique index `instantly_events_dedupe_idx` makes
+// silver promotion idempotent across webhook + /emails sources.
 export const instantlyEvents = pgTable(
   "instantly_events",
   {
@@ -98,7 +101,9 @@ export const instantlyEvents = pgTable(
     step: integer("step"),
     variant: integer("variant"),
     timestamp: timestamp("timestamp").notNull(),
-    rawPayload: jsonb("raw_payload").notNull(),
+    rawPayload: jsonb("raw_payload"),
+    source: text("source").notNull().default("webhook"),
+    sourceRowId: text("source_row_id"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [
@@ -131,7 +136,7 @@ export const sequenceCosts = pgTable(
   ],
 );
 
-// Analytics snapshots table
+// Analytics snapshots table (legacy — kept for back-compat; new bronze tables below)
 export const instantlyAnalyticsSnapshots = pgTable("instantly_analytics_snapshots", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   campaignId: text("campaign_id").notNull(),
@@ -145,3 +150,71 @@ export const instantlyAnalyticsSnapshots = pgTable("instantly_analytics_snapshot
   rawData: jsonb("raw_data"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+// ─── Bronze tables (raw external sources, append-only, never mutated) ─────────
+
+// Bronze 1: webhook payloads received from Instantly
+export const instantlyWebhookPayloadsRaw = pgTable(
+  "instantly_webhook_payloads_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id"),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    payload: jsonb("payload").notNull(),
+    receivedAt: timestamp("received_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("instantly_webhook_payloads_raw_campaign_id_idx").on(table.instantlyCampaignId),
+    index("instantly_webhook_payloads_raw_received_at_idx").on(table.receivedAt),
+  ],
+);
+
+// Bronze 2: /campaigns/analytics responses (per-campaign aggregate snapshots)
+export const instantlyAnalyticsRaw = pgTable(
+  "instantly_analytics_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id"),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("instantly_analytics_raw_campaign_id_idx").on(table.instantlyCampaignId),
+    index("instantly_analytics_raw_fetched_at_idx").on(table.fetchedAt),
+  ],
+);
+
+// Bronze 3: /emails records (individual email rows with step field)
+export const instantlyEmailsRaw = pgTable(
+  "instantly_emails_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id"),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    instantlyEmailId: text("instantly_email_id").notNull(),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("instantly_emails_raw_email_id_idx").on(table.instantlyEmailId),
+    index("instantly_emails_raw_campaign_id_idx").on(table.instantlyCampaignId),
+  ],
+);
+
+// Bronze 4: /leads/list per-lead snapshots (status + engagement counts)
+export const instantlyLeadsRaw = pgTable(
+  "instantly_leads_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id"),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("instantly_leads_raw_campaign_email_idx").on(table.instantlyCampaignId, table.leadEmail),
+    index("instantly_leads_raw_fetched_at_idx").on(table.fetchedAt),
+  ],
+);

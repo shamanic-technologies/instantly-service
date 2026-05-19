@@ -274,6 +274,69 @@
           "errors"
         ]
       },
+      "ReconcileResponse": {
+        "type": "object",
+        "properties": {
+          "campaignsScanned": {
+            "type": "number"
+          },
+          "campaignsWithDrift": {
+            "type": "number"
+          },
+          "campaignsSkippedNoKey": {
+            "type": "number"
+          },
+          "campaignsFailed": {
+            "type": "number"
+          },
+          "drift": {
+            "type": "object",
+            "properties": {
+              "emailsSent": {
+                "type": "number"
+              },
+              "replies": {
+                "type": "number"
+              },
+              "bounces": {
+                "type": "number"
+              },
+              "unsubs": {
+                "type": "number"
+              },
+              "opensBackfilled": {
+                "type": "number"
+              },
+              "clicksBackfilled": {
+                "type": "number"
+              },
+              "leadStatusUpdates": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "emailsSent",
+              "replies",
+              "bounces",
+              "unsubs",
+              "opensBackfilled",
+              "clicksBackfilled",
+              "leadStatusUpdates"
+            ]
+          },
+          "durationMs": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "campaignsScanned",
+          "campaignsWithDrift",
+          "campaignsSkippedNoKey",
+          "campaignsFailed",
+          "drift",
+          "durationMs"
+        ]
+      },
       "StatsResponse": {
         "type": "object",
         "properties": {
@@ -1742,6 +1805,37 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CheckStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/campaigns/reconcile": {
+      "post": {
+        "summary": "Reconcile webhook state against Instantly API",
+        "description": "Daily catch-up job that pulls Instantly's per-campaign state (aggregate, per-lead status, per-email records) and promotes any events missed by the webhook into the silver event log. Idempotent — safe to re-run.",
+        "responses": {
+          "200": {
+            "description": "Reconcile complete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconcileResponse"
                 }
               }
             }
