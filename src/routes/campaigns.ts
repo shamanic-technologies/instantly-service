@@ -10,6 +10,7 @@ import { handleCampaignError } from "../lib/campaign-error-handler";
 import { resolveInstantlyApiKey } from "../lib/key-client";
 import { UpdateStatusRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
+import { reconcileAll } from "../lib/reconcile";
 
 const router = Router();
 
@@ -208,6 +209,22 @@ router.post("/check-status", async (_req: Request, res: Response) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[campaigns] check-status failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * POST /campaigns/reconcile
+ * Daily catch-up: pulls Instantly's per-campaign state and promotes any events
+ * missed by the webhook into the silver event log. See lib/reconcile.ts.
+ */
+router.post("/reconcile", async (_req: Request, res: Response) => {
+  try {
+    const summary = await reconcileAll();
+    res.json(summary);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] reconcile failed: ${message}`);
     res.status(500).json({ error: message });
   }
 });

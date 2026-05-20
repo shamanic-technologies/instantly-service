@@ -316,6 +316,51 @@ registry.registerPath({
   },
 });
 
+// ─── Reconcile ──────────────────────────────────────────────────────────────
+
+const ReconcileDriftSchema = z.object({
+  emailsSent: z.number(),
+  replies: z.number(),
+  bounces: z.number(),
+  unsubs: z.number(),
+  opensBackfilled: z.number(),
+  clicksBackfilled: z.number(),
+  leadStatusUpdates: z.number(),
+});
+
+const ReconcileResponseSchema = z
+  .object({
+    campaignsScanned: z.number(),
+    campaignsWithDrift: z.number(),
+    campaignsSkippedNoKey: z.number(),
+    campaignsFailed: z.number(),
+    drift: ReconcileDriftSchema,
+    durationMs: z.number(),
+  })
+  .openapi("ReconcileResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/campaigns/reconcile",
+  summary: "Reconcile webhook state against Instantly API",
+  request: {},
+  description:
+    "Daily catch-up job that pulls Instantly's per-campaign state (aggregate, " +
+    "per-lead status, per-email records) and promotes any events missed by " +
+    "the webhook into the silver event log. Idempotent — safe to re-run.",
+  responses: {
+    200: {
+      description: "Reconcile complete",
+      content: { "application/json": { schema: ReconcileResponseSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ─── Leads ──────────────────────────────────────────────────────────────────
 
 registry.registerPath({
