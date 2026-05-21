@@ -179,7 +179,6 @@ async function instantlyRequest<T>(
 
       if (response.status === 429 || response.status >= 500) {
         const errorText = await response.text().catch(() => "");
-        console.warn(`[instantly-api] ${method} ${path} → ${response.status} (attempt ${attempt + 1}/${retries}): ${errorText.slice(0, 500)}`);
         lastError = new Error(
           `instantly-api ${method} ${path} failed: ${response.status} - ${errorText.slice(0, 500)}`
         );
@@ -198,9 +197,7 @@ async function instantlyRequest<T>(
         );
       }
 
-      const json = await response.json() as T;
-      console.log(`[instantly-api] ${method} ${path} → ${response.status}`, JSON.stringify(json).slice(0, 500));
-      return json;
+      return (await response.json()) as T;
     } catch (error) {
       lastError = error as Error;
       if (attempt < retries - 1) {
