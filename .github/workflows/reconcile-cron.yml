@@ -36,14 +36,17 @@ jobs:
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
-            --max-time 3000 \
+            --max-time 60 \
             "${SERVICE_URL}/internal/campaigns/reconcile")
 
           echo "HTTP ${status}"
           cat "${response_file}"
           echo
 
-          if [ "${status}" != "200" ]; then
-            echo "Reconcile failed with HTTP ${status}"
+          # Endpoint returns 202 Accepted and runs the job in the background.
+          # Verify completion via Railway logs (`reconcile: done`) or by polling
+          # `instantly_*_raw` bronze tables — NOT via this curl exit code.
+          if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
+            echo "Reconcile dispatch failed with HTTP ${status}"
             exit 1
           fi
