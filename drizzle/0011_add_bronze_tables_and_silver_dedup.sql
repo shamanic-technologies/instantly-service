@@ -78,6 +78,24 @@ ALTER TABLE "instantly_events" ADD COLUMN IF NOT EXISTS "source" text DEFAULT 'w
 ALTER TABLE "instantly_events" ADD COLUMN IF NOT EXISTS "source_row_id" text;
 --> statement-breakpoint
 
+-- Pre-dedupe: webhook retries from Instantly produced exact duplicate rows
+-- (same campaign_id, lead_email, event_type, timestamp, step). The UNIQUE
+-- INDEX below would fail to build without this cleanup. Keep the oldest
+-- row per natural key (lowest created_at, ctid tiebreaker for same ms).
+DELETE FROM "instantly_events"
+WHERE "ctid" IN (
+  SELECT "ctid" FROM (
+    SELECT "ctid",
+           ROW_NUMBER() OVER (
+             PARTITION BY "campaign_id", "lead_email", "event_type", "timestamp", COALESCE("step", -1)
+             ORDER BY "created_at" ASC, "ctid" ASC
+           ) AS rn
+    FROM "instantly_events"
+  ) sub
+  WHERE rn > 1
+);
+--> statement-breakpoint
+
 -- Unique index for idempotent silver promotion from any bronze source.
 -- COALESCE(step, -1) lets NULL step values participate in dedup (Postgres treats
 -- NULL as distinct otherwise, allowing duplicate inserts for step-less events).
