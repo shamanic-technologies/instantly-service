@@ -134,6 +134,20 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Instantly caps `/emails` at 20 req/min per workspace. We serialize requests
+// via a single shared "next-call-allowed-at" timestamp so all concurrent
+// reconcile workers pace below the cap. 3100ms = 19.35 req/min (safety margin).
+const EMAILS_MIN_INTERVAL_MS = 3100;
+let emailsNextAllowedAt = 0;
+
+async function throttleEmailsPath(): Promise<void> {
+  const now = Date.now();
+  const scheduledAt = Math.max(now, emailsNextAllowedAt);
+  emailsNextAllowedAt = scheduledAt + EMAILS_MIN_INTERVAL_MS;
+  const wait = scheduledAt - now;
+  if (wait > 0) await sleep(wait);
+}
+
 async function instantlyRequest<T>(
   apiKey: string,
   path: string,
@@ -147,6 +161,10 @@ async function instantlyRequest<T>(
 
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
+  }
+
+  if (path.startsWith("/emails")) {
+    await throttleEmailsPath();
   }
 
   let lastError: Error | null = null;
@@ -404,8 +422,9 @@ export async function listLeadsFull(
 
 /**
  * GET /emails — paginated list of individual email records with `step` field.
- * Rate-limited to 20 req/min per workspace by Instantly. Caller responsible for
- * pacing. `min_timestamp_created` filters to emails created after a cursor.
+ * Rate-limited to 20 req/min per workspace by Instantly. Pacing handled in
+ * `instantlyRequest` via a process-wide gate on `/emails` paths.
+ * `min_timestamp_created` filters to emails created after a cursor.
  */
 export async function listEmails(
   apiKey: string,
