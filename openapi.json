@@ -274,67 +274,22 @@
           "errors"
         ]
       },
-      "ReconcileResponse": {
+      "ReconcileAccepted": {
         "type": "object",
         "properties": {
-          "campaignsScanned": {
-            "type": "number"
+          "runId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Opaque identifier for log correlation"
           },
-          "campaignsWithDrift": {
-            "type": "number"
-          },
-          "campaignsSkippedNoKey": {
-            "type": "number"
-          },
-          "campaignsFailed": {
-            "type": "number"
-          },
-          "drift": {
-            "type": "object",
-            "properties": {
-              "emailsSent": {
-                "type": "number"
-              },
-              "replies": {
-                "type": "number"
-              },
-              "bounces": {
-                "type": "number"
-              },
-              "unsubs": {
-                "type": "number"
-              },
-              "opensBackfilled": {
-                "type": "number"
-              },
-              "clicksBackfilled": {
-                "type": "number"
-              },
-              "leadStatusUpdates": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "emailsSent",
-              "replies",
-              "bounces",
-              "unsubs",
-              "opensBackfilled",
-              "clicksBackfilled",
-              "leadStatusUpdates"
-            ]
-          },
-          "durationMs": {
-            "type": "number"
+          "startedAt": {
+            "type": "string",
+            "description": "ISO timestamp when the job was dispatched"
           }
         },
         "required": [
-          "campaignsScanned",
-          "campaignsWithDrift",
-          "campaignsSkippedNoKey",
-          "campaignsFailed",
-          "drift",
-          "durationMs"
+          "runId",
+          "startedAt"
         ]
       },
       "StatsResponse": {
@@ -1827,31 +1782,21 @@
     },
     "/internal/campaigns/reconcile": {
       "post": {
-        "summary": "Reconcile webhook state against Instantly API",
-        "description": "Daily catch-up job that pulls Instantly's per-campaign state (aggregate, per-lead status, per-email records) and promotes any events missed by the webhook into the silver event log. Idempotent — safe to re-run.",
+        "summary": "Dispatch reconcile webhook state against Instantly API",
+        "description": "Daily catch-up job that pulls Instantly's per-campaign state (aggregate, per-lead status, per-email records) and promotes any events missed by the webhook into the silver event log. Idempotent — safe to re-run.\n\nReturns 202 immediately and runs the job in the background. Verify completion via Railway logs (`reconcile: done`) or by polling `instantly_*_raw` bronze tables.",
         "responses": {
-          "200": {
-            "description": "Reconcile complete",
+          "202": {
+            "description": "Reconcile job dispatched (running in background)",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ReconcileResponse"
+                  "$ref": "#/components/schemas/ReconcileAccepted"
                 }
               }
             }
           },
           "401": {
             "description": "Unauthorized"
-          },
-          "500": {
-            "description": "Server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
           }
         }
       }

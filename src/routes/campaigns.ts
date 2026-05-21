@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import { randomUUID } from "crypto";
 import { db } from "../db";
 import { instantlyCampaigns } from "../db/schema";
 import { eq, or } from "drizzle-orm";
@@ -217,16 +218,22 @@ router.post("/check-status", async (_req: Request, res: Response) => {
  * POST /campaigns/reconcile
  * Daily catch-up: pulls Instantly's per-campaign state and promotes any events
  * missed by the webhook into the silver event log. See lib/reconcile.ts.
+ *
+ * Returns 202 Accepted immediately and runs the job in the background.
+ * Synchronous execution exceeded the Cloudflare/Railway 15min proxy timeout
+ * on the GH Actions runner, so the cron caller could not observe completion.
+ * Caller verifies progress via Railway logs (`reconcile: done`) or by polling
+ * the `instantly_*_raw` bronze tables.
  */
-router.post("/reconcile", async (_req: Request, res: Response) => {
-  try {
-    const summary = await reconcileAll();
-    res.json(summary);
-  } catch (error: unknown) {
+router.post("/reconcile", (_req: Request, res: Response) => {
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+  console.log(`[instantly-service] reconcile: dispatched run=${runId}`);
+  res.status(202).json({ runId, startedAt });
+  reconcileAll().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[instantly-service] reconcile failed: ${message}`);
-    res.status(500).json({ error: message });
-  }
+    console.error(`[instantly-service] reconcile run=${runId} failed: ${message}`);
+  });
 });
 
 export default router;
