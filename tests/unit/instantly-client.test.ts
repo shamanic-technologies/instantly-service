@@ -265,4 +265,62 @@ describe("instantly-client", () => {
     await getCampaignAnalytics(TEST_API_KEY, "c2");
     expect(Date.now() - t0).toBeLessThan(500);
   });
+
+  it("happy-path 200 emits no console.log/warn (no log spam)", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([{ id: "c1" }]),
+    });
+
+    const { getCampaignAnalytics } = await import("../../src/lib/instantly-client");
+    await getCampaignAnalytics(TEST_API_KEY, "c1");
+
+    const noisy = (s: ReturnType<typeof vi.spyOn>) =>
+      s.mock.calls.some((args) => String(args[0] ?? "").includes("[instantly-api]"));
+    expect(noisy(logSpy)).toBe(false);
+    expect(noisy(warnSpy)).toBe(false);
+
+    logSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it("429 retries emit no per-attempt console.warn", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockFetch
+      .mockResolvedValueOnce({ ok: false, status: 429, text: () => Promise.resolve("rate") })
+      .mockResolvedValueOnce({ ok: false, status: 429, text: () => Promise.resolve("rate") })
+      .mockResolvedValueOnce({ ok: false, status: 429, text: () => Promise.resolve("rate") });
+
+    const { getCampaignAnalytics } = await import("../../src/lib/instantly-client");
+    await expect(getCampaignAnalytics(TEST_API_KEY, "c1")).rejects.toThrow(/429/);
+
+    const apiWarns = warnSpy.mock.calls.filter((args) =>
+      String(args[0] ?? "").includes("[instantly-api]"),
+    );
+    expect(apiWarns).toHaveLength(0);
+
+    warnSpy.mockRestore();
+  }, 30000);
+
+  it("non-retryable 4xx still emits console.error", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: () => Promise.resolve("bad"),
+    });
+
+    const { getCampaignAnalytics } = await import("../../src/lib/instantly-client");
+    await expect(getCampaignAnalytics(TEST_API_KEY, "c1")).rejects.toThrow(/400/);
+
+    const apiErrors = errSpy.mock.calls.filter((args) =>
+      String(args[0] ?? "").includes("[instantly-api]"),
+    );
+    expect(apiErrors.length).toBeGreaterThanOrEqual(1);
+
+    errSpy.mockRestore();
+  }, 30000);
 });
