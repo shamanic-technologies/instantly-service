@@ -9,6 +9,7 @@ const TEST_API_KEY = "test-api-key";
 describe("instantly-client", () => {
   beforeEach(() => {
     mockFetch.mockClear();
+    vi.resetModules();
   });
 
   it("should export createCampaign function", async () => {
@@ -220,5 +221,48 @@ describe("instantly-client", () => {
     if (options.body === undefined) {
       expect(options.headers["Content-Type"]).toBeUndefined();
     }
+  });
+
+  it("listEmails serializes /emails requests via ≥3s throttle gate", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(global, "setTimeout");
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ items: [] }),
+    });
+
+    const { listEmails } = await import("../../src/lib/instantly-client");
+
+    const p1 = listEmails(TEST_API_KEY, { campaignId: "c1" });
+    await vi.runAllTimersAsync();
+    await p1;
+
+    const p2 = listEmails(TEST_API_KEY, { campaignId: "c2" });
+    await vi.runAllTimersAsync();
+    await p2;
+
+    const delays = setTimeoutSpy.mock.calls
+      .map(([, ms]) => Number(ms))
+      .filter((d) => !Number.isNaN(d));
+    expect(delays.some((d) => d >= 3000)).toBe(true);
+
+    setTimeoutSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("non-/emails paths are not throttled", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([]),
+    });
+
+    const { getCampaignAnalytics } = await import("../../src/lib/instantly-client");
+
+    const t0 = Date.now();
+    await getCampaignAnalytics(TEST_API_KEY, "c1");
+    await getCampaignAnalytics(TEST_API_KEY, "c2");
+    expect(Date.now() - t0).toBeLessThan(500);
   });
 });
