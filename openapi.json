@@ -326,6 +326,10 @@
                 "type": "number",
                 "description": "Leads who unsubscribed (COUNT DISTINCT lead_email)"
               },
+              "notSending": {
+                "type": "number",
+                "description": "Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic (COUNT DISTINCT lead_email)"
+              },
               "repliesPositive": {
                 "type": "number",
                 "description": "interested + meetingBooked + closed"
@@ -403,6 +407,7 @@
               "bounced",
               "clicked",
               "unsubscribed",
+              "notSending",
               "repliesPositive",
               "repliesNegative",
               "repliesNeutral",
@@ -615,6 +620,10 @@
                       "type": "number",
                       "description": "Leads who unsubscribed (COUNT DISTINCT lead_email)"
                     },
+                    "notSending": {
+                      "type": "number",
+                      "description": "Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic (COUNT DISTINCT lead_email)"
+                    },
                     "repliesPositive": {
                       "type": "number",
                       "description": "interested + meetingBooked + closed"
@@ -692,6 +701,7 @@
                     "bounced",
                     "clicked",
                     "unsubscribed",
+                    "notSending",
                     "repliesPositive",
                     "repliesNegative",
                     "repliesNeutral",

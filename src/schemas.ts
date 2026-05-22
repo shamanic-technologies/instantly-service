@@ -413,6 +413,7 @@ const RecipientStatsSchema = z.object({
   bounced: z.number().describe("Leads with at least one bounce (COUNT DISTINCT lead_email)"),
   clicked: z.number().describe("Leads who clicked at least one link (COUNT DISTINCT lead_email)"),
   unsubscribed: z.number().describe("Leads who unsubscribed (COUNT DISTINCT lead_email)"),
+  notSending: z.number().describe("Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic (COUNT DISTINCT lead_email)"),
 }).merge(RepliesAggregatesSchema);
 
 const StepStatsSchema = z.object({

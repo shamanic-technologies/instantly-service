@@ -448,6 +448,76 @@ describe("GET /stats", () => {
     }
   });
 
+  // ─── notSending recipient stat ──────────────────────────────────────────────
+
+  it("should return notSending count from queryCampaignAggregates", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [makeStatsRow({ esSent: 50, rsSent: 30 })],
+    });
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ emailsContacted: 100, notSending: 17 }],
+    });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+
+    const response = await request(app).get("/stats").set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    expect(response.body.recipientStats.notSending).toBe(17);
+    expect(response.body.recipientStats.contacted).toBe(100);
+  });
+
+  it("should default notSending to 0 when DB returns no notSending field", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+
+    const response = await request(app).get("/stats").set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    expect(response.body.recipientStats.notSending).toBe(0);
+  });
+
+  it("should use COUNT DISTINCT lead_email FILTER (not_sending_status) in aggregates query", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0, notSending: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+
+    await request(app).get("/stats").set(identityHeadersObj);
+
+    // 2nd call is queryCampaignAggregates (1st = events, 3rd = step)
+    const aggregatesSql = extractSqlText(mockExecute.mock.calls[1][0]);
+    expect(aggregatesSql).toContain("COUNT(DISTINCT c.lead_email)");
+    expect(aggregatesSql).toContain("not_sending_status IS NOT NULL");
+  });
+
+  it("should propagate notSending per-group when grouping by brandId", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { groupKey: "brand-1", esSent: 10, esOpened: 5, esClicked: 0, esBounced: 0, rsSent: 5, rsOpened: 3, rsClicked: 0, rsBounced: 0, rdInterested: 0, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+      ],
+    });
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ groupKey: "brand-1", emailsContacted: 5, notSending: 2 }],
+    });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .query({ groupBy: "brandId" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    expect(response.body.groups[0].recipientStats.notSending).toBe(2);
+    expect(response.body.groups[0].recipientStats.contacted).toBe(5);
+  });
+
   // ─── groupBy: featureSlug ───────────────────────────────────────────────────
 
   it("should support groupBy featureSlug", async () => {

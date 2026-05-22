@@ -54,6 +54,7 @@ Cold email outreach service via [Instantly.ai](https://instantly.ai/) API V2. Ha
 | `instantly_analytics_raw` | Bronze: `/campaigns/analytics` responses |
 | `instantly_emails_raw` | Bronze: `/emails` records (individual emails with step) |
 | `instantly_leads_raw` | Bronze: `/leads/list` per-lead snapshots |
+| `instantly_campaigns_config_raw` | Bronze: `GET /campaigns/{id}` full config snapshots (used to derive `not_sending_status`) |
 
 ### Funnel stages (4-stage)
 
@@ -62,7 +63,16 @@ Cold email outreach service via [Instantly.ai](https://instantly.ai/) API V2. Ha
 | 2 — contacted | `contacted` (default) | row exists in `instantly_campaigns` (POST /send success) |
 | 3 — sent | `sent` | `instantly_events.event_type='email_sent'` (webhook from Instantly) |
 | 4 — delivered | (derived) | sent AND NOT bounced — computed in queries, never stored |
-| terminal | `bounced` / `replied` / `unsubscribed` / `failed` | webhook events |
+| terminal | `bounced` / `replied` / `unsubscribed` / `failed` / `cancelled` | webhook events; `failed` set by campaign-error-handler; `cancelled` reserved for the stuck-lead retry job (writes leads whose campaign is deliberately killed because Instantly never dispatched — typically `not_sending_status` flagged) |
+
+### Observability — `not_sending_status`
+
+Instantly exposes a per-campaign diagnostic `not_sending_status` (e.g. `4` = capacity-blocked). When set, Instantly will not dispatch emails for that campaign. The reconcile job pulls `GET /campaigns/{id}` per campaign per cycle (bronze: `instantly_campaigns_config_raw`) and promotes the field to silver columns on `instantly_campaigns`:
+
+- `not_sending_status` (integer, NULL = sending normally)
+- `not_sending_status_seen_at` (timestamp of last observation)
+
+`GET /stats` surfaces `recipientStats.notSending` = `COUNT(DISTINCT lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)` scoped to the request's filters.
 
 ## Setup
 
