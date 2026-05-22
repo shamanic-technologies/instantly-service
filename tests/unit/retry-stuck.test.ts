@@ -15,18 +15,22 @@ vi.mock("../../src/db/schema", () => ({
 }));
 
 const mockResolveKey = vi.fn();
-const mockKeyServiceError = class KeyServiceError extends Error {
-  statusCode: number;
-  constructor(statusCode: number, message: string) {
-    super(message);
-    this.name = "KeyServiceError";
-    this.statusCode = statusCode;
+
+const { MockKeyServiceError } = vi.hoisted(() => {
+  class MockKeyServiceError extends Error {
+    statusCode: number;
+    constructor(statusCode: number, message: string) {
+      super(message);
+      this.name = "KeyServiceError";
+      this.statusCode = statusCode;
+    }
   }
-};
+  return { MockKeyServiceError };
+});
 
 vi.mock("../../src/lib/key-client", () => ({
   resolveInstantlyApiKey: (...args: unknown[]) => mockResolveKey(...args),
-  KeyServiceError: mockKeyServiceError,
+  KeyServiceError: MockKeyServiceError,
 }));
 
 const mockGetCampaign = vi.fn();
@@ -149,7 +153,7 @@ describe("runRetryStuck", () => {
 
   it("skips org when key resolution fails", async () => {
     mockSelect([row()]);
-    mockResolveKey.mockRejectedValueOnce(new mockKeyServiceError(404, "key not configured"));
+    mockResolveKey.mockRejectedValueOnce(new MockKeyServiceError(404, "key not configured"));
 
     const summary = await runRetryStuck();
 
