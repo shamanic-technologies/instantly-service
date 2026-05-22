@@ -141,27 +141,36 @@ export async function handleCampaignError(
     );
   }
 
-  // 5. Send admin notification (non-fatal)
-  try {
-    await sendEmail(
-      {
-        appId: "instantly-service",
-        eventType: "campaign-error",
-        recipientEmail: ADMIN_EMAIL,
-        metadata: {
-          campaignId: campaign.campaignId || "unknown",
-          leadEmail: campaign.leadEmail || "unknown",
-          instantlyCampaignId,
-          errorReason: reason,
+  // 5. Send admin notification (non-fatal).
+  //
+  // Suppress for the `cancelled` terminal path: that's the retry-stuck cron,
+  // which can cancel hundreds-to-thousands of rows per sweep. One email per
+  // row floods the admin inbox without adding signal — the sweep summary
+  // log line + the DB row's `delivery_status='cancelled'` are the audit
+  // trail. Inline `failed` errors still email because each is a one-off
+  // real campaign failure that warrants attention.
+  if (terminalStatus !== "cancelled") {
+    try {
+      await sendEmail(
+        {
+          appId: "instantly-service",
+          eventType: "campaign-error",
+          recipientEmail: ADMIN_EMAIL,
+          metadata: {
+            campaignId: campaign.campaignId || "unknown",
+            leadEmail: campaign.leadEmail || "unknown",
+            instantlyCampaignId,
+            errorReason: reason,
+          },
         },
-      },
-      identity,
-    );
-    console.log(`[campaign-error] Admin notification sent to ${ADMIN_EMAIL}`);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(
-      `[campaign-error] Failed to send admin notification: ${message}`,
-    );
+        identity,
+      );
+      console.log(`[campaign-error] Admin notification sent to ${ADMIN_EMAIL}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[campaign-error] Failed to send admin notification: ${message}`,
+      );
+    }
   }
 }
