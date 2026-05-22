@@ -1,6 +1,6 @@
 /**
  * Retry-stuck job — detects campaigns that Instantly is refusing to send and
- * cancels the customer's reserved spend.
+ * re-dispatches the lead onto a fresh healthy account when possible.
  *
  * Selection: rows with `delivery_status='contacted' AND status='active'` that
  * are older than 24h, oldest first, capped at MAX_ROWS_PER_RUN per sweep so a
@@ -9,45 +9,57 @@
  * Concurrency: a Postgres advisory lock (`pg_try_advisory_lock(8729, 1)`)
  * gates the sweep so overlapping cron ticks can't double-cancel + double-
  * refund the same row. The second caller short-circuits with
- * `{ skipped: "sweep_in_progress" }` and releases nothing. The lock is held
- * for the full sweep duration (including background processing after the
- * HTTP 202 returns) and released in a `finally` block.
+ * `{ skipped: "sweep_in_progress" }`. Released in `finally`.
  *
  * Per row:
- *   1. Resolve the org's Instantly API key (once per org).
+ *   1. Resolve the org's Instantly API key (once per org, with its keySource).
  *   2. Fetch the live campaign from Instantly. If `not_sending_status IS NULL`,
  *      the campaign is still actively trying — leave it alone.
- *   3. If `metadata.retryCount >= MAX_RETRIES`, leave it alone (idempotency cap).
- *   4. Pause the Instantly campaign (`status=paused`) to stop further dispatch.
- *   5. Write the observed `not_sending_status` + seen-at onto the row so
- *      observers (status endpoint, dashboards) can see the diagnostic
- *      without having to re-fetch Instantly.
- *   6. Delegate to `handleCampaignError(..., { terminalStatus: 'cancelled' })`
- *      to cancel both actual+provisioned costs, fail step runs. The handler
- *      suppresses its admin email on the cancelled path so the cron sweep
- *      does not flood the inbox.
+ *   3. Pause the original Instantly campaign (`status=paused`) so no further
+ *      dispatch can race the next steps.
+ *   4. Write the observed `not_sending_status` onto the row (diagnostic).
+ *   5. **Re-dispatch attempt** — read the sequence from the failing Instantly
+ *      campaign, strip the old account's signature from each body, look up the
+ *      lead's profile data locally, and call `dispatchLeadToInstantly()` to
+ *      provision a new campaign on a different healthy account.
+ *      - On success: cancel the old cost rows (refund), provision fresh costs
+ *        on new step runs (re-charge), mute the local row in place to point at
+ *        the new Instantly campaign, append a `redispatchHistory` entry. Row's
+ *        `delivery_status` stays `'contacted'`.
+ *      - On failure (no healthy account or all attempts hit
+ *        `not_sending_status`): fall through to terminal cancellation via
+ *        `handleCampaignError(cancelled)` — refund only, no re-charge.
  *
- * Throughput: rows are processed in `Promise.all` batches of BATCH_SIZE. The
- * Instantly client's internal throttle (`/emails` 20 req/min, general 600
- * req/min) paces the concurrent calls — bursts within a batch flatten out
- * to the throttle's min-interval gate.
+ * Throughput: rows are processed in `Promise.all` batches of BATCH_SIZE per
+ * org. The instantly-client throttle paces concurrent API calls below the
+ * 600 req/min general cap.
  *
  * The endpoint that drives this lives at POST /internal/campaigns/retry-stuck
  * (cron-driven, daily 02:00 UTC) in routes/campaigns.ts.
  */
 
 import { db } from "../db";
-import { instantlyCampaigns } from "../db/schema";
-import { eq, sql } from "drizzle-orm";
+import { instantlyCampaigns, instantlyLeads, sequenceCosts } from "../db/schema";
+import { and, eq, or, sql } from "drizzle-orm";
 import {
   getCampaign as getInstantlyCampaign,
   updateCampaignStatus as updateInstantlyStatus,
+  type Lead,
 } from "./instantly-client";
 import { resolveInstantlyApiKey, KeyServiceError } from "./key-client";
 import { handleCampaignError } from "./campaign-error-handler";
-
-/** Max times a single (campaignId, leadEmail) row can be processed by this job. */
-export const MAX_RETRIES = 2;
+import {
+  dispatchLeadToInstantly,
+  stripAccountSignature,
+  type SortedSequenceStep,
+} from "./dispatch-lead";
+import {
+  addCosts,
+  createRun,
+  updateCostStatus,
+  updateRun,
+  type IdentityContext,
+} from "./runs-client";
 
 /** Age (hours) a row must reach before the cron picks it up. */
 export const STUCK_AGE_HOURS = 24;
@@ -65,8 +77,8 @@ const SWEEP_LOCK_KEY_2 = 1;
 export interface RetryStuckSummary {
   scanned: number;
   cancelled: number;
+  redispatched: number;
   stillSending: number;
-  capped: number;
   skippedNoKey: number;
   failed: number;
   durationMs: number;
@@ -80,6 +92,9 @@ interface StuckCampaignRow {
   campaignId: string | null;
   leadEmail: string | null;
   orgId: string | null;
+  userId: string | null;
+  runId: string | null;
+  brandIds: string[] | null;
   metadata: Record<string, unknown> | null;
 }
 
@@ -107,6 +122,9 @@ async function selectStuckRows(): Promise<StuckCampaignRow[]> {
       campaign_id           AS "campaignId",
       lead_email            AS "leadEmail",
       org_id                AS "orgId",
+      user_id               AS "userId",
+      run_id                AS "runId",
+      brand_ids             AS "brandIds",
       metadata
     FROM instantly_campaigns
     WHERE delivery_status = 'contacted'
@@ -119,9 +137,9 @@ async function selectStuckRows(): Promise<StuckCampaignRow[]> {
   return rows as StuckCampaignRow[];
 }
 
-function getRetryCount(metadata: Record<string, unknown> | null): number {
+function getRedispatchCount(metadata: Record<string, unknown> | null): number {
   if (!metadata) return 0;
-  const raw = metadata.retryCount;
+  const raw = metadata.redispatchCount;
   if (typeof raw === "number" && Number.isFinite(raw)) return raw;
   return 0;
 }
@@ -130,8 +148,8 @@ function emptySummary(durationMs: number): RetryStuckSummary {
   return {
     scanned: 0,
     cancelled: 0,
+    redispatched: 0,
     stillSending: 0,
-    capped: 0,
     skippedNoKey: 0,
     failed: 0,
     durationMs,
@@ -140,21 +158,281 @@ function emptySummary(durationMs: number): RetryStuckSummary {
 
 interface RowOutcome {
   cancelled: number;
+  redispatched: number;
   stillSending: number;
-  capped: number;
   failed: number;
+}
+
+/**
+ * Translate the Instantly campaign config returned by `getCampaign` into the
+ * normalized `SortedSequenceStep[]` shape expected by `dispatchLeadToInstantly`.
+ *
+ * Instantly's per-step `delay` is "days AFTER this step before the NEXT one".
+ * Our `daysSinceLastStep` on step N is "days BEFORE step N (since step N-1)".
+ * So `sortedSequence[i].daysSinceLastStep = liveSteps[i-1].delay` for `i >= 1`,
+ * and `0` for the first step.
+ *
+ * Each body has the previous account's signature appended (`\n\n--\n<sig>`);
+ * we strip that so the new account's signature can be re-injected by
+ * `buildSequenceSteps` inside the dispatch helper.
+ */
+function extractSequenceFromLive(
+  live: Record<string, unknown>,
+): { subject: string; sortedSequence: SortedSequenceStep[] } | null {
+  const sequences = live.sequences as
+    | Array<{ steps?: Array<{ delay?: number; variants?: Array<{ subject?: string; body?: string }> }> }>
+    | undefined;
+  const steps = sequences?.[0]?.steps;
+  if (!steps || steps.length === 0) return null;
+
+  const subject = steps[0]?.variants?.[0]?.subject ?? "(no subject)";
+
+  const sortedSequence: SortedSequenceStep[] = steps.map((s, i) => ({
+    step: i + 1,
+    bodyHtml: stripAccountSignature(s.variants?.[0]?.body ?? ""),
+    daysSinceLastStep: i === 0 ? 0 : steps[i - 1]?.delay ?? 0,
+  }));
+
+  return { subject, sortedSequence };
+}
+
+/**
+ * Cancel the (provisioned | actual) cost rows tied to (campaignId, leadEmail)
+ * via runs-service (refunds the customer) and flip the local rows to
+ * `cancelled`. Returns the count of cost rows transitioned.
+ */
+async function cancelExistingCosts(
+  row: StuckCampaignRow,
+  identity: IdentityContext,
+): Promise<number> {
+  if (!row.campaignId || !row.leadEmail) return 0;
+
+  const existing = await db
+    .select()
+    .from(sequenceCosts)
+    .where(
+      and(
+        eq(sequenceCosts.campaignId, row.campaignId),
+        eq(sequenceCosts.leadEmail, row.leadEmail),
+        or(
+          eq(sequenceCosts.status, "provisioned"),
+          eq(sequenceCosts.status, "actual"),
+        ),
+      ),
+    );
+
+  for (const cost of existing) {
+    const costIdentity = { ...identity, runId: cost.runId };
+    await updateCostStatus(cost.runId, cost.costId, "cancelled", costIdentity);
+    await db
+      .update(sequenceCosts)
+      .set({ status: "cancelled", updatedAt: new Date() })
+      .where(eq(sequenceCosts.id, cost.id));
+  }
+
+  return existing.length;
+}
+
+/**
+ * Provision fresh cost rows for each step of the re-dispatched campaign on a
+ * new per-step run. Mirrors the /send entry-point pattern.
+ */
+async function provisionFreshCostsForRedispatch(
+  row: StuckCampaignRow,
+  parentIdentity: IdentityContext,
+  keySource: "platform" | "org",
+  stepCount: number,
+): Promise<void> {
+  if (!row.campaignId || !row.leadEmail) return;
+
+  for (let step = 1; step <= stepCount; step++) {
+    const stepRun = await createRun(
+      {
+        serviceName: "instantly-service",
+        taskName: `email-send-step-${step}`,
+        brandId: row.brandIds?.join(",") ?? undefined,
+        campaignId: row.campaignId,
+      },
+      parentIdentity,
+    );
+
+    const stepIdentity: IdentityContext = { ...parentIdentity, runId: stepRun.id };
+
+    const costResult = await addCosts(
+      stepRun.id,
+      [
+        {
+          costName: "instantly-account-email-sent",
+          quantity: 1,
+          costSource: keySource,
+          status: "provisioned",
+        },
+        {
+          costName: "instantly-domain-email-sent",
+          quantity: 1,
+          costSource: keySource,
+          status: "provisioned",
+        },
+      ],
+      stepIdentity,
+    );
+
+    for (const cost of costResult.costs) {
+      await db.insert(sequenceCosts).values({
+        campaignId: row.campaignId,
+        leadEmail: row.leadEmail,
+        step,
+        runId: stepRun.id,
+        costId: cost.id,
+        status: "provisioned",
+      });
+    }
+
+    await updateRun(stepRun.id, "completed", stepIdentity);
+  }
+}
+
+interface RedispatchOutcome {
+  ok: boolean;
+  newInstantlyCampaignId?: string;
+  accountEmail?: string;
+  reason?: string;
+}
+
+async function tryRedispatch(
+  apiKey: string,
+  keySource: "platform" | "org",
+  row: StuckCampaignRow,
+  live: Record<string, unknown>,
+): Promise<RedispatchOutcome> {
+  if (!row.campaignId || !row.leadEmail || !row.orgId) {
+    return { ok: false, reason: "row_missing_identifiers" };
+  }
+
+  const seq = extractSequenceFromLive(live);
+  if (!seq) {
+    return { ok: false, reason: "no_sequence_on_live_campaign" };
+  }
+
+  // Look up the lead's profile data (firstName/lastName/etc.) from the local
+  // instantly_leads row originally inserted at /send time (or by a previous
+  // re-dispatch). Matches against the CURRENT instantlyCampaignId — every
+  // successful re-dispatch also writes a fresh instantly_leads row for the
+  // new campaign so future re-dispatches still resolve.
+  const [storedLead] = await db
+    .select()
+    .from(instantlyLeads)
+    .where(eq(instantlyLeads.instantlyCampaignId, row.instantlyCampaignId))
+    .limit(1);
+
+  if (!storedLead) {
+    return { ok: false, reason: "lead_profile_not_found" };
+  }
+
+  const lead: Lead = {
+    email: storedLead.email,
+    first_name: storedLead.firstName ?? undefined,
+    last_name: storedLead.lastName ?? undefined,
+    company_name: storedLead.companyName ?? undefined,
+    variables: (storedLead.customVariables as Record<string, string> | null) ?? undefined,
+  };
+
+  const redispatchCount = getRedispatchCount(row.metadata);
+  const campaignName = `Campaign ${row.campaignId} (retry ${redispatchCount + 1})`;
+
+  const dispatch = await dispatchLeadToInstantly({
+    apiKey,
+    campaignName,
+    subject: seq.subject,
+    sortedSequence: seq.sortedSequence,
+    lead,
+  });
+
+  if (!dispatch.ok) {
+    return { ok: false, reason: dispatch.reason };
+  }
+
+  // Identity for cost & run writes: prefer the row's userId so cost lineage
+  // points back to the originating user, fall back to the system uuid when
+  // missing (legacy rows pre-dating the column).
+  const identity: IdentityContext = {
+    orgId: row.orgId,
+    userId: row.userId ?? "00000000-0000-0000-0000-000000000000",
+    runId: row.runId ?? undefined,
+  };
+
+  // 1. Cancel old costs first (refund customer for the failed attempt).
+  await cancelExistingCosts(row, identity);
+
+  // 2. Provision fresh costs on new step runs (re-charge for the new attempt).
+  await provisionFreshCostsForRedispatch(
+    row,
+    identity,
+    keySource,
+    seq.sortedSequence.length,
+  );
+
+  // 3. Mirror the lead onto the new Instantly campaign so the next sweep can
+  // still resolve the lead's profile data.
+  await db
+    .insert(instantlyLeads)
+    .values({
+      instantlyCampaignId: dispatch.value.instantlyCampaignId,
+      email: storedLead.email,
+      firstName: storedLead.firstName,
+      lastName: storedLead.lastName,
+      companyName: storedLead.companyName,
+      customVariables: storedLead.customVariables,
+      orgId: row.orgId,
+      runId: null,
+    })
+    .onConflictDoNothing();
+
+  // 4. Mute the campaign row in place: new Instantly campaign ID, NSS cleared,
+  // metadata bumped with the redispatch history entry. delivery_status stays
+  // `'contacted'` — the lead is back to actively being dispatched.
+  const existingMetadata = (row.metadata ?? {}) as Record<string, unknown>;
+  const existingHistory = Array.isArray(existingMetadata.redispatchHistory)
+    ? (existingMetadata.redispatchHistory as Array<Record<string, unknown>>)
+    : [];
+
+  await db
+    .update(instantlyCampaigns)
+    .set({
+      instantlyCampaignId: dispatch.value.instantlyCampaignId,
+      name: campaignName,
+      notSendingStatus: null,
+      notSendingStatusSeenAt: null,
+      metadata: {
+        ...existingMetadata,
+        redispatchCount: redispatchCount + 1,
+        redispatchHistory: [
+          ...existingHistory,
+          {
+            from: row.instantlyCampaignId,
+            to: dispatch.value.instantlyCampaignId,
+            account: dispatch.value.account.email,
+            at: new Date().toISOString(),
+          },
+        ],
+      },
+      updatedAt: new Date(),
+    })
+    .where(eq(instantlyCampaigns.id, row.id));
+
+  return {
+    ok: true,
+    newInstantlyCampaignId: dispatch.value.instantlyCampaignId,
+    accountEmail: dispatch.value.account.email,
+  };
 }
 
 async function processRow(
   apiKey: string,
+  keySource: "platform" | "org",
   row: StuckCampaignRow,
 ): Promise<RowOutcome> {
   try {
-    const retryCount = getRetryCount(row.metadata);
-    if (retryCount >= MAX_RETRIES) {
-      return { cancelled: 0, stillSending: 0, capped: 1, failed: 0 };
-    }
-
     const live = (await getInstantlyCampaign(
       apiKey,
       row.instantlyCampaignId,
@@ -162,24 +440,21 @@ async function processRow(
 
     const notSendingStatus = live.not_sending_status;
     if (notSendingStatus === undefined || notSendingStatus === null) {
-      return { cancelled: 0, stillSending: 1, capped: 0, failed: 0 };
+      return { cancelled: 0, redispatched: 0, stillSending: 1, failed: 0 };
     }
 
-    // Pause the Instantly campaign before cancelling costs so no further
-    // dispatch can race the cancel write.
+    // Pause the original Instantly campaign before any cancel/re-dispatch
+    // work so no in-flight Instantly send can race us.
     try {
       await updateInstantlyStatus(apiKey, row.instantlyCampaignId, "paused");
     } catch (pauseErr: unknown) {
       const msg = pauseErr instanceof Error ? pauseErr.message : String(pauseErr);
       console.warn(
-        `[instantly-service] retry-stuck: failed to pause campaign=${row.instantlyCampaignId}: ${msg} — proceeding with cost cancel`,
+        `[instantly-service] retry-stuck: failed to pause campaign=${row.instantlyCampaignId}: ${msg} — proceeding`,
       );
     }
 
-    // Persist the observed diagnostic onto the row BEFORE flipping
-    // delivery_status. Idempotent: re-running the sweep against the same
-    // row writes the same value (and handleCampaignError's idempotency
-    // guard prevents the second cancel).
+    // Persist the observed diagnostic onto the row for dashboards/queries.
     const nssNumeric = typeof notSendingStatus === "number" ? notSendingStatus : null;
     await db
       .update(instantlyCampaigns)
@@ -189,12 +464,26 @@ async function processRow(
       })
       .where(eq(instantlyCampaigns.id, row.id));
 
-    const reason = `not_sending_status: ${JSON.stringify(notSendingStatus)}`;
+    // Try re-dispatching the lead onto a different healthy account.
+    const redispatch = await tryRedispatch(apiKey, keySource, row, live);
+
+    if (redispatch.ok) {
+      console.log(
+        `[instantly-service] retry-stuck: re-dispatched row=${row.id} ` +
+          `from=${row.instantlyCampaignId} to=${redispatch.newInstantlyCampaignId} ` +
+          `account=${redispatch.accountEmail}`,
+      );
+      return { cancelled: 0, redispatched: 1, stillSending: 0, failed: 0 };
+    }
+
+    // Re-dispatch impossible — fall through to terminal cancellation.
+    const reason = `not_sending_status: ${JSON.stringify(notSendingStatus)} (redispatch_failed: ${redispatch.reason})`;
     await handleCampaignError(row.instantlyCampaignId, reason, {
       terminalStatus: "cancelled",
       extraMetadata: {
         notSendingStatus,
-        retryCount: retryCount + 1,
+        redispatchCount: getRedispatchCount(row.metadata),
+        lastRedispatchFailure: redispatch.reason,
       },
     });
 
@@ -202,13 +491,13 @@ async function processRow(
       `[instantly-service] retry-stuck: cancelled campaign=${row.instantlyCampaignId} ` +
         `lead=${row.leadEmail} reason=${reason}`,
     );
-    return { cancelled: 1, stillSending: 0, capped: 0, failed: 0 };
+    return { cancelled: 1, redispatched: 0, stillSending: 0, failed: 0 };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(
       `[instantly-service] retry-stuck: row=${row.instantlyCampaignId} failed: ${message}`,
     );
-    return { cancelled: 0, stillSending: 0, capped: 0, failed: 1 };
+    return { cancelled: 0, redispatched: 0, stillSending: 0, failed: 1 };
   }
 }
 
@@ -245,8 +534,8 @@ export async function runRetryStuck(): Promise<RetryStuckSummary> {
 
     let scanned = 0;
     let cancelled = 0;
+    let redispatched = 0;
     let stillSending = 0;
-    let capped = 0;
     let skippedNoKey = 0;
     let failed = 0;
 
@@ -260,6 +549,7 @@ export async function runRetryStuck(): Promise<RetryStuckSummary> {
 
     for (const [orgId, orgRows] of byOrg) {
       let apiKey: string;
+      let keySource: "platform" | "org";
       try {
         if (!orgId) throw new Error("Campaign missing orgId");
         const keyResult = await resolveInstantlyApiKey(orgId, "system", {
@@ -267,6 +557,7 @@ export async function runRetryStuck(): Promise<RetryStuckSummary> {
           path: "/internal/campaigns/retry-stuck",
         });
         apiKey = keyResult.key;
+        keySource = keyResult.keySource;
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         const isKeyMissing = error instanceof KeyServiceError && error.statusCode === 404;
@@ -278,18 +569,18 @@ export async function runRetryStuck(): Promise<RetryStuckSummary> {
         continue;
       }
 
-      // Parallel batches per org. Inside a batch, the Instantly client's
-      // throttle paces the concurrent calls below the rate cap.
+      // Parallel batches per org. The instantly-client throttle paces the
+      // concurrent Instantly API calls within each batch.
       for (let i = 0; i < orgRows.length; i += BATCH_SIZE) {
         const batch = orgRows.slice(i, i + BATCH_SIZE);
         const outcomes = await Promise.all(
-          batch.map((row) => processRow(apiKey, row)),
+          batch.map((row) => processRow(apiKey, keySource, row)),
         );
         for (const outcome of outcomes) {
           scanned++;
           cancelled += outcome.cancelled;
+          redispatched += outcome.redispatched;
           stillSending += outcome.stillSending;
-          capped += outcome.capped;
           failed += outcome.failed;
         }
       }
@@ -298,15 +589,15 @@ export async function runRetryStuck(): Promise<RetryStuckSummary> {
     const durationMs = Date.now() - startedAt;
     console.log(
       `[instantly-service] retry-stuck: done scanned=${scanned} cancelled=${cancelled} ` +
-        `stillSending=${stillSending} capped=${capped} skippedNoKey=${skippedNoKey} ` +
-        `failed=${failed} duration=${durationMs}ms`,
+        `redispatched=${redispatched} stillSending=${stillSending} ` +
+        `skippedNoKey=${skippedNoKey} failed=${failed} duration=${durationMs}ms`,
     );
 
     return {
       scanned,
       cancelled,
+      redispatched,
       stillSending,
-      capped,
       skippedNoKey,
       failed,
       durationMs,

@@ -7,16 +7,12 @@ import {
 } from "../db/schema";
 import { eq, and, ne, isNotNull } from "drizzle-orm";
 import {
-  createCampaign as createInstantlyCampaign,
-  updateCampaign as updateInstantlyCampaign,
-  getCampaign as getInstantlyCampaign,
-  addLeads as addInstantlyLeads,
-  updateCampaignStatus,
-  listAccounts,
   Lead,
-  Account,
-  SequenceStep,
 } from "../lib/instantly-client";
+import {
+  dispatchLeadToInstantly,
+  MAX_DISPATCH_RETRIES,
+} from "../lib/dispatch-lead";
 import {
   createRun,
   updateRun,
@@ -40,83 +36,6 @@ function getTracking(res: Response): TrackingHeaders {
 
 const router = Router();
 
-const MAX_SEND_RETRIES = 3;
-
-/**
- * Pick an account from the list using a single-pool weighted random:
- * weight = max(1, stat_warmup_score ?? 0). Accounts without a score still
- * get a baseline weight of 1, so they remain eligible while warmer accounts
- * are favoured proportionally. Falls back to uniform random when no account
- * has a score (all weights collapse to 1).
- */
-const BLOCKED_DOMAINS = [
-  "arcadiaquest.org",
-];
-
-export function pickRandomAccount(accounts: Account[]): Account {
-  if (accounts.length === 0) {
-    throw new Error("No accounts available");
-  }
-
-  const weights = accounts.map((a) => Math.max(1, a.stat_warmup_score ?? 0));
-  const total = weights.reduce((sum, w) => sum + w, 0);
-  const target = Math.random() * total;
-
-  let acc = 0;
-  for (let i = 0; i < accounts.length; i++) {
-    acc += weights[i];
-    if (target < acc) return accounts[i];
-  }
-
-  return accounts[accounts.length - 1];
-}
-
-/**
- * Inject the selected account's signature into the email body.
- *
- * {{accountSignature}} only resolves in the Instantly UI — campaigns created
- * via the API send it as literal text.  Instead we use the assigned account's
- * `signature` field and splice it in directly.
- */
-export function buildEmailBodyWithSignature(
-  body: string,
-  account: Account,
-): string {
-  const signature = account.signature?.trim() || "";
-
-  if (!signature) {
-    console.warn(
-      `[send] Account ${account.email} has no signature configured — email will be sent without signature`,
-    );
-    return body.replace(/\n*\{\{accountSignature\}\}/g, "");
-  }
-
-  if (body.includes("{{accountSignature}}")) {
-    return body.replace("{{accountSignature}}", `--\n${signature}`);
-  }
-
-  return `${body}\n\n--\n${signature}`;
-}
-
-/**
- * Build Instantly sequence steps from the request sequence.
- * Injects the account signature into every step's bodyHtml.
- * All steps share the same subject (Instantly handles Re: threading for follow-ups).
- */
-export function buildSequenceSteps(
-  subject: string,
-  sequence: { step: number; bodyHtml: string; daysSinceLastStep: number }[],
-  account: Account,
-): SequenceStep[] {
-  return sequence
-    .sort((a, b) => a.step - b.step)
-    .map((s) => ({
-      subject,
-      bodyHtml: buildEmailBodyWithSignature(s.bodyHtml, account),
-      daysSinceLastStep: s.daysSinceLastStep,
-    }));
-}
-
 /**
  * Check if a campaign already exists for this (campaignId, leadEmail) pair.
  */
@@ -134,63 +53,6 @@ async function findExistingCampaign(campaignId: string, leadEmail: string) {
 }
 
 /**
- * Create an Instantly campaign, assign an account, add a lead, and activate it.
- * Returns the instantlyCampaignId on success, or null if not_sending_status detected.
- */
-async function tryCreateAndActivateCampaign(
-  apiKey: string,
-  campaignId: string,
-  account: Account,
-  steps: SequenceStep[],
-  lead: Lead,
-): Promise<{ instantlyCampaignId: string; added: number } | null> {
-  console.log(`[send] Creating new Instantly campaign for ${campaignId} with account ${account.email}`);
-  const instantlyCampaign = await createInstantlyCampaign(apiKey, {
-    name: `Campaign ${campaignId}`,
-    steps,
-  });
-  console.log(`[send] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`);
-
-  // Assign the selected account via PATCH
-  console.log(`[send] Assigning account ${account.email} to campaign ${instantlyCampaign.id}`);
-  await updateInstantlyCampaign(apiKey, instantlyCampaign.id, {
-    email_list: [account.email],
-    open_tracking: true,
-    link_tracking: true,
-    insert_unsubscribe_header: true,
-    stop_on_reply: true,
-  });
-
-  // Verify accounts were assigned
-  const verified = await getInstantlyCampaign(apiKey, instantlyCampaign.id) as unknown as Record<string, unknown>;
-  console.log(`[send] Verify after PATCH — email_list=${JSON.stringify(verified.email_list)} not_sending_status=${JSON.stringify(verified.not_sending_status)}`);
-
-  // Add lead
-  console.log(`[send] Adding lead ${lead.email} to instantly campaign ${instantlyCampaign.id}`);
-  const result = await addInstantlyLeads(apiKey, {
-    campaign_id: instantlyCampaign.id,
-    leads: [lead],
-  });
-  console.log(`[send] addLeads result: added=${result.added}`);
-
-  // Activate
-  console.log(`[send] Activating campaign ${instantlyCampaign.id}`);
-  await updateCampaignStatus(apiKey, instantlyCampaign.id, "active");
-
-  // Verify post-activation
-  const postActivate = await getInstantlyCampaign(apiKey, instantlyCampaign.id) as unknown as Record<string, unknown>;
-  console.log(`[send] Post-activate — status=${postActivate.status} email_list=${JSON.stringify(postActivate.email_list)} not_sending_status=${JSON.stringify(postActivate.not_sending_status)}`);
-
-  if (postActivate.not_sending_status) {
-    const reason = `not_sending_status: ${JSON.stringify(postActivate.not_sending_status)}`;
-    console.warn(`[send] Campaign ${instantlyCampaign.id} has ${reason}`);
-    return null;
-  }
-
-  return { instantlyCampaignId: instantlyCampaign.id, added: result.added };
-}
-
-/**
  * POST /send
  * Add a lead to a multi-step sequence campaign via Instantly.
  *
@@ -201,8 +63,9 @@ async function tryCreateAndActivateCampaign(
  * Follow-up runs are completed when webhook email_sent arrives,
  * or failed on reply/bounce/unsub/not_interested/campaign error.
  *
- * If Instantly reports not_sending_status after activation, retries up to
- * MAX_SEND_RETRIES times with a different random account before giving up.
+ * Dispatch (find healthy account + create campaign + add lead + activate)
+ * is delegated to `dispatchLeadToInstantly()` in `lib/dispatch-lead.ts`, which
+ * also handles the retry loop on post-activation `not_sending_status`.
  */
 router.post("/", async (req: Request, res: Response) => {
   const parsed = SendRequestSchema.safeParse(req.body);
@@ -265,30 +128,9 @@ router.post("/", async (req: Request, res: Response) => {
     const stepRuns: { step: number; runId: string }[] = [];
 
     try {
-      // 3. Check available accounts — status > 0 means active (1 = active, 2 = active+warming)
-      const allAccounts = await listAccounts(apiKey);
-      console.log(`[send] Account statuses: ${JSON.stringify(allAccounts.map((a) => ({ email: a.email, status: a.status, warmup_status: a.warmup_status })))}`);
-      const accounts = allAccounts.filter((a) => {
-        if (a.status <= 0) return false;
-        const domain = a.email.split("@")[1];
-        if (BLOCKED_DOMAINS.includes(domain)) {
-          console.log(`[send] Skipping blocked domain account: ${a.email}`);
-          return false;
-        }
-        return true;
-      });
-      if (accounts.length === 0) {
-        const total = allAccounts.length;
-        const msg = total === 0
-          ? "No email accounts found in Instantly"
-          : `Found ${total} email account(s) but none are active — please check your Instantly subscriptions`;
-        throw new Error(msg);
-      }
-      console.log(`[send] ${accounts.length}/${allAccounts.length} accounts are active`);
-
       const sortedSequence = [...body.sequence].sort((a, b) => a.step - b.step);
 
-      // 3a. Lead ID conflict check: if this email already exists with a different lead_id, reject
+      // 3. Lead ID conflict check: if this email already exists with a different lead_id, reject
       if (body.leadId) {
         const [conflict] = await db
           .select({ leadId: instantlyCampaigns.leadId })
@@ -311,7 +153,7 @@ router.post("/", async (req: Request, res: Response) => {
         }
       }
 
-      // 3b. Dedup: check if this (campaignId, leadEmail) pair already has a campaign
+      // 4. Dedup: check if this (campaignId, leadEmail) pair already has a campaign
       const existing = await findExistingCampaign(campaignId, body.to);
 
       let savedLead: { id: string } | undefined;
@@ -327,7 +169,7 @@ router.post("/", async (req: Request, res: Response) => {
           duplicate: true,
         });
       } else {
-        // New campaign — create with retry loop
+        // 5. Dispatch lead to a healthy Instantly account (retries internally).
         const lead: Lead = {
           email: body.to,
           first_name: body.firstName,
@@ -336,36 +178,37 @@ router.post("/", async (req: Request, res: Response) => {
           variables: body.variables,
         };
 
-        let result: { instantlyCampaignId: string; added: number } | null = null;
-        let lastReason: string | undefined;
+        const dispatch = await dispatchLeadToInstantly({
+          apiKey,
+          campaignName: `Campaign ${campaignId}`,
+          subject: body.subject,
+          sortedSequence,
+          lead,
+        });
 
-        for (let attempt = 1; attempt <= MAX_SEND_RETRIES; attempt++) {
-          const account = pickRandomAccount(accounts);
-          const steps = buildSequenceSteps(body.subject, sortedSequence, account);
-
-          console.log(`[send] Attempt ${attempt}/${MAX_SEND_RETRIES} for ${campaignId}/${body.to} with account ${account.email}`);
-          result = await tryCreateAndActivateCampaign(apiKey, campaignId, account, steps, lead);
-
-          if (result) {
-            traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-campaign-created", detail: `instantlyCampaignId=${result.instantlyCampaignId}, added=${result.added}, attempt=${attempt}` }, req.headers).catch(() => {});
-            break;
-          }
-
-          lastReason = `Attempt ${attempt}/${MAX_SEND_RETRIES} failed with not_sending_status`;
-          console.warn(`[send] ${lastReason}`);
-        }
-
-        if (!result) {
-          // All retries exhausted — no step runs were created yet
-          const errorMsg = `Campaign failed after ${MAX_SEND_RETRIES} retry attempts`;
-          console.error(`[send] ${errorMsg} for ${campaignId}/${body.to}`);
+        if (!dispatch.ok) {
+          const detail =
+            dispatch.reason === "no_healthy_account"
+              ? "No active Instantly accounts available for this organization"
+              : `Campaign failed after ${MAX_DISPATCH_RETRIES} attempts (not_sending_status on every account)`;
+          console.error(`[send] ${detail} for ${campaignId}/${body.to}`);
           return res.status(500).json({
-            error: errorMsg,
-            details: lastReason,
+            error: "Failed to dispatch lead",
+            details: detail,
           });
         }
 
-        added = result.added;
+        traceEvent(
+          res.locals.runId as string,
+          {
+            service: "instantly-service",
+            event: "send-campaign-created",
+            detail: `instantlyCampaignId=${dispatch.value.instantlyCampaignId}, added=${dispatch.value.added}, account=${dispatch.value.account.email}`,
+          },
+          req.headers,
+        ).catch(() => {});
+
+        added = dispatch.value.added;
 
         // Success — save campaign to DB (atomic dedup via unique index)
         const [insertedCampaign] = await db
@@ -374,7 +217,7 @@ router.post("/", async (req: Request, res: Response) => {
             campaignId,
             leadEmail: body.to,
             leadId: body.leadId,
-            instantlyCampaignId: result.instantlyCampaignId,
+            instantlyCampaignId: dispatch.value.instantlyCampaignId,
             name: `Campaign ${campaignId}`,
             status: "active",
             deliveryStatus: "contacted",
@@ -401,7 +244,7 @@ router.post("/", async (req: Request, res: Response) => {
         const [createdLead] = await db
           .insert(instantlyLeads)
           .values({
-            instantlyCampaignId: result.instantlyCampaignId,
+            instantlyCampaignId: dispatch.value.instantlyCampaignId,
             email: body.to,
             firstName: body.firstName,
             lastName: body.lastName,
