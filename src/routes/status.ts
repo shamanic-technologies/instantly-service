@@ -5,10 +5,18 @@ import { StatusRequestSchema } from "../schemas";
 
 const router = Router();
 
+// 4-stage funnel:
+//   1. Pre-Instantly queue (not modeled in this service)
+//   2. contacted = row exists in instantly_campaigns (lead pushed to Instantly)
+//   3. sent      = instantly_events.event_type='email_sent' (Instantly dispatched)
+//   4. delivered = sent AND NOT bounced (derived in queries, never a status)
+// Terminal markers (bounced/unsubscribed/replied) derive from events directly.
+
 interface AggRow {
   key: string;
   campaignId: string | null;
   contacted: boolean | null;
+  sent: boolean | null;
   delivered: boolean | null;
   opened: boolean | null;
   clicked: boolean | null;
@@ -25,7 +33,7 @@ function extractRows(result: unknown): AggRow[] {
 }
 
 function emptyScoped() {
-  return { contacted: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null };
+  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null };
 }
 
 function formatTimestamp(val: string | null | undefined): string | null {
@@ -36,6 +44,7 @@ function buildScopedStatus(row: AggRow | undefined) {
   return row
     ? {
         contacted: row.contacted === true,
+        sent: row.sent === true,
         delivered: row.delivered === true,
         opened: row.opened === true,
         clicked: row.clicked === true,
@@ -59,15 +68,24 @@ function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string
       c.lead_email AS "key",
       CAST(NULL AS text) AS "campaignId",
       TRUE AS "contacted",
-      BOOL_OR(c.delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
+      BOOL_OR(se.campaign_id IS NOT NULL) AS "sent",
+      (BOOL_OR(se.campaign_id IS NOT NULL) AND NOT BOOL_OR(be.campaign_id IS NOT NULL)) AS "delivered",
       BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
       BOOL_OR(ce.campaign_id IS NOT NULL) AS "clicked",
-      BOOL_OR(c.delivery_status = 'replied') AS "replied",
+      BOOL_OR(re.campaign_id IS NOT NULL) AS "replied",
       (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
-      BOOL_OR(c.delivery_status = 'bounced') AS "bounced",
-      BOOL_OR(c.delivery_status = 'unsubscribed') AS "unsubscribed",
-      MAX(CASE WHEN c.delivery_status IN ('sent', 'delivered', 'replied') THEN c.updated_at END) AS "lastDeliveredAt"
+      BOOL_OR(be.campaign_id IS NOT NULL) AS "bounced",
+      BOOL_OR(ue.campaign_id IS NOT NULL) AS "unsubscribed",
+      MAX(se.timestamp) AS "lastDeliveredAt"
     FROM instantly_campaigns c
+    LEFT JOIN instantly_events se
+      ON se.campaign_id = c.instantly_campaign_id
+      AND se.lead_email = c.lead_email
+      AND se.event_type = 'email_sent'
+    LEFT JOIN instantly_events be
+      ON be.campaign_id = c.instantly_campaign_id
+      AND be.lead_email = c.lead_email
+      AND be.event_type = 'email_bounced'
     LEFT JOIN instantly_events oe
       ON oe.campaign_id = c.instantly_campaign_id
       AND oe.lead_email = c.lead_email
@@ -76,6 +94,14 @@ function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string
       ON ce.campaign_id = c.instantly_campaign_id
       AND ce.lead_email = c.lead_email
       AND ce.event_type = 'email_link_clicked'
+    LEFT JOIN instantly_events re
+      ON re.campaign_id = c.instantly_campaign_id
+      AND re.lead_email = c.lead_email
+      AND re.event_type = 'reply_received'
+    LEFT JOIN instantly_events ue
+      ON ue.campaign_id = c.instantly_campaign_id
+      AND ue.lead_email = c.lead_email
+      AND ue.event_type = 'lead_unsubscribed'
     WHERE c.lead_email IN (${sqlIn(emails)}) AND ${filterClause}
     GROUP BY c.lead_email
   `);
@@ -88,15 +114,24 @@ function brandBreakdownQuery(brandId: string, emails: string[]) {
       c.lead_email AS "key",
       c.campaign_id AS "campaignId",
       TRUE AS "contacted",
-      BOOL_OR(c.delivery_status IN ('sent', 'delivered', 'replied')) AS "delivered",
+      BOOL_OR(se.campaign_id IS NOT NULL) AS "sent",
+      (BOOL_OR(se.campaign_id IS NOT NULL) AND NOT BOOL_OR(be.campaign_id IS NOT NULL)) AS "delivered",
       BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
       BOOL_OR(ce.campaign_id IS NOT NULL) AS "clicked",
-      BOOL_OR(c.delivery_status = 'replied') AS "replied",
+      BOOL_OR(re.campaign_id IS NOT NULL) AS "replied",
       (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
-      BOOL_OR(c.delivery_status = 'bounced') AS "bounced",
-      BOOL_OR(c.delivery_status = 'unsubscribed') AS "unsubscribed",
-      MAX(CASE WHEN c.delivery_status IN ('sent', 'delivered', 'replied') THEN c.updated_at END) AS "lastDeliveredAt"
+      BOOL_OR(be.campaign_id IS NOT NULL) AS "bounced",
+      BOOL_OR(ue.campaign_id IS NOT NULL) AS "unsubscribed",
+      MAX(se.timestamp) AS "lastDeliveredAt"
     FROM instantly_campaigns c
+    LEFT JOIN instantly_events se
+      ON se.campaign_id = c.instantly_campaign_id
+      AND se.lead_email = c.lead_email
+      AND se.event_type = 'email_sent'
+    LEFT JOIN instantly_events be
+      ON be.campaign_id = c.instantly_campaign_id
+      AND be.lead_email = c.lead_email
+      AND be.event_type = 'email_bounced'
     LEFT JOIN instantly_events oe
       ON oe.campaign_id = c.instantly_campaign_id
       AND oe.lead_email = c.lead_email
@@ -105,6 +140,14 @@ function brandBreakdownQuery(brandId: string, emails: string[]) {
       ON ce.campaign_id = c.instantly_campaign_id
       AND ce.lead_email = c.lead_email
       AND ce.event_type = 'email_link_clicked'
+    LEFT JOIN instantly_events re
+      ON re.campaign_id = c.instantly_campaign_id
+      AND re.lead_email = c.lead_email
+      AND re.event_type = 'reply_received'
+    LEFT JOIN instantly_events ue
+      ON ue.campaign_id = c.instantly_campaign_id
+      AND ue.lead_email = c.lead_email
+      AND ue.event_type = 'lead_unsubscribed'
     WHERE c.lead_email IN (${sqlIn(emails)}) AND ${brandId} = ANY(c.brand_ids)
     GROUP BY c.lead_email, c.campaign_id
   `);
@@ -139,6 +182,7 @@ function aggregateBrandStatus(rows: AggRow[]) {
 
   return {
     contacted: rows.some((r) => r.contacted === true),
+    sent: rows.some((r) => r.sent === true),
     delivered: rows.some((r) => r.delivered === true),
     opened: rows.some((r) => r.opened === true),
     clicked: rows.some((r) => r.clicked === true),
@@ -172,20 +216,29 @@ router.post("/", async (req: Request, res: Response) => {
   const isCampaignMode = !!campaignId;
 
   try {
-    // Global: only bounced + unsubscribed on email
+    // Global: bounced + unsubscribed across the entire org, derived from events.
     const globalEmailPromise = db.execute(sql`
       SELECT
-        lead_email AS "key",
+        c.lead_email AS "key",
         CAST(NULL AS text) AS "campaignId",
         CAST(NULL AS boolean) AS "contacted",
+        CAST(NULL AS boolean) AS "sent",
         CAST(NULL AS boolean) AS "delivered",
         CAST(NULL AS boolean) AS "replied",
-        BOOL_OR(delivery_status = 'bounced') AS "bounced",
-        BOOL_OR(delivery_status = 'unsubscribed') AS "unsubscribed",
+        BOOL_OR(be.campaign_id IS NOT NULL) AS "bounced",
+        BOOL_OR(ue.campaign_id IS NOT NULL) AS "unsubscribed",
         CAST(NULL AS timestamp) AS "lastDeliveredAt"
-      FROM instantly_campaigns
-      WHERE lead_email IN (${sqlIn(emails)})
-      GROUP BY lead_email
+      FROM instantly_campaigns c
+      LEFT JOIN instantly_events be
+        ON be.campaign_id = c.instantly_campaign_id
+        AND be.lead_email = c.lead_email
+        AND be.event_type = 'email_bounced'
+      LEFT JOIN instantly_events ue
+        ON ue.campaign_id = c.instantly_campaign_id
+        AND ue.lead_email = c.lead_email
+        AND ue.event_type = 'lead_unsubscribed'
+      WHERE c.lead_email IN (${sqlIn(emails)})
+      GROUP BY c.lead_email
     `);
 
     let brandBreakdownPromise: Promise<unknown> | null = null;

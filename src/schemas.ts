@@ -721,15 +721,16 @@ export type StatusRequest = z.infer<typeof StatusRequestSchema>;
 const ReplyClassificationSchema = z.enum(["positive", "negative", "neutral"]);
 
 const ScopedStatusFieldsSchema = z.object({
-  contacted: z.boolean().describe("true if the lead was added to this campaign/brand"),
-  delivered: z.boolean().describe("true if at least one email was delivered (sent/delivered/replied status)"),
+  contacted: z.boolean().describe("Stage 2: lead was pushed to Instantly (row exists in instantly_campaigns)"),
+  sent: z.boolean().describe("Stage 3: Instantly dispatched at least one email_sent event for this lead"),
+  delivered: z.boolean().describe("Stage 4: sent AND not bounced (derived from instantly_events; never a stored status)"),
   opened: z.boolean().describe("true if at least one email_opened event exists"),
   clicked: z.boolean().describe("true if at least one email_link_clicked event exists"),
-  replied: z.boolean().describe("true if at least one reply was received"),
+  replied: z.boolean().describe("true if at least one reply_received event exists"),
   replyClassification: ReplyClassificationSchema.nullable().describe("Reply classification based on Instantly interest status. null = no reply"),
-  bounced: z.boolean().describe("true if at least one email bounced"),
-  unsubscribed: z.boolean().describe("true if lead unsubscribed"),
-  lastDeliveredAt: z.string().nullable().describe("ISO 8601 timestamp of the most recent delivery. null if never delivered"),
+  bounced: z.boolean().describe("true if at least one email_bounced event exists"),
+  unsubscribed: z.boolean().describe("true if at least one lead_unsubscribed event exists"),
+  lastDeliveredAt: z.string().nullable().describe("ISO 8601 timestamp of the most recent email_sent event. null if Instantly has not dispatched yet"),
 });
 
 const GlobalEmailStatusSchema = z.object({
@@ -760,18 +761,18 @@ const StatusResponseSchema = z
           email: "alice@media.com",
           byCampaign: {
             "c1a2b3c4-0000-0000-0000-000000000001": {
-              contacted: true, delivered: true, opened: true, clicked: false,
+              contacted: true, sent: true, delivered: true, opened: true, clicked: false,
               replied: false, replyClassification: null, bounced: false, unsubscribed: false,
               lastDeliveredAt: "2026-03-01T10:00:00.000Z",
             },
             "c1a2b3c4-0000-0000-0000-000000000002": {
-              contacted: true, delivered: true, opened: false, clicked: true,
+              contacted: true, sent: true, delivered: true, opened: false, clicked: true,
               replied: true, replyClassification: "positive", bounced: false, unsubscribed: false,
               lastDeliveredAt: "2026-03-02T12:00:00.000Z",
             },
           },
           brand: {
-            contacted: true, delivered: true, opened: true, clicked: true,
+            contacted: true, sent: true, delivered: true, opened: true, clicked: true,
             replied: true, replyClassification: "positive", bounced: false, unsubscribed: false,
             lastDeliveredAt: "2026-03-02T12:00:00.000Z",
           },
@@ -793,7 +794,7 @@ registry.registerPath({
     "- **Campaign mode** (`campaignId` set, with or without `brandId`): returns `campaign` (single campaign status) and `global`. When both are provided, `brandId` is ignored.\n" +
     "- **Global only** (neither): returns only `global`.\n\n" +
     "**Aggregation rules for `brand`:**\n" +
-    "- Boolean fields (`contacted`, `delivered`, `opened`, `replied`, `bounced`, `unsubscribed`): `true` if true in at least one campaign (BOOL_OR).\n" +
+    "- Boolean fields (`contacted`, `sent`, `delivered`, `opened`, `clicked`, `replied`, `bounced`, `unsubscribed`): `true` if true in at least one campaign (BOOL_OR).\n" +
     "- `replyClassification`: from the campaign with the most recent `lastDeliveredAt` that has a non-null classification.\n" +
     "- `lastDeliveredAt`: MAX across all campaigns.\n\n" +
     "**`global.email`** aggregates `bounced`/`unsubscribed` across ALL campaigns in the org, regardless of brand or campaign filters.\n\n" +
