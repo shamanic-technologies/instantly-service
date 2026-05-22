@@ -25,9 +25,14 @@ const SEQUENCE_STOP_EVENTS = new Set([
   "lead_not_interested",
 ]);
 
+// Maps an Instantly webhook event_type to the silver `delivery_status` value
+// it should set on `instantly_campaigns`. Aligns with the 4-stage funnel
+// (contacted → sent → delivered → terminal). POST /send writes `contacted`
+// directly; webhook `email_sent` promotes to `sent` (stage 3). Stage 4
+// `delivered` is derived in queries (sent − bounced), never written as a
+// status. `campaign_completed` is sequence-level and does not change delivery.
 const DELIVERY_STATUS_MAP: Record<string, string> = {
   email_sent: "sent",
-  campaign_completed: "delivered",
   reply_received: "replied",
   email_bounced: "bounced",
   lead_unsubscribed: "unsubscribed",

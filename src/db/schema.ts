@@ -28,7 +28,13 @@ export const instantlyCampaigns = pgTable(
     featureSlug: text("feature_slug"),
     runId: text("run_id"),
     leadId: text("lead_id"),
-    deliveryStatus: text("delivery_status").notNull().default("pending"),
+    // 4-stage funnel:
+    //   contacted = lead pushed to Instantly (POST /send success — DEFAULT)
+    //   sent      = Instantly dispatched at least one email (webhook email_sent)
+    //   delivered = derived in queries (sent AND NOT bounced); never stored
+    //   bounced / replied / unsubscribed = terminal markers from webhooks
+    //   failed    = push to Instantly errored (campaign-error-handler)
+    deliveryStatus: text("delivery_status").notNull().default("contacted"),
     replyClassification: text("reply_classification"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -135,21 +141,6 @@ export const sequenceCosts = pgTable(
     uniqueIndex("sequence_costs_cost_id_idx").on(table.costId),
   ],
 );
-
-// Analytics snapshots table (legacy — kept for back-compat; new bronze tables below)
-export const instantlyAnalyticsSnapshots = pgTable("instantly_analytics_snapshots", {
-  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  campaignId: text("campaign_id").notNull(),
-  totalLeads: integer("total_leads").notNull().default(0),
-  contacted: integer("contacted").notNull().default(0),
-  opened: integer("opened").notNull().default(0),
-  replied: integer("replied").notNull().default(0),
-  bounced: integer("bounced").notNull().default(0),
-  unsubscribed: integer("unsubscribed").notNull().default(0),
-  snapshotAt: timestamp("snapshot_at").notNull(),
-  rawData: jsonb("raw_data"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
 
 // ─── Bronze tables (raw external sources, append-only, never mutated) ─────────
 

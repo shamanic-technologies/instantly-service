@@ -45,11 +45,24 @@ Cold email outreach service via [Instantly.ai](https://instantly.ai/) API V2. Ha
 
 | Table | Purpose |
 |-------|---------|
-| `instantly_campaigns` | Campaign records |
+| `instantly_campaigns` | Campaign records (silver — `delivery_status` reflects 4-stage funnel) |
 | `instantly_leads` | Lead records per campaign |
 | `instantly_accounts` | Email accounts + warmup status |
-| `instantly_events` | Webhook events |
-| `instantly_analytics_snapshots` | Campaign analytics snapshots |
+| `instantly_events` | Webhook events (silver — source of truth for funnel) |
+| `sequence_costs` | Per-step cost lifecycle (provisioned → actual / cancelled) |
+| `instantly_webhook_payloads_raw` | Bronze: webhook payloads from Instantly |
+| `instantly_analytics_raw` | Bronze: `/campaigns/analytics` responses |
+| `instantly_emails_raw` | Bronze: `/emails` records (individual emails with step) |
+| `instantly_leads_raw` | Bronze: `/leads/list` per-lead snapshots |
+
+### Funnel stages (4-stage)
+
+| Stage | `delivery_status` | Source of truth |
+|-------|-------------------|-----------------|
+| 2 — contacted | `contacted` (default) | row exists in `instantly_campaigns` (POST /send success) |
+| 3 — sent | `sent` | `instantly_events.event_type='email_sent'` (webhook from Instantly) |
+| 4 — delivered | (derived) | sent AND NOT bounced — computed in queries, never stored |
+| terminal | `bounced` / `replied` / `unsubscribed` / `failed` | webhook events |
 
 ## Setup
 
