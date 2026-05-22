@@ -317,4 +317,23 @@ describe("handleCampaignError", () => {
     expect(mockUpdateCostStatus).not.toHaveBeenCalled();
     expect(mockSendEmail).not.toHaveBeenCalled();
   });
+
+  it("should NOT send admin email when terminalStatus='cancelled' (bulk cron path)", async () => {
+    mockDbWhere.mockResolvedValueOnce([baseCampaign]);
+    mockDbWhere.mockResolvedValueOnce([]); // no costs
+
+    await handleCampaignError("inst-camp-1", "not_sending_status: 4", {
+      terminalStatus: "cancelled",
+    });
+
+    // Cost cancel + run-fail still run
+    expect(mockUpdateRun).toHaveBeenCalledWith(
+      "run-1",
+      "failed",
+      expect.objectContaining({ orgId: "org-1" }),
+      "not_sending_status: 4",
+    );
+    // Admin email suppressed (cron sweep would flood the inbox)
+    expect(mockSendEmail).not.toHaveBeenCalled();
+  });
 });
