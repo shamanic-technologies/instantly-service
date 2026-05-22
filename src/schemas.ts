@@ -346,81 +346,31 @@ registry.registerPath({
   },
 });
 
-// ─── Retry-stuck (cron + retro) ─────────────────────────────────────────────
-
-export const RetryStuckNowRequestSchema = z
-  .object({
-    all: z.boolean().optional().describe(
-      "When true, ignore the default 24h age filter and sweep every currently " +
-        "stuck row in one pass (retro mode).",
-    ),
-  })
-  .openapi("RetryStuckNowRequest");
-
-export type RetryStuckNowRequest = z.infer<typeof RetryStuckNowRequestSchema>;
-
-const RetryStuckSummarySchema = z
-  .object({
-    scanned: z.number(),
-    cancelled: z.number(),
-    stillSending: z.number(),
-    capped: z.number(),
-    skippedNoKey: z.number(),
-    failed: z.number(),
-    durationMs: z.number(),
-  })
-  .openapi("RetryStuckSummary");
+// ─── Retry-stuck (cron) ─────────────────────────────────────────────────────
 
 registry.registerPath({
   method: "post",
   path: "/internal/campaigns/retry-stuck",
-  summary: "Dispatch hourly retry-stuck sweep",
+  summary: "Dispatch daily retry-stuck sweep",
   request: {},
   description:
-    "Hourly sweep that scans campaigns with `delivery_status='contacted'` " +
-    "stuck for >24h, fetches `not_sending_status` live from Instantly, and " +
-    "for each row Instantly is refusing to dispatch: pauses the Instantly " +
-    "campaign, cancels actual+provisioned costs, marks " +
-    "`delivery_status='cancelled'`. Idempotent — already-cancelled rows fall " +
-    "outside the SELECT.\n\n" +
-    "Returns 202 immediately and runs the sweep in the background. Verify " +
-    "completion via Railway logs (`retry-stuck: done`).",
+    "Daily sweep (02:00 UTC) that scans campaigns with " +
+    "`delivery_status='contacted'` stuck for >24h, fetches " +
+    "`not_sending_status` live from Instantly, and for each row Instantly is " +
+    "refusing to dispatch: pauses the Instantly campaign, writes the observed " +
+    "`not_sending_status` onto the row, cancels actual+provisioned costs, " +
+    "marks `delivery_status='cancelled'`. Idempotent — already-cancelled rows " +
+    "fall outside the SELECT.\n\n" +
+    "Per-run cap: 500 oldest rows. Serialized via a Postgres advisory lock — " +
+    "overlapping calls short-circuit with no-op summary. Returns 202 " +
+    "immediately and runs in the background. Verify completion via Railway " +
+    "logs (`retry-stuck: done`).",
   responses: {
     202: {
       description: "Retry-stuck sweep dispatched (running in background)",
       content: { "application/json": { schema: ReconcileAcceptedSchema } },
     },
     401: { description: "Unauthorized" },
-  },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/internal/campaigns/retry-stuck-now",
-  summary: "Run retry-stuck sweep synchronously (retro one-shot)",
-  request: {
-    body: {
-      content: { "application/json": { schema: RetryStuckNowRequestSchema } },
-    },
-  },
-  description:
-    "Synchronous variant of /retry-stuck. Body `{ all: true }` skips the " +
-    "24h age filter so a single call cancels every currently-stuck row. " +
-    "Returns the summary directly so operators can verify the cancel count.",
-  responses: {
-    200: {
-      description: "Sweep summary",
-      content: { "application/json": { schema: RetryStuckSummarySchema } },
-    },
-    400: {
-      description: "Invalid request",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: { description: "Unauthorized" },
-    500: {
-      description: "Server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
   },
 });
 

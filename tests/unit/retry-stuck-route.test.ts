@@ -83,7 +83,7 @@ describe("POST /internal/campaigns/retry-stuck (async dispatch)", () => {
     expect(new Date(res.body.startedAt).toString()).not.toBe("Invalid Date");
   });
 
-  it("invokes runRetryStuck with no options (default cron path)", async () => {
+  it("invokes runRetryStuck with no arguments", async () => {
     mockRunRetryStuck.mockResolvedValue({});
 
     const app = await makeApp();
@@ -113,80 +113,10 @@ describe("POST /internal/campaigns/retry-stuck (async dispatch)", () => {
   });
 });
 
-describe("POST /internal/campaigns/retry-stuck-now (sync retro)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns the sweep summary in the response body", async () => {
-    mockRunRetryStuck.mockResolvedValue({
-      scanned: 5,
-      cancelled: 3,
-      stillSending: 2,
-      capped: 0,
-      skippedNoKey: 0,
-      failed: 0,
-      durationMs: 42,
-    });
-
+describe("POST /internal/campaigns/retry-stuck-now (removed)", () => {
+  it("returns 404 — the sync retro endpoint was dropped in favor of the async one", async () => {
     const app = await makeApp();
-    const res = await request(app)
-      .post("/internal/campaigns/retry-stuck-now")
-      .send({ all: true });
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      scanned: 5,
-      cancelled: 3,
-      stillSending: 2,
-      capped: 0,
-      skippedNoKey: 0,
-      failed: 0,
-      durationMs: 42,
-    });
-  });
-
-  it("forwards { all: true } to runRetryStuck", async () => {
-    mockRunRetryStuck.mockResolvedValue({});
-
-    const app = await makeApp();
-    await request(app)
-      .post("/internal/campaigns/retry-stuck-now")
-      .send({ all: true });
-
-    expect(mockRunRetryStuck).toHaveBeenCalledWith({ all: true });
-  });
-
-  it("forwards { all: false } when omitted (default cron-like behavior)", async () => {
-    mockRunRetryStuck.mockResolvedValue({});
-
-    const app = await makeApp();
-    await request(app)
-      .post("/internal/campaigns/retry-stuck-now")
-      .send({});
-
-    expect(mockRunRetryStuck).toHaveBeenCalledWith({ all: undefined });
-  });
-
-  it("rejects invalid body with 400", async () => {
-    const app = await makeApp();
-    const res = await request(app)
-      .post("/internal/campaigns/retry-stuck-now")
-      .send({ all: "not-a-boolean" });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Invalid request");
-  });
-
-  it("returns 500 when runRetryStuck throws", async () => {
-    mockRunRetryStuck.mockRejectedValue(new Error("db down"));
-
-    const app = await makeApp();
-    const res = await request(app)
-      .post("/internal/campaigns/retry-stuck-now")
-      .send({ all: true });
-
-    expect(res.status).toBe(500);
-    expect(res.body.error).toBe("db down");
+    const res = await request(app).post("/internal/campaigns/retry-stuck-now");
+    expect(res.status).toBe(404);
   });
 });

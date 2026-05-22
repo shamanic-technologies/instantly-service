@@ -1,20 +1,19 @@
 /**
- * End-to-end integration test for the retry-stuck retro endpoint.
+ * End-to-end integration test for the retry-stuck sweep.
  *
  * Seeds real fixture rows in the local test DB (`instantly_campaigns`,
  * `sequence_costs`), stubs the Instantly + runs-service HTTP boundaries,
- * fires `POST /internal/campaigns/retry-stuck-now { all: true }`, and asserts
- * the rows flip to `delivery_status='cancelled'` while sequence costs go to
- * `status='cancelled'`. Skipped when no DB URL is configured (CI without
- * Neon access still runs unit tests via tests/unit/retry-stuck-route).
+ * calls `runRetryStuck()` directly (the production cron path), and asserts
+ * the rows flip to `delivery_status='cancelled'` while sequence costs go
+ * to `status='cancelled'` AND the `not_sending_status` / `_seen_at`
+ * columns are populated. Skipped when no DB URL is configured.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
-import request from "supertest";
 import { eq } from "drizzle-orm";
 
-// Mock the outbound HTTP clients BEFORE importing the test app. The DB itself
-// is real so the SQL update in handleCampaignError + retry-stuck observe the
-// fixture rows.
+// Mock the outbound HTTP clients BEFORE importing the module under test.
+// The DB itself is real so the SQL UPDATE in handleCampaignError + retry-stuck
+// observe the fixture rows.
 vi.mock("../../src/lib/instantly-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/lib/instantly-client")>();
   return {
@@ -46,17 +45,18 @@ vi.mock("../../src/lib/email-client", () => ({
   deployTemplates: vi.fn().mockResolvedValue({}),
 }));
 
-import { createTestApp, getAuthHeaders } from "../helpers/test-app";
 import { cleanTestData, closeDb } from "../helpers/test-db";
 import { db } from "../../src/db";
 import { instantlyCampaigns, sequenceCosts } from "../../src/db/schema";
 import { getCampaign } from "../../src/lib/instantly-client";
+import { runRetryStuck } from "../../src/lib/retry-stuck";
 
 const SKIP = !process.env.INSTANTLY_SERVICE_DATABASE_URL;
 
-describe.skipIf(SKIP)("POST /internal/campaigns/retry-stuck-now (DB-backed)", () => {
-  const app = createTestApp();
+// Rows must be older than 24h to fall inside the SELECT's age filter.
+const STUCK_CREATED_AT = new Date(Date.now() - 25 * 60 * 60 * 1000);
 
+describe.skipIf(SKIP)("runRetryStuck (DB-backed)", () => {
   beforeEach(async () => {
     await cleanTestData();
     vi.clearAllMocks();
@@ -67,8 +67,7 @@ describe.skipIf(SKIP)("POST /internal/campaigns/retry-stuck-now (DB-backed)", ()
     await closeDb();
   });
 
-  it("cancels every stuck fixture row when called with { all: true }", async () => {
-    // Seed two campaigns both stuck in 'contacted' state.
+  it("cancels every stuck fixture row and populates not_sending_status columns", async () => {
     const baseCampaign = {
       campaignId: "camp-1",
       orgId: "org-1",
@@ -77,6 +76,7 @@ describe.skipIf(SKIP)("POST /internal/campaigns/retry-stuck-now (DB-backed)", ()
       status: "active",
       deliveryStatus: "contacted",
       name: "test",
+      createdAt: STUCK_CREATED_AT,
     };
 
     await db.insert(instantlyCampaigns).values([
@@ -89,24 +89,31 @@ describe.skipIf(SKIP)("POST /internal/campaigns/retry-stuck-now (DB-backed)", ()
       { campaignId: "camp-1", leadEmail: "stuck-b@test.com", step: 1, runId: "run-b-1", costId: "cost-b-1", status: "provisioned" },
     ]);
 
-    // Instantly reports not_sending_status for both.
-    vi.mocked(getCampaign).mockResolvedValue({ not_sending_status: { reason: "esp_mismatch" } } as any);
+    vi.mocked(getCampaign).mockResolvedValue({ not_sending_status: 4 } as any);
 
-    const res = await request(app)
-      .post("/internal/campaigns/retry-stuck-now")
-      .set(getAuthHeaders())
-      .send({ all: true });
+    const summary = await runRetryStuck();
+    expect(summary.cancelled).toBe(2);
+    expect(summary.scanned).toBe(2);
+    expect(summary.skipped).toBeUndefined();
 
-    expect(res.status).toBe(200);
-    expect(res.body.cancelled).toBe(2);
-    expect(res.body.scanned).toBe(2);
-
-    const [rowA] = await db.select().from(instantlyCampaigns).where(eq(instantlyCampaigns.instantlyCampaignId, "inst-a"));
-    const [rowB] = await db.select().from(instantlyCampaigns).where(eq(instantlyCampaigns.instantlyCampaignId, "inst-b"));
+    const [rowA] = await db
+      .select()
+      .from(instantlyCampaigns)
+      .where(eq(instantlyCampaigns.instantlyCampaignId, "inst-a"));
+    const [rowB] = await db
+      .select()
+      .from(instantlyCampaigns)
+      .where(eq(instantlyCampaigns.instantlyCampaignId, "inst-b"));
     expect(rowA.deliveryStatus).toBe("cancelled");
     expect(rowB.deliveryStatus).toBe("cancelled");
     expect(rowA.status).toBe("error");
     expect((rowA.metadata as Record<string, unknown>).retryCount).toBe(1);
+
+    // The diagnostic columns added by PR A are populated by this sweep.
+    expect(rowA.notSendingStatus).toBe(4);
+    expect(rowB.notSendingStatus).toBe(4);
+    expect(rowA.notSendingStatusSeenAt).toBeInstanceOf(Date);
+    expect(rowB.notSendingStatusSeenAt).toBeInstanceOf(Date);
 
     const allCosts = await db.select().from(sequenceCosts);
     for (const c of allCosts) {
@@ -125,22 +132,24 @@ describe.skipIf(SKIP)("POST /internal/campaigns/retry-stuck-now (DB-backed)", ()
       name: "test",
       leadEmail: "healthy@test.com",
       instantlyCampaignId: "inst-healthy",
+      createdAt: STUCK_CREATED_AT,
     });
 
     vi.mocked(getCampaign).mockResolvedValue({ not_sending_status: null } as any);
 
-    const res = await request(app)
-      .post("/internal/campaigns/retry-stuck-now")
-      .set(getAuthHeaders())
-      .send({ all: true });
+    const summary = await runRetryStuck();
+    expect(summary.cancelled).toBe(0);
+    expect(summary.stillSending).toBe(1);
 
-    expect(res.status).toBe(200);
-    expect(res.body.cancelled).toBe(0);
-    expect(res.body.stillSending).toBe(1);
-
-    const [row] = await db.select().from(instantlyCampaigns).where(eq(instantlyCampaigns.instantlyCampaignId, "inst-healthy"));
+    const [row] = await db
+      .select()
+      .from(instantlyCampaigns)
+      .where(eq(instantlyCampaigns.instantlyCampaignId, "inst-healthy"));
     expect(row.deliveryStatus).toBe("contacted");
     expect(row.status).toBe("active");
+    // No diagnostic write when the row is still sending.
+    expect(row.notSendingStatus).toBeNull();
+    expect(row.notSendingStatusSeenAt).toBeNull();
   });
 
   it("is idempotent — re-running yields no additional cancels", async () => {
@@ -154,22 +163,44 @@ describe.skipIf(SKIP)("POST /internal/campaigns/retry-stuck-now (DB-backed)", ()
       name: "test",
       leadEmail: "stuck@test.com",
       instantlyCampaignId: "inst-stuck",
+      createdAt: STUCK_CREATED_AT,
     });
 
-    vi.mocked(getCampaign).mockResolvedValue({ not_sending_status: "x" } as any);
+    vi.mocked(getCampaign).mockResolvedValue({ not_sending_status: 2 } as any);
 
-    const first = await request(app)
-      .post("/internal/campaigns/retry-stuck-now")
-      .set(getAuthHeaders())
-      .send({ all: true });
-    expect(first.body.cancelled).toBe(1);
+    const first = await runRetryStuck();
+    expect(first.cancelled).toBe(1);
 
-    const second = await request(app)
-      .post("/internal/campaigns/retry-stuck-now")
-      .set(getAuthHeaders())
-      .send({ all: true });
+    const second = await runRetryStuck();
     // Once the row's deliveryStatus is 'cancelled', it falls outside the SELECT.
-    expect(second.body.cancelled).toBe(0);
-    expect(second.body.scanned).toBe(0);
+    expect(second.cancelled).toBe(0);
+    expect(second.scanned).toBe(0);
+  });
+
+  it("ignores rows younger than the 24h age floor", async () => {
+    // Row created 1h ago — should NOT be picked up by the cron sweep.
+    await db.insert(instantlyCampaigns).values({
+      campaignId: "camp-1",
+      orgId: "org-1",
+      userId: "00000000-0000-0000-0000-000000000001",
+      brandIds: ["brand-1"],
+      status: "active",
+      deliveryStatus: "contacted",
+      name: "test",
+      leadEmail: "young@test.com",
+      instantlyCampaignId: "inst-young",
+      createdAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    vi.mocked(getCampaign).mockResolvedValue({ not_sending_status: 4 } as any);
+
+    const summary = await runRetryStuck();
+    expect(summary.scanned).toBe(0);
+
+    const [row] = await db
+      .select()
+      .from(instantlyCampaigns)
+      .where(eq(instantlyCampaigns.instantlyCampaignId, "inst-young"));
+    expect(row.deliveryStatus).toBe("contacted");
   });
 });
