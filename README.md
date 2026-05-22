@@ -120,8 +120,22 @@ spend.
   `delivery_status='failed'`, costs cancelled, run failed, admin notified.
 - **Retry-stuck cron** — campaigns stuck >24h with live `not_sending_status`:
   `delivery_status='cancelled'`, costs cancelled, retry capped at 2 attempts.
-  Driven by `.github/workflows/retry-stuck-cron.yml` every hour. Retro
-  one-shot via `POST /internal/campaigns/retry-stuck-now { all: true }`.
+  Driven by `.github/workflows/retry-stuck-cron.yml` **daily at 02:00 UTC**.
+  Each sweep is bounded to `MAX_ROWS_PER_RUN = 500` oldest stuck rows
+  (`ORDER BY created_at ASC LIMIT 500`) and serialized via a Postgres
+  advisory lock — overlapping ticks short-circuit with
+  `skipped: "sweep_in_progress"`. Per-tick `Promise.all` batches of 10
+  flow through the instantly-client's general throttle (~545 req/min, under
+  Instantly's 600 req/min ceiling). When a row is cancelled, the observed
+  `not_sending_status` value is also written onto the row via the
+  `not_sending_status` / `not_sending_status_seen_at` columns. Admin email
+  notifications are suppressed on the cancelled path so the sweep cannot
+  flood the admin inbox. Manual dispatch is available via the
+  `workflow_dispatch` button or by hitting `POST /internal/campaigns/retry-stuck`
+  directly; the route returns 202 immediately and runs the sweep in the
+  background. The sync retro endpoint (`/retry-stuck-now`) was removed —
+  draining a large backlog now happens by hitting `/retry-stuck` repeatedly
+  or letting the daily cron drain 500 rows/day.
 
 ## BYOK (Bring Your Own Key)
 
