@@ -39,13 +39,20 @@ interface PaginatedResponse<T> {
   next_starting_after?: string;
 }
 
+// NAMING COLLISION: Instantly's `contacted_count` / `new_leads_contacted_count`
+// represent leads that Instantly DISPATCHED an email to (their stage 3, our
+// "sent"). This is NOT our internal `contacted` stage (stage 2 — lead pushed
+// into Instantly via POST /send). Wire-format field names are preserved here;
+// callers must read them as "dispatched" counts.
 export interface CampaignAnalytics {
   campaign_id: string;
   campaign_name: string;
   campaign_status: number;
   leads_count: number;
+  /** Instantly's count of leads they have dispatched an email to (= our stage 3 "sent"). */
   contacted_count: number;
   emails_sent_count: number;
+  /** New leads Instantly dispatched in the latest window (= delta of stage 3 "sent"). */
   new_leads_contacted_count: number;
   open_count: number;
   open_count_unique: number;

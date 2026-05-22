@@ -85,6 +85,13 @@
       "when": 1774483200000,
       "tag": "0011_add_bronze_tables_and_silver_dedup",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1774569600000,
+      "tag": "0012_funnel_4stage_naming",
+      "breakpoints": true
     }
   ]
 }
