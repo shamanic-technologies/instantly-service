@@ -50,6 +50,7 @@ import {
   promoteFromEmailRecord,
   promoteFromLead,
   promoteSyntheticOpensFromLead,
+  promoteFromCampaignConfig,
 } from "../../src/lib/silver-promote";
 
 const NIL_USER_UUID = "00000000-0000-0000-0000-000000000000";
@@ -595,6 +596,138 @@ describe("promoteFromLead", () => {
     });
 
     expect(result.promoted).toBe(false);
+  });
+});
+
+describe("promoteFromCampaignConfig", () => {
+  const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockDbSelect.mockResolvedValue([]);
+  });
+
+  it("returns promoted=false when campaign row not found", async () => {
+    mockDbSelect.mockResolvedValueOnce([]);
+
+    const result = await promoteFromCampaignConfig({
+      bronzeRowId: "bronze-cfg-1",
+      instantlyCampaignId: "inst-camp-unknown",
+      notSendingStatus: 4,
+    });
+
+    expect(result.promoted).toBe(false);
+    expect(mockDbUpdate).not.toHaveBeenCalled();
+  });
+
+  it("promotes on first observation (current value null)", async () => {
+    mockDbSelect.mockResolvedValueOnce([
+      { notSendingStatus: null, notSendingStatusSeenAt: null },
+    ]);
+    const now = new Date("2026-05-22T12:00:00Z");
+
+    const result = await promoteFromCampaignConfig({
+      bronzeRowId: "bronze-cfg-1",
+      instantlyCampaignId: "inst-camp-1",
+      notSendingStatus: 4,
+      now,
+    });
+
+    expect(result.promoted).toBe(true);
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notSendingStatus: 4,
+        notSendingStatusSeenAt: now,
+      }),
+    );
+  });
+
+  it("skips when value unchanged and seen_at is within 15min window", async () => {
+    const now = new Date("2026-05-22T12:00:00Z");
+    const recent = new Date(now.getTime() - FIFTEEN_MIN_MS + 60_000); // 14min ago
+    mockDbSelect.mockResolvedValueOnce([
+      { notSendingStatus: 4, notSendingStatusSeenAt: recent },
+    ]);
+
+    const result = await promoteFromCampaignConfig({
+      bronzeRowId: "bronze-cfg-1",
+      instantlyCampaignId: "inst-camp-1",
+      notSendingStatus: 4,
+      now,
+    });
+
+    expect(result.promoted).toBe(false);
+    expect(mockDbUpdate).not.toHaveBeenCalled();
+  });
+
+  it("promotes when value unchanged but seen_at is older than 15min", async () => {
+    const now = new Date("2026-05-22T12:00:00Z");
+    const stale = new Date(now.getTime() - FIFTEEN_MIN_MS - 60_000); // 16min ago
+    mockDbSelect.mockResolvedValueOnce([
+      { notSendingStatus: 4, notSendingStatusSeenAt: stale },
+    ]);
+
+    const result = await promoteFromCampaignConfig({
+      bronzeRowId: "bronze-cfg-1",
+      instantlyCampaignId: "inst-camp-1",
+      notSendingStatus: 4,
+      now,
+    });
+
+    expect(result.promoted).toBe(true);
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notSendingStatus: 4,
+        notSendingStatusSeenAt: now,
+      }),
+    );
+  });
+
+  it("promotes when value changes (4 → null)", async () => {
+    const now = new Date("2026-05-22T12:00:00Z");
+    mockDbSelect.mockResolvedValueOnce([
+      {
+        notSendingStatus: 4,
+        notSendingStatusSeenAt: new Date(now.getTime() - 60_000),
+      },
+    ]);
+
+    const result = await promoteFromCampaignConfig({
+      bronzeRowId: "bronze-cfg-1",
+      instantlyCampaignId: "inst-camp-1",
+      notSendingStatus: null,
+      now,
+    });
+
+    expect(result.promoted).toBe(true);
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notSendingStatus: null,
+        notSendingStatusSeenAt: now,
+      }),
+    );
+  });
+
+  it("promotes when value changes (null → 4) even with recent seen_at", async () => {
+    const now = new Date("2026-05-22T12:00:00Z");
+    mockDbSelect.mockResolvedValueOnce([
+      {
+        notSendingStatus: null,
+        notSendingStatusSeenAt: new Date(now.getTime() - 60_000),
+      },
+    ]);
+
+    const result = await promoteFromCampaignConfig({
+      bronzeRowId: "bronze-cfg-1",
+      instantlyCampaignId: "inst-camp-1",
+      notSendingStatus: 4,
+      now,
+    });
+
+    expect(result.promoted).toBe(true);
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ notSendingStatus: 4 }),
+    );
   });
 });
 

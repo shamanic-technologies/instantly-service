@@ -20,6 +20,7 @@ import { db } from "../db";
 import { instantlyCampaigns } from "../db/schema";
 import { sql } from "drizzle-orm";
 import {
+  getCampaign,
   getCampaignAnalytics,
   listLeadsFull,
   listEmails,
@@ -30,10 +31,12 @@ import {
 import { resolveInstantlyApiKey, KeyServiceError } from "./key-client";
 import {
   insertAnalyticsSnapshot,
+  insertCampaignConfigSnapshot,
   insertEmailsBatch,
   insertLeadsSnapshot,
 } from "./bronze";
 import {
+  promoteFromCampaignConfig,
   promoteFromEmailRecord,
   promoteFromLead,
   promoteSyntheticOpensFromLead,
@@ -127,6 +130,37 @@ async function reconcileOneCampaign(
     clicksBackfilled: 0,
     leadStatusUpdates: 0,
   };
+
+  // ─── Phase 0: campaign config → not_sending_status observability ───────────
+  // Pull full /campaigns/{id} payload into bronze, promote `not_sending_status`
+  // to silver. Failures here MUST NOT abort the rest of reconcile — observability
+  // is best-effort.
+  try {
+    const config = (await getCampaign(
+      apiKey,
+      campaign.instantlyCampaignId,
+    )) as unknown as Record<string, unknown> | null;
+    if (config) {
+      const bronzeRef = await insertCampaignConfigSnapshot(
+        campaign.instantlyCampaignId,
+        campaign.orgId,
+        config,
+      );
+      const rawValue = config["not_sending_status"];
+      const notSendingStatus =
+        typeof rawValue === "number" ? rawValue : null;
+      await promoteFromCampaignConfig({
+        bronzeRowId: bronzeRef.id,
+        instantlyCampaignId: campaign.instantlyCampaignId,
+        notSendingStatus,
+      });
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[instantly-service] reconcile: /campaigns/${campaign.instantlyCampaignId} failed (phase 0): ${message}`,
+    );
+  }
 
   // ─── Phase 1: aggregate sanity check ───────────────────────────────────────
   const analytics = await getCampaignAnalytics(apiKey, campaign.instantlyCampaignId);

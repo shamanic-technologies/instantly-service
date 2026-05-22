@@ -53,6 +53,7 @@ const ZERO_RECIPIENT_STATS = {
   bounced: 0,
   clicked: 0,
   unsubscribed: 0,
+  notSending: 0,
   repliesPositive: 0,
   repliesNegative: 0,
   repliesNeutral: 0,
@@ -94,23 +95,41 @@ export function campaignExclusionClause(): SQL {
   `;
 }
 
-/** Count contacted leads from instantly_campaigns (row exists = contacted) */
-export async function queryContactedCount(whereClause: SQL): Promise<number> {
+export interface CampaignAggregates {
+  contacted: number;
+  notSending: number;
+}
+
+const ZERO_CAMPAIGN_AGGREGATES: CampaignAggregates = { contacted: 0, notSending: 0 };
+
+/**
+ * Aggregate per-lead counts derived from the campaigns table (NOT the events
+ * table). One DB roundtrip — `contacted` = row count, `notSending` = distinct
+ * lead_email where Instantly flagged the parent campaign with a
+ * not_sending_status diagnostic.
+ */
+export async function queryCampaignAggregates(whereClause: SQL): Promise<CampaignAggregates> {
   const result = await db.execute(sql`
-    SELECT COUNT(*)::int AS "emailsContacted"
+    SELECT
+      COUNT(*)::int AS "emailsContacted",
+      COUNT(DISTINCT c.lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)::int AS "notSending"
     FROM instantly_campaigns c
     WHERE ${whereClause}
       AND ${campaignExclusionClause()}
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
-  return (rows[0] as any)?.emailsContacted ?? 0;
+  const row = rows[0] as any;
+  return {
+    contacted: row?.emailsContacted ?? 0,
+    notSending: row?.notSending ?? 0,
+  };
 }
 
-/** Count contacted leads grouped by dimension */
-export async function queryGroupedContactedCount(
+/** Same aggregates as queryCampaignAggregates, grouped by dimension. */
+export async function queryGroupedCampaignAggregates(
   whereClause: SQL,
   groupBy: string,
-): Promise<Map<string, number>> {
+): Promise<Map<string, CampaignAggregates>> {
   const col = GROUP_BY_COLUMNS[groupBy];
   if (!col) return new Map();
 
@@ -119,7 +138,8 @@ export async function queryGroupedContactedCount(
   const result = await db.execute(sql`
     SELECT
       ${groupCol} AS "groupKey",
-      COUNT(*)::int AS "emailsContacted"
+      COUNT(*)::int AS "emailsContacted",
+      COUNT(DISTINCT c.lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)::int AS "notSending"
     FROM instantly_campaigns c
     ${lateralJoin}
     WHERE ${whereClause}
@@ -128,7 +148,15 @@ export async function queryGroupedContactedCount(
     GROUP BY ${groupCol}
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
-  return new Map(rows.map((r: any) => [r.groupKey, r.emailsContacted ?? 0]));
+  return new Map(
+    rows.map((r: any) => [
+      r.groupKey,
+      {
+        contacted: r.emailsContacted ?? 0,
+        notSending: r.notSending ?? 0,
+      } as CampaignAggregates,
+    ]),
+  );
 }
 
 const GROUP_BY_COLUMNS: Record<string, string> = {
@@ -184,8 +212,9 @@ export async function queryGroupedStats(
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
-  // Fetch contacted counts in parallel (from campaigns table, not events)
-  const contactedMap = await queryGroupedContactedCount(whereClause, groupBy);
+  // Fetch campaign-level aggregates (contacted + notSending) from campaigns
+  // table — derived independently of the events table.
+  const aggregatesMap = await queryGroupedCampaignAggregates(whereClause, groupBy);
 
   const rawGroups = rows.map((row: any) => {
     const detail = {
@@ -203,16 +232,18 @@ export async function queryGroupedStats(
     const rsBounced = row.rsBounced ?? 0;
     const esSent = row.esSent ?? 0;
     const esBounced = row.esBounced ?? 0;
+    const aggregates = aggregatesMap.get(row.groupKey) ?? ZERO_CAMPAIGN_AGGREGATES;
     return {
       key: row.groupKey as string,
       recipientStats: {
-        contacted: contactedMap.get(row.groupKey) ?? 0,
+        contacted: aggregates.contacted,
         sent: rsSent,
         delivered: rsSent - rsBounced,
         opened: row.rsOpened ?? 0,
         bounced: rsBounced,
         clicked: row.rsClicked ?? 0,
         unsubscribed: row.rsUnsubscribed ?? 0,
+        notSending: aggregates.notSending,
         ...buildRepliesFromDetail(detail),
       },
       emailStats: {
@@ -259,11 +290,16 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
-  const contacted = await queryContactedCount(whereClause);
+  const aggregates = await queryCampaignAggregates(whereClause);
 
   if (!rows.length) {
     return {
-      recipientStats: { ...ZERO_RECIPIENT_STATS, contacted, repliesDetail: { ...ZERO_REPLIES_DETAIL } },
+      recipientStats: {
+        ...ZERO_RECIPIENT_STATS,
+        contacted: aggregates.contacted,
+        notSending: aggregates.notSending,
+        repliesDetail: { ...ZERO_REPLIES_DETAIL },
+      },
       emailStats: { ...ZERO_EMAIL_STATS },
     };
   }
@@ -286,13 +322,14 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
   const esBounced = row.esBounced ?? 0;
   return {
     recipientStats: {
-      contacted,
+      contacted: aggregates.contacted,
       sent: rsSent,
       delivered: rsSent - rsBounced,
       opened: row.rsOpened ?? 0,
       bounced: rsBounced,
       clicked: row.rsClicked ?? 0,
       unsubscribed: row.rsUnsubscribed ?? 0,
+      notSending: aggregates.notSending,
       ...buildRepliesFromDetail(detail),
     },
     emailStats: {

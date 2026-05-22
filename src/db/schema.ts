@@ -29,13 +29,21 @@ export const instantlyCampaigns = pgTable(
     runId: text("run_id"),
     leadId: text("lead_id"),
     // 4-stage funnel:
-    //   contacted = lead pushed to Instantly (POST /send success — DEFAULT)
-    //   sent      = Instantly dispatched at least one email (webhook email_sent)
-    //   delivered = derived in queries (sent AND NOT bounced); never stored
+    //   contacted   = lead pushed to Instantly (POST /send success — DEFAULT)
+    //   sent        = Instantly dispatched at least one email (webhook email_sent)
+    //   delivered   = derived in queries (sent AND NOT bounced); never stored
     //   bounced / replied / unsubscribed = terminal markers from webhooks
-    //   failed    = push to Instantly errored (campaign-error-handler)
+    //   failed      = push to Instantly errored (campaign-error-handler)
+    //   cancelled   = reserved for the stuck-lead retry job (separate PR) —
+    //                 marks leads whose campaign is killed because Instantly
+    //                 never dispatched (typically not_sending_status set)
     deliveryStatus: text("delivery_status").notNull().default("contacted"),
     replyClassification: text("reply_classification"),
+    // Instantly's per-campaign diagnostic. NULL = sending normally. Non-NULL
+    // (e.g. 4 = capacity-blocked) means Instantly will not dispatch — surfaced
+    // in /stats `recipientStats.notSending` and consumed by retry job (PR B).
+    notSendingStatus: integer("not_sending_status"),
+    notSendingStatusSeenAt: timestamp("not_sending_status_seen_at"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -207,5 +215,23 @@ export const instantlyLeadsRaw = pgTable(
   (table) => [
     index("instantly_leads_raw_campaign_email_idx").on(table.instantlyCampaignId, table.leadEmail),
     index("instantly_leads_raw_fetched_at_idx").on(table.fetchedAt),
+  ],
+);
+
+// Bronze 5: GET /campaigns/{id} responses — full campaign config snapshots.
+// Reconciler writes one row per campaign per cycle. Used to derive
+// `instantly_campaigns.not_sending_status` (Instantly diagnostic).
+export const instantlyCampaignsConfigRaw = pgTable(
+  "instantly_campaigns_config_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id"),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("instantly_campaigns_config_raw_campaign_id_idx").on(table.instantlyCampaignId),
+    index("instantly_campaigns_config_raw_fetched_at_idx").on(table.fetchedAt),
   ],
 );

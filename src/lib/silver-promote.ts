@@ -437,6 +437,72 @@ export async function promoteSyntheticOpensFromLead(params: {
   return { promoted: result.promoted };
 }
 
+// Refresh window for not_sending_status_seen_at — if the value is unchanged
+// AND was seen within this window, skip the DB write to keep the silver row
+// quiet. Window matches typical reconcile cadence.
+const NOT_SENDING_STATUS_REFRESH_MS = 15 * 60 * 1000;
+
+/**
+ * Promote a bronze GET /campaigns/{id} payload into silver
+ * `instantly_campaigns.not_sending_status` + `not_sending_status_seen_at`.
+ *
+ * Idempotency: writes only if (a) value changed, or (b) value unchanged but
+ * `seen_at` is older than NOT_SENDING_STATUS_REFRESH_MS. This keeps the silver
+ * row from churning every cycle when nothing changes.
+ *
+ * Returns { promoted: true } on write, { promoted: false } on skip / unknown
+ * campaign.
+ */
+export async function promoteFromCampaignConfig(params: {
+  bronzeRowId: string;
+  instantlyCampaignId: string;
+  notSendingStatus: number | null;
+  now?: Date;
+}): Promise<{ promoted: boolean }> {
+  const { instantlyCampaignId, notSendingStatus } = params;
+  const now = params.now ?? new Date();
+
+  const [row] = await db
+    .select({
+      notSendingStatus: instantlyCampaigns.notSendingStatus,
+      notSendingStatusSeenAt: instantlyCampaigns.notSendingStatusSeenAt,
+    })
+    .from(instantlyCampaigns)
+    .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
+
+  if (!row) {
+    return { promoted: false };
+  }
+
+  const currentValue = row.notSendingStatus ?? null;
+  const currentSeenAt = row.notSendingStatusSeenAt;
+  const valueChanged = currentValue !== notSendingStatus;
+  const stale =
+    !currentSeenAt ||
+    now.getTime() - currentSeenAt.getTime() > NOT_SENDING_STATUS_REFRESH_MS;
+
+  if (!valueChanged && !stale) {
+    return { promoted: false };
+  }
+
+  await db
+    .update(instantlyCampaigns)
+    .set({
+      notSendingStatus,
+      notSendingStatusSeenAt: now,
+      updatedAt: now,
+    })
+    .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
+
+  if (valueChanged) {
+    console.log(
+      `[instantly-service] silver: notSendingStatus ${currentValue ?? "null"}→${notSendingStatus ?? "null"} campaign=${instantlyCampaignId}`,
+    );
+  }
+
+  return { promoted: true };
+}
+
 /**
  * Backfill synthetic click events from a /leads/list snapshot. Same shape as
  * opens. Note: Instantly does not expose timestamp_last_click directly; we use
