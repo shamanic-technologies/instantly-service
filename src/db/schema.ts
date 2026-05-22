@@ -34,9 +34,8 @@ export const instantlyCampaigns = pgTable(
     //   delivered   = derived in queries (sent AND NOT bounced); never stored
     //   bounced / replied / unsubscribed = terminal markers from webhooks
     //   failed      = push to Instantly errored (campaign-error-handler)
-    //   cancelled   = reserved for the stuck-lead retry job (separate PR) —
-    //                 marks leads whose campaign is killed because Instantly
-    //                 never dispatched (typically not_sending_status set)
+    //   cancelled   = Instantly refused to send (not_sending_status set) and the
+    //                 retry-stuck job paused the campaign + cancelled costs
     deliveryStatus: text("delivery_status").notNull().default("contacted"),
     replyClassification: text("reply_classification"),
     // Instantly's per-campaign diagnostic. NULL = sending normally. Non-NULL

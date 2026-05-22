@@ -9,9 +9,10 @@ import {
 } from "../lib/instantly-client";
 import { handleCampaignError } from "../lib/campaign-error-handler";
 import { resolveInstantlyApiKey } from "../lib/key-client";
-import { UpdateStatusRequestSchema } from "../schemas";
+import { UpdateStatusRequestSchema, RetryStuckNowRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
 import { reconcileAll } from "../lib/reconcile";
+import { runRetryStuck } from "../lib/retry-stuck";
 
 const router = Router();
 
@@ -234,6 +235,54 @@ router.post("/reconcile", (_req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[instantly-service] reconcile run=${runId} failed: ${message}`);
   });
+});
+
+/**
+ * POST /internal/campaigns/retry-stuck
+ * Hourly catch-up: scans campaigns stuck in `delivery_status='contacted'` for
+ * more than 24h, fetches `not_sending_status` live from Instantly, and for
+ * each row where Instantly is refusing to dispatch: pauses the Instantly
+ * campaign, cancels actual+provisioned costs (via handleCampaignError), and
+ * marks `delivery_status='cancelled'`. Idempotent — already-cancelled rows
+ * fall outside the SELECT.
+ *
+ * Returns 202 immediately and runs the sweep in the background (mirrors the
+ * /reconcile pattern; the sweep can take minutes for large orgs).
+ */
+router.post("/retry-stuck", (_req: Request, res: Response) => {
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+  console.log(`[instantly-service] retry-stuck: dispatched run=${runId}`);
+  res.status(202).json({ runId, startedAt });
+  runRetryStuck().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] retry-stuck run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/campaigns/retry-stuck-now
+ * Synchronous retro one-shot. Body `{ all: true }` skips the 24h age filter
+ * so the sweep covers every currently-stuck row in one pass. Same per-row
+ * semantics as the cron path. Returns the summary directly (not 202) so
+ * operators can verify the cancel count from the response.
+ */
+router.post("/retry-stuck-now", async (req: Request, res: Response) => {
+  const parsed = RetryStuckNowRequestSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Invalid request",
+      details: parsed.error.flatten(),
+    });
+  }
+  try {
+    const summary = await runRetryStuck({ all: parsed.data.all });
+    res.json(summary);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] retry-stuck-now failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
 });
 
 export default router;

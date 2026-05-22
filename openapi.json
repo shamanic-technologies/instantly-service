@@ -292,6 +292,50 @@
           "startedAt"
         ]
       },
+      "RetryStuckSummary": {
+        "type": "object",
+        "properties": {
+          "scanned": {
+            "type": "number"
+          },
+          "cancelled": {
+            "type": "number"
+          },
+          "stillSending": {
+            "type": "number"
+          },
+          "capped": {
+            "type": "number"
+          },
+          "skippedNoKey": {
+            "type": "number"
+          },
+          "failed": {
+            "type": "number"
+          },
+          "durationMs": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "scanned",
+          "cancelled",
+          "stillSending",
+          "capped",
+          "skippedNoKey",
+          "failed",
+          "durationMs"
+        ]
+      },
+      "RetryStuckNowRequest": {
+        "type": "object",
+        "properties": {
+          "all": {
+            "type": "boolean",
+            "description": "When true, ignore the default 24h age filter and sweep every currently stuck row in one pass (retro mode)."
+          }
+        }
+      },
       "StatsResponse": {
         "type": "object",
         "properties": {
@@ -329,6 +373,10 @@
               "notSending": {
                 "type": "number",
                 "description": "Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic (COUNT DISTINCT lead_email)"
+              },
+              "cancelled": {
+                "type": "number",
+                "description": "Leads whose campaign was cancelled by the retry-stuck job (delivery_status='cancelled')"
               },
               "repliesPositive": {
                 "type": "number",
@@ -408,6 +456,7 @@
               "clicked",
               "unsubscribed",
               "notSending",
+              "cancelled",
               "repliesPositive",
               "repliesNegative",
               "repliesNeutral",
@@ -624,6 +673,10 @@
                       "type": "number",
                       "description": "Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic (COUNT DISTINCT lead_email)"
                     },
+                    "cancelled": {
+                      "type": "number",
+                      "description": "Leads whose campaign was cancelled by the retry-stuck job (delivery_status='cancelled')"
+                    },
                     "repliesPositive": {
                       "type": "number",
                       "description": "interested + meetingBooked + closed"
@@ -702,6 +755,7 @@
                     "clicked",
                     "unsubscribed",
                     "notSending",
+                    "cancelled",
                     "repliesPositive",
                     "repliesNegative",
                     "repliesNeutral",
@@ -1061,6 +1115,10 @@
                         "type": "boolean",
                         "description": "true if at least one lead_unsubscribed event exists"
                       },
+                      "cancelled": {
+                        "type": "boolean",
+                        "description": "true if the retry-stuck job cancelled the campaign (delivery_status='cancelled')"
+                      },
                       "lastDeliveredAt": {
                         "type": "string",
                         "nullable": true,
@@ -1077,6 +1135,7 @@
                       "replyClassification",
                       "bounced",
                       "unsubscribed",
+                      "cancelled",
                       "lastDeliveredAt"
                     ]
                   },
@@ -1129,6 +1188,10 @@
                       "type": "boolean",
                       "description": "true if at least one lead_unsubscribed event exists"
                     },
+                    "cancelled": {
+                      "type": "boolean",
+                      "description": "true if the retry-stuck job cancelled the campaign (delivery_status='cancelled')"
+                    },
                     "lastDeliveredAt": {
                       "type": "string",
                       "nullable": true,
@@ -1145,6 +1208,7 @@
                     "replyClassification",
                     "bounced",
                     "unsubscribed",
+                    "cancelled",
                     "lastDeliveredAt"
                   ],
                   "description": "Aggregated brand status (most advanced across campaigns) — present only when brandId is provided without campaignId"
@@ -1196,6 +1260,10 @@
                       "type": "boolean",
                       "description": "true if at least one lead_unsubscribed event exists"
                     },
+                    "cancelled": {
+                      "type": "boolean",
+                      "description": "true if the retry-stuck job cancelled the campaign (delivery_status='cancelled')"
+                    },
                     "lastDeliveredAt": {
                       "type": "string",
                       "nullable": true,
@@ -1212,6 +1280,7 @@
                     "replyClassification",
                     "bounced",
                     "unsubscribed",
+                    "cancelled",
                     "lastDeliveredAt"
                   ],
                   "description": "Campaign-scoped status — present only when campaignId is provided"
@@ -1270,6 +1339,7 @@
                   "replyClassification": null,
                   "bounced": false,
                   "unsubscribed": false,
+                  "cancelled": false,
                   "lastDeliveredAt": "2026-03-01T10:00:00.000Z"
                 },
                 "c1a2b3c4-0000-0000-0000-000000000002": {
@@ -1282,6 +1352,7 @@
                   "replyClassification": "positive",
                   "bounced": false,
                   "unsubscribed": false,
+                  "cancelled": false,
                   "lastDeliveredAt": "2026-03-02T12:00:00.000Z"
                 }
               },
@@ -1295,6 +1366,7 @@
                 "replyClassification": "positive",
                 "bounced": false,
                 "unsubscribed": false,
+                "cancelled": false,
                 "lastDeliveredAt": "2026-03-02T12:00:00.000Z"
               },
               "campaign": null,
@@ -1825,6 +1897,77 @@
           },
           "401": {
             "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/campaigns/retry-stuck": {
+      "post": {
+        "summary": "Dispatch hourly retry-stuck sweep",
+        "description": "Hourly sweep that scans campaigns with `delivery_status='contacted'` stuck for >24h, fetches `not_sending_status` live from Instantly, and for each row Instantly is refusing to dispatch: pauses the Instantly campaign, cancels actual+provisioned costs, marks `delivery_status='cancelled'`. Idempotent — already-cancelled rows fall outside the SELECT.\n\nReturns 202 immediately and runs the sweep in the background. Verify completion via Railway logs (`retry-stuck: done`).",
+        "responses": {
+          "202": {
+            "description": "Retry-stuck sweep dispatched (running in background)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconcileAccepted"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/campaigns/retry-stuck-now": {
+      "post": {
+        "summary": "Run retry-stuck sweep synchronously (retro one-shot)",
+        "description": "Synchronous variant of /retry-stuck. Body `{ all: true }` skips the 24h age filter so a single call cancels every currently-stuck row. Returns the summary directly so operators can verify the cancel count.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetryStuckNowRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sweep summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryStuckSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }

@@ -84,6 +84,32 @@ describe("GET /stats", () => {
     expect(flatParams).not.toContain("test-org,");
   });
 
+  it("should include cancelled count in recipientStats funnel", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow({ rsSent: 50 })] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 100, notSending: 2, cancelled: 7 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+    const response = await request(app).get("/stats").set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    expect(response.body.recipientStats.cancelled).toBe(7);
+    expect(response.body.recipientStats.contacted).toBe(100);
+    expect(response.body.recipientStats.notSending).toBe(2);
+  });
+
+  it("should issue a queryCampaignAggregates SQL with delivery_status = 'cancelled'", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0, notSending: 0, cancelled: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+    await request(app).get("/stats").set(identityHeadersObj);
+
+    const aggregatesSqlText = extractSqlText(mockExecute.mock.calls[1][0]);
+    expect(aggregatesSqlText).toContain("delivery_status = 'cancelled'");
+  });
+
   it("should return recipientStats and emailStats when no filters provided", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
@@ -278,7 +304,7 @@ describe("GET /stats", () => {
 
     await request(app).get("/stats").set(identityHeadersObj);
 
-    // Stats query + contacted count + step query
+    // Stats query + campaign-aggregates + step query
     expect(mockExecute).toHaveBeenCalledTimes(3);
 
     const sqlObj = mockExecute.mock.calls[0][0];
@@ -691,6 +717,7 @@ describe("POST /stats/grouped", () => {
         },
       });
 
+    // Stats query + campaign-aggregates (per group)
     expect(mockExecute).toHaveBeenCalledTimes(2);
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);

@@ -22,7 +22,7 @@ async function createStatusApp() {
   return app;
 }
 
-const emptyScoped = { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null };
+const emptyScoped = { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: null };
 
 describe("POST /status", () => {
   beforeEach(() => {
@@ -88,6 +88,23 @@ describe("POST /status", () => {
     expect(r.campaign.lastDeliveredAt).toBe("2026-02-20T14:30:00.000Z");
     expect(r.byCampaign).toBeNull();
     expect(r.brand).toBeNull();
+  });
+
+  it("should surface cancelled=true when delivery_status is cancelled", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "stuck@acme.com", campaignId: null, contacted: true, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: true, lastDeliveredAt: null }],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      campaignId: "camp-1",
+      items: [{ email: "stuck@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results[0].campaign.cancelled).toBe(true);
+    expect(res.body.results[0].campaign.sent).toBe(false);
   });
 
   it("should return campaign as emptyScoped when campaignId provided but no data", async () => {

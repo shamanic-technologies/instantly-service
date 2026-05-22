@@ -208,7 +208,7 @@ describe("promoteFromWebhookPayload", () => {
     );
   });
 
-  it("converts provisioned cost to actual on email_sent step > 1", async () => {
+  it("converts provisioned cost to actual on email_sent (any step)", async () => {
     mockCampaign();
     mockNewSilverRow();
     mockProvisions({
@@ -236,6 +236,37 @@ describe("promoteFromWebhookPayload", () => {
       "cost-2",
       "actual",
       expect.objectContaining({ runId: "step-run-2", userId: "user-uuid" }),
+    );
+  });
+
+  it("converts step-1 provisioned cost to actual on email_sent", async () => {
+    mockCampaign();
+    mockNewSilverRow();
+    mockProvisions({
+      id: "sc-1",
+      campaignId: "camp-1",
+      leadEmail: "lead@test.com",
+      step: 1,
+      runId: "step-run-1",
+      costId: "cost-1",
+      status: "provisioned",
+    });
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-1",
+      payload: {
+        event_type: "email_sent",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 1,
+      },
+    });
+
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith(
+      "step-run-1",
+      "cost-1",
+      "actual",
+      expect.objectContaining({ runId: "step-run-1", userId: "user-uuid" }),
     );
   });
 
@@ -270,7 +301,9 @@ describe("promoteFromWebhookPayload", () => {
     );
   });
 
-  it("does NOT convert cost on email_sent step 1", async () => {
+  it("skips cost conversion when step is missing on email_sent", async () => {
+    // step is required to scope the cost update — fall through harmlessly when
+    // the webhook payload doesn't include it.
     mockCampaign();
     mockNewSilverRow();
 
@@ -280,7 +313,6 @@ describe("promoteFromWebhookPayload", () => {
         event_type: "email_sent",
         campaign_id: "inst-camp-1",
         lead_email: "lead@test.com",
-        step: 1,
       },
     });
 

@@ -24,6 +24,7 @@ interface AggRow {
   replyClassification: string | null;
   bounced: boolean | null;
   unsubscribed: boolean | null;
+  cancelled: boolean | null;
   lastDeliveredAt: string | null;
 }
 
@@ -33,7 +34,7 @@ function extractRows(result: unknown): AggRow[] {
 }
 
 function emptyScoped() {
-  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, lastDeliveredAt: null };
+  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: null };
 }
 
 function formatTimestamp(val: string | null | undefined): string | null {
@@ -52,6 +53,7 @@ function buildScopedStatus(row: AggRow | undefined) {
         replyClassification: row.replyClassification ?? null,
         bounced: row.bounced === true,
         unsubscribed: row.unsubscribed === true,
+        cancelled: row.cancelled === true,
         lastDeliveredAt: formatTimestamp(row.lastDeliveredAt),
       }
     : emptyScoped();
@@ -76,6 +78,7 @@ function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string
       (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
       BOOL_OR(be.campaign_id IS NOT NULL) AS "bounced",
       BOOL_OR(ue.campaign_id IS NOT NULL) AS "unsubscribed",
+      BOOL_OR(c.delivery_status = 'cancelled') AS "cancelled",
       MAX(se.timestamp) AS "lastDeliveredAt"
     FROM instantly_campaigns c
     LEFT JOIN instantly_events se
@@ -122,6 +125,7 @@ function brandBreakdownQuery(brandId: string, emails: string[]) {
       (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
       BOOL_OR(be.campaign_id IS NOT NULL) AS "bounced",
       BOOL_OR(ue.campaign_id IS NOT NULL) AS "unsubscribed",
+      BOOL_OR(c.delivery_status = 'cancelled') AS "cancelled",
       MAX(se.timestamp) AS "lastDeliveredAt"
     FROM instantly_campaigns c
     LEFT JOIN instantly_events se
@@ -190,6 +194,7 @@ function aggregateBrandStatus(rows: AggRow[]) {
     replyClassification,
     bounced: rows.some((r) => r.bounced === true),
     unsubscribed: rows.some((r) => r.unsubscribed === true),
+    cancelled: rows.some((r) => r.cancelled === true),
     lastDeliveredAt: formatTimestamp(maxDeliveredAt),
   };
 }

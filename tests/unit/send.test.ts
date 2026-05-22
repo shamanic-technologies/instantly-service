@@ -473,10 +473,11 @@ describe("POST /send", () => {
     expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-3" }), expect.objectContaining({ orgId: "org-1", userId: "user-1" }));
 
     expect(mockAddCosts).toHaveBeenCalledTimes(3);
-    // Step 1: 2 email costs (actual) + contact upload (actual)
+    // Step 1: 2 email costs (provisioned — only actualized on webhook email_sent)
+    // + contact upload (actual — lead is uploaded regardless of dispatch)
     expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [
-      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "actual" },
-      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "actual" },
+      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
+      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
       { costName: "instantly-contact-uploaded", quantity: 1, costSource: "platform", status: "actual" },
     ], expect.objectContaining({ orgId: "org-1" }));
     // Steps 2-3: 2 email costs (provisioned), no contact upload
@@ -510,9 +511,9 @@ describe("POST /send", () => {
       ([v]: [any]) => v.costId && v.step,
     );
     expect(sequenceCostInserts).toHaveLength(6); // 2 costs × 3 steps
-    // Step 1: 2 actual costs
-    expect(sequenceCostInserts[0][0]).toMatchObject({ step: 1, runId: "step-run-1", status: "actual" });
-    expect(sequenceCostInserts[1][0]).toMatchObject({ step: 1, runId: "step-run-1", status: "actual" });
+    // Step 1: 2 provisioned costs (flipped to actual on webhook email_sent)
+    expect(sequenceCostInserts[0][0]).toMatchObject({ step: 1, runId: "step-run-1", status: "provisioned" });
+    expect(sequenceCostInserts[1][0]).toMatchObject({ step: 1, runId: "step-run-1", status: "provisioned" });
     // Step 2: 2 provisioned costs
     expect(sequenceCostInserts[2][0]).toMatchObject({ step: 2, runId: "step-run-2", status: "provisioned" });
     expect(sequenceCostInserts[3][0]).toMatchObject({ step: 2, runId: "step-run-2", status: "provisioned" });
@@ -537,8 +538,8 @@ describe("POST /send", () => {
     expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }), expect.objectContaining({ orgId: "org-1" }));
     expect(mockAddCosts).toHaveBeenCalledTimes(1);
     expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [
-      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "actual" },
-      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "actual" },
+      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
+      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
       { costName: "instantly-contact-uploaded", quantity: 1, costSource: "platform", status: "actual" },
     ], expect.objectContaining({ orgId: "org-1" }));
     expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" }));

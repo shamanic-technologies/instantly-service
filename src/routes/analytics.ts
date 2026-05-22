@@ -54,6 +54,7 @@ const ZERO_RECIPIENT_STATS = {
   clicked: 0,
   unsubscribed: 0,
   notSending: 0,
+  cancelled: 0,
   repliesPositive: 0,
   repliesNegative: 0,
   repliesNeutral: 0,
@@ -98,21 +99,26 @@ export function campaignExclusionClause(): SQL {
 export interface CampaignAggregates {
   contacted: number;
   notSending: number;
+  cancelled: number;
 }
 
-const ZERO_CAMPAIGN_AGGREGATES: CampaignAggregates = { contacted: 0, notSending: 0 };
+const ZERO_CAMPAIGN_AGGREGATES: CampaignAggregates = { contacted: 0, notSending: 0, cancelled: 0 };
 
 /**
  * Aggregate per-lead counts derived from the campaigns table (NOT the events
- * table). One DB roundtrip — `contacted` = row count, `notSending` = distinct
- * lead_email where Instantly flagged the parent campaign with a
- * not_sending_status diagnostic.
+ * table). One DB roundtrip:
+ *   - `contacted` = row count (lead pushed to Instantly).
+ *   - `notSending` = distinct lead_email where Instantly's diagnostic
+ *     `not_sending_status` is currently flagged (lead live-stuck).
+ *   - `cancelled` = row count where the retry-stuck job has terminally
+ *     killed the campaign (delivery_status='cancelled').
  */
 export async function queryCampaignAggregates(whereClause: SQL): Promise<CampaignAggregates> {
   const result = await db.execute(sql`
     SELECT
       COUNT(*)::int AS "emailsContacted",
-      COUNT(DISTINCT c.lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)::int AS "notSending"
+      COUNT(DISTINCT c.lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)::int AS "notSending",
+      COUNT(*) FILTER (WHERE c.delivery_status = 'cancelled')::int AS "cancelled"
     FROM instantly_campaigns c
     WHERE ${whereClause}
       AND ${campaignExclusionClause()}
@@ -122,6 +128,7 @@ export async function queryCampaignAggregates(whereClause: SQL): Promise<Campaig
   return {
     contacted: row?.emailsContacted ?? 0,
     notSending: row?.notSending ?? 0,
+    cancelled: row?.cancelled ?? 0,
   };
 }
 
@@ -139,7 +146,8 @@ export async function queryGroupedCampaignAggregates(
     SELECT
       ${groupCol} AS "groupKey",
       COUNT(*)::int AS "emailsContacted",
-      COUNT(DISTINCT c.lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)::int AS "notSending"
+      COUNT(DISTINCT c.lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)::int AS "notSending",
+      COUNT(*) FILTER (WHERE c.delivery_status = 'cancelled')::int AS "cancelled"
     FROM instantly_campaigns c
     ${lateralJoin}
     WHERE ${whereClause}
@@ -154,6 +162,7 @@ export async function queryGroupedCampaignAggregates(
       {
         contacted: r.emailsContacted ?? 0,
         notSending: r.notSending ?? 0,
+        cancelled: r.cancelled ?? 0,
       } as CampaignAggregates,
     ]),
   );
@@ -212,8 +221,8 @@ export async function queryGroupedStats(
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
-  // Fetch campaign-level aggregates (contacted + notSending) from campaigns
-  // table — derived independently of the events table.
+  // Fetch campaign-level aggregates (contacted + notSending + cancelled) from
+  // campaigns table — derived independently of the events table.
   const aggregatesMap = await queryGroupedCampaignAggregates(whereClause, groupBy);
 
   const rawGroups = rows.map((row: any) => {
@@ -244,6 +253,7 @@ export async function queryGroupedStats(
         clicked: row.rsClicked ?? 0,
         unsubscribed: row.rsUnsubscribed ?? 0,
         notSending: aggregates.notSending,
+        cancelled: aggregates.cancelled,
         ...buildRepliesFromDetail(detail),
       },
       emailStats: {
@@ -298,6 +308,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
         ...ZERO_RECIPIENT_STATS,
         contacted: aggregates.contacted,
         notSending: aggregates.notSending,
+        cancelled: aggregates.cancelled,
         repliesDetail: { ...ZERO_REPLIES_DETAIL },
       },
       emailStats: { ...ZERO_EMAIL_STATS },
@@ -330,6 +341,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
       clicked: row.rsClicked ?? 0,
       unsubscribed: row.rsUnsubscribed ?? 0,
       notSending: aggregates.notSending,
+      cancelled: aggregates.cancelled,
       ...buildRepliesFromDetail(detail),
     },
     emailStats: {

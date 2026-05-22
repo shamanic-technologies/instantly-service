@@ -246,4 +246,75 @@ describe("handleCampaignError", () => {
     // Notification still sent
     expect(mockSendEmail).toHaveBeenCalled();
   });
+
+  it("should use deliveryStatus='cancelled' when terminalStatus override is supplied", async () => {
+    mockDbWhere.mockResolvedValueOnce([baseCampaign]);
+    mockDbWhere.mockResolvedValueOnce([]); // no costs
+
+    await handleCampaignError("inst-camp-1", "not_sending_status: foo", {
+      terminalStatus: "cancelled",
+    });
+
+    expect(mockDbSetWhere).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "error",
+        deliveryStatus: "cancelled",
+      }),
+    );
+  });
+
+  it("should merge extraMetadata on top of errorReason", async () => {
+    mockDbWhere.mockResolvedValueOnce([baseCampaign]);
+    mockDbWhere.mockResolvedValueOnce([]);
+
+    await handleCampaignError("inst-camp-1", "not_sending_status: bar", {
+      terminalStatus: "cancelled",
+      extraMetadata: { notSendingStatus: { reason: "bar" }, retryCount: 1 },
+    });
+
+    expect(mockDbSetWhere).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: {
+          errorReason: "not_sending_status: bar",
+          notSendingStatus: { reason: "bar" },
+          retryCount: 1,
+        },
+      }),
+    );
+  });
+
+  it("should still cancel costs in cancelled-terminal mode", async () => {
+    mockDbWhere.mockResolvedValueOnce([baseCampaign]);
+    mockDbWhere.mockResolvedValueOnce([
+      { id: "sc-1", step: 1, runId: "step-run-1", costId: "cost-1", status: "provisioned" },
+      { id: "sc-2", step: 2, runId: "step-run-2", costId: "cost-2", status: "provisioned" },
+    ]);
+
+    await handleCampaignError("inst-camp-1", "stuck", {
+      terminalStatus: "cancelled",
+    });
+
+    expect(mockUpdateCostStatus).toHaveBeenCalledTimes(2);
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith(
+      "step-run-1", "cost-1", "cancelled",
+      expect.objectContaining({ runId: "step-run-1" }),
+    );
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith(
+      "step-run-2", "cost-2", "cancelled",
+      expect.objectContaining({ runId: "step-run-2" }),
+    );
+  });
+
+  it("should skip if campaign already cancelled (idempotent re-run)", async () => {
+    mockDbWhere.mockResolvedValueOnce([{ ...baseCampaign, deliveryStatus: "cancelled" }]);
+
+    await handleCampaignError("inst-camp-1", "stuck", {
+      terminalStatus: "cancelled",
+    });
+
+    expect(mockDbSetWhere).not.toHaveBeenCalled();
+    expect(mockUpdateRun).not.toHaveBeenCalled();
+    expect(mockUpdateCostStatus).not.toHaveBeenCalled();
+    expect(mockSendEmail).not.toHaveBeenCalled();
+  });
 });
