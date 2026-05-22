@@ -122,10 +122,12 @@ async function updateReplyClassification(
 }
 
 /**
- * When a follow-up email is sent, convert all matching provisioned costs to actual.
- * Each step has 2 email costs (account + domain).
+ * When `email_sent` arrives for any step, convert that step's provisioned
+ * email costs to actual. Each step has 2 email costs (account + domain).
+ * Step 1's costs were inserted as provisioned at /send time (POST /send no
+ * longer marks them actual upfront), so this handler runs for every step.
  */
-async function handleFollowUpSent(
+async function handleEmailSent(
   campaign: CampaignRow,
   leadEmail: string,
   step: number,
@@ -255,8 +257,8 @@ export async function promoteEvent(input: PromoteEventInput): Promise<PromoteEve
   await updateReplyClassification(input.instantlyCampaignId, input.eventType);
 
   if (input.leadEmail) {
-    if (input.eventType === "email_sent" && input.step && input.step > 1) {
-      await handleFollowUpSent(campaign, input.leadEmail, input.step);
+    if (input.eventType === "email_sent" && input.step) {
+      await handleEmailSent(campaign, input.leadEmail, input.step);
     } else if (SEQUENCE_STOP_EVENTS.has(input.eventType)) {
       await cancelRemainingProvisions(campaign, input.leadEmail);
     }
@@ -435,6 +437,72 @@ export async function promoteSyntheticOpensFromLead(params: {
     sourceRowId: bronzeRowId,
   });
   return { promoted: result.promoted };
+}
+
+// Refresh window for not_sending_status_seen_at — if the value is unchanged
+// AND was seen within this window, skip the DB write to keep the silver row
+// quiet. Window matches typical reconcile cadence.
+const NOT_SENDING_STATUS_REFRESH_MS = 15 * 60 * 1000;
+
+/**
+ * Promote a bronze GET /campaigns/{id} payload into silver
+ * `instantly_campaigns.not_sending_status` + `not_sending_status_seen_at`.
+ *
+ * Idempotency: writes only if (a) value changed, or (b) value unchanged but
+ * `seen_at` is older than NOT_SENDING_STATUS_REFRESH_MS. This keeps the silver
+ * row from churning every cycle when nothing changes.
+ *
+ * Returns { promoted: true } on write, { promoted: false } on skip / unknown
+ * campaign.
+ */
+export async function promoteFromCampaignConfig(params: {
+  bronzeRowId: string;
+  instantlyCampaignId: string;
+  notSendingStatus: number | null;
+  now?: Date;
+}): Promise<{ promoted: boolean }> {
+  const { instantlyCampaignId, notSendingStatus } = params;
+  const now = params.now ?? new Date();
+
+  const [row] = await db
+    .select({
+      notSendingStatus: instantlyCampaigns.notSendingStatus,
+      notSendingStatusSeenAt: instantlyCampaigns.notSendingStatusSeenAt,
+    })
+    .from(instantlyCampaigns)
+    .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
+
+  if (!row) {
+    return { promoted: false };
+  }
+
+  const currentValue = row.notSendingStatus ?? null;
+  const currentSeenAt = row.notSendingStatusSeenAt;
+  const valueChanged = currentValue !== notSendingStatus;
+  const stale =
+    !currentSeenAt ||
+    now.getTime() - currentSeenAt.getTime() > NOT_SENDING_STATUS_REFRESH_MS;
+
+  if (!valueChanged && !stale) {
+    return { promoted: false };
+  }
+
+  await db
+    .update(instantlyCampaigns)
+    .set({
+      notSendingStatus,
+      notSendingStatusSeenAt: now,
+      updatedAt: now,
+    })
+    .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
+
+  if (valueChanged) {
+    console.log(
+      `[instantly-service] silver: notSendingStatus ${currentValue ?? "null"}→${notSendingStatus ?? "null"} campaign=${instantlyCampaignId}`,
+    );
+  }
+
+  return { promoted: true };
 }
 
 /**

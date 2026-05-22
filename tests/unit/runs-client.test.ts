@@ -100,6 +100,62 @@ describe("runs-client", () => {
     expect(options.headers["x-feature-slug"]).toBe("cold-outreach");
   });
 
+  it("updateCostStatus PATCHes /v1/runs/:runId/costs/:costId with status='actual'", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: "cost-1", status: "actual" }),
+    });
+
+    const { updateCostStatus } = await import("../../src/lib/runs-client");
+    await updateCostStatus("run-1", "cost-1", "actual", {
+      orgId: "org-1",
+      userId: "user-1",
+      runId: "run-1",
+    });
+
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toContain("/v1/runs/run-1/costs/cost-1");
+    expect(options.method).toBe("PATCH");
+    const body = JSON.parse(options.body);
+    expect(body.status).toBe("actual");
+  });
+
+  it("updateCostStatus accepts status='provisioned'", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: "cost-1", status: "provisioned" }),
+    });
+
+    const { updateCostStatus } = await import("../../src/lib/runs-client");
+    await updateCostStatus("run-1", "cost-1", "provisioned", {
+      orgId: "org-1",
+      userId: "user-1",
+      runId: "run-1",
+    });
+
+    const [, options] = mockFetch.mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.status).toBe("provisioned");
+  });
+
+  it("updateCostStatus accepts status='cancelled'", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: "cost-1", status: "cancelled" }),
+    });
+
+    const { updateCostStatus } = await import("../../src/lib/runs-client");
+    await updateCostStatus("run-1", "cost-1", "cancelled", {
+      orgId: "org-1",
+      userId: "user-1",
+      runId: "run-1",
+    });
+
+    const [, options] = mockFetch.mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.status).toBe("cancelled");
+  });
+
   it("should not include tracking headers when not present in identity context", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,

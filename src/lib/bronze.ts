@@ -13,6 +13,7 @@ import {
   instantlyAnalyticsRaw,
   instantlyEmailsRaw,
   instantlyLeadsRaw,
+  instantlyCampaignsConfigRaw,
 } from "../db/schema";
 import type { CampaignAnalytics, EmailRecord, LeadFull } from "./instantly-client";
 
@@ -93,4 +94,25 @@ export async function insertLeadsSnapshot(
     .values(values)
     .returning({ id: instantlyLeadsRaw.id });
   return rows.map((r) => ({ id: r.id }));
+}
+
+/**
+ * Insert a GET /campaigns/{id} response snapshot. Append-only: every reconcile
+ * cycle writes a fresh row. Silver promotion (see promoteFromCampaignConfig)
+ * reads the latest row and updates `instantly_campaigns.not_sending_status`.
+ */
+export async function insertCampaignConfigSnapshot(
+  instantlyCampaignId: string,
+  orgId: string | null,
+  payload: Record<string, unknown>,
+): Promise<BronzeRowRef> {
+  const [row] = await db
+    .insert(instantlyCampaignsConfigRaw)
+    .values({
+      orgId,
+      instantlyCampaignId,
+      payload,
+    })
+    .returning({ id: instantlyCampaignsConfigRaw.id });
+  return { id: row.id };
 }

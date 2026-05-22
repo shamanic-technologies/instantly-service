@@ -3,10 +3,16 @@
  *
  * When an Instantly campaign enters an error state (detected via
  * `not_sending_status`), this module:
- *   1. Updates our DB status to "error"
- *   2. Cancels all remaining provisioned costs for follow-up steps
+ *   1. Updates our DB status (default "error", or caller-supplied)
+ *   2. Cancels all remaining actual/provisioned costs for every step
  *   3. Marks the associated run as "failed" (MUST succeed — throws on failure)
  *   4. Sends an admin notification email (non-fatal)
+ *
+ * Two terminal modes:
+ *   - `failed` (default) — Instantly reported an error inline, no retry possible.
+ *   - `cancelled` — discovered post-hoc by the retry-stuck cron (24h+ contacted
+ *     rows with not_sending_status set). Same cost-cancel semantics, but signals
+ *     "stuck and refunded" rather than "errored".
  */
 
 import { db } from "../db";
@@ -17,16 +23,36 @@ import { sendEmail } from "./email-client";
 
 const ADMIN_EMAIL = process.env.ADMIN_NOTIFICATION_EMAIL || "kevin@distribute.you";
 
+export type CampaignErrorTerminal = "failed" | "cancelled";
+
+export interface HandleCampaignErrorOptions {
+  /**
+   * Final `delivery_status` value. Defaults to `failed`. Use `cancelled` for
+   * the retry-stuck cron path so the lifecycle is distinguishable.
+   */
+  terminalStatus?: CampaignErrorTerminal;
+  /**
+   * Extra metadata keys to merge into the campaign row (e.g. `notSendingStatus`,
+   * `retryCount`). Always merged on top of existing metadata + `errorReason`.
+   */
+  extraMetadata?: Record<string, unknown>;
+}
+
 /**
  * Handle a campaign that has entered an error state on Instantly's side.
  *
  * @param instantlyCampaignId - The Instantly campaign ID (not our internal ID)
  * @param reason - Human-readable reason (typically JSON of not_sending_status)
+ * @param options - Terminal-status override + extra metadata to persist
  */
 export async function handleCampaignError(
   instantlyCampaignId: string,
   reason: string,
+  options: HandleCampaignErrorOptions = {},
 ): Promise<void> {
+  const terminalStatus: CampaignErrorTerminal = options.terminalStatus ?? "failed";
+  const extraMetadata = options.extraMetadata ?? {};
+
   // 1. Look up campaign in our DB
   const [campaign] = await db
     .select()
@@ -40,13 +66,14 @@ export async function handleCampaignError(
     return;
   }
 
-  // Already handled
-  if (campaign.status === "error") {
+  // Already handled — skip when the campaign reached a terminal status earlier
+  // (avoids double-cancel / double-notify on cron retry or webhook redelivery).
+  if (campaign.status === "error" || campaign.deliveryStatus === "cancelled") {
     return;
   }
 
   console.error(
-    `[campaign-error] Campaign ${instantlyCampaignId} (${campaign.campaignId}/${campaign.leadEmail}) → error: ${reason}`,
+    `[campaign-error] Campaign ${instantlyCampaignId} (${campaign.campaignId}/${campaign.leadEmail}) → ${terminalStatus}: ${reason}`,
   );
 
   // Build identity context from campaign record (automated process)
@@ -56,15 +83,15 @@ export async function handleCampaignError(
     runId: campaign.runId || undefined,
   };
 
-  // 2. Update DB status to "error" with reason in metadata
+  // 2. Update DB status + deliveryStatus with reason + caller metadata
   const existingMetadata =
     (campaign.metadata as Record<string, unknown>) || {};
   await db
     .update(instantlyCampaigns)
     .set({
       status: "error",
-      deliveryStatus: "failed",
-      metadata: { ...existingMetadata, errorReason: reason },
+      deliveryStatus: terminalStatus,
+      metadata: { ...existingMetadata, errorReason: reason, ...extraMetadata },
       updatedAt: new Date(),
     })
     .where(eq(instantlyCampaigns.id, campaign.id));

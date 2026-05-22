@@ -152,7 +152,7 @@ export async function addCosts(
 export async function updateCostStatus(
   runId: string,
   costId: string,
-  status: "actual" | "cancelled",
+  status: "actual" | "provisioned" | "cancelled",
   identity: IdentityContext
 ): Promise<RunCost> {
   return runsRequest<RunCost>(`/v1/runs/${runId}/costs/${costId}`, identity, {

@@ -54,6 +54,7 @@ Cold email outreach service via [Instantly.ai](https://instantly.ai/) API V2. Ha
 | `instantly_analytics_raw` | Bronze: `/campaigns/analytics` responses |
 | `instantly_emails_raw` | Bronze: `/emails` records (individual emails with step) |
 | `instantly_leads_raw` | Bronze: `/leads/list` per-lead snapshots |
+| `instantly_campaigns_config_raw` | Bronze: `GET /campaigns/{id}` full config snapshots (used to derive `not_sending_status`) |
 
 ### Funnel stages (4-stage)
 
@@ -62,7 +63,16 @@ Cold email outreach service via [Instantly.ai](https://instantly.ai/) API V2. Ha
 | 2 — contacted | `contacted` (default) | row exists in `instantly_campaigns` (POST /send success) |
 | 3 — sent | `sent` | `instantly_events.event_type='email_sent'` (webhook from Instantly) |
 | 4 — delivered | (derived) | sent AND NOT bounced — computed in queries, never stored |
-| terminal | `bounced` / `replied` / `unsubscribed` / `failed` | webhook events |
+| terminal | `bounced` / `replied` / `unsubscribed` / `failed` / `cancelled` | webhook events; `failed` set by campaign-error-handler; `cancelled` reserved for the stuck-lead retry job (writes leads whose campaign is deliberately killed because Instantly never dispatched — typically `not_sending_status` flagged) |
+
+### Observability — `not_sending_status`
+
+Instantly exposes a per-campaign diagnostic `not_sending_status` (e.g. `4` = capacity-blocked). When set, Instantly will not dispatch emails for that campaign. The reconcile job pulls `GET /campaigns/{id}` per campaign per cycle (bronze: `instantly_campaigns_config_raw`) and promotes the field to silver columns on `instantly_campaigns`:
+
+- `not_sending_status` (integer, NULL = sending normally)
+- `not_sending_status_seen_at` (timestamp of last observation)
+
+`GET /stats` surfaces `recipientStats.notSending` = `COUNT(DISTINCT lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)` scoped to the request's filters.
 
 ## Setup
 
@@ -85,6 +95,33 @@ npm run dev
 | `npm run db:generate` | Generate Drizzle migrations |
 | `npm run db:migrate` | Run migrations |
 | `npm run db:push` | Push schema to database |
+
+## Cost lifecycle
+
+Costs flow through three states in runs-service: `provisioned` (reserved) →
+`actual` (charged) | `cancelled` (refunded).
+
+| Cost | Inserted at /send | Promoted on | Cancelled when |
+|------|-------------------|-------------|----------------|
+| `instantly-contact-uploaded` | `actual` (1× per send) | n/a | never — lead IS uploaded |
+| `instantly-account-email-sent` | `provisioned` (1× per step) | webhook `email_sent` | sequence stop (reply/bounce/unsub) OR retry-stuck |
+| `instantly-domain-email-sent` | `provisioned` (1× per step) | webhook `email_sent` | sequence stop OR retry-stuck |
+
+Step 1's email costs are now `provisioned` (previously `actual`). Instantly's
+daily sender quota is only consumed on actual dispatch, so charging the
+customer at /send time over-bills when Instantly later refuses to send (spam
+filter, capacity, esp mismatch). The retry-stuck cron sweeps stuck
+`delivery_status='contacted'` rows older than 24h and cancels their reserved
+spend.
+
+### Cancellation paths
+
+- **Inline** — Instantly returns `not_sending_status` during /send activation:
+  `delivery_status='failed'`, costs cancelled, run failed, admin notified.
+- **Retry-stuck cron** — campaigns stuck >24h with live `not_sending_status`:
+  `delivery_status='cancelled'`, costs cancelled, retry capped at 2 attempts.
+  Driven by `.github/workflows/retry-stuck-cron.yml` every hour. Retro
+  one-shot via `POST /internal/campaigns/retry-stuck-now { all: true }`.
 
 ## BYOK (Bring Your Own Key)
 

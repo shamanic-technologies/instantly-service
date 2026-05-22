@@ -346,6 +346,84 @@ registry.registerPath({
   },
 });
 
+// ─── Retry-stuck (cron + retro) ─────────────────────────────────────────────
+
+export const RetryStuckNowRequestSchema = z
+  .object({
+    all: z.boolean().optional().describe(
+      "When true, ignore the default 24h age filter and sweep every currently " +
+        "stuck row in one pass (retro mode).",
+    ),
+  })
+  .openapi("RetryStuckNowRequest");
+
+export type RetryStuckNowRequest = z.infer<typeof RetryStuckNowRequestSchema>;
+
+const RetryStuckSummarySchema = z
+  .object({
+    scanned: z.number(),
+    cancelled: z.number(),
+    stillSending: z.number(),
+    capped: z.number(),
+    skippedNoKey: z.number(),
+    failed: z.number(),
+    durationMs: z.number(),
+  })
+  .openapi("RetryStuckSummary");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/campaigns/retry-stuck",
+  summary: "Dispatch hourly retry-stuck sweep",
+  request: {},
+  description:
+    "Hourly sweep that scans campaigns with `delivery_status='contacted'` " +
+    "stuck for >24h, fetches `not_sending_status` live from Instantly, and " +
+    "for each row Instantly is refusing to dispatch: pauses the Instantly " +
+    "campaign, cancels actual+provisioned costs, marks " +
+    "`delivery_status='cancelled'`. Idempotent — already-cancelled rows fall " +
+    "outside the SELECT.\n\n" +
+    "Returns 202 immediately and runs the sweep in the background. Verify " +
+    "completion via Railway logs (`retry-stuck: done`).",
+  responses: {
+    202: {
+      description: "Retry-stuck sweep dispatched (running in background)",
+      content: { "application/json": { schema: ReconcileAcceptedSchema } },
+    },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/campaigns/retry-stuck-now",
+  summary: "Run retry-stuck sweep synchronously (retro one-shot)",
+  request: {
+    body: {
+      content: { "application/json": { schema: RetryStuckNowRequestSchema } },
+    },
+  },
+  description:
+    "Synchronous variant of /retry-stuck. Body `{ all: true }` skips the " +
+    "24h age filter so a single call cancels every currently-stuck row. " +
+    "Returns the summary directly so operators can verify the cancel count.",
+  responses: {
+    200: {
+      description: "Sweep summary",
+      content: { "application/json": { schema: RetryStuckSummarySchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ─── Leads ──────────────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -413,6 +491,8 @@ const RecipientStatsSchema = z.object({
   bounced: z.number().describe("Leads with at least one bounce (COUNT DISTINCT lead_email)"),
   clicked: z.number().describe("Leads who clicked at least one link (COUNT DISTINCT lead_email)"),
   unsubscribed: z.number().describe("Leads who unsubscribed (COUNT DISTINCT lead_email)"),
+  notSending: z.number().describe("Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic (COUNT DISTINCT lead_email)"),
+  cancelled: z.number().describe("Leads whose campaign was cancelled by the retry-stuck job (delivery_status='cancelled')"),
 }).merge(RepliesAggregatesSchema);
 
 const StepStatsSchema = z.object({
@@ -730,6 +810,7 @@ const ScopedStatusFieldsSchema = z.object({
   replyClassification: ReplyClassificationSchema.nullable().describe("Reply classification based on Instantly interest status. null = no reply"),
   bounced: z.boolean().describe("true if at least one email_bounced event exists"),
   unsubscribed: z.boolean().describe("true if at least one lead_unsubscribed event exists"),
+  cancelled: z.boolean().describe("true if the retry-stuck job cancelled the campaign (delivery_status='cancelled')"),
   lastDeliveredAt: z.string().nullable().describe("ISO 8601 timestamp of the most recent email_sent event. null if Instantly has not dispatched yet"),
 });
 
@@ -763,18 +844,18 @@ const StatusResponseSchema = z
             "c1a2b3c4-0000-0000-0000-000000000001": {
               contacted: true, sent: true, delivered: true, opened: true, clicked: false,
               replied: false, replyClassification: null, bounced: false, unsubscribed: false,
-              lastDeliveredAt: "2026-03-01T10:00:00.000Z",
+              cancelled: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z",
             },
             "c1a2b3c4-0000-0000-0000-000000000002": {
               contacted: true, sent: true, delivered: true, opened: false, clicked: true,
               replied: true, replyClassification: "positive", bounced: false, unsubscribed: false,
-              lastDeliveredAt: "2026-03-02T12:00:00.000Z",
+              cancelled: false, lastDeliveredAt: "2026-03-02T12:00:00.000Z",
             },
           },
           brand: {
             contacted: true, sent: true, delivered: true, opened: true, clicked: true,
             replied: true, replyClassification: "positive", bounced: false, unsubscribed: false,
-            lastDeliveredAt: "2026-03-02T12:00:00.000Z",
+            cancelled: false, lastDeliveredAt: "2026-03-02T12:00:00.000Z",
           },
           campaign: null,
           global: { email: { bounced: false, unsubscribed: false } },

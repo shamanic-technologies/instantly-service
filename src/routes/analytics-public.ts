@@ -14,6 +14,7 @@ const ZERO_RECIPIENT_STATS = {
   bounced: 0,
   clicked: 0,
   unsubscribed: 0,
+  notSending: 0,
   repliesPositive: 0,
   repliesNegative: 0,
   repliesNeutral: 0,
