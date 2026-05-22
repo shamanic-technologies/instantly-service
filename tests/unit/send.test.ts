@@ -77,7 +77,7 @@ vi.mock("../../src/lib/billing-client", () => ({
   authorizeCreditSpend: (...args: unknown[]) => mockAuthorizeCreditSpend(...args),
 }));
 
-import { buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/routes/send";
+import { buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/lib/dispatch-lead";
 import { requireOrgId } from "../../src/middleware/requireOrgId";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
@@ -315,7 +315,7 @@ describe("POST /send", () => {
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(res.status).toBe(500);
-    expect(res.body.details).toContain("none are active");
+    expect(res.body.details).toContain("No active Instantly accounts available");
     expect(mockCreateCampaign).not.toHaveBeenCalled();
   });
 
@@ -331,7 +331,7 @@ describe("POST /send", () => {
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(res.status).toBe(500);
-    expect(res.body.details).toContain("none are active");
+    expect(res.body.details).toContain("No active Instantly accounts available");
     expect(mockCreateCampaign).not.toHaveBeenCalled();
   });
 
@@ -362,7 +362,7 @@ describe("POST /send", () => {
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(res.status).toBe(500);
-    expect(res.body.details).toContain("none are active");
+    expect(res.body.details).toContain("No active Instantly accounts available");
   });
 
   it("should only use active accounts and ignore inactive ones", async () => {
@@ -665,7 +665,7 @@ describe("POST /send", () => {
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(res.status).toBe(500);
-    expect(res.body.error).toContain("failed after 3 retry attempts");
+    expect(res.body.details).toContain("failed after 3 attempts");
     expect(mockCreateCampaign).toHaveBeenCalledTimes(3);
     // No step runs were created (runs are created AFTER successful activation)
     expect(mockCreateRun).not.toHaveBeenCalled();

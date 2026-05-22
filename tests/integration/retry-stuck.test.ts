@@ -2,11 +2,11 @@
  * End-to-end integration test for the retry-stuck sweep.
  *
  * Seeds real fixture rows in the local test DB (`instantly_campaigns`,
- * `sequence_costs`), stubs the Instantly + runs-service HTTP boundaries,
- * calls `runRetryStuck()` directly (the production cron path), and asserts
- * the rows flip to `delivery_status='cancelled'` while sequence costs go
- * to `status='cancelled'` AND the `not_sending_status` / `_seen_at`
- * columns are populated. Skipped when no DB URL is configured.
+ * `sequence_costs`), stubs the Instantly + runs-service + dispatch-lead
+ * boundaries, calls `runRetryStuck()` directly, and asserts the row
+ * lifecycle: either re-dispatched (row mutated + costs rotated) or
+ * cancelled (row flipped, costs refunded). Skipped when no DB URL is
+ * configured.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
@@ -23,11 +23,24 @@ vi.mock("../../src/lib/instantly-client", async (importOriginal) => {
   };
 });
 
+// Re-dispatch path goes through dispatch-lead.ts → real listAccounts/createCampaign
+// would hit Instantly's API. Mock the helper to return a deterministic outcome
+// without touching the network.
+vi.mock("../../src/lib/dispatch-lead", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/lib/dispatch-lead")>();
+  return {
+    ...actual,
+    dispatchLeadToInstantly: vi.fn(),
+  };
+});
+
 vi.mock("../../src/lib/runs-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/lib/runs-client")>();
   return {
     ...actual,
+    createRun: vi.fn(),
     updateRun: vi.fn().mockResolvedValue({}),
+    addCosts: vi.fn(),
     updateCostStatus: vi.fn().mockResolvedValue({}),
   };
 });
@@ -47,8 +60,10 @@ vi.mock("../../src/lib/email-client", () => ({
 
 import { cleanTestData, closeDb } from "../helpers/test-db";
 import { db } from "../../src/db";
-import { instantlyCampaigns, sequenceCosts } from "../../src/db/schema";
+import { instantlyCampaigns, instantlyLeads, sequenceCosts } from "../../src/db/schema";
 import { getCampaign } from "../../src/lib/instantly-client";
+import { dispatchLeadToInstantly } from "../../src/lib/dispatch-lead";
+import { createRun, addCosts } from "../../src/lib/runs-client";
 import { runRetryStuck } from "../../src/lib/retry-stuck";
 
 const SKIP = !process.env.INSTANTLY_SERVICE_DATABASE_URL;
@@ -67,7 +82,7 @@ describe.skipIf(SKIP)("runRetryStuck (DB-backed)", () => {
     await closeDb();
   });
 
-  it("cancels every stuck fixture row and populates not_sending_status columns", async () => {
+  it("re-dispatches every stuck fixture row onto a fresh account when a sender is available", async () => {
     const baseCampaign = {
       campaignId: "camp-1",
       orgId: "org-1",
@@ -84,41 +99,130 @@ describe.skipIf(SKIP)("runRetryStuck (DB-backed)", () => {
       { ...baseCampaign, leadEmail: "stuck-b@test.com", instantlyCampaignId: "inst-b" },
     ]);
 
+    await db.insert(instantlyLeads).values([
+      { instantlyCampaignId: "inst-a", email: "stuck-a@test.com", firstName: "A", orgId: "org-1" },
+      { instantlyCampaignId: "inst-b", email: "stuck-b@test.com", firstName: "B", orgId: "org-1" },
+    ]);
+
     await db.insert(sequenceCosts).values([
       { campaignId: "camp-1", leadEmail: "stuck-a@test.com", step: 1, runId: "run-a-1", costId: "cost-a-1", status: "provisioned" },
       { campaignId: "camp-1", leadEmail: "stuck-b@test.com", step: 1, runId: "run-b-1", costId: "cost-b-1", status: "provisioned" },
     ]);
 
-    vi.mocked(getCampaign).mockResolvedValue({ not_sending_status: 4 } as any);
+    // Live Instantly campaign has a 1-step sequence so re-dispatch can rebuild it.
+    vi.mocked(getCampaign).mockResolvedValue({
+      not_sending_status: 4,
+      sequences: [{ steps: [{ delay: 0, variants: [{ subject: "Hi", body: "Body" }] }] }],
+    } as any);
+
+    // Pretend each row got dispatched to a different new Instantly campaign.
+    let counter = 0;
+    vi.mocked(dispatchLeadToInstantly).mockImplementation(async () => {
+      counter += 1;
+      return {
+        ok: true,
+        value: {
+          instantlyCampaignId: `inst-NEW-${counter}`,
+          added: 1,
+          account: { email: `sender-${counter}@new.test`, status: 1, warmup_status: 1 } as any,
+        },
+      };
+    });
+
+    vi.mocked(createRun).mockImplementation(async () => ({ id: `new-step-run-${Math.random()}` }) as any);
+    vi.mocked(addCosts).mockResolvedValue({
+      costs: [
+        { id: "new-cost-account", costName: "instantly-account-email-sent" },
+        { id: "new-cost-domain", costName: "instantly-domain-email-sent" },
+      ],
+    } as any);
 
     const summary = await runRetryStuck();
-    expect(summary.cancelled).toBe(2);
+    expect(summary.redispatched).toBe(2);
+    expect(summary.cancelled).toBe(0);
     expect(summary.scanned).toBe(2);
     expect(summary.skipped).toBeUndefined();
 
-    const [rowA] = await db
-      .select()
-      .from(instantlyCampaigns)
-      .where(eq(instantlyCampaigns.instantlyCampaignId, "inst-a"));
-    const [rowB] = await db
-      .select()
-      .from(instantlyCampaigns)
-      .where(eq(instantlyCampaigns.instantlyCampaignId, "inst-b"));
-    expect(rowA.deliveryStatus).toBe("cancelled");
-    expect(rowB.deliveryStatus).toBe("cancelled");
-    expect(rowA.status).toBe("error");
-    expect((rowA.metadata as Record<string, unknown>).retryCount).toBe(1);
-
-    // The diagnostic columns added by PR A are populated by this sweep.
-    expect(rowA.notSendingStatus).toBe(4);
-    expect(rowB.notSendingStatus).toBe(4);
-    expect(rowA.notSendingStatusSeenAt).toBeInstanceOf(Date);
-    expect(rowB.notSendingStatusSeenAt).toBeInstanceOf(Date);
-
-    const allCosts = await db.select().from(sequenceCosts);
-    for (const c of allCosts) {
-      expect(c.status).toBe("cancelled");
+    // Rows now point at the new Instantly campaigns; delivery_status stays 'contacted'.
+    const rows = await db.select().from(instantlyCampaigns);
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r.deliveryStatus).toBe("contacted");
+      expect(r.status).toBe("active");
+      expect(r.instantlyCampaignId).toMatch(/^inst-NEW-\d$/);
+      expect((r.metadata as Record<string, unknown>).redispatchCount).toBe(1);
+      const history = (r.metadata as { redispatchHistory: Array<Record<string, unknown>> }).redispatchHistory;
+      expect(history).toHaveLength(1);
+      expect(history[0].from).toMatch(/^inst-[ab]$/);
     }
+
+    // Old cost rows are now `cancelled` (refund). New `provisioned` rows are present.
+    const allCosts = await db.select().from(sequenceCosts);
+    const cancelled = allCosts.filter((c) => c.status === "cancelled");
+    const provisioned = allCosts.filter((c) => c.status === "provisioned");
+    expect(cancelled).toHaveLength(2); // original cost-a-1, cost-b-1
+    expect(provisioned.length).toBeGreaterThanOrEqual(2); // new costs for each re-dispatch
+  });
+
+  it("falls back to terminal cancellation when no sender is available", async () => {
+    await db.insert(instantlyCampaigns).values({
+      campaignId: "camp-1",
+      orgId: "org-1",
+      userId: "00000000-0000-0000-0000-000000000001",
+      brandIds: ["brand-1"],
+      status: "active",
+      deliveryStatus: "contacted",
+      name: "test",
+      leadEmail: "stuck@test.com",
+      instantlyCampaignId: "inst-stuck",
+      createdAt: STUCK_CREATED_AT,
+    });
+
+    await db.insert(instantlyLeads).values({
+      instantlyCampaignId: "inst-stuck",
+      email: "stuck@test.com",
+      orgId: "org-1",
+    });
+
+    await db.insert(sequenceCosts).values({
+      campaignId: "camp-1",
+      leadEmail: "stuck@test.com",
+      step: 1,
+      runId: "run-stuck-1",
+      costId: "cost-stuck-1",
+      status: "provisioned",
+    });
+
+    vi.mocked(getCampaign).mockResolvedValue({
+      not_sending_status: 4,
+      sequences: [{ steps: [{ delay: 0, variants: [{ subject: "Hi", body: "Body" }] }] }],
+    } as any);
+
+    vi.mocked(dispatchLeadToInstantly).mockResolvedValue({
+      ok: false,
+      reason: "no_healthy_account",
+    });
+
+    const summary = await runRetryStuck();
+    expect(summary.cancelled).toBe(1);
+    expect(summary.redispatched).toBe(0);
+
+    const [row] = await db
+      .select()
+      .from(instantlyCampaigns)
+      .where(eq(instantlyCampaigns.instantlyCampaignId, "inst-stuck"));
+    expect(row.deliveryStatus).toBe("cancelled");
+    expect(row.status).toBe("error");
+
+    // The diagnostic columns are populated.
+    expect(row.notSendingStatus).toBe(4);
+    expect(row.notSendingStatusSeenAt).toBeInstanceOf(Date);
+
+    const [cost] = await db
+      .select()
+      .from(sequenceCosts)
+      .where(eq(sequenceCosts.costId, "cost-stuck-1"));
+    expect(cost.status).toBe("cancelled");
   });
 
   it("leaves rows alone when not_sending_status is null", async () => {
@@ -152,7 +256,7 @@ describe.skipIf(SKIP)("runRetryStuck (DB-backed)", () => {
     expect(row.notSendingStatusSeenAt).toBeNull();
   });
 
-  it("is idempotent — re-running yields no additional cancels", async () => {
+  it("is idempotent — once a row reaches a terminal state it falls outside the SELECT", async () => {
     await db.insert(instantlyCampaigns).values({
       campaignId: "camp-1",
       orgId: "org-1",
@@ -162,17 +266,31 @@ describe.skipIf(SKIP)("runRetryStuck (DB-backed)", () => {
       deliveryStatus: "contacted",
       name: "test",
       leadEmail: "stuck@test.com",
-      instantlyCampaignId: "inst-stuck",
+      instantlyCampaignId: "inst-stuck-idem",
       createdAt: STUCK_CREATED_AT,
     });
 
-    vi.mocked(getCampaign).mockResolvedValue({ not_sending_status: 2 } as any);
+    await db.insert(instantlyLeads).values({
+      instantlyCampaignId: "inst-stuck-idem",
+      email: "stuck@test.com",
+      orgId: "org-1",
+    });
+
+    vi.mocked(getCampaign).mockResolvedValue({
+      not_sending_status: 2,
+      sequences: [{ steps: [{ delay: 0, variants: [{ subject: "Hi", body: "Body" }] }] }],
+    } as any);
+
+    vi.mocked(dispatchLeadToInstantly).mockResolvedValue({
+      ok: false,
+      reason: "no_healthy_account",
+    });
 
     const first = await runRetryStuck();
     expect(first.cancelled).toBe(1);
 
     const second = await runRetryStuck();
-    // Once the row's deliveryStatus is 'cancelled', it falls outside the SELECT.
+    // Once delivery_status flips to 'cancelled', it no longer matches the SELECT.
     expect(second.cancelled).toBe(0);
     expect(second.scanned).toBe(0);
   });

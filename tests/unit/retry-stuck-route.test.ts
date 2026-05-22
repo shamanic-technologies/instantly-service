@@ -53,7 +53,7 @@ describe("POST /internal/campaigns/retry-stuck (async dispatch)", () => {
     vi.clearAllMocks();
   });
 
-  it("returns 202 within 100ms even when runRetryStuck takes longer", async () => {
+  it("returns 202 fast (well before runRetryStuck would complete)", async () => {
     let resolveJob: () => void;
     mockRunRetryStuck.mockImplementation(
       () => new Promise<void>((r) => { resolveJob = r; }),
@@ -65,7 +65,9 @@ describe("POST /internal/campaigns/retry-stuck (async dispatch)", () => {
     const elapsed = Date.now() - t0;
 
     expect(res.status).toBe(202);
-    expect(elapsed).toBeLessThan(100);
+    // 250ms upper bound absorbs CI scheduling noise — still way under the
+    // multi-second sweep duration the route is meant to short-circuit.
+    expect(elapsed).toBeLessThan(250);
 
     resolveJob!();
   });
