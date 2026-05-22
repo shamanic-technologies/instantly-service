@@ -122,10 +122,12 @@ async function updateReplyClassification(
 }
 
 /**
- * When a follow-up email is sent, convert all matching provisioned costs to actual.
- * Each step has 2 email costs (account + domain).
+ * When `email_sent` arrives for any step, convert that step's provisioned
+ * email costs to actual. Each step has 2 email costs (account + domain).
+ * Step 1's costs were inserted as provisioned at /send time (POST /send no
+ * longer marks them actual upfront), so this handler runs for every step.
  */
-async function handleFollowUpSent(
+async function handleEmailSent(
   campaign: CampaignRow,
   leadEmail: string,
   step: number,
@@ -255,8 +257,8 @@ export async function promoteEvent(input: PromoteEventInput): Promise<PromoteEve
   await updateReplyClassification(input.instantlyCampaignId, input.eventType);
 
   if (input.leadEmail) {
-    if (input.eventType === "email_sent" && input.step && input.step > 1) {
-      await handleFollowUpSent(campaign, input.leadEmail, input.step);
+    if (input.eventType === "email_sent" && input.step) {
+      await handleEmailSent(campaign, input.leadEmail, input.step);
     } else if (SEQUENCE_STOP_EVENTS.has(input.eventType)) {
       await cancelRemainingProvisions(campaign, input.leadEmail);
     }

@@ -53,6 +53,7 @@ const ZERO_RECIPIENT_STATS = {
   bounced: 0,
   clicked: 0,
   unsubscribed: 0,
+  cancelled: 0,
   repliesPositive: 0,
   repliesNegative: 0,
   repliesNeutral: 0,
@@ -106,6 +107,19 @@ export async function queryContactedCount(whereClause: SQL): Promise<number> {
   return (rows[0] as any)?.emailsContacted ?? 0;
 }
 
+/** Count cancelled campaigns (retry-stuck job marked delivery_status='cancelled'). */
+export async function queryCancelledCount(whereClause: SQL): Promise<number> {
+  const result = await db.execute(sql`
+    SELECT COUNT(*)::int AS "emailsCancelled"
+    FROM instantly_campaigns c
+    WHERE ${whereClause}
+      AND c.delivery_status = 'cancelled'
+      AND ${campaignExclusionClause()}
+  `);
+  const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+  return (rows[0] as any)?.emailsCancelled ?? 0;
+}
+
 /** Count contacted leads grouped by dimension */
 export async function queryGroupedContactedCount(
   whereClause: SQL,
@@ -129,6 +143,32 @@ export async function queryGroupedContactedCount(
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
   return new Map(rows.map((r: any) => [r.groupKey, r.emailsContacted ?? 0]));
+}
+
+/** Count cancelled campaigns grouped by dimension */
+export async function queryGroupedCancelledCount(
+  whereClause: SQL,
+  groupBy: string,
+): Promise<Map<string, number>> {
+  const col = GROUP_BY_COLUMNS[groupBy];
+  if (!col) return new Map();
+
+  const groupCol = sql.raw(col);
+  const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
+  const result = await db.execute(sql`
+    SELECT
+      ${groupCol} AS "groupKey",
+      COUNT(*)::int AS "emailsCancelled"
+    FROM instantly_campaigns c
+    ${lateralJoin}
+    WHERE ${whereClause}
+      AND c.delivery_status = 'cancelled'
+      AND ${campaignExclusionClause()}
+      AND ${groupCol} IS NOT NULL
+    GROUP BY ${groupCol}
+  `);
+  const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+  return new Map(rows.map((r: any) => [r.groupKey, r.emailsCancelled ?? 0]));
 }
 
 const GROUP_BY_COLUMNS: Record<string, string> = {
@@ -184,8 +224,11 @@ export async function queryGroupedStats(
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
-  // Fetch contacted counts in parallel (from campaigns table, not events)
-  const contactedMap = await queryGroupedContactedCount(whereClause, groupBy);
+  // Fetch contacted + cancelled counts (from campaigns table, not events)
+  const [contactedMap, cancelledMap] = await Promise.all([
+    queryGroupedContactedCount(whereClause, groupBy),
+    queryGroupedCancelledCount(whereClause, groupBy),
+  ]);
 
   const rawGroups = rows.map((row: any) => {
     const detail = {
@@ -213,6 +256,7 @@ export async function queryGroupedStats(
         bounced: rsBounced,
         clicked: row.rsClicked ?? 0,
         unsubscribed: row.rsUnsubscribed ?? 0,
+        cancelled: cancelledMap.get(row.groupKey) ?? 0,
         ...buildRepliesFromDetail(detail),
       },
       emailStats: {
@@ -259,11 +303,14 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
-  const contacted = await queryContactedCount(whereClause);
+  const [contacted, cancelled] = await Promise.all([
+    queryContactedCount(whereClause),
+    queryCancelledCount(whereClause),
+  ]);
 
   if (!rows.length) {
     return {
-      recipientStats: { ...ZERO_RECIPIENT_STATS, contacted, repliesDetail: { ...ZERO_REPLIES_DETAIL } },
+      recipientStats: { ...ZERO_RECIPIENT_STATS, contacted, cancelled, repliesDetail: { ...ZERO_REPLIES_DETAIL } },
       emailStats: { ...ZERO_EMAIL_STATS },
     };
   }
@@ -293,6 +340,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
       bounced: rsBounced,
       clicked: row.rsClicked ?? 0,
       unsubscribed: row.rsUnsubscribed ?? 0,
+      cancelled,
       ...buildRepliesFromDetail(detail),
     },
     emailStats: {

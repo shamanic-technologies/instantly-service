@@ -65,6 +65,7 @@ describe("GET /stats", () => {
   it("should strip trailing commas from x-org-id before querying", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow({ esSent: 5, rsSent: 3 })] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 2 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
@@ -84,6 +85,33 @@ describe("GET /stats", () => {
     expect(flatParams).not.toContain("test-org,");
   });
 
+  it("should include cancelled count in recipientStats funnel", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow({ rsSent: 50 })] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 100 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 7 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+    const response = await request(app).get("/stats").set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    expect(response.body.recipientStats.cancelled).toBe(7);
+    expect(response.body.recipientStats.contacted).toBe(100);
+  });
+
+  it("should issue a queryCancelledCount SQL with delivery_status = 'cancelled'", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+    await request(app).get("/stats").set(identityHeadersObj);
+
+    const cancelledSqlText = extractSqlText(mockExecute.mock.calls[2][0]);
+    expect(cancelledSqlText).toContain("delivery_status = 'cancelled'");
+  });
+
   it("should return recipientStats and emailStats when no filters provided", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
@@ -93,6 +121,7 @@ describe("GET /stats", () => {
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 120 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
@@ -118,6 +147,7 @@ describe("GET /stats", () => {
   it("should return zeros when no events match", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
@@ -146,6 +176,7 @@ describe("GET /stats", () => {
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 80 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
@@ -173,6 +204,7 @@ describe("GET /stats", () => {
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 500 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
@@ -200,6 +232,7 @@ describe("GET /stats", () => {
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 10 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({
       rows: [
         { step: 1, sent: 10, opened: 8, clicked: 3, bounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
@@ -233,6 +266,7 @@ describe("GET /stats", () => {
   it("should return zero stats when db returns empty rows", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
 
     const app = await createStatsApp();
 
@@ -252,6 +286,7 @@ describe("GET /stats", () => {
       rows: [makeStatsRow({ esSent: 10, rsSent: 10 })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 10 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
@@ -273,13 +308,14 @@ describe("GET /stats", () => {
   it("should exclude internal emails and sender from stats query", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] }); // step query
     const app = await createStatsApp();
 
     await request(app).get("/stats").set(identityHeadersObj);
 
-    // Stats query + contacted count + step query
-    expect(mockExecute).toHaveBeenCalledTimes(3);
+    // Stats query + contacted count + cancelled count + step query
+    expect(mockExecute).toHaveBeenCalledTimes(4);
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
@@ -311,6 +347,7 @@ describe("GET /stats", () => {
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 50 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     mockExecute.mockRejectedValueOnce(new Error("step query timeout"));
 
     const app = await createStatsApp();
@@ -333,6 +370,7 @@ describe("GET /stats", () => {
       rows: [makeStatsRow({ esSent: 10, rsSent: 10 })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 10 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     const pgError = new Error("canceling statement due to statement timeout");
     const drizzleError = new Error("Failed query: SELECT ...");
     drizzleError.cause = pgError;
@@ -355,6 +393,7 @@ describe("GET /stats", () => {
   it("should query all 9 reply event types in SQL", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     const app = await createStatsApp();
 
     await request(app).get("/stats").set(identityHeadersObj);
@@ -380,6 +419,7 @@ describe("GET /stats", () => {
       rows: [makeStatsRow({ esSent: 20, rsSent: 10 })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 10 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
@@ -401,6 +441,7 @@ describe("GET /stats", () => {
       rows: [makeStatsRow({ esSent: 10, rsSent: 5 })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 5 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
@@ -428,6 +469,7 @@ describe("GET /stats", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [{ groupKey: "brand-1", emailsContacted: 5 }],
     });
+    mockExecute.mockResolvedValueOnce({ rows: [{ groupKey: "brand-1", emailsCancelled: 0 }] });
 
     const app = await createStatsApp();
 
@@ -459,6 +501,7 @@ describe("GET /stats", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [{ groupKey: "feat-1", emailsContacted: 5 }],
     });
+    mockExecute.mockResolvedValueOnce({ rows: [{ groupKey: "feat-1", emailsCancelled: 0 }] });
 
     const app = await createStatsApp();
 
@@ -497,8 +540,10 @@ describe("POST /stats/grouped", () => {
     });
     // Group 1 contacted count
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 450 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
     // Group 2 contacted count
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 120 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
 
     const app = await createStatsApp();
 
@@ -529,6 +574,7 @@ describe("POST /stats/grouped", () => {
   it("should return zero stats for groups with no matching events", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
 
     const app = await createStatsApp();
 
@@ -609,6 +655,7 @@ describe("POST /stats/grouped", () => {
       rows: [makeStatsRow({ esSent: 10, rsSent: 5 })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 5 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
 
     const app = await createStatsApp();
 
@@ -621,7 +668,8 @@ describe("POST /stats/grouped", () => {
         },
       });
 
-    expect(mockExecute).toHaveBeenCalledTimes(2);
+    // Stats query + contacted count + cancelled count (per group)
+    expect(mockExecute).toHaveBeenCalledTimes(3);
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
     expect(sqlText).toContain("run_id IN");
@@ -631,6 +679,7 @@ describe("POST /stats/grouped", () => {
   it("should exclude internal emails from grouped stats", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsCancelled: 0 }] });
 
     const app = await createStatsApp();
 

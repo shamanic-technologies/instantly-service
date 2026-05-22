@@ -416,17 +416,22 @@ router.post("/", async (req: Request, res: Response) => {
         if (createdLead) savedLead = createdLead;
       }
 
-      // 4. Create per-step runs: step 1 = actual cost, steps 2-N = provisioned cost
-      //    All runs are completed immediately — the webhook updates costs later.
+      // 4. Create per-step runs. Every step's email costs are inserted as
+      //    `provisioned` and flipped to `actual` when the `email_sent` webhook
+      //    arrives (silver-promote.ts:handleFollowUpSent). Instantly's daily
+      //    quota slot per sender is only consumed at actual dispatch, so we
+      //    must not charge customers at /send time for step 1.
       //
       //    Cost model:
-      //    - instantly-contact-uploaded: 1× on first step, always actual (not cancellable)
-      //    - instantly-account-email-sent: 1× per step, actual/provisioned
-      //    - instantly-domain-email-sent: 1× per step, actual/provisioned
+      //    - instantly-contact-uploaded: 1× on first step, actual at /send (the
+      //      lead IS uploaded to Instantly, regardless of subsequent dispatch).
+      //    - instantly-account-email-sent: 1× per step, provisioned at /send,
+      //      promoted to actual on webhook email_sent.
+      //    - instantly-domain-email-sent: 1× per step, provisioned at /send,
+      //      promoted to actual on webhook email_sent.
       const parentIdentity = { orgId, userId, runId: res.locals.runId as string, tracking };
       for (const s of sortedSequence) {
         const isFirstStep = s.step === sortedSequence[0].step;
-        const emailCostStatus = isFirstStep ? "actual" as const : "provisioned" as const;
         const stepRun = await createRun({
           serviceName: "instantly-service",
           taskName: `email-send-step-${s.step}`,
@@ -437,8 +442,8 @@ router.post("/", async (req: Request, res: Response) => {
         const stepIdentity = { orgId, userId, runId: stepRun.id, tracking };
 
         const costItems: { costName: string; quantity: number; costSource: "platform" | "org"; status: "actual" | "provisioned" }[] = [
-          { costName: "instantly-account-email-sent", quantity: 1, costSource: keySource, status: emailCostStatus },
-          { costName: "instantly-domain-email-sent", quantity: 1, costSource: keySource, status: emailCostStatus },
+          { costName: "instantly-account-email-sent", quantity: 1, costSource: keySource, status: "provisioned" },
+          { costName: "instantly-domain-email-sent", quantity: 1, costSource: keySource, status: "provisioned" },
         ];
         // Contact upload cost: once per send, always actual, not tracked in sequence_costs
         if (isFirstStep) {
@@ -457,7 +462,7 @@ router.post("/", async (req: Request, res: Response) => {
             step: s.step,
             runId: stepRun.id,
             costId: cost.id,
-            status: isFirstStep ? "actual" : "provisioned",
+            status: "provisioned",
           });
         }
 

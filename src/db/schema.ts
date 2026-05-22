@@ -34,6 +34,8 @@ export const instantlyCampaigns = pgTable(
     //   delivered = derived in queries (sent AND NOT bounced); never stored
     //   bounced / replied / unsubscribed = terminal markers from webhooks
     //   failed    = push to Instantly errored (campaign-error-handler)
+    //   cancelled = Instantly refused to send (not_sending_status set) and the
+    //               retry-stuck job paused the campaign + cancelled costs
     deliveryStatus: text("delivery_status").notNull().default("contacted"),
     replyClassification: text("reply_classification"),
     metadata: jsonb("metadata"),

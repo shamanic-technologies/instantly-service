@@ -86,6 +86,33 @@ npm run dev
 | `npm run db:migrate` | Run migrations |
 | `npm run db:push` | Push schema to database |
 
+## Cost lifecycle
+
+Costs flow through three states in runs-service: `provisioned` (reserved) →
+`actual` (charged) | `cancelled` (refunded).
+
+| Cost | Inserted at /send | Promoted on | Cancelled when |
+|------|-------------------|-------------|----------------|
+| `instantly-contact-uploaded` | `actual` (1× per send) | n/a | never — lead IS uploaded |
+| `instantly-account-email-sent` | `provisioned` (1× per step) | webhook `email_sent` | sequence stop (reply/bounce/unsub) OR retry-stuck |
+| `instantly-domain-email-sent` | `provisioned` (1× per step) | webhook `email_sent` | sequence stop OR retry-stuck |
+
+Step 1's email costs are now `provisioned` (previously `actual`). Instantly's
+daily sender quota is only consumed on actual dispatch, so charging the
+customer at /send time over-bills when Instantly later refuses to send (spam
+filter, capacity, esp mismatch). The retry-stuck cron sweeps stuck
+`delivery_status='contacted'` rows older than 24h and cancels their reserved
+spend.
+
+### Cancellation paths
+
+- **Inline** — Instantly returns `not_sending_status` during /send activation:
+  `delivery_status='failed'`, costs cancelled, run failed, admin notified.
+- **Retry-stuck cron** — campaigns stuck >24h with live `not_sending_status`:
+  `delivery_status='cancelled'`, costs cancelled, retry capped at 2 attempts.
+  Driven by `.github/workflows/retry-stuck-cron.yml` every hour. Retro
+  one-shot via `POST /internal/campaigns/retry-stuck-now { all: true }`.
+
 ## BYOK (Bring Your Own Key)
 
 Routes with `clerkOrgId` context use the org's own Instantly API key via key-service's BYOK decrypt endpoint. If the org hasn't configured their key, the request fails with 422 — no fallback to the shared app key.
