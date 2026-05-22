@@ -1,10 +1,14 @@
-name: Retry stuck campaigns (hourly)
+name: Retry stuck campaigns (daily)
 
-# Runs every hour to detect campaigns stuck in `delivery_status='contacted'`
-# for >24h because Instantly refuses to send (not_sending_status set). Pauses
-# the Instantly campaign, cancels actual+provisioned costs (so the customer
-# is refunded), marks `delivery_status='cancelled'`. Idempotent — already
-# cancelled rows fall outside the SELECT.
+# Runs once a day (02:00 UTC) to detect campaigns stuck in
+# `delivery_status='contacted'` for >24h because Instantly refuses to send
+# (not_sending_status set). Pauses the Instantly campaign, writes the
+# observed not_sending_status onto the row, cancels actual+provisioned
+# costs (so the customer is refunded), marks `delivery_status='cancelled'`.
+# Idempotent — already-cancelled rows fall outside the SELECT.
+#
+# Per-run cap: 500 oldest rows. Serialized via a Postgres advisory lock so
+# overlapping invocations short-circuit instead of double-cancelling.
 #
 # Required secrets:
 #   INSTANTLY_SERVICE_URL  — production URL (e.g. https://instantly.example.com)
@@ -14,7 +18,7 @@ name: Retry stuck campaigns (hourly)
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 jobs:

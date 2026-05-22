@@ -292,50 +292,6 @@
           "startedAt"
         ]
       },
-      "RetryStuckSummary": {
-        "type": "object",
-        "properties": {
-          "scanned": {
-            "type": "number"
-          },
-          "cancelled": {
-            "type": "number"
-          },
-          "stillSending": {
-            "type": "number"
-          },
-          "capped": {
-            "type": "number"
-          },
-          "skippedNoKey": {
-            "type": "number"
-          },
-          "failed": {
-            "type": "number"
-          },
-          "durationMs": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "scanned",
-          "cancelled",
-          "stillSending",
-          "capped",
-          "skippedNoKey",
-          "failed",
-          "durationMs"
-        ]
-      },
-      "RetryStuckNowRequest": {
-        "type": "object",
-        "properties": {
-          "all": {
-            "type": "boolean",
-            "description": "When true, ignore the default 24h age filter and sweep every currently stuck row in one pass (retro mode)."
-          }
-        }
-      },
       "StatsResponse": {
         "type": "object",
         "properties": {
@@ -1903,8 +1859,8 @@
     },
     "/internal/campaigns/retry-stuck": {
       "post": {
-        "summary": "Dispatch hourly retry-stuck sweep",
-        "description": "Hourly sweep that scans campaigns with `delivery_status='contacted'` stuck for >24h, fetches `not_sending_status` live from Instantly, and for each row Instantly is refusing to dispatch: pauses the Instantly campaign, cancels actual+provisioned costs, marks `delivery_status='cancelled'`. Idempotent — already-cancelled rows fall outside the SELECT.\n\nReturns 202 immediately and runs the sweep in the background. Verify completion via Railway logs (`retry-stuck: done`).",
+        "summary": "Dispatch daily retry-stuck sweep",
+        "description": "Daily sweep (02:00 UTC) that scans campaigns with `delivery_status='contacted'` stuck for >24h, fetches `not_sending_status` live from Instantly, and for each row Instantly is refusing to dispatch: pauses the Instantly campaign, writes the observed `not_sending_status` onto the row, cancels actual+provisioned costs, marks `delivery_status='cancelled'`. Idempotent — already-cancelled rows fall outside the SELECT.\n\nPer-run cap: 500 oldest rows. Serialized via a Postgres advisory lock — overlapping calls short-circuit with no-op summary. Returns 202 immediately and runs in the background. Verify completion via Railway logs (`retry-stuck: done`).",
         "responses": {
           "202": {
             "description": "Retry-stuck sweep dispatched (running in background)",
@@ -1918,56 +1874,6 @@
           },
           "401": {
             "description": "Unauthorized"
-          }
-        }
-      }
-    },
-    "/internal/campaigns/retry-stuck-now": {
-      "post": {
-        "summary": "Run retry-stuck sweep synchronously (retro one-shot)",
-        "description": "Synchronous variant of /retry-stuck. Body `{ all: true }` skips the 24h age filter so a single call cancels every currently-stuck row. Returns the summary directly so operators can verify the cancel count.",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RetryStuckNowRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Sweep summary",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RetryStuckSummary"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "500": {
-            "description": "Server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
           }
         }
       }

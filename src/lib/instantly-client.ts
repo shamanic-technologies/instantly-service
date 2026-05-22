@@ -141,16 +141,29 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Instantly caps `/emails` at 20 req/min per workspace. We serialize requests
-// via a single shared "next-call-allowed-at" timestamp so all concurrent
-// reconcile workers pace below the cap. 3100ms = 19.35 req/min (safety margin).
-const EMAILS_MIN_INTERVAL_MS = 3100;
-let emailsNextAllowedAt = 0;
+// Per-path throttling: Instantly caps `/emails` at 20 req/min per workspace
+// and the general API at ~600 req/min. We serialize requests through a
+// per-slot "next-call-allowed-at" timestamp so concurrent workers (reconcile
+// loops, retry-stuck batches) pace below the cap regardless of how many
+// promises run in parallel. The slot is selected by `slotForPath()`.
+//   /emails:   3100ms ≈ 19.35 req/min (safety margin under 20/min cap)
+//   general:   110ms  ≈ 545 req/min   (safety margin under 600/min cap)
+interface ThrottleSlot {
+  nextAllowedAt: number;
+  minIntervalMs: number;
+}
 
-async function throttleEmailsPath(): Promise<void> {
+const emailsSlot: ThrottleSlot = { nextAllowedAt: 0, minIntervalMs: 3100 };
+const generalSlot: ThrottleSlot = { nextAllowedAt: 0, minIntervalMs: 110 };
+
+function slotForPath(path: string): ThrottleSlot {
+  return path.startsWith("/emails") ? emailsSlot : generalSlot;
+}
+
+async function throttle(slot: ThrottleSlot): Promise<void> {
   const now = Date.now();
-  const scheduledAt = Math.max(now, emailsNextAllowedAt);
-  emailsNextAllowedAt = scheduledAt + EMAILS_MIN_INTERVAL_MS;
+  const scheduledAt = Math.max(now, slot.nextAllowedAt);
+  slot.nextAllowedAt = scheduledAt + slot.minIntervalMs;
   const wait = scheduledAt - now;
   if (wait > 0) await sleep(wait);
 }
@@ -170,9 +183,7 @@ async function instantlyRequest<T>(
     headers["Content-Type"] = "application/json";
   }
 
-  if (path.startsWith("/emails")) {
-    await throttleEmailsPath();
-  }
+  await throttle(slotForPath(path));
 
   let lastError: Error | null = null;
 

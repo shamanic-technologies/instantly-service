@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock fetch globally
 const mockFetch = vi.fn();
@@ -10,6 +10,14 @@ describe("instantly-client", () => {
   beforeEach(() => {
     mockFetch.mockClear();
     vi.resetModules();
+  });
+
+  // Defensive cleanup: tests that use fake timers must NOT leak fake-timer
+  // state into the next test. If a fake-timer test fails before its manual
+  // useRealTimers() call, every subsequent test runs with fake setTimeout
+  // and `await sleep(...)` hangs forever.
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("should export createCampaign function", async () => {
@@ -251,7 +259,9 @@ describe("instantly-client", () => {
     vi.useRealTimers();
   });
 
-  it("non-/emails paths are not throttled", async () => {
+  it("non-/emails paths use the general (fast) throttle slot, not the slow /emails one", async () => {
+    // General slot is ~110ms — two sequential calls finish well under 500ms.
+    // (vs. the /emails slot at 3100ms which would gate the second call.)
     mockFetch.mockResolvedValue({
       ok: true,
       status: 200,
@@ -264,6 +274,45 @@ describe("instantly-client", () => {
     await getCampaignAnalytics(TEST_API_KEY, "c1");
     await getCampaignAnalytics(TEST_API_KEY, "c2");
     expect(Date.now() - t0).toBeLessThan(500);
+  });
+
+  it("non-/emails paths: parallel batch is paced through the general throttle (≥110ms gaps)", async () => {
+    // The retry-stuck cron submits a batch of ~10 calls via Promise.all.
+    // Each call must serialize through `throttle(generalSlot)` so the
+    // workspace stays under Instantly's general 600 req/min cap.
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(global, "setTimeout");
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ id: "c" }),
+    });
+
+    const { getCampaign } = await import("../../src/lib/instantly-client");
+
+    const N = 5;
+    const calls = Array.from({ length: N }, (_, i) => getCampaign(TEST_API_KEY, `c${i}`));
+    await vi.runAllTimersAsync();
+    await Promise.all(calls);
+
+    // With 5 concurrent calls hitting the general throttle (110ms interval),
+    // the waits accumulate: 0, 110, 220, 330, 440 — so calls 2..5 each issue
+    // their own setTimeout with a positive delay. At least N-1 such waits.
+    const positiveDelays = setTimeoutSpy.mock.calls
+      .map(([, ms]) => Number(ms))
+      .filter((d) => Number.isFinite(d) && d > 0);
+    expect(positiveDelays.length).toBeGreaterThanOrEqual(N - 1);
+
+    // And we never accidentally hit the slow /emails throttle (≥3000ms).
+    const emailsThrottleDelays = positiveDelays.filter((d) => d >= 3000);
+    expect(emailsThrottleDelays).toHaveLength(0);
+
+    // The max wait should be bounded by ~N * 110ms — well under any /emails
+    // gate. Generous upper bound to absorb test scheduling noise.
+    expect(Math.max(...positiveDelays)).toBeLessThan(N * 200);
+
+    setTimeoutSpy.mockRestore();
+    vi.useRealTimers();
   });
 
   it("happy-path 200 emits no console.log/warn (no log spam)", async () => {
