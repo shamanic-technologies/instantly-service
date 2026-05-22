@@ -21,11 +21,13 @@ vi.mock("../../src/db/schema", () => ({
   instantlyEvents: {},
 }));
 
+const mockGetCampaign = vi.fn();
 const mockGetCampaignAnalytics = vi.fn();
 const mockListLeadsFull = vi.fn();
 const mockListEmails = vi.fn();
 
 vi.mock("../../src/lib/instantly-client", () => ({
+  getCampaign: (...args: unknown[]) => mockGetCampaign(...args),
   getCampaignAnalytics: (...args: unknown[]) => mockGetCampaignAnalytics(...args),
   listLeadsFull: (...args: unknown[]) => mockListLeadsFull(...args),
   listEmails: (...args: unknown[]) => mockListEmails(...args),
@@ -49,21 +51,27 @@ vi.mock("../../src/lib/key-client", () => {
 const { KeyServiceError } = await import("../../src/lib/key-client");
 
 const mockInsertAnalyticsSnapshot = vi.fn();
+const mockInsertCampaignConfigSnapshot = vi.fn();
 const mockInsertEmailsBatch = vi.fn();
 const mockInsertLeadsSnapshot = vi.fn();
 
 vi.mock("../../src/lib/bronze", () => ({
   insertAnalyticsSnapshot: (...args: unknown[]) => mockInsertAnalyticsSnapshot(...args),
+  insertCampaignConfigSnapshot: (...args: unknown[]) =>
+    mockInsertCampaignConfigSnapshot(...args),
   insertEmailsBatch: (...args: unknown[]) => mockInsertEmailsBatch(...args),
   insertLeadsSnapshot: (...args: unknown[]) => mockInsertLeadsSnapshot(...args),
 }));
 
+const mockPromoteFromCampaignConfig = vi.fn();
 const mockPromoteFromEmailRecord = vi.fn();
 const mockPromoteFromLead = vi.fn();
 const mockPromoteSyntheticOpensFromLead = vi.fn();
 const mockPromoteSyntheticClicksFromLead = vi.fn();
 
 vi.mock("../../src/lib/silver-promote", () => ({
+  promoteFromCampaignConfig: (...args: unknown[]) =>
+    mockPromoteFromCampaignConfig(...args),
   promoteFromEmailRecord: (...args: unknown[]) => mockPromoteFromEmailRecord(...args),
   promoteFromLead: (...args: unknown[]) => mockPromoteFromLead(...args),
   promoteSyntheticOpensFromLead: (...args: unknown[]) =>
@@ -115,9 +123,12 @@ describe("reconcileAll", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "fake-api-key", keySource: "platform" });
+    mockGetCampaign.mockResolvedValue({ id: "inst-camp-1", not_sending_status: null });
     mockInsertAnalyticsSnapshot.mockResolvedValue({ id: "analytics-1" });
+    mockInsertCampaignConfigSnapshot.mockResolvedValue({ id: "config-1" });
     mockInsertLeadsSnapshot.mockResolvedValue([]);
     mockInsertEmailsBatch.mockResolvedValue([]);
+    mockPromoteFromCampaignConfig.mockResolvedValue({ promoted: false });
     mockPromoteFromEmailRecord.mockResolvedValue({ promoted: false, silverEventId: null });
     mockPromoteFromLead.mockResolvedValue({ promoted: false, silverEventId: null });
     mockPromoteSyntheticOpensFromLead.mockResolvedValue({ promoted: false });
@@ -283,5 +294,64 @@ describe("reconcileAll", () => {
     expect(result.campaignsWithDrift).toBe(0);
     expect(result.drift.replies).toBe(0);
     expect(mockListLeadsFull).not.toHaveBeenCalled();
+  });
+
+  it("phase 0: writes campaign config to bronze and promotes not_sending_status", async () => {
+    mockDbSelectFrom.mockResolvedValue([
+      { id: "db-1", instantlyCampaignId: "inst-1", orgId: "org-1" },
+    ]);
+    mockGetCampaign.mockResolvedValue({
+      id: "inst-1",
+      name: "Campaign 1",
+      not_sending_status: 4,
+    });
+    mockGetCampaignAnalytics.mockResolvedValue(makeAnalytics());
+    mockLocalCounts({ sent: 0, replies: 0, bounces: 0, unsubs: 0 });
+
+    await reconcileAll();
+
+    expect(mockInsertCampaignConfigSnapshot).toHaveBeenCalledWith(
+      "inst-1",
+      "org-1",
+      expect.objectContaining({ not_sending_status: 4 }),
+    );
+    expect(mockPromoteFromCampaignConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        instantlyCampaignId: "inst-1",
+        notSendingStatus: 4,
+      }),
+    );
+  });
+
+  it("phase 0: maps absent not_sending_status to null", async () => {
+    mockDbSelectFrom.mockResolvedValue([
+      { id: "db-1", instantlyCampaignId: "inst-1", orgId: "org-1" },
+    ]);
+    mockGetCampaign.mockResolvedValue({ id: "inst-1", name: "Campaign 1" });
+    mockGetCampaignAnalytics.mockResolvedValue(makeAnalytics());
+    mockLocalCounts({ sent: 0, replies: 0, bounces: 0, unsubs: 0 });
+
+    await reconcileAll();
+
+    expect(mockPromoteFromCampaignConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ notSendingStatus: null }),
+    );
+  });
+
+  it("phase 0: failure does not abort reconcile (phases 1-3 still run)", async () => {
+    mockDbSelectFrom.mockResolvedValue([
+      { id: "db-1", instantlyCampaignId: "inst-1", orgId: "org-1" },
+    ]);
+    mockGetCampaign.mockRejectedValue(new Error("instantly-api GET /campaigns/inst-1 failed: 500"));
+    mockGetCampaignAnalytics.mockResolvedValue(makeAnalytics());
+    mockLocalCounts({ sent: 0, replies: 0, bounces: 0, unsubs: 0 });
+
+    const result = await reconcileAll();
+
+    expect(result.campaignsScanned).toBe(1);
+    expect(result.campaignsFailed).toBe(0);
+    expect(mockInsertCampaignConfigSnapshot).not.toHaveBeenCalled();
+    expect(mockPromoteFromCampaignConfig).not.toHaveBeenCalled();
+    expect(mockGetCampaignAnalytics).toHaveBeenCalledTimes(1);
   });
 });

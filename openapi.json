@@ -370,6 +370,10 @@
                 "type": "number",
                 "description": "Leads who unsubscribed (COUNT DISTINCT lead_email)"
               },
+              "notSending": {
+                "type": "number",
+                "description": "Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic (COUNT DISTINCT lead_email)"
+              },
               "cancelled": {
                 "type": "number",
                 "description": "Leads whose campaign was cancelled by the retry-stuck job (delivery_status='cancelled')"
@@ -451,6 +455,7 @@
               "bounced",
               "clicked",
               "unsubscribed",
+              "notSending",
               "cancelled",
               "repliesPositive",
               "repliesNegative",
@@ -664,6 +669,10 @@
                       "type": "number",
                       "description": "Leads who unsubscribed (COUNT DISTINCT lead_email)"
                     },
+                    "notSending": {
+                      "type": "number",
+                      "description": "Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic (COUNT DISTINCT lead_email)"
+                    },
                     "cancelled": {
                       "type": "number",
                       "description": "Leads whose campaign was cancelled by the retry-stuck job (delivery_status='cancelled')"
@@ -745,6 +754,7 @@
                     "bounced",
                     "clicked",
                     "unsubscribed",
+                    "notSending",
                     "cancelled",
                     "repliesPositive",
                     "repliesNegative",
