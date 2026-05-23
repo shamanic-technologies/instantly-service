@@ -141,7 +141,7 @@ spend.
     `not_sending_status`, or the live campaign / lead profile is missing):
     fall through to `handleCampaignError(cancelled)` — refund costs, flip
     `delivery_status='cancelled'`.
-  - **Bounds**: per-run cap `MAX_ROWS_PER_RUN = 500` (oldest first), Postgres
+  - **Bounds**: per-run cap `MAX_ROWS_PER_RUN = 5000` (oldest first), Postgres
     advisory lock prevents overlapping sweeps (`skipped: "sweep_in_progress"`),
     `Promise.all` batches of 10 paced by the general 600 req/min throttle.
   - Admin email notifications are suppressed on the cancelled path so a

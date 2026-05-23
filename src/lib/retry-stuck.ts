@@ -64,8 +64,15 @@ import {
 /** Age (hours) a row must reach before the cron picks it up. */
 export const STUCK_AGE_HOURS = 24;
 
-/** Cap rows processed per sweep so a daily tick has a bounded runtime. */
-export const MAX_ROWS_PER_RUN = 500;
+/**
+ * Cap rows processed per sweep so a daily tick has a bounded runtime.
+ *
+ * At ~2.6s per row (observed prod: 351 re-dispatches in 22min on 2026-05-23),
+ * 5000 rows ≈ 3.5h per sweep. Comfortably under the daily window and large
+ * enough that a typical backlog drains in a single tick instead of dragging
+ * across N days.
+ */
+export const MAX_ROWS_PER_RUN = 5000;
 
 /** Per-tick batch size for parallel Instantly calls. */
 export const BATCH_SIZE = 10;
