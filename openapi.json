@@ -300,39 +300,39 @@
             "properties": {
               "contacted": {
                 "type": "number",
-                "description": "Leads added to a campaign (row exists in instantly_campaigns)"
+                "description": "Leads added to a campaign / send attempted"
               },
               "sent": {
                 "type": "number",
-                "description": "Leads with at least one email sent (COUNT DISTINCT lead_email)"
+                "description": "Leads with at least 1 email sent (COUNT DISTINCT lead)"
               },
               "delivered": {
                 "type": "number",
-                "description": "sent minus bounced (leads)"
+                "description": "Leads delivered (sent - bounced)"
               },
               "opened": {
                 "type": "number",
-                "description": "Leads who opened at least one email (COUNT DISTINCT lead_email)"
+                "description": "Leads who opened at least 1 email"
               },
               "bounced": {
                 "type": "number",
-                "description": "Leads with at least one bounce (COUNT DISTINCT lead_email)"
+                "description": "Leads with at least 1 bounce"
               },
               "clicked": {
                 "type": "number",
-                "description": "Leads who clicked at least one link (COUNT DISTINCT lead_email)"
+                "description": "Leads who clicked at least 1 link"
               },
               "unsubscribed": {
                 "type": "number",
-                "description": "Leads who unsubscribed (COUNT DISTINCT lead_email)"
+                "description": "Leads who unsubscribed"
               },
               "notSending": {
                 "type": "number",
-                "description": "Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic (COUNT DISTINCT lead_email)"
+                "description": "Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic. Optional in contract v1; will be required in v2 after postmark padding ships."
               },
               "cancelled": {
                 "type": "number",
-                "description": "Leads whose campaign was cancelled by the retry-stuck job (delivery_status='cancelled')"
+                "description": "Leads whose campaign was cancelled by the retry-stuck job (delivery_status='cancelled'). Optional in contract v1; will be required in v2 after postmark padding ships."
               },
               "repliesPositive": {
                 "type": "number",
@@ -400,7 +400,8 @@
                   "neutral",
                   "autoReply",
                   "outOfOffice"
-                ]
+                ],
+                "description": "Granular reply breakdown by classification"
               }
             },
             "required": [
@@ -411,8 +412,6 @@
               "bounced",
               "clicked",
               "unsubscribed",
-              "notSending",
-              "cancelled",
               "repliesPositive",
               "repliesNegative",
               "repliesNeutral",
@@ -425,19 +424,19 @@
             "properties": {
               "sent": {
                 "type": "number",
-                "description": "Total emails sent (all steps)"
+                "description": "Total emails sent (COUNT *, all steps)"
               },
               "delivered": {
                 "type": "number",
-                "description": "sent minus bounced (emails)"
+                "description": "Total emails delivered (sent - bounced)"
               },
               "opened": {
                 "type": "number",
-                "description": "Unique emails opened at least once"
+                "description": "Unique emails opened at least once (COUNT DISTINCT)"
               },
               "clicked": {
                 "type": "number",
-                "description": "Unique emails with at least one link click"
+                "description": "Unique emails with at least 1 click (COUNT DISTINCT)"
               },
               "bounced": {
                 "type": "number",
@@ -462,19 +461,19 @@
                     },
                     "delivered": {
                       "type": "number",
-                      "description": "sent minus bounced at this step"
+                      "description": "Delivered at this step (sent - bounced)"
                     },
                     "opened": {
                       "type": "number",
                       "description": "Emails opened at this step"
                     },
-                    "bounced": {
-                      "type": "number",
-                      "description": "Emails bounced at this step"
-                    },
                     "clicked": {
                       "type": "number",
                       "description": "Link clicks at this step"
+                    },
+                    "bounced": {
+                      "type": "number",
+                      "description": "Emails bounced at this step"
                     },
                     "unsubscribed": {
                       "type": "number",
@@ -546,7 +545,8 @@
                         "neutral",
                         "autoReply",
                         "outOfOffice"
-                      ]
+                      ],
+                      "description": "Granular reply breakdown by classification"
                     }
                   },
                   "required": [
@@ -554,8 +554,8 @@
                     "sent",
                     "delivered",
                     "opened",
-                    "bounced",
                     "clicked",
+                    "bounced",
                     "unsubscribed",
                     "repliesPositive",
                     "repliesNegative",
@@ -564,7 +564,7 @@
                     "repliesDetail"
                   ]
                 },
-                "description": "Per-step breakdown"
+                "description": "Per-step breakdown (instantly broadcast only; empty/omitted for postmark transactional)"
               }
             },
             "required": [
@@ -599,39 +599,39 @@
                   "properties": {
                     "contacted": {
                       "type": "number",
-                      "description": "Leads added to a campaign (row exists in instantly_campaigns)"
+                      "description": "Leads added to a campaign / send attempted"
                     },
                     "sent": {
                       "type": "number",
-                      "description": "Leads with at least one email sent (COUNT DISTINCT lead_email)"
+                      "description": "Leads with at least 1 email sent (COUNT DISTINCT lead)"
                     },
                     "delivered": {
                       "type": "number",
-                      "description": "sent minus bounced (leads)"
+                      "description": "Leads delivered (sent - bounced)"
                     },
                     "opened": {
                       "type": "number",
-                      "description": "Leads who opened at least one email (COUNT DISTINCT lead_email)"
+                      "description": "Leads who opened at least 1 email"
                     },
                     "bounced": {
                       "type": "number",
-                      "description": "Leads with at least one bounce (COUNT DISTINCT lead_email)"
+                      "description": "Leads with at least 1 bounce"
                     },
                     "clicked": {
                       "type": "number",
-                      "description": "Leads who clicked at least one link (COUNT DISTINCT lead_email)"
+                      "description": "Leads who clicked at least 1 link"
                     },
                     "unsubscribed": {
                       "type": "number",
-                      "description": "Leads who unsubscribed (COUNT DISTINCT lead_email)"
+                      "description": "Leads who unsubscribed"
                     },
                     "notSending": {
                       "type": "number",
-                      "description": "Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic (COUNT DISTINCT lead_email)"
+                      "description": "Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic. Optional in contract v1; will be required in v2 after postmark padding ships."
                     },
                     "cancelled": {
                       "type": "number",
-                      "description": "Leads whose campaign was cancelled by the retry-stuck job (delivery_status='cancelled')"
+                      "description": "Leads whose campaign was cancelled by the retry-stuck job (delivery_status='cancelled'). Optional in contract v1; will be required in v2 after postmark padding ships."
                     },
                     "repliesPositive": {
                       "type": "number",
@@ -699,7 +699,8 @@
                         "neutral",
                         "autoReply",
                         "outOfOffice"
-                      ]
+                      ],
+                      "description": "Granular reply breakdown by classification"
                     }
                   },
                   "required": [
@@ -710,8 +711,6 @@
                     "bounced",
                     "clicked",
                     "unsubscribed",
-                    "notSending",
-                    "cancelled",
                     "repliesPositive",
                     "repliesNegative",
                     "repliesNeutral",
@@ -724,19 +723,19 @@
                   "properties": {
                     "sent": {
                       "type": "number",
-                      "description": "Total emails sent (all steps)"
+                      "description": "Total emails sent (COUNT *, all steps)"
                     },
                     "delivered": {
                       "type": "number",
-                      "description": "sent minus bounced (emails)"
+                      "description": "Total emails delivered (sent - bounced)"
                     },
                     "opened": {
                       "type": "number",
-                      "description": "Unique emails opened at least once"
+                      "description": "Unique emails opened at least once (COUNT DISTINCT)"
                     },
                     "clicked": {
                       "type": "number",
-                      "description": "Unique emails with at least one link click"
+                      "description": "Unique emails with at least 1 click (COUNT DISTINCT)"
                     },
                     "bounced": {
                       "type": "number",
@@ -761,19 +760,19 @@
                           },
                           "delivered": {
                             "type": "number",
-                            "description": "sent minus bounced at this step"
+                            "description": "Delivered at this step (sent - bounced)"
                           },
                           "opened": {
                             "type": "number",
                             "description": "Emails opened at this step"
                           },
-                          "bounced": {
-                            "type": "number",
-                            "description": "Emails bounced at this step"
-                          },
                           "clicked": {
                             "type": "number",
                             "description": "Link clicks at this step"
+                          },
+                          "bounced": {
+                            "type": "number",
+                            "description": "Emails bounced at this step"
                           },
                           "unsubscribed": {
                             "type": "number",
@@ -845,7 +844,8 @@
                               "neutral",
                               "autoReply",
                               "outOfOffice"
-                            ]
+                            ],
+                            "description": "Granular reply breakdown by classification"
                           }
                         },
                         "required": [
@@ -853,8 +853,8 @@
                           "sent",
                           "delivered",
                           "opened",
-                          "bounced",
                           "clicked",
+                          "bounced",
                           "unsubscribed",
                           "repliesPositive",
                           "repliesNegative",
@@ -863,7 +863,7 @@
                           "repliesDetail"
                         ]
                       },
-                      "description": "Per-step breakdown"
+                      "description": "Per-step breakdown (instantly broadcast only; empty/omitted for postmark transactional)"
                     }
                   },
                   "required": [
@@ -1030,27 +1030,27 @@
                     "properties": {
                       "contacted": {
                         "type": "boolean",
-                        "description": "Stage 2: lead was pushed to Instantly (row exists in instantly_campaigns)"
+                        "description": "Whether at least one sending exists in this scope"
                       },
                       "sent": {
                         "type": "boolean",
-                        "description": "Stage 3: Instantly dispatched at least one email_sent event for this lead"
+                        "description": "Whether an email was sent in this scope"
                       },
                       "delivered": {
                         "type": "boolean",
-                        "description": "Stage 4: sent AND not bounced (derived from instantly_events; never a stored status)"
+                        "description": "Whether an email was delivered in this scope (sent AND not bounced)"
                       },
                       "opened": {
                         "type": "boolean",
-                        "description": "true if at least one email_opened event exists"
+                        "description": "Whether the recipient opened any email in this scope"
                       },
                       "clicked": {
                         "type": "boolean",
-                        "description": "true if at least one email_link_clicked event exists"
+                        "description": "Whether the recipient clicked any link in this scope"
                       },
                       "replied": {
                         "type": "boolean",
-                        "description": "true if at least one reply_received event exists"
+                        "description": "Whether the recipient replied in this scope (always false for postmark — no reply tracking)"
                       },
                       "replyClassification": {
                         "type": "string",
@@ -1061,24 +1061,24 @@
                           "neutral",
                           null
                         ],
-                        "description": "Reply classification based on Instantly interest status. null = no reply"
+                        "description": "Classification of most recent reply: positive / negative / neutral, or null if no reply (always null for postmark)"
                       },
                       "bounced": {
                         "type": "boolean",
-                        "description": "true if at least one email_bounced event exists"
+                        "description": "Whether an email bounced in this scope"
                       },
                       "unsubscribed": {
                         "type": "boolean",
-                        "description": "true if at least one lead_unsubscribed event exists"
+                        "description": "Whether the recipient unsubscribed in this scope"
                       },
                       "cancelled": {
                         "type": "boolean",
-                        "description": "true if the retry-stuck job cancelled the campaign (delivery_status='cancelled')"
+                        "description": "Whether the campaign was cancelled by the retry-stuck job. Optional in contract v1; required in v2 after postmark padding ships."
                       },
                       "lastDeliveredAt": {
                         "type": "string",
                         "nullable": true,
-                        "description": "ISO 8601 timestamp of the most recent email_sent event. null if Instantly has not dispatched yet"
+                        "description": "ISO 8601 timestamp of last delivery in this scope; null if none"
                       }
                     },
                     "required": [
@@ -1091,7 +1091,6 @@
                       "replyClassification",
                       "bounced",
                       "unsubscribed",
-                      "cancelled",
                       "lastDeliveredAt"
                     ]
                   },
@@ -1103,27 +1102,27 @@
                   "properties": {
                     "contacted": {
                       "type": "boolean",
-                      "description": "Stage 2: lead was pushed to Instantly (row exists in instantly_campaigns)"
+                      "description": "Whether at least one sending exists in this scope"
                     },
                     "sent": {
                       "type": "boolean",
-                      "description": "Stage 3: Instantly dispatched at least one email_sent event for this lead"
+                      "description": "Whether an email was sent in this scope"
                     },
                     "delivered": {
                       "type": "boolean",
-                      "description": "Stage 4: sent AND not bounced (derived from instantly_events; never a stored status)"
+                      "description": "Whether an email was delivered in this scope (sent AND not bounced)"
                     },
                     "opened": {
                       "type": "boolean",
-                      "description": "true if at least one email_opened event exists"
+                      "description": "Whether the recipient opened any email in this scope"
                     },
                     "clicked": {
                       "type": "boolean",
-                      "description": "true if at least one email_link_clicked event exists"
+                      "description": "Whether the recipient clicked any link in this scope"
                     },
                     "replied": {
                       "type": "boolean",
-                      "description": "true if at least one reply_received event exists"
+                      "description": "Whether the recipient replied in this scope (always false for postmark — no reply tracking)"
                     },
                     "replyClassification": {
                       "type": "string",
@@ -1134,24 +1133,24 @@
                         "neutral",
                         null
                       ],
-                      "description": "Reply classification based on Instantly interest status. null = no reply"
+                      "description": "Classification of most recent reply: positive / negative / neutral, or null if no reply (always null for postmark)"
                     },
                     "bounced": {
                       "type": "boolean",
-                      "description": "true if at least one email_bounced event exists"
+                      "description": "Whether an email bounced in this scope"
                     },
                     "unsubscribed": {
                       "type": "boolean",
-                      "description": "true if at least one lead_unsubscribed event exists"
+                      "description": "Whether the recipient unsubscribed in this scope"
                     },
                     "cancelled": {
                       "type": "boolean",
-                      "description": "true if the retry-stuck job cancelled the campaign (delivery_status='cancelled')"
+                      "description": "Whether the campaign was cancelled by the retry-stuck job. Optional in contract v1; required in v2 after postmark padding ships."
                     },
                     "lastDeliveredAt": {
                       "type": "string",
                       "nullable": true,
-                      "description": "ISO 8601 timestamp of the most recent email_sent event. null if Instantly has not dispatched yet"
+                      "description": "ISO 8601 timestamp of last delivery in this scope; null if none"
                     }
                   },
                   "required": [
@@ -1164,7 +1163,6 @@
                     "replyClassification",
                     "bounced",
                     "unsubscribed",
-                    "cancelled",
                     "lastDeliveredAt"
                   ],
                   "description": "Aggregated brand status (most advanced across campaigns) — present only when brandId is provided without campaignId"
@@ -1175,27 +1173,27 @@
                   "properties": {
                     "contacted": {
                       "type": "boolean",
-                      "description": "Stage 2: lead was pushed to Instantly (row exists in instantly_campaigns)"
+                      "description": "Whether at least one sending exists in this scope"
                     },
                     "sent": {
                       "type": "boolean",
-                      "description": "Stage 3: Instantly dispatched at least one email_sent event for this lead"
+                      "description": "Whether an email was sent in this scope"
                     },
                     "delivered": {
                       "type": "boolean",
-                      "description": "Stage 4: sent AND not bounced (derived from instantly_events; never a stored status)"
+                      "description": "Whether an email was delivered in this scope (sent AND not bounced)"
                     },
                     "opened": {
                       "type": "boolean",
-                      "description": "true if at least one email_opened event exists"
+                      "description": "Whether the recipient opened any email in this scope"
                     },
                     "clicked": {
                       "type": "boolean",
-                      "description": "true if at least one email_link_clicked event exists"
+                      "description": "Whether the recipient clicked any link in this scope"
                     },
                     "replied": {
                       "type": "boolean",
-                      "description": "true if at least one reply_received event exists"
+                      "description": "Whether the recipient replied in this scope (always false for postmark — no reply tracking)"
                     },
                     "replyClassification": {
                       "type": "string",
@@ -1206,24 +1204,24 @@
                         "neutral",
                         null
                       ],
-                      "description": "Reply classification based on Instantly interest status. null = no reply"
+                      "description": "Classification of most recent reply: positive / negative / neutral, or null if no reply (always null for postmark)"
                     },
                     "bounced": {
                       "type": "boolean",
-                      "description": "true if at least one email_bounced event exists"
+                      "description": "Whether an email bounced in this scope"
                     },
                     "unsubscribed": {
                       "type": "boolean",
-                      "description": "true if at least one lead_unsubscribed event exists"
+                      "description": "Whether the recipient unsubscribed in this scope"
                     },
                     "cancelled": {
                       "type": "boolean",
-                      "description": "true if the retry-stuck job cancelled the campaign (delivery_status='cancelled')"
+                      "description": "Whether the campaign was cancelled by the retry-stuck job. Optional in contract v1; required in v2 after postmark padding ships."
                     },
                     "lastDeliveredAt": {
                       "type": "string",
                       "nullable": true,
-                      "description": "ISO 8601 timestamp of the most recent email_sent event. null if Instantly has not dispatched yet"
+                      "description": "ISO 8601 timestamp of last delivery in this scope; null if none"
                     }
                   },
                   "required": [
@@ -1236,7 +1234,6 @@
                     "replyClassification",
                     "bounced",
                     "unsubscribed",
-                    "cancelled",
                     "lastDeliveredAt"
                   ],
                   "description": "Campaign-scoped status — present only when campaignId is provided"
@@ -1249,17 +1246,18 @@
                       "properties": {
                         "bounced": {
                           "type": "boolean",
-                          "description": "true if this email bounced in ANY campaign across the entire org (not scoped to brand)"
+                          "description": "True if this email bounced anywhere in the org"
                         },
                         "unsubscribed": {
                           "type": "boolean",
-                          "description": "true if this email unsubscribed in ANY campaign across the entire org (not scoped to brand)"
+                          "description": "True if this email unsubscribed anywhere in the org"
                         }
                       },
                       "required": [
                         "bounced",
                         "unsubscribed"
-                      ]
+                      ],
+                      "description": "Global email signals (technical/legal)"
                     }
                   },
                   "required": [

@@ -18,6 +18,7 @@ Cold email outreach service via Instantly.ai API V2. Handles campaign management
 
 - `src/index.ts` — Express app entry point
 - `src/schemas.ts` — Zod schemas (source of truth for validation + OpenAPI)
+- `src/zod-setup.ts` — Side-effect module that extends Zod with `.openapi()`. Import it BEFORE any module that creates `z.object(...).openapi("Name")` schemas.
 - `src/routes/` — Route handlers (campaigns, leads, accounts, analytics, send, webhooks, health)
 - `src/middleware/serviceAuth.ts` — API key auth middleware
 - `src/lib/instantly-client.ts` — Instantly API V2 HTTP client
@@ -28,3 +29,13 @@ Cold email outreach service via Instantly.ai API V2. Handles campaign management
 - `tests/integration/` — Integration tests
 - `tests/helpers/` — Test utilities (test app, test DB)
 - `openapi.json` — Auto-generated, do NOT edit manually
+
+## Shared contract
+
+Cross-provider canonical shapes (`StatusScope`, `RecipientStats`, `EmailStats`, `StepStats`, `RepliesDetail`, `ChannelStats`, `ProviderStatus`, `GlobalStatus`, `ReplyClassification`) live in [`@shamanic-technologies/email-domain-contract`](https://github.com/shamanic-technologies/email-domain-contract). Do NOT redeclare these schemas locally — re-export from the package via `src/schemas.ts`. Instantly-specific schemas that wrap or extend these shapes keep their local declaration.
+
+Two provider-specific fields are **optional in v1** of the contract: `cancelled` and `notSending`. Instantly-service is the source of truth for both — handlers always emit them as populated values. Contract v2 will tighten them to required once postmark-service ships its padding follow-up.
+
+## Zod 4 caveat — contract schemas + `.openapi()`
+
+`@asteasolutions/zod-to-openapi` attaches `.openapi()` to Zod schema instances at the time `extendZodWithOpenApi(z)` runs in the consumer. The contract package's schemas were instantiated before that point in the consumer's module graph, so they do NOT gain `.openapi()` retroactively. Re-export them without `.openapi(name)` and let the generator inline them (no `$ref` name). Local schemas defined in `src/schemas.ts` (after `import "./zod-setup"`) keep their `.openapi(name)` tagging.
