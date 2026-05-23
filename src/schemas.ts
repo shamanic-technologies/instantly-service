@@ -1,12 +1,61 @@
-import { z } from "zod";
-import {
-  OpenAPIRegistry,
-  extendZodWithOpenApi,
-} from "@asteasolutions/zod-to-openapi";
+// Side-effect import — extends Zod with `.openapi()` so subsequent local schema
+// declarations (`z.object({...}).openapi("Name")`) work. Imported contract
+// schemas are re-exported as-is without `.openapi(name)`: zod-to-openapi v8's
+// `.openapi(name)` requires the schema instance to be created AFTER the
+// extension (Zod 4 attaches prototype methods at construction time). The
+// OpenAPI generator inlines contract shapes where they're referenced; trade-off
+// accepted to keep a single source of truth in the contract package.
+import "./zod-setup";
 
-extendZodWithOpenApi(z);
+import { z } from "zod";
+import { OpenAPIRegistry } from "@asteasolutions/zod-to-openapi";
+import {
+  ReplyClassificationSchema as RawReplyClassification,
+  RepliesDetailSchema as RawRepliesDetail,
+  RecipientStatsSchema as RawRecipientStats,
+  StepStatsSchema as RawStepStats,
+  EmailStatsSchema as RawEmailStats,
+  ChannelStatsSchema as RawChannelStats,
+  StatusScopeSchema as RawStatusScope,
+  GlobalStatusSchema as RawGlobalStatus,
+  ProviderStatusSchema as RawProviderStatus,
+} from "@shamanic-technologies/email-domain-contract";
 
 export const registry = new OpenAPIRegistry();
+
+// ─── Shared cross-provider schemas (imported from email-domain-contract) ────
+// Re-exported as-is. The OpenAPI generator inlines them where they're referenced
+// (no $ref name) because zod-to-openapi v8's `.openapi(name)` cannot be applied
+// to pre-existing Zod 4 schema instances without the consumer creating them
+// fresh. Trade-off accepted for v1: slightly more verbose OpenAPI output, but
+// the schemas remain a single source of truth in the contract package.
+
+export const ReplyClassificationSchema = RawReplyClassification;
+export type ReplyClassification = z.infer<typeof ReplyClassificationSchema>;
+
+export const RepliesDetailSchema = RawRepliesDetail;
+export type RepliesDetail = z.infer<typeof RepliesDetailSchema>;
+
+export const RecipientStatsSchema = RawRecipientStats;
+export type RecipientStats = z.infer<typeof RecipientStatsSchema>;
+
+export const StepStatsSchema = RawStepStats;
+export type StepStats = z.infer<typeof StepStatsSchema>;
+
+export const EmailStatsSchema = RawEmailStats;
+export type EmailStats = z.infer<typeof EmailStatsSchema>;
+
+export const ChannelStatsSchema = RawChannelStats;
+export type ChannelStats = z.infer<typeof ChannelStatsSchema>;
+
+export const StatusScopeSchema = RawStatusScope;
+export type StatusScope = z.infer<typeof StatusScopeSchema>;
+
+export const GlobalStatusSchema = RawGlobalStatus;
+export type GlobalStatus = z.infer<typeof GlobalStatusSchema>;
+
+export const ProviderStatusSchema = RawProviderStatus;
+export type ProviderStatus = z.infer<typeof ProviderStatusSchema>;
 
 // ─── Tracking Headers (optional, injected by workflow-service) ─────────────
 
@@ -413,58 +462,6 @@ export const StatsQuerySchema = z
 
 export type StatsQuery = z.infer<typeof StatsQuerySchema>;
 
-const RepliesDetailSchema = z.object({
-  interested: z.number().describe("lead_interested events"),
-  meetingBooked: z.number().describe("lead_meeting_booked events"),
-  closed: z.number().describe("lead_closed events"),
-  notInterested: z.number().describe("lead_not_interested events"),
-  wrongPerson: z.number().describe("lead_wrong_person events"),
-  unsubscribe: z.number().describe("lead_unsubscribed events"),
-  neutral: z.number().describe("lead_neutral events"),
-  autoReply: z.number().describe("auto_reply_received events"),
-  outOfOffice: z.number().describe("lead_out_of_office events"),
-});
-
-const RepliesAggregatesSchema = z.object({
-  repliesPositive: z.number().describe("interested + meetingBooked + closed"),
-  repliesNegative: z.number().describe("notInterested + wrongPerson + unsubscribe"),
-  repliesNeutral: z.number().describe("neutral (lead_neutral events only)"),
-  repliesAutoReply: z.number().describe("autoReply + outOfOffice"),
-  repliesDetail: RepliesDetailSchema,
-});
-
-const RecipientStatsSchema = z.object({
-  contacted: z.number().describe("Leads added to a campaign (row exists in instantly_campaigns)"),
-  sent: z.number().describe("Leads with at least one email sent (COUNT DISTINCT lead_email)"),
-  delivered: z.number().describe("sent minus bounced (leads)"),
-  opened: z.number().describe("Leads who opened at least one email (COUNT DISTINCT lead_email)"),
-  bounced: z.number().describe("Leads with at least one bounce (COUNT DISTINCT lead_email)"),
-  clicked: z.number().describe("Leads who clicked at least one link (COUNT DISTINCT lead_email)"),
-  unsubscribed: z.number().describe("Leads who unsubscribed (COUNT DISTINCT lead_email)"),
-  notSending: z.number().describe("Leads in campaigns currently flagged with Instantly's not_sending_status diagnostic (COUNT DISTINCT lead_email)"),
-  cancelled: z.number().describe("Leads whose campaign was cancelled by the retry-stuck job (delivery_status='cancelled')"),
-}).merge(RepliesAggregatesSchema);
-
-const StepStatsSchema = z.object({
-  step: z.number().describe("Step number (1-based)"),
-  sent: z.number().describe("Emails sent at this step"),
-  delivered: z.number().describe("sent minus bounced at this step"),
-  opened: z.number().describe("Emails opened at this step"),
-  bounced: z.number().describe("Emails bounced at this step"),
-  clicked: z.number().describe("Link clicks at this step"),
-  unsubscribed: z.number().describe("Unsubscribes at this step"),
-}).merge(RepliesAggregatesSchema);
-
-const EmailStatsSchema = z.object({
-  sent: z.number().describe("Total emails sent (all steps)"),
-  delivered: z.number().describe("sent minus bounced (emails)"),
-  opened: z.number().describe("Unique emails opened at least once"),
-  clicked: z.number().describe("Unique emails with at least one link click"),
-  bounced: z.number().describe("Total emails bounced"),
-  unsubscribed: z.number().describe("Total unsubscribe events"),
-  stepStats: z.array(StepStatsSchema).optional().describe("Per-step breakdown"),
-});
-
 const StatsResponseSchema = z
   .object({
     recipientStats: RecipientStatsSchema,
@@ -748,36 +745,11 @@ export const StatusRequestSchema = z
 
 export type StatusRequest = z.infer<typeof StatusRequestSchema>;
 
-const ReplyClassificationSchema = z.enum(["positive", "negative", "neutral"]);
-
-const ScopedStatusFieldsSchema = z.object({
-  contacted: z.boolean().describe("Stage 2: lead was pushed to Instantly (row exists in instantly_campaigns)"),
-  sent: z.boolean().describe("Stage 3: Instantly dispatched at least one email_sent event for this lead"),
-  delivered: z.boolean().describe("Stage 4: sent AND not bounced (derived from instantly_events; never a stored status)"),
-  opened: z.boolean().describe("true if at least one email_opened event exists"),
-  clicked: z.boolean().describe("true if at least one email_link_clicked event exists"),
-  replied: z.boolean().describe("true if at least one reply_received event exists"),
-  replyClassification: ReplyClassificationSchema.nullable().describe("Reply classification based on Instantly interest status. null = no reply"),
-  bounced: z.boolean().describe("true if at least one email_bounced event exists"),
-  unsubscribed: z.boolean().describe("true if at least one lead_unsubscribed event exists"),
-  cancelled: z.boolean().describe("true if the retry-stuck job cancelled the campaign (delivery_status='cancelled')"),
-  lastDeliveredAt: z.string().nullable().describe("ISO 8601 timestamp of the most recent email_sent event. null if Instantly has not dispatched yet"),
-});
-
-const GlobalEmailStatusSchema = z.object({
-  bounced: z.boolean().describe("true if this email bounced in ANY campaign across the entire org (not scoped to brand)"),
-  unsubscribed: z.boolean().describe("true if this email unsubscribed in ANY campaign across the entire org (not scoped to brand)"),
-});
-
-const GlobalStatusSchema = z.object({
-  email: GlobalEmailStatusSchema,
-});
-
 const StatusResultSchema = z.object({
   email: z.string(),
-  byCampaign: z.record(z.string(), ScopedStatusFieldsSchema).nullable().describe("Per-campaign breakdown — present only when brandId is provided without campaignId"),
-  brand: ScopedStatusFieldsSchema.nullable().describe("Aggregated brand status (most advanced across campaigns) — present only when brandId is provided without campaignId"),
-  campaign: ScopedStatusFieldsSchema.nullable().describe("Campaign-scoped status — present only when campaignId is provided"),
+  byCampaign: z.record(z.string(), StatusScopeSchema).nullable().describe("Per-campaign breakdown — present only when brandId is provided without campaignId"),
+  brand: StatusScopeSchema.nullable().describe("Aggregated brand status (most advanced across campaigns) — present only when brandId is provided without campaignId"),
+  campaign: StatusScopeSchema.nullable().describe("Campaign-scoped status — present only when campaignId is provided"),
   global: GlobalStatusSchema,
 });
 
