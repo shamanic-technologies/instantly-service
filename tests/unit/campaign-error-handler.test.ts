@@ -121,14 +121,18 @@ describe("handleCampaignError", () => {
     expect(mockUpdateRun).toHaveBeenCalledWith("run-1", "failed", expect.objectContaining({ orgId: "org-1", runId: "run-1" }), "account disconnected");
   });
 
-  it("should throw if parent updateRun fails", async () => {
+  it("does NOT throw when parent updateRun fails — best-effort, logs and continues", async () => {
+    // Parent run identity may drift from the row's current identity (brand
+    // transfer between orgs), causing runs-service to reject the PATCH with
+    // 409. The row is already flipped to cancelled and costs are cancelled,
+    // so the audit trail is intact even without the parent updateRun.
     mockDbWhere.mockResolvedValueOnce([baseCampaign]);
     mockDbWhere.mockResolvedValueOnce([]); // no costs
-    mockUpdateRun.mockRejectedValue(new Error("runs-service down"));
+    mockUpdateRun.mockRejectedValue(new Error("runs-service POST /v1/runs/X failed: 409"));
 
     await expect(
       handleCampaignError("inst-camp-1", "account disconnected"),
-    ).rejects.toThrow("runs-service down");
+    ).resolves.toBeUndefined();
   });
 
   it("should send admin notification email with identity context", async () => {

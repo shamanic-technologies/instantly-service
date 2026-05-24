@@ -126,6 +126,26 @@ export async function createRun(params: CreateRunParams, identity: IdentityConte
   });
 }
 
+/**
+ * Fetch a single run by ID. Returns `null` on 404 (or other lookup failure)
+ * so callers can branch on "parent gone" without try/catching every site.
+ */
+export async function getRun(runId: string, identity: IdentityContext): Promise<Run | null> {
+  try {
+    return await runsRequest<Run>(`/v1/runs/${runId}`, identity);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    // runsRequest formats errors as `... failed: <status> - <body>`; 404 means
+    // the run doesn't exist (deleted / wrong ID). 403 means the caller's
+    // identity isn't allowed to read it (cross-org). Both are "unusable
+    // parent" from retry-stuck's perspective.
+    if (/failed: 40[34]\b/.test(message)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 export async function updateRun(
   runId: string,
   status: "completed" | "failed",

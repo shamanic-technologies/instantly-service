@@ -2,15 +2,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 //
-// The simplified retry-stuck module exposes two primitives consumed by the
-// worker loop:
-//   - selectOneStuckRow(): SELECT ... LIMIT 1 returning a candidate or null.
-//   - processRow(row):     resolve key, recover sequence, send on fresh
-//                          account, refund + recharge, mute row. Returns a
-//                          discriminated RowOutcome; never throws.
-//
-// No advisory lock. No batching. No counters. The worker is responsible for
-// looping; this module is stateless side-effects.
+// retry-stuck primitives consumed by the worker loop:
+//   - selectOneStuckRow(): SELECT ... LIMIT 1 with 72h floor, silver guard,
+//                          NULL identifier guard, and lastAttemptAt cooldown.
+//   - processRow(row):     stamp lastAttemptAt; resolve parent run identity;
+//                          recover sequence + lead; send on fresh account;
+//                          refund + recharge; mute row. Cancels via
+//                          handleCampaignError on "terminal-for-us" failures
+//                          (parent gone, key gone, no sequence, no lead,
+//                          runs-service 409). Leaves row alone on transient
+//                          send failures.
 
 const mockDbExecute = vi.fn();
 const mockDbUpdateSet = vi.fn();
@@ -67,21 +68,8 @@ vi.mock("../../src/db/schema", () => ({
 
 const mockResolveKey = vi.fn();
 
-const { MockKeyServiceError } = vi.hoisted(() => {
-  class MockKeyServiceError extends Error {
-    statusCode: number;
-    constructor(statusCode: number, message: string) {
-      super(message);
-      this.name = "KeyServiceError";
-      this.statusCode = statusCode;
-    }
-  }
-  return { MockKeyServiceError };
-});
-
 vi.mock("../../src/lib/key-client", () => ({
   resolveInstantlyApiKey: (...args: unknown[]) => mockResolveKey(...args),
-  KeyServiceError: MockKeyServiceError,
 }));
 
 const mockGetCampaign = vi.fn();
@@ -102,18 +90,27 @@ const mockCreateRun = vi.fn();
 const mockUpdateRun = vi.fn();
 const mockAddCosts = vi.fn();
 const mockUpdateCostStatus = vi.fn();
+const mockGetRun = vi.fn();
 
 vi.mock("../../src/lib/runs-client", () => ({
   createRun: (...args: unknown[]) => mockCreateRun(...args),
   updateRun: (...args: unknown[]) => mockUpdateRun(...args),
   addCosts: (...args: unknown[]) => mockAddCosts(...args),
   updateCostStatus: (...args: unknown[]) => mockUpdateCostStatus(...args),
+  getRun: (...args: unknown[]) => mockGetRun(...args),
+}));
+
+const mockHandleCampaignError = vi.fn();
+
+vi.mock("../../src/lib/campaign-error-handler", () => ({
+  handleCampaignError: (...args: unknown[]) => mockHandleCampaignError(...args),
 }));
 
 import {
   selectOneStuckRow,
   processRow,
   STUCK_AGE_HOURS,
+  ATTEMPT_COOLDOWN_MINUTES,
   type StuckCampaignRow,
 } from "../../src/lib/retry-stuck";
 
@@ -123,9 +120,9 @@ function row(extra: Record<string, unknown> = {}): StuckCampaignRow {
     instantlyCampaignId: "inst-camp-1",
     campaignId: "camp-1",
     leadEmail: "lead@test.com",
-    orgId: "org-1",
-    userId: "user-1",
-    runId: "run-1",
+    orgId: "org-CURRENT",
+    userId: "user-CURRENT",
+    runId: "parent-run-1",
     brandIds: ["brand-1"],
     metadata: null,
     ...extra,
@@ -164,6 +161,15 @@ beforeEach(() => {
   mockDbExecute.mockResolvedValue({ rows: [] });
   mockResolveKey.mockResolvedValue({ key: "fake-api-key", keySource: "platform" });
   mockGetCampaign.mockResolvedValue(SINGLE_STEP_LIVE);
+  // Default getRun returns a parent whose identity matches row.runId's lineage.
+  // Parent's org is DIFFERENT from row.orgId on purpose — exercises the
+  // identity-drift fix (parent identity is the one we MUST use, not row's).
+  mockGetRun.mockResolvedValue({
+    id: "parent-run-1",
+    organizationId: "org-PARENT",
+    userId: "user-PARENT",
+    parentRunId: null,
+  });
   mockSendLeadToInstantly.mockResolvedValue({
     ok: true,
     value: {
@@ -184,20 +190,24 @@ beforeEach(() => {
     ],
   });
   mockUpdateCostStatus.mockResolvedValue({});
+  mockHandleCampaignError.mockResolvedValue(undefined);
 });
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
-describe("STUCK_AGE_HOURS", () => {
-  it("is 72", () => {
+describe("constants", () => {
+  it("STUCK_AGE_HOURS = 72", () => {
     expect(STUCK_AGE_HOURS).toBe(72);
+  });
+  it("ATTEMPT_COOLDOWN_MINUTES > 0", () => {
+    expect(ATTEMPT_COOLDOWN_MINUTES).toBeGreaterThan(0);
   });
 });
 
 // ─── selectOneStuckRow ─────────────────────────────────────────────────────
 
-describe("selectOneStuckRow", () => {
-  it("SQL contains 72h floor, LIMIT 1, ORDER BY ASC, silver NOT EXISTS guard, and NULL identifier filter", async () => {
+describe("selectOneStuckRow SQL filter", () => {
+  it("contains 72h floor, LIMIT 1, ORDER BY ASC, silver NOT EXISTS, NULL guards, and lastAttemptAt cooldown", async () => {
     await selectOneStuckRow();
     const selectCall = mockDbExecute.mock.calls[0]?.[0];
     expect(selectCall).toBeDefined();
@@ -214,6 +224,9 @@ describe("selectOneStuckRow", () => {
     expect(text).toMatch(/c\.campaign_id IS NOT NULL/);
     expect(text).toMatch(/c\.lead_email IS NOT NULL/);
     expect(text).toMatch(/c\.org_id IS NOT NULL/);
+    expect(text).toMatch(/c\.metadata->>'lastAttemptAt' IS NULL/);
+    expect(text).toMatch(/lastAttemptAt.*::timestamptz <.*NOW\(\)/);
+    expect(text).toMatch(/30\s+minutes/);
   });
 
   it("returns null when SELECT yields zero rows", async () => {
@@ -227,14 +240,31 @@ describe("selectOneStuckRow", () => {
     const r = await selectOneStuckRow();
     expect(r).not.toBeNull();
     expect(r!.id).toBe("row-1");
-    expect(r!.instantlyCampaignId).toBe("inst-camp-1");
   });
 });
 
-// ─── processRow success ────────────────────────────────────────────────────
+// ─── processRow happy path ─────────────────────────────────────────────────
 
 describe("processRow — success path", () => {
-  it("re-sends the lead on a fresh healthy account", async () => {
+  it("stamps lastAttemptAt on the row before doing any work", async () => {
+    queueSelectLead();
+    queueSelectCosts([]);
+
+    await processRow(row());
+
+    const attemptStamp = mockDbUpdateSet.mock.calls.find((c) => {
+      const v = c[0] as Record<string, unknown>;
+      const m = v.metadata as Record<string, unknown> | undefined;
+      return (
+        m !== undefined &&
+        typeof m.lastAttemptAt === "string" &&
+        !("redispatchCount" in m)
+      );
+    });
+    expect(attemptStamp).toBeDefined();
+  });
+
+  it("re-sends using the parent run's identity (not the row's current identity)", async () => {
     queueSelectLead();
     queueSelectCosts([
       {
@@ -250,43 +280,34 @@ describe("processRow — success path", () => {
 
     const outcome = await processRow(row());
 
-    expect(outcome).toEqual({
-      kind: "redispatched",
-      newInstantlyCampaignId: "inst-camp-NEW",
-      account: "new-sender@test.com",
-    });
+    expect(outcome.kind).toBe("redispatched");
 
-    // sendLeadToInstantly invoked with rebuilt sequence + lead.
-    expect(mockSendLeadToInstantly).toHaveBeenCalledTimes(1);
-    const args = mockSendLeadToInstantly.mock.calls[0][0] as {
-      sortedSequence: Array<{ step: number; bodyHtml: string; daysSinceLastStep: number }>;
-      lead: { email: string; first_name?: string };
-      subject: string;
-    };
-    expect(args.lead.email).toBe("lead@test.com");
-    expect(args.lead.first_name).toBe("Lead");
-    expect(args.sortedSequence).toHaveLength(1);
-    expect(args.subject).toBe("Hi");
+    // Instantly key resolved for PARENT'S org, not row's current org.
+    expect(mockResolveKey).toHaveBeenCalledWith(
+      "org-PARENT",
+      "system",
+      expect.any(Object),
+    );
 
-    // Old cost cancelled via runs-service.
+    // updateCostStatus identity uses PARENT'S identity.
     expect(mockUpdateCostStatus).toHaveBeenCalledWith(
       "step-run-1",
       "cost-id-1",
       "cancelled",
-      expect.objectContaining({ orgId: "org-1" }),
+      expect.objectContaining({ orgId: "org-PARENT" }),
     );
-    // Fresh cost provisioned for the new step run.
-    expect(mockAddCosts).toHaveBeenCalled();
 
-    // Row mutated to point at the new Instantly campaign.
-    const muteCall = mockDbUpdateSet.mock.calls.find((c) => {
-      const v = c[0] as Record<string, unknown>;
-      return v.instantlyCampaignId === "inst-camp-NEW";
-    });
-    expect(muteCall).toBeDefined();
+    // createRun for new step run also carries parent identity + parent's runId.
+    expect(mockCreateRun).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        orgId: "org-PARENT",
+        runId: "parent-run-1",
+      }),
+    );
   });
 
-  it("appends redispatchHistory + bumps redispatchCount on success", async () => {
+  it("appends redispatchHistory + bumps redispatchCount + persists lastAttemptAt", async () => {
     queueSelectLead();
     queueSelectCosts([]);
 
@@ -306,45 +327,138 @@ describe("processRow — success path", () => {
       return "instantlyCampaignId" in v;
     });
     expect(muteCall).toBeDefined();
-    const v = muteCall![0] as { metadata: { redispatchCount: number; redispatchHistory: unknown[] } };
+    const v = muteCall![0] as {
+      metadata: {
+        redispatchCount: number;
+        redispatchHistory: unknown[];
+        lastAttemptAt: string;
+      };
+    };
     expect(v.metadata.redispatchCount).toBe(2);
     expect(v.metadata.redispatchHistory).toHaveLength(2);
+    expect(typeof v.metadata.lastAttemptAt).toBe("string");
   });
 
-  it("mirrors the lead onto the new Instantly campaign", async () => {
+  it("falls back to the row's current identity when row.runId is null (top-level run)", async () => {
     queueSelectLead();
     queueSelectCosts([]);
 
-    await processRow(row());
+    await processRow(row({ runId: null }));
 
-    const leadInsert = mockDbInsertValues.mock.calls.find((c) => {
-      const v = c[0] as Record<string, unknown>;
-      return v.instantlyCampaignId === "inst-camp-NEW" && v.email === "lead@test.com";
-    });
-    expect(leadInsert).toBeDefined();
+    expect(mockGetRun).not.toHaveBeenCalled();
+    // Falls back to row.orgId.
+    expect(mockResolveKey).toHaveBeenCalledWith(
+      "org-CURRENT",
+      "system",
+      expect.any(Object),
+    );
   });
 });
 
-// ─── processRow failure paths — row left alone ─────────────────────────────
+// ─── processRow terminal cancel paths ──────────────────────────────────────
 
-describe("processRow — failure paths", () => {
-  it("returns skipped_no_key when KeyServiceError 404", async () => {
-    mockResolveKey.mockRejectedValueOnce(new MockKeyServiceError(404, "key not configured"));
+describe("processRow — terminal cancel paths", () => {
+  it("cancels the row when the parent run is gone (getRun returns null)", async () => {
+    mockGetRun.mockResolvedValueOnce(null);
 
     const outcome = await processRow(row());
 
-    expect(outcome).toEqual({ kind: "skipped_no_key" });
-    expect(mockGetCampaign).not.toHaveBeenCalled();
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed") expect(outcome.reason).toBe("parent_run_gone");
+    expect(mockHandleCampaignError).toHaveBeenCalledWith(
+      "inst-camp-1",
+      expect.stringContaining("parent_run_gone"),
+      expect.objectContaining({ terminalStatus: "cancelled" }),
+    );
     expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
   });
 
-  it("returns failed when sendLeadToInstantly returns no_healthy_account", async () => {
+  it("cancels the row when Instantly key resolution fails", async () => {
+    mockResolveKey.mockRejectedValueOnce(new Error("KEY-SERVICE 404"));
+
+    const outcome = await processRow(row());
+
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed") expect(outcome.reason).toBe("key_unavailable");
+    expect(mockHandleCampaignError).toHaveBeenCalledWith(
+      "inst-camp-1",
+      expect.stringContaining("key_unavailable"),
+      expect.objectContaining({ terminalStatus: "cancelled" }),
+    );
+    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
+  });
+
+  it("cancels the row when the live campaign has no sequence", async () => {
+    mockGetCampaign.mockResolvedValueOnce({ sequences: [] });
+
+    const outcome = await processRow(row());
+
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed") expect(outcome.reason).toBe("no_sequence");
+    expect(mockHandleCampaignError).toHaveBeenCalledWith(
+      "inst-camp-1",
+      expect.stringContaining("no_sequence"),
+      expect.objectContaining({ terminalStatus: "cancelled" }),
+    );
+    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
+  });
+
+  it("cancels the row when the local lead profile is missing", async () => {
+    // No queueSelectLead() — lookup returns empty array.
+
+    const outcome = await processRow(row());
+
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed") expect(outcome.reason).toBe("lead_profile_not_found");
+    expect(mockHandleCampaignError).toHaveBeenCalledWith(
+      "inst-camp-1",
+      expect.stringContaining("lead_profile_not_found"),
+      expect.objectContaining({ terminalStatus: "cancelled" }),
+    );
+    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
+  });
+
+  it("cancels the row when runs-service throws 409 mid-flight", async () => {
+    queueSelectLead();
+    queueSelectCosts([]);
+    // Make addCosts throw a 409 — typical "Parent-child field conflict" path.
+    mockAddCosts.mockRejectedValueOnce(new Error("runs-service POST /v1/runs failed: 409 - Parent-child conflict"));
+
+    const outcome = await processRow(row());
+
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed") expect(outcome.reason).toBe("runs_service_409");
+    expect(mockHandleCampaignError).toHaveBeenCalledWith(
+      "inst-camp-1",
+      expect.stringContaining("runs_service_409"),
+      expect.objectContaining({ terminalStatus: "cancelled" }),
+    );
+  });
+
+  it("cancels the row when required identifiers (campaignId/leadEmail/orgId) are null", async () => {
+    const outcome = await processRow(row({ campaignId: null }));
+
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed") expect(outcome.reason).toBe("missing_identifiers");
+    expect(mockHandleCampaignError).toHaveBeenCalledWith(
+      "inst-camp-1",
+      expect.stringContaining("missing_identifiers"),
+      expect.objectContaining({ terminalStatus: "cancelled" }),
+    );
+  });
+});
+
+// ─── processRow transient failure paths (no cancel) ────────────────────────
+
+describe("processRow — transient failure paths (row left alone)", () => {
+  it("leaves the row alone when sendLeadToInstantly returns no_healthy_account", async () => {
     queueSelectLead();
     mockSendLeadToInstantly.mockResolvedValueOnce({ ok: false, reason: "no_healthy_account" });
 
     const outcome = await processRow(row());
 
     expect(outcome).toEqual({ kind: "failed", reason: "no_healthy_account" });
+    expect(mockHandleCampaignError).not.toHaveBeenCalled();
     const muteCall = mockDbUpdateSet.mock.calls.find((c) => {
       const v = c[0] as Record<string, unknown>;
       return v.instantlyCampaignId === "inst-camp-NEW";
@@ -352,49 +466,23 @@ describe("processRow — failure paths", () => {
     expect(muteCall).toBeUndefined();
   });
 
-  it("returns failed when sendLeadToInstantly returns max_retries_exhausted", async () => {
+  it("leaves the row alone when sendLeadToInstantly returns max_retries_exhausted", async () => {
     queueSelectLead();
     mockSendLeadToInstantly.mockResolvedValueOnce({ ok: false, reason: "max_retries_exhausted" });
 
     const outcome = await processRow(row());
 
     expect(outcome).toEqual({ kind: "failed", reason: "max_retries_exhausted" });
+    expect(mockHandleCampaignError).not.toHaveBeenCalled();
   });
 
-  it("returns failed when live campaign has no sequence", async () => {
-    mockGetCampaign.mockResolvedValueOnce({ sequences: [] });
-
-    const outcome = await processRow(row());
-
-    expect(outcome).toEqual({ kind: "failed", reason: "no_sequence" });
-    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
-  });
-
-  it("returns failed when local lead profile is missing", async () => {
-    // No queueSelectLead() — lookup returns empty array.
-
-    const outcome = await processRow(row());
-
-    expect(outcome).toEqual({ kind: "failed", reason: "lead_profile_not_found" });
-    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
-  });
-
-  it("returns failed (with thrown message) when getCampaign throws", async () => {
+  it("leaves the row alone (cooldown) when getCampaign throws non-409", async () => {
     mockGetCampaign.mockRejectedValueOnce(new Error("instantly 500"));
 
     const outcome = await processRow(row());
 
     expect(outcome.kind).toBe("failed");
-    if (outcome.kind === "failed") {
-      expect(outcome.reason).toContain("instantly 500");
-    }
-  });
-
-  it("returns failed when row is missing required identifiers", async () => {
-    const outcome = await processRow(row({ campaignId: null }));
-
-    expect(outcome).toEqual({ kind: "failed", reason: "missing_identifiers" });
-    expect(mockResolveKey).not.toHaveBeenCalled();
+    expect(mockHandleCampaignError).not.toHaveBeenCalled();
   });
 });
 
