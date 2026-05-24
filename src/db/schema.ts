@@ -44,6 +44,10 @@ export const instantlyCampaigns = pgTable(
     // in /stats `recipientStats.notSending` and consumed by retry job (PR B).
     notSendingStatus: integer("not_sending_status"),
     notSendingStatusSeenAt: timestamp("not_sending_status_seen_at"),
+    // Source of `reply_classification`. 'auto' = derived from Instantly webhook
+    // event; 'manual' = set via human qualification (POST /orgs/manual-qualifications).
+    // Manual wins: silver-promote skips webhook-driven updates when this is 'manual'.
+    replyClassificationSource: text("reply_classification_source").notNull().default("auto"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -249,5 +253,37 @@ export const instantlyCampaignsConfigRaw = pgTable(
   (table) => [
     index("instantly_campaigns_config_raw_campaign_id_idx").on(table.instantlyCampaignId),
     index("instantly_campaigns_config_raw_fetched_at_idx").on(table.fetchedAt),
+  ],
+);
+
+// Bronze 6: manual reply qualifications set by human users via POST /orgs/manual-qualifications.
+// External-to-pipeline (UI action), append-only. Source-of-truth for "what the human
+// said about a lead's reply". Resolved (org_id, campaign_id, lead_email) identifier;
+// instantly_campaign_id stored at insertion time for direct join with silver tables.
+export const instantlyManualQualificationsRaw = pgTable(
+  "instantly_manual_qualifications_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id").notNull(),
+    campaignId: text("campaign_id").notNull(),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    status: text("status").notNull(),
+    qualifiedBy: text("qualified_by").notNull(),
+    notes: text("notes"),
+    payload: jsonb("payload").notNull(),
+    qualifiedAt: timestamp("qualified_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("instantly_manual_qualifications_raw_org_campaign_email_idx").on(
+      table.orgId,
+      table.campaignId,
+      table.leadEmail,
+    ),
+    index("instantly_manual_qualifications_raw_instantly_campaign_email_idx").on(
+      table.instantlyCampaignId,
+      table.leadEmail,
+    ),
+    index("instantly_manual_qualifications_raw_qualified_at_idx").on(table.qualifiedAt),
   ],
 );
