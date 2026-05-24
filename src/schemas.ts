@@ -786,6 +786,135 @@ const StatusResponseSchema = z
     },
   });
 
+// ─── Manual Qualifications ──────────────────────────────────────────────────
+
+const MANUAL_QUALIFICATION_STATUS_VALUES = [
+  "lead_interested",
+  "lead_meeting_booked",
+  "lead_closed",
+  "lead_not_interested",
+  "lead_wrong_person",
+  "lead_neutral",
+  "lead_out_of_office",
+  "auto_reply_received",
+] as const;
+
+export const ManualQualificationStatusSchema = z
+  .enum(MANUAL_QUALIFICATION_STATUS_VALUES)
+  .describe(
+    "Manual reply qualification status — mirrors Instantly webhook reply event_type values exactly. Set by a human via the dashboard when Instantly fails to detect a reply (e.g. reply received on a non-leurre email account).",
+  );
+
+export type ManualQualificationStatus = z.infer<typeof ManualQualificationStatusSchema>;
+
+export const ManualQualificationCreateBodySchema = z
+  .object({
+    campaign_id: z.string().min(1).describe("Logical campaign id (groups sub-campaigns for the same workflow run)"),
+    email: z.string().email().describe("Lead email address"),
+    status: ManualQualificationStatusSchema,
+    notes: z.string().max(2000).optional().describe("Optional free-text human note for audit"),
+  })
+  .openapi("ManualQualificationCreateBody", {
+    example: {
+      campaign_id: "c1a2b3c4-0000-0000-0000-000000000001",
+      email: "alice@media.com",
+      status: "lead_interested",
+      notes: "Reply received on Gmail — Instantly missed it",
+    },
+  });
+
+export const ManualQualificationListQuerySchema = z.object({
+  campaign_id: z.string().min(1).optional().describe("Filter by logical campaign id"),
+  email: z.string().email().optional().describe("Filter by lead email"),
+  limit: z
+    .coerce.number()
+    .int()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe("Max rows to return (default 200, max 500)"),
+});
+
+const ManualQualificationRowSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  campaignId: z.string(),
+  instantlyCampaignId: z.string(),
+  email: z.string(),
+  status: ManualQualificationStatusSchema,
+  qualifiedBy: z.string(),
+  notes: z.string().nullable(),
+  qualifiedAt: z.string().describe("ISO 8601 timestamp"),
+});
+
+const ManualQualificationCreateResponseSchema = z
+  .object({
+    idempotent: z
+      .boolean()
+      .describe("True if the latest existing row already matched the requested status — no new bronze row was inserted, no side effects fired"),
+    qualification: ManualQualificationRowSchema,
+  })
+  .openapi("ManualQualificationCreateResponse");
+
+const ManualQualificationListResponseSchema = z
+  .object({ qualifications: z.array(ManualQualificationRowSchema) })
+  .openapi("ManualQualificationListResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/manual-qualifications",
+  summary: "Set a manual reply qualification for a (campaign, lead) pair",
+  description:
+    "Record a human-set reply classification for a lead in a campaign. Used when Instantly's automatic webhook reply classification fails to detect a reply (e.g. the reply was sent to a non-leurre account that Instantly does not monitor).\n\n" +
+    "**Bronze:** an `instantly_manual_qualifications_raw` row is appended for audit (append-only).\n\n" +
+    "**Silver / Gold:** a corresponding row is inserted into `instantly_events` with `source='manual'`, so analytics counters (RepliesDetail) include the manual qualification alongside webhook events. `instantly_campaigns.reply_classification` is updated to the derived positive/negative/neutral value and `reply_classification_source` is set to `manual` so subsequent webhook events do not overwrite the human choice.\n\n" +
+    "**Idempotence:** if the latest row for (org, campaign, lead) already has `status`, the call is a no-op — no new bronze row, no side effects. The response includes `idempotent: true` and the existing row.",
+  request: {
+    headers: TrackingHeadersSchema,
+    body: {
+      content: { "application/json": { schema: ManualQualificationCreateBodySchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Manual qualification recorded (or idempotent no-op)",
+      content: { "application/json": { schema: ManualQualificationCreateResponseSchema } },
+    },
+    400: {
+      description: "Invalid body or missing identity header",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    404: {
+      description: "Campaign not found in this org for the given email",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/manual-qualifications",
+  summary: "List manual reply qualifications (org-scoped audit history)",
+  description:
+    "Returns the org's manual qualification history, sorted by `qualifiedAt` DESC. Optionally filter by `campaign_id` and/or `email`. Cross-org reads are blocked — only rows where `org_id` matches the request header are returned.",
+  request: {
+    headers: TrackingHeadersSchema,
+    query: ManualQualificationListQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "List of manual qualifications",
+      content: { "application/json": { schema: ManualQualificationListResponseSchema } },
+    },
+    400: {
+      description: "Invalid query parameters",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/orgs/status",
