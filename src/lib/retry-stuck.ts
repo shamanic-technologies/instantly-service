@@ -42,7 +42,7 @@ import { db } from "../db";
 import { instantlyCampaigns, instantlyLeads, sequenceCosts } from "../db/schema";
 import { and, eq, or, sql } from "drizzle-orm";
 import { getCampaign as getInstantlyCampaign, type Lead } from "./instantly-client";
-import { resolveInstantlyApiKey, KeyServiceError } from "./key-client";
+import { resolveInstantlyApiKey } from "./key-client";
 import {
   sendLeadToInstantly,
   stripAccountSignature,
@@ -51,13 +51,23 @@ import {
 import {
   addCosts,
   createRun,
+  getRun,
   updateCostStatus,
   updateRun,
   type IdentityContext,
 } from "./runs-client";
+import { handleCampaignError } from "./campaign-error-handler";
 
 /** Age (hours) a row must reach before retry-stuck picks it up. */
 export const STUCK_AGE_HOURS = 72;
+
+/**
+ * Minimum gap (minutes) between two consecutive attempts on the same row.
+ * Set on `metadata.lastAttemptAt` at the start of every `processRow` call.
+ * The SELECT excludes rows whose last attempt is more recent than this,
+ * preventing any single broken row from hogging the loop.
+ */
+export const ATTEMPT_COOLDOWN_MINUTES = 30;
 
 const SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -101,6 +111,10 @@ export async function selectOneStuckRow(): Promise<StuckCampaignRow | null> {
       AND c.campaign_id IS NOT NULL
       AND c.lead_email IS NOT NULL
       AND c.org_id IS NOT NULL
+      AND (
+        c.metadata->>'lastAttemptAt' IS NULL
+        OR (c.metadata->>'lastAttemptAt')::timestamptz < NOW() - INTERVAL '${sql.raw(`${ATTEMPT_COOLDOWN_MINUTES} minutes`)}'
+      )
       AND NOT EXISTS (
         SELECT 1 FROM instantly_events e
         WHERE e.campaign_id = c.instantly_campaign_id
@@ -257,39 +271,142 @@ async function provisionFreshCosts(
 }
 
 /**
- * Process one stuck row: resolve key, recover sequence + lead, send on a
- * fresh healthy account, refund old costs, provision new ones, mute the
- * local row.
+ * Stamp `metadata.lastAttemptAt = NOW()` on the row so the SELECT can
+ * exclude it for at least `ATTEMPT_COOLDOWN_MINUTES` minutes. Prevents
+ * any single broken row from monopolizing the worker loop.
+ */
+async function markAttempt(row: StuckCampaignRow): Promise<void> {
+  const existingMetadata = (row.metadata ?? {}) as Record<string, unknown>;
+  await db
+    .update(instantlyCampaigns)
+    .set({
+      metadata: { ...existingMetadata, lastAttemptAt: new Date().toISOString() },
+      updatedAt: new Date(),
+    })
+    .where(eq(instantlyCampaigns.id, row.id));
+}
+
+/**
+ * Resolve the identity context retry-stuck should use for runs-service
+ * writes on this row. Reuses the original parent run's identity so child
+ * runs match parent identity (avoids 409 even if the row has been
+ * transferred to a different org since the original /send).
+ *
+ * Returns `null` if the parent run no longer exists or its identity can't
+ * be read — caller should treat the row as un-retriable and cancel it.
+ */
+async function resolveParentIdentity(
+  row: StuckCampaignRow,
+): Promise<IdentityContext | null> {
+  if (!row.orgId) return null;
+
+  if (!row.runId) {
+    // No parent — new runs will be top-level under the row's current
+    // identity. No conflict possible.
+    return {
+      orgId: row.orgId,
+      userId: row.userId ?? SYSTEM_USER_ID,
+    };
+  }
+
+  const parent = await getRun(row.runId, {
+    orgId: row.orgId,
+    userId: row.userId ?? SYSTEM_USER_ID,
+  });
+
+  if (!parent || !parent.organizationId) {
+    return null;
+  }
+
+  return {
+    orgId: parent.organizationId,
+    userId: parent.userId ?? SYSTEM_USER_ID,
+    runId: row.runId,
+  };
+}
+
+/**
+ * Cancel the row as a terminal `delivery_status='cancelled'`. Refunds
+ * remaining costs via `handleCampaignError`. Reserved for "this row
+ * cannot be retried by us" outcomes (parent run gone, parent identity
+ * unusable, key unavailable for parent org, runs-service rejects the
+ * write with 409, etc.) — once cancelled the row falls outside the
+ * retry-stuck SELECT and lead-service can re-attempt with a fresh /send.
+ */
+async function cancelRowAsTerminal(
+  row: StuckCampaignRow,
+  reason: string,
+): Promise<void> {
+  console.warn(
+    `[instantly-service] retry-stuck: row=${row.id} instantly=${row.instantlyCampaignId} cancelling — ${reason}`,
+  );
+  try {
+    await handleCampaignError(row.instantlyCampaignId, reason, {
+      terminalStatus: "cancelled",
+      extraMetadata: { retryStuckCancelReason: reason },
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[instantly-service] retry-stuck: row=${row.id} cancellation handler threw: ${message}`,
+    );
+  }
+}
+
+/**
+ * Process one stuck row: stamp lastAttemptAt, resolve parent identity,
+ * resolve key, recover sequence + lead, send on a fresh healthy account,
+ * refund old costs, provision new ones, mute the local row.
+ *
+ * Failures fall into two buckets:
+ *   - **Transient** (no_healthy_account, max_retries_exhausted): row is
+ *     left alone. lastAttemptAt holds it out of SELECT for
+ *     ATTEMPT_COOLDOWN_MINUTES, then it's eligible again.
+ *   - **Terminal-for-us** (parent run gone, parent identity unusable,
+ *     key unavailable, runs-service 409, no sequence, no local lead):
+ *     row is flipped to `delivery_status='cancelled'` via
+ *     `handleCampaignError`. lead-service can re-send under current
+ *     ownership.
  *
  * Returns a discriminated outcome instead of throwing so the worker loop
  * can keep iterating without try/catch around each call.
  */
 export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
+  if (!row.campaignId || !row.leadEmail || !row.orgId) {
+    await cancelRowAsTerminal(row, "missing_identifiers");
+    return { kind: "failed", reason: "missing_identifiers" };
+  }
+
+  // Rate-limit per-row: stamp lastAttemptAt up front so SELECT excludes
+  // this row for ATTEMPT_COOLDOWN_MINUTES even if processRow throws.
+  await markAttempt(row);
+
+  // Reuse the original parent run's identity so child runs match parent
+  // identity (no 409 even after brand/org transfer).
+  const parentIdentity = await resolveParentIdentity(row);
+  if (!parentIdentity) {
+    await cancelRowAsTerminal(row, "parent_run_gone_or_unreadable");
+    return { kind: "failed", reason: "parent_run_gone" };
+  }
+
+  // Resolve Instantly key for the parent's org (= the org the original
+  // /send was for). If the key isn't configured anymore, we can't retry.
+  let apiKey: string;
+  let keySource: "platform" | "org";
   try {
-    if (!row.campaignId || !row.leadEmail || !row.orgId) {
-      return { kind: "failed", reason: "missing_identifiers" };
-    }
+    const keyResult = await resolveInstantlyApiKey(parentIdentity.orgId, "system", {
+      method: "POST",
+      path: "/internal/campaigns/retry-stuck",
+    });
+    apiKey = keyResult.key;
+    keySource = keyResult.keySource;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    await cancelRowAsTerminal(row, `key_unavailable: ${message}`);
+    return { kind: "failed", reason: "key_unavailable" };
+  }
 
-    // Resolve the org's Instantly key.
-    let apiKey: string;
-    let keySource: "platform" | "org";
-    try {
-      const keyResult = await resolveInstantlyApiKey(row.orgId, "system", {
-        method: "POST",
-        path: "/internal/campaigns/retry-stuck",
-      });
-      apiKey = keyResult.key;
-      keySource = keyResult.keySource;
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      const isKeyMissing = error instanceof KeyServiceError && error.statusCode === 404;
-      const logFn = isKeyMissing ? console.warn : console.error;
-      logFn(
-        `[instantly-service] retry-stuck: skipping row=${row.id} org=${row.orgId} — ${message}`,
-      );
-      return { kind: "skipped_no_key" };
-    }
-
+  try {
     // 1. Pull the live campaign once to recover the sequence. NOT used for
     //    any NSS decision — reconcile owns that signal independently.
     const live = (await getInstantlyCampaign(
@@ -299,9 +416,7 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
 
     const seq = extractSequenceFromLive(live);
     if (!seq) {
-      console.warn(
-        `[instantly-service] retry-stuck: row=${row.id} instantly=${row.instantlyCampaignId} no sequence on live campaign — leaving alone`,
-      );
+      await cancelRowAsTerminal(row, "no_sequence_on_live_campaign");
       return { kind: "failed", reason: "no_sequence" };
     }
 
@@ -313,9 +428,7 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
       .limit(1);
 
     if (!storedLead) {
-      console.warn(
-        `[instantly-service] retry-stuck: row=${row.id} lead profile not found in instantly_leads — leaving alone`,
-      );
+      await cancelRowAsTerminal(row, "lead_profile_not_found");
       return { kind: "failed", reason: "lead_profile_not_found" };
     }
 
@@ -340,23 +453,19 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
     });
 
     if (!result.ok) {
+      // Transient — leave the row alone. The cooldown stamp holds it out
+      // of SELECT for ATTEMPT_COOLDOWN_MINUTES, then it's eligible again.
       console.warn(
-        `[instantly-service] retry-stuck: row=${row.id} send failed (${result.reason}) — leaving alone`,
+        `[instantly-service] retry-stuck: row=${row.id} send failed (${result.reason}) — cooling down`,
       );
       return { kind: "failed", reason: result.reason };
     }
 
-    const identity: IdentityContext = {
-      orgId: row.orgId,
-      userId: row.userId ?? SYSTEM_USER_ID,
-      runId: row.runId ?? undefined,
-    };
-
     // 4. Cancel old costs (refund), provision fresh costs (recharge).
-    await cancelExistingCosts(row, identity);
+    await cancelExistingCosts(row, parentIdentity);
     await provisionFreshCosts(
       row,
-      identity,
+      parentIdentity,
       keySource,
       seq.sortedSequence.length,
     );
@@ -372,7 +481,7 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
         lastName: storedLead.lastName,
         companyName: storedLead.companyName,
         customVariables: storedLead.customVariables,
-        orgId: row.orgId,
+        orgId: parentIdentity.orgId,
         runId: null,
       })
       .onConflictDoNothing();
@@ -392,6 +501,7 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
         name: campaignName,
         metadata: {
           ...existingMetadata,
+          lastAttemptAt: new Date().toISOString(),
           redispatchCount: redispatchCount + 1,
           redispatchHistory: [
             ...existingHistory,
@@ -419,6 +529,13 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
     };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
+    // 409 from runs-service (parent/child identity drift) — cancel the row.
+    // Anything else is unexpected; cool down via lastAttemptAt and let the
+    // next pass try again with fresh state.
+    if (/failed: 409\b/.test(message)) {
+      await cancelRowAsTerminal(row, `runs_service_409: ${message}`);
+      return { kind: "failed", reason: "runs_service_409" };
+    }
     console.error(
       `[instantly-service] retry-stuck: row=${row.id} threw: ${message}`,
     );

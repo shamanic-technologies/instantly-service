@@ -35,6 +35,7 @@ vi.mock("../../src/lib/runs-client", async (importOriginal) => {
     updateRun: vi.fn().mockResolvedValue({}),
     addCosts: vi.fn(),
     updateCostStatus: vi.fn().mockResolvedValue({}),
+    getRun: vi.fn(),
   };
 });
 
@@ -56,7 +57,7 @@ import { db } from "../../src/db";
 import { instantlyCampaigns, instantlyLeads, sequenceCosts, instantlyEvents } from "../../src/db/schema";
 import { getCampaign } from "../../src/lib/instantly-client";
 import { sendLeadToInstantly } from "../../src/lib/send-lead";
-import { createRun, addCosts } from "../../src/lib/runs-client";
+import { createRun, addCosts, getRun } from "../../src/lib/runs-client";
 import { selectOneStuckRow, processRow } from "../../src/lib/retry-stuck";
 
 const SKIP = !process.env.INSTANTLY_SERVICE_DATABASE_URL;
@@ -199,6 +200,12 @@ describe.skipIf(SKIP)("retry-stuck (DB-backed)", () => {
       },
     });
 
+    vi.mocked(getRun).mockResolvedValue({
+      id: "run-stuck-1",
+      organizationId: "org-1",
+      userId: "00000000-0000-0000-0000-000000000001",
+      parentRunId: null,
+    } as any);
     vi.mocked(createRun).mockImplementation(async () => ({ id: `step-run-${Math.random()}` }) as any);
     vi.mocked(addCosts).mockResolvedValue({
       costs: [
@@ -251,6 +258,13 @@ describe.skipIf(SKIP)("retry-stuck (DB-backed)", () => {
       costId: "cost-stuck-1",
       status: "provisioned",
     });
+
+    vi.mocked(getRun).mockResolvedValue({
+      id: "run-stuck-1",
+      organizationId: "org-1",
+      userId: "00000000-0000-0000-0000-000000000001",
+      parentRunId: null,
+    } as any);
 
     vi.mocked(getCampaign).mockResolvedValue({
       sequences: [{ steps: [{ delay: 0, variants: [{ subject: "Hi", body: "Body" }] }] }],
