@@ -22,12 +22,23 @@
 
 import { runRetryStuck } from "./retry-stuck";
 
-/** Tick interval in ms. Override via env for staging / debugging. */
+/**
+ * Tick interval in ms. Override via env for staging / debugging.
+ *
+ * One tick processes up to MAX_ROWS_PER_TICK (100) rows, each costing ~7-8s
+ * of wall-clock (Instantly throttle 110ms × 8 calls + DB + runs-service).
+ * Observed prod duration is ~12-13min per tick. Setting the interval below
+ * the worst-case tick duration causes adjacent ticks to short-circuit on
+ * the advisory lock — wasted CPU + misleading "silent" gaps in DB writes.
+ * Default 15min keeps a ~2min buffer between tick completion and the next
+ * fire.
+ */
 export const RETRY_STUCK_TICK_INTERVAL_MS = (() => {
+  const DEFAULT_MS = 15 * 60 * 1000;
   const raw = process.env.RETRY_STUCK_TICK_INTERVAL_MS;
-  if (!raw) return 10 * 60 * 1000;
+  if (!raw) return DEFAULT_MS;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 10 * 60 * 1000;
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MS;
   return parsed;
 })();
 

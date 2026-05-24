@@ -232,7 +232,7 @@ describe("runRetryStuck", () => {
 
   // ─── SQL selection filter ──────────────────────────────────────────────────
 
-  it("selectStuckRows SQL contains 72h floor, LIMIT, ORDER BY ASC, and silver NOT EXISTS guard", async () => {
+  it("selectStuckRows SQL contains 72h floor, LIMIT, ORDER BY ASC, silver NOT EXISTS guard, and NULL identifier filter", async () => {
     setupSweep([]);
     await runRetryStuck();
     const selectCall = mockDbExecute.mock.calls[1]?.[0];
@@ -247,6 +247,9 @@ describe("runRetryStuck", () => {
     expect(text).toMatch(/email_bounced/);
     expect(text).toMatch(/reply_received/);
     expect(text).toMatch(/lead_unsubscribed/);
+    expect(text).toMatch(/c\.campaign_id IS NOT NULL/);
+    expect(text).toMatch(/c\.lead_email IS NOT NULL/);
+    expect(text).toMatch(/c\.org_id IS NOT NULL/);
   });
 
   // ─── Lock + grouping ───────────────────────────────────────────────────────
