@@ -68,7 +68,7 @@ const REPLY_CLASSIFICATION_MAP: Record<string, "positive" | "negative" | "neutra
 const LEAD_STATUS_BOUNCED = -1;
 const LEAD_STATUS_UNSUBSCRIBED = -2;
 
-export type EventSource = "webhook" | "poll_emails" | "poll_leads" | "inferred";
+export type EventSource = "webhook" | "poll_emails" | "poll_leads" | "inferred" | "manual";
 
 export interface PromoteEventInput {
   eventType: string;

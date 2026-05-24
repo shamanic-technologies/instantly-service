@@ -16,6 +16,7 @@ import {
   instantlyManualQualificationsRaw,
 } from "../db/schema";
 import { and, desc, eq } from "drizzle-orm";
+import { promoteEvent } from "./silver-promote";
 
 // Mirrors the 8 keys of REPLY_CLASSIFICATION_MAP in silver-promote.ts. Kept in
 // sync deliberately: when a human qualifies a reply, the status is the same
@@ -166,16 +167,44 @@ export interface ApplyManualQualificationSideEffectsInput {
 
 /**
  * Side effects after a manual qualification is inserted into bronze:
- *  1. Mirror as a silver event row (`instantly_events`) with source='manual'
- *     so gold analytics counters (COUNT FILTER WHERE event_type=...) naturally
- *     include the manual signal alongside webhook-derived ones.
- *  2. Update `instantly_campaigns.reply_classification` to the derived
- *     positive/negative/neutral value and set `reply_classification_source` to
- *     'manual' so subsequent webhook events do not overwrite the manual choice.
+ *  1. **Synthesize a `reply_received` silver event** (source='manual'). The
+ *     human is asserting "this lead replied — Instantly missed it", so the
+ *     reply event MUST exist in silver for `/orgs/status` to report
+ *     `replied=true`. Routed through `promoteEvent` so the normal side
+ *     effects fire: `delivery_status='replied'` AND remaining provisioned
+ *     costs are cancelled (sequence stops on reply).
+ *  2. Mirror the lead-status event (`lead_interested` / `lead_not_interested`
+ *     / etc.) in silver via direct insert. Kept as a direct insert so we
+ *     can also set `replyClassificationSource='manual'` below — going
+ *     through `promoteEvent` would update `replyClassification` from the
+ *     status map but not the source field.
+ *  3. Set `reply_classification` to the derived positive/negative/neutral
+ *     value and pin `reply_classification_source='manual'` so subsequent
+ *     webhook events do not overwrite the manual choice.
  */
 export async function applyManualQualificationSideEffects(
   input: ApplyManualQualificationSideEffectsInput,
 ): Promise<void> {
+  // 1. Synthesize the reply_received event so `/orgs/status.replied` reports
+  //    true. `promoteEvent` handles the one-shot dedupe: if a real reply
+  //    event already exists (Instantly auto-detected too), this is a no-op.
+  await promoteEvent({
+    eventType: "reply_received",
+    instantlyCampaignId: input.instantlyCampaignId,
+    leadEmail: input.leadEmail,
+    accountEmail: null,
+    step: null,
+    variant: null,
+    timestamp: input.qualifiedAt,
+    rawPayload: input.rawPayload,
+    source: "manual",
+    sourceRowId: input.bronzeRowId,
+    inferred: false,
+  });
+
+  // 2. Mirror the lead-status event in silver (direct insert — source field is
+  //    set to 'manual' explicitly below; promoteEvent's auto-update would not
+  //    touch `reply_classification_source`).
   await db.insert(instantlyEvents).values({
     eventType: input.status,
     campaignId: input.instantlyCampaignId,
@@ -192,6 +221,8 @@ export async function applyManualQualificationSideEffects(
     inferredRule: null,
   });
 
+  // 3. Pin reply_classification + source='manual'. Manual wins over webhook
+  //    auto — subsequent webhook events do not overwrite.
   await db
     .update(instantlyCampaigns)
     .set({
