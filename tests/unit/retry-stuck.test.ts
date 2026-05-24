@@ -2,15 +2,20 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 //
-// runRetryStuck calls many primitives. Mocks dispatch by drizzle table & method
-// where it matters; the rest fall through to `vi.fn()` defaults.
+// New simplified retry-stuck flow per row:
+//   1. getCampaign(apiKey, instantlyCampaignId)         → live (sequence read)
+//   2. extractSequenceFromLive(live)                    → seq
+//   3. SELECT instantly_leads .. WHERE instantly_campaign_id = ... LIMIT 1
+//   4. sendLeadToInstantly({...})                       → fresh campaign on healthy account
+//   5. SELECT sequence_costs .. WHERE campaign_id = ... AND lead_email = ...
+//   6. updateCostStatus for each → cancel old (refund)
+//   7. createRun + addCosts per step + updateRun        → fresh provisioned costs (recharge)
+//   8. db.insert(instantlyLeads) onConflictDoNothing    → mirror lead onto new campaign
+//   9. db.update(instantlyCampaigns)                    → mute row (point at new campaign)
 //
-// db.execute is called multiple times per sweep:
-//   1. SELECT pg_try_advisory_lock(...) AS locked
-//   2. SELECT ... FROM instantly_campaigns ... LIMIT 500
-//   3. SELECT pg_advisory_unlock(...)
-// Tests use `setupSweep(rows)` to queue (1) + (2). The catch-all default
-// `{ rows: [] }` handles (3) and any UPDATE/SELECT/INSERT through db.execute.
+// NO NSS read. NO pause call. NO terminal cancel (handleCampaignError). NO max
+// retry cap. On any failure (no sequence, no lead, send failure, getCampaign
+// throw) the row is left alone — next tick retries.
 
 const mockDbExecute = vi.fn();
 const mockDbUpdateSet = vi.fn();
@@ -22,14 +27,10 @@ function nextDbSelectResponse(): unknown[] {
 }
 
 /**
- * The drizzle select chain has two shapes in retry-stuck:
- *   - `db.select().from(...).where(...)`            awaited directly (sequenceCosts lookup)
- *   - `db.select().from(...).where(...).limit(n)`   awaited (instantly_leads lookup)
- *
- * Build a thenable that resolves to the next queued response AND exposes a
- * `.limit()` method that returns another thenable with the same response.
- * Each call to `db.select().from(...).where(...)` consumes ONE item from the
- * queue, regardless of whether `.limit()` is then chained.
+ * Drizzle select chain in retry-stuck:
+ *   - `db.select().from(...).where(...)`            sequenceCosts lookup
+ *   - `db.select().from(...).where(...).limit(n)`   instantly_leads lookup
+ * Each `db.select().from().where()` consumes ONE queue item; `.limit()` no-ops.
  */
 function makeSelectChain() {
   return {
@@ -70,12 +71,7 @@ vi.mock("../../src/db", () => ({
 }));
 
 vi.mock("../../src/db/schema", () => ({
-  instantlyCampaigns: {
-    id: "id",
-    instantlyCampaignId: "instantly_campaign_id",
-    notSendingStatus: "not_sending_status",
-    notSendingStatusSeenAt: "not_sending_status_seen_at",
-  },
+  instantlyCampaigns: { id: "id", instantlyCampaignId: "instantly_campaign_id" },
   instantlyLeads: { instantlyCampaignId: "instantly_campaign_id", email: "email" },
   sequenceCosts: { campaignId: "campaign_id", leadEmail: "lead_email", status: "status" },
 }));
@@ -107,17 +103,18 @@ vi.mock("../../src/lib/instantly-client", () => ({
   updateCampaignStatus: (...args: unknown[]) => mockUpdateCampaignStatus(...args),
 }));
 
+// retry-stuck no longer calls campaign-error-handler. Spy that it stays unused.
 const mockHandleCampaignError = vi.fn();
 
 vi.mock("../../src/lib/campaign-error-handler", () => ({
   handleCampaignError: (...args: unknown[]) => mockHandleCampaignError(...args),
 }));
 
-const mockDispatchLeadToInstantly = vi.fn();
+const mockSendLeadToInstantly = vi.fn();
 const mockStripAccountSignature = vi.fn((body: string) => body);
 
-vi.mock("../../src/lib/dispatch-lead", () => ({
-  dispatchLeadToInstantly: (...args: unknown[]) => mockDispatchLeadToInstantly(...args),
+vi.mock("../../src/lib/send-lead", () => ({
+  sendLeadToInstantly: (...args: unknown[]) => mockSendLeadToInstantly(...args),
   stripAccountSignature: (b: string) => mockStripAccountSignature(b),
 }));
 
@@ -135,7 +132,8 @@ vi.mock("../../src/lib/runs-client", () => ({
 
 import {
   runRetryStuck,
-  MAX_ROWS_PER_RUN,
+  MAX_ROWS_PER_TICK,
+  STUCK_AGE_HOURS,
   BATCH_SIZE,
 } from "../../src/lib/retry-stuck";
 
@@ -155,7 +153,6 @@ function row(extra: Record<string, unknown> = {}) {
 }
 
 const SINGLE_STEP_LIVE = {
-  not_sending_status: { reason: "x" },
   sequences: [
     {
       steps: [
@@ -195,10 +192,10 @@ describe("runRetryStuck", () => {
     mockDbSelectQueue.length = 0;
     mockDbExecute.mockResolvedValue({ rows: [] });
     mockResolveKey.mockResolvedValue({ key: "fake-api-key", keySource: "platform" });
-    mockGetCampaign.mockResolvedValue({});
+    mockGetCampaign.mockResolvedValue(SINGLE_STEP_LIVE);
     mockUpdateCampaignStatus.mockResolvedValue({});
     mockHandleCampaignError.mockResolvedValue(undefined);
-    mockDispatchLeadToInstantly.mockResolvedValue({
+    mockSendLeadToInstantly.mockResolvedValue({
       ok: true,
       value: {
         instantlyCampaignId: "inst-camp-NEW",
@@ -218,34 +215,43 @@ describe("runRetryStuck", () => {
     mockUpdateCostStatus.mockResolvedValue({});
   });
 
-  // ─── Still-sending / lock / cap (carried over from PR C tests) ─────────────
+  // ─── Constants ─────────────────────────────────────────────────────────────
 
-  it("skips when not_sending_status is null", async () => {
-    setupSweep([row()]);
-    mockGetCampaign.mockResolvedValueOnce({ not_sending_status: null });
-
-    const summary = await runRetryStuck();
-
-    expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
-    expect(mockDispatchLeadToInstantly).not.toHaveBeenCalled();
-    expect(mockHandleCampaignError).not.toHaveBeenCalled();
-    expect(summary.stillSending).toBe(1);
-    expect(summary.cancelled).toBe(0);
-    expect(summary.redispatched).toBe(0);
+  it("STUCK_AGE_HOURS is 72", () => {
+    expect(STUCK_AGE_HOURS).toBe(72);
   });
 
-  it("skips when not_sending_status is missing (undefined)", async () => {
-    setupSweep([row()]);
-    mockGetCampaign.mockResolvedValueOnce({});
-
-    const summary = await runRetryStuck();
-
-    expect(mockHandleCampaignError).not.toHaveBeenCalled();
-    expect(mockDispatchLeadToInstantly).not.toHaveBeenCalled();
-    expect(summary.stillSending).toBe(1);
+  it("MAX_ROWS_PER_TICK is bounded (≤ 200) so a tick stays cheap", () => {
+    expect(MAX_ROWS_PER_TICK).toBeGreaterThan(0);
+    expect(MAX_ROWS_PER_TICK).toBeLessThanOrEqual(200);
   });
 
-  it("short-circuits with skipped='sweep_in_progress' when the advisory lock is held", async () => {
+  it("BATCH_SIZE > 1 so per-tick parallelism is on", () => {
+    expect(BATCH_SIZE).toBeGreaterThan(1);
+  });
+
+  // ─── SQL selection filter ──────────────────────────────────────────────────
+
+  it("selectStuckRows SQL contains 72h floor, LIMIT, ORDER BY ASC, and silver NOT EXISTS guard", async () => {
+    setupSweep([]);
+    await runRetryStuck();
+    const selectCall = mockDbExecute.mock.calls[1]?.[0];
+    expect(selectCall).toBeDefined();
+    const text = chunkText(selectCall);
+    expect(text).toMatch(/72\s+hours/);
+    expect(text).toMatch(/ORDER BY created_at ASC/);
+    expect(text).toMatch(/LIMIT/);
+    expect(text).toMatch(/NOT EXISTS/i);
+    expect(text).toMatch(/instantly_events/);
+    expect(text).toMatch(/email_sent/);
+    expect(text).toMatch(/email_bounced/);
+    expect(text).toMatch(/reply_received/);
+    expect(text).toMatch(/lead_unsubscribed/);
+  });
+
+  // ─── Lock + grouping ───────────────────────────────────────────────────────
+
+  it("short-circuits with skipped='sweep_in_progress' when advisory lock is held", async () => {
     setupSweep([], { lockAcquired: false });
 
     const summary = await runRetryStuck();
@@ -253,38 +259,26 @@ describe("runRetryStuck", () => {
     expect(summary.skipped).toBe("sweep_in_progress");
     expect(summary.scanned).toBe(0);
     expect(mockGetCampaign).not.toHaveBeenCalled();
-    expect(mockHandleCampaignError).not.toHaveBeenCalled();
     expect(mockResolveKey).not.toHaveBeenCalled();
+    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
   });
 
-  it("limits work to MAX_ROWS_PER_RUN rows in a single sweep", async () => {
-    const rows = Array.from({ length: MAX_ROWS_PER_RUN }, (_, i) =>
-      row({
-        id: `row-${i}`,
-        instantlyCampaignId: `inst-${i}`,
-        leadEmail: `lead-${i}@test.com`,
-      }),
-    );
-    setupSweep(rows);
-    mockGetCampaign.mockResolvedValue({ not_sending_status: null });
+  it("groups rows by orgId so each org resolves its key once", async () => {
+    setupSweep([
+      row({ id: "a", orgId: "org-1" }),
+      row({ id: "b", orgId: "org-1", instantlyCampaignId: "inst-b" }),
+      row({ id: "c", orgId: "org-2", instantlyCampaignId: "inst-c" }),
+    ]);
+    queueSelectLead();
+    queueSelectCosts([]);
+    queueSelectLead();
+    queueSelectCosts([]);
+    queueSelectLead();
+    queueSelectCosts([]);
 
-    const summary = await runRetryStuck();
-
-    expect(summary.scanned).toBe(MAX_ROWS_PER_RUN);
-  });
-
-  it("selectStuckRows SQL contains LIMIT and ORDER BY created_at ASC", async () => {
-    setupSweep([]);
     await runRetryStuck();
-    const selectCall = mockDbExecute.mock.calls[1]?.[0];
-    expect(selectCall).toBeDefined();
-    const text = chunkText(selectCall);
-    expect(text).toMatch(/ORDER BY created_at ASC/);
-    expect(text).toMatch(/LIMIT/);
-  });
 
-  it("exposes BATCH_SIZE > 1 so per-tick parallelism is on", () => {
-    expect(BATCH_SIZE).toBeGreaterThan(1);
+    expect(mockResolveKey).toHaveBeenCalledTimes(2);
   });
 
   it("skips org when key resolution fails", async () => {
@@ -294,46 +288,59 @@ describe("runRetryStuck", () => {
     const summary = await runRetryStuck();
 
     expect(mockGetCampaign).not.toHaveBeenCalled();
-    expect(mockDispatchLeadToInstantly).not.toHaveBeenCalled();
+    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
     expect(summary.skippedNoKey).toBe(1);
   });
 
-  it("groups rows by orgId so each org resolves its key once", async () => {
-    setupSweep([
-      row({ id: "a", orgId: "org-1" }),
-      row({ id: "b", orgId: "org-1" }),
-      row({ id: "c", orgId: "org-2", instantlyCampaignId: "inst-c" }),
-    ]);
-    mockGetCampaign.mockResolvedValue({ not_sending_status: null });
+  it("caps work at MAX_ROWS_PER_TICK", async () => {
+    const rows = Array.from({ length: MAX_ROWS_PER_TICK }, (_, i) =>
+      row({
+        id: `row-${i}`,
+        instantlyCampaignId: `inst-${i}`,
+        leadEmail: `lead-${i}@test.com`,
+      }),
+    );
+    setupSweep(rows);
+    for (let i = 0; i < MAX_ROWS_PER_TICK; i++) {
+      queueSelectLead();
+      queueSelectCosts([]);
+    }
 
-    await runRetryStuck();
+    const summary = await runRetryStuck();
 
-    expect(mockResolveKey).toHaveBeenCalledTimes(2);
+    expect(summary.scanned).toBe(MAX_ROWS_PER_TICK);
   });
 
-  // ─── New: re-dispatch flow ─────────────────────────────────────────────────
+  // ─── Success flow ──────────────────────────────────────────────────────────
 
-  it("on NSS, attempts re-dispatch onto a fresh healthy account", async () => {
+  it("re-dispatches on a fresh healthy account", async () => {
     setupSweep([row()]);
-    mockGetCampaign.mockResolvedValueOnce(SINGLE_STEP_LIVE);
     queueSelectLead();
     queueSelectCosts([
-      { id: "cost-row-1", runId: "step-run-1", costId: "cost-id-1", status: "provisioned", step: 1, campaignId: "camp-1", leadEmail: "lead@test.com" },
+      {
+        id: "cost-row-1",
+        runId: "step-run-1",
+        costId: "cost-id-1",
+        status: "provisioned",
+        step: 1,
+        campaignId: "camp-1",
+        leadEmail: "lead@test.com",
+      },
     ]);
 
     const summary = await runRetryStuck();
 
-    // dispatchLeadToInstantly invoked with the rebuilt sequence + lead.
-    expect(mockDispatchLeadToInstantly).toHaveBeenCalledTimes(1);
-    const dispatchArgs = mockDispatchLeadToInstantly.mock.calls[0][0] as {
+    // sendLeadToInstantly invoked with rebuilt sequence + lead.
+    expect(mockSendLeadToInstantly).toHaveBeenCalledTimes(1);
+    const args = mockSendLeadToInstantly.mock.calls[0][0] as {
       sortedSequence: Array<{ step: number; bodyHtml: string; daysSinceLastStep: number }>;
       lead: { email: string; first_name?: string };
       subject: string;
     };
-    expect(dispatchArgs.lead.email).toBe("lead@test.com");
-    expect(dispatchArgs.lead.first_name).toBe("Lead");
-    expect(dispatchArgs.sortedSequence).toHaveLength(1);
-    expect(dispatchArgs.subject).toBe("Hi");
+    expect(args.lead.email).toBe("lead@test.com");
+    expect(args.lead.first_name).toBe("Lead");
+    expect(args.sortedSequence).toHaveLength(1);
+    expect(args.subject).toBe("Hi");
 
     // Old cost cancelled via runs-service.
     expect(mockUpdateCostStatus).toHaveBeenCalledWith(
@@ -346,19 +353,14 @@ describe("runRetryStuck", () => {
     expect(mockAddCosts).toHaveBeenCalled();
 
     // Row mutated to point at the new Instantly campaign.
-    expect(mockDbUpdateSet).toHaveBeenCalledWith(
-      expect.objectContaining({
-        instantlyCampaignId: "inst-camp-NEW",
-        notSendingStatus: null,
-        notSendingStatusSeenAt: null,
-      }),
-    );
-
-    // handleCampaignError NOT invoked — lead is alive on the new account.
-    expect(mockHandleCampaignError).not.toHaveBeenCalled();
+    const muteCall = mockDbUpdateSet.mock.calls.find((c) => {
+      const v = c[0] as Record<string, unknown>;
+      return v.instantlyCampaignId === "inst-camp-NEW";
+    });
+    expect(muteCall).toBeDefined();
 
     expect(summary.redispatched).toBe(1);
-    expect(summary.cancelled).toBe(0);
+    expect(summary.failed).toBe(0);
     expect(summary.scanned).toBe(1);
   });
 
@@ -373,135 +375,89 @@ describe("runRetryStuck", () => {
         },
       }),
     ]);
-    mockGetCampaign.mockResolvedValueOnce(SINGLE_STEP_LIVE);
     queueSelectLead();
     queueSelectCosts([]);
 
     await runRetryStuck();
 
-    const muteCall = mockDbUpdateSet.mock.calls.find((args) => {
-      const v = args[0] as Record<string, unknown>;
+    const muteCall = mockDbUpdateSet.mock.calls.find((c) => {
+      const v = c[0] as Record<string, unknown>;
       return "instantlyCampaignId" in v;
     });
     expect(muteCall).toBeDefined();
-    const mutePayload = muteCall![0] as { metadata: { redispatchCount: number; redispatchHistory: unknown[] } };
-    expect(mutePayload.metadata.redispatchCount).toBe(2);
-    expect(mutePayload.metadata.redispatchHistory).toHaveLength(2);
+    const v = muteCall![0] as { metadata: { redispatchCount: number; redispatchHistory: unknown[] } };
+    expect(v.metadata.redispatchCount).toBe(2);
+    expect(v.metadata.redispatchHistory).toHaveLength(2);
   });
 
-  it("falls back to handleCampaignError(cancelled) when no healthy account exists", async () => {
+  it("mirrors the lead onto the new Instantly campaign so future re-dispatches resolve", async () => {
     setupSweep([row()]);
-    mockGetCampaign.mockResolvedValueOnce(SINGLE_STEP_LIVE);
-    queueSelectLead();
-    queueSelectCosts([]);
-
-    mockDispatchLeadToInstantly.mockResolvedValueOnce({
-      ok: false,
-      reason: "no_healthy_account",
-    });
-
-    const summary = await runRetryStuck();
-
-    expect(mockHandleCampaignError).toHaveBeenCalledWith(
-      "inst-camp-1",
-      expect.stringContaining("redispatch_failed: no_healthy_account"),
-      expect.objectContaining({ terminalStatus: "cancelled" }),
-    );
-    expect(summary.cancelled).toBe(1);
-    expect(summary.redispatched).toBe(0);
-  });
-
-  it("falls back to handleCampaignError(cancelled) when every dispatch attempt hits NSS", async () => {
-    setupSweep([row()]);
-    mockGetCampaign.mockResolvedValueOnce(SINGLE_STEP_LIVE);
-    queueSelectLead();
-    queueSelectCosts([]);
-
-    mockDispatchLeadToInstantly.mockResolvedValueOnce({
-      ok: false,
-      reason: "max_retries_exhausted",
-    });
-
-    const summary = await runRetryStuck();
-
-    expect(mockHandleCampaignError).toHaveBeenCalledWith(
-      "inst-camp-1",
-      expect.stringContaining("redispatch_failed: max_retries_exhausted"),
-      expect.objectContaining({ terminalStatus: "cancelled" }),
-    );
-    expect(summary.cancelled).toBe(1);
-    expect(summary.redispatched).toBe(0);
-  });
-
-  it("writes not_sending_status diagnostic onto the row even when re-dispatch succeeds", async () => {
-    setupSweep([row()]);
-    mockGetCampaign.mockResolvedValueOnce({
-      ...SINGLE_STEP_LIVE,
-      not_sending_status: 4,
-    });
     queueSelectLead();
     queueSelectCosts([]);
 
     await runRetryStuck();
 
-    expect(mockDbUpdateSet).toHaveBeenCalledWith(
-      expect.objectContaining({
-        notSendingStatus: 4,
-        notSendingStatusSeenAt: expect.any(Date),
-      }),
-    );
-  });
-
-  it("falls back to cancel when the live campaign has no sequence (cannot rebuild)", async () => {
-    setupSweep([row()]);
-    mockGetCampaign.mockResolvedValueOnce({
-      not_sending_status: 4,
-      sequences: [],
+    const leadInsert = mockDbInsertValues.mock.calls.find((c) => {
+      const v = c[0] as Record<string, unknown>;
+      return v.instantlyCampaignId === "inst-camp-NEW" && v.email === "lead@test.com";
     });
-    queueSelectCosts([]);
-
-    const summary = await runRetryStuck();
-
-    expect(mockDispatchLeadToInstantly).not.toHaveBeenCalled();
-    expect(mockHandleCampaignError).toHaveBeenCalledWith(
-      "inst-camp-1",
-      expect.stringContaining("no_sequence_on_live_campaign"),
-      expect.objectContaining({ terminalStatus: "cancelled" }),
-    );
-    expect(summary.cancelled).toBe(1);
+    expect(leadInsert).toBeDefined();
   });
 
-  it("falls back to cancel when the lead's local profile row is missing", async () => {
+  // ─── Failure flow — row left alone, NOT terminal-cancelled ─────────────────
+
+  it("when sendLeadToInstantly returns no_healthy_account, row is left alone (no terminal cancel)", async () => {
     setupSweep([row()]);
-    mockGetCampaign.mockResolvedValueOnce(SINGLE_STEP_LIVE);
-    // No queueSelectLead() — lookup returns empty array.
-    queueSelectCosts([]);
-
-    const summary = await runRetryStuck();
-
-    expect(mockDispatchLeadToInstantly).not.toHaveBeenCalled();
-    expect(mockHandleCampaignError).toHaveBeenCalledWith(
-      "inst-camp-1",
-      expect.stringContaining("lead_profile_not_found"),
-      expect.objectContaining({ terminalStatus: "cancelled" }),
-    );
-    expect(summary.cancelled).toBe(1);
-  });
-
-  it("continues with re-dispatch even when Instantly pause fails", async () => {
-    setupSweep([row()]);
-    mockGetCampaign.mockResolvedValueOnce(SINGLE_STEP_LIVE);
-    mockUpdateCampaignStatus.mockRejectedValueOnce(new Error("instantly 503"));
     queueSelectLead();
-    queueSelectCosts([]);
+    mockSendLeadToInstantly.mockResolvedValueOnce({ ok: false, reason: "no_healthy_account" });
 
     const summary = await runRetryStuck();
 
-    expect(mockDispatchLeadToInstantly).toHaveBeenCalled();
-    expect(summary.redispatched).toBe(1);
+    expect(mockHandleCampaignError).not.toHaveBeenCalled();
+    const muteCall = mockDbUpdateSet.mock.calls.find((c) => {
+      const v = c[0] as Record<string, unknown>;
+      return v.instantlyCampaignId === "inst-camp-NEW";
+    });
+    expect(muteCall).toBeUndefined();
+    expect(summary.redispatched).toBe(0);
+    expect(summary.failed).toBe(1);
   });
 
-  it("counts failures without halting the sweep", async () => {
+  it("when sendLeadToInstantly returns max_retries_exhausted, row is left alone (no terminal cancel)", async () => {
+    setupSweep([row()]);
+    queueSelectLead();
+    mockSendLeadToInstantly.mockResolvedValueOnce({ ok: false, reason: "max_retries_exhausted" });
+
+    const summary = await runRetryStuck();
+
+    expect(mockHandleCampaignError).not.toHaveBeenCalled();
+    expect(summary.redispatched).toBe(0);
+    expect(summary.failed).toBe(1);
+  });
+
+  it("when live campaign has no sequence, row is left alone (no terminal cancel)", async () => {
+    setupSweep([row()]);
+    mockGetCampaign.mockResolvedValueOnce({ sequences: [] });
+
+    const summary = await runRetryStuck();
+
+    expect(mockHandleCampaignError).not.toHaveBeenCalled();
+    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
+    expect(summary.failed).toBe(1);
+  });
+
+  it("when local lead profile is missing, row is left alone (no terminal cancel)", async () => {
+    setupSweep([row()]);
+    // No queueSelectLead() — lookup returns empty array.
+
+    const summary = await runRetryStuck();
+
+    expect(mockHandleCampaignError).not.toHaveBeenCalled();
+    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
+    expect(summary.failed).toBe(1);
+  });
+
+  it("when getCampaign throws, row is counted as failed but the sweep continues", async () => {
     setupSweep([
       row({ id: "a", instantlyCampaignId: "inst-a" }),
       row({ id: "b", instantlyCampaignId: "inst-b" }),
@@ -517,41 +473,52 @@ describe("runRetryStuck", () => {
     expect(summary.scanned).toBe(2);
     expect(summary.failed).toBe(1);
     expect(summary.redispatched).toBe(1);
+    expect(mockHandleCampaignError).not.toHaveBeenCalled();
   });
 
-  it("mirrors the lead onto the new Instantly campaign so future re-dispatches can find it", async () => {
+  // ─── Removed-side-effect guards ────────────────────────────────────────────
+
+  it("never calls updateCampaignStatus (no pause on the old campaign)", async () => {
     setupSweep([row()]);
-    mockGetCampaign.mockResolvedValueOnce(SINGLE_STEP_LIVE);
     queueSelectLead();
     queueSelectCosts([]);
 
     await runRetryStuck();
 
-    // db.insert called with the new instantlyCampaignId + lead data.
-    const leadInsert = mockDbInsertValues.mock.calls.find((args) => {
-      const v = args[0] as Record<string, unknown>;
-      return v.instantlyCampaignId === "inst-camp-NEW" && v.email === "lead@test.com";
-    });
-    expect(leadInsert).toBeDefined();
+    expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
+  });
+
+  it("never writes not_sending_status onto the row (reconcile owns NSS, not retry-stuck)", async () => {
+    setupSweep([row()]);
+    queueSelectLead();
+    queueSelectCosts([]);
+
+    await runRetryStuck();
+
+    // Every db.update().set(v) — none of them should set notSendingStatus.
+    for (const call of mockDbUpdateSet.mock.calls) {
+      const v = call[0] as Record<string, unknown>;
+      expect(v).not.toHaveProperty("notSendingStatus");
+    }
   });
 });
 
-/** Concatenate every string fragment in a drizzle SQL query for assertions. */
+/** Recursively concatenate every string fragment in a drizzle SQL query. */
 function chunkText(query: unknown): string {
-  if (!query || typeof query !== "object") return String(query);
+  if (query == null) return "";
+  if (typeof query === "string") return query;
+  if (typeof query !== "object") return String(query);
+
+  // Drizzle's SQL node nests recursively via `queryChunks`.
   const chunks = (query as { queryChunks?: unknown[] }).queryChunks;
-  if (!Array.isArray(chunks)) return String(query);
-  let out = "";
-  for (const c of chunks) {
-    if (typeof c === "string") {
-      out += c;
-      continue;
-    }
-    if (c && typeof c === "object") {
-      const v = (c as { value?: unknown }).value;
-      if (typeof v === "string") out += v;
-      else if (Array.isArray(v)) out += v.join("");
-    }
+  if (Array.isArray(chunks)) {
+    return chunks.map(chunkText).join("");
   }
-  return out;
+
+  // sql.raw and StringChunk both expose their text via `.value`.
+  const v = (query as { value?: unknown }).value;
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) return v.map(chunkText).join("");
+
+  return "";
 }

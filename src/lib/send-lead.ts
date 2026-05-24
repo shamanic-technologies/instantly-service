@@ -1,20 +1,21 @@
 /**
- * Shared dispatch helper.
+ * Shared send helper.
  *
  * Encapsulates the "find a healthy Instantly account + create campaign + add
  * lead + activate + check not_sending_status" loop. Used by:
- *   - POST /send (first-time dispatch)
- *   - retry-stuck cron (re-dispatch when an existing row hits not_sending_status
- *     post-activation, e.g. when Instantly's daily quota check trips later)
+ *   - POST /send (first-time send)
+ *   - retry-stuck heartbeat (re-send when an existing row has stayed in
+ *     `delivery_status='contacted'` past STUCK_AGE_HOURS without any silver
+ *     proof Instantly actually sent — see lib/retry-stuck.ts)
  *
  * The retry loop picks a random account each attempt (weighted by warmup score),
  * creates a fresh Instantly campaign, adds the lead, activates, and verifies
  * not_sending_status is null. If set, we discard and try again with a different
- * account — up to MAX_DISPATCH_RETRIES.
+ * account — up to MAX_SEND_RETRIES.
  *
  * No exclusion list: with ~100+ accounts per org, random sampling collides
  * rarely enough that maintaining a "failed accounts" list is more bookkeeping
- * than payoff. Each dispatch is independent.
+ * than payoff. Each send is independent.
  */
 
 import {
@@ -29,10 +30,10 @@ import {
   type SequenceStep,
 } from "./instantly-client";
 
-export const MAX_DISPATCH_RETRIES = 3;
+export const MAX_SEND_RETRIES = 3;
 
 /**
- * Accounts whose domain we refuse to dispatch from regardless of Instantly
+ * Accounts whose domain we refuse to send from regardless of Instantly
  * status. Add domains here when a sender's deliverability is so poor that
  * even an "active" status is misleading.
  */
@@ -78,7 +79,7 @@ export function buildEmailBodyWithSignature(body: string, account: Account): str
 
   if (!signature) {
     console.warn(
-      `[dispatch-lead] Account ${account.email} has no signature configured — email will be sent without signature`,
+      `[send-lead] Account ${account.email} has no signature configured — email will be sent without signature`,
     );
     return body.replace(/\n*\{\{accountSignature\}\}/g, "");
   }
@@ -92,14 +93,14 @@ export function buildEmailBodyWithSignature(body: string, account: Account): str
 
 /**
  * Strip a previously-appended `\n\n--\nSIGNATURE` block from a body. Used by
- * the retry-stuck re-dispatch path to recover the original prospect-facing
- * body from an Instantly campaign that already had account A's signature
- * baked in, so we can re-inject account B's signature.
+ * retry-stuck to recover the original prospect-facing body from an Instantly
+ * campaign that already had account A's signature baked in, so account B's
+ * signature can be re-injected.
  *
  * Heuristic: split on the marker `\n\n--\n` and keep everything before it.
  * If the marker doesn't appear, return the body unchanged. Senders whose
  * original body legitimately contains `\n\n--\n` will lose content past that
- * point on a re-dispatch — accepted edge-case rather than introducing a new
+ * point on a re-send — accepted edge-case rather than introducing a new
  * `sequence_template` table just for this rare path.
  */
 export function stripAccountSignature(body: string): string {
@@ -135,7 +136,7 @@ export function buildSequenceSteps(
 }
 
 /**
- * Filter the raw Instantly account list to senders we can dispatch from now:
+ * Filter the raw Instantly account list to senders we can send from now:
  *   - `status > 0` (active in Instantly's account state machine)
  *   - domain not in BLOCKED_DOMAINS
  *
@@ -147,7 +148,7 @@ export function filterHealthyAccounts(accounts: Account[]): Account[] {
     if (a.status <= 0) return false;
     const domain = a.email.split("@")[1];
     if (BLOCKED_DOMAINS.includes(domain)) {
-      console.log(`[dispatch-lead] Skipping blocked-domain account: ${a.email}`);
+      console.log(`[send-lead] Skipping blocked-domain account: ${a.email}`);
       return false;
     }
     return true;
@@ -168,14 +169,14 @@ export async function tryCreateAndActivateCampaign(
   lead: Lead,
 ): Promise<{ instantlyCampaignId: string; added: number } | null> {
   console.log(
-    `[dispatch-lead] Creating Instantly campaign "${campaignName}" with account ${account.email}`,
+    `[send-lead] Creating Instantly campaign "${campaignName}" with account ${account.email}`,
   );
   const instantlyCampaign = await createInstantlyCampaign(apiKey, {
     name: campaignName,
     steps,
   });
   console.log(
-    `[dispatch-lead] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`,
+    `[send-lead] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`,
   );
 
   // Assign the selected account via PATCH.
@@ -195,7 +196,7 @@ export async function tryCreateAndActivateCampaign(
     instantlyCampaign.id,
   )) as unknown as Record<string, unknown>;
   console.log(
-    `[dispatch-lead] Verify after PATCH — email_list=${JSON.stringify(verified.email_list)} not_sending_status=${JSON.stringify(verified.not_sending_status)}`,
+    `[send-lead] Verify after PATCH — email_list=${JSON.stringify(verified.email_list)} not_sending_status=${JSON.stringify(verified.not_sending_status)}`,
   );
 
   // Add lead.
@@ -218,7 +219,7 @@ export async function tryCreateAndActivateCampaign(
   if (postActivate.not_sending_status) {
     const reason = `not_sending_status: ${JSON.stringify(postActivate.not_sending_status)}`;
     console.warn(
-      `[dispatch-lead] Campaign ${instantlyCampaign.id} ${reason} — will retry with another account`,
+      `[send-lead] Campaign ${instantlyCampaign.id} ${reason} — will retry with another account`,
     );
     return null;
   }
@@ -226,7 +227,7 @@ export async function tryCreateAndActivateCampaign(
   return { instantlyCampaignId: instantlyCampaign.id, added: addResult.added };
 }
 
-export interface DispatchOptions {
+export interface SendOptions {
   apiKey: string;
   campaignName: string;
   subject: string;
@@ -235,41 +236,41 @@ export interface DispatchOptions {
   maxRetries?: number;
 }
 
-export interface DispatchSuccess {
+export interface SendSuccess {
   instantlyCampaignId: string;
   added: number;
   account: Account;
 }
 
-export type DispatchFailureReason = "no_healthy_account" | "max_retries_exhausted";
+export type SendFailureReason = "no_healthy_account" | "max_retries_exhausted";
 
-export type DispatchResult =
-  | { ok: true; value: DispatchSuccess }
-  | { ok: false; reason: DispatchFailureReason };
+export type SendResult =
+  | { ok: true; value: SendSuccess }
+  | { ok: false; reason: SendFailureReason };
 
 /**
- * Find a healthy Instantly account for the given org's API key and dispatch
+ * Find a healthy Instantly account for the given org's API key and send
  * the lead onto a fresh campaign. Tries up to `maxRetries` accounts before
  * giving up.
  *
  * Returns:
  *   - `{ok: true, ...}` on success with the new Instantly campaign ID + chosen account.
  *   - `{ok: false, reason: "no_healthy_account"}` when `listAccounts` returns
- *     zero senders that pass `filterHealthyAccounts` — caller should treat
- *     this as terminal (refund the lead).
+ *     zero senders that pass `filterHealthyAccounts` — caller leaves the row
+ *     alone and lets the next tick retry.
  *   - `{ok: false, reason: "max_retries_exhausted"}` when every attempt hit
- *     `not_sending_status` post-activate. Caller can either treat as terminal
- *     or schedule a later retry.
+ *     `not_sending_status` post-activate — caller leaves the row alone and lets
+ *     the next tick retry.
  */
-export async function dispatchLeadToInstantly(opts: DispatchOptions): Promise<DispatchResult> {
-  const maxRetries = opts.maxRetries ?? MAX_DISPATCH_RETRIES;
+export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult> {
+  const maxRetries = opts.maxRetries ?? MAX_SEND_RETRIES;
 
   const allAccounts = await listAccounts(opts.apiKey);
   const accounts = filterHealthyAccounts(allAccounts);
 
   if (accounts.length === 0) {
     console.warn(
-      `[dispatch-lead] No healthy accounts available (raw=${allAccounts.length}) for "${opts.campaignName}"`,
+      `[send-lead] No healthy accounts available (raw=${allAccounts.length}) for "${opts.campaignName}"`,
     );
     return { ok: false, reason: "no_healthy_account" };
   }
@@ -279,7 +280,7 @@ export async function dispatchLeadToInstantly(opts: DispatchOptions): Promise<Di
     const steps = buildSequenceSteps(opts.subject, opts.sortedSequence, account);
 
     console.log(
-      `[dispatch-lead] Attempt ${attempt}/${maxRetries} for "${opts.campaignName}" with account ${account.email}`,
+      `[send-lead] Attempt ${attempt}/${maxRetries} for "${opts.campaignName}" with account ${account.email}`,
     );
 
     const result = await tryCreateAndActivateCampaign(
