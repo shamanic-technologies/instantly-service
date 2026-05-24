@@ -239,19 +239,16 @@ router.post("/reconcile", (_req: Request, res: Response) => {
 
 /**
  * POST /internal/campaigns/retry-stuck
- * Daily 02:00 UTC sweep: scans campaigns stuck in `delivery_status='contacted'`
- * for more than 24h, fetches `not_sending_status` live from Instantly, and
- * for each row where Instantly is refusing to dispatch: pauses the Instantly
- * campaign, writes the observed `not_sending_status` onto the row, cancels
- * actual+provisioned costs (via handleCampaignError), and marks
- * `delivery_status='cancelled'`. Idempotent — already-cancelled rows fall
- * outside the SELECT.
+ * Manual-trigger entry into the retry-stuck sweep. Same code path the
+ * heartbeat worker (lib/retry-stuck-worker.ts) drives every
+ * RETRY_STUCK_TICK_INTERVAL_MS — processes up to MAX_ROWS_PER_TICK rows
+ * stuck in `delivery_status='contacted'` for >72h with no silver event
+ * proving the lead was sent. Each row is re-sent on a fresh healthy
+ * account; failures leave the row alone for the next tick to retry.
+ * Serialized via a Postgres advisory lock so this endpoint can't race the
+ * worker.
  *
- * Bounded per run by MAX_ROWS_PER_RUN (oldest first) and serialized via a
- * Postgres advisory lock so overlapping ticks cannot double-cancel.
- *
- * Returns 202 immediately and runs the sweep in the background (mirrors the
- * /reconcile pattern; the sweep can take minutes for large orgs).
+ * Returns 202 immediately and runs the sweep in the background.
  */
 router.post("/retry-stuck", (_req: Request, res: Response) => {
   const runId = randomUUID();

@@ -93,7 +93,19 @@ async function start() {
   await runMigrations();
   await deployEmailTemplates();
   app.listen(PORT, () => {
-    console.log(`instantly-service running on port ${PORT}`);
+    console.log(`[instantly-service] running on port ${PORT}`);
+    // Start the retry-stuck heartbeat AFTER the port is bound. Tick work is
+    // bounded by MAX_ROWS_PER_TICK so it cannot starve the event loop, and
+    // any throw inside a tick is swallowed by the worker — never blocking
+    // /healthz or other inbound traffic.
+    import("./lib/retry-stuck-worker")
+      .then(({ startRetryStuckWorker }) => startRetryStuckWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[instantly-service] failed to start retry-stuck worker: ${message}`,
+        );
+      });
   });
 }
 

@@ -110,45 +110,73 @@ Costs flow through three states in runs-service: `provisioned` (reserved) →
 Step 1's email costs are now `provisioned` (previously `actual`). Instantly's
 daily sender quota is only consumed on actual dispatch, so charging the
 customer at /send time over-bills when Instantly later refuses to send (spam
-filter, capacity, esp mismatch). The retry-stuck cron sweeps stuck
-`delivery_status='contacted'` rows older than 24h and cancels their reserved
-spend.
+filter, capacity, esp mismatch). The retry-stuck heartbeat (see below)
+sweeps stuck `delivery_status='contacted'` rows older than 72h and re-sends
+them onto a fresh account, rolling the reserved spend over.
 
-### Cancellation paths
+### Retry-stuck heartbeat
 
-- **Inline** — Instantly returns `not_sending_status` during /send activation:
-  `delivery_status='failed'`, costs cancelled, run failed, admin notified.
-- **Retry-stuck cron** — campaigns stuck >24h with live `not_sending_status`
-  are first **re-dispatched** onto a different healthy Instantly account when
-  one is available. Driven by `.github/workflows/retry-stuck-cron.yml`
-  **daily at 02:00 UTC**.
-  - **Sender pool**: the cron calls `listAccounts(apiKey)` (org-wide) and
-    filters to `status > 0` + non-blocked domains. A weighted-random pick
-    selects one account (warmup-score weighting, fallback uniform).
-  - **Re-dispatch flow**: pause the original Instantly campaign, write the
-    observed `not_sending_status` onto the row (diagnostic), refetch the
-    sequence from the failing campaign, strip the old account's signature,
-    look up the lead profile locally, and call `dispatchLeadToInstantly`
-    (shared with `POST /send`, retries internally up to 3 different accounts).
-  - **On success**: refund the old cost rows via runs-service, provision
-    fresh costs on new step runs (customer is re-charged for the new
-    attempt), mute the local row in place (new `instantly_campaign_id`,
-    `not_sending_status` cleared), and append `metadata.redispatchHistory`.
-    `delivery_status` stays `'contacted'`. **No cap** on how many times a
-    single lead can be re-dispatched — every sweep retries until either
-    Instantly delivers or no healthy account is left.
-  - **On terminal failure** (no healthy account, all 3 attempts hit
-    `not_sending_status`, or the live campaign / lead profile is missing):
-    fall through to `handleCampaignError(cancelled)` — refund costs, flip
-    `delivery_status='cancelled'`.
-  - **Bounds**: per-run cap `MAX_ROWS_PER_RUN = 5000` (oldest first), Postgres
-    advisory lock prevents overlapping sweeps (`skipped: "sweep_in_progress"`),
-    `Promise.all` batches of 10 paced by the general 600 req/min throttle.
-  - Admin email notifications are suppressed on the cancelled path so a
-    sweep cannot flood the admin inbox. Manual dispatch is available via the
-    `workflow_dispatch` button or by hitting `POST /internal/campaigns/retry-stuck`
-    directly; the route returns 202 immediately and runs the sweep in the
-    background. The sync retro endpoint (`/retry-stuck-now`) was removed.
+A continuous in-process worker (`src/lib/retry-stuck-worker.ts`) replaces the
+old daily GitHub Actions cron. Started from `src/index.ts` right after
+`app.listen()` so port-binding never blocks on it, and shut down cleanly on
+`SIGTERM`/`SIGINT`.
+
+Selection criteria are **purely local** (no Instantly preflight):
+
+```
+delivery_status = 'contacted'
+AND status = 'active'
+AND created_at < NOW() - INTERVAL '72 hours'
+AND NOT EXISTS (
+  SELECT 1 FROM instantly_events e
+  WHERE e.campaign_id = c.instantly_campaign_id
+    AND e.event_type IN (
+      'email_sent','email_opened','link_clicked',
+      'reply_received','auto_reply_received',
+      'email_bounced','lead_unsubscribed'
+    )
+)
+ORDER BY created_at ASC LIMIT 100
+```
+
+Belt-and-suspenders: the column gate AND a silver `NOT EXISTS` gate
+(catches the rare case where webhook + reconcile both missed a real
+`email_sent` and the column stayed stale).
+
+Per row:
+1. Pull the live Instantly campaign once to recover the sequence (subject +
+   step bodies + delays). `not_sending_status` is NOT consulted — reconcile
+   owns that signal for `/stats`.
+2. Read the lead profile from local `instantly_leads`.
+3. Call `sendLeadToInstantly` (shared with `POST /send`) to create a fresh
+   campaign on a different healthy account, weighted-random by warmup score.
+4. On success: refund the old cost rows, provision new ones, mirror the lead
+   onto the new campaign, mute the local row in place (new
+   `instantly_campaign_id`, `metadata.redispatchCount` bumped,
+   `metadata.redispatchHistory` appended). `delivery_status` stays
+   `'contacted'`.
+5. On failure (no healthy account, all 3 send attempts hit NSS, no sequence,
+   no local lead, `getCampaign` throws): the row is **left alone**. No
+   terminal cancel. The next tick retries — Instantly is free; with 100+
+   accounts random sampling converges.
+
+Bounds + concurrency:
+- `MAX_ROWS_PER_TICK = 100`. `BATCH_SIZE = 10` per org (the global
+  instantly-client throttle paces the rest).
+- Tick interval `RETRY_STUCK_TICK_INTERVAL_MS` (default `10 * 60 * 1000`,
+  env-overridable for staging / debugging).
+- Postgres advisory lock keyed `(8729, 1)` gates each tick so overlapping
+  invocations short-circuit with `skipped: "sweep_in_progress"`.
+
+Manual triggers: `POST /internal/campaigns/retry-stuck` calls the same
+`runRetryStuck()` (202 + background). Useful for ad-hoc Railway debugging
+without waiting for the next heartbeat.
+
+NSS webhook investigation: see
+[docs/retry-stuck-event-driven-investigation.md](./docs/retry-stuck-event-driven-investigation.md).
+TL;DR — Instantly does not emit a `not_sending_status` webhook, so reconcile
+(daily 03:00 UTC) remains the sole NSS observer and feeds `/stats`
+independently of retry-stuck.
 
 ## BYOK (Bring Your Own Key)
 

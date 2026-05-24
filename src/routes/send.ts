@@ -10,9 +10,9 @@ import {
   Lead,
 } from "../lib/instantly-client";
 import {
-  dispatchLeadToInstantly,
-  MAX_DISPATCH_RETRIES,
-} from "../lib/dispatch-lead";
+  sendLeadToInstantly,
+  MAX_SEND_RETRIES,
+} from "../lib/send-lead";
 import {
   createRun,
   updateRun,
@@ -64,7 +64,7 @@ async function findExistingCampaign(campaignId: string, leadEmail: string) {
  * or failed on reply/bounce/unsub/not_interested/campaign error.
  *
  * Dispatch (find healthy account + create campaign + add lead + activate)
- * is delegated to `dispatchLeadToInstantly()` in `lib/dispatch-lead.ts`, which
+ * is delegated to `sendLeadToInstantly()` in `lib/send-lead.ts`, which
  * also handles the retry loop on post-activation `not_sending_status`.
  */
 router.post("/", async (req: Request, res: Response) => {
@@ -178,7 +178,7 @@ router.post("/", async (req: Request, res: Response) => {
           variables: body.variables,
         };
 
-        const dispatch = await dispatchLeadToInstantly({
+        const sendResult = await sendLeadToInstantly({
           apiKey,
           campaignName: `Campaign ${campaignId}`,
           subject: body.subject,
@@ -186,14 +186,14 @@ router.post("/", async (req: Request, res: Response) => {
           lead,
         });
 
-        if (!dispatch.ok) {
+        if (!sendResult.ok) {
           const detail =
-            dispatch.reason === "no_healthy_account"
+            sendResult.reason === "no_healthy_account"
               ? "No active Instantly accounts available for this organization"
-              : `Campaign failed after ${MAX_DISPATCH_RETRIES} attempts (not_sending_status on every account)`;
+              : `Campaign failed after ${MAX_SEND_RETRIES} attempts (not_sending_status on every account)`;
           console.error(`[send] ${detail} for ${campaignId}/${body.to}`);
           return res.status(500).json({
-            error: "Failed to dispatch lead",
+            error: "Failed to send lead",
             details: detail,
           });
         }
@@ -203,12 +203,12 @@ router.post("/", async (req: Request, res: Response) => {
           {
             service: "instantly-service",
             event: "send-campaign-created",
-            detail: `instantlyCampaignId=${dispatch.value.instantlyCampaignId}, added=${dispatch.value.added}, account=${dispatch.value.account.email}`,
+            detail: `instantlyCampaignId=${sendResult.value.instantlyCampaignId}, added=${sendResult.value.added}, account=${sendResult.value.account.email}`,
           },
           req.headers,
         ).catch(() => {});
 
-        added = dispatch.value.added;
+        added = sendResult.value.added;
 
         // Success — save campaign to DB (atomic dedup via unique index)
         const [insertedCampaign] = await db
@@ -217,7 +217,7 @@ router.post("/", async (req: Request, res: Response) => {
             campaignId,
             leadEmail: body.to,
             leadId: body.leadId,
-            instantlyCampaignId: dispatch.value.instantlyCampaignId,
+            instantlyCampaignId: sendResult.value.instantlyCampaignId,
             name: `Campaign ${campaignId}`,
             status: "active",
             deliveryStatus: "contacted",
@@ -244,7 +244,7 @@ router.post("/", async (req: Request, res: Response) => {
         const [createdLead] = await db
           .insert(instantlyLeads)
           .values({
-            instantlyCampaignId: dispatch.value.instantlyCampaignId,
+            instantlyCampaignId: sendResult.value.instantlyCampaignId,
             email: body.to,
             firstName: body.firstName,
             lastName: body.lastName,
