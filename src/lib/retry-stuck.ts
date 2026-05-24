@@ -1,13 +1,13 @@
 /**
- * Retry-stuck job — heartbeat-driven sweep that re-sends leads stuck in
- * `delivery_status='contacted'` past the age floor onto a fresh healthy
- * Instantly account.
+ * Retry-stuck primitives — single-row pick + send/refund/recharge mutation.
  *
  * Selection criteria (LOCAL DB only — no Instantly preflight):
  *   - `delivery_status = 'contacted'` (lead pushed, not yet observed sending)
  *   - `status = 'active'` (not in terminal error state locally)
  *   - `created_at < NOW() - INTERVAL '72 hours'` (3 days = beyond Instantly's
  *     weekday/business-hours dispatch window)
+ *   - `campaign_id`, `lead_email`, `org_id` are NOT NULL (filter out orphaned
+ *     rows that can't be re-sent)
  *   - NOT EXISTS any silver event in `instantly_events` proving the lead
  *     already moved off `contacted` (email_sent / email_opened / link_clicked
  *     / reply_received / auto_reply_received / email_bounced /
@@ -28,19 +28,14 @@
  *      `delivery_status` stays `'contacted'`.
  *   5. On failure (no healthy account, all attempts hit NSS, no sequence,
  *      no local lead profile, getCampaign throws): the row is LEFT ALONE.
- *      No terminal cancel. Next tick retries. Instantly is free; with 100+
- *      accounts random sampling converges.
+ *      No terminal cancel. The worker loop will pick up another row and the
+ *      stuck row is re-visited on the next sweep.
  *
- * Concurrency: a Postgres advisory lock (`pg_try_advisory_lock(8729, 1)`)
- * gates each tick so overlapping invocations can't double-process the same
- * row. The lock is held for the duration of one tick (~seconds), released
- * in `finally`. Heartbeat worker (lib/retry-stuck-worker.ts) drives ticks
- * every RETRY_STUCK_TICK_INTERVAL_MS; manual triggers via
- * `POST /internal/campaigns/retry-stuck` use the same path.
- *
- * Throughput: rows are processed in `Promise.all` batches of BATCH_SIZE per
- * org. The instantly-client throttle (process-global) paces concurrent
- * Instantly API calls below per-workspace caps.
+ * Concurrency: this module exposes a `selectOneStuckRow` + `processRow` pair
+ * that the worker loop in `lib/retry-stuck-worker.ts` calls sequentially —
+ * one row at a time, no batching, no advisory lock. With a single replica
+ * this is race-free by construction. (Multi-replica safety would need
+ * `FOR UPDATE SKIP LOCKED` on the SELECT — not currently required.)
  */
 
 import { db } from "../db";
@@ -64,29 +59,9 @@ import {
 /** Age (hours) a row must reach before retry-stuck picks it up. */
 export const STUCK_AGE_HOURS = 72;
 
-/** Cap rows processed per tick so the advisory lock window stays short. */
-export const MAX_ROWS_PER_TICK = 100;
-
-/** Per-tick batch size for parallel Instantly calls within a single org. */
-export const BATCH_SIZE = 10;
-
-/** Postgres advisory-lock keyspace for the retry-stuck sweep singleton. */
-const SWEEP_LOCK_KEY_1 = 8729;
-const SWEEP_LOCK_KEY_2 = 1;
-
 const SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000";
 
-export interface RetryStuckSummary {
-  scanned: number;
-  redispatched: number;
-  skippedNoKey: number;
-  failed: number;
-  durationMs: number;
-  /** When set, no work was done because another sweep holds the lock. */
-  skipped?: "sweep_in_progress";
-}
-
-interface StuckCampaignRow {
+export interface StuckCampaignRow {
   id: string;
   instantlyCampaignId: string;
   campaignId: string | null;
@@ -98,23 +73,16 @@ interface StuckCampaignRow {
   metadata: Record<string, unknown> | null;
 }
 
-async function tryAcquireSweepLock(): Promise<boolean> {
-  const result = await db.execute(
-    sql`SELECT pg_try_advisory_lock(${SWEEP_LOCK_KEY_1}, ${SWEEP_LOCK_KEY_2}) AS locked`,
-  );
-  const rows = Array.isArray(result)
-    ? (result as Array<{ locked?: boolean }>)
-    : ((result as { rows?: Array<{ locked?: boolean }> }).rows ?? []);
-  return rows[0]?.locked === true;
-}
+export type RowOutcome =
+  | { kind: "redispatched"; newInstantlyCampaignId: string; account: string }
+  | { kind: "skipped_no_key" }
+  | { kind: "failed"; reason: string };
 
-async function releaseSweepLock(): Promise<void> {
-  await db.execute(
-    sql`SELECT pg_advisory_unlock(${SWEEP_LOCK_KEY_1}, ${SWEEP_LOCK_KEY_2})`,
-  );
-}
-
-async function selectStuckRows(): Promise<StuckCampaignRow[]> {
+/**
+ * Pick one stuck row (oldest first). Returns `null` when the backlog is
+ * empty — caller should back off and retry later.
+ */
+export async function selectOneStuckRow(): Promise<StuckCampaignRow | null> {
   const result = await db.execute(sql`
     SELECT
       id,
@@ -147,10 +115,11 @@ async function selectStuckRows(): Promise<StuckCampaignRow[]> {
           )
       )
     ORDER BY created_at ASC
-    LIMIT ${MAX_ROWS_PER_TICK}
+    LIMIT 1
   `);
   const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
-  return rows as StuckCampaignRow[];
+  if (rows.length === 0) return null;
+  return rows[0] as StuckCampaignRow;
 }
 
 function getRedispatchCount(metadata: Record<string, unknown> | null): number {
@@ -158,21 +127,6 @@ function getRedispatchCount(metadata: Record<string, unknown> | null): number {
   const raw = metadata.redispatchCount;
   if (typeof raw === "number" && Number.isFinite(raw)) return raw;
   return 0;
-}
-
-function emptySummary(durationMs: number): RetryStuckSummary {
-  return {
-    scanned: 0,
-    redispatched: 0,
-    skippedNoKey: 0,
-    failed: 0,
-    durationMs,
-  };
-}
-
-interface RowOutcome {
-  redispatched: number;
-  failed: number;
 }
 
 /**
@@ -211,13 +165,13 @@ function extractSequenceFromLive(
 /**
  * Cancel the (provisioned | actual) cost rows tied to (campaignId, leadEmail)
  * via runs-service (refunds the customer) and flip the local rows to
- * `cancelled`. Returns the count of cost rows transitioned.
+ * `cancelled`.
  */
 async function cancelExistingCosts(
   row: StuckCampaignRow,
   identity: IdentityContext,
-): Promise<number> {
-  if (!row.campaignId || !row.leadEmail) return 0;
+): Promise<void> {
+  if (!row.campaignId || !row.leadEmail) return;
 
   const existing = await db
     .select()
@@ -241,8 +195,6 @@ async function cancelExistingCosts(
       .set({ status: "cancelled", updatedAt: new Date() })
       .where(eq(sequenceCosts.id, cost.id));
   }
-
-  return existing.length;
 }
 
 /**
@@ -304,14 +256,42 @@ async function provisionFreshCosts(
   }
 }
 
-async function processRow(
-  apiKey: string,
-  keySource: "platform" | "org",
-  row: StuckCampaignRow,
-): Promise<RowOutcome> {
+/**
+ * Process one stuck row: resolve key, recover sequence + lead, send on a
+ * fresh healthy account, refund old costs, provision new ones, mute the
+ * local row.
+ *
+ * Returns a discriminated outcome instead of throwing so the worker loop
+ * can keep iterating without try/catch around each call.
+ */
+export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
   try {
-    // 1. Pull the live campaign once to recover the sequence. NOT used for any
-    //    NSS decision — reconcile owns that signal independently.
+    if (!row.campaignId || !row.leadEmail || !row.orgId) {
+      return { kind: "failed", reason: "missing_identifiers" };
+    }
+
+    // Resolve the org's Instantly key.
+    let apiKey: string;
+    let keySource: "platform" | "org";
+    try {
+      const keyResult = await resolveInstantlyApiKey(row.orgId, "system", {
+        method: "POST",
+        path: "/internal/campaigns/retry-stuck",
+      });
+      apiKey = keyResult.key;
+      keySource = keyResult.keySource;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isKeyMissing = error instanceof KeyServiceError && error.statusCode === 404;
+      const logFn = isKeyMissing ? console.warn : console.error;
+      logFn(
+        `[instantly-service] retry-stuck: skipping row=${row.id} org=${row.orgId} — ${message}`,
+      );
+      return { kind: "skipped_no_key" };
+    }
+
+    // 1. Pull the live campaign once to recover the sequence. NOT used for
+    //    any NSS decision — reconcile owns that signal independently.
     const live = (await getInstantlyCampaign(
       apiKey,
       row.instantlyCampaignId,
@@ -322,21 +302,10 @@ async function processRow(
       console.warn(
         `[instantly-service] retry-stuck: row=${row.id} instantly=${row.instantlyCampaignId} no sequence on live campaign — leaving alone`,
       );
-      return { redispatched: 0, failed: 1 };
+      return { kind: "failed", reason: "no_sequence" };
     }
 
-    if (!row.campaignId || !row.leadEmail || !row.orgId) {
-      console.warn(
-        `[instantly-service] retry-stuck: row=${row.id} missing campaignId/leadEmail/orgId — leaving alone`,
-      );
-      return { redispatched: 0, failed: 1 };
-    }
-
-    // 2. Read the lead's profile data (firstName/lastName/etc.) from the local
-    //    instantly_leads row originally inserted at /send time (or by a previous
-    //    re-send). Match against the CURRENT instantlyCampaignId — every
-    //    successful re-send mirrors a fresh instantly_leads row for the new
-    //    campaign so future re-sends still resolve.
+    // 2. Read the lead's profile data from the local instantly_leads row.
     const [storedLead] = await db
       .select()
       .from(instantlyLeads)
@@ -347,7 +316,7 @@ async function processRow(
       console.warn(
         `[instantly-service] retry-stuck: row=${row.id} lead profile not found in instantly_leads — leaving alone`,
       );
-      return { redispatched: 0, failed: 1 };
+      return { kind: "failed", reason: "lead_profile_not_found" };
     }
 
     const lead: Lead = {
@@ -372,21 +341,18 @@ async function processRow(
 
     if (!result.ok) {
       console.warn(
-        `[instantly-service] retry-stuck: row=${row.id} send failed (${result.reason}) — leaving alone, next tick will retry`,
+        `[instantly-service] retry-stuck: row=${row.id} send failed (${result.reason}) — leaving alone`,
       );
-      return { redispatched: 0, failed: 1 };
+      return { kind: "failed", reason: result.reason };
     }
 
-    // 4. Identity for cost & run writes: prefer the row's userId so cost
-    //    lineage points back to the originating user, fall back to the system
-    //    UUID when missing (legacy rows pre-dating the column).
     const identity: IdentityContext = {
       orgId: row.orgId,
       userId: row.userId ?? SYSTEM_USER_ID,
       runId: row.runId ?? undefined,
     };
 
-    // 5. Cancel old costs (refund), provision fresh costs (recharge).
+    // 4. Cancel old costs (refund), provision fresh costs (recharge).
     await cancelExistingCosts(row, identity);
     await provisionFreshCosts(
       row,
@@ -395,8 +361,8 @@ async function processRow(
       seq.sortedSequence.length,
     );
 
-    // 6. Mirror the lead onto the new Instantly campaign so the next sweep can
-    //    still resolve the lead's profile data.
+    // 5. Mirror the lead onto the new Instantly campaign so subsequent
+    //    re-sends still resolve the profile data.
     await db
       .insert(instantlyLeads)
       .values({
@@ -411,7 +377,7 @@ async function processRow(
       })
       .onConflictDoNothing();
 
-    // 7. Mute the campaign row in place: new Instantly campaign ID, metadata
+    // 6. Mute the campaign row in place: new Instantly campaign ID, metadata
     //    bumped with the redispatch history entry. delivery_status stays
     //    `'contacted'` — the lead is back to actively being attempted.
     const existingMetadata = (row.metadata ?? {}) as Record<string, unknown>;
@@ -446,111 +412,16 @@ async function processRow(
         `from=${row.instantlyCampaignId} to=${result.value.instantlyCampaignId} ` +
         `account=${result.value.account.email}`,
     );
-    return { redispatched: 1, failed: 0 };
+    return {
+      kind: "redispatched",
+      newInstantlyCampaignId: result.value.instantlyCampaignId,
+      account: result.value.account.email,
+    };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(
-      `[instantly-service] retry-stuck: row=${row.instantlyCampaignId} threw: ${message}`,
+      `[instantly-service] retry-stuck: row=${row.id} threw: ${message}`,
     );
-    return { redispatched: 0, failed: 1 };
-  }
-}
-
-/**
- * Run one retry-stuck tick. Returns counters for logging / response payloads.
- *
- * Acquires a Postgres advisory lock on entry; if another tick holds it,
- * returns immediately with `skipped: "sweep_in_progress"` and an otherwise-
- * zeroed summary. The lock is released in `finally`.
- *
- * Errors per row are caught + counted (`failed++`) — a single bad row must
- * not halt the tick.
- */
-export async function runRetryStuck(): Promise<RetryStuckSummary> {
-  const startedAt = Date.now();
-
-  const acquired = await tryAcquireSweepLock();
-  if (!acquired) {
-    console.warn(
-      `[instantly-service] retry-stuck: skipped (another tick is in progress)`,
-    );
-    return {
-      ...emptySummary(Date.now() - startedAt),
-      skipped: "sweep_in_progress",
-    };
-  }
-
-  try {
-    const rows = await selectStuckRows();
-
-    console.log(
-      `[instantly-service] retry-stuck: starting, candidates=${rows.length} (cap=${MAX_ROWS_PER_TICK})`,
-    );
-
-    let scanned = 0;
-    let redispatched = 0;
-    let skippedNoKey = 0;
-    let failed = 0;
-
-    // Group by orgId so each org's Instantly key is resolved once per tick.
-    const byOrg = new Map<string | null, StuckCampaignRow[]>();
-    for (const r of rows) {
-      const k = r.orgId ?? null;
-      if (!byOrg.has(k)) byOrg.set(k, []);
-      byOrg.get(k)!.push(r);
-    }
-
-    for (const [orgId, orgRows] of byOrg) {
-      let apiKey: string;
-      let keySource: "platform" | "org";
-      try {
-        if (!orgId) throw new Error("Campaign missing orgId");
-        const keyResult = await resolveInstantlyApiKey(orgId, "system", {
-          method: "POST",
-          path: "/internal/campaigns/retry-stuck",
-        });
-        apiKey = keyResult.key;
-        keySource = keyResult.keySource;
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        const isKeyMissing = error instanceof KeyServiceError && error.statusCode === 404;
-        const logFn = isKeyMissing ? console.warn : console.error;
-        logFn(
-          `[instantly-service] retry-stuck: skipping org=${orgId} (${orgRows.length} rows) — ${message}`,
-        );
-        skippedNoKey += orgRows.length;
-        continue;
-      }
-
-      // Parallel batches per org. The instantly-client throttle paces the
-      // concurrent Instantly API calls within each batch.
-      for (let i = 0; i < orgRows.length; i += BATCH_SIZE) {
-        const batch = orgRows.slice(i, i + BATCH_SIZE);
-        const outcomes = await Promise.all(
-          batch.map((row) => processRow(apiKey, keySource, row)),
-        );
-        for (const outcome of outcomes) {
-          scanned++;
-          redispatched += outcome.redispatched;
-          failed += outcome.failed;
-        }
-      }
-    }
-
-    const durationMs = Date.now() - startedAt;
-    console.log(
-      `[instantly-service] retry-stuck: tick processed=${scanned} redispatched=${redispatched} ` +
-        `skippedNoKey=${skippedNoKey} failed=${failed} duration=${durationMs}ms`,
-    );
-
-    return {
-      scanned,
-      redispatched,
-      skippedNoKey,
-      failed,
-      durationMs,
-    };
-  } finally {
-    await releaseSweepLock();
+    return { kind: "failed", reason: message };
   }
 }
