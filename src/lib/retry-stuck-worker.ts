@@ -1,49 +1,54 @@
 /**
- * Heartbeat worker that drives `runRetryStuck` on a fixed interval.
+ * Retry-stuck worker — continuous loop, one row at a time.
  *
- * Replaces the daily GitHub Actions cron (which often blocked for hours and
- * dropped > 1000 rows per sweep on transient `fetch failed` errors). With a
- * 10-minute heartbeat, each tick processes a bounded `MAX_ROWS_PER_TICK`
- * chunk, holds the advisory lock for ~seconds, and converges the backlog
- * smoothly instead of in one daily megastampede.
+ * Design: dead-simple infinite loop.
+ *   while (running):
+ *     row = selectOneStuckRow()
+ *     if !row: sleep IDLE_SLEEP_MS, continue
+ *     processRow(row)
+ *     -- no extra delay — instantly-client throttle already paces calls --
+ *
+ * Why a loop and not setInterval:
+ *   - Each row takes ~7-8s wall-clock (8 Instantly calls × 110ms throttle
+ *     + network + DB writes). A fixed interval that's too short causes
+ *     ticks to short-circuit on advisory locks; too long leaves the worker
+ *     idle while there's still backlog. A loop is naturally rate-limited
+ *     by the actual work and uses 100% of available capacity when the
+ *     backlog is non-empty.
+ *   - One row at a time means no advisory lock — by construction no two
+ *     concurrent processings of the same row inside this process. Multi-
+ *     replica safety would require `FOR UPDATE SKIP LOCKED` on the SELECT;
+ *     currently the service runs single-replica.
+ *   - Sleeps only when the backlog is drained — wakes up immediately when
+ *     work appears.
  *
  * Lifecycle:
- *   - `startRetryStuckWorker()` arms the setInterval (no immediate tick on
- *     boot — port binding stays unblocked).
- *   - `stopRetryStuckWorker()` clears the interval. SIGTERM/SIGINT handlers
- *     wired automatically so Railway's graceful-shutdown signal stops new
- *     ticks before the process exits.
+ *   - `startRetryStuckWorker()` arms the loop. The first row is processed
+ *     immediately (no boot delay).
+ *   - SIGTERM / SIGINT flip a `shouldStop` flag; the current row finishes
+ *     processing, the next loop iteration checks the flag and exits.
  *   - Idempotent: calling start twice is a no-op.
- *
- * Tick-internal errors propagate through `runRetryStuck`'s own logging — the
- * worker swallows any thrown rejection so a single bad tick can't crash the
- * service.
  */
 
-import { runRetryStuck } from "./retry-stuck";
+import { processRow, selectOneStuckRow } from "./retry-stuck";
 
-/**
- * Tick interval in ms. Override via env for staging / debugging.
- *
- * One tick processes up to MAX_ROWS_PER_TICK (100) rows, each costing ~7-8s
- * of wall-clock (Instantly throttle 110ms × 8 calls + DB + runs-service).
- * Observed prod duration is ~12-13min per tick. Setting the interval below
- * the worst-case tick duration causes adjacent ticks to short-circuit on
- * the advisory lock — wasted CPU + misleading "silent" gaps in DB writes.
- * Default 15min keeps a ~2min buffer between tick completion and the next
- * fire.
- */
-export const RETRY_STUCK_TICK_INTERVAL_MS = (() => {
-  const DEFAULT_MS = 15 * 60 * 1000;
-  const raw = process.env.RETRY_STUCK_TICK_INTERVAL_MS;
+/** How long to sleep when the SELECT returns no candidates. */
+export const RETRY_STUCK_IDLE_SLEEP_MS = (() => {
+  const DEFAULT_MS = 60 * 1000;
+  const raw = process.env.RETRY_STUCK_IDLE_SLEEP_MS;
   if (!raw) return DEFAULT_MS;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MS;
   return parsed;
 })();
 
-let intervalHandle: ReturnType<typeof setInterval> | null = null;
+let running = false;
+let shouldStop = false;
 let signalHandlersInstalled = false;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function installSignalHandlers(): void {
   if (signalHandlersInstalled) return;
@@ -58,39 +63,53 @@ function installSignalHandlers(): void {
   process.on("SIGINT", handler);
 }
 
-async function tick(): Promise<void> {
-  try {
-    await runRetryStuck();
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(
-      `[instantly-service] retry-stuck worker: tick threw — ${message}`,
-    );
+async function loop(): Promise<void> {
+  while (!shouldStop) {
+    let row;
+    try {
+      row = await selectOneStuckRow();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(
+        `[instantly-service] retry-stuck worker: selectOneStuckRow failed — ${message}`,
+      );
+      await sleep(RETRY_STUCK_IDLE_SLEEP_MS);
+      continue;
+    }
+
+    if (!row) {
+      await sleep(RETRY_STUCK_IDLE_SLEEP_MS);
+      continue;
+    }
+
+    // `processRow` returns a discriminated outcome instead of throwing —
+    // every failure is captured and counted at log time.
+    await processRow(row);
   }
+  running = false;
+  console.log(`[instantly-service] retry-stuck worker: stopped`);
 }
 
 /**
- * Arm the heartbeat. Safe to call multiple times — subsequent calls are
+ * Arm the loop. Safe to call multiple times — subsequent calls are
  * ignored while the worker is already running.
  */
 export function startRetryStuckWorker(): void {
-  if (intervalHandle !== null) return;
+  if (running) return;
+  running = true;
+  shouldStop = false;
   installSignalHandlers();
-  intervalHandle = setInterval(() => {
-    void tick();
-  }, RETRY_STUCK_TICK_INTERVAL_MS);
-  // Allow the Node event loop to exit naturally during graceful shutdown.
-  if (typeof intervalHandle.unref === "function") {
-    intervalHandle.unref();
-  }
-  console.log(
-    `[instantly-service] retry-stuck worker: started (interval=${RETRY_STUCK_TICK_INTERVAL_MS}ms)`,
-  );
+  console.log(`[instantly-service] retry-stuck worker: started`);
+  // Fire-and-forget the loop. Caller (src/index.ts) wraps in .catch.
+  void loop();
 }
 
-/** Clear the interval. Safe to call when the worker isn't running. */
+/** Signal the loop to exit after the current row finishes. */
 export function stopRetryStuckWorker(): void {
-  if (intervalHandle === null) return;
-  clearInterval(intervalHandle);
-  intervalHandle = null;
+  shouldStop = true;
+}
+
+/** Test helper: report whether the loop is currently running. */
+export function isRetryStuckWorkerRunning(): boolean {
+  return running;
 }

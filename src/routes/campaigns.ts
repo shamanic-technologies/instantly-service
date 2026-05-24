@@ -12,7 +12,6 @@ import { resolveInstantlyApiKey } from "../lib/key-client";
 import { UpdateStatusRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
 import { reconcileAll } from "../lib/reconcile";
-import { runRetryStuck } from "../lib/retry-stuck";
 
 const router = Router();
 
@@ -234,30 +233,6 @@ router.post("/reconcile", (_req: Request, res: Response) => {
   reconcileAll().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[instantly-service] reconcile run=${runId} failed: ${message}`);
-  });
-});
-
-/**
- * POST /internal/campaigns/retry-stuck
- * Manual-trigger entry into the retry-stuck sweep. Same code path the
- * heartbeat worker (lib/retry-stuck-worker.ts) drives every
- * RETRY_STUCK_TICK_INTERVAL_MS — processes up to MAX_ROWS_PER_TICK rows
- * stuck in `delivery_status='contacted'` for >72h with no silver event
- * proving the lead was sent. Each row is re-sent on a fresh healthy
- * account; failures leave the row alone for the next tick to retry.
- * Serialized via a Postgres advisory lock so this endpoint can't race the
- * worker.
- *
- * Returns 202 immediately and runs the sweep in the background.
- */
-router.post("/retry-stuck", (_req: Request, res: Response) => {
-  const runId = randomUUID();
-  const startedAt = new Date().toISOString();
-  console.log(`[instantly-service] retry-stuck: dispatched run=${runId}`);
-  res.status(202).json({ runId, startedAt });
-  runRetryStuck().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`[instantly-service] retry-stuck run=${runId} failed: ${message}`);
   });
 });
 

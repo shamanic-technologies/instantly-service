@@ -94,10 +94,9 @@ async function start() {
   await deployEmailTemplates();
   app.listen(PORT, () => {
     console.log(`[instantly-service] running on port ${PORT}`);
-    // Start the retry-stuck heartbeat AFTER the port is bound. Tick work is
-    // bounded by MAX_ROWS_PER_TICK so it cannot starve the event loop, and
-    // any throw inside a tick is swallowed by the worker — never blocking
-    // /healthz or other inbound traffic.
+    // Start the retry-stuck worker AFTER the port is bound. The worker is a
+    // continuous loop processing one stuck row at a time; throughput is
+    // naturally bounded by the instantly-client throttle.
     import("./lib/retry-stuck-worker")
       .then(({ startRetryStuckWorker }) => startRetryStuckWorker())
       .catch((err: unknown) => {
