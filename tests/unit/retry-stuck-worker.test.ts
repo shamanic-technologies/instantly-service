@@ -122,7 +122,7 @@ describe("retry-stuck worker — continuous loop", () => {
     errSpy.mockRestore();
   });
 
-  it("RETRY_STUCK_IDLE_SLEEP_MS defaults to 60_000 ms (1 minute)", () => {
-    expect(RETRY_STUCK_IDLE_SLEEP_MS).toBe(60 * 1000);
+  it("RETRY_STUCK_IDLE_SLEEP_MS defaults to 4 hours (matches the 72h SELECT floor)", () => {
+    expect(RETRY_STUCK_IDLE_SLEEP_MS).toBe(4 * 60 * 60 * 1000);
   });
 });
