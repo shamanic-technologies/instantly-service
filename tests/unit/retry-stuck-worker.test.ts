@@ -12,6 +12,15 @@ import {
   RETRY_STUCK_TICK_INTERVAL_MS,
 } from "../../src/lib/retry-stuck-worker";
 
+describe("RETRY_STUCK_TICK_INTERVAL_MS default", () => {
+  it("defaults to 15 minutes (longer than the observed ~13min worst-case tick duration)", () => {
+    // The worker uses setInterval, so the interval must exceed the worst-case
+    // tick wall-clock to avoid adjacent ticks short-circuiting on the
+    // advisory lock. Prod observation 2026-05-24: tick duration 764s ≈ 12.7min.
+    expect(RETRY_STUCK_TICK_INTERVAL_MS).toBe(15 * 60 * 1000);
+  });
+});
+
 describe("retry-stuck worker", () => {
   beforeEach(() => {
     vi.useFakeTimers();
