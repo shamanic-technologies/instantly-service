@@ -101,11 +101,11 @@ npm run dev
 Costs flow through three states in runs-service: `provisioned` (reserved) →
 `actual` (charged) | `cancelled` (refunded).
 
-| Cost | Inserted at /send | Promoted on | Cancelled when |
-|------|-------------------|-------------|----------------|
-| `instantly-contact-uploaded` | `actual` (1× per send) | n/a | never — lead IS uploaded |
-| `instantly-account-email-sent` | `provisioned` (1× per step) | webhook `email_sent` | sequence stop (reply/bounce/unsub) OR retry-stuck |
-| `instantly-domain-email-sent` | `provisioned` (1× per step) | webhook `email_sent` | sequence stop OR retry-stuck |
+| Cost | Inserted at /send | Inserted at retry-stuck re-send | Promoted on | Cancelled when |
+|------|-------------------|--------------------------------|-------------|----------------|
+| `instantly-contact-uploaded` | `actual` (1× per send) | `actual` (1× per re-send — fresh slot consumed) | n/a | never — upload IS billed each time |
+| `instantly-account-email-sent` | `provisioned` (1× per step) | `provisioned` (1× per step) | webhook `email_sent` | sequence stop (reply/bounce/unsub) OR retry-stuck cancel |
+| `instantly-domain-email-sent` | `provisioned` (1× per step) | `provisioned` (1× per step) | webhook `email_sent` | sequence stop OR retry-stuck cancel |
 
 Step 1's email costs are now `provisioned` (previously `actual`). Instantly's
 daily sender quota is only consumed on actual dispatch, so charging the

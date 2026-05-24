@@ -339,6 +339,42 @@ describe("processRow — success path", () => {
     expect(typeof v.metadata.lastAttemptAt).toBe("string");
   });
 
+  it("charges a fresh instantly-contact-uploaded (actual) at step 1 of the re-send", async () => {
+    queueSelectLead();
+    queueSelectCosts([]);
+
+    await processRow(row());
+
+    // Multi-step would call addCosts multiple times — for single-step LIVE
+    // we expect exactly one call. It must include the upload cost as actual.
+    expect(mockAddCosts).toHaveBeenCalled();
+    const firstCall = mockAddCosts.mock.calls[0];
+    const items = firstCall[1] as Array<{ costName: string; status: string }>;
+    const uploadCost = items.find((c) => c.costName === "instantly-contact-uploaded");
+    expect(uploadCost).toBeDefined();
+    expect(uploadCost!.status).toBe("actual");
+  });
+
+  it("does NOT persist the contact-uploaded cost into sequence_costs (it is never cancelled)", async () => {
+    mockAddCosts.mockResolvedValueOnce({
+      costs: [
+        { id: "new-cost-account-id", costName: "instantly-account-email-sent" },
+        { id: "new-cost-domain-id", costName: "instantly-domain-email-sent" },
+        { id: "new-cost-upload-id", costName: "instantly-contact-uploaded" },
+      ],
+    });
+    queueSelectLead();
+    queueSelectCosts([]);
+
+    await processRow(row());
+
+    const uploadInsert = mockDbInsertValues.mock.calls.find((c) => {
+      const v = c[0] as Record<string, unknown>;
+      return v.costId === "new-cost-upload-id";
+    });
+    expect(uploadInsert).toBeUndefined();
+  });
+
   it("falls back to the row's current identity when row.runId is null (top-level run)", async () => {
     queueSelectLead();
     queueSelectCosts([]);
