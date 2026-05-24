@@ -114,29 +114,44 @@ filter, capacity, esp mismatch). The retry-stuck heartbeat (see below)
 sweeps stuck `delivery_status='contacted'` rows older than 72h and re-sends
 them onto a fresh account, rolling the reserved spend over.
 
-### Retry-stuck heartbeat
+### Retry-stuck worker (continuous loop)
 
-A continuous in-process worker (`src/lib/retry-stuck-worker.ts`) replaces the
-old daily GitHub Actions cron. Started from `src/index.ts` right after
-`app.listen()` so port-binding never blocks on it, and shut down cleanly on
-`SIGTERM`/`SIGINT`.
+A continuous in-process worker (`src/lib/retry-stuck-worker.ts`) processes
+stuck leads one row at a time, back-to-back. Started from `src/index.ts`
+right after `app.listen()`; SIGTERM/SIGINT flip a flag, the current row
+finishes, the loop exits.
+
+```ts
+while (!shouldStop) {
+  const row = await selectOneStuckRow();
+  if (!row) { await sleep(60s); continue; }
+  await processRow(row);
+}
+```
+
+No advisory lock. No batching. No fixed interval. Single-replica safe by
+construction; throughput is naturally bounded by the instantly-client
+throttle.
 
 Selection criteria are **purely local** (no Instantly preflight):
 
-```
-delivery_status = 'contacted'
-AND status = 'active'
-AND created_at < NOW() - INTERVAL '72 hours'
-AND NOT EXISTS (
-  SELECT 1 FROM instantly_events e
-  WHERE e.campaign_id = c.instantly_campaign_id
-    AND e.event_type IN (
-      'email_sent','email_opened','link_clicked',
-      'reply_received','auto_reply_received',
-      'email_bounced','lead_unsubscribed'
-    )
-)
-ORDER BY created_at ASC LIMIT 100
+```sql
+WHERE c.delivery_status = 'contacted'
+  AND c.status = 'active'
+  AND c.created_at < NOW() - INTERVAL '72 hours'
+  AND c.campaign_id IS NOT NULL
+  AND c.lead_email IS NOT NULL
+  AND c.org_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM instantly_events e
+    WHERE e.campaign_id = c.instantly_campaign_id
+      AND e.event_type IN (
+        'email_sent','email_opened','link_clicked',
+        'reply_received','auto_reply_received',
+        'email_bounced','lead_unsubscribed'
+      )
+  )
+ORDER BY created_at ASC LIMIT 1
 ```
 
 Belt-and-suspenders: the column gate AND a silver `NOT EXISTS` gate
@@ -144,33 +159,28 @@ Belt-and-suspenders: the column gate AND a silver `NOT EXISTS` gate
 `email_sent` and the column stayed stale).
 
 Per row:
-1. Pull the live Instantly campaign once to recover the sequence (subject +
+1. Resolve the org's Instantly API key.
+2. Pull the live Instantly campaign once to recover the sequence (subject +
    step bodies + delays). `not_sending_status` is NOT consulted — reconcile
    owns that signal for `/stats`.
-2. Read the lead profile from local `instantly_leads`.
-3. Call `sendLeadToInstantly` (shared with `POST /send`) to create a fresh
+3. Read the lead profile from local `instantly_leads`.
+4. Call `sendLeadToInstantly` (shared with `POST /send`) to create a fresh
    campaign on a different healthy account, weighted-random by warmup score.
-4. On success: refund the old cost rows, provision new ones, mirror the lead
+5. On success: refund the old cost rows, provision new ones, mirror the lead
    onto the new campaign, mute the local row in place (new
    `instantly_campaign_id`, `metadata.redispatchCount` bumped,
    `metadata.redispatchHistory` appended). `delivery_status` stays
    `'contacted'`.
-5. On failure (no healthy account, all 3 send attempts hit NSS, no sequence,
+6. On failure (no healthy account, all 3 send attempts hit NSS, no sequence,
    no local lead, `getCampaign` throws): the row is **left alone**. No
-   terminal cancel. The next tick retries — Instantly is free; with 100+
-   accounts random sampling converges.
+   terminal cancel. The loop picks up the next-oldest row; the failed row
+   surfaces again at the top of the SELECT once it is the oldest again.
 
-Bounds + concurrency:
-- `MAX_ROWS_PER_TICK = 100`. `BATCH_SIZE = 10` per org (the global
-  instantly-client throttle paces the rest).
-- Tick interval `RETRY_STUCK_TICK_INTERVAL_MS` (default `10 * 60 * 1000`,
-  env-overridable for staging / debugging).
-- Postgres advisory lock keyed `(8729, 1)` gates each tick so overlapping
-  invocations short-circuit with `skipped: "sweep_in_progress"`.
-
-Manual triggers: `POST /internal/campaigns/retry-stuck` calls the same
-`runRetryStuck()` (202 + background). Useful for ad-hoc Railway debugging
-without waiting for the next heartbeat.
+Idle backoff: when `selectOneStuckRow` returns null, the loop sleeps
+`RETRY_STUCK_IDLE_SLEEP_MS` (default 4h) before re-checking. Rationale:
+the 72h `created_at` floor means a drained backlog cannot refill faster
+than rows trickle past the 3-day threshold, so polling more aggressively
+yields zero benefit.
 
 NSS webhook investigation: see
 [docs/retry-stuck-event-driven-investigation.md](./docs/retry-stuck-event-driven-investigation.md).
