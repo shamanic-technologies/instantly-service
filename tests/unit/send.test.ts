@@ -77,7 +77,7 @@ vi.mock("../../src/lib/billing-client", () => ({
   authorizeCreditSpend: (...args: unknown[]) => mockAuthorizeCreditSpend(...args),
 }));
 
-import { buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/lib/dispatch-lead";
+import { buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/lib/send-lead";
 import { requireOrgId } from "../../src/middleware/requireOrgId";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
