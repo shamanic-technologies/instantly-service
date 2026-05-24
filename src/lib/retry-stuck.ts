@@ -214,6 +214,13 @@ async function cancelExistingCosts(
 /**
  * Provision fresh cost rows for each step of the re-sent campaign on a
  * new per-step run. Mirrors the /send entry-point pattern.
+ *
+ * Step 1 also charges a fresh `instantly-contact-uploaded` (actual): each
+ * re-send creates a brand-new Instantly campaign and uploads the lead to
+ * it, consuming a workspace lead slot from Instantly's quota. The cost is
+ * NOT stored in `sequence_costs` — same convention as /send (the upload
+ * is a one-shot actual, never refunded). Without this charge, every
+ * re-dispatch consumes a slot the customer doesn't pay for.
  */
 async function provisionFreshCosts(
   row: StuckCampaignRow,
@@ -236,26 +243,44 @@ async function provisionFreshCosts(
 
     const stepIdentity: IdentityContext = { ...parentIdentity, runId: stepRun.id };
 
-    const costResult = await addCosts(
-      stepRun.id,
-      [
-        {
-          costName: "instantly-account-email-sent",
-          quantity: 1,
-          costSource: keySource,
-          status: "provisioned",
-        },
-        {
-          costName: "instantly-domain-email-sent",
-          quantity: 1,
-          costSource: keySource,
-          status: "provisioned",
-        },
-      ],
-      stepIdentity,
-    );
+    const costItems: Array<{
+      costName: string;
+      quantity: number;
+      costSource: "platform" | "org";
+      status: "actual" | "provisioned";
+    }> = [
+      {
+        costName: "instantly-account-email-sent",
+        quantity: 1,
+        costSource: keySource,
+        status: "provisioned",
+      },
+      {
+        costName: "instantly-domain-email-sent",
+        quantity: 1,
+        costSource: keySource,
+        status: "provisioned",
+      },
+    ];
 
+    // Step 1 also charges for the fresh lead upload to the new Instantly
+    // campaign (actual, one-shot — mirrors /send).
+    if (step === 1) {
+      costItems.push({
+        costName: "instantly-contact-uploaded",
+        quantity: 1,
+        costSource: keySource,
+        status: "actual",
+      });
+    }
+
+    const costResult = await addCosts(stepRun.id, costItems, stepIdentity);
+
+    // Store email costs in sequence_costs for webhook lifecycle management.
+    // Contact upload cost is NOT stored — it is actual + never cancelled
+    // (consistent with /send).
     for (const cost of costResult.costs) {
+      if (cost.costName === "instantly-contact-uploaded") continue;
       await db.insert(sequenceCosts).values({
         campaignId: row.campaignId,
         leadEmail: row.leadEmail,
