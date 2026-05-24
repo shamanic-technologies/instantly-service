@@ -215,6 +215,32 @@ describe("promoteFromWebhookPayload", () => {
     );
   });
 
+  it("skips replyClassification update when reply_classification_source='manual' (manual wins)", async () => {
+    mockCampaign();
+    mockNewSilverRow();
+    // The 2nd db.select inside updateReplyClassification looks up the current
+    // source for this campaign. Returning 'manual' makes the update bail out.
+    mockDbSelect.mockResolvedValueOnce([{ source: "manual" }]);
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-1",
+      payload: {
+        event_type: "lead_neutral",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+      },
+    });
+
+    // The db.update spy receives ZERO calls with replyClassification (manual gate
+    // blocks the write before db.update fires). updateDeliveryStatus is also a no-op
+    // for lead_neutral (not in DELIVERY_STATUS_MAP).
+    const callsWithClassification = mockDbUpdate.mock.calls.filter((args) => {
+      const set = args[0] as Record<string, unknown>;
+      return set && Object.prototype.hasOwnProperty.call(set, "replyClassification");
+    });
+    expect(callsWithClassification).toHaveLength(0);
+  });
+
   it("converts provisioned cost to actual on email_sent (any step)", async () => {
     mockCampaign();
     mockNewSilverRow();

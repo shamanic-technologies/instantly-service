@@ -16,6 +16,7 @@ import webhooksRoutes from "./routes/webhooks";
 import sendRoutes from "./routes/send";
 import statusRoutes from "./routes/status";
 import transferBrandRoutes from "./routes/transfer-brand";
+import manualQualificationsRoutes from "./routes/manual-qualifications";
 import { serviceAuth } from "./middleware/serviceAuth";
 import { requireOrgId } from "./middleware/requireOrgId";
 
@@ -54,6 +55,7 @@ app.use("/orgs/status", serviceAuth, requireOrgId, statusRoutes);
 app.use("/orgs/campaigns", serviceAuth, requireOrgId, campaignsRoutes);
 app.use("/orgs/campaigns", serviceAuth, requireOrgId, leadsRoutes);
 app.use("/orgs/accounts", serviceAuth, requireOrgId, accountsRoutes);
+app.use("/orgs/manual-qualifications", serviceAuth, requireOrgId, manualQualificationsRoutes);
 app.use("/orgs", serviceAuth, requireOrgId, analyticsRoutes);
 
 const PORT = process.env.PORT || 3011;

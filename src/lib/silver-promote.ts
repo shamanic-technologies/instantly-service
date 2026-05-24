@@ -134,9 +134,28 @@ async function updateReplyClassification(
   const classification = REPLY_CLASSIFICATION_MAP[eventType];
   if (!classification) return;
 
+  // Manual wins: if a human has manually qualified this campaign's reply via
+  // POST /orgs/manual-qualifications, do not let a subsequent webhook event
+  // overwrite the human choice. The reply_classification_source column is
+  // flipped to 'manual' by lib/manual-qualifications.applyManualQualificationSideEffects.
+  const [row] = await db
+    .select({ source: instantlyCampaigns.replyClassificationSource })
+    .from(instantlyCampaigns)
+    .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
+  if (row?.source === "manual") {
+    console.log(
+      `[instantly-service] silver: skipping replyClassification update — manual qualification in effect for campaign=${instantlyCampaignId}`,
+    );
+    return;
+  }
+
   await db
     .update(instantlyCampaigns)
-    .set({ replyClassification: classification, updatedAt: new Date() })
+    .set({
+      replyClassification: classification,
+      replyClassificationSource: "auto",
+      updatedAt: new Date(),
+    })
     .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
   console.log(
     `[instantly-service] silver: replyClassification='${classification}' campaign=${instantlyCampaignId}`,
