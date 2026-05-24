@@ -8,6 +8,7 @@ import {
   uniqueIndex,
   index,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 // Campaigns table
 // Each POST /send creates its own row (one Instantly campaign per lead).
@@ -99,10 +100,23 @@ export const instantlyAccounts = pgTable("instantly_accounts", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-// Silver: canonical event log derived from bronze sources (webhooks + reconcile polls).
-// raw_payload kept nullable for backwards compat; new rows store source attribution
-// pointing to bronze instead. Unique index `instantly_events_dedupe_idx` makes
-// silver promotion idempotent across webhook + /emails sources.
+// Silver: canonical event log derived from bronze sources (webhooks + reconcile polls)
+// and deterministic inference. `raw_payload` is nullable for backwards compat; new
+// rows store source attribution pointing to bronze instead.
+//
+// Indexes:
+//   - `instantly_events_dedupe_idx` — primary dedupe across (campaign, lead, event_type,
+//     timestamp, step). Used by repeatable events (opens, clicks) which can fire many
+//     times per step at different timestamps.
+//   - `instantly_events_one_shot_dedupe_idx` — partial unique index for events that are
+//     at-most-1 per (campaign, lead, event_type, step), regardless of timestamp. Enables
+//     UPSERT semantics so a real webhook arriving after a synthetic inference can upgrade
+//     the row (`inferred=true` → `inferred=false`, real timestamp wins).
+//
+// Inference columns:
+//   - `inferred` — true if synthesized from a strong-implication rule (opened ⇒ sent, etc.)
+//   - `inferred_from_event_id` — silver id of the event that triggered the inference
+//   - `inferred_rule` — rule name (e.g. `opened_implies_sent`, `sent_cascade`) for audit
 export const instantlyEvents = pgTable(
   "instantly_events",
   {
@@ -117,6 +131,9 @@ export const instantlyEvents = pgTable(
     rawPayload: jsonb("raw_payload"),
     source: text("source").notNull().default("webhook"),
     sourceRowId: text("source_row_id"),
+    inferred: boolean("inferred").notNull().default(false),
+    inferredFromEventId: text("inferred_from_event_id"),
+    inferredRule: text("inferred_rule"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [

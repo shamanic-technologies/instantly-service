@@ -29,7 +29,14 @@ vi.mock("../../src/db", () => ({
 
 vi.mock("../../src/db/schema", () => ({
   instantlyCampaigns: { instantlyCampaignId: "instantly_campaign_id" },
-  instantlyEvents: { id: "id" },
+  instantlyEvents: {
+    id: "id",
+    campaignId: "campaign_id",
+    leadEmail: "lead_email",
+    eventType: "event_type",
+    step: "step",
+    inferred: "inferred",
+  },
   sequenceCosts: {
     id: "id",
     campaignId: "campaign_id",
