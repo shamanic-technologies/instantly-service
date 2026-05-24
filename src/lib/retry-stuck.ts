@@ -130,6 +130,9 @@ async function selectStuckRows(): Promise<StuckCampaignRow[]> {
     WHERE c.delivery_status = 'contacted'
       AND c.status = 'active'
       AND c.created_at < NOW() - INTERVAL '${sql.raw(`${STUCK_AGE_HOURS} hours`)}'
+      AND c.campaign_id IS NOT NULL
+      AND c.lead_email IS NOT NULL
+      AND c.org_id IS NOT NULL
       AND NOT EXISTS (
         SELECT 1 FROM instantly_events e
         WHERE e.campaign_id = c.instantly_campaign_id
