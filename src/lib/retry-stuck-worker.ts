@@ -32,9 +32,18 @@
 
 import { processRow, selectOneStuckRow } from "./retry-stuck";
 
-/** How long to sleep when the SELECT returns no candidates. */
+/**
+ * How long to sleep when the SELECT returns no candidates.
+ *
+ * Default 4h. Rationale: the selection filter has a 72h floor on
+ * `created_at`, so once the backlog drains, the next candidate cannot
+ * appear before the next row crosses the 72h threshold. New `contacted`
+ * rows trickle in slowly (only those Instantly hasn't dispatched after 3
+ * days). Polling more aggressively than ~4h wastes DB queries with zero
+ * chance of finding work.
+ */
 export const RETRY_STUCK_IDLE_SLEEP_MS = (() => {
-  const DEFAULT_MS = 60 * 1000;
+  const DEFAULT_MS = 4 * 60 * 60 * 1000;
   const raw = process.env.RETRY_STUCK_IDLE_SLEEP_MS;
   if (!raw) return DEFAULT_MS;
   const parsed = Number(raw);

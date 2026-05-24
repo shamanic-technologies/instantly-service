@@ -177,7 +177,10 @@ Per row:
    surfaces again at the top of the SELECT once it is the oldest again.
 
 Idle backoff: when `selectOneStuckRow` returns null, the loop sleeps
-`RETRY_STUCK_IDLE_SLEEP_MS` (default 60_000 ms) before re-checking.
+`RETRY_STUCK_IDLE_SLEEP_MS` (default 4h) before re-checking. Rationale:
+the 72h `created_at` floor means a drained backlog cannot refill faster
+than rows trickle past the 3-day threshold, so polling more aggressively
+yields zero benefit.
 
 NSS webhook investigation: see
 [docs/retry-stuck-event-driven-investigation.md](./docs/retry-stuck-event-driven-investigation.md).
