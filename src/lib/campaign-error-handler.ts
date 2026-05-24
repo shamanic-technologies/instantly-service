@@ -133,12 +133,23 @@ export async function handleCampaignError(
     }
   }
 
-  // 4. Mark the run as failed (MUST succeed — let it throw)
+  // 4. Mark the run as failed. Best-effort: the parent run's identity may
+  //    have diverged from the row's current identity (e.g. brand transfer
+  //    after the original /send), in which case runs-service rejects the
+  //    PATCH with 409. Log and continue — the row is already flipped to
+  //    `cancelled` and costs are cancelled, so the audit trail is intact.
   if (campaign.runId) {
-    await updateRun(campaign.runId, "failed", identity, reason);
-    console.log(
-      `[campaign-error] Marked run ${campaign.runId} as failed`,
-    );
+    try {
+      await updateRun(campaign.runId, "failed", identity, reason);
+      console.log(
+        `[campaign-error] Marked run ${campaign.runId} as failed`,
+      );
+    } catch (runErr: unknown) {
+      const msg = runErr instanceof Error ? runErr.message : String(runErr);
+      console.warn(
+        `[campaign-error] Could not mark parent run ${campaign.runId} as failed (identity drift?): ${msg}`,
+      );
+    }
   }
 
   // 5. Send admin notification (non-fatal).
