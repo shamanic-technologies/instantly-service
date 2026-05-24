@@ -14,7 +14,7 @@
  */
 import { db } from "../db";
 import { instantlyCampaigns, instantlyEvents, sequenceCosts } from "../db/schema";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { updateCostStatus, type IdentityContext } from "./runs-client";
 import type { LeadFull, EmailRecord } from "./instantly-client";
 
@@ -24,6 +24,21 @@ const SEQUENCE_STOP_EVENTS = new Set([
   "lead_unsubscribed",
   "lead_not_interested",
 ]);
+
+// Events that are at-most-1 per (campaign, lead, step) regardless of timestamp.
+// Backed by partial unique index `instantly_events_one_shot_dedupe_idx`. When a
+// real webhook/poll arrives after a synthetic inference, the existing row is
+// upgraded in place (inferred=true → inferred=false, real timestamp wins).
+const ONE_SHOT_EVENT_TYPES = new Set([
+  "email_sent",
+  "email_bounced",
+  "lead_unsubscribed",
+  "reply_received",
+]);
+
+function isOneShotEvent(eventType: string): boolean {
+  return ONE_SHOT_EVENT_TYPES.has(eventType);
+}
 
 // Maps an Instantly webhook event_type to the silver `delivery_status` value
 // it should set on `instantly_campaigns`. Aligns with the 4-stage funnel
@@ -53,7 +68,7 @@ const REPLY_CLASSIFICATION_MAP: Record<string, "positive" | "negative" | "neutra
 const LEAD_STATUS_BOUNCED = -1;
 const LEAD_STATUS_UNSUBSCRIBED = -2;
 
-export type EventSource = "webhook" | "poll_emails" | "poll_leads";
+export type EventSource = "webhook" | "poll_emails" | "poll_leads" | "inferred";
 
 export interface PromoteEventInput {
   eventType: string;
@@ -66,6 +81,13 @@ export interface PromoteEventInput {
   source: EventSource;
   sourceRowId: string;
   rawPayload?: unknown;
+  // Set true for synthetic predecessors emitted by inferPredecessors. Skips
+  // side effects (delivery_status, cost lifecycle) — those only fire for real
+  // external signals. Recursion still runs so cascade rules (e.g. sent step N
+  // ⇒ sent steps 1..N-1) propagate through inferred chains.
+  inferred?: boolean;
+  inferredFromEventId?: string | null;
+  inferredRule?: string | null;
 }
 
 export interface PromoteEventResult {
@@ -219,19 +241,172 @@ async function cancelRemainingProvisions(
 }
 
 /**
- * Promote a single event into silver. Idempotent: if a row matching the
- * dedupe key (campaign_id, lead_email, event_type, timestamp, step) already
- * exists, returns { promoted: false } and skips side effects.
+ * Inference rule: a real (or already-inferred) event implies its predecessor
+ * events must also have occurred. Stored as a function returning an array of
+ * partial event descriptors (without inferred markers — those are added by
+ * `inferPredecessors`).
  *
- * Returns { promoted: true, silverEventId } on first insert, in which case
- * side effects (delivery_status update, cost lifecycle) have fired.
+ * Rules:
+ *   - `email_opened`        ⇒ `email_sent` (same step)            [opened_implies_sent]
+ *   - `email_link_clicked`  ⇒ `email_opened` + `email_sent`       [clicked_implies_opened, clicked_implies_sent]
+ *   - `reply_received`      ⇒ `email_sent`                        [replied_implies_sent]
+ *   - `email_bounced`       ⇒ `email_sent`                        [bounced_implies_sent]
+ *   - `lead_unsubscribed`   ⇒ `email_sent`                        [unsubscribed_implies_sent]
+ *   - `email_sent` step N   ⇒ `email_sent` steps 1..N-1           [sent_cascade]
+ *
+ * Step is required for any inference — if the trigger event has no step we
+ * cannot place the predecessor in the sequence and skip.
  */
-export async function promoteEvent(input: PromoteEventInput): Promise<PromoteEventResult> {
-  const campaign = await findCampaign(input.instantlyCampaignId);
-  if (!campaign) {
-    return { promoted: false, silverEventId: null };
-  }
+interface PredecessorDescriptor {
+  eventType: string;
+  step: number;
+  rule: string;
+}
 
+function computePredecessors(input: PromoteEventInput): PredecessorDescriptor[] {
+  if (input.step == null) return [];
+  const step = input.step;
+
+  switch (input.eventType) {
+    case "email_opened":
+      return [{ eventType: "email_sent", step, rule: "opened_implies_sent" }];
+
+    case "email_link_clicked":
+      return [
+        { eventType: "email_opened", step, rule: "clicked_implies_opened" },
+        { eventType: "email_sent", step, rule: "clicked_implies_sent" },
+      ];
+
+    case "reply_received":
+      return [{ eventType: "email_sent", step, rule: "replied_implies_sent" }];
+
+    case "email_bounced":
+      return [{ eventType: "email_sent", step, rule: "bounced_implies_sent" }];
+
+    case "lead_unsubscribed":
+      return [{ eventType: "email_sent", step, rule: "unsubscribed_implies_sent" }];
+
+    case "email_sent": {
+      const out: PredecessorDescriptor[] = [];
+      for (let s = 1; s < step; s++) {
+        out.push({ eventType: "email_sent", step: s, rule: "sent_cascade" });
+      }
+      return out;
+    }
+
+    default:
+      return [];
+  }
+}
+
+/**
+ * Emit synthetic predecessor events for a freshly-promoted trigger event.
+ * Synthetic rows carry `inferred=true`, `source='inferred'`, and trace back
+ * to the trigger via `inferred_from_event_id`. Timestamp matches the trigger
+ * (per design: synthetic rows are not chronologically real — they are logical
+ * projections, so co-locating them at the trigger ts avoids backdating).
+ *
+ * Recursion is safe: synthetic events also go through `promoteEvent`, so
+ * cascade rules (e.g. sent step 3 ⇒ sent steps 1, 2) propagate. The dedup
+ * indexes terminate the chain (each predecessor inserted at most once).
+ */
+async function inferPredecessors(
+  trigger: PromoteEventInput,
+  triggerEventId: string,
+): Promise<void> {
+  const predecessors = computePredecessors(trigger);
+  if (predecessors.length === 0) return;
+
+  for (const pred of predecessors) {
+    await promoteEvent({
+      eventType: pred.eventType,
+      instantlyCampaignId: trigger.instantlyCampaignId,
+      leadEmail: trigger.leadEmail,
+      accountEmail: trigger.accountEmail,
+      step: pred.step,
+      variant: null,
+      timestamp: trigger.timestamp,
+      source: "inferred",
+      sourceRowId: triggerEventId,
+      rawPayload: null,
+      inferred: true,
+      inferredFromEventId: triggerEventId,
+      inferredRule: pred.rule,
+    });
+  }
+}
+
+/**
+ * Look up an existing one-shot silver row by natural key (campaign, lead,
+ * event_type, step) — ignoring timestamp. Used by the upsert path to detect
+ * "real event arrived after synthetic inference" so the row can be upgraded.
+ */
+async function findOneShotEvent(
+  instantlyCampaignId: string,
+  leadEmail: string | null,
+  eventType: string,
+  step: number | null,
+): Promise<{ id: string; inferred: boolean } | null> {
+  const conditions = [
+    eq(instantlyEvents.campaignId, instantlyCampaignId),
+    eq(instantlyEvents.eventType, eventType),
+    leadEmail === null
+      ? isNull(instantlyEvents.leadEmail)
+      : eq(instantlyEvents.leadEmail, leadEmail),
+    step === null ? isNull(instantlyEvents.step) : eq(instantlyEvents.step, step),
+  ];
+
+  const [row] = await db
+    .select({ id: instantlyEvents.id, inferred: instantlyEvents.inferred })
+    .from(instantlyEvents)
+    .where(and(...conditions));
+
+  return row ?? null;
+}
+
+/**
+ * Upgrade a synthetic (inferred=true) row to a real row in place. Used when a
+ * real webhook/poll arrives after inference already projected the event. The
+ * row's silver id is preserved so downstream references stay stable.
+ */
+async function upgradeInferredRow(
+  rowId: string,
+  realInput: PromoteEventInput,
+): Promise<void> {
+  await db
+    .update(instantlyEvents)
+    .set({
+      inferred: false,
+      source: realInput.source,
+      sourceRowId: realInput.sourceRowId,
+      timestamp: realInput.timestamp,
+      rawPayload: realInput.rawPayload as Record<string, unknown> | null | undefined,
+      inferredFromEventId: null,
+      inferredRule: null,
+    })
+    .where(eq(instantlyEvents.id, rowId));
+  console.log(
+    `[instantly-service] silver: upgraded inferred → real event=${realInput.eventType} campaign=${realInput.instantlyCampaignId} lead=${realInput.leadEmail ?? "null"} step=${realInput.step ?? "null"}`,
+  );
+}
+
+interface InsertResult {
+  /** True if a new row was inserted into silver (first-time promotion). */
+  promoted: boolean;
+  /** True if an existing inferred row was upgraded to real. */
+  upgraded: boolean;
+  silverEventId: string | null;
+}
+
+/**
+ * Insert or upgrade a silver event row. Handles the one-shot upgrade case:
+ * if a synthetic row exists for the same natural key, a real event upgrades it
+ * in place instead of inserting a duplicate. Synthetic events with a real row
+ * already in place are a no-op.
+ */
+async function insertOrUpgradeSilverEvent(
+  input: PromoteEventInput,
+): Promise<InsertResult> {
   const inserted = await db
     .insert(instantlyEvents)
     .values({
@@ -245,26 +420,94 @@ export async function promoteEvent(input: PromoteEventInput): Promise<PromoteEve
       rawPayload: input.rawPayload as Record<string, unknown> | null | undefined,
       source: input.source,
       sourceRowId: input.sourceRowId,
+      inferred: input.inferred ?? false,
+      inferredFromEventId: input.inferredFromEventId ?? null,
+      inferredRule: input.inferredRule ?? null,
     })
     .onConflictDoNothing()
     .returning({ id: instantlyEvents.id });
 
-  if (inserted.length === 0) {
+  if (inserted.length > 0) {
+    return { promoted: true, upgraded: false, silverEventId: inserted[0].id };
+  }
+
+  // Conflict hit. For one-shot events, the conflict may be on the partial
+  // unique index `(campaign, lead, event_type, step)` (timestamp-independent).
+  // If the existing row is synthetic and the incoming event is real, upgrade.
+  if (isOneShotEvent(input.eventType)) {
+    const existing = await findOneShotEvent(
+      input.instantlyCampaignId,
+      input.leadEmail,
+      input.eventType,
+      input.step,
+    );
+    if (existing && existing.inferred && !input.inferred) {
+      await upgradeInferredRow(existing.id, input);
+      return { promoted: false, upgraded: true, silverEventId: existing.id };
+    }
+    return {
+      promoted: false,
+      upgraded: false,
+      silverEventId: existing?.id ?? null,
+    };
+  }
+
+  return { promoted: false, upgraded: false, silverEventId: null };
+}
+
+/**
+ * Promote a single event into silver. Idempotent: if a row matching the
+ * dedupe key already exists, returns { promoted: false } and skips side
+ * effects. Upgrade path: if the existing row was synthetic (inferred=true)
+ * and the incoming event is real, the row is upgraded in place — side effects
+ * fire because this is the first time the real signal is observed.
+ *
+ * Inference: after a successful insert/upgrade, deterministic predecessor
+ * rules (opened ⇒ sent, replied ⇒ sent, sent N ⇒ sent 1..N-1, etc.) synthesize
+ * missing predecessor rows with `inferred=true`. Synthetic events themselves
+ * also recurse so cascade chains complete in one pass; dedup terminates the
+ * recursion naturally.
+ *
+ * Returns { promoted: true, silverEventId } when a new row was inserted (or
+ * an inferred row was upgraded), in which case side effects (delivery_status,
+ * cost lifecycle) have fired for real events.
+ */
+export async function promoteEvent(input: PromoteEventInput): Promise<PromoteEventResult> {
+  const campaign = await findCampaign(input.instantlyCampaignId);
+  if (!campaign) {
     return { promoted: false, silverEventId: null };
   }
 
-  await updateDeliveryStatus(input.instantlyCampaignId, input.eventType);
-  await updateReplyClassification(input.instantlyCampaignId, input.eventType);
+  const result = await insertOrUpgradeSilverEvent(input);
 
-  if (input.leadEmail) {
-    if (input.eventType === "email_sent" && input.step) {
-      await handleEmailSent(campaign, input.leadEmail, input.step);
-    } else if (SEQUENCE_STOP_EVENTS.has(input.eventType)) {
-      await cancelRemainingProvisions(campaign, input.leadEmail);
+  if (!result.promoted && !result.upgraded) {
+    return { promoted: false, silverEventId: result.silverEventId };
+  }
+
+  // Side effects fire only for real (non-inferred) events. Synthetic events
+  // are stats-only projection; delivery_status and cost lifecycle are driven
+  // by actual external signals.
+  if (!input.inferred) {
+    await updateDeliveryStatus(input.instantlyCampaignId, input.eventType);
+    await updateReplyClassification(input.instantlyCampaignId, input.eventType);
+
+    if (input.leadEmail) {
+      if (input.eventType === "email_sent" && input.step) {
+        await handleEmailSent(campaign, input.leadEmail, input.step);
+      } else if (SEQUENCE_STOP_EVENTS.has(input.eventType)) {
+        await cancelRemainingProvisions(campaign, input.leadEmail);
+      }
     }
   }
 
-  return { promoted: true, silverEventId: inserted[0].id };
+  // Run inference on the freshly-promoted event. Inferred trigger events
+  // also recurse so cascade rules (e.g. sent step N ⇒ sent 1..N-1) propagate
+  // through synthetic chains. Termination is guaranteed by the dedup indexes.
+  if (result.silverEventId && result.promoted) {
+    await inferPredecessors(input, result.silverEventId);
+  }
+
+  return { promoted: true, silverEventId: result.silverEventId };
 }
 
 /**
@@ -535,4 +778,40 @@ export async function promoteSyntheticClicksFromLead(params: {
     sourceRowId: bronzeRowId,
   });
   return { promoted: result.promoted };
+}
+
+/**
+ * Run inference for an existing silver event. Used by the backfill CLI to
+ * project predecessor events for rows that pre-date inference logic (or for
+ * events that landed via a path that skipped `inferPredecessors`).
+ *
+ * Idempotent: predecessors that already exist (real or inferred) dedup via
+ * the silver indexes. No side effects (delivery_status / cost lifecycle).
+ */
+export async function backfillInferenceForEvent(args: {
+  silverEventId: string;
+  eventType: string;
+  instantlyCampaignId: string;
+  leadEmail: string | null;
+  accountEmail: string | null;
+  step: number | null;
+  timestamp: Date;
+}): Promise<void> {
+  await inferPredecessors(
+    {
+      eventType: args.eventType,
+      instantlyCampaignId: args.instantlyCampaignId,
+      leadEmail: args.leadEmail,
+      accountEmail: args.accountEmail,
+      step: args.step,
+      variant: null,
+      timestamp: args.timestamp,
+      // Source on the trigger event is unused by inferPredecessors (only the
+      // synthetic rows it emits carry source='inferred'). Pass any valid value.
+      source: "webhook",
+      sourceRowId: args.silverEventId,
+      inferred: false,
+    },
+    args.silverEventId,
+  );
 }

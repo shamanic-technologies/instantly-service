@@ -13,6 +13,7 @@ Cold email outreach service via Instantly.ai API V2. Handles campaign management
 - `npm run db:generate` — generate Drizzle migrations
 - `npm run db:migrate` — run migrations
 - `npm run db:push` — push schema to database
+- `npm run backfill:inferences` — one-shot CLI: project synthetic predecessor events onto existing silver rows. Manual only — NEVER wired into boot (port-bind hazard).
 
 ## Architecture
 
@@ -39,3 +40,32 @@ Two provider-specific fields are **optional in v1** of the contract: `cancelled`
 ## Zod 4 caveat — contract schemas + `.openapi()`
 
 `@asteasolutions/zod-to-openapi` attaches `.openapi()` to Zod schema instances at the time `extendZodWithOpenApi(z)` runs in the consumer. The contract package's schemas were instantiated before that point in the consumer's module graph, so they do NOT gain `.openapi()` retroactively. Re-export them without `.openapi(name)` and let the generator inline them (no `$ref` name). Local schemas defined in `src/schemas.ts` (after `import "./zod-setup"`) keep their `.openapi(name)` tagging.
+
+## Data layering — Bronze / Silver / Gold
+
+Three layers, doctrine per `~/.claude/skills/data-layering/SKILL.md`:
+
+- **Bronze** — raw external mirrors, append-only, never mutated. Tables: `instantly_webhook_payloads_raw`, `instantly_analytics_raw`, `instantly_emails_raw`, `instantly_leads_raw`, `instantly_campaigns_config_raw`. Each row = one payload from Instantly (webhook OR reconcile poll).
+- **Silver** — canonical event log `instantly_events` + state row `instantly_campaigns`. Derived from bronze via `src/lib/silver-promote.ts`. Rebuildable.
+- **Gold** — stats views in `src/routes/analytics.ts`, `status.ts`. Read silver only.
+
+### Silver inference (synthetic predecessors)
+
+When a "downstream" event lands (e.g. `email_opened`) without a preceding "upstream" event (e.g. `email_sent`), silver promotion synthesizes the missing predecessor deterministically. Rules:
+
+| Trigger | Inferred predecessors |
+|---|---|
+| `email_opened` step N | `email_sent` step N |
+| `email_link_clicked` step N | `email_opened` step N + `email_sent` step N |
+| `reply_received` step N | `email_sent` step N |
+| `email_bounced` step N | `email_sent` step N |
+| `lead_unsubscribed` step N | `email_sent` step N |
+| `email_sent` step N | `email_sent` steps 1..N-1 (sequence cascade) |
+
+Synthetic rows carry `inferred=true`, `source='inferred'`, `inferred_from_event_id` (audit), and `inferred_rule` (rule name). Timestamp = trigger event timestamp.
+
+**One-shot upgrade:** for at-most-1-per-step event types (`email_sent`, `email_bounced`, `lead_unsubscribed`, `reply_received`), partial unique index `instantly_events_one_shot_dedupe_idx` enforces that. When a real webhook arrives after inference projected the event, the synthetic row is upgraded in place (`inferred=true → false`, real timestamp wins). Side effects fire because this is the first time the real signal is observed.
+
+**Side effects on inferred events:** SKIPPED. Synthetic events are projection-only. `delivery_status` / `cost lifecycle` / `reply classification` update only when real external signals arrive.
+
+**Backfill:** `npm run backfill:inferences` re-projects predecessors for every existing real silver event. Idempotent. CLI only — must not run in boot path.

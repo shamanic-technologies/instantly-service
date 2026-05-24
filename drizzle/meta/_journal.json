@@ -99,6 +99,13 @@
       "when": 1774656000000,
       "tag": "0013_add_campaign_config_observability",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1774742400000,
+      "tag": "0014_add_silver_inference",
+      "breakpoints": true
     }
   ]
 }
