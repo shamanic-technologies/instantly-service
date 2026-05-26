@@ -66,8 +66,14 @@ export const STUCK_AGE_HOURS = 72;
  * Set on `metadata.lastAttemptAt` at the start of every `processRow` call.
  * The SELECT excludes rows whose last attempt is more recent than this,
  * preventing any single broken row from hogging the loop.
+ *
+ * 24h. A row that was just redispatched onto a fresh Instantly campaign
+ * needs at least a full day before re-checking — Instantly's dispatch
+ * window is weekday/business-hours and a much tighter cooldown causes the
+ * worker to redispatch the same row dozens of times per day while
+ * Instantly is still queuing the new campaign.
  */
-export const ATTEMPT_COOLDOWN_MINUTES = 30;
+export const ATTEMPT_COOLDOWN_MINUTES = 1440;
 
 const SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000";
 
