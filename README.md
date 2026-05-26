@@ -63,16 +63,26 @@ Cold email outreach service via [Instantly.ai](https://instantly.ai/) API V2. Ha
 | 2 — contacted | `contacted` (default) | row exists in `instantly_campaigns` (POST /send success) |
 | 3 — sent | `sent` | `instantly_events.event_type='email_sent'` (webhook from Instantly) |
 | 4 — delivered | (derived) | sent AND NOT bounced — computed in queries, never stored |
-| terminal | `bounced` / `replied` / `unsubscribed` / `failed` / `cancelled` | webhook events; `failed` set by campaign-error-handler; `cancelled` reserved for the stuck-lead retry job (writes leads whose campaign is deliberately killed because Instantly never dispatched — typically `not_sending_status` flagged) |
+| terminal | `bounced` / `replied` / `unsubscribed` / `failed` / `cancelled` | webhook events; `failed` set by campaign-error-handler; `cancelled` set by the retry-stuck worker for rows it determines unretriable (parent run gone, key unavailable, no sequence recoverable, etc.) |
 
 ### Observability — `not_sending_status`
 
-Instantly exposes a per-campaign diagnostic `not_sending_status` (e.g. `4` = capacity-blocked). When set, Instantly will not dispatch emails for that campaign. The reconcile job pulls `GET /campaigns/{id}` per campaign per cycle (bronze: `instantly_campaigns_config_raw`) and promotes the field to silver columns on `instantly_campaigns`:
+Instantly exposes a per-campaign pacing diagnostic `not_sending_status` (NSS). The reconcile job pulls `GET /campaigns/{id}` per campaign per cycle (bronze: `instantly_campaigns_config_raw`) and promotes the field to silver columns on `instantly_campaigns`:
 
-- `not_sending_status` (integer, NULL = sending normally)
+- `not_sending_status` (integer, NULL = no pacing constraint observed)
 - `not_sending_status_seen_at` (timestamp of last observation)
 
-`GET /stats` surfaces `recipientStats.notSending` = `COUNT(DISTINCT lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)` scoped to the request's filters.
+NSS enum (from Instantly OpenAPI):
+
+| NSS | Meaning |
+|-----|---------|
+| `1` | Outside sending schedule |
+| `2` | Waiting for a lead to process |
+| `3` | Campaign daily sending limit hit |
+| `4` | All assigned accounts hit their daily limit |
+| `99` | Generic error — "contact support" |
+
+Values 1-4 are **transient pacing states** that resolve naturally (daily reset, schedule window). NSS is **not** an error trigger anywhere in send-time dispatch or retry-stuck selection — it is observability only. `GET /stats` surfaces `recipientStats.notSending` = `COUNT(DISTINCT lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)` scoped to the request's filters.
 
 ## Setup
 
