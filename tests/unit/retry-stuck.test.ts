@@ -226,7 +226,7 @@ describe("selectOneStuckRow SQL filter", () => {
     expect(text).toMatch(/c\.org_id IS NOT NULL/);
     expect(text).toMatch(/c\.metadata->>'lastAttemptAt' IS NULL/);
     expect(text).toMatch(/lastAttemptAt.*::timestamptz <.*NOW\(\)/);
-    expect(text).toMatch(/1440\s+minutes/);
+    expect(text).toMatch(/4320\s+minutes/);
   });
 
   it("returns null when SELECT yields zero rows", async () => {

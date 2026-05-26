@@ -67,13 +67,14 @@ export const STUCK_AGE_HOURS = 72;
  * The SELECT excludes rows whose last attempt is more recent than this,
  * preventing any single broken row from hogging the loop.
  *
- * 24h. A row that was just redispatched onto a fresh Instantly campaign
- * needs at least a full day before re-checking — Instantly's dispatch
- * window is weekday/business-hours and a much tighter cooldown causes the
- * worker to redispatch the same row dozens of times per day while
- * Instantly is still queuing the new campaign.
+ * 72h. Matches the STUCK_AGE_HOURS floor — after a redispatch lands on a
+ * fresh Instantly campaign, give Instantly the full dispatch window (3
+ * full business days) to actually fire the new send before considering
+ * the row stuck again. Each redispatch consumes a fresh contact-upload
+ * slot on the customer's Instantly workspace, so re-attempting more
+ * aggressively burns billable slots without any new signal.
  */
-export const ATTEMPT_COOLDOWN_MINUTES = 1440;
+export const ATTEMPT_COOLDOWN_MINUTES = 4320;
 
 const SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000";
 
