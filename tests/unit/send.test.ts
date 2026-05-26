@@ -77,7 +77,7 @@ vi.mock("../../src/lib/billing-client", () => ({
   authorizeCreditSpend: (...args: unknown[]) => mockAuthorizeCreditSpend(...args),
 }));
 
-import { buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/lib/send-lead";
+import { autolinkifyHtml, buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/lib/send-lead";
 import { requireOrgId } from "../../src/middleware/requireOrgId";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
@@ -201,6 +201,44 @@ describe("pickRandomAccount", () => {
   });
 });
 
+describe("autolinkifyHtml", () => {
+  it("wraps plain https URL in anchor tag", () => {
+    const out = autolinkifyHtml("<p>visit https://pressbeat.io now</p>");
+    expect(out).toContain('<a href="https://pressbeat.io"');
+    expect(out).toContain(">https://pressbeat.io</a>");
+  });
+
+  it("wraps bare domain with https default protocol", () => {
+    const out = autolinkifyHtml("<p>over at pressbeat.io okay</p>");
+    expect(out).toContain('href="https://pressbeat.io"');
+    expect(out).toContain(">pressbeat.io</a>");
+  });
+
+  it("leaves existing <a href> untouched (no double wrap)", () => {
+    const out = autolinkifyHtml('<p><a href="https://x.com">x.com</a> and https://y.com</p>');
+    expect((out.match(/<a /g) || []).length).toBe(2);
+    expect(out).toContain('<a href="https://x.com">x.com</a>');
+    expect(out).toContain('href="https://y.com"');
+  });
+
+  it("preserves mustache placeholders even when they look domain-like", () => {
+    const out = autolinkifyHtml("<p>Hi {{firstName}}, {{user.email}}, see https://z.com</p>");
+    expect(out).toContain("{{firstName}}");
+    expect(out).toContain("{{user.email}}");
+    expect(out).toContain('href="https://z.com"');
+  });
+
+  it("returns input unchanged when no URLs and no domains present", () => {
+    expect(autolinkifyHtml("<p>Hello world</p>")).toBe("<p>Hello world</p>");
+  });
+
+  it("strips trailing punctuation from URL match", () => {
+    const out = autolinkifyHtml("<p>(over at pressbeat.io)</p>");
+    expect(out).toContain('href="https://pressbeat.io"');
+    expect(out).toContain(">pressbeat.io</a>)");
+  });
+});
+
 describe("buildEmailBodyWithSignature", () => {
   const sig = "<p>Best,<br>John Doe</p>";
 
@@ -224,6 +262,22 @@ describe("buildEmailBodyWithSignature", () => {
   it("should return body as-is when account has no signature and no placeholder", () => {
     const result = buildEmailBodyWithSignature("Hello", acct());
     expect(result).toBe("Hello");
+  });
+
+  it("autolinkifies URLs inside both the body and the appended signature", () => {
+    const sigWithLink = '<p>Best,<br>John — see https://example.com</p>';
+    const result = buildEmailBodyWithSignature("<p>hey https://z.com</p>", acct({ signature: sigWithLink }));
+    expect(result).toContain('href="https://z.com"');
+    expect(result).toContain('href="https://example.com"');
+  });
+
+  it("leaves mustache vars in body intact even after autolinkify", () => {
+    const result = buildEmailBodyWithSignature(
+      "<p>Hi {{firstName}}, visit https://z.com</p>",
+      acct({ signature: "<p>--</p>" }),
+    );
+    expect(result).toContain("{{firstName}}");
+    expect(result).toContain('href="https://z.com"');
   });
 });
 
