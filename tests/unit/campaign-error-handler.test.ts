@@ -322,11 +322,11 @@ describe("handleCampaignError", () => {
     expect(mockSendEmail).not.toHaveBeenCalled();
   });
 
-  it("should NOT send admin email when terminalStatus='cancelled' (bulk cron path)", async () => {
+  it("should NOT send admin email when terminalStatus='cancelled' (retry-stuck path)", async () => {
     mockDbWhere.mockResolvedValueOnce([baseCampaign]);
     mockDbWhere.mockResolvedValueOnce([]); // no costs
 
-    await handleCampaignError("inst-camp-1", "not_sending_status: 4", {
+    await handleCampaignError("inst-camp-1", "parent_run_gone_or_unreadable", {
       terminalStatus: "cancelled",
     });
 
@@ -335,9 +335,9 @@ describe("handleCampaignError", () => {
       "run-1",
       "failed",
       expect.objectContaining({ orgId: "org-1" }),
-      "not_sending_status: 4",
+      "parent_run_gone_or_unreadable",
     );
-    // Admin email suppressed (cron sweep would flood the inbox)
+    // Admin email suppressed (bulk worker path would flood the inbox)
     expect(mockSendEmail).not.toHaveBeenCalled();
   });
 });

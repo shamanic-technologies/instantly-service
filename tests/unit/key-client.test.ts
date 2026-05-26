@@ -100,7 +100,7 @@ describe("key-client", () => {
     const { resolveInstantlyApiKey } = await import("../../src/lib/key-client");
     await resolveInstantlyApiKey("org_123", "system", {
       method: "POST",
-      path: "/campaigns/check-status",
+      path: "/campaigns/reconcile",
     });
 
     const [, options] = mockFetch.mock.calls[0];

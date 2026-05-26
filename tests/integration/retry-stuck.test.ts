@@ -272,14 +272,14 @@ describe.skipIf(SKIP)("retry-stuck (DB-backed)", () => {
 
     vi.mocked(sendLeadToInstantly).mockResolvedValue({
       ok: false,
-      reason: "no_healthy_account",
+      reason: "no_healthy_accounts_available",
     });
 
     const candidate = await selectOneStuckRow();
     expect(candidate).not.toBeNull();
 
     const outcome = await processRow(candidate!);
-    expect(outcome).toEqual({ kind: "failed", reason: "no_healthy_account" });
+    expect(outcome).toEqual({ kind: "failed", reason: "no_healthy_accounts_available" });
 
     const [row] = await db
       .select()

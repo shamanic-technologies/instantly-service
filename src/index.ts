@@ -45,7 +45,7 @@ app.use("/webhooks", webhooksRoutes);
 app.use("/public", serviceAuth, analyticsPublicRoutes);
 
 // ─── Internal routes (x-api-key only, no org context) ───────────────────────
-app.use("/internal/campaigns", serviceAuth, campaignsRoutes);  // check-status
+app.use("/internal/campaigns", serviceAuth, campaignsRoutes);  // reconcile + retry-stuck triggers
 app.use("/internal/accounts", serviceAuth, accountsRoutes);    // list all accounts
 app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 

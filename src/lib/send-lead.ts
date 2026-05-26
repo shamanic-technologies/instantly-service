@@ -1,21 +1,18 @@
 /**
  * Shared send helper.
  *
- * Encapsulates the "find a healthy Instantly account + create campaign + add
- * lead + activate + check not_sending_status" loop. Used by:
+ * Encapsulates "find a healthy Instantly account + create campaign + add
+ * lead + activate". Used by:
  *   - POST /send (first-time send)
  *   - retry-stuck heartbeat (re-send when an existing row has stayed in
  *     `delivery_status='contacted'` past STUCK_AGE_HOURS without any silver
  *     proof Instantly actually sent — see lib/retry-stuck.ts)
  *
- * The retry loop picks a random account each attempt (weighted by warmup score),
- * creates a fresh Instantly campaign, adds the lead, activates, and verifies
- * not_sending_status is null. If set, we discard and try again with a different
- * account — up to MAX_SEND_RETRIES.
- *
- * No exclusion list: with ~100+ accounts per org, random sampling collides
- * rarely enough that maintaining a "failed accounts" list is more bookkeeping
- * than payoff. Each send is independent.
+ * One-shot: picks a single healthy account (weighted by warmup score),
+ * creates a fresh Instantly campaign, adds the lead, activates. Returns
+ * success regardless of post-activate `not_sending_status` (NSS is pacing
+ * diagnostic, not error signal — retry-stuck owns the eventual catch-up
+ * 72h later if the campaign never sends).
  */
 
 import {
@@ -29,8 +26,6 @@ import {
   type Lead,
   type SequenceStep,
 } from "./instantly-client";
-
-export const MAX_SEND_RETRIES = 3;
 
 /**
  * Accounts whose domain we refuse to send from regardless of Instantly
@@ -156,18 +151,21 @@ export function filterHealthyAccounts(accounts: Account[]): Account[] {
 }
 
 /**
- * Create an Instantly campaign, assign one account, add the lead, activate,
- * and verify `not_sending_status` is null post-activation. Returns the new
- * Instantly campaign ID on success, or `null` if `not_sending_status` fired
- * (caller should retry with a different account).
+ * Create an Instantly campaign, assign one account, add the lead, activate.
+ * Returns the new Instantly campaign ID + the number of leads added.
+ *
+ * Post-activate `not_sending_status` is logged but never treated as an
+ * error — it is pacing diagnostic (daily quota, sending schedule, etc.),
+ * not a failure mode. retry-stuck handles the eventual catch-up if the
+ * campaign never dispatches.
  */
-export async function tryCreateAndActivateCampaign(
+export async function createAndActivateCampaign(
   apiKey: string,
   campaignName: string,
   account: Account,
   steps: SequenceStep[],
   lead: Lead,
-): Promise<{ instantlyCampaignId: string; added: number } | null> {
+): Promise<{ instantlyCampaignId: string; added: number }> {
   console.log(
     `[send-lead] Creating Instantly campaign "${campaignName}" with account ${account.email}`,
   );
@@ -208,22 +206,6 @@ export async function tryCreateAndActivateCampaign(
   // Activate.
   await updateCampaignStatus(apiKey, instantlyCampaign.id, "active");
 
-  // Post-activation guard: Instantly sometimes flips not_sending_status the
-  // moment a campaign is activated (e.g. account just hit daily quota). If
-  // set, caller will retry with a different account.
-  const postActivate = (await getInstantlyCampaign(
-    apiKey,
-    instantlyCampaign.id,
-  )) as unknown as Record<string, unknown>;
-
-  if (postActivate.not_sending_status) {
-    const reason = `not_sending_status: ${JSON.stringify(postActivate.not_sending_status)}`;
-    console.warn(
-      `[send-lead] Campaign ${instantlyCampaign.id} ${reason} — will retry with another account`,
-    );
-    return null;
-  }
-
   return { instantlyCampaignId: instantlyCampaign.id, added: addResult.added };
 }
 
@@ -233,7 +215,6 @@ export interface SendOptions {
   subject: string;
   sortedSequence: SortedSequenceStep[];
   lead: Lead;
-  maxRetries?: number;
 }
 
 export interface SendSuccess {
@@ -242,7 +223,7 @@ export interface SendSuccess {
   account: Account;
 }
 
-export type SendFailureReason = "no_healthy_account" | "max_retries_exhausted";
+export type SendFailureReason = "no_healthy_accounts_available";
 
 export type SendResult =
   | { ok: true; value: SendSuccess }
@@ -250,21 +231,16 @@ export type SendResult =
 
 /**
  * Find a healthy Instantly account for the given org's API key and send
- * the lead onto a fresh campaign. Tries up to `maxRetries` accounts before
- * giving up.
+ * the lead onto a fresh campaign. One-shot — no retry on post-activate
+ * NSS (retry-stuck owns the eventual catch-up).
  *
  * Returns:
  *   - `{ok: true, ...}` on success with the new Instantly campaign ID + chosen account.
- *   - `{ok: false, reason: "no_healthy_account"}` when `listAccounts` returns
- *     zero senders that pass `filterHealthyAccounts` — caller leaves the row
- *     alone and lets the next tick retry.
- *   - `{ok: false, reason: "max_retries_exhausted"}` when every attempt hit
- *     `not_sending_status` post-activate — caller leaves the row alone and lets
- *     the next tick retry.
+ *   - `{ok: false, reason: "no_healthy_accounts_available"}` when `listAccounts`
+ *     returns zero senders that pass `filterHealthyAccounts` — caller surfaces
+ *     this to the upstream (no row created).
  */
 export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult> {
-  const maxRetries = opts.maxRetries ?? MAX_SEND_RETRIES;
-
   const allAccounts = await listAccounts(opts.apiKey);
   const accounts = filterHealthyAccounts(allAccounts);
 
@@ -272,32 +248,26 @@ export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult
     console.warn(
       `[send-lead] No healthy accounts available (raw=${allAccounts.length}) for "${opts.campaignName}"`,
     );
-    return { ok: false, reason: "no_healthy_account" };
+    return { ok: false, reason: "no_healthy_accounts_available" };
   }
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const account = pickRandomAccount(accounts);
-    const steps = buildSequenceSteps(opts.subject, opts.sortedSequence, account);
+  const account = pickRandomAccount(accounts);
+  const steps = buildSequenceSteps(opts.subject, opts.sortedSequence, account);
 
-    console.log(
-      `[send-lead] Attempt ${attempt}/${maxRetries} for "${opts.campaignName}" with account ${account.email}`,
-    );
+  console.log(
+    `[send-lead] Sending "${opts.campaignName}" with account ${account.email}`,
+  );
 
-    const result = await tryCreateAndActivateCampaign(
-      opts.apiKey,
-      opts.campaignName,
-      account,
-      steps,
-      opts.lead,
-    );
+  const result = await createAndActivateCampaign(
+    opts.apiKey,
+    opts.campaignName,
+    account,
+    steps,
+    opts.lead,
+  );
 
-    if (result) {
-      return {
-        ok: true,
-        value: { ...result, account },
-      };
-    }
-  }
-
-  return { ok: false, reason: "max_retries_exhausted" };
+  return {
+    ok: true,
+    value: { ...result, account },
+  };
 }
