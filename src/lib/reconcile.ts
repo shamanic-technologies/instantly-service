@@ -77,6 +77,8 @@ interface LocalCounts {
   replies: number;
   bounces: number;
   unsubs: number;
+  /** Distinct leads observed with at least one `email_opened` silver row. */
+  opensUnique: number;
 }
 
 async function getLocalCounts(instantlyCampaignId: string): Promise<LocalCounts> {
@@ -85,12 +87,19 @@ async function getLocalCounts(instantlyCampaignId: string): Promise<LocalCounts>
       COALESCE(SUM(CASE WHEN event_type = 'email_sent' THEN 1 ELSE 0 END), 0)::int AS "sent",
       COALESCE(SUM(CASE WHEN event_type = 'reply_received' THEN 1 ELSE 0 END), 0)::int AS "replies",
       COALESCE(SUM(CASE WHEN event_type = 'email_bounced' THEN 1 ELSE 0 END), 0)::int AS "bounces",
-      COALESCE(SUM(CASE WHEN event_type = 'lead_unsubscribed' THEN 1 ELSE 0 END), 0)::int AS "unsubs"
+      COALESCE(SUM(CASE WHEN event_type = 'lead_unsubscribed' THEN 1 ELSE 0 END), 0)::int AS "unsubs",
+      COALESCE(COUNT(DISTINCT CASE WHEN event_type = 'email_opened' THEN lead_email END), 0)::int AS "opensUnique"
     FROM instantly_events
     WHERE campaign_id = ${instantlyCampaignId}
   `);
   const rows = Array.isArray(result) ? result : (result as { rows?: unknown[] }).rows ?? [];
-  const row = (rows[0] as LocalCounts | undefined) ?? { sent: 0, replies: 0, bounces: 0, unsubs: 0 };
+  const row = (rows[0] as LocalCounts | undefined) ?? {
+    sent: 0,
+    replies: 0,
+    bounces: 0,
+    unsubs: 0,
+    opensUnique: 0,
+  };
   return row;
 }
 
@@ -99,8 +108,24 @@ function detectDrift(local: LocalCounts, remote: CampaignAnalytics): boolean {
     remote.emails_sent_count > local.sent ||
     remote.reply_count > local.replies ||
     remote.bounced_count > local.bounces ||
-    remote.unsubscribed_count > local.unsubs
+    remote.unsubscribed_count > local.unsubs ||
+    remote.open_count_unique > local.opensUnique
   );
+}
+
+/**
+ * One-shot bypass of the per-campaign drift gate in Phase 1. When the env var
+ * `RECONCILE_FORCE_PHASE_2` is "true", every campaign skips the drift check
+ * and proceeds straight to Phase 2 (/leads/list backfill). Use only for
+ * historical backfill runs where new silver event types (e.g. interest
+ * status) were added — the drift gate sees no change on the metrics it
+ * tracks, so naturally-converging reconcile would never visit those leads.
+ *
+ * Cost: one `/leads/list` + `/emails` call per campaign per reconcile run
+ * (12k+ Instantly API calls per cycle on prod). Leave OFF in steady state.
+ */
+function isForcePhase2Enabled(): boolean {
+  return process.env.RECONCILE_FORCE_PHASE_2 === "true";
 }
 
 async function getEmailsCursor(instantlyCampaignId: string): Promise<string | undefined> {
@@ -179,16 +204,20 @@ async function reconcileOneCampaign(
 
   const localCounts = await getLocalCounts(campaign.instantlyCampaignId);
   const drifted = detectDrift(localCounts, analytics);
-  if (!drifted) {
+  const forcePhase2 = isForcePhase2Enabled();
+  if (!drifted && !forcePhase2) {
     return { drifted: false, drift };
   }
 
   console.log(
-    `[instantly-service] reconcile: drift campaign=${campaign.instantlyCampaignId} ` +
+    `[instantly-service] reconcile: ${forcePhase2 && !drifted ? "force-phase-2" : "drift"} ` +
+      `campaign=${campaign.instantlyCampaignId} ` +
       `remote(sent=${analytics.emails_sent_count}, replies=${analytics.reply_count}, ` +
-      `bounces=${analytics.bounced_count}, unsubs=${analytics.unsubscribed_count}) ` +
+      `bounces=${analytics.bounced_count}, unsubs=${analytics.unsubscribed_count}, ` +
+      `opensUnique=${analytics.open_count_unique}) ` +
       `local(sent=${localCounts.sent}, replies=${localCounts.replies}, ` +
-      `bounces=${localCounts.bounces}, unsubs=${localCounts.unsubs}) ` +
+      `bounces=${localCounts.bounces}, unsubs=${localCounts.unsubs}, ` +
+      `opensUnique=${localCounts.opensUnique}) ` +
       `snapshot=${analyticsRef.id}`,
   );
 
