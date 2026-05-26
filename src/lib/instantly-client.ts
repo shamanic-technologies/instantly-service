@@ -149,14 +149,19 @@ async function sleep(ms: number): Promise<void> {
 // per-slot "next-call-allowed-at" timestamp so concurrent workers (reconcile
 // loops, retry-stuck batches) pace below the cap regardless of how many
 // promises run in parallel. The slot is selected by `slotForPath()`.
-//   /emails:   3100ms ≈ 19.35 req/min (safety margin under 20/min cap)
-//   general:   110ms  ≈ 545 req/min   (safety margin under 600/min cap)
+//   /emails:   3500ms ≈ 17.1 req/min (safety margin under 20/min cap)
+//   general:   110ms  ≈ 545 req/min  (safety margin under 600/min cap)
+//
+// Margin reasoning: a single replica with 3500ms cadence emits 17 calls per
+// rolling 60s window. The previous 3100ms cadence was too tight — combined
+// with retries-not-going-through-throttle (fixed below), it crossed the
+// sliding-window edge and tripped 429s in prod 2026-05-26.
 interface ThrottleSlot {
   nextAllowedAt: number;
   minIntervalMs: number;
 }
 
-const emailsSlot: ThrottleSlot = { nextAllowedAt: 0, minIntervalMs: 3100 };
+const emailsSlot: ThrottleSlot = { nextAllowedAt: 0, minIntervalMs: 3500 };
 const generalSlot: ThrottleSlot = { nextAllowedAt: 0, minIntervalMs: 110 };
 
 function slotForPath(path: string): ThrottleSlot {
@@ -169,6 +174,30 @@ async function throttle(slot: ThrottleSlot): Promise<void> {
   slot.nextAllowedAt = scheduledAt + slot.minIntervalMs;
   const wait = scheduledAt - now;
   if (wait > 0) await sleep(wait);
+}
+
+/**
+ * Parse a Retry-After header (RFC 9110). Accepts seconds-from-now (`"5"`) or
+ * an HTTP-date. Returns the wait in milliseconds, capped at 60_000ms so a
+ * misconfigured upstream cannot stall a worker indefinitely. Returns null
+ * when header is absent or unparseable — caller falls back to exponential
+ * backoff.
+ */
+function parseRetryAfter(header: string | null): number | null {
+  if (!header) return null;
+  const trimmed = header.trim();
+
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, 60_000);
+  }
+
+  const date = Date.parse(trimmed);
+  if (Number.isFinite(date)) {
+    return Math.min(Math.max(0, date - Date.now()), 60_000);
+  }
+
+  return null;
 }
 
 async function instantlyRequest<T>(
@@ -186,11 +215,15 @@ async function instantlyRequest<T>(
     headers["Content-Type"] = "application/json";
   }
 
-  await throttle(slotForPath(path));
-
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < retries; attempt++) {
+    // Re-pace through the throttle slot on EVERY attempt (including retries).
+    // Previously the throttle ran once before the loop, so a 429 retry could
+    // fire within the rate-limit window and trip a second 429 — cascading
+    // until retries exhausted.
+    await throttle(slotForPath(path));
+
     try {
       const response = await fetch(`${INSTANTLY_API_URL}${path}`, {
         method,
@@ -204,7 +237,11 @@ async function instantlyRequest<T>(
           `instantly-api ${method} ${path} failed: ${response.status} - ${errorText.slice(0, 500)}`
         );
         if (attempt < retries - 1) {
-          const delay = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 10000);
+          const retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
+          const delay =
+            retryAfterMs !== null
+              ? retryAfterMs
+              : Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 10000);
           await sleep(delay);
         }
         continue;

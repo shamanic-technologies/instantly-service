@@ -189,16 +189,19 @@ describe("instantly-client", () => {
       .mockResolvedValueOnce({
         ok: false,
         status: 429,
+        headers: { get: () => null },
         text: () => Promise.resolve('{"error":"rate_limit","message":"Too many requests"}'),
       })
       .mockResolvedValueOnce({
         ok: false,
         status: 500,
+        headers: { get: () => null },
         text: () => Promise.resolve('{"error":"internal","message":"Campaign limit reached"}'),
       })
       .mockResolvedValueOnce({
         ok: false,
         status: 500,
+        headers: { get: () => null },
         text: () => Promise.resolve('{"error":"internal","message":"Campaign limit reached"}'),
       });
 
@@ -209,6 +212,77 @@ describe("instantly-client", () => {
         steps: [{ subject: "Hello", bodyHtml: "<p>Hi</p>", daysSinceLastStep: 0 }],
       }),
     ).rejects.toThrow(/Campaign limit reached/);
+  });
+
+  it("429 with Retry-After header waits at least that many seconds before retrying", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(global, "setTimeout");
+
+    // First attempt 429 with Retry-After: 5, second attempt succeeds
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: { get: (name: string) => (name === "Retry-After" ? "5" : null) },
+        text: () => Promise.resolve('{"error":"rate_limit"}'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ id: "camp-1" }),
+      });
+
+    const { createCampaign } = await import("../../src/lib/instantly-client");
+    const p = createCampaign(TEST_API_KEY, {
+      name: "Test",
+      steps: [{ subject: "Hi", bodyHtml: "<p>Hi</p>", daysSinceLastStep: 0 }],
+    });
+    await vi.runAllTimersAsync();
+    await p;
+
+    const delays = setTimeoutSpy.mock.calls
+      .map(([, ms]) => Number(ms))
+      .filter((d) => !Number.isNaN(d));
+    // Retry-After of 5s = 5000ms. The 429 retry MUST wait at least that long.
+    expect(delays.some((d) => d >= 5000)).toBe(true);
+
+    setTimeoutSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("429 without Retry-After falls back to exponential backoff", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(global, "setTimeout");
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: { get: () => null },
+        text: () => Promise.resolve('{"error":"rate_limit"}'),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ id: "camp-1" }),
+      });
+
+    const { createCampaign } = await import("../../src/lib/instantly-client");
+    const p = createCampaign(TEST_API_KEY, {
+      name: "Test",
+      steps: [{ subject: "Hi", bodyHtml: "<p>Hi</p>", daysSinceLastStep: 0 }],
+    });
+    await vi.runAllTimersAsync();
+    await p;
+
+    const delays = setTimeoutSpy.mock.calls
+      .map(([, ms]) => Number(ms))
+      .filter((d) => !Number.isNaN(d));
+    // Exponential backoff on first retry: 1000 + jitter (0-1000) = 1000-2000ms
+    expect(delays.some((d) => d >= 1000 && d < 2000)).toBe(true);
+
+    setTimeoutSpy.mockRestore();
+    vi.useRealTimers();
   });
 
   it("updateCampaignStatus should not send Content-Type without a body", async () => {
