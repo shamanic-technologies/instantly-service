@@ -68,6 +68,7 @@ const mockPromoteFromEmailRecord = vi.fn();
 const mockPromoteFromLead = vi.fn();
 const mockPromoteSyntheticOpensFromLead = vi.fn();
 const mockPromoteSyntheticClicksFromLead = vi.fn();
+const mockPromoteSyntheticInterestFromLead = vi.fn();
 
 vi.mock("../../src/lib/silver-promote", () => ({
   promoteFromCampaignConfig: (...args: unknown[]) =>
@@ -78,6 +79,8 @@ vi.mock("../../src/lib/silver-promote", () => ({
     mockPromoteSyntheticOpensFromLead(...args),
   promoteSyntheticClicksFromLead: (...args: unknown[]) =>
     mockPromoteSyntheticClicksFromLead(...args),
+  promoteSyntheticInterestFromLead: (...args: unknown[]) =>
+    mockPromoteSyntheticInterestFromLead(...args),
 }));
 
 // Import under test AFTER mocks
@@ -133,6 +136,7 @@ describe("reconcileAll", () => {
     mockPromoteFromLead.mockResolvedValue({ promoted: false, silverEventId: null });
     mockPromoteSyntheticOpensFromLead.mockResolvedValue({ promoted: false });
     mockPromoteSyntheticClicksFromLead.mockResolvedValue({ promoted: false });
+    mockPromoteSyntheticInterestFromLead.mockResolvedValue({ promoted: false });
   });
 
   it("returns zero summary when no campaigns exist", async () => {

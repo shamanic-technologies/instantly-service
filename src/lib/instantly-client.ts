@@ -89,9 +89,12 @@ export interface LeadFull {
   email_opened_variant?: number | null;
   email_replied_step?: number | null;
   email_clicked_step?: number | null;
+  email_clicked_variant?: number | null;
   timestamp_last_contact?: string | null;
   timestamp_last_open?: string | null;
+  timestamp_last_click?: string | null;
   timestamp_last_reply?: string | null;
+  timestamp_last_interest_change?: string | null;
   lt_interest_status?: number | null;
   [key: string]: unknown;
 }
