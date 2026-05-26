@@ -175,7 +175,7 @@ describe("POST /webhooks/instantly", () => {
     expect(res.body.promoted).toBe(false);
   });
 
-  it("should return 500 if bronze insert fails", async () => {
+  it("should return 200 with degraded=true when bronze insert fails (avoid Instantly auto-pause)", async () => {
     mockVerification("inst-camp-1");
     mockInsertWebhookPayload.mockRejectedValue(new Error("DB down"));
     const app = await createWebhookApp();
@@ -184,8 +184,49 @@ describe("POST /webhooks/instantly", () => {
       .post("/webhooks/instantly")
       .send({ event_type: "email_sent", campaign_id: "inst-camp-1" });
 
-    expect(res.status).toBe(500);
-    expect(res.body.error).toBe("DB down");
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.degraded).toBe(true);
+    expect(res.body.degradedReason).toContain("bronze failed");
+    expect(res.body.degradedReason).toContain("DB down");
+    expect(res.body.bronzeRowId).toBeNull();
+    expect(res.body.promoted).toBe(false);
+    // Silver MUST be skipped when bronze fails — no bronzeRowId to anchor to
+    expect(mockPromoteFromWebhookPayload).not.toHaveBeenCalled();
+  });
+
+  it("should return 200 with degraded=true when silver promote fails (avoid Instantly auto-pause)", async () => {
+    mockVerification("inst-camp-1");
+    mockPromoteFromWebhookPayload.mockRejectedValue(new Error("constraint violation"));
+    const app = await createWebhookApp();
+
+    const res = await request(app)
+      .post("/webhooks/instantly")
+      .send({ event_type: "email_sent", campaign_id: "inst-camp-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.degraded).toBe(true);
+    expect(res.body.degradedReason).toContain("silver failed");
+    expect(res.body.degradedReason).toContain("constraint violation");
+    // Bronze write still succeeded — row IS persisted for reconcile catch-up
+    expect(res.body.bronzeRowId).toBe("bronze-row-1");
+    expect(res.body.promoted).toBe(false);
+  });
+
+  it("happy path returns 200 with degraded=false", async () => {
+    mockVerification("inst-camp-1");
+    const app = await createWebhookApp();
+
+    const res = await request(app)
+      .post("/webhooks/instantly")
+      .send({ event_type: "email_sent", campaign_id: "inst-camp-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.degraded).toBe(false);
+    expect(res.body.degradedReason).toBeNull();
+    expect(res.body.bronzeRowId).toBe("bronze-row-1");
+    expect(res.body.promoted).toBe(true);
   });
 });
 

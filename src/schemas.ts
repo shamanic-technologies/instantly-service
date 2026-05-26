@@ -132,6 +132,10 @@ const WebhookResponseSchema = z
   .object({
     success: z.boolean(),
     eventType: z.string(),
+    bronzeRowId: z.string().nullable(),
+    promoted: z.boolean(),
+    degraded: z.boolean().describe("True when bronze or silver write failed but webhook was acknowledged with 200 to avoid Instantly auto-pause"),
+    degradedReason: z.string().nullable().describe("Failure message when degraded=true, null otherwise"),
   })
   .openapi("WebhookResponse");
 
