@@ -41,6 +41,7 @@ import {
   promoteFromLead,
   promoteSyntheticOpensFromLead,
   promoteSyntheticClicksFromLead,
+  promoteSyntheticInterestFromLead,
 } from "./silver-promote";
 
 const RECONCILE_CONCURRENCY = 5;
@@ -52,6 +53,7 @@ export interface DriftReport {
   unsubs: number;
   opensBackfilled: number;
   clicksBackfilled: number;
+  interestBackfilled: number;
   leadStatusUpdates: number;
 }
 
@@ -128,6 +130,7 @@ async function reconcileOneCampaign(
     unsubs: 0,
     opensBackfilled: 0,
     clicksBackfilled: 0,
+    interestBackfilled: 0,
     leadStatusUpdates: 0,
   };
 
@@ -237,6 +240,13 @@ async function reconcileOneCampaign(
       lead,
     });
     if (clicksResult.promoted) drift.clicksBackfilled++;
+
+    const interestResult = await promoteSyntheticInterestFromLead({
+      bronzeRowId: ref.id,
+      instantlyCampaignId: campaign.instantlyCampaignId,
+      lead,
+    });
+    if (interestResult.promoted) drift.interestBackfilled++;
   }
 
   // ─── Phase 3: /emails — per-step event backfill ────────────────────────────
@@ -323,6 +333,7 @@ function emptyDrift(): DriftReport {
     unsubs: 0,
     opensBackfilled: 0,
     clicksBackfilled: 0,
+    interestBackfilled: 0,
     leadStatusUpdates: 0,
   };
 }
@@ -335,6 +346,7 @@ function mergeDrift(a: DriftReport, b: DriftReport): DriftReport {
     unsubs: a.unsubs + b.unsubs,
     opensBackfilled: a.opensBackfilled + b.opensBackfilled,
     clicksBackfilled: a.clicksBackfilled + b.clicksBackfilled,
+    interestBackfilled: a.interestBackfilled + b.interestBackfilled,
     leadStatusUpdates: a.leadStatusUpdates + b.leadStatusUpdates,
   };
 }
