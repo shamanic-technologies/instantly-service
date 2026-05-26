@@ -8,12 +8,21 @@ const mockDbSelect = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
-    select: () => ({ from: () => ({ where: mockDbSelect }) }),
+    select: () => ({
+      from: () => ({
+        where: (...whereArgs: unknown[]) => {
+          const resultPromise = Promise.resolve(mockDbSelect(...whereArgs));
+          return Object.assign(resultPromise, {
+            limit: () => resultPromise,
+          });
+        },
+      }),
+    }),
   },
 }));
 
 vi.mock("../../src/db/schema", () => ({
-  instantlyCampaigns: { instantlyCampaignId: "instantly_campaign_id" },
+  instantlyCampaigns: { instantlyCampaignId: "instantly_campaign_id", metadata: "metadata" },
 }));
 
 // Bronze + silver are unit-tested separately. Webhook tests verify orchestration.
@@ -69,14 +78,58 @@ describe("POST /webhooks/instantly", () => {
     expect(res.body.error).toBe("Missing campaign_id");
   });
 
-  it("should reject requests with unknown campaign_id", async () => {
+  it("should return 200 + degraded for unknown campaign_id (avoid Instantly auto-pause)", async () => {
     const app = await createWebhookApp();
     const res = await request(app)
       .post("/webhooks/instantly")
       .send({ event_type: "email_sent", campaign_id: "unknown-camp" });
 
-    expect(res.status).toBe(401);
-    expect(res.body.error).toBe("Unknown campaign_id");
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.degraded).toBe(true);
+    expect(res.body.degradedReason).toBe("unknown_campaign_id");
+    expect(res.body.bronzeRowId).toBeNull();
+    expect(res.body.promoted).toBe(false);
+    // Bronze + silver MUST be skipped — no campaign row to anchor to
+    expect(mockInsertWebhookPayload).not.toHaveBeenCalled();
+    expect(mockPromoteFromWebhookPayload).not.toHaveBeenCalled();
+  });
+
+  it("should find redispatched campaign via metadata.redispatchHistory alias", async () => {
+    // Webhook arrives with OLD instantly_campaign_id, but row's current id is NEW.
+    // The DB lookup uses an OR (current id == X OR metadata @? alias path).
+    // We mock the lookup to return the row (matched via alias).
+    mockDbSelect.mockResolvedValueOnce([
+      {
+        id: "camp-db-1",
+        instantlyCampaignId: "inst-camp-NEW",
+        orgId: "org-uuid",
+        runId: "run-1",
+        metadata: {
+          redispatchHistory: [{ from: "inst-camp-OLD", to: "inst-camp-NEW", account: "x", at: "..." }],
+        },
+      },
+    ]);
+    const app = await createWebhookApp();
+    const res = await request(app)
+      .post("/webhooks/instantly")
+      .send({ event_type: "email_opened", campaign_id: "inst-camp-OLD" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.degraded).toBe(false);
+    expect(res.body.bronzeRowId).toBe("bronze-row-1");
+    expect(res.body.promoted).toBe(true);
+    // Bronze + silver write under the canonical (current) id, NOT the alias
+    expect(mockInsertWebhookPayload).toHaveBeenCalledWith(
+      "inst-camp-NEW",
+      "org-uuid",
+      expect.objectContaining({ campaign_id: "inst-camp-OLD" }),
+    );
+    expect(mockPromoteFromWebhookPayload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ campaign_id: "inst-camp-NEW" }),
+      }),
+    );
   });
 
   it("should accept webhook with valid campaign_id", async () => {
