@@ -73,11 +73,31 @@
           },
           "eventType": {
             "type": "string"
+          },
+          "bronzeRowId": {
+            "type": "string",
+            "nullable": true
+          },
+          "promoted": {
+            "type": "boolean"
+          },
+          "degraded": {
+            "type": "boolean",
+            "description": "True when bronze or silver write failed but webhook was acknowledged with 200 to avoid Instantly auto-pause"
+          },
+          "degradedReason": {
+            "type": "string",
+            "nullable": true,
+            "description": "Failure message when degraded=true, null otherwise"
           }
         },
         "required": [
           "success",
-          "eventType"
+          "eventType",
+          "bronzeRowId",
+          "promoted",
+          "degraded",
+          "degradedReason"
         ]
       },
       "WebhookPayload": {

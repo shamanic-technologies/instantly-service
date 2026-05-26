@@ -32,6 +32,15 @@ router.get("/instantly/config", (_req: Request, res: Response) => {
  *   4. Promote to silver (instantly_events) — idempotent via dedupe index.
  *      Silver promotion fires side effects (delivery_status update, reply
  *      classification, sequence cost lifecycle) ONLY on first insert.
+ *
+ * Failure handling: bronze write and silver promotion are each wrapped in
+ * try/catch. ANY failure inside the validated handler returns HTTP 200 with
+ * `degraded: true` and a `degradedReason` field. Rationale: Instantly
+ * auto-pauses webhooks after repetitive 5xx responses (observed 2026-05-20:
+ * a bug in promoteEvent caused 6 days of webhook silence). The cost of
+ * silently losing the dedup on rare DB hiccups is far lower than the cost
+ * of a multi-day webhook outage. Failures are logged loudly (`console.error`)
+ * and reconcile cron will backfill any missed events at 03:00 UTC.
  */
 router.post("/instantly", async (req: Request, res: Response) => {
   const parsed = WebhookPayloadSchema.safeParse(req.body);
@@ -53,70 +62,109 @@ router.post("/instantly", async (req: Request, res: Response) => {
     return res.status(401).json({ error: "Unknown campaign_id" });
   }
 
-  try {
-    traceEvent(
-      campaign.runId || "unknown",
-      {
-        service: "instantly-service",
-        event: "webhook-received",
-        detail: `type=${payload.event_type}, campaign=${payload.campaign_id}, lead=${payload.lead_email ?? "none"}, step=${payload.step ?? "none"}`,
-      },
-      req.headers,
-    ).catch(() => {});
+  traceEvent(
+    campaign.runId || "unknown",
+    {
+      service: "instantly-service",
+      event: "webhook-received",
+      detail: `type=${payload.event_type}, campaign=${payload.campaign_id}, lead=${payload.lead_email ?? "none"}, step=${payload.step ?? "none"}`,
+    },
+    req.headers,
+  ).catch(() => {});
 
+  let bronzeRowId: string | null = null;
+  let bronzeError: string | null = null;
+  try {
     const bronzeRef = await insertWebhookPayload(
       payload.campaign_id,
       campaign.orgId,
       req.body,
     );
-
-    const result = await promoteFromWebhookPayload({
-      bronzeRowId: bronzeRef.id,
-      payload: {
-        event_type: payload.event_type,
-        campaign_id: payload.campaign_id,
-        lead_email: payload.lead_email,
-        email_account: payload.email_account,
-        step: payload.step,
-        variant: payload.variant,
-        timestamp: payload.timestamp,
-      },
-      rawPayload: req.body,
-    });
-
-    if (result.promoted) {
-      traceEvent(
-        campaign.runId || "unknown",
-        {
-          service: "instantly-service",
-          event: "webhook-promoted",
-          detail: `type=${payload.event_type}, silverEventId=${result.silverEventId}`,
-        },
-        req.headers,
-      ).catch(() => {});
-    }
-
-    res.json({
-      success: true,
-      eventType: payload.event_type,
-      bronzeRowId: bronzeRef.id,
-      promoted: result.promoted,
-    });
+    bronzeRowId = bronzeRef.id;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
+    bronzeError = message;
+    console.error(
+      `[instantly-service] webhook bronze write failed (returning 200 to avoid auto-pause): campaign=${payload.campaign_id} type=${payload.event_type} error=${message}`,
+    );
     traceEvent(
       campaign.runId || "unknown",
       {
         service: "instantly-service",
-        event: "webhook-error",
+        event: "webhook-bronze-error",
         detail: message,
         level: "error",
       },
       req.headers,
     ).catch(() => {});
-    console.error(`[instantly-service] webhook failed: ${message}`);
-    res.status(500).json({ error: message });
   }
+
+  let silverResult: { promoted: boolean; silverEventId: string | null } | null = null;
+  let silverError: string | null = null;
+  if (bronzeRowId) {
+    try {
+      silverResult = await promoteFromWebhookPayload({
+        bronzeRowId,
+        payload: {
+          event_type: payload.event_type,
+          campaign_id: payload.campaign_id,
+          lead_email: payload.lead_email,
+          email_account: payload.email_account,
+          step: payload.step,
+          variant: payload.variant,
+          timestamp: payload.timestamp,
+        },
+        rawPayload: req.body,
+      });
+
+      if (silverResult.promoted) {
+        traceEvent(
+          campaign.runId || "unknown",
+          {
+            service: "instantly-service",
+            event: "webhook-promoted",
+            detail: `type=${payload.event_type}, silverEventId=${silverResult.silverEventId}`,
+          },
+          req.headers,
+        ).catch(() => {});
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      silverError = message;
+      console.error(
+        `[instantly-service] webhook silver promote failed (bronze row=${bronzeRowId} persisted, returning 200 to avoid auto-pause): campaign=${payload.campaign_id} type=${payload.event_type} error=${message}`,
+      );
+      traceEvent(
+        campaign.runId || "unknown",
+        {
+          service: "instantly-service",
+          event: "webhook-silver-error",
+          detail: message,
+          level: "error",
+        },
+        req.headers,
+      ).catch(() => {});
+    }
+  }
+
+  const degraded = bronzeError !== null || silverError !== null;
+  const degradedReason =
+    bronzeError && silverError
+      ? `bronze+silver failed: ${bronzeError}; ${silverError}`
+      : bronzeError
+        ? `bronze failed: ${bronzeError}`
+        : silverError
+          ? `silver failed: ${silverError}`
+          : null;
+
+  res.json({
+    success: true,
+    eventType: payload.event_type,
+    bronzeRowId,
+    promoted: silverResult?.promoted ?? false,
+    degraded,
+    degradedReason,
+  });
 });
 
 export default router;
