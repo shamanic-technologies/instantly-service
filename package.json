@@ -25,6 +25,8 @@
     "dotenv": "^16.6.1",
     "drizzle-orm": "^0.44.0",
     "express": "^4.21.2",
+    "linkify-html": "^4.3.3",
+    "linkifyjs": "^4.3.3",
     "pg": "^8.16.3",
     "zod": "^4.3.6"
   },

@@ -15,6 +15,7 @@
  * 72h later if the campaign never sends).
  */
 
+import linkifyHtml from "linkify-html";
 import {
   createCampaign as createInstantlyCampaign,
   updateCampaign as updateInstantlyCampaign,
@@ -63,6 +64,24 @@ export function pickRandomAccount(accounts: Account[]): Account {
 }
 
 /**
+ * Wrap plain-text URLs and bare domains in `<a href>` so Instantly's link
+ * tracker rewrites them into redirect URLs (without anchors, Instantly leaves
+ * the URL untouched and no `email_link_clicked` webhook ever fires).
+ *
+ * Mustache placeholders (`{{firstName}}`, `{{user.email}}`) are masked before
+ * linkify to avoid wrapping things like `user.email` that look domain-like.
+ */
+export function autolinkifyHtml(html: string): string {
+  const placeholders: string[] = [];
+  const masked = html.replace(/\{\{[^}]*\}\}/g, (m) => {
+    placeholders.push(m);
+    return `XXLINKMUSTACHE${placeholders.length - 1}XX`;
+  });
+  const linkified = linkifyHtml(masked, { defaultProtocol: "https" });
+  return linkified.replace(/XXLINKMUSTACHE(\d+)XX/g, (_, i) => placeholders[Number(i)]);
+}
+
+/**
  * Inject the selected account's signature into the email body.
  *
  * `{{accountSignature}}` only resolves in the Instantly UI — campaigns created
@@ -72,18 +91,19 @@ export function pickRandomAccount(accounts: Account[]): Account {
 export function buildEmailBodyWithSignature(body: string, account: Account): string {
   const signature = account.signature?.trim() || "";
 
+  let raw: string;
   if (!signature) {
     console.warn(
       `[send-lead] Account ${account.email} has no signature configured — email will be sent without signature`,
     );
-    return body.replace(/\n*\{\{accountSignature\}\}/g, "");
+    raw = body.replace(/\n*\{\{accountSignature\}\}/g, "");
+  } else if (body.includes("{{accountSignature}}")) {
+    raw = body.replace("{{accountSignature}}", `--\n${signature}`);
+  } else {
+    raw = `${body}\n\n--\n${signature}`;
   }
 
-  if (body.includes("{{accountSignature}}")) {
-    return body.replace("{{accountSignature}}", `--\n${signature}`);
-  }
-
-  return `${body}\n\n--\n${signature}`;
+  return autolinkifyHtml(raw);
 }
 
 /**
