@@ -84,6 +84,20 @@ NSS enum (from Instantly OpenAPI):
 
 Values 1-4 are **transient pacing states** that resolve naturally (daily reset, schedule window). NSS is **not** an error trigger anywhere in send-time dispatch or retry-stuck selection — it is observability only. `GET /stats` surfaces `recipientStats.notSending` = `COUNT(DISTINCT lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)` scoped to the request's filters.
 
+### Reconcile drift detection
+
+Reconcile (daily 03:00 UTC) skips per-campaign Phase 2 (`/leads/list` backfill) and Phase 3 (`/emails` backfill) when `detectDrift` returns false. Drift is detected when ANY of these remote counts exceed the local silver event counts:
+
+- `emails_sent_count` vs local `email_sent`
+- `reply_count` vs local `reply_received`
+- `bounced_count` vs local `email_bounced`
+- `unsubscribed_count` vs local `lead_unsubscribed`
+- `open_count_unique` vs local `COUNT(DISTINCT lead_email) FILTER (WHERE event_type='email_opened')`
+
+`link_click_count` is excluded — Instantly does not expose a `link_click_count_unique` field, so comparing total clicks (multi per lead) against 1-row-per-lead synthetic silver opens always returns drift=true (false positive).
+
+**Force flag**: set env `RECONCILE_FORCE_PHASE_2=true` to bypass the drift gate and run Phase 2 + Phase 3 on every campaign. Use only for one-shot historical backfill (e.g. after adding a new synthetic event type like `lead_interested`) — leave OFF in steady state (12k+ extra Instantly API calls per cycle).
+
 ## Setup
 
 ```bash
