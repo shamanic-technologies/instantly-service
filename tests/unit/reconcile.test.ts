@@ -106,9 +106,11 @@ function makeAnalytics(overrides: Record<string, number> = {}) {
   };
 }
 
-function mockLocalCounts(counts: { sent: number; replies: number; bounces: number; unsubs: number }) {
+function mockLocalCounts(
+  counts: { sent: number; replies: number; bounces: number; unsubs: number; opensUnique?: number },
+) {
   mockDbExecute.mockImplementationOnce(() =>
-    Promise.resolve({ rows: [counts] }),
+    Promise.resolve({ rows: [{ opensUnique: 0, ...counts }] }),
   );
 }
 
@@ -288,16 +290,68 @@ describe("reconcileAll", () => {
       { id: "db-1", instantlyCampaignId: "inst-1", orgId: "org-1" },
     ]);
     mockGetCampaignAnalytics.mockResolvedValue(
-      makeAnalytics({ emails_sent_count: 2, reply_count: 1 }),
+      makeAnalytics({ emails_sent_count: 2, reply_count: 1, open_count_unique: 1 }),
     );
     // Local already has all events from a previous run
-    mockLocalCounts({ sent: 2, replies: 1, bounces: 0, unsubs: 0 });
+    mockLocalCounts({ sent: 2, replies: 1, bounces: 0, unsubs: 0, opensUnique: 1 });
 
     const result = await reconcileAll();
 
     expect(result.campaignsWithDrift).toBe(0);
     expect(result.drift.replies).toBe(0);
     expect(mockListLeadsFull).not.toHaveBeenCalled();
+  });
+
+  it("detects drift on opens_unique even when sent/replies/bounces/unsubs match", async () => {
+    mockDbSelectFrom.mockResolvedValue([
+      { id: "db-1", instantlyCampaignId: "inst-1", orgId: "org-1" },
+    ]);
+    mockGetCampaignAnalytics.mockResolvedValue(
+      makeAnalytics({ emails_sent_count: 2, open_count_unique: 5 }),
+    );
+    // Local sent matches but only 2 distinct leads have opened silver events
+    mockLocalCounts({ sent: 2, replies: 0, bounces: 0, unsubs: 0, opensUnique: 2 });
+    mockEmailsCursor(null);
+    mockEmailIdLookup([]);
+
+    mockListLeadsFull.mockResolvedValue([]);
+    mockInsertLeadsSnapshot.mockResolvedValue([]);
+    mockListEmails.mockResolvedValue([]);
+
+    const result = await reconcileAll();
+
+    expect(result.campaignsWithDrift).toBe(1);
+    expect(mockListLeadsFull).toHaveBeenCalledWith("fake-api-key", "inst-1");
+  });
+
+  it("RECONCILE_FORCE_PHASE_2=true bypasses drift gate and fires phase 2 anyway", async () => {
+    const prev = process.env.RECONCILE_FORCE_PHASE_2;
+    process.env.RECONCILE_FORCE_PHASE_2 = "true";
+
+    try {
+      mockDbSelectFrom.mockResolvedValue([
+        { id: "db-1", instantlyCampaignId: "inst-1", orgId: "org-1" },
+      ]);
+      mockGetCampaignAnalytics.mockResolvedValue(
+        makeAnalytics({ emails_sent_count: 2, reply_count: 1, open_count_unique: 1 }),
+      );
+      // Local matches remote exactly — no drift
+      mockLocalCounts({ sent: 2, replies: 1, bounces: 0, unsubs: 0, opensUnique: 1 });
+      mockEmailsCursor(null);
+      mockEmailIdLookup([]);
+
+      mockListLeadsFull.mockResolvedValue([]);
+      mockInsertLeadsSnapshot.mockResolvedValue([]);
+      mockListEmails.mockResolvedValue([]);
+
+      await reconcileAll();
+
+      // Phase 2 must fire despite no drift
+      expect(mockListLeadsFull).toHaveBeenCalledWith("fake-api-key", "inst-1");
+    } finally {
+      if (prev === undefined) delete process.env.RECONCILE_FORCE_PHASE_2;
+      else process.env.RECONCILE_FORCE_PHASE_2 = prev;
+    }
   });
 
   it("phase 0: writes campaign config to bronze and promotes not_sending_status", async () => {
