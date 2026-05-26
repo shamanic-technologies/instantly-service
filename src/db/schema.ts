@@ -35,13 +35,17 @@ export const instantlyCampaigns = pgTable(
     //   delivered   = derived in queries (sent AND NOT bounced); never stored
     //   bounced / replied / unsubscribed = terminal markers from webhooks
     //   failed      = push to Instantly errored (campaign-error-handler)
-    //   cancelled   = Instantly refused to send (not_sending_status set) and the
-    //                 retry-stuck job paused the campaign + cancelled costs
+    //   cancelled   = retry-stuck job determined the row is unretriable (parent
+    //                 run gone, key gone, no sequence, no local lead, etc.) and
+    //                 terminally killed the campaign + cancelled costs
     deliveryStatus: text("delivery_status").notNull().default("contacted"),
     replyClassification: text("reply_classification"),
-    // Instantly's per-campaign diagnostic. NULL = sending normally. Non-NULL
-    // (e.g. 4 = capacity-blocked) means Instantly will not dispatch — surfaced
-    // in /stats `recipientStats.notSending` and consumed by retry job (PR B).
+    // Instantly's per-campaign pacing diagnostic. NULL = no pacing constraint
+    // observed at last reconcile. Non-NULL values 1..4 are transient pacing
+    // states that resolve naturally (out of sending schedule, daily quota hit,
+    // etc. — see Instantly API docs). 99 = generic error. Stored for /stats
+    // observability only — never treated as an error signal in send-time
+    // dispatch or retry-stuck selection.
     notSendingStatus: integer("not_sending_status"),
     notSendingStatusSeenAt: timestamp("not_sending_status_seen_at"),
     // Source of `reply_classification`. 'auto' = derived from Instantly webhook

@@ -5,16 +5,20 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockDbSelect = vi.fn();
 const mockDbUpdate = vi.fn();
 const mockDbInsertReturning = vi.fn();
+const mockDbInsertValues = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
     select: () => ({ from: () => ({ where: mockDbSelect }) }),
     insert: () => ({
-      values: () => ({
-        onConflictDoNothing: () => ({
-          returning: () => mockDbInsertReturning(),
-        }),
-      }),
+      values: (v: unknown) => {
+        mockDbInsertValues(v);
+        return {
+          onConflictDoNothing: () => ({
+            returning: () => mockDbInsertReturning(),
+          }),
+        };
+      },
     }),
     update: () => ({
       set: (v: unknown) => ({
@@ -57,6 +61,8 @@ import {
   promoteFromEmailRecord,
   promoteFromLead,
   promoteSyntheticOpensFromLead,
+  promoteSyntheticClicksFromLead,
+  promoteSyntheticInterestFromLead,
   promoteFromCampaignConfig,
 } from "../../src/lib/silver-promote";
 
@@ -845,6 +851,182 @@ describe("promoteSyntheticOpensFromLead", () => {
         email: "nots@test.com",
         email_open_count: 1,
         timestamp_last_open: null,
+      },
+    });
+
+    expect(result.promoted).toBe(false);
+  });
+});
+
+describe("promoteSyntheticClicksFromLead", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbSelect.mockResolvedValue([]);
+    mockDbInsertReturning.mockResolvedValue([]);
+  });
+
+  it("uses timestamp_last_click when present (not the proxy)", async () => {
+    mockCampaign();
+    mockNewSilverRow();
+
+    const result = await promoteSyntheticClicksFromLead({
+      bronzeRowId: "bronze-lead-1",
+      instantlyCampaignId: "inst-camp-1",
+      lead: {
+        id: "lead-id-1",
+        email: "clicker@test.com",
+        email_click_count: 2,
+        email_clicked_step: 1,
+        email_clicked_variant: 0,
+        timestamp_last_click: "2026-05-15T12:00:00Z",
+        timestamp_last_open: "2026-05-10T09:00:00Z",
+      },
+    });
+
+    expect(result.promoted).toBe(true);
+    const insertedValues = mockDbInsertValues.mock.calls[0][0] as {
+      timestamp: Date;
+      variant: number | null;
+    };
+    expect(insertedValues.timestamp.toISOString()).toBe("2026-05-15T12:00:00.000Z");
+    expect(insertedValues.variant).toBe(0);
+  });
+
+  it("falls back to timestamp_last_open when timestamp_last_click missing", async () => {
+    mockCampaign();
+    mockNewSilverRow();
+
+    const result = await promoteSyntheticClicksFromLead({
+      bronzeRowId: "bronze-lead-1",
+      instantlyCampaignId: "inst-camp-1",
+      lead: {
+        id: "lead-id-1",
+        email: "clicker@test.com",
+        email_click_count: 1,
+        email_clicked_step: 2,
+        timestamp_last_open: "2026-05-10T09:00:00Z",
+      },
+    });
+
+    expect(result.promoted).toBe(true);
+    const insertedValues = mockDbInsertValues.mock.calls[0][0] as { timestamp: Date };
+    expect(insertedValues.timestamp.toISOString()).toBe("2026-05-10T09:00:00.000Z");
+  });
+
+  it("skips when email_click_count is 0", async () => {
+    const result = await promoteSyntheticClicksFromLead({
+      bronzeRowId: "bronze-lead-1",
+      instantlyCampaignId: "inst-camp-1",
+      lead: {
+        id: "lead-id-1",
+        email: "noclick@test.com",
+        email_click_count: 0,
+      },
+    });
+
+    expect(result.promoted).toBe(false);
+  });
+});
+
+describe("promoteSyntheticInterestFromLead", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDbSelect.mockResolvedValue([]);
+    mockDbInsertReturning.mockResolvedValue([]);
+  });
+
+  type EnumCase = { status: number; eventType: string };
+  const cases: EnumCase[] = [
+    { status: 1, eventType: "lead_interested" },
+    { status: 2, eventType: "lead_meeting_booked" },
+    { status: 3, eventType: "lead_meeting_completed" },
+    { status: 4, eventType: "lead_closed" },
+    { status: 0, eventType: "lead_out_of_office" },
+    { status: -1, eventType: "lead_not_interested" },
+    { status: -2, eventType: "lead_wrong_person" },
+  ];
+
+  for (const { status, eventType } of cases) {
+    it(`maps lt_interest_status=${status} to ${eventType}`, async () => {
+      mockCampaign();
+      mockNewSilverRow();
+
+      const result = await promoteSyntheticInterestFromLead({
+        bronzeRowId: "bronze-lead-1",
+        instantlyCampaignId: "inst-camp-1",
+        lead: {
+          id: "lead-id-1",
+          email: "lead@test.com",
+          lt_interest_status: status,
+          timestamp_last_interest_change: "2026-05-20T08:00:00Z",
+        },
+      });
+
+      expect(result.promoted).toBe(true);
+      const insertedValues = mockDbInsertValues.mock.calls[0][0] as {
+        eventType: string;
+      };
+      expect(insertedValues.eventType).toBe(eventType);
+    });
+  }
+
+  it.each([-3, -4])("skips lt_interest_status=%i (no webhook equivalent)", async (status) => {
+    const result = await promoteSyntheticInterestFromLead({
+      bronzeRowId: "bronze-lead-1",
+      instantlyCampaignId: "inst-camp-1",
+      lead: {
+        id: "lead-id-1",
+        email: "lead@test.com",
+        lt_interest_status: status,
+        timestamp_last_interest_change: "2026-05-20T08:00:00Z",
+      },
+    });
+
+    expect(result.promoted).toBe(false);
+  });
+
+  it("skips when lt_interest_status is null", async () => {
+    const result = await promoteSyntheticInterestFromLead({
+      bronzeRowId: "bronze-lead-1",
+      instantlyCampaignId: "inst-camp-1",
+      lead: {
+        id: "lead-id-1",
+        email: "lead@test.com",
+        lt_interest_status: null,
+      },
+    });
+
+    expect(result.promoted).toBe(false);
+  });
+
+  it("falls back to timestamp_last_contact when timestamp_last_interest_change missing", async () => {
+    mockCampaign();
+    mockNewSilverRow();
+
+    const result = await promoteSyntheticInterestFromLead({
+      bronzeRowId: "bronze-lead-1",
+      instantlyCampaignId: "inst-camp-1",
+      lead: {
+        id: "lead-id-1",
+        email: "lead@test.com",
+        lt_interest_status: 1,
+        timestamp_last_contact: "2026-05-10T09:00:00Z",
+      },
+    });
+
+    expect(result.promoted).toBe(true);
+    const insertedValues = mockDbInsertValues.mock.calls[0][0] as { timestamp: Date };
+    expect(insertedValues.timestamp.toISOString()).toBe("2026-05-10T09:00:00.000Z");
+  });
+
+  it("skips when no timestamp available", async () => {
+    const result = await promoteSyntheticInterestFromLead({
+      bronzeRowId: "bronze-lead-1",
+      instantlyCampaignId: "inst-camp-1",
+      lead: {
+        id: "lead-id-1",
+        email: "lead@test.com",
+        lt_interest_status: 1,
       },
     });
 

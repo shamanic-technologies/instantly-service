@@ -329,42 +329,6 @@ registry.registerPath({
   },
 });
 
-const CheckStatusErrorSchema = z.object({
-  instantlyCampaignId: z.string(),
-  campaignId: z.string().nullable(),
-  leadEmail: z.string().nullable(),
-  reason: z.string(),
-});
-
-const CheckStatusResponseSchema = z
-  .object({
-    checked: z.number().describe("Number of active campaigns checked"),
-    errors: z.array(CheckStatusErrorSchema).describe("Campaigns that entered error state"),
-  })
-  .openapi("CheckStatusResponse");
-
-registry.registerPath({
-  method: "post",
-  path: "/internal/campaigns/check-status",
-  summary: "Poll active campaigns for errors",
-  request: {},
-  description:
-    "Checks all active campaigns against the Instantly API to detect error states. " +
-    "For each errored campaign: updates DB status, cancels provisioned costs, fails the run, " +
-    "and sends an admin notification.",
-  responses: {
-    200: {
-      description: "Status check complete",
-      content: { "application/json": { schema: CheckStatusResponseSchema } },
-    },
-    401: { description: "Unauthorized" },
-    500: {
-      description: "Server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
 // ─── Reconcile ──────────────────────────────────────────────────────────────
 
 const ReconcileAcceptedSchema = z
@@ -403,17 +367,14 @@ registry.registerPath({
   summary: "Dispatch daily retry-stuck sweep",
   request: {},
   description:
-    "Daily sweep (02:00 UTC) that scans campaigns with " +
-    "`delivery_status='contacted'` stuck for >24h, fetches " +
-    "`not_sending_status` live from Instantly, and for each row Instantly is " +
-    "refusing to dispatch: pauses the Instantly campaign, writes the observed " +
-    "`not_sending_status` onto the row, cancels actual+provisioned costs, " +
-    "marks `delivery_status='cancelled'`. Idempotent — already-cancelled rows " +
-    "fall outside the SELECT.\n\n" +
-    "Per-run cap: 500 oldest rows. Serialized via a Postgres advisory lock — " +
-    "overlapping calls short-circuit with no-op summary. Returns 202 " +
-    "immediately and runs in the background. Verify completion via Railway " +
-    "logs (`retry-stuck: done`).",
+    "Continuous worker that scans campaigns with `delivery_status='contacted'` " +
+    "stuck for >72h with no silver event proving Instantly ever sent. For each " +
+    "row: re-sends the lead onto a fresh healthy Instantly account, refunds the " +
+    "old cost rows, and provisions fresh costs against the new campaign. The " +
+    "row's local `delivery_status` stays `contacted` until a real `email_sent` " +
+    "webhook lands or it is terminally cancelled. The worker now runs " +
+    "continuously (not a daily cron) — this endpoint exists for legacy callers " +
+    "and is a no-op trigger.",
   responses: {
     202: {
       description: "Retry-stuck sweep dispatched (running in background)",

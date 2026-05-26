@@ -769,8 +769,9 @@ export async function promoteFromCampaignConfig(params: {
 
 /**
  * Backfill synthetic click events from a /leads/list snapshot. Same shape as
- * opens. Note: Instantly does not expose timestamp_last_click directly; we use
- * timestamp_last_contact as a proxy (best available).
+ * opens. Prefers Instantly's `timestamp_last_click` when present; falls back
+ * to `timestamp_last_open` then `timestamp_last_contact` for legacy snapshots
+ * where the field was not populated.
  */
 export async function promoteSyntheticClicksFromLead(params: {
   bronzeRowId: string;
@@ -782,8 +783,11 @@ export async function promoteSyntheticClicksFromLead(params: {
     return { promoted: false };
   }
 
-  const fallbackTs = lead.timestamp_last_open ?? lead.timestamp_last_contact;
-  if (!fallbackTs) return { promoted: false };
+  const ts =
+    lead.timestamp_last_click ??
+    lead.timestamp_last_open ??
+    lead.timestamp_last_contact;
+  if (!ts) return { promoted: false };
 
   const result = await promoteEvent({
     eventType: "email_link_clicked",
@@ -791,8 +795,74 @@ export async function promoteSyntheticClicksFromLead(params: {
     leadEmail: lead.email,
     accountEmail: null,
     step: lead.email_clicked_step ?? null,
+    variant: lead.email_clicked_variant ?? null,
+    timestamp: new Date(ts),
+    source: "poll_leads",
+    sourceRowId: bronzeRowId,
+  });
+  return { promoted: result.promoted };
+}
+
+/**
+ * Map of Instantly's per-lead `lt_interest_status` enum to the equivalent
+ * webhook `event_type` for silver promotion. Values 1..4 + 0 are positive /
+ * neutral terminal states; -1, -2 are negative; -3 (Lost), -4 (No Show) have
+ * no equivalent webhook event_type and are intentionally not mapped.
+ *
+ *   1  → lead_interested
+ *   2  → lead_meeting_booked
+ *   3  → lead_meeting_completed
+ *   4  → lead_closed                 (won)
+ *   0  → lead_out_of_office
+ *  -1  → lead_not_interested
+ *  -2  → lead_wrong_person
+ *  -3  → (skipped — no webhook equivalent)
+ *  -4  → (skipped — no webhook equivalent)
+ */
+const INTEREST_STATUS_TO_EVENT_TYPE: Record<number, string> = {
+  1: "lead_interested",
+  2: "lead_meeting_booked",
+  3: "lead_meeting_completed",
+  4: "lead_closed",
+  0: "lead_out_of_office",
+  [-1]: "lead_not_interested",
+  [-2]: "lead_wrong_person",
+};
+
+/**
+ * Backfill a synthetic interest event from a /leads/list snapshot. Reads
+ * `lead.lt_interest_status` (the lead's current Instantly interest tag) and
+ * promotes the matching `lead_*` webhook event_type. Idempotent — silver
+ * dedup index collapses repeated calls for the same lead/event_type.
+ *
+ * Note: Instantly's `lt_interest_status` is a CURRENT state, not an event
+ * log. Transitions between values are lost (e.g. lead that went
+ * `interested → meeting_booked → closed` reconciles only to `closed`). One
+ * silver event per lead per terminal state.
+ */
+export async function promoteSyntheticInterestFromLead(params: {
+  bronzeRowId: string;
+  instantlyCampaignId: string;
+  lead: LeadFull;
+}): Promise<{ promoted: boolean }> {
+  const { bronzeRowId, instantlyCampaignId, lead } = params;
+  const status = lead.lt_interest_status;
+  if (status == null) return { promoted: false };
+
+  const eventType = INTEREST_STATUS_TO_EVENT_TYPE[status];
+  if (!eventType) return { promoted: false };
+
+  const ts = lead.timestamp_last_interest_change ?? lead.timestamp_last_contact;
+  if (!ts) return { promoted: false };
+
+  const result = await promoteEvent({
+    eventType,
+    instantlyCampaignId,
+    leadEmail: lead.email,
+    accountEmail: null,
+    step: null,
     variant: null,
-    timestamp: new Date(fallbackTs),
+    timestamp: new Date(ts),
     source: "poll_leads",
     sourceRowId: bronzeRowId,
   });

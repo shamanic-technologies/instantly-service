@@ -487,29 +487,19 @@ describe("processRow — terminal cancel paths", () => {
 // ─── processRow transient failure paths (no cancel) ────────────────────────
 
 describe("processRow — transient failure paths (row left alone)", () => {
-  it("leaves the row alone when sendLeadToInstantly returns no_healthy_account", async () => {
+  it("leaves the row alone when sendLeadToInstantly returns no_healthy_accounts_available", async () => {
     queueSelectLead();
-    mockSendLeadToInstantly.mockResolvedValueOnce({ ok: false, reason: "no_healthy_account" });
+    mockSendLeadToInstantly.mockResolvedValueOnce({ ok: false, reason: "no_healthy_accounts_available" });
 
     const outcome = await processRow(row());
 
-    expect(outcome).toEqual({ kind: "failed", reason: "no_healthy_account" });
+    expect(outcome).toEqual({ kind: "failed", reason: "no_healthy_accounts_available" });
     expect(mockHandleCampaignError).not.toHaveBeenCalled();
     const muteCall = mockDbUpdateSet.mock.calls.find((c) => {
       const v = c[0] as Record<string, unknown>;
       return v.instantlyCampaignId === "inst-camp-NEW";
     });
     expect(muteCall).toBeUndefined();
-  });
-
-  it("leaves the row alone when sendLeadToInstantly returns max_retries_exhausted", async () => {
-    queueSelectLead();
-    mockSendLeadToInstantly.mockResolvedValueOnce({ ok: false, reason: "max_retries_exhausted" });
-
-    const outcome = await processRow(row());
-
-    expect(outcome).toEqual({ kind: "failed", reason: "max_retries_exhausted" });
-    expect(mockHandleCampaignError).not.toHaveBeenCalled();
   });
 
   it("leaves the row alone (cooldown) when getCampaign throws non-409", async () => {
