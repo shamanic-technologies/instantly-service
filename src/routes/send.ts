@@ -9,10 +9,7 @@ import { eq, and, ne, isNotNull } from "drizzle-orm";
 import {
   Lead,
 } from "../lib/instantly-client";
-import {
-  sendLeadToInstantly,
-  MAX_SEND_RETRIES,
-} from "../lib/send-lead";
+import { sendLeadToInstantly } from "../lib/send-lead";
 import {
   createRun,
   updateRun,
@@ -64,8 +61,9 @@ async function findExistingCampaign(campaignId: string, leadEmail: string) {
  * or failed on reply/bounce/unsub/not_interested/campaign error.
  *
  * Dispatch (find healthy account + create campaign + add lead + activate)
- * is delegated to `sendLeadToInstantly()` in `lib/send-lead.ts`, which
- * also handles the retry loop on post-activation `not_sending_status`.
+ * is delegated to `sendLeadToInstantly()` in `lib/send-lead.ts`. One-shot —
+ * NSS post-activate is logged but never causes a retry (retry-stuck owns
+ * the eventual catch-up 72h later if the campaign never dispatches).
  */
 router.post("/", async (req: Request, res: Response) => {
   const parsed = SendRequestSchema.safeParse(req.body);
@@ -187,10 +185,7 @@ router.post("/", async (req: Request, res: Response) => {
         });
 
         if (!sendResult.ok) {
-          const detail =
-            sendResult.reason === "no_healthy_account"
-              ? "No active Instantly accounts available for this organization"
-              : `Campaign failed after ${MAX_SEND_RETRIES} attempts (not_sending_status on every account)`;
+          const detail = "No active Instantly accounts available for this organization";
           console.error(`[send] ${detail} for ${campaignId}/${body.to}`);
           return res.status(500).json({
             error: "Failed to send lead",

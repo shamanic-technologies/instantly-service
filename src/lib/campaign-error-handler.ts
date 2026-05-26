@@ -1,18 +1,18 @@
 /**
  * Shared campaign error handler.
  *
- * When an Instantly campaign enters an error state (detected via
- * `not_sending_status`), this module:
- *   1. Updates our DB status (default "error", or caller-supplied)
+ * Called when a campaign needs to be terminally killed (parent run gone, key
+ * unavailable, no sequence recoverable, runs-service 409, etc.). Steps:
+ *   1. Updates our DB `delivery_status` (default `failed`, or caller-supplied)
  *   2. Cancels all remaining actual/provisioned costs for every step
  *   3. Marks the associated run as "failed" (MUST succeed — throws on failure)
  *   4. Sends an admin notification email (non-fatal)
  *
  * Two terminal modes:
- *   - `failed` (default) — Instantly reported an error inline, no retry possible.
- *   - `cancelled` — discovered post-hoc by the retry-stuck cron (24h+ contacted
- *     rows with not_sending_status set). Same cost-cancel semantics, but signals
- *     "stuck and refunded" rather than "errored".
+ *   - `failed` (default) — caller decided the campaign cannot proceed.
+ *   - `cancelled` — used by the retry-stuck worker for rows it determines
+ *     unretriable (parent run gone, key unavailable, etc.). Same cost-cancel
+ *     semantics, but signals "stuck and refunded" rather than "errored".
  */
 
 import { db } from "../db";

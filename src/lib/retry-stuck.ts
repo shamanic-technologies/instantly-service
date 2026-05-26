@@ -391,9 +391,9 @@ async function cancelRowAsTerminal(
  * refund old costs, provision new ones, mute the local row.
  *
  * Failures fall into two buckets:
- *   - **Transient** (no_healthy_account, max_retries_exhausted): row is
- *     left alone. lastAttemptAt holds it out of SELECT for
- *     ATTEMPT_COOLDOWN_MINUTES, then it's eligible again.
+ *   - **Transient** (no_healthy_accounts_available): row is left alone.
+ *     lastAttemptAt holds it out of SELECT for ATTEMPT_COOLDOWN_MINUTES,
+ *     then it's eligible again.
  *   - **Terminal-for-us** (parent run gone, parent identity unusable,
  *     key unavailable, runs-service 409, no sequence, no local lead):
  *     row is flipped to `delivery_status='cancelled'` via
