@@ -82,32 +82,39 @@ export function autolinkifyHtml(html: string): string {
 }
 
 /**
+ * Canonical signature appended to every outbound email when the assigned
+ * account has no per-sender override in Instantly's UI. Per-account UI
+ * signatures are intentionally empty in prod so every sender shares one
+ * canonical signature.
+ */
+const DEFAULT_SIGNATURE =
+  "Kevin Lourd | Marketing Representative\nDistributed with ❤️ from distribute.you";
+
+/**
  * Inject the selected account's signature into the email body.
  *
  * `{{accountSignature}}` only resolves in the Instantly UI — campaigns created
- * via the API send it as literal text. Instead we splice the assigned account's
- * `signature` field directly.
+ * via the API send it as literal text. Instead we splice the signature directly.
+ *
+ * Signature resolution priority:
+ *   1. `account.signature` — per-sender override configured in Instantly's UI
+ *      (intentionally empty in prod for every sender).
+ *   2. `DEFAULT_SIGNATURE` constant above — service-wide fallback, source of
+ *      truth in prod.
  *
  * Idempotent (`f(f(x)) === f(x)`): always strips any pre-existing signature
- * block via `stripAccountSignature` BEFORE appending the current account's
- * signature. Guarantees a body re-sent N times never accumulates N stacked
- * signatures (historic bug 2026-05-28 — see `stripAccountSignature` docstring).
+ * block via `stripAccountSignature` BEFORE appending. Guarantees a body re-sent
+ * N times never accumulates N stacked signatures (historic bug 2026-05-28 —
+ * see `stripAccountSignature` docstring).
  */
 export function buildEmailBodyWithSignature(body: string, account: Account): string {
-  const signature = account.signature?.trim() || "";
+  const accountSig = account.signature?.trim() || "";
+  const signature = accountSig || DEFAULT_SIGNATURE;
   const stripped = stripAccountSignature(body);
 
-  let raw: string;
-  if (!signature) {
-    console.warn(
-      `[send-lead] Account ${account.email} has no signature configured — email will be sent without signature`,
-    );
-    raw = stripped.replace(/\n*\{\{accountSignature\}\}/g, "");
-  } else if (stripped.includes("{{accountSignature}}")) {
-    raw = stripped.replace("{{accountSignature}}", `--\n${signature}`);
-  } else {
-    raw = `${stripped}\n\n--\n${signature}`;
-  }
+  const raw = stripped.includes("{{accountSignature}}")
+    ? stripped.replace("{{accountSignature}}", `--\n${signature}`)
+    : `${stripped}\n\n--\n${signature}`;
 
   return autolinkifyHtml(raw);
 }
