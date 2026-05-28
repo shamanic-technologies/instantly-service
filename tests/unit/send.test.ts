@@ -241,31 +241,32 @@ describe("autolinkifyHtml", () => {
 
 describe("buildEmailBodyWithSignature", () => {
   const sig = "<p>Best,<br>John Doe</p>";
-  const DEFAULT_SIG =
-    "Kevin Lourd | Marketing Representative\nDistributed with ❤️ from distribute.you";
+  const DEFAULT_SIG_TEXT = "Kevin Lourd | Marketing Representative";
 
-  it("should append separator + signature to body", () => {
+  it("should append HTML <p>--</p> separator + signature to body", () => {
     const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: sig }));
-    expect(result).toBe(`<p>Hello</p>\n\n--\n${sig}`);
+    expect(result).toBe(`<p>Hello</p><p>--</p>${sig}`);
   });
 
-  it("should replace {{accountSignature}} placeholder with separator + signature", () => {
+  it("should replace {{accountSignature}} placeholder with HTML separator + signature", () => {
     const body = "Hello\n\n{{accountSignature}}";
     const result = buildEmailBodyWithSignature(body, acct({ signature: sig }));
-    expect(result).toBe(`Hello\n\n--\n${sig}`);
+    expect(result).toBe(`Hello\n\n<p>--</p>${sig}`);
   });
 
   it("falls back to the hardcoded DEFAULT_SIGNATURE when account.signature is empty (with placeholder)", () => {
     const body = "Hello\n\n{{accountSignature}}";
     const result = buildEmailBodyWithSignature(body, acct({ signature: "" }));
-    expect(result).toContain("Hello\n\n--\nKevin Lourd | Marketing Representative");
+    expect(result).toContain("<p>--</p>");
+    expect(result).toContain(DEFAULT_SIG_TEXT);
     expect(result).toContain("Distributed with ❤️ from");
-    expect((result.match(/--/g) ?? []).length).toBe(1);
+    expect((result.match(/<p>--<\/p>/g) ?? []).length).toBe(1);
   });
 
   it("falls back to the hardcoded DEFAULT_SIGNATURE when account.signature is empty (no placeholder)", () => {
     const result = buildEmailBodyWithSignature("Hello", acct());
-    expect(result).toContain("Hello\n\n--\nKevin Lourd | Marketing Representative");
+    expect(result).toContain("Hello<p>--</p>");
+    expect(result).toContain(DEFAULT_SIG_TEXT);
     expect(result).toContain("Distributed with ❤️ from");
   });
 
@@ -289,7 +290,7 @@ describe("buildEmailBodyWithSignature", () => {
     const newSig = "<p>Best,<br>Jane</p>";
     const body = `<p>Hello world</p>\n\n--\n<p>Old signature from Bob</p>`;
     const result = buildEmailBodyWithSignature(body, acct({ signature: newSig }));
-    expect(result).toBe(`<p>Hello world</p>\n\n--\n${newSig}`);
+    expect(result).toBe(`<p>Hello world</p><p>--</p>${newSig}`);
     expect(result.match(/--/g)?.length).toBe(1);
   });
 
@@ -321,7 +322,7 @@ describe("buildEmailBodyWithSignature", () => {
     expect(result).not.toContain("Sig Two");
     expect(result).not.toContain("Sig Three");
     expect(result).toContain(newSig);
-    expect(result).toBe(`<p>Hello</p>\n\n--\n${newSig}`);
+    expect(result).toBe(`<p>Hello</p><p>--</p>${newSig}`);
   });
 
   it("collapses stacked HTML signatures into exactly 1 signature", () => {
@@ -343,14 +344,14 @@ describe("buildEmailBodyWithSignature", () => {
 
   it("account.signature wins over hardcoded DEFAULT_SIGNATURE when present", () => {
     const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: "<p>Account Sig</p>" }));
-    expect(result).toBe("<p>Hello</p>\n\n--\n<p>Account Sig</p>");
+    expect(result).toBe("<p>Hello</p><p>--</p><p>Account Sig</p>");
     expect(result).not.toContain("Kevin Lourd");
   });
 
   it("hardcoded fallback also strips stacked sigs (idempotence preserved)", () => {
     const body = "<p>Hello</p>\n\n--\n<p>Old Sig 1</p>\n\n--\n<p>Old Sig 2</p>";
     const result = buildEmailBodyWithSignature(body, acct({ signature: "" }));
-    expect(result).toContain("<p>Hello</p>\n\n--\nKevin Lourd");
+    expect(result).toContain("<p>Hello</p><p>--</p><p>Kevin Lourd");
     expect(result).not.toContain("Old Sig 1");
     expect(result).not.toContain("Old Sig 2");
   });
