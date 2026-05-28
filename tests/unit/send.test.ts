@@ -77,7 +77,7 @@ vi.mock("../../src/lib/billing-client", () => ({
   authorizeCreditSpend: (...args: unknown[]) => mockAuthorizeCreditSpend(...args),
 }));
 
-import { autolinkifyHtml, buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps } from "../../src/lib/send-lead";
+import { autolinkifyHtml, buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps, stripAccountSignature } from "../../src/lib/send-lead";
 import { requireOrgId } from "../../src/middleware/requireOrgId";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
@@ -278,6 +278,123 @@ describe("buildEmailBodyWithSignature", () => {
     );
     expect(result).toContain("{{firstName}}");
     expect(result).toContain('href="https://z.com"');
+  });
+
+  it("strips a pre-existing plain-text signature before appending the new one (no cumulative stacking)", () => {
+    const newSig = "<p>Best,<br>Jane</p>";
+    const body = `<p>Hello world</p>\n\n--\n<p>Old signature from Bob</p>`;
+    const result = buildEmailBodyWithSignature(body, acct({ signature: newSig }));
+    expect(result).toBe(`<p>Hello world</p>\n\n--\n${newSig}`);
+    expect(result.match(/--/g)?.length).toBe(1);
+  });
+
+  it("strips a pre-existing HTML <p>--</p> signature marker before appending", () => {
+    const newSig = "<p>Best,<br>Jane</p>";
+    const body = `<p>Hello world</p><p>--</p><p>Old signature</p>`;
+    const result = buildEmailBodyWithSignature(body, acct({ signature: newSig }));
+    expect(result).not.toContain("Old signature");
+    expect(result).toContain(newSig);
+    expect((result.match(/Old signature/g) ?? []).length).toBe(0);
+  });
+
+  it("strips a pre-existing <br>--<br> signature marker before appending", () => {
+    const newSig = "<p>Jane</p>";
+    const body = `<p>Hello world</p><br>--<br><p>Old signature</p>`;
+    const result = buildEmailBodyWithSignature(body, acct({ signature: newSig }));
+    expect(result).not.toContain("Old signature");
+    expect(result).toContain(newSig);
+  });
+
+  it("collapses 3 stacked signatures into exactly 1 signature (no cumulative)", () => {
+    const newSig = "<p>Jane</p>";
+    const sig1 = "<p>Sig One</p>";
+    const sig2 = "<p>Sig Two</p>";
+    const sig3 = "<p>Sig Three</p>";
+    const body = `<p>Hello</p>\n\n--\n${sig1}\n\n--\n${sig2}\n\n--\n${sig3}`;
+    const result = buildEmailBodyWithSignature(body, acct({ signature: newSig }));
+    expect(result).not.toContain("Sig One");
+    expect(result).not.toContain("Sig Two");
+    expect(result).not.toContain("Sig Three");
+    expect(result).toContain(newSig);
+    expect(result).toBe(`<p>Hello</p>\n\n--\n${newSig}`);
+  });
+
+  it("collapses stacked HTML signatures into exactly 1 signature", () => {
+    const newSig = "<p>Jane</p>";
+    const body = `<p>Hello</p><p>--</p><p>Sig One</p><p>--</p><p>Sig Two</p>`;
+    const result = buildEmailBodyWithSignature(body, acct({ signature: newSig }));
+    expect(result).not.toContain("Sig One");
+    expect(result).not.toContain("Sig Two");
+    expect(result).toContain(newSig);
+  });
+
+  it("idempotent: f(f(x)) === f(x)", () => {
+    const newSig = "<p>Jane</p>";
+    const body = "<p>Hello world</p>";
+    const once = buildEmailBodyWithSignature(body, acct({ signature: newSig }));
+    const twice = buildEmailBodyWithSignature(once, acct({ signature: newSig }));
+    expect(twice).toBe(once);
+  });
+});
+
+describe("stripAccountSignature", () => {
+  it("returns body unchanged when no marker present", () => {
+    expect(stripAccountSignature("<p>Hello world</p>")).toBe("<p>Hello world</p>");
+    expect(stripAccountSignature("Just plain text")).toBe("Just plain text");
+  });
+
+  it("strips first plain-text `\\n\\n--\\n` marker and everything after", () => {
+    const body = "<p>Hello</p>\n\n--\n<p>Bob signature</p>";
+    expect(stripAccountSignature(body)).toBe("<p>Hello</p>");
+  });
+
+  it("strips HTML `<p>--</p>` marker (paragraph form) and everything after", () => {
+    const body = "<p>Hello</p><p>--</p><p>Bob signature</p>";
+    expect(stripAccountSignature(body)).toBe("<p>Hello</p>");
+  });
+
+  it("strips HTML `<br>--<br>` marker (line-break form) and everything after", () => {
+    const body = "<p>Hello world</p><br>--<br><p>Sig</p>";
+    expect(stripAccountSignature(body)).toBe("<p>Hello world</p>");
+  });
+
+  it("strips HTML `<div>--</div>` marker and everything after", () => {
+    const body = "<div>Hello</div><div>--</div><div>Sig</div>";
+    expect(stripAccountSignature(body)).toBe("<div>Hello</div>");
+  });
+
+  it("strips marker with `-- ` (trailing space, RFC 3676)", () => {
+    const body = "<p>Hello</p>\n\n-- \n<p>Sig</p>";
+    expect(stripAccountSignature(body)).toBe("<p>Hello</p>");
+  });
+
+  it("strips marker with `&nbsp;` adjacent (HTML non-breaking space)", () => {
+    const body = "<p>Hello</p><p>--&nbsp;</p><p>Sig</p>";
+    expect(stripAccountSignature(body)).toBe("<p>Hello</p>");
+  });
+
+  it("strips all of 3 stacked plain-text signatures via first occurrence", () => {
+    const body = "<p>Hello</p>\n\n--\nSig1\n\n--\nSig2\n\n--\nSig3";
+    expect(stripAccountSignature(body)).toBe("<p>Hello</p>");
+  });
+
+  it("strips all of 3 stacked HTML signatures via first occurrence", () => {
+    const body = "<p>Hello</p><p>--</p><p>Sig1</p><p>--</p><p>Sig2</p><p>--</p><p>Sig3</p>";
+    expect(stripAccountSignature(body)).toBe("<p>Hello</p>");
+  });
+
+  it("idempotent: f(f(x)) === f(x)", () => {
+    const inputs = [
+      "<p>Hello</p>\n\n--\n<p>Sig</p>",
+      "<p>Hello</p><p>--</p><p>Sig</p>",
+      "<p>Hello</p>",
+      "<p>Hello</p><br>--<br><p>Sig</p>",
+    ];
+    for (const input of inputs) {
+      const once = stripAccountSignature(input);
+      const twice = stripAccountSignature(once);
+      expect(twice).toBe(once);
+    }
   });
 });
 
