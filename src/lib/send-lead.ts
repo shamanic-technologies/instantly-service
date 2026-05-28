@@ -82,13 +82,28 @@ export function autolinkifyHtml(html: string): string {
 }
 
 /**
- * Canonical signature appended to every outbound email when the assigned
- * account has no per-sender override in Instantly's UI. Per-account UI
- * signatures are intentionally empty in prod so every sender shares one
- * canonical signature.
+ * Canonical signature (HTML-formatted) appended to every outbound email when
+ * the assigned account has no per-sender override in Instantly's UI.
+ *
+ * Per-account UI signatures are intentionally empty in prod so every sender
+ * shares one canonical signature.
+ *
+ * Wrapped in `<p>...</p>` because Instantly's HTML sanitizer aggressively
+ * strips plain text and `--` outside of element wrappers (text loses on PATCH
+ * round-trip: only `<a>` anchors survive). Historic bug 2026-05-28: an earlier
+ * plain-text version of this constant was stripped down to a stray
+ * `<a>distribute.you</a>` anchor each time it round-tripped through Instantly.
  */
 const DEFAULT_SIGNATURE =
-  "Kevin Lourd | Marketing Representative\nDistributed with ❤️ from distribute.you";
+  "<p>Kevin Lourd | Marketing Representative<br>Distributed with ❤️ from distribute.you</p>";
+
+/**
+ * HTML signature separator. RFC 3676 plain text uses `\n\n--\n`, but Instantly's
+ * HTML sanitizer normalizes that to nothing on PATCH round-trip — the `<p>--</p>`
+ * form survives and renders as the expected `--` delimiter line in mail clients.
+ * Matched in stripAccountSignature via the `<p>--</p>` regex in SIG_MARKERS.
+ */
+const SIG_SEPARATOR_HTML = "<p>--</p>";
 
 /**
  * Inject the selected account's signature into the email body.
@@ -113,8 +128,8 @@ export function buildEmailBodyWithSignature(body: string, account: Account): str
   const stripped = stripAccountSignature(body);
 
   const raw = stripped.includes("{{accountSignature}}")
-    ? stripped.replace("{{accountSignature}}", `--\n${signature}`)
-    : `${stripped}\n\n--\n${signature}`;
+    ? stripped.replace("{{accountSignature}}", `${SIG_SEPARATOR_HTML}${signature}`)
+    : `${stripped}${SIG_SEPARATOR_HTML}${signature}`;
 
   return autolinkifyHtml(raw);
 }
