@@ -61,10 +61,9 @@ Historic bug 2026-05-28: `listAccounts` shipped without pagination. Only 10 of 1
 **Signature source priority:**
 
 1. `account.signature` — per-sender override configured in Instantly's UI (account settings).
-2. `INSTANTLY_DEFAULT_SIGNATURE` env var — service-wide fallback. **This is the source of truth in prod**: per-account UI signatures are intentionally empty so every sender shares one canonical signature ("Kevin Lourd | Marketing Representative\nDistributed with ❤️ from distribute.you"). Set on Railway staging + production.
-3. None — emit warning, strip any `{{accountSignature}}` placeholder.
+2. `DEFAULT_SIGNATURE` constant in `src/lib/send-lead.ts` — service-wide fallback. **This is the source of truth in prod**: per-account UI signatures are intentionally empty so every sender shares one canonical signature.
 
-Do NOT re-add per-account signatures in Instantly UI without updating this rule — code will prefer the UI value over the env default.
+The fallback is intentionally hardcoded (not env-var driven). When the signature copy changes, edit `DEFAULT_SIGNATURE` and ship a hotfix — that's the canonical write-path. Do NOT re-add per-account signatures in Instantly UI without updating this rule — code will prefer the UI value over the hardcoded default.
 
 `stripAccountSignature` is HTML-tolerant. It looks for the EARLIEST occurrence of any of these standalone `--` markers (RFC 3676 sig delimiter, in its plain or HTML-wrapped forms):
 

@@ -241,14 +241,8 @@ describe("autolinkifyHtml", () => {
 
 describe("buildEmailBodyWithSignature", () => {
   const sig = "<p>Best,<br>John Doe</p>";
-
-  beforeEach(() => {
-    delete process.env.INSTANTLY_DEFAULT_SIGNATURE;
-  });
-
-  afterEach(() => {
-    delete process.env.INSTANTLY_DEFAULT_SIGNATURE;
-  });
+  const DEFAULT_SIG =
+    "Kevin Lourd | Marketing Representative\nDistributed with ❤️ from distribute.you";
 
   it("should append separator + signature to body", () => {
     const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: sig }));
@@ -261,15 +255,18 @@ describe("buildEmailBodyWithSignature", () => {
     expect(result).toBe(`Hello\n\n--\n${sig}`);
   });
 
-  it("should strip {{accountSignature}} when account has no signature", () => {
+  it("falls back to the hardcoded DEFAULT_SIGNATURE when account.signature is empty (with placeholder)", () => {
     const body = "Hello\n\n{{accountSignature}}";
     const result = buildEmailBodyWithSignature(body, acct({ signature: "" }));
-    expect(result).toBe("Hello");
+    expect(result).toContain("Hello\n\n--\nKevin Lourd | Marketing Representative");
+    expect(result).toContain("Distributed with ❤️ from");
+    expect((result.match(/--/g) ?? []).length).toBe(1);
   });
 
-  it("should return body as-is when account has no signature and no placeholder", () => {
+  it("falls back to the hardcoded DEFAULT_SIGNATURE when account.signature is empty (no placeholder)", () => {
     const result = buildEmailBodyWithSignature("Hello", acct());
-    expect(result).toBe("Hello");
+    expect(result).toContain("Hello\n\n--\nKevin Lourd | Marketing Representative");
+    expect(result).toContain("Distributed with ❤️ from");
   });
 
   it("autolinkifies URLs inside both the body and the appended signature", () => {
@@ -344,30 +341,16 @@ describe("buildEmailBodyWithSignature", () => {
     expect(twice).toBe(once);
   });
 
-  it("falls back to INSTANTLY_DEFAULT_SIGNATURE when account.signature is empty", () => {
-    process.env.INSTANTLY_DEFAULT_SIGNATURE = "Kevin Lourd | Marketing Representative";
-    const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: "" }));
-    expect(result).toBe("<p>Hello</p>\n\n--\nKevin Lourd | Marketing Representative");
-  });
-
-  it("falls back to INSTANTLY_DEFAULT_SIGNATURE when account has no signature field at all", () => {
-    process.env.INSTANTLY_DEFAULT_SIGNATURE = "Default Sig\nLine 2";
-    const result = buildEmailBodyWithSignature("<p>Hello</p>", acct());
-    expect(result).toBe("<p>Hello</p>\n\n--\nDefault Sig\nLine 2");
-  });
-
-  it("account.signature wins over INSTANTLY_DEFAULT_SIGNATURE when both present", () => {
-    process.env.INSTANTLY_DEFAULT_SIGNATURE = "Default Sig";
+  it("account.signature wins over hardcoded DEFAULT_SIGNATURE when present", () => {
     const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: "<p>Account Sig</p>" }));
     expect(result).toBe("<p>Hello</p>\n\n--\n<p>Account Sig</p>");
-    expect(result).not.toContain("Default Sig");
+    expect(result).not.toContain("Kevin Lourd");
   });
 
-  it("env fallback also strips stacked sigs (idempotence preserved)", () => {
-    process.env.INSTANTLY_DEFAULT_SIGNATURE = "Kevin";
+  it("hardcoded fallback also strips stacked sigs (idempotence preserved)", () => {
     const body = "<p>Hello</p>\n\n--\n<p>Old Sig 1</p>\n\n--\n<p>Old Sig 2</p>";
     const result = buildEmailBodyWithSignature(body, acct({ signature: "" }));
-    expect(result).toBe("<p>Hello</p>\n\n--\nKevin");
+    expect(result).toContain("<p>Hello</p>\n\n--\nKevin Lourd");
     expect(result).not.toContain("Old Sig 1");
     expect(result).not.toContain("Old Sig 2");
   });
@@ -458,9 +441,9 @@ describe("buildSequenceSteps", () => {
       { step: 2, bodyHtml: "B", daysSinceLastStep: 3 },
     ];
     const steps = buildSequenceSteps("Subject", sequence, acct());
-    expect(steps[0].bodyHtml).toBe("A");
-    expect(steps[1].bodyHtml).toBe("B");
-    expect(steps[2].bodyHtml).toBe("C");
+    expect(steps[0].bodyHtml).toMatch(/^A\b/);
+    expect(steps[1].bodyHtml).toMatch(/^B\b/);
+    expect(steps[2].bodyHtml).toMatch(/^C\b/);
   });
 });
 
