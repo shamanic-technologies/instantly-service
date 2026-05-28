@@ -16,7 +16,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "backfill:inferences": "tsx scripts/backfill-inferences.ts"
+    "backfill:inferences": "tsx scripts/backfill-inferences.ts",
+    "cleanup:stacked-sigs": "tsx scripts/cleanup-stacked-signatures.ts"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^8.4.0",

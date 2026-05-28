@@ -14,6 +14,7 @@ Cold email outreach service via Instantly.ai API V2. Handles campaign management
 - `npm run db:migrate` — run migrations
 - `npm run db:push` — push schema to database
 - `npm run backfill:inferences` — one-shot CLI: project synthetic predecessor events onto existing silver rows. Manual only — NEVER wired into boot (port-bind hazard).
+- `npm run cleanup:stacked-sigs` — one-shot CLI: clean stacked signatures from Instantly campaigns whose lead has been pushed but not yet received any email. Dry-run by default; pass `-- --commit` to actually PATCH Instantly. See [Signature handling](#signature-handling--idempotent-strip-then-append). Manual only.
 
 ## Architecture
 
