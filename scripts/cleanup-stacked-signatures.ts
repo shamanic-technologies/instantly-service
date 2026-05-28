@@ -54,6 +54,7 @@ import { resolveInstantlyApiKey } from "../src/lib/key-client";
 interface CliArgs {
   commit: boolean;
   limit?: number;
+  offset: number;
 }
 
 interface EligibleRow {
@@ -81,11 +82,17 @@ function parseArgs(): CliArgs {
     limitIdx >= 0 && args[limitIdx + 1]
       ? parseInt(args[limitIdx + 1], 10)
       : undefined;
-  return { commit: args.includes("--commit"), limit };
+  const offsetIdx = args.indexOf("--offset");
+  const offset =
+    offsetIdx >= 0 && args[offsetIdx + 1]
+      ? parseInt(args[offsetIdx + 1], 10)
+      : 0;
+  return { commit: args.includes("--commit"), limit, offset };
 }
 
-async function selectEligibleRows(limit?: number): Promise<EligibleRow[]> {
+async function selectEligibleRows(limit?: number, offset = 0): Promise<EligibleRow[]> {
   const limitSql = typeof limit === "number" ? sql`LIMIT ${limit}` : sql``;
+  const offsetSql = offset > 0 ? sql`OFFSET ${offset}` : sql``;
   const result = await db.execute(sql`
     SELECT
       id,
@@ -104,6 +111,7 @@ async function selectEligibleRows(limit?: number): Promise<EligibleRow[]> {
       )
     ORDER BY c.created_at ASC
     ${limitSql}
+    ${offsetSql}
   `);
   const rows = Array.isArray(result)
     ? result
@@ -225,10 +233,10 @@ async function processRow(
 async function main(): Promise<void> {
   const args = parseArgs();
   console.log(
-    `[cleanup-sigs] starting — commit=${args.commit} limit=${args.limit ?? "all"}`,
+    `[cleanup-sigs] starting — commit=${args.commit} limit=${args.limit ?? "all"} offset=${args.offset}`,
   );
 
-  const rows = await selectEligibleRows(args.limit);
+  const rows = await selectEligibleRows(args.limit, args.offset);
   console.log(`[cleanup-sigs] ${rows.length} eligible rows`);
 
   const keyByOrg = new Map<string, string>();
