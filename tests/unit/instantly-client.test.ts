@@ -446,4 +446,152 @@ describe("instantly-client", () => {
 
     errSpy.mockRestore();
   }, 30000);
+
+  // ─── listAccounts pagination ──────────────────────────────────────────────
+  //
+  // Historic bug 2026-05-28: `listAccounts` was a single un-paginated GET,
+  // so it only ever returned Instantly's default page (10 items). With 156
+  // active accounts in the workspace, 146 were invisible to
+  // `pickRandomAccount` — sends + retry-stuck redispatches saturated the
+  // first 10 accounts while the rest sat idle. These tests pin the
+  // pagination contract so the bug cannot reappear.
+
+  it("listAccounts: single page (no next_starting_after) returns items, 1 fetch", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          items: [
+            { email: "a@x.com", status: 1, warmup_status: 1 },
+            { email: "b@x.com", status: 1, warmup_status: 1 },
+          ],
+        }),
+    });
+
+    const { listAccounts } = await import("../../src/lib/instantly-client");
+    const accounts = await listAccounts(TEST_API_KEY);
+
+    expect(accounts).toHaveLength(2);
+    expect(accounts.map((a) => a.email)).toEqual(["a@x.com", "b@x.com"]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("listAccounts: paginates via next_starting_after across 3 pages, concatenates in order", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            items: Array.from({ length: 100 }, (_, i) => ({
+              email: `p1-${i}@x.com`,
+              status: 1,
+              warmup_status: 1,
+            })),
+            next_starting_after: "cursor-1",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            items: Array.from({ length: 100 }, (_, i) => ({
+              email: `p2-${i}@x.com`,
+              status: 1,
+              warmup_status: 1,
+            })),
+            next_starting_after: "cursor-2",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            items: [{ email: "p3-0@x.com", status: 1, warmup_status: 1 }],
+          }),
+      });
+
+    const { listAccounts } = await import("../../src/lib/instantly-client");
+    const accounts = await listAccounts(TEST_API_KEY);
+
+    expect(accounts).toHaveLength(201);
+    expect(accounts[0].email).toBe("p1-0@x.com");
+    expect(accounts[100].email).toBe("p2-0@x.com");
+    expect(accounts[200].email).toBe("p3-0@x.com");
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+
+    // Second/third fetch URLs must carry the cursor from the prior response.
+    const url2 = String(mockFetch.mock.calls[1][0]);
+    const url3 = String(mockFetch.mock.calls[2][0]);
+    expect(url2).toContain("starting_after=cursor-1");
+    expect(url3).toContain("starting_after=cursor-2");
+  });
+
+  it("listAccounts: sends limit=100 on every page (Instantly's max — probed empirically)", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            items: [{ email: "a@x.com", status: 1, warmup_status: 1 }],
+            next_starting_after: "c1",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            items: [{ email: "b@x.com", status: 1, warmup_status: 1 }],
+          }),
+      });
+
+    const { listAccounts } = await import("../../src/lib/instantly-client");
+    await listAccounts(TEST_API_KEY);
+
+    for (const call of mockFetch.mock.calls) {
+      expect(String(call[0])).toContain("limit=100");
+    }
+  });
+
+  it("listAccounts: empty response returns [] with one fetch (no infinite loop)", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ items: [] }),
+    });
+
+    const { listAccounts } = await import("../../src/lib/instantly-client");
+    const accounts = await listAccounts(TEST_API_KEY);
+
+    expect(accounts).toEqual([]);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("listAccounts: stops when next_starting_after is empty even if items still present", async () => {
+    // Defensive: if Instantly ever drops the cursor on the last page but
+    // still returns items, we MUST stop. No cursor = no next page.
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          items: Array.from({ length: 100 }, (_, i) => ({
+            email: `acct-${i}@x.com`,
+            status: 1,
+            warmup_status: 1,
+          })),
+        }),
+    });
+
+    const { listAccounts } = await import("../../src/lib/instantly-client");
+    const accounts = await listAccounts(TEST_API_KEY);
+
+    expect(accounts).toHaveLength(100);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
 });

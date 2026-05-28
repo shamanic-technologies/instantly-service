@@ -41,6 +41,19 @@ Two provider-specific fields are **optional in v1** of the contract: `cancelled`
 
 `@asteasolutions/zod-to-openapi` attaches `.openapi()` to Zod schema instances at the time `extendZodWithOpenApi(z)` runs in the consumer. The contract package's schemas were instantiated before that point in the consumer's module graph, so they do NOT gain `.openapi()` retroactively. Re-export them without `.openapi(name)` and let the generator inline them (no `$ref` name). Local schemas defined in `src/schemas.ts` (after `import "./zod-setup"`) keep their `.openapi(name)` tagging.
 
+## Instantly client — pagination convention
+
+Any helper in `src/lib/instantly-client.ts` that returns "all of X" from Instantly (no caller-driven `skip` / `limit` parameters) MUST paginate via the `next_starting_after` cursor pattern used by `listAccounts`, `listLeadsFull`, and `listEmails`. NEVER call `/path` once and return `response.items` — Instantly's default page size is **10**. Every such helper requires a unit test asserting:
+1. multi-page traversal (mock 2+ pages, assert `mockFetch.mock.calls.length` matches and items are concatenated in order),
+2. termination on `next_starting_after = null` even when items are still returned,
+3. termination on empty `items` (no infinite loop).
+
+Use `limit=100` per page — Instantly silently returns an empty list for any larger value.
+
+Helpers that expose `skip` + `limit` (caller-driven pagination) do NOT exist in this codebase today. If you add one, document why caller-driven pagination is the right shape (e.g. a route that lets a UI page through results); otherwise default to the "all of X" full-pagination helper.
+
+Historic bug 2026-05-28: `listAccounts` shipped without pagination. Only 10 of 156 active senders were ever picked by `pickRandomAccount` (send-lead.ts) → 146 warmed accounts sat idle while the first 10 saturated at 30/day. Fix: paginate. Guard: this section + the pagination unit tests in `tests/unit/instantly-client.test.ts` ("listAccounts: paginates via next_starting_after across 3 pages, ...").
+
 ## Data layering — Bronze / Silver / Gold
 
 Three layers, doctrine per `~/.claude/skills/data-layering/SKILL.md`:
