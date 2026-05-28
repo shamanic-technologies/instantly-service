@@ -329,10 +329,6 @@ export async function getCampaign(apiKey: string, campaignId: string): Promise<C
   return instantlyRequest<Campaign>(apiKey, `/campaigns/${campaignId}`);
 }
 
-export async function listCampaigns(apiKey: string, limit = 100, skip = 0): Promise<Campaign[]> {
-  return instantlyRequest<Campaign[]>(apiKey, `/campaigns?limit=${limit}&skip=${skip}`);
-}
-
 export async function updateCampaignStatus(
   apiKey: string,
   campaignId: string,
@@ -365,23 +361,6 @@ export async function addLeads(apiKey: string, params: AddLeadsParams): Promise<
   return { added };
 }
 
-export async function listLeads(
-  apiKey: string,
-  campaignId: string,
-  limit = 100,
-  skip = 0
-): Promise<Lead[]> {
-  const response = await instantlyRequest<{ items: Lead[] }>(apiKey, "/leads/list", {
-    method: "POST",
-    body: {
-      campaign: campaignId,
-      limit,
-      skip,
-    },
-  });
-  return response.items ?? [];
-}
-
 export async function deleteLeads(
   apiKey: string,
   campaignId: string,
@@ -403,9 +382,38 @@ export async function deleteLeads(
 
 // ─── Accounts ────────────────────────────────────────────────────────────────
 
+/**
+ * Fetch ALL accounts in the workspace. Paginates via `next_starting_after`
+ * using the maximum per-page limit Instantly accepts (100 — probed
+ * empirically; any value >100 returns an empty `items` array). The loop
+ * terminates only when Instantly stops returning a cursor, so this scales
+ * to any account count.
+ *
+ * Historic bug 2026-05-28: the previous non-paginated implementation only
+ * saw Instantly's default page (10 items). With 156 active senders in the
+ * workspace, 146 were invisible to `pickRandomAccount` — sends + retry-
+ * stuck redispatches saturated the first 10 accounts to 30/day while the
+ * rest sat idle. Any new "list all of X" helper added to this file MUST
+ * follow this pattern (see CLAUDE.md "Instantly client — pagination
+ * convention").
+ */
 export async function listAccounts(apiKey: string): Promise<Account[]> {
-  const response = await instantlyRequest<PaginatedResponse<Account>>(apiKey, "/accounts");
-  return response.items;
+  const PAGE_LIMIT = 100;
+  const results: Account[] = [];
+  let startingAfter: string | undefined;
+  for (;;) {
+    const query = new URLSearchParams({ limit: String(PAGE_LIMIT) });
+    if (startingAfter) query.set("starting_after", startingAfter);
+    const response = await instantlyRequest<PaginatedResponse<Account>>(
+      apiKey,
+      `/accounts?${query.toString()}`,
+    );
+    const items = response.items ?? [];
+    results.push(...items);
+    if (!response.next_starting_after || items.length === 0) break;
+    startingAfter = response.next_starting_after;
+  }
+  return results;
 }
 
 export async function enableWarmup(apiKey: string, email: string): Promise<Account> {
