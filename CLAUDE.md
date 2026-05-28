@@ -54,6 +54,23 @@ Helpers that expose `skip` + `limit` (caller-driven pagination) do NOT exist in 
 
 Historic bug 2026-05-28: `listAccounts` shipped without pagination. Only 10 of 156 active senders were ever picked by `pickRandomAccount` (send-lead.ts) → 146 warmed accounts sat idle while the first 10 saturated at 30/day. Fix: paginate. Guard: this section + the pagination unit tests in `tests/unit/instantly-client.test.ts` ("listAccounts: paginates via next_starting_after across 3 pages, ...").
 
+## Signature handling — idempotent strip-then-append
+
+`buildEmailBodyWithSignature` (`src/lib/send-lead.ts`) MUST be idempotent: `f(f(x)) === f(x)`. It ALWAYS calls `stripAccountSignature` on the input body before appending the account's signature. Guarantees a body re-sent N times (e.g. retry-stuck redispatching the same lead) never accumulates N stacked signatures.
+
+`stripAccountSignature` is HTML-tolerant. It looks for the EARLIEST occurrence of any of these standalone `--` markers (RFC 3676 sig delimiter, in its plain or HTML-wrapped forms):
+
+- `\n\n--\n` plain (with optional trailing space, e.g. `\n\n-- \n`)
+- `<p>--</p>` paragraph-wrapped (with optional `&nbsp;`)
+- `<br>--<br>` line-break-wrapped
+- `<div>--</div>` div-wrapped
+
+…and slices everything from the marker onward. If no marker matches, body is returned unchanged. Senders whose original body legitimately contains one of these markers will lose content past that point on a re-send — accepted edge-case.
+
+Historic bug 2026-05-28: the original `stripAccountSignature` matched only the plain `\n\n--\n` marker. Bodies stored as HTML never matched, so every retry-stuck re-send appended a fresh signature on top of the existing one. A row redispatched 72 times shipped a body with 72 stacked signatures. Fix: HTML-tolerant marker list + strip-then-append in `buildEmailBodyWithSignature`. Guard: this section + the `stripAccountSignature` and `buildEmailBodyWithSignature` cumulative-stack tests in `tests/unit/send.test.ts`.
+
+If you add a new HTML wrapper form (e.g. `<section>--</section>`), add a regex to `SIG_MARKERS` AND a unit test case covering both the marker shape and a 3-stacked case for that shape.
+
 ## Data layering — Bronze / Silver / Gold
 
 Three layers, doctrine per `~/.claude/skills/data-layering/SKILL.md`:
