@@ -115,6 +115,34 @@ function countMarkers(body: string): number {
   return (body.match(/--/g) ?? []).length;
 }
 
+/**
+ * Strip the legacy "broken anchor stack" pattern from a body. Historic damage
+ * 2026-05-28: an earlier pass of this cleanup script (under v0.35.3 plain-text
+ * DEFAULT_SIGNATURE) PATCHed bodies with `${stripped}\n\n--\n${signature}` where
+ * the signature was plain text. Instantly's HTML sanitizer stripped the `--`
+ * separator and the plain-text signature content on storage, retaining only the
+ * autolinkified `<a href="https://distribute.you">distribute.you</a>` anchor.
+ * Because the script's `changed` detection compared byte-equality and Instantly
+ * always normalized differently than our re-emission, the script re-PATCHed the
+ * same rows on every batch run — each pass appending one more `<a>` anchor at
+ * the end. ~700 rows now carry between 1 and 4 stacked trailing anchors.
+ *
+ * This pre-strip surgically removes that legacy trailing pattern so the normal
+ * `stripAccountSignature` + `buildEmailBodyWithSignature` flow can re-append a
+ * clean HTML signature on top of an unpolluted body. Idempotent — running it on
+ * a body that doesn't carry the pattern returns the body unchanged.
+ *
+ * Intentionally narrow: matches only `https?://distribute.you[...]` anchors in
+ * a contiguous trailing run (with optional inter-anchor whitespace). Not added
+ * to `stripAccountSignature` in `send-lead.ts` because the pattern is specific
+ * to legacy damage from a known historic bug, not a forward-going invariant.
+ */
+function stripLegacyBrokenAnchorStack(body: string): string {
+  const re =
+    /(?:\s*<a\s[^>]*href="https?:\/\/distribute\.you[^"]*"[^>]*>[^<]*<\/a>)+\s*$/i;
+  return body.replace(re, "");
+}
+
 async function processRow(
   row: EligibleRow,
   commit: boolean,
@@ -161,8 +189,9 @@ async function processRow(
   const cleanedSteps: InstantlySequenceStep[] = steps.map((s, i) => {
     const v0 = s.variants?.[0] ?? {};
     const originalBody = v0.body ?? "";
+    const prePurged = stripLegacyBrokenAnchorStack(originalBody);
     const cleanedBody = buildEmailBodyWithSignature(
-      stripAccountSignature(originalBody),
+      stripAccountSignature(prePurged),
       account,
     );
     if (i === 0) firstMarkerCountBefore = countMarkers(originalBody);
