@@ -124,6 +124,21 @@ export interface CreateCampaignParams {
   steps: SequenceStep[];
 }
 
+/**
+ * Wire-format step shape accepted by Instantly's PATCH /campaigns/{id} for
+ * the `sequences` field. Distinct from our internal `SequenceStep` (which
+ * uses `bodyHtml` / `daysSinceLastStep`); this mirrors Instantly's V2 schema
+ * 1:1 so callers can round-trip a `getCampaign` response back to PATCH.
+ */
+export interface InstantlySequenceStep {
+  delay?: number;
+  variants?: Array<{
+    subject?: string;
+    body?: string;
+    v_disabled?: boolean;
+  }>;
+}
+
 export interface UpdateCampaignParams {
   email_list?: string[];
   bcc_list?: string[];
@@ -131,6 +146,7 @@ export interface UpdateCampaignParams {
   link_tracking?: boolean;
   insert_unsubscribe_header?: boolean;
   stop_on_reply?: boolean;
+  sequences?: Array<{ steps: InstantlySequenceStep[] }>;
 }
 
 export interface AddLeadsParams {
