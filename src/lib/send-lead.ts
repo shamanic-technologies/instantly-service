@@ -87,42 +87,76 @@ export function autolinkifyHtml(html: string): string {
  * `{{accountSignature}}` only resolves in the Instantly UI — campaigns created
  * via the API send it as literal text. Instead we splice the assigned account's
  * `signature` field directly.
+ *
+ * Idempotent (`f(f(x)) === f(x)`): always strips any pre-existing signature
+ * block via `stripAccountSignature` BEFORE appending the current account's
+ * signature. Guarantees a body re-sent N times never accumulates N stacked
+ * signatures (historic bug 2026-05-28 — see `stripAccountSignature` docstring).
  */
 export function buildEmailBodyWithSignature(body: string, account: Account): string {
   const signature = account.signature?.trim() || "";
+  const stripped = stripAccountSignature(body);
 
   let raw: string;
   if (!signature) {
     console.warn(
       `[send-lead] Account ${account.email} has no signature configured — email will be sent without signature`,
     );
-    raw = body.replace(/\n*\{\{accountSignature\}\}/g, "");
-  } else if (body.includes("{{accountSignature}}")) {
-    raw = body.replace("{{accountSignature}}", `--\n${signature}`);
+    raw = stripped.replace(/\n*\{\{accountSignature\}\}/g, "");
+  } else if (stripped.includes("{{accountSignature}}")) {
+    raw = stripped.replace("{{accountSignature}}", `--\n${signature}`);
   } else {
-    raw = `${body}\n\n--\n${signature}`;
+    raw = `${stripped}\n\n--\n${signature}`;
   }
 
   return autolinkifyHtml(raw);
 }
 
 /**
- * Strip a previously-appended `\n\n--\nSIGNATURE` block from a body. Used by
+ * Markers that announce a signature block. Each matches a standalone `--`
+ * line in one of the common email/HTML forms:
+ *   - `\n\n--\n` plain text (RFC 3676 sig delimiter, with optional trailing space)
+ *   - `<p>--</p>` paragraph-wrapped
+ *   - `<br>--<br>` line-break-wrapped
+ *   - `<div>--</div>` div-wrapped
+ * `&nbsp;` may appear adjacent to the `--` in HTML forms (HTML-rendered RFC 3676).
+ */
+const SIG_MARKERS: RegExp[] = [
+  /\n\n--\s*\n/,
+  /<p[^>]*>\s*--\s*(?:&nbsp;)?\s*<\/p>/i,
+  /<br\s*\/?>\s*--\s*(?:&nbsp;)?\s*<br\s*\/?>/i,
+  /<div[^>]*>\s*--\s*(?:&nbsp;)?\s*<\/div>/i,
+];
+
+/**
+ * Strip the first signature block (and everything after) from a body. Used by
+ * `buildEmailBodyWithSignature` to keep that function idempotent, and by
  * retry-stuck to recover the original prospect-facing body from an Instantly
- * campaign that already had account A's signature baked in, so account B's
- * signature can be re-injected.
+ * campaign that already had account A's signature baked in.
  *
- * Heuristic: split on the marker `\n\n--\n` and keep everything before it.
- * If the marker doesn't appear, return the body unchanged. Senders whose
- * original body legitimately contains `\n\n--\n` will lose content past that
- * point on a re-send — accepted edge-case rather than introducing a new
- * `sequence_template` table just for this rare path.
+ * HTML-tolerant: matches plain `\n\n--\n` AND the HTML variants that Instantly
+ * stores after a body has been round-tripped through a rich-text editor.
+ *
+ * Senders whose original body legitimately contains one of these markers will
+ * lose content past that point on a re-send — accepted edge-case rather than
+ * introducing a new `sequence_template` table just for this rare path.
+ *
+ * Historic bug 2026-05-28: the previous implementation matched only the plain
+ * `\n\n--\n` marker. Bodies stored as HTML never matched, so every retry-stuck
+ * re-send appended a fresh signature on top of the existing one. A row
+ * redispatched 72 times shipped 72 stacked signatures. Fix: HTML-tolerant
+ * markers + always strip before append (see `buildEmailBodyWithSignature`).
  */
 export function stripAccountSignature(body: string): string {
-  const marker = "\n\n--\n";
-  const idx = body.indexOf(marker);
-  if (idx === -1) return body;
-  return body.slice(0, idx);
+  let earliest = -1;
+  for (const re of SIG_MARKERS) {
+    const m = re.exec(body);
+    if (m && (earliest === -1 || m.index < earliest)) {
+      earliest = m.index;
+    }
+  }
+  if (earliest === -1) return body;
+  return body.slice(0, earliest);
 }
 
 export interface SortedSequenceStep {
