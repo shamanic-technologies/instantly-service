@@ -65,6 +65,8 @@ Historic bug 2026-05-28: `listAccounts` shipped without pagination. Only 10 of 1
 
 The fallback is intentionally hardcoded (not env-var driven). When the signature copy changes, edit `DEFAULT_SIGNATURE` and ship a hotfix — that's the canonical write-path. Do NOT re-add per-account signatures in Instantly UI without updating this rule — code will prefer the UI value over the hardcoded default.
 
+**HTML-formatted, HTML-separated.** `DEFAULT_SIGNATURE` MUST be wrapped in `<p>...</p>` (use `<br>` for in-sig line breaks). Separator is `<p>--</p>`, NOT `\n\n--\n`. Reason: Instantly's HTML sanitizer aggressively strips plain text and bare `--` outside element wrappers on PATCH round-trip — only `<a>` anchors and tag-wrapped content survive. An earlier plain-text `DEFAULT_SIGNATURE` was reduced to a stray `<a>distribute.you</a>` anchor on every PATCH (historic damage 2026-05-28: ~700 rows shipped with stacked broken anchors and no signature text). Guard: `should append HTML <p>--</p> separator + signature to body` + sibling cumulative-strip tests in `tests/unit/send.test.ts` assert the `<p>--</p>` form.
+
 `stripAccountSignature` is HTML-tolerant. It looks for the EARLIEST occurrence of any of these standalone `--` markers (RFC 3676 sig delimiter, in its plain or HTML-wrapped forms):
 
 - `\n\n--\n` plain (with optional trailing space, e.g. `\n\n-- \n`)
