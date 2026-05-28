@@ -242,6 +242,14 @@ describe("autolinkifyHtml", () => {
 describe("buildEmailBodyWithSignature", () => {
   const sig = "<p>Best,<br>John Doe</p>";
 
+  beforeEach(() => {
+    delete process.env.INSTANTLY_DEFAULT_SIGNATURE;
+  });
+
+  afterEach(() => {
+    delete process.env.INSTANTLY_DEFAULT_SIGNATURE;
+  });
+
   it("should append separator + signature to body", () => {
     const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: sig }));
     expect(result).toBe(`<p>Hello</p>\n\n--\n${sig}`);
@@ -334,6 +342,34 @@ describe("buildEmailBodyWithSignature", () => {
     const once = buildEmailBodyWithSignature(body, acct({ signature: newSig }));
     const twice = buildEmailBodyWithSignature(once, acct({ signature: newSig }));
     expect(twice).toBe(once);
+  });
+
+  it("falls back to INSTANTLY_DEFAULT_SIGNATURE when account.signature is empty", () => {
+    process.env.INSTANTLY_DEFAULT_SIGNATURE = "Kevin Lourd | Marketing Representative";
+    const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: "" }));
+    expect(result).toBe("<p>Hello</p>\n\n--\nKevin Lourd | Marketing Representative");
+  });
+
+  it("falls back to INSTANTLY_DEFAULT_SIGNATURE when account has no signature field at all", () => {
+    process.env.INSTANTLY_DEFAULT_SIGNATURE = "Default Sig\nLine 2";
+    const result = buildEmailBodyWithSignature("<p>Hello</p>", acct());
+    expect(result).toBe("<p>Hello</p>\n\n--\nDefault Sig\nLine 2");
+  });
+
+  it("account.signature wins over INSTANTLY_DEFAULT_SIGNATURE when both present", () => {
+    process.env.INSTANTLY_DEFAULT_SIGNATURE = "Default Sig";
+    const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: "<p>Account Sig</p>" }));
+    expect(result).toBe("<p>Hello</p>\n\n--\n<p>Account Sig</p>");
+    expect(result).not.toContain("Default Sig");
+  });
+
+  it("env fallback also strips stacked sigs (idempotence preserved)", () => {
+    process.env.INSTANTLY_DEFAULT_SIGNATURE = "Kevin";
+    const body = "<p>Hello</p>\n\n--\n<p>Old Sig 1</p>\n\n--\n<p>Old Sig 2</p>";
+    const result = buildEmailBodyWithSignature(body, acct({ signature: "" }));
+    expect(result).toBe("<p>Hello</p>\n\n--\nKevin");
+    expect(result).not.toContain("Old Sig 1");
+    expect(result).not.toContain("Old Sig 2");
   });
 });
 
