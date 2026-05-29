@@ -82,20 +82,67 @@ export function autolinkifyHtml(html: string): string {
 }
 
 /**
- * Canonical signature (HTML-formatted) appended to every outbound email when
- * the assigned account has no per-sender override in Instantly's UI.
+ * Maps a sender domain's second-level label (the part before the TLD) to its
+ * camel-cased display form for the signature's brand line. Domains are
+ * concatenated words with no delimiter (`growthagency`), so the split into
+ * `Growth` + `Agency` cannot be derived programmatically — it must be declared.
  *
- * Per-account UI signatures are intentionally empty in prod so every sender
- * shares one canonical signature.
+ * Unknown labels fall back to a plain first-letter capitalization in
+ * `displayDomain` (e.g. `foobar` → `Foobar`) and log a warning so the map can
+ * be extended.
  *
- * Wrapped in `<p>...</p>` because Instantly's HTML sanitizer aggressively
- * strips plain text and `--` outside of element wrappers (text loses on PATCH
- * round-trip: only `<a>` anchors survive). Historic bug 2026-05-28: an earlier
- * plain-text version of this constant was stripped down to a stray
- * `<a>distribute.you</a>` anchor each time it round-tripped through Instantly.
+ * When a new sending domain is provisioned, add its SLD label here.
  */
-const DEFAULT_SIGNATURE =
-  "<p>Kevin Lourd | Marketing Representative<br>Distributed with ❤️ from distribute.you</p>";
+const DOMAIN_DISPLAY_MAP: Record<string, string> = {
+  growthagency: "GrowthAgency",
+  marketingagency: "MarketingAgency",
+  growthservice: "GrowthService",
+  salescoldemails: "SalesColdEmails",
+  salesmolt: "SalesMolt",
+  pressbeat: "PressBeat",
+  outcaged: "OutCaged",
+  arcadiaquest: "ArcadiaQuest",
+  distribute: "Distribute",
+};
+
+/**
+ * Render a sender domain as `DisplayLabel.tld` — the SLD label camel-cased via
+ * `DOMAIN_DISPLAY_MAP`, the TLD left lowercase. E.g. `growthagency.dev` →
+ * `GrowthAgency.dev`, `marketingagency.co.uk` → `MarketingAgency.co.uk`.
+ */
+function displayDomain(domain: string): string {
+  const firstDot = domain.indexOf(".");
+  if (firstDot === -1) return domain;
+  const sld = domain.slice(0, firstDot);
+  const tld = domain.slice(firstDot + 1);
+  const display =
+    DOMAIN_DISPLAY_MAP[sld] ?? sld.charAt(0).toUpperCase() + sld.slice(1);
+  if (!DOMAIN_DISPLAY_MAP[sld]) {
+    console.warn(
+      `[send-lead] No DOMAIN_DISPLAY_MAP entry for sender SLD "${sld}" (domain=${domain}) — falling back to "${display}". Add it to the map.`,
+    );
+  }
+  return `${display}.${tld}`;
+}
+
+/**
+ * Build the canonical per-account signature (HTML-formatted). Derived from the
+ * SENDING account's email domain — the brand line reflects whichever sender
+ * `pickRandomAccount` selected for this dispatch:
+ *
+ *   Kevin Lourd | Founder
+ *   GrowthAgency.dev | Marketing Agency
+ *
+ * Wrapped in `<p>...<br>...</p>` because Instantly's HTML sanitizer aggressively
+ * strips plain text and bare `--` outside element wrappers on PATCH round-trip
+ * (only `<a>` anchors and tag-wrapped content survive). Historic damage
+ * 2026-05-28: a plain-text signature was reduced to a stray
+ * `<a>distribute.you</a>` anchor on every PATCH.
+ */
+export function buildDefaultSignature(account: Account): string {
+  const domain = account.email.split("@")[1] ?? "";
+  return `<p>Kevin Lourd | Founder<br>${displayDomain(domain)} | Marketing Agency</p>`;
+}
 
 /**
  * HTML signature separator. RFC 3676 plain text uses `\n\n--\n`, but Instantly's
@@ -114,8 +161,8 @@ const SIG_SEPARATOR_HTML = "<p>--</p>";
  * Signature resolution priority:
  *   1. `account.signature` — per-sender override configured in Instantly's UI
  *      (intentionally empty in prod for every sender).
- *   2. `DEFAULT_SIGNATURE` constant above — service-wide fallback, source of
- *      truth in prod.
+ *   2. `buildDefaultSignature(account)` — per-account signature derived from the
+ *      sending domain. Source of truth in prod.
  *
  * Idempotent (`f(f(x)) === f(x)`): always strips any pre-existing signature
  * block via `stripAccountSignature` BEFORE appending. Guarantees a body re-sent
@@ -124,7 +171,7 @@ const SIG_SEPARATOR_HTML = "<p>--</p>";
  */
 export function buildEmailBodyWithSignature(body: string, account: Account): string {
   const accountSig = account.signature?.trim() || "";
-  const signature = accountSig || DEFAULT_SIGNATURE;
+  const signature = accountSig || buildDefaultSignature(account);
   const stripped = stripAccountSignature(body);
 
   const raw = stripped.includes("{{accountSignature}}")

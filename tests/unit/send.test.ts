@@ -241,7 +241,6 @@ describe("autolinkifyHtml", () => {
 
 describe("buildEmailBodyWithSignature", () => {
   const sig = "<p>Best,<br>John Doe</p>";
-  const DEFAULT_SIG_TEXT = "Kevin Lourd | Marketing Representative";
 
   it("should append HTML <p>--</p> separator + signature to body", () => {
     const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: sig }));
@@ -254,20 +253,35 @@ describe("buildEmailBodyWithSignature", () => {
     expect(result).toBe(`Hello\n\n<p>--</p>${sig}`);
   });
 
-  it("falls back to the hardcoded DEFAULT_SIGNATURE when account.signature is empty (with placeholder)", () => {
+  it("falls back to per-account default signature when account.signature is empty (with placeholder)", () => {
     const body = "Hello\n\n{{accountSignature}}";
-    const result = buildEmailBodyWithSignature(body, acct({ signature: "" }));
+    const result = buildEmailBodyWithSignature(body, acct({ email: "kevinl@growthagency.dev", signature: "" }));
     expect(result).toContain("<p>--</p>");
-    expect(result).toContain(DEFAULT_SIG_TEXT);
-    expect(result).toContain("Distributed with ❤️ from");
+    expect(result).toContain("Kevin Lourd | Founder");
+    expect(result).toContain(">GrowthAgency.dev</a>");
+    expect(result).toContain("| Marketing Agency");
     expect((result.match(/<p>--<\/p>/g) ?? []).length).toBe(1);
   });
 
-  it("falls back to the hardcoded DEFAULT_SIGNATURE when account.signature is empty (no placeholder)", () => {
-    const result = buildEmailBodyWithSignature("Hello", acct());
-    expect(result).toContain("Hello<p>--</p>");
-    expect(result).toContain(DEFAULT_SIG_TEXT);
-    expect(result).toContain("Distributed with ❤️ from");
+  it("falls back to per-account default signature when account.signature is empty (no placeholder)", () => {
+    // autolinkify wraps the bare brand domain in an anchor (same as the old
+    // distribute.you sig) — host is case-insensitive so the mixed-case href resolves.
+    const result = buildEmailBodyWithSignature("Hello", acct({ email: "kevinl@growthagency.dev" }));
+    expect(result).toBe(
+      'Hello<p>--</p><p>Kevin Lourd | Founder<br><a href="https://GrowthAgency.dev">GrowthAgency.dev</a> | Marketing Agency</p>',
+    );
+  });
+
+  it("derives the brand line from the sending account's domain (marketingagency)", () => {
+    const result = buildEmailBodyWithSignature("Hello", acct({ email: "kevin@marketingagency.forum" }));
+    expect(result).toContain(">MarketingAgency.forum</a>");
+    expect(result).toContain("| Marketing Agency");
+  });
+
+  it("falls back to first-letter capitalization for an unmapped sender domain", () => {
+    const result = buildEmailBodyWithSignature("Hello", acct({ email: "x@unknownbrand.io" }));
+    expect(result).toContain(">Unknownbrand.io</a>");
+    expect(result).toContain("| Marketing Agency");
   });
 
   it("autolinkifies URLs inside both the body and the appended signature", () => {
@@ -342,16 +356,17 @@ describe("buildEmailBodyWithSignature", () => {
     expect(twice).toBe(once);
   });
 
-  it("account.signature wins over hardcoded DEFAULT_SIGNATURE when present", () => {
+  it("account.signature wins over per-account default signature when present", () => {
     const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: "<p>Account Sig</p>" }));
     expect(result).toBe("<p>Hello</p><p>--</p><p>Account Sig</p>");
     expect(result).not.toContain("Kevin Lourd");
   });
 
-  it("hardcoded fallback also strips stacked sigs (idempotence preserved)", () => {
+  it("per-account fallback also strips stacked sigs (idempotence preserved)", () => {
     const body = "<p>Hello</p>\n\n--\n<p>Old Sig 1</p>\n\n--\n<p>Old Sig 2</p>";
-    const result = buildEmailBodyWithSignature(body, acct({ signature: "" }));
-    expect(result).toContain("<p>Hello</p><p>--</p><p>Kevin Lourd");
+    const result = buildEmailBodyWithSignature(body, acct({ email: "kevinl@growthagency.dev", signature: "" }));
+    expect(result).toContain("<p>Hello</p><p>--</p><p>Kevin Lourd | Founder<br>");
+    expect(result).toContain(">GrowthAgency.dev</a>");
     expect(result).not.toContain("Old Sig 1");
     expect(result).not.toContain("Old Sig 2");
   });
