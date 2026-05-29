@@ -62,16 +62,16 @@ Historic bug 2026-05-28: `listAccounts` shipped without pagination. Only 10 of 1
 **Signature source priority:**
 
 1. `account.signature` — per-sender override configured in Instantly's UI (account settings). Intentionally empty in prod.
-2. `buildDefaultSignature(account)` (`src/lib/send-lead.ts`) — **per-account signature derived from the SENDING domain. Source of truth in prod.**
+2. `buildDefaultSignature(account)` (`src/lib/send-lead.ts`) — returns the `DEFAULT_SIGNATURE` constant. **Source of truth in prod.**
 
-**Per-account, derived from sending domain.** The sender is chosen at dispatch by `pickRandomAccount`, so the signature's brand line reflects whichever account fired. Shape:
+**One fixed brand line for every sender.** Identical regardless of which account `pickRandomAccount` selected:
 
 ```
 Kevin Lourd | Founder
-<DisplaySLD>.<tld> | Marketing Agency
+Distribute.you | Marketing Agency
 ```
 
-e.g. `growthagency.dev` → `GrowthAgency.dev | Marketing Agency`. The SLD label is camel-cased via `DOMAIN_DISPLAY_MAP` (the split `growthagency` → `GrowthAgency` cannot be derived from the concatenated string — it MUST be declared). Unknown SLD → first-letter capitalization + a `console.warn`. **When a new sending domain is provisioned, add its SLD label to `DOMAIN_DISPLAY_MAP`.** The brand domain renders as **plain text — NOT a clickable `<a>` link**: `buildEmailBodyWithSignature` autolinkifies the prospect body ONLY, appending the signature block verbatim. Do NOT reintroduce sig-wide autolinkify.
+`buildDefaultSignature(account)` ignores its `account` arg today (kept so per-account derivation can be reintroduced without touching the caller). The brand line renders as **plain text — NOT a clickable `<a>` link**: `buildEmailBodyWithSignature` autolinkifies the prospect body ONLY, appending the signature block verbatim. Do NOT reintroduce sig-wide autolinkify. When the copy/title/brand changes, edit `DEFAULT_SIGNATURE` and ship a hotfix.
 
 The signature is intentionally code-derived (not Instantly-UI driven). When the copy/title/format changes, edit `buildDefaultSignature` and ship a hotfix. Do NOT re-add per-account UI signatures without updating this rule — code prefers the UI value over the derived default.
 
