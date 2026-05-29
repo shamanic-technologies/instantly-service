@@ -71,7 +71,7 @@ Kevin Lourd | Founder
 <DisplaySLD>.<tld> | Marketing Agency
 ```
 
-e.g. `growthagency.dev` → `GrowthAgency.dev | Marketing Agency`. The SLD label is camel-cased via `DOMAIN_DISPLAY_MAP` (the split `growthagency` → `GrowthAgency` cannot be derived from the concatenated string — it MUST be declared). Unknown SLD → first-letter capitalization + a `console.warn`. **When a new sending domain is provisioned, add its SLD label to `DOMAIN_DISPLAY_MAP`.** The brand domain is auto-linkified into an `<a>` anchor (host is case-insensitive so the mixed-case href resolves) — same behavior as the legacy `distribute.you` sig.
+e.g. `growthagency.dev` → `GrowthAgency.dev | Marketing Agency`. The SLD label is camel-cased via `DOMAIN_DISPLAY_MAP` (the split `growthagency` → `GrowthAgency` cannot be derived from the concatenated string — it MUST be declared). Unknown SLD → first-letter capitalization + a `console.warn`. **When a new sending domain is provisioned, add its SLD label to `DOMAIN_DISPLAY_MAP`.** The brand domain renders as **plain text — NOT a clickable `<a>` link**: `buildEmailBodyWithSignature` autolinkifies the prospect body ONLY, appending the signature block verbatim. Do NOT reintroduce sig-wide autolinkify.
 
 The signature is intentionally code-derived (not Instantly-UI driven). When the copy/title/format changes, edit `buildDefaultSignature` and ship a hotfix. Do NOT re-add per-account UI signatures without updating this rule — code prefers the UI value over the derived default.
 
