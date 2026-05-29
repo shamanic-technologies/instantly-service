@@ -135,9 +135,11 @@ function displayDomain(domain: string): string {
  *
  * Wrapped in `<p>...<br>...</p>` because Instantly's HTML sanitizer aggressively
  * strips plain text and bare `--` outside element wrappers on PATCH round-trip
- * (only `<a>` anchors and tag-wrapped content survive). Historic damage
- * 2026-05-28: a plain-text signature was reduced to a stray
- * `<a>distribute.you</a>` anchor on every PATCH.
+ * (only tag-wrapped content survives). Historic damage 2026-05-28: a plain-text
+ * signature was reduced to a stray `<a>distribute.you</a>` anchor on every PATCH.
+ *
+ * The brand domain is intentionally PLAIN TEXT (no `<a>` link) — `buildEmail-
+ * BodyWithSignature` autolinkifies only the prospect body, never the signature.
  */
 export function buildDefaultSignature(account: Account): string {
   const domain = account.email.split("@")[1] ?? "";
@@ -168,17 +170,22 @@ const SIG_SEPARATOR_HTML = "<p>--</p>";
  * block via `stripAccountSignature` BEFORE appending. Guarantees a body re-sent
  * N times never accumulates N stacked signatures (historic bug 2026-05-28 —
  * see `stripAccountSignature` docstring).
+ *
+ * Autolinkify is applied to the PROSPECT BODY ONLY. The signature block is our
+ * own controlled HTML and is appended verbatim — its brand domain must render
+ * as plain text, NOT a clickable `<a>` link.
  */
 export function buildEmailBodyWithSignature(body: string, account: Account): string {
   const accountSig = account.signature?.trim() || "";
   const signature = accountSig || buildDefaultSignature(account);
   const stripped = stripAccountSignature(body);
 
-  const raw = stripped.includes("{{accountSignature}}")
-    ? stripped.replace("{{accountSignature}}", `${SIG_SEPARATOR_HTML}${signature}`)
-    : `${stripped}${SIG_SEPARATOR_HTML}${signature}`;
+  const linkedBody = autolinkifyHtml(stripped);
+  const sigBlock = `${SIG_SEPARATOR_HTML}${signature}`;
 
-  return autolinkifyHtml(raw);
+  return linkedBody.includes("{{accountSignature}}")
+    ? linkedBody.replace("{{accountSignature}}", sigBlock)
+    : `${linkedBody}${sigBlock}`;
 }
 
 /**

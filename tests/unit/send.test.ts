@@ -258,37 +258,38 @@ describe("buildEmailBodyWithSignature", () => {
     const result = buildEmailBodyWithSignature(body, acct({ email: "kevinl@growthagency.dev", signature: "" }));
     expect(result).toContain("<p>--</p>");
     expect(result).toContain("Kevin Lourd | Founder");
-    expect(result).toContain(">GrowthAgency.dev</a>");
-    expect(result).toContain("| Marketing Agency");
+    expect(result).toContain("GrowthAgency.dev | Marketing Agency");
     expect((result.match(/<p>--<\/p>/g) ?? []).length).toBe(1);
   });
 
   it("falls back to per-account default signature when account.signature is empty (no placeholder)", () => {
-    // autolinkify wraps the bare brand domain in an anchor (same as the old
-    // distribute.you sig) — host is case-insensitive so the mixed-case href resolves.
+    // Brand domain in the signature is plain text — NOT auto-linkified into an <a>.
     const result = buildEmailBodyWithSignature("Hello", acct({ email: "kevinl@growthagency.dev" }));
     expect(result).toBe(
-      'Hello<p>--</p><p>Kevin Lourd | Founder<br><a href="https://GrowthAgency.dev">GrowthAgency.dev</a> | Marketing Agency</p>',
+      "Hello<p>--</p><p>Kevin Lourd | Founder<br>GrowthAgency.dev | Marketing Agency</p>",
     );
+    expect(result).not.toContain("<a ");
   });
 
-  it("derives the brand line from the sending account's domain (marketingagency)", () => {
+  it("derives the brand line from the sending account's domain (marketingagency), no link", () => {
     const result = buildEmailBodyWithSignature("Hello", acct({ email: "kevin@marketingagency.forum" }));
-    expect(result).toContain(">MarketingAgency.forum</a>");
-    expect(result).toContain("| Marketing Agency");
+    expect(result).toContain("MarketingAgency.forum | Marketing Agency");
+    expect(result).not.toContain("<a ");
   });
 
-  it("falls back to first-letter capitalization for an unmapped sender domain", () => {
+  it("falls back to first-letter capitalization for an unmapped sender domain, no link", () => {
     const result = buildEmailBodyWithSignature("Hello", acct({ email: "x@unknownbrand.io" }));
-    expect(result).toContain(">Unknownbrand.io</a>");
-    expect(result).toContain("| Marketing Agency");
+    expect(result).toContain("Unknownbrand.io | Marketing Agency");
+    expect(result).not.toContain("<a ");
   });
 
-  it("autolinkifies URLs inside both the body and the appended signature", () => {
+  it("autolinkifies URLs in the body but NOT in the appended signature", () => {
     const sigWithLink = '<p>Best,<br>John — see https://example.com</p>';
     const result = buildEmailBodyWithSignature("<p>hey https://z.com</p>", acct({ signature: sigWithLink }));
     expect(result).toContain('href="https://z.com"');
-    expect(result).toContain('href="https://example.com"');
+    // Signature is appended verbatim — its URL stays plain text, no <a> wrap.
+    expect(result).not.toContain('href="https://example.com"');
+    expect(result).toContain("see https://example.com");
   });
 
   it("leaves mustache vars in body intact even after autolinkify", () => {
@@ -365,8 +366,7 @@ describe("buildEmailBodyWithSignature", () => {
   it("per-account fallback also strips stacked sigs (idempotence preserved)", () => {
     const body = "<p>Hello</p>\n\n--\n<p>Old Sig 1</p>\n\n--\n<p>Old Sig 2</p>";
     const result = buildEmailBodyWithSignature(body, acct({ email: "kevinl@growthagency.dev", signature: "" }));
-    expect(result).toContain("<p>Hello</p><p>--</p><p>Kevin Lourd | Founder<br>");
-    expect(result).toContain(">GrowthAgency.dev</a>");
+    expect(result).toContain("<p>Hello</p><p>--</p><p>Kevin Lourd | Founder<br>GrowthAgency.dev | Marketing Agency</p>");
     expect(result).not.toContain("Old Sig 1");
     expect(result).not.toContain("Old Sig 2");
   });
