@@ -82,68 +82,31 @@ export function autolinkifyHtml(html: string): string {
 }
 
 /**
- * Maps a sender domain's second-level label (the part before the TLD) to its
- * camel-cased display form for the signature's brand line. Domains are
- * concatenated words with no delimiter (`growthagency`), so the split into
- * `Growth` + `Agency` cannot be derived programmatically — it must be declared.
- *
- * Unknown labels fall back to a plain first-letter capitalization in
- * `displayDomain` (e.g. `foobar` → `Foobar`) and log a warning so the map can
- * be extended.
- *
- * When a new sending domain is provisioned, add its SLD label here.
- */
-const DOMAIN_DISPLAY_MAP: Record<string, string> = {
-  growthagency: "GrowthAgency",
-  marketingagency: "MarketingAgency",
-  growthservice: "GrowthService",
-  salescoldemails: "SalesColdEmails",
-  salesmolt: "SalesMolt",
-  pressbeat: "PressBeat",
-  outcaged: "OutCaged",
-  arcadiaquest: "ArcadiaQuest",
-  distribute: "Distribute",
-};
-
-/**
- * Render a sender domain as `DisplayLabel.tld` — the SLD label camel-cased via
- * `DOMAIN_DISPLAY_MAP`, the TLD left lowercase. E.g. `growthagency.dev` →
- * `GrowthAgency.dev`, `marketingagency.co.uk` → `MarketingAgency.co.uk`.
- */
-function displayDomain(domain: string): string {
-  const firstDot = domain.indexOf(".");
-  if (firstDot === -1) return domain;
-  const sld = domain.slice(0, firstDot);
-  const tld = domain.slice(firstDot + 1);
-  const display =
-    DOMAIN_DISPLAY_MAP[sld] ?? sld.charAt(0).toUpperCase() + sld.slice(1);
-  if (!DOMAIN_DISPLAY_MAP[sld]) {
-    console.warn(
-      `[send-lead] No DOMAIN_DISPLAY_MAP entry for sender SLD "${sld}" (domain=${domain}) — falling back to "${display}". Add it to the map.`,
-    );
-  }
-  return `${display}.${tld}`;
-}
-
-/**
- * Build the canonical per-account signature (HTML-formatted). Derived from the
- * SENDING account's email domain — the brand line reflects whichever sender
- * `pickRandomAccount` selected for this dispatch:
+ * The canonical signature (HTML-formatted), identical for every sender
+ * regardless of which sending account `pickRandomAccount` selected:
  *
  *   Kevin Lourd | Founder
- *   GrowthAgency.dev | Marketing Agency
+ *   Distribute.you | Marketing Agency
  *
  * Wrapped in `<p>...<br>...</p>` because Instantly's HTML sanitizer aggressively
  * strips plain text and bare `--` outside element wrappers on PATCH round-trip
  * (only tag-wrapped content survives). Historic damage 2026-05-28: a plain-text
  * signature was reduced to a stray `<a>distribute.you</a>` anchor on every PATCH.
  *
- * The brand domain is intentionally PLAIN TEXT (no `<a>` link) — `buildEmail-
+ * The brand line is intentionally PLAIN TEXT (no `<a>` link) — `buildEmail-
  * BodyWithSignature` autolinkifies only the prospect body, never the signature.
  */
-export function buildDefaultSignature(account: Account): string {
-  const domain = account.email.split("@")[1] ?? "";
-  return `<p>Kevin Lourd | Founder<br>${displayDomain(domain)} | Marketing Agency</p>`;
+const DEFAULT_SIGNATURE =
+  "<p>Kevin Lourd | Founder<br>Distribute.you | Marketing Agency</p>";
+
+/**
+ * Returns the canonical signature. Kept as a function (rather than inlining the
+ * constant) so a future change can re-introduce per-account derivation without
+ * touching `buildEmailBodyWithSignature`. The `account` param is currently
+ * unused — every sender shares one brand line.
+ */
+export function buildDefaultSignature(_account: Account): string {
+  return DEFAULT_SIGNATURE;
 }
 
 /**
