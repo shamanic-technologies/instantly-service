@@ -61,12 +61,21 @@ Historic bug 2026-05-28: `listAccounts` shipped without pagination. Only 10 of 1
 
 **Signature source priority:**
 
-1. `account.signature` — per-sender override configured in Instantly's UI (account settings).
-2. `DEFAULT_SIGNATURE` constant in `src/lib/send-lead.ts` — service-wide fallback. **This is the source of truth in prod**: per-account UI signatures are intentionally empty so every sender shares one canonical signature.
+1. `account.signature` — per-sender override configured in Instantly's UI (account settings). Intentionally empty in prod.
+2. `buildDefaultSignature(account)` (`src/lib/send-lead.ts`) — **per-account signature derived from the SENDING domain. Source of truth in prod.**
 
-The fallback is intentionally hardcoded (not env-var driven). When the signature copy changes, edit `DEFAULT_SIGNATURE` and ship a hotfix — that's the canonical write-path. Do NOT re-add per-account signatures in Instantly UI without updating this rule — code will prefer the UI value over the hardcoded default.
+**Per-account, derived from sending domain.** The sender is chosen at dispatch by `pickRandomAccount`, so the signature's brand line reflects whichever account fired. Shape:
 
-**HTML-formatted, HTML-separated.** `DEFAULT_SIGNATURE` MUST be wrapped in `<p>...</p>` (use `<br>` for in-sig line breaks). Separator is `<p>--</p>`, NOT `\n\n--\n`. Reason: Instantly's HTML sanitizer aggressively strips plain text and bare `--` outside element wrappers on PATCH round-trip — only `<a>` anchors and tag-wrapped content survive. An earlier plain-text `DEFAULT_SIGNATURE` was reduced to a stray `<a>distribute.you</a>` anchor on every PATCH (historic damage 2026-05-28: ~700 rows shipped with stacked broken anchors and no signature text). Guard: `should append HTML <p>--</p> separator + signature to body` + sibling cumulative-strip tests in `tests/unit/send.test.ts` assert the `<p>--</p>` form.
+```
+Kevin Lourd | Founder
+<DisplaySLD>.<tld> | Marketing Agency
+```
+
+e.g. `growthagency.dev` → `GrowthAgency.dev | Marketing Agency`. The SLD label is camel-cased via `DOMAIN_DISPLAY_MAP` (the split `growthagency` → `GrowthAgency` cannot be derived from the concatenated string — it MUST be declared). Unknown SLD → first-letter capitalization + a `console.warn`. **When a new sending domain is provisioned, add its SLD label to `DOMAIN_DISPLAY_MAP`.** The brand domain is auto-linkified into an `<a>` anchor (host is case-insensitive so the mixed-case href resolves) — same behavior as the legacy `distribute.you` sig.
+
+The signature is intentionally code-derived (not Instantly-UI driven). When the copy/title/format changes, edit `buildDefaultSignature` and ship a hotfix. Do NOT re-add per-account UI signatures without updating this rule — code prefers the UI value over the derived default.
+
+**HTML-formatted, HTML-separated.** The signature MUST be wrapped in `<p>...</p>` (use `<br>` for in-sig line breaks). Separator is `<p>--</p>`, NOT `\n\n--\n`. Reason: Instantly's HTML sanitizer aggressively strips plain text and bare `--` outside element wrappers on PATCH round-trip — only `<a>` anchors and tag-wrapped content survive. An earlier plain-text signature was reduced to a stray `<a>distribute.you</a>` anchor on every PATCH (historic damage 2026-05-28: ~700 rows shipped with stacked broken anchors and no signature text). Guard: `should append HTML <p>--</p> separator + signature to body` + sibling cumulative-strip tests in `tests/unit/send.test.ts` assert the `<p>--</p>` form.
 
 `stripAccountSignature` is HTML-tolerant. It looks for the EARLIEST occurrence of any of these standalone `--` markers (RFC 3676 sig delimiter, in its plain or HTML-wrapped forms):
 
