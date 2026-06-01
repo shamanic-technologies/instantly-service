@@ -104,6 +104,7 @@ If you add a new HTML wrapper form (e.g. `<section>--</section>`), add a regex t
   - `unknown-brand` — ≥2 active campaigns but a campaign has no DB row (DB gap; duplicate still real).
 - Pure detection logic lives in `src/lib/audit-duplicates.ts` (`findDuplicateContacts` / `summarizeDuplicates`), unit-tested in `tests/unit/audit-duplicates.test.ts`. The script `scripts/audit-cross-campaign-dupes.ts` does only the Instantly + DB IO.
 - **Read-only — never PATCH/pause/cancel.** This audits; it does not heal. A healing pass (and the deferred `POST /send` prevention) is separate work.
+- **Running it locally against prod.** key-service lives at `key-service.railway.internal`, which only resolves INSIDE Railway's network — a laptop `railway run` shell gets `ENOTFOUND`. So set `INSTANTLY_API_KEY` directly (bypasses key-service; audits that key's workspace — the platform key audits the shared workspace) and let `railway run -s instantly-service` inject `INSTANTLY_SERVICE_DATABASE_URL` (Neon, publicly reachable) for the brand labels: `railway run -s instantly-service -- bash -lc 'export INSTANTLY_API_KEY=…; npm run audit:dupes'`. The brand-label DB lookup is chunked + uses `inArray` (drizzle expands `ANY(${jsArray})` into a ROW expression that trips Postgres' 1664-entry limit; never pass a large JS array to `sql\`= ANY(...)\``).
 
 ## Data layering — Bronze / Silver / Gold
 
