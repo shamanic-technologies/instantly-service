@@ -33,7 +33,8 @@
  */
 
 import { db, closeDb } from "../src/db";
-import { sql } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
+import { instantlyCampaigns } from "../src/db/schema";
 import { resolveInstantlyApiKey } from "../src/lib/key-client";
 import {
   findDuplicateContacts,
@@ -46,8 +47,8 @@ const INSTANTLY_API_URL = "https://api.instantly.ai/api/v2";
 const PAGE_LIMIT = 100;
 /** Instantly campaign status codes considered "actively contacting". 1 = Active. */
 const ACTIVE_STATUSES = new Set<number>([1]);
-/** Pacing between calls — stays well under Instantly's ~600 req/min general cap. */
-const PACE_MS = 150;
+/** Pacing between calls — 110ms ≈ 545 req/min, under Instantly's ~600/min general cap. */
+const PACE_MS = 110;
 
 interface RawCampaign {
   id: string;
@@ -137,25 +138,31 @@ async function listAllLeads(apiKey: string): Promise<RawLead[]> {
   return out;
 }
 
+/** DB query is chunked: drizzle expands `ANY(${jsArray})` into a ROW expression,
+ * which Postgres caps at 1664 entries (error 54011). Batch well under that. */
+const BRAND_LABEL_CHUNK = 1000;
+
 /** Local DB brand/org label per Instantly campaign id. Instantly has no brand field. */
 async function loadBrandLabels(
   instantlyCampaignIds: string[],
 ): Promise<Map<string, { brandIds: string[]; orgId: string | null }>> {
   const map = new Map<string, { brandIds: string[]; orgId: string | null }>();
-  if (instantlyCampaignIds.length === 0) return map;
-  const result = await db.execute(sql`
-    SELECT instantly_campaign_id, brand_ids, org_id
-    FROM instantly_campaigns
-    WHERE instantly_campaign_id = ANY(${instantlyCampaignIds})
-  `);
-  const rows =
-    (result as unknown as { rows?: Array<{ instantly_campaign_id: string; brand_ids: string[] | null; org_id: string | null }> })
-      .rows ?? [];
-  for (const r of rows) {
-    map.set(r.instantly_campaign_id, {
-      brandIds: r.brand_ids ?? [],
-      orgId: r.org_id,
-    });
+  for (let i = 0; i < instantlyCampaignIds.length; i += BRAND_LABEL_CHUNK) {
+    const chunk = instantlyCampaignIds.slice(i, i + BRAND_LABEL_CHUNK);
+    const rows = await db
+      .select({
+        id: instantlyCampaigns.instantlyCampaignId,
+        brandIds: instantlyCampaigns.brandIds,
+        orgId: instantlyCampaigns.orgId,
+      })
+      .from(instantlyCampaigns)
+      .where(inArray(instantlyCampaigns.instantlyCampaignId, chunk));
+    for (const r of rows) {
+      map.set(r.id, {
+        brandIds: r.brandIds ?? [],
+        orgId: r.orgId,
+      });
+    }
   }
   return map;
 }
@@ -188,18 +195,38 @@ function parseArgs(argv: string[]): Args {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.orgId) {
-    console.error(
-      "Usage: npm run audit:dupes -- <orgId> [--json] [--limit N] [--severe-only]",
-    );
-    process.exit(1);
-  }
 
-  const { key: apiKey, keySource } = await resolveInstantlyApiKey(args.orgId, "system", {
-    method: "GET",
-    path: "/internal/audit-dupes",
-  });
-  console.log(`[audit-dupes] resolved ${keySource} Instantly key for org ${args.orgId}`);
+  // Key resolution. Prefer an explicit INSTANTLY_API_KEY from env: key-service
+  // lives at *.railway.internal, which only resolves INSIDE Railway's network —
+  // a local `railway run` shell cannot reach it (ENOTFOUND). Setting
+  // INSTANTLY_API_KEY directly lets the audit run from any laptop against the
+  // workspace that key belongs to (e.g. the shared platform workspace). When the
+  // env key is absent, fall back to key-service resolution keyed on <orgId>.
+  let apiKey: string;
+  let keySource: string;
+  const envKey = process.env.INSTANTLY_API_KEY?.trim();
+  if (envKey) {
+    apiKey = envKey;
+    keySource = "env";
+    console.log(
+      `[audit-dupes] using INSTANTLY_API_KEY from env (key-service bypassed); auditing that key's workspace.`,
+    );
+  } else {
+    if (!args.orgId) {
+      console.error(
+        "Usage: npm run audit:dupes -- <orgId> [--json] [--limit N] [--severe-only]\n" +
+          "       (or set INSTANTLY_API_KEY to audit that key's workspace directly)",
+      );
+      process.exit(1);
+    }
+    const resolved = await resolveInstantlyApiKey(args.orgId, "system", {
+      method: "GET",
+      path: "/internal/audit-dupes",
+    });
+    apiKey = resolved.key;
+    keySource = resolved.keySource;
+    console.log(`[audit-dupes] resolved ${keySource} Instantly key for org ${args.orgId}`);
+  }
 
   console.log(`[audit-dupes] listing campaigns...`);
   const campaigns = await listAllCampaigns(apiKey);
@@ -210,18 +237,18 @@ async function main() {
     `[audit-dupes] ${campaigns.length} campaigns, ${activeIds.length} active (status 1).`,
   );
 
-  console.log(`[audit-dupes] loading brand labels from local DB...`);
-  const brandLabels = await loadBrandLabels(activeIds);
-
+  // Build the campaign map with active flag but NO brand yet. Brand labels are
+  // loaded from the DB only for campaigns that actually collide (computed after
+  // the lead sweep) — querying brand for all 10k+ active campaigns up front is
+  // both wasteful and trips Postgres' ROW-expression limit.
   const campaignsById = new Map<string, AuditCampaign>();
   for (const c of campaigns) {
-    const label = brandLabels.get(c.id);
     campaignsById.set(c.id, {
       id: c.id,
       name: c.name ?? c.id,
       active: ACTIVE_STATUSES.has(Number(c.status)),
-      brandIds: label?.brandIds ?? [],
-      orgId: label?.orgId ?? null,
+      brandIds: [],
+      orgId: null,
     });
   }
 
@@ -236,6 +263,26 @@ async function main() {
   const distinctActiveEmails = new Set(
     memberships.filter((m) => activeSet.has(m.campaignId)).map((m) => m.email.toLowerCase()),
   );
+
+  // First pass (no brand) → identifies which campaigns collide.
+  const firstPass = findDuplicateContacts(memberships, campaignsById);
+  const dupCampaignIds = [
+    ...new Set(firstPass.flatMap((d) => d.activeCampaigns.map((c) => c.id))),
+  ];
+  console.log(
+    `[audit-dupes] ${firstPass.length} duplicate emails; loading brand labels for ${dupCampaignIds.length} colliding campaigns...`,
+  );
+
+  // Patch only the colliding campaigns with their DB brand/org, then re-classify.
+  const brandLabels = await loadBrandLabels(dupCampaignIds);
+  for (const id of dupCampaignIds) {
+    const label = brandLabels.get(id);
+    const c = campaignsById.get(id);
+    if (c && label) {
+      c.brandIds = label.brandIds;
+      c.orgId = label.orgId;
+    }
+  }
 
   let duplicates = findDuplicateContacts(memberships, campaignsById);
   if (args.severeOnly) duplicates = duplicates.filter((d) => d.severity === "same-brand");
