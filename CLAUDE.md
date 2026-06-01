@@ -16,6 +16,7 @@ Cold email outreach service via Instantly.ai API V2. Handles campaign management
 - `npm run backfill:inferences` — one-shot CLI: project synthetic predecessor events onto existing silver rows. Manual only — NEVER wired into boot (port-bind hazard).
 - `npm run cleanup:stacked-sigs` — one-shot CLI: clean stacked signatures from Instantly campaigns whose lead has been pushed but not yet received any email. Dry-run by default; pass `-- --commit` to actually PATCH Instantly. See [Signature handling](#signature-handling--idempotent-strip-then-append). Manual only.
 - `npm run audit:dupes -- <orgId>` — read-only CLI: audit cross-campaign duplicate contacts (same email sitting in ≥2 **active** Instantly campaigns). **Source of truth = Instantly API**, never the local DB (the DB can be stale — the duplicate FACT is derived from Instantly). The local DB is read only to label each collision `same-brand` / `cross-brand` / `unknown-brand` (Instantly has no brand field). Read-only — audits, never heals. Flags: `--json`, `--limit N`, `--severe-only`. Manual only. See [Cross-campaign duplicate audit](#cross-campaign-duplicate-audit--read-only).
+- `npm run heal:dupes -- --commit` — MUTATING CLI: pause redundant active Instantly campaigns. For each email in ≥2 active campaigns, **keep the oldest** (`timestamp_created`) and **pause** the rest. Dry-run by default; `--commit` to act; `--limit N` to batch. Pause is reversible (no delete). Instantly-only (no cost refund / DB write — runs-service is internal-DNS-only from a local shell). Run AFTER the retry-stuck fix deploys (else the worker re-spawns dupes). Idempotent/resumable. Manual only. See [Cross-campaign duplicate audit](#cross-campaign-duplicate-audit--read-only).
 
 ## Architecture
 
@@ -103,7 +104,15 @@ If you add a new HTML wrapper form (e.g. `<section>--</section>`), add a regex t
   - `cross-brand` — ≥2 active campaigns, all brands known, none repeated.
   - `unknown-brand` — ≥2 active campaigns but a campaign has no DB row (DB gap; duplicate still real).
 - Pure detection logic lives in `src/lib/audit-duplicates.ts` (`findDuplicateContacts` / `summarizeDuplicates`), unit-tested in `tests/unit/audit-duplicates.test.ts`. The script `scripts/audit-cross-campaign-dupes.ts` does only the Instantly + DB IO.
-- **Read-only — never PATCH/pause/cancel.** This audits; it does not heal. A healing pass (and the deferred `POST /send` prevention) is separate work.
+- **Read-only — never PATCH/pause/cancel.** This audits; it does not heal. The healing pass is `heal:dupes` (below); the deferred `POST /send` prevention is separate work.
+
+The **heal** (`scripts/heal-pause-dupe-campaigns.ts`, `npm run heal:dupes`):
+
+- For each email in ≥2 active campaigns, **keep the oldest by `timestamp_created`** (NOT `created_at` — the `/campaigns` list does not return `created_at`; relying on it silently falls back to id-sort and keeps the wrong campaign) and **pause** the rest via `POST /campaigns/{id}/pause`. Collapses retry stacks AND distinct logical campaigns → one active per person.
+- Selection logic is pure + unit-tested in `src/lib/heal-duplicates.ts` (`selectCampaignsToPause`); the script does only Instantly IO.
+- **Pause, not delete** — reversible. **Dry-run by default**; `--commit` to act; `--limit N` to batch (~110ms/call ⇒ ~75 min for the full ~41k backlog). Idempotent + resumable: re-runs re-sweep live state, so already-paused campaigns leave the active set and are never re-touched.
+- **Instantly-only.** No cost refund / local-DB `delivery_status` write — `handleCampaignError` / runs-service live at `*.railway.internal`, unreachable from a local shell. Cost reconciliation is a follow-up (DIS-148).
+- **Order matters:** deploy the retry-stuck fix (DIS-148) BEFORE running `--commit`, else the worker re-spawns duplicates faster than the heal clears them.
 - **Running it locally against prod.** key-service lives at `key-service.railway.internal`, which only resolves INSIDE Railway's network — a laptop `railway run` shell gets `ENOTFOUND`. So set `INSTANTLY_API_KEY` directly (bypasses key-service; audits that key's workspace — the platform key audits the shared workspace) and let `railway run -s instantly-service` inject `INSTANTLY_SERVICE_DATABASE_URL` (Neon, publicly reachable) for the brand labels: `railway run -s instantly-service -- bash -lc 'export INSTANTLY_API_KEY=…; npm run audit:dupes'`. The brand-label DB lookup is chunked + uses `inArray` (drizzle expands `ANY(${jsArray})` into a ROW expression that trips Postgres' 1664-entry limit; never pass a large JS array to `sql\`= ANY(...)\``).
 
 ## Data layering — Bronze / Silver / Gold
