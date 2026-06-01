@@ -15,6 +15,7 @@ Cold email outreach service via Instantly.ai API V2. Handles campaign management
 - `npm run db:push` — push schema to database
 - `npm run backfill:inferences` — one-shot CLI: project synthetic predecessor events onto existing silver rows. Manual only — NEVER wired into boot (port-bind hazard).
 - `npm run cleanup:stacked-sigs` — one-shot CLI: clean stacked signatures from Instantly campaigns whose lead has been pushed but not yet received any email. Dry-run by default; pass `-- --commit` to actually PATCH Instantly. See [Signature handling](#signature-handling--idempotent-strip-then-append). Manual only.
+- `npm run audit:dupes -- <orgId>` — read-only CLI: audit cross-campaign duplicate contacts (same email sitting in ≥2 **active** Instantly campaigns). **Source of truth = Instantly API**, never the local DB (the DB can be stale — the duplicate FACT is derived from Instantly). The local DB is read only to label each collision `same-brand` / `cross-brand` / `unknown-brand` (Instantly has no brand field). Read-only — audits, never heals. Flags: `--json`, `--limit N`, `--severe-only`. Manual only. See [Cross-campaign duplicate audit](#cross-campaign-duplicate-audit--read-only).
 
 ## Architecture
 
@@ -89,6 +90,20 @@ The signature is intentionally code-derived (not Instantly-UI driven). When the 
 Historic bug 2026-05-28: the original `stripAccountSignature` matched only the plain `\n\n--\n` marker. Bodies stored as HTML never matched, so every retry-stuck re-send appended a fresh signature on top of the existing one. A row redispatched 72 times shipped a body with 72 stacked signatures. Fix: HTML-tolerant marker list + strip-then-append in `buildEmailBodyWithSignature`. Guard: this section + the `stripAccountSignature` and `buildEmailBodyWithSignature` cumulative-stack tests in `tests/unit/send.test.ts`.
 
 If you add a new HTML wrapper form (e.g. `<section>--</section>`), add a regex to `SIG_MARKERS` AND a unit test case covering both the marker shape and a 3-stacked case for that shape.
+
+## Cross-campaign duplicate audit — read-only
+
+`POST /send` dedups on `(campaign_id, lead_email)` (`instantly_campaigns_campaign_lead_idx`), **not** on `(org_id, lead_email)` or `(brand, lead_email)`. So the same person reached by two **different** logical campaigns of the same org/brand creates two separate active Instantly campaigns — the same prospect gets double-contacted. DIS-77 healed this once (Phase A cancelled 6 same-wave dups, Phase B cancelled 51 re-contacts) but its **root-cause prevention in `POST /send` was never shipped**, so duplicates re-accumulate.
+
+`npm run audit:dupes -- <orgId>` is the standing read-only check for this:
+
+- **Duplicate fact = Instantly API, authoritative.** Lists all campaigns (active = status `1`), sweeps all leads via `POST /leads/list`, groups by email, flags any email in ≥2 active campaigns. The local DB is deliberately NOT consulted for the fact — it can be stale.
+- **Brand/org = local DB, label only.** Instantly has no brand field; `instantly_campaigns.brand_ids` / `org_id` are joined on `instantly_campaign_id` purely to classify each collision:
+  - `same-brand` — ≥2 active campaigns share a brand. True redundant outreach (the dangerous case).
+  - `cross-brand` — ≥2 active campaigns, all brands known, none repeated.
+  - `unknown-brand` — ≥2 active campaigns but a campaign has no DB row (DB gap; duplicate still real).
+- Pure detection logic lives in `src/lib/audit-duplicates.ts` (`findDuplicateContacts` / `summarizeDuplicates`), unit-tested in `tests/unit/audit-duplicates.test.ts`. The script `scripts/audit-cross-campaign-dupes.ts` does only the Instantly + DB IO.
+- **Read-only — never PATCH/pause/cancel.** This audits; it does not heal. A healing pass (and the deferred `POST /send` prevention) is separate work.
 
 ## Data layering — Bronze / Silver / Gold
 
