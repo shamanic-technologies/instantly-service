@@ -18,6 +18,8 @@ import {
 describe("retry-stuck worker — continuous loop", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    // Arm the kill-switch so the worker is allowed to run in these cases.
+    process.env.RETRY_STUCK_WORKER_ENABLED = "true";
     mockProcessRow.mockReset();
     mockSelectOneStuckRow.mockReset();
     mockProcessRow.mockResolvedValue({ kind: "redispatched" });
@@ -29,6 +31,27 @@ describe("retry-stuck worker — continuous loop", () => {
     // Let any in-flight loop iteration observe shouldStop=true.
     await vi.runAllTimersAsync().catch(() => {});
     vi.useRealTimers();
+    delete process.env.RETRY_STUCK_WORKER_ENABLED;
+  });
+
+  it("does NOT start when RETRY_STUCK_WORKER_ENABLED is not 'true' (fail-safe OFF kill-switch)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockSelectOneStuckRow.mockResolvedValue({ id: "row-1" });
+
+    delete process.env.RETRY_STUCK_WORKER_ENABLED;
+    startRetryStuckWorker();
+    expect(isRetryStuckWorkerRunning()).toBe(false);
+
+    process.env.RETRY_STUCK_WORKER_ENABLED = "false";
+    startRetryStuckWorker();
+    expect(isRetryStuckWorkerRunning()).toBe(false);
+
+    // Drain — confirm no row was ever picked up while disabled.
+    for (let k = 0; k < 20; k++) await Promise.resolve();
+    expect(mockSelectOneStuckRow).not.toHaveBeenCalled();
+    expect(mockProcessRow).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it("processes rows back-to-back without waiting between them", async () => {
