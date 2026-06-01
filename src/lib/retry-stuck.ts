@@ -1,35 +1,42 @@
 /**
  * Retry-stuck primitives — single-row pick + send/refund/recharge mutation.
  *
- * Selection criteria (LOCAL DB only — no Instantly preflight):
+ * Selection criteria:
  *   - `delivery_status = 'contacted'` (lead pushed, not yet observed sending)
  *   - `status = 'active'` (not in terminal error state locally)
  *   - `created_at < NOW() - INTERVAL '72 hours'` (3 days = beyond Instantly's
  *     weekday/business-hours dispatch window)
  *   - `campaign_id`, `lead_email`, `org_id` are NOT NULL (filter out orphaned
  *     rows that can't be re-sent)
- *   - NOT EXISTS any silver event in `instantly_events` proving the lead
- *     already moved off `contacted` (email_sent / email_opened / link_clicked
- *     / reply_received / auto_reply_received / email_bounced /
- *     lead_unsubscribed). Belt-and-suspenders: if the column stayed stale
- *     for any reason, silver still gates us.
+ *   - NOT EXISTS any silver event for THIS campaign proving the lead already
+ *     moved off `contacted` (email_sent / opened / clicked / reply / auto-reply
+ *     / bounced / unsubscribed).
+ *   - NOT EXISTS any reply / auto-reply / unsubscribe / bounce for this
+ *     LEAD_EMAIL in ANY campaign (DIS-148 person-level opt-out gate — keyed on
+ *     the atomic member, since redispatch repoints `instantly_campaign_id`
+ *     and orphans the opt-out signal on the predecessor).
  *
  * Per row:
- *   1. Read live Instantly campaign once to recover the sequence (subject +
- *      step bodies + delays). This is the ONLY Instantly call we make for
- *      observability — `not_sending_status` is NOT consulted (reconcile owns
- *      it for /stats; retry-stuck operates purely on local signals).
+ *   1. Read live Instantly campaign once. Used for two things: (a) recover the
+ *      sequence (subject + step bodies + delays); (b) live-status preflight —
+ *      if the campaign is no longer active (e.g. paused in Instantly's UI; the
+ *      local `status` is NOT synced from Instantly by reconcile), sync local
+ *      status and SKIP the redispatch rather than resurrect it. `not_sending_
+ *      status` is still NOT consulted (reconcile owns it for /stats).
  *   2. Read the lead's profile from `instantly_leads`.
  *   3. Call `sendLeadToInstantly` to provision a new campaign on a different
- *      healthy account.
+ *      healthy account, then PAUSE the predecessor Instantly campaign so the
+ *      prospect is not contacted by both (best-effort — a pause failure does
+ *      not abort the redispatch).
  *   4. On success: cancel the old cost rows (refund), provision fresh costs
  *      on new step runs (re-charge), mute the local row in place to point at
  *      the new Instantly campaign, append a `redispatchHistory` entry.
  *      `delivery_status` stays `'contacted'`.
- *   5. On failure (no healthy account, all attempts hit NSS, no sequence,
- *      no local lead profile, getCampaign throws): the row is LEFT ALONE.
- *      No terminal cancel. The worker loop will pick up another row and the
- *      stuck row is re-visited on the next sweep.
+ *   5. Terminal-cancel when the row is un-retriable (parent gone, key gone, no
+ *      sequence, no lead profile, runs-service 409) OR has already been
+ *      redispatched `MAX_REDISPATCHES` times without ever sending. On a
+ *      transient failure (no healthy account) the row is LEFT ALONE and
+ *      re-visited next sweep.
  *
  * Concurrency: this module exposes a `selectOneStuckRow` + `processRow` pair
  * that the worker loop in `lib/retry-stuck-worker.ts` calls sequentially —
@@ -41,7 +48,11 @@
 import { db } from "../db";
 import { instantlyCampaigns, instantlyLeads, sequenceCosts } from "../db/schema";
 import { and, eq, or, sql } from "drizzle-orm";
-import { getCampaign as getInstantlyCampaign, type Lead } from "./instantly-client";
+import {
+  getCampaign as getInstantlyCampaign,
+  updateCampaignStatus,
+  type Lead,
+} from "./instantly-client";
 import { resolveInstantlyApiKey } from "./key-client";
 import {
   sendLeadToInstantly,
@@ -76,6 +87,28 @@ export const STUCK_AGE_HOURS = 72;
  */
 export const ATTEMPT_COOLDOWN_MINUTES = 4320;
 
+/**
+ * Hard cap on redispatches per row. A row that has been redispatched this many
+ * times and STILL never reached `email_sent` is presumed un-sendable (dead
+ * lead, perma-NSS, etc.) — it is terminal-cancelled instead of looping forever.
+ *
+ * Each redispatch creates a fresh Instantly campaign + consumes a billable
+ * contact-upload slot, so an uncapped loop both spams the prospect and burns
+ * the customer's quota. DIS-41 showed rows historically hit 70+ redispatches
+ * under the old 30-min cooldown; this cap is the structural fix.
+ */
+export const MAX_REDISPATCHES = 3;
+
+/**
+ * Instantly campaign status codes (from the live `GET /campaigns/{id}` payload).
+ * 1 = Active (actively contacting). Anything else (2 paused, 3 completed,
+ * 4 running-subsequences-only, negative = suspended) means Instantly is NOT
+ * sending fresh first-touches, so retry-stuck must NOT redispatch — it would
+ * resurrect a campaign the operator (or Instantly) deliberately stopped.
+ */
+const INSTANTLY_STATUS_ACTIVE = 1;
+const INSTANTLY_STATUS_COMPLETED = 3;
+
 const SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000";
 
 export interface StuckCampaignRow {
@@ -93,6 +126,7 @@ export interface StuckCampaignRow {
 export type RowOutcome =
   | { kind: "redispatched"; newInstantlyCampaignId: string; account: string }
   | { kind: "skipped_no_key" }
+  | { kind: "skipped_paused"; liveStatus: number }
   | { kind: "failed"; reason: string };
 
 /**
@@ -129,6 +163,23 @@ export async function selectOneStuckRow(): Promise<StuckCampaignRow | null> {
             'email_sent',
             'email_opened',
             'link_clicked',
+            'reply_received',
+            'auto_reply_received',
+            'email_bounced',
+            'lead_unsubscribed'
+          )
+      )
+      -- Person-level opt-out gate (DIS-148). Keyed on the ATOMIC member
+      -- (lead_email), NOT the campaign instance: once a prospect has replied,
+      -- auto-replied, unsubscribed, or bounced under ANY campaign, they are
+      -- done -- never redispatch them onto a fresh campaign. The per-campaign
+      -- gate above misses this because retry-stuck repoints the campaign id
+      -- to the new campaign (0 events), orphaning the opt-out signal on the
+      -- predecessor (cf. DIS-57).
+      AND NOT EXISTS (
+        SELECT 1 FROM instantly_events e2
+        WHERE e2.lead_email = c.lead_email
+          AND e2.event_type IN (
             'reply_received',
             'auto_reply_received',
             'email_bounced',
@@ -409,6 +460,19 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
     return { kind: "failed", reason: "missing_identifiers" };
   }
 
+  // Bound retries (DIS-148): a row redispatched MAX_REDISPATCHES times that
+  // STILL never reached `email_sent` is presumed un-sendable. Terminal-cancel
+  // it instead of looping — once cancelled it leaves the SELECT pool and
+  // lead-service can re-attempt with a fresh /send.
+  const priorRedispatches = getRedispatchCount(row.metadata);
+  if (priorRedispatches >= MAX_REDISPATCHES) {
+    await cancelRowAsTerminal(
+      row,
+      `max_redispatches_exceeded (${priorRedispatches} >= ${MAX_REDISPATCHES})`,
+    );
+    return { kind: "failed", reason: "max_redispatches_exceeded" };
+  }
+
   // Rate-limit per-row: stamp lastAttemptAt up front so SELECT excludes
   // this row for ATTEMPT_COOLDOWN_MINUTES even if processRow throws.
   await markAttempt(row);
@@ -445,6 +509,29 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
       apiKey,
       row.instantlyCampaignId,
     )) as unknown as Record<string, unknown>;
+
+    // Live-status preflight (DIS-148). The SELECT gates on the LOCAL
+    // `status='active'`, but reconcile never syncs Instantly-side pause/stop
+    // back into local, so a campaign the operator paused in Instantly's UI
+    // still reads `active` locally. Read the live status directly: if the
+    // campaign is no longer active on Instantly, respect that — sync local
+    // status and skip the redispatch rather than resurrecting it on a fresh
+    // campaign. (A missing/unknown status → NaN → also treated as not-active,
+    // i.e. fail-safe toward NOT sending.)
+    const liveStatus = Number((live as { status?: unknown }).status);
+    if (liveStatus !== INSTANTLY_STATUS_ACTIVE) {
+      const localStatus =
+        liveStatus === INSTANTLY_STATUS_COMPLETED ? "completed" : "paused";
+      await db
+        .update(instantlyCampaigns)
+        .set({ status: localStatus, updatedAt: new Date() })
+        .where(eq(instantlyCampaigns.id, row.id));
+      console.log(
+        `[instantly-service] retry-stuck: row=${row.id} instantly=${row.instantlyCampaignId} ` +
+          `live status=${liveStatus} (not active) — skipping redispatch, synced local status='${localStatus}'`,
+      );
+      return { kind: "skipped_paused", liveStatus };
+    }
 
     const seq = extractSequenceFromLive(live);
     if (!seq) {
@@ -491,6 +578,28 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
         `[instantly-service] retry-stuck: row=${row.id} send failed (${result.reason}) — cooling down`,
       );
       return { kind: "failed", reason: result.reason };
+    }
+
+    // 3b. Stop the bleed (DIS-148): pause the PREDECESSOR Instantly campaign
+    //     now that the lead lives on a fresh one. Without this, every
+    //     redispatch left the old campaign active, so the prospect could be
+    //     contacted by BOTH — multiplied across retries into many
+    //     simultaneously-active campaigns. Best-effort: the redispatch has
+    //     already succeeded, so a pause failure must NOT abort the flow — log
+    //     it (warn = actionable) and continue. Worst case is one extra active
+    //     campaign, not the unbounded loop.
+    try {
+      await updateCampaignStatus(apiKey, row.instantlyCampaignId, "paused");
+      console.log(
+        `[instantly-service] retry-stuck: paused predecessor campaign=${row.instantlyCampaignId} ` +
+          `after redispatch to ${result.value.instantlyCampaignId}`,
+      );
+    } catch (pauseError: unknown) {
+      const msg = pauseError instanceof Error ? pauseError.message : String(pauseError);
+      console.warn(
+        `[instantly-service] retry-stuck: row=${row.id} failed to pause predecessor ` +
+          `${row.instantlyCampaignId}: ${msg}`,
+      );
     }
 
     // 4. Cancel old costs (refund), provision fresh costs (recharge).

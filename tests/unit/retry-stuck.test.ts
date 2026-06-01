@@ -73,9 +73,11 @@ vi.mock("../../src/lib/key-client", () => ({
 }));
 
 const mockGetCampaign = vi.fn();
+const mockUpdateCampaignStatus = vi.fn();
 
 vi.mock("../../src/lib/instantly-client", () => ({
   getCampaign: (...args: unknown[]) => mockGetCampaign(...args),
+  updateCampaignStatus: (...args: unknown[]) => mockUpdateCampaignStatus(...args),
 }));
 
 const mockSendLeadToInstantly = vi.fn();
@@ -111,6 +113,7 @@ import {
   processRow,
   STUCK_AGE_HOURS,
   ATTEMPT_COOLDOWN_MINUTES,
+  MAX_REDISPATCHES,
   type StuckCampaignRow,
 } from "../../src/lib/retry-stuck";
 
@@ -130,6 +133,7 @@ function row(extra: Record<string, unknown> = {}): StuckCampaignRow {
 }
 
 const SINGLE_STEP_LIVE = {
+  status: 1, // Instantly "Active" — passes the live-status preflight.
   sequences: [
     {
       steps: [
@@ -191,6 +195,7 @@ beforeEach(() => {
   });
   mockUpdateCostStatus.mockResolvedValue({});
   mockHandleCampaignError.mockResolvedValue(undefined);
+  mockUpdateCampaignStatus.mockResolvedValue({});
 });
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -227,6 +232,16 @@ describe("selectOneStuckRow SQL filter", () => {
     expect(text).toMatch(/c\.metadata->>'lastAttemptAt' IS NULL/);
     expect(text).toMatch(/lastAttemptAt.*::timestamptz <.*NOW\(\)/);
     expect(text).toMatch(/4320\s+minutes/);
+  });
+
+  it("contains a PERSON-LEVEL opt-out gate keyed on lead_email (reply/auto-reply/unsub/bounce in ANY campaign)", async () => {
+    await selectOneStuckRow();
+    const text = chunkText(mockDbExecute.mock.calls[0]?.[0]);
+    // Two NOT EXISTS blocks: the per-campaign progress gate + the person gate.
+    expect((text.match(/NOT EXISTS/gi) ?? []).length).toBeGreaterThanOrEqual(2);
+    // Person gate is keyed on the atomic member, not the campaign instance.
+    expect(text).toMatch(/e2\.lead_email\s*=\s*c\.lead_email/);
+    expect(text).toMatch(/e2\.event_type IN/);
   });
 
   it("returns null when SELECT yields zero rows", async () => {
@@ -425,7 +440,7 @@ describe("processRow — terminal cancel paths", () => {
   });
 
   it("cancels the row when the live campaign has no sequence", async () => {
-    mockGetCampaign.mockResolvedValueOnce({ sequences: [] });
+    mockGetCampaign.mockResolvedValueOnce({ status: 1, sequences: [] });
 
     const outcome = await processRow(row());
 
@@ -508,6 +523,103 @@ describe("processRow — transient failure paths (row left alone)", () => {
     const outcome = await processRow(row());
 
     expect(outcome.kind).toBe("failed");
+    expect(mockHandleCampaignError).not.toHaveBeenCalled();
+  });
+});
+
+// ─── DIS-148: live-status preflight, pause-predecessor, retry cap ──────────
+
+describe("processRow — DIS-148 guards", () => {
+  it("MAX_REDISPATCHES is 3", () => {
+    expect(MAX_REDISPATCHES).toBe(3);
+  });
+
+  it("skips redispatch when the live Instantly campaign is paused (status 2) and syncs local status", async () => {
+    mockGetCampaign.mockResolvedValueOnce({ status: 2, sequences: SINGLE_STEP_LIVE.sequences });
+
+    const outcome = await processRow(row());
+
+    expect(outcome.kind).toBe("skipped_paused");
+    if (outcome.kind === "skipped_paused") expect(outcome.liveStatus).toBe(2);
+    // Did NOT redispatch.
+    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
+    expect(mockHandleCampaignError).not.toHaveBeenCalled();
+    // Synced local status to 'paused'.
+    const sync = mockDbUpdateSet.mock.calls.find((c) => {
+      const v = c[0] as Record<string, unknown>;
+      return v.status === "paused";
+    });
+    expect(sync).toBeDefined();
+  });
+
+  it("syncs local status to 'completed' when the live campaign is completed (status 3)", async () => {
+    mockGetCampaign.mockResolvedValueOnce({ status: 3, sequences: SINGLE_STEP_LIVE.sequences });
+
+    const outcome = await processRow(row());
+
+    expect(outcome.kind).toBe("skipped_paused");
+    const sync = mockDbUpdateSet.mock.calls.find((c) => {
+      const v = c[0] as Record<string, unknown>;
+      return v.status === "completed";
+    });
+    expect(sync).toBeDefined();
+    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
+  });
+
+  it("pauses the PREDECESSOR Instantly campaign after a successful redispatch", async () => {
+    queueSelectLead();
+    queueSelectCosts([]);
+
+    const outcome = await processRow(row());
+
+    expect(outcome.kind).toBe("redispatched");
+    expect(mockUpdateCampaignStatus).toHaveBeenCalledWith(
+      "fake-api-key",
+      "inst-camp-1", // the OLD campaign id
+      "paused",
+    );
+  });
+
+  it("a pause-predecessor failure does NOT abort the redispatch (best-effort)", async () => {
+    queueSelectLead();
+    queueSelectCosts([]);
+    mockUpdateCampaignStatus.mockRejectedValueOnce(new Error("instantly 500"));
+
+    const outcome = await processRow(row());
+
+    expect(outcome.kind).toBe("redispatched");
+    // Row still muted onto the new campaign despite the pause failure.
+    const muteCall = mockDbUpdateSet.mock.calls.find((c) => {
+      const v = c[0] as Record<string, unknown>;
+      return v.instantlyCampaignId === "inst-camp-NEW";
+    });
+    expect(muteCall).toBeDefined();
+  });
+
+  it("terminal-cancels a row already redispatched MAX_REDISPATCHES times (no send)", async () => {
+    const outcome = await processRow(row({ metadata: { redispatchCount: MAX_REDISPATCHES } }));
+
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind === "failed") expect(outcome.reason).toBe("max_redispatches_exceeded");
+    expect(mockHandleCampaignError).toHaveBeenCalledWith(
+      "inst-camp-1",
+      expect.stringContaining("max_redispatches_exceeded"),
+      expect.objectContaining({ terminalStatus: "cancelled" }),
+    );
+    // Capped before any Instantly work.
+    expect(mockGetCampaign).not.toHaveBeenCalled();
+    expect(mockSendLeadToInstantly).not.toHaveBeenCalled();
+  });
+
+  it("still redispatches a row under the cap (redispatchCount = MAX_REDISPATCHES - 1)", async () => {
+    queueSelectLead();
+    queueSelectCosts([]);
+
+    const outcome = await processRow(
+      row({ metadata: { redispatchCount: MAX_REDISPATCHES - 1 } }),
+    );
+
+    expect(outcome.kind).toBe("redispatched");
     expect(mockHandleCampaignError).not.toHaveBeenCalled();
   });
 });

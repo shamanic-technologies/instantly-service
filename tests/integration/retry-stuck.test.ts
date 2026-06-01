@@ -55,7 +55,7 @@ vi.mock("../../src/lib/email-client", () => ({
 import { cleanTestData, closeDb } from "../helpers/test-db";
 import { db } from "../../src/db";
 import { instantlyCampaigns, instantlyLeads, sequenceCosts, instantlyEvents } from "../../src/db/schema";
-import { getCampaign } from "../../src/lib/instantly-client";
+import { getCampaign, updateCampaignStatus } from "../../src/lib/instantly-client";
 import { sendLeadToInstantly } from "../../src/lib/send-lead";
 import { createRun, addCosts, getRun } from "../../src/lib/runs-client";
 import { selectOneStuckRow, processRow } from "../../src/lib/retry-stuck";
@@ -157,6 +157,74 @@ describe.skipIf(SKIP)("retry-stuck (DB-backed)", () => {
     expect(r).toBeNull();
   });
 
+  it("selectOneStuckRow ignores a lead who replied on a DIFFERENT campaign (person-level opt-out)", async () => {
+    await db.insert(instantlyCampaigns).values({
+      campaignId: "camp-1",
+      orgId: "org-1",
+      userId: "00000000-0000-0000-0000-000000000001",
+      brandIds: ["brand-1"],
+      status: "active",
+      deliveryStatus: "contacted",
+      name: "test",
+      leadEmail: "replied@test.com",
+      instantlyCampaignId: "inst-current",
+      createdAt: STUCK_CREATED_AT,
+    });
+
+    // Reply landed on a SIBLING campaign id, not the row's current one.
+    await db.insert(instantlyEvents).values({
+      eventType: "reply_received",
+      campaignId: "inst-some-other-campaign",
+      leadEmail: "replied@test.com",
+      accountEmail: "sender@test.com",
+      step: 1,
+      variant: 1,
+      timestamp: new Date(),
+      source: "webhook",
+    });
+
+    const r = await selectOneStuckRow();
+    expect(r).toBeNull();
+  });
+
+  it("processRow skips + syncs local status when the live campaign is paused in Instantly", async () => {
+    await db.insert(instantlyCampaigns).values({
+      campaignId: "camp-1",
+      orgId: "org-1",
+      userId: "00000000-0000-0000-0000-000000000001",
+      brandIds: ["brand-1"],
+      status: "active",
+      deliveryStatus: "contacted",
+      name: "test",
+      leadEmail: "paused@test.com",
+      instantlyCampaignId: "inst-paused",
+      createdAt: STUCK_CREATED_AT,
+    });
+
+    vi.mocked(getRun).mockResolvedValue({
+      id: "run-x",
+      organizationId: "org-1",
+      userId: "00000000-0000-0000-0000-000000000001",
+      parentRunId: null,
+    } as any);
+
+    // Instantly reports the campaign as paused (status 2).
+    vi.mocked(getCampaign).mockResolvedValue({ status: 2, sequences: [] } as any);
+
+    const candidate = await selectOneStuckRow();
+    expect(candidate).not.toBeNull();
+
+    const outcome = await processRow(candidate!);
+    expect(outcome.kind).toBe("skipped_paused");
+    expect(vi.mocked(sendLeadToInstantly)).not.toHaveBeenCalled();
+
+    const [r] = await db
+      .select()
+      .from(instantlyCampaigns)
+      .where(eq(instantlyCampaigns.instantlyCampaignId, "inst-paused"));
+    expect(r.status).toBe("paused");
+  });
+
   it("processRow re-sends the lead on a fresh account and updates the row in place", async () => {
     await db.insert(instantlyCampaigns).values({
       campaignId: "camp-1",
@@ -188,6 +256,7 @@ describe.skipIf(SKIP)("retry-stuck (DB-backed)", () => {
     });
 
     vi.mocked(getCampaign).mockResolvedValue({
+      status: 1,
       sequences: [{ steps: [{ delay: 0, variants: [{ subject: "Hi", body: "Body" }] }] }],
     } as any);
 
@@ -228,6 +297,13 @@ describe.skipIf(SKIP)("retry-stuck (DB-backed)", () => {
     expect(row.status).toBe("active");
     expect(row.instantlyCampaignId).toBe("inst-NEW");
     expect((row.metadata as Record<string, unknown>).redispatchCount).toBe(1);
+
+    // Predecessor Instantly campaign was paused (stop-the-bleed).
+    expect(vi.mocked(updateCampaignStatus)).toHaveBeenCalledWith(
+      "fake-key",
+      "inst-stuck",
+      "paused",
+    );
   });
 
   it("processRow leaves the row alone (no terminal cancel) when no sender is available", async () => {
@@ -267,6 +343,7 @@ describe.skipIf(SKIP)("retry-stuck (DB-backed)", () => {
     } as any);
 
     vi.mocked(getCampaign).mockResolvedValue({
+      status: 1,
       sequences: [{ steps: [{ delay: 0, variants: [{ subject: "Hi", body: "Body" }] }] }],
     } as any);
 
