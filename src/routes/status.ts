@@ -26,6 +26,15 @@ interface AggRow {
   unsubscribed: boolean | null;
   cancelled: boolean | null;
   lastDeliveredAt: string | null;
+  // Per-event first-occurrence (MIN) timestamps — mirror of lastDeliveredAt (MAX).
+  firstContactedAt: string | null;
+  firstSentAt: string | null;
+  firstDeliveredAt: string | null;
+  firstOpenedAt: string | null;
+  firstClickedAt: string | null;
+  firstRepliedAt: string | null;
+  firstBouncedAt: string | null;
+  firstUnsubscribedAt: string | null;
 }
 
 function extractRows(result: unknown): AggRow[] {
@@ -34,7 +43,7 @@ function extractRows(result: unknown): AggRow[] {
 }
 
 function emptyScoped() {
-  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: null };
+  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
 }
 
 function formatTimestamp(val: string | null | undefined): string | null {
@@ -55,6 +64,14 @@ function buildScopedStatus(row: AggRow | undefined) {
         unsubscribed: row.unsubscribed === true,
         cancelled: row.cancelled === true,
         lastDeliveredAt: formatTimestamp(row.lastDeliveredAt),
+        firstContactedAt: formatTimestamp(row.firstContactedAt),
+        firstSentAt: formatTimestamp(row.firstSentAt),
+        firstDeliveredAt: formatTimestamp(row.firstDeliveredAt),
+        firstOpenedAt: formatTimestamp(row.firstOpenedAt),
+        firstClickedAt: formatTimestamp(row.firstClickedAt),
+        firstRepliedAt: formatTimestamp(row.firstRepliedAt),
+        firstBouncedAt: formatTimestamp(row.firstBouncedAt),
+        firstUnsubscribedAt: formatTimestamp(row.firstUnsubscribedAt),
       }
     : emptyScoped();
 }
@@ -79,7 +96,15 @@ function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string
       BOOL_OR(be.campaign_id IS NOT NULL) AS "bounced",
       BOOL_OR(ue.campaign_id IS NOT NULL) AS "unsubscribed",
       BOOL_OR(c.delivery_status = 'cancelled') AS "cancelled",
-      MAX(se.timestamp) AS "lastDeliveredAt"
+      MAX(se.timestamp) AS "lastDeliveredAt",
+      MIN(c.created_at) AS "firstContactedAt",
+      MIN(se.timestamp) AS "firstSentAt",
+      CASE WHEN BOOL_OR(se.campaign_id IS NOT NULL) AND NOT BOOL_OR(be.campaign_id IS NOT NULL) THEN MIN(se.timestamp) ELSE NULL END AS "firstDeliveredAt",
+      MIN(oe.timestamp) AS "firstOpenedAt",
+      MIN(ce.timestamp) AS "firstClickedAt",
+      MIN(re.timestamp) AS "firstRepliedAt",
+      MIN(be.timestamp) AS "firstBouncedAt",
+      MIN(ue.timestamp) AS "firstUnsubscribedAt"
     FROM instantly_campaigns c
     LEFT JOIN instantly_events se
       ON se.campaign_id = c.instantly_campaign_id
@@ -126,7 +151,15 @@ function brandBreakdownQuery(brandId: string, emails: string[]) {
       BOOL_OR(be.campaign_id IS NOT NULL) AS "bounced",
       BOOL_OR(ue.campaign_id IS NOT NULL) AS "unsubscribed",
       BOOL_OR(c.delivery_status = 'cancelled') AS "cancelled",
-      MAX(se.timestamp) AS "lastDeliveredAt"
+      MAX(se.timestamp) AS "lastDeliveredAt",
+      MIN(c.created_at) AS "firstContactedAt",
+      MIN(se.timestamp) AS "firstSentAt",
+      CASE WHEN BOOL_OR(se.campaign_id IS NOT NULL) AND NOT BOOL_OR(be.campaign_id IS NOT NULL) THEN MIN(se.timestamp) ELSE NULL END AS "firstDeliveredAt",
+      MIN(oe.timestamp) AS "firstOpenedAt",
+      MIN(ce.timestamp) AS "firstClickedAt",
+      MIN(re.timestamp) AS "firstRepliedAt",
+      MIN(be.timestamp) AS "firstBouncedAt",
+      MIN(ue.timestamp) AS "firstUnsubscribedAt"
     FROM instantly_campaigns c
     LEFT JOIN instantly_events se
       ON se.campaign_id = c.instantly_campaign_id
@@ -184,6 +217,18 @@ function aggregateBrandStatus(rows: AggRow[]) {
     }
   }
 
+  // Brand-level first-occurrence = MIN across the brand's campaigns (mirror of the
+  // MAX lastDeliveredAt / BOOL_OR boolean aggregation). Null skipped, so each
+  // firstXAt stays consistent with its boolean: non-null iff some campaign has it.
+  const minAt = (pick: (r: AggRow) => string | null) => {
+    let min: string | null = null;
+    for (const row of rows) {
+      const v = pick(row);
+      if (v && (!min || new Date(v) < new Date(min))) min = v;
+    }
+    return formatTimestamp(min);
+  };
+
   return {
     contacted: rows.some((r) => r.contacted === true),
     sent: rows.some((r) => r.sent === true),
@@ -196,6 +241,14 @@ function aggregateBrandStatus(rows: AggRow[]) {
     unsubscribed: rows.some((r) => r.unsubscribed === true),
     cancelled: rows.some((r) => r.cancelled === true),
     lastDeliveredAt: formatTimestamp(maxDeliveredAt),
+    firstContactedAt: minAt((r) => r.firstContactedAt),
+    firstSentAt: minAt((r) => r.firstSentAt),
+    firstDeliveredAt: minAt((r) => r.firstDeliveredAt),
+    firstOpenedAt: minAt((r) => r.firstOpenedAt),
+    firstClickedAt: minAt((r) => r.firstClickedAt),
+    firstRepliedAt: minAt((r) => r.firstRepliedAt),
+    firstBouncedAt: minAt((r) => r.firstBouncedAt),
+    firstUnsubscribedAt: minAt((r) => r.firstUnsubscribedAt),
   };
 }
 

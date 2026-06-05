@@ -22,7 +22,7 @@ async function createStatusApp() {
   return app;
 }
 
-const emptyScoped = { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: null };
+const emptyScoped = { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
 
 describe("POST /status", () => {
   beforeEach(() => {
@@ -420,5 +420,154 @@ describe("POST /status", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.results[0]).not.toHaveProperty("leadId");
+  });
+
+  // ── First-occurrence (MIN) timestamps — DIS-229 ────────────────────────────
+
+  it("AC: campaign opened@T1 then clicked@T2>T1 → firstOpenedAt==T1 < firstClickedAt==T2, distinguishable", async () => {
+    const T1 = "2026-03-01T10:00:00.000Z";
+    const T2 = "2026-03-01T15:30:00.000Z";
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", campaignId: null, contacted: true, sent: true, delivered: true, opened: true, clicked: true, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: T1, firstContactedAt: T1, firstSentAt: T1, firstDeliveredAt: T1, firstOpenedAt: T1, firstClickedAt: T2, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null }],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      campaignId: "camp-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    const c = res.body.results[0].campaign;
+    expect(c.firstOpenedAt).toBe(T1);
+    expect(c.firstClickedAt).toBe(T2);
+    expect(c.firstOpenedAt).not.toBeNull();
+    expect(c.firstClickedAt).not.toBeNull();
+    expect(new Date(c.firstOpenedAt).getTime()).toBeLessThan(new Date(c.firstClickedAt).getTime());
+    // distinguishable by field
+    expect(c.firstOpenedAt).not.toBe(c.firstClickedAt);
+  });
+
+  it("un-engaged recipient (sent only) → engagement first*At are null, firstSentAt set", async () => {
+    const T = "2026-03-01T10:00:00.000Z";
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", campaignId: null, contacted: true, sent: true, delivered: true, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: T, firstContactedAt: T, firstSentAt: T, firstDeliveredAt: T, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null }],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      campaignId: "camp-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    const c = res.body.results[0].campaign;
+    expect(c.firstSentAt).toBe(T);
+    expect(c.firstOpenedAt).toBeNull();
+    expect(c.firstClickedAt).toBeNull();
+    expect(c.firstRepliedAt).toBeNull();
+    expect(c.firstBouncedAt).toBeNull();
+    expect(c.firstUnsubscribedAt).toBeNull();
+  });
+
+  it("emptyScoped campaign (no row) → all 8 first*At null", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // campaign
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      campaignId: "camp-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    const c = res.body.results[0].campaign;
+    expect(c).toEqual(emptyScoped);
+    for (const f of ["firstContactedAt", "firstSentAt", "firstDeliveredAt", "firstOpenedAt", "firstClickedAt", "firstRepliedAt", "firstBouncedAt", "firstUnsubscribedAt"]) {
+      expect(c[f]).toBeNull();
+    }
+  });
+
+  it("brand aggregate firstOpenedAt = MIN across campaigns", async () => {
+    const Ta = "2026-03-01T10:00:00.000Z"; // camp-1 opened earlier
+    const Tb = "2026-03-05T10:00:00.000Z"; // camp-2 opened later
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { key: "john@acme.com", campaignId: "camp-1", contacted: true, sent: true, delivered: true, opened: true, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: Ta, firstContactedAt: Ta, firstSentAt: Ta, firstDeliveredAt: Ta, firstOpenedAt: Ta, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null },
+        { key: "john@acme.com", campaignId: "camp-2", contacted: true, sent: true, delivered: true, opened: true, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: Tb, firstContactedAt: Tb, firstSentAt: Tb, firstDeliveredAt: Tb, firstOpenedAt: Tb, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null },
+      ],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      brandId: "brand-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    const r = res.body.results[0];
+    expect(r.byCampaign["camp-1"].firstOpenedAt).toBe(Ta);
+    expect(r.byCampaign["camp-2"].firstOpenedAt).toBe(Tb);
+    // brand = MIN across campaigns
+    expect(r.brand.firstOpenedAt).toBe(Ta);
+    expect(r.brand.firstContactedAt).toBe(Ta);
+    expect(r.brand.firstClickedAt).toBeNull(); // never clicked in any campaign
+  });
+
+  it("firstDeliveredAt agrees with delivered boolean (non-null iff delivered)", async () => {
+    const T = "2026-03-01T10:00:00.000Z";
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        // delivered=true → firstDeliveredAt set
+        { key: "ok@acme.com", campaignId: "camp-1", contacted: true, sent: true, delivered: true, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: T, firstContactedAt: T, firstSentAt: T, firstDeliveredAt: T, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null },
+      ],
+    });
+
+    const app = await createStatusApp();
+    const okRes = await request(app).post("/").send({
+      brandId: "brand-1",
+      items: [{ email: "ok@acme.com" }],
+    });
+    expect(okRes.body.results[0].byCampaign["camp-1"].delivered).toBe(true);
+    expect(okRes.body.results[0].byCampaign["camp-1"].firstDeliveredAt).toBe(T);
+
+    // bounced → delivered=false → firstDeliveredAt null (SQL CASE returns NULL)
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { key: "bad@acme.com", campaignId: "camp-2", contacted: true, sent: true, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: true, unsubscribed: false, cancelled: false, lastDeliveredAt: null, firstContactedAt: T, firstSentAt: T, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: T, firstUnsubscribedAt: null },
+      ],
+    });
+    const badRes = await request(app).post("/").send({
+      brandId: "brand-1",
+      items: [{ email: "bad@acme.com" }],
+    });
+    expect(badRes.body.results[0].byCampaign["camp-2"].delivered).toBe(false);
+    expect(badRes.body.results[0].byCampaign["camp-2"].firstDeliveredAt).toBeNull();
+    expect(badRes.body.results[0].byCampaign["camp-2"].firstBouncedAt).toBe(T);
+  });
+
+  it("firstContactedAt non-null when contacted=true", async () => {
+    const T = "2026-03-01T10:00:00.000Z";
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", campaignId: null, contacted: true, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: null, firstContactedAt: T, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null }],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      campaignId: "camp-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    const c = res.body.results[0].campaign;
+    expect(c.contacted).toBe(true);
+    expect(c.firstContactedAt).toBe(T);
+    expect(c.firstSentAt).toBeNull();
   });
 });

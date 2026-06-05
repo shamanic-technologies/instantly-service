@@ -18,11 +18,12 @@
     "db:studio": "drizzle-kit studio",
     "backfill:inferences": "tsx scripts/backfill-inferences.ts",
     "cleanup:stacked-sigs": "tsx scripts/cleanup-stacked-signatures.ts",
-    "audit:dupes": "tsx scripts/audit-cross-campaign-dupes.ts"
+    "audit:dupes": "tsx scripts/audit-cross-campaign-dupes.ts",
+    "heal:dupes": "tsx scripts/heal-pause-dupe-campaigns.ts"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^8.4.0",
-    "@shamanic-technologies/email-domain-contract": "^1.0.2",
+    "@shamanic-technologies/email-domain-contract": "^1.1.0",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "drizzle-orm": "^0.44.0",
