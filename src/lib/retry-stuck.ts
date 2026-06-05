@@ -162,7 +162,7 @@ export async function selectOneStuckRow(): Promise<StuckCampaignRow | null> {
           AND e.event_type IN (
             'email_sent',
             'email_opened',
-            'link_clicked',
+            'email_link_clicked',
             'reply_received',
             'auto_reply_received',
             'email_bounced',

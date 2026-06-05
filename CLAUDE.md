@@ -125,6 +125,12 @@ Three layers, doctrine per `~/.claude/skills/data-layering/SKILL.md`:
 - **Silver** — canonical event log `instantly_events` + state row `instantly_campaigns`. Derived from bronze via `src/lib/silver-promote.ts`. Rebuildable.
 - **Gold** — stats views in `src/routes/analytics.ts`, `status.ts`. Read silver only.
 
+### Webhook event_type normalization — canonical `email_link_clicked` (DIS-239)
+
+Silver's canonical `event_type` for a link click is **`email_link_clicked`**. Instantly's webhook, however, emits the raw name **`link_clicked`** (the ONE event Instantly sends without the `email_` prefix — every other webhook event_type is already canonical: `email_sent`, `email_opened`, `email_bounced`, `reply_received`, `lead_*`). `promoteFromWebhookPayload` (`src/lib/silver-promote.ts`) MUST run `payload.event_type` through `normalizeWebhookEventType` (alias map `link_clicked → email_link_clicked`) before `promoteEvent`. Bronze keeps the raw `link_clicked` (append-only, never normalized). The reconcile snapshot path (`promoteClickFromLead`) already emits the canonical name directly, so both ingestion paths converge.
+
+Every silver READER must use `email_link_clicked`, NEVER `link_clicked`: gold queries (`analytics.ts`, `analytics-public.ts`, `status.ts`), the inference rule (`computePredecessors`), `backfill-inferences.ts`, and the retry-stuck progress gate (`retry-stuck.ts`). Historic bug 2026-06-05 (DIS-239): the webhook path passed `link_clicked` verbatim while every reader filtered `email_link_clicked` → 196 real clicks stranded in silver under a name no consumer read; `% Clicks` was 0 everywhere (features-service DIS-132) despite clicks arriving since 2026-05-28 (DIS-58 fixed click *delivery*; this fixed click *visibility*). Guard: the "normalizes webhook 'link_clicked' to canonical 'email_link_clicked'" test in `tests/unit/silver-promote.test.ts`. If Instantly later adds another prefix-less webhook event, add it to `WEBHOOK_EVENT_TYPE_ALIASES` AND a unit case — do NOT pass it verbatim.
+
 ### Silver inference (synthetic predecessors)
 
 When a "downstream" event lands (e.g. `email_opened`) without a preceding "upstream" event (e.g. `email_sent`), silver promotion synthesizes the missing predecessor deterministically. Rules:
