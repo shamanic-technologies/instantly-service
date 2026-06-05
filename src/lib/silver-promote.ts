@@ -53,6 +53,24 @@ const DELIVERY_STATUS_MAP: Record<string, string> = {
   lead_unsubscribed: "unsubscribed",
 };
 
+// Instantly's webhook `event_type` is already the canonical silver name for
+// almost every event (email_sent, email_opened, email_bounced, reply_received,
+// lead_*, ...). The ONE exception is link clicks: Instantly emits `link_clicked`
+// (no `email_` prefix), while silver, the gold queries (analytics/status), the
+// inference rules, and the published contract all key on `email_link_clicked`.
+// Left un-normalized, every webhook click lands in silver under a name no
+// consumer reads — invisible in all stats (bug 2026-06-05; 196 clicks stranded).
+// Normalize at the webhook boundary so both ingestion paths converge on one
+// canonical name: the reconcile snapshot path (`promoteClickFromLead`) already
+// emits `email_link_clicked`. Bronze keeps the raw provider value (append-only).
+const WEBHOOK_EVENT_TYPE_ALIASES: Record<string, string> = {
+  link_clicked: "email_link_clicked",
+};
+
+function normalizeWebhookEventType(raw: string): string {
+  return WEBHOOK_EVENT_TYPE_ALIASES[raw] ?? raw;
+}
+
 const REPLY_CLASSIFICATION_MAP: Record<string, "positive" | "negative" | "neutral"> = {
   lead_interested: "positive",
   lead_meeting_booked: "positive",
@@ -548,7 +566,7 @@ export async function promoteFromWebhookPayload(params: {
 }): Promise<PromoteEventResult> {
   const { bronzeRowId, payload, rawPayload } = params;
   return promoteEvent({
-    eventType: payload.event_type,
+    eventType: normalizeWebhookEventType(payload.event_type),
     instantlyCampaignId: payload.campaign_id,
     leadEmail: payload.lead_email ?? null,
     accountEmail: payload.email_account ?? null,

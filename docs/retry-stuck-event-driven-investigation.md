@@ -31,7 +31,7 @@ endpoint):
 - `email_opened`
 - `reply_received`
 - `auto_reply_received`
-- `link_clicked`
+- `link_clicked` (normalized to canonical `email_link_clicked` in silver — see CLAUDE.md "Webhook event_type normalization"; silver readers must use `email_link_clicked`)
 - `email_bounced`
 - `lead_unsubscribed`
 - `account_error`
@@ -93,7 +93,7 @@ WHERE c.delivery_status = 'contacted'
     SELECT 1 FROM instantly_events e
     WHERE e.campaign_id = c.instantly_campaign_id
       AND e.event_type IN (
-        'email_sent', 'email_opened', 'link_clicked',
+        'email_sent', 'email_opened', 'email_link_clicked',
         'reply_received', 'auto_reply_received',
         'email_bounced', 'lead_unsubscribed'
       )

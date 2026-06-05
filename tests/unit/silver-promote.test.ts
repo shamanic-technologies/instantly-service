@@ -221,6 +221,53 @@ describe("promoteFromWebhookPayload", () => {
     );
   });
 
+  // ── Webhook event_type normalization (split-brain guard) ───────────────────
+  // Instantly's webhook sends `link_clicked` (no `email_` prefix). Silver, gold
+  // queries, and the inference rules all key on the canonical `email_link_clicked`.
+  // The webhook boundary MUST normalize so clicks are not stranded under a name
+  // no consumer reads. Regression guard for the 2026-06-05 invisible-clicks bug.
+  it("normalizes webhook 'link_clicked' to canonical 'email_link_clicked' on insert", async () => {
+    mockCampaign();
+    mockNewSilverRow();
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-1",
+      payload: {
+        event_type: "link_clicked",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 2,
+      },
+    });
+
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "email_link_clicked", step: 2 }),
+    );
+    // The raw provider name must never reach silver.
+    expect(mockDbInsertValues).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "link_clicked" }),
+    );
+  });
+
+  it("passes through already-canonical event types verbatim (no over-normalization)", async () => {
+    mockCampaign();
+    mockNewSilverRow();
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-1",
+      payload: {
+        event_type: "email_sent",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 1,
+      },
+    });
+
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "email_sent" }),
+    );
+  });
+
   it("skips replyClassification update when reply_classification_source='manual' (manual wins)", async () => {
     mockCampaign();
     mockNewSilverRow();

@@ -170,7 +170,7 @@ WHERE c.delivery_status = 'contacted'
     SELECT 1 FROM instantly_events e
     WHERE e.campaign_id = c.instantly_campaign_id
       AND e.event_type IN (
-        'email_sent','email_opened','link_clicked',
+        'email_sent','email_opened','email_link_clicked',
         'reply_received','auto_reply_received',
         'email_bounced','lead_unsubscribed'
       )
