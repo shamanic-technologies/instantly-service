@@ -1238,6 +1238,46 @@
                         "type": "string",
                         "nullable": true,
                         "description": "ISO 8601 timestamp of last delivery in this scope; null if none"
+                      },
+                      "firstContactedAt": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "First-occurrence (MIN) ISO 8601 timestamp of a contacted event in this scope; null if it never happened in scope"
+                      },
+                      "firstSentAt": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "First-occurrence (MIN) ISO 8601 timestamp of a sent event in this scope; null if it never happened in scope"
+                      },
+                      "firstDeliveredAt": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "First-occurrence (MIN) ISO 8601 timestamp of a delivered event in this scope; null if it never happened in scope"
+                      },
+                      "firstOpenedAt": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "First-occurrence (MIN) ISO 8601 timestamp of an opened event in this scope; null if it never happened in scope"
+                      },
+                      "firstClickedAt": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "First-occurrence (MIN) ISO 8601 timestamp of a clicked event in this scope; null if it never happened in scope"
+                      },
+                      "firstRepliedAt": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "First-occurrence (MIN) ISO 8601 timestamp of a replied event in this scope; null if it never happened in scope (always null for postmark — no reply tracking)"
+                      },
+                      "firstBouncedAt": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "First-occurrence (MIN) ISO 8601 timestamp of a bounced event in this scope; null if it never happened in scope"
+                      },
+                      "firstUnsubscribedAt": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "First-occurrence (MIN) ISO 8601 timestamp of an unsubscribed event in this scope; null if it never happened in scope"
                       }
                     },
                     "required": [
@@ -1310,6 +1350,46 @@
                       "type": "string",
                       "nullable": true,
                       "description": "ISO 8601 timestamp of last delivery in this scope; null if none"
+                    },
+                    "firstContactedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a contacted event in this scope; null if it never happened in scope"
+                    },
+                    "firstSentAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a sent event in this scope; null if it never happened in scope"
+                    },
+                    "firstDeliveredAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a delivered event in this scope; null if it never happened in scope"
+                    },
+                    "firstOpenedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of an opened event in this scope; null if it never happened in scope"
+                    },
+                    "firstClickedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a clicked event in this scope; null if it never happened in scope"
+                    },
+                    "firstRepliedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a replied event in this scope; null if it never happened in scope (always null for postmark — no reply tracking)"
+                    },
+                    "firstBouncedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a bounced event in this scope; null if it never happened in scope"
+                    },
+                    "firstUnsubscribedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of an unsubscribed event in this scope; null if it never happened in scope"
                     }
                   },
                   "required": [
@@ -1381,6 +1461,46 @@
                       "type": "string",
                       "nullable": true,
                       "description": "ISO 8601 timestamp of last delivery in this scope; null if none"
+                    },
+                    "firstContactedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a contacted event in this scope; null if it never happened in scope"
+                    },
+                    "firstSentAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a sent event in this scope; null if it never happened in scope"
+                    },
+                    "firstDeliveredAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a delivered event in this scope; null if it never happened in scope"
+                    },
+                    "firstOpenedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of an opened event in this scope; null if it never happened in scope"
+                    },
+                    "firstClickedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a clicked event in this scope; null if it never happened in scope"
+                    },
+                    "firstRepliedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a replied event in this scope; null if it never happened in scope (always null for postmark — no reply tracking)"
+                    },
+                    "firstBouncedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of a bounced event in this scope; null if it never happened in scope"
+                    },
+                    "firstUnsubscribedAt": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "First-occurrence (MIN) ISO 8601 timestamp of an unsubscribed event in this scope; null if it never happened in scope"
                     }
                   },
                   "required": [
@@ -2910,7 +3030,7 @@
     "/orgs/status": {
       "post": {
         "summary": "Batch delivery status check for emails",
-        "description": "Batch delivery status check. Filters are in the body — headers are tracing/logging only.\n\n**Modes:**\n- **Brand mode** (`brandId` set, no `campaignId`): returns `byCampaign` (per-campaign breakdown keyed by campaign UUID), `brand` (aggregated), and `global`.\n- **Campaign mode** (`campaignId` set, with or without `brandId`): returns `campaign` (single campaign status) and `global`. When both are provided, `brandId` is ignored.\n- **Global only** (neither): returns only `global`.\n\n**Aggregation rules for `brand`:**\n- Boolean fields (`contacted`, `sent`, `delivered`, `opened`, `clicked`, `replied`, `bounced`, `unsubscribed`): `true` if true in at least one campaign (BOOL_OR).\n- `replyClassification`: from the campaign with the most recent `lastDeliveredAt` that has a non-null classification.\n- `lastDeliveredAt`: MAX across all campaigns.\n\n**`global.email`** aggregates `bounced`/`unsubscribed` across ALL campaigns in the org, regardless of brand or campaign filters.\n\nFields not applicable to the active mode are always present but set to `null`.",
+        "description": "Batch delivery status check. Filters are in the body — headers are tracing/logging only.\n\n**Modes:**\n- **Brand mode** (`brandId` set, no `campaignId`): returns `byCampaign` (per-campaign breakdown keyed by campaign UUID), `brand` (aggregated), and `global`.\n- **Campaign mode** (`campaignId` set, with or without `brandId`): returns `campaign` (single campaign status) and `global`. When both are provided, `brandId` is ignored.\n- **Global only** (neither): returns only `global`.\n\n**Aggregation rules for `brand`:**\n- Boolean fields (`contacted`, `sent`, `delivered`, `opened`, `clicked`, `replied`, `bounced`, `unsubscribed`): `true` if true in at least one campaign (BOOL_OR).\n- `replyClassification`: from the campaign with the most recent `lastDeliveredAt` that has a non-null classification.\n- `lastDeliveredAt`: MAX across all campaigns.\n- `firstContactedAt` / `firstSentAt` / `firstDeliveredAt` / `firstOpenedAt` / `firstClickedAt` / `firstRepliedAt` / `firstBouncedAt` / `firstUnsubscribedAt`: first-occurrence (MIN) timestamp of each event type in the scope, null if it never happened; brand = MIN across campaigns. Each agrees with its boolean (non-null iff the boolean is true; `firstDeliveredAt` consistent with `delivered = sent AND NOT bounced`).\n\n**`global.email`** aggregates `bounced`/`unsubscribed` across ALL campaigns in the org, regardless of brand or campaign filters.\n\nFields not applicable to the active mode are always present but set to `null`.",
         "parameters": [
           {
             "schema": {
