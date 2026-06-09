@@ -53,8 +53,8 @@ export interface RunCost {
 export interface CreateRunParams {
   serviceName: string;
   taskName: string;
-  brandId?: string;
-  campaignId?: string;
+  brandId?: string | null;
+  campaignId?: string | null;
 }
 
 export interface CostItem {
@@ -120,9 +120,16 @@ async function runsRequest<T>(
  * - x-run-id → parentRunId (caller's run ID becomes the parent)
  */
 export async function createRun(params: CreateRunParams, identity: IdentityContext): Promise<Run> {
+  const body: CreateRunParams = {
+    serviceName: params.serviceName,
+    taskName: params.taskName,
+  };
+  if (params.brandId?.trim()) body.brandId = params.brandId;
+  if (params.campaignId?.trim()) body.campaignId = params.campaignId;
+
   return runsRequest<Run>("/v1/runs", identity, {
     method: "POST",
-    body: params,
+    body,
   });
 }
 

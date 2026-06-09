@@ -136,7 +136,8 @@
             "type": "boolean"
           },
           "campaignId": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
           },
           "leadId": {
             "type": "string",
@@ -167,7 +168,6 @@
         },
         "required": [
           "success",
-          "campaignId",
           "added"
         ]
       },

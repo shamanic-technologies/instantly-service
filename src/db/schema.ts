@@ -156,7 +156,7 @@ export const sequenceCosts = pgTable(
   "sequence_costs",
   {
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-    campaignId: text("campaign_id").notNull(),
+    campaignId: text("campaign_id"),
     leadEmail: text("lead_email").notNull(),
     step: integer("step").notNull(),
     runId: text("run_id").notNull(),
