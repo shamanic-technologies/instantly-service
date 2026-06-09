@@ -960,6 +960,50 @@ describe("POST /send", () => {
     );
   });
 
+  it("should accept platform sends without campaign context and not pass campaignId to runs-service", async () => {
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
+    mockCreateCampaign.mockResolvedValueOnce({ id: "inst-camp-platform", status: "draft" });
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], not_sending_status: null });
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([{ id: "sub-platform", campaignId: null, instantlyCampaignId: "inst-camp-platform" }]);
+    mockDbReturning.mockResolvedValueOnce([{ id: "lead-1" }]);
+    mockDbReturning.mockResolvedValue([]);
+
+    const app = await createSendApp();
+    const res = await request(app)
+      .post("/send")
+      .set({
+        "x-org-id": "org-1",
+        "x-user-id": "user-1",
+        "x-run-id": "run-1",
+        "x-brand-id": "brand-1",
+      })
+      .send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.campaignId).toBeNull();
+    expect(mockDbWhere).toHaveBeenCalledTimes(1);
+    expect(mockCreateRun).toHaveBeenCalledTimes(3);
+    for (const [params, identity] of mockCreateRun.mock.calls) {
+      expect(params.campaignId).toBeUndefined();
+      expect(identity.tracking?.campaignId).toBeUndefined();
+    }
+
+    const campaignInsert = mockDbInsertValues.mock.calls.find(
+      ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,
+    );
+    expect(campaignInsert![0].campaignId).toBeNull();
+
+    const sequenceCostInserts = mockDbInsertValues.mock.calls.filter(
+      ([v]: [any]) => v.costId && v.step,
+    );
+    expect(sequenceCostInserts).toHaveLength(6);
+    for (const [value] of sequenceCostInserts) {
+      expect(value.campaignId).toBeNull();
+    }
+  });
+
   it("should return 402 when credit authorization fails for platform keySource", async () => {
     mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: false, balance_cents: 2, required_cents: 15 });
     const app = await createSendApp();
