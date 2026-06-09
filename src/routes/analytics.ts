@@ -71,6 +71,30 @@ const ZERO_EMAIL_STATS = {
   unsubscribed: 0,
 };
 
+export interface EngagementLatencyMetric {
+  averageMs: number | null;
+  medianMs: number | null;
+  sampleSize: number;
+}
+
+export interface EngagementLatencyGroup {
+  key: string;
+  workflowSlugs: string[];
+  timeToFirstLinkClick: EngagementLatencyMetric;
+  timeToFirstPositiveReply: EngagementLatencyMetric;
+}
+
+export interface EngagementLatencyGroupInput {
+  key: string;
+  workflowSlugs: string[];
+}
+
+const ZERO_ENGAGEMENT_LATENCY_METRIC: EngagementLatencyMetric = {
+  averageMs: null,
+  medianMs: null,
+  sampleSize: 0,
+};
+
 /** Compute reply aggregates from detail counts */
 export function buildRepliesFromDetail(detail: typeof ZERO_REPLIES_DETAIL) {
   return {
@@ -80,6 +104,176 @@ export function buildRepliesFromDetail(detail: typeof ZERO_REPLIES_DETAIL) {
     repliesAutoReply: detail.autoReply + detail.outOfOffice,
     repliesDetail: detail,
   };
+}
+
+function readFiniteNumber(value: unknown, field: string): number {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    throw new Error(`Invalid engagement latency field ${field}`);
+  }
+  return numeric;
+}
+
+function readNullableFiniteNumber(value: unknown, field: string): number | null {
+  if (value === null) return null;
+  return readFiniteNumber(value, field);
+}
+
+function buildLatencyMetric(
+  row: Record<string, unknown>,
+  sampleSizeField: string,
+  averageMsField: string,
+  medianMsField: string,
+): EngagementLatencyMetric {
+  const sampleSize = readFiniteNumber(row[sampleSizeField], sampleSizeField);
+  if (!Number.isInteger(sampleSize) || sampleSize < 0) {
+    throw new Error(`Invalid engagement latency sample size ${sampleSizeField}`);
+  }
+  if (sampleSize === 0) return { ...ZERO_ENGAGEMENT_LATENCY_METRIC };
+
+  const averageMs = readNullableFiniteNumber(row[averageMsField], averageMsField);
+  const medianMs = readNullableFiniteNumber(row[medianMsField], medianMsField);
+  if (averageMs === null || medianMs === null) {
+    throw new Error(`Missing engagement latency metric for non-empty sample ${sampleSizeField}`);
+  }
+  return { averageMs, medianMs, sampleSize };
+}
+
+/**
+ * Public-safe engagement latency aggregate.
+ *
+ * The caller supplies public grouping keys and their workflow slug sets. This
+ * service owns the dated email events, so it computes first-send -> first
+ * engagement distributions here and returns only aggregate metrics.
+ */
+export async function queryEngagementLatencyGroups(
+  groups: EngagementLatencyGroupInput[],
+): Promise<EngagementLatencyGroup[]> {
+  if (groups.length === 0) return [];
+
+  const values = groups.flatMap((group) =>
+    group.workflowSlugs.map((workflowSlug) => ({ key: group.key, workflowSlug })),
+  );
+  if (values.length === 0) {
+    throw new Error("Engagement latency groups require at least one workflow slug");
+  }
+
+  const groupWorkflowValues = sql.join(
+    values.map((value) => sql`(${value.key}, ${value.workflowSlug})`),
+    sql`, `,
+  );
+
+  const result = await db.execute(sql`
+    WITH group_workflows(group_key, workflow_slug) AS (
+      VALUES ${groupWorkflowValues}
+    ),
+    group_keys AS (
+      SELECT group_key
+      FROM group_workflows
+      GROUP BY group_key
+    ),
+    events_in_group AS (
+      SELECT
+        gw.group_key,
+        e.lead_email,
+        e.event_type,
+        e.timestamp,
+        e.inferred
+      FROM instantly_events e
+      JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+      JOIN group_workflows gw ON gw.workflow_slug = c.workflow_slug
+      WHERE ${internalExclusionClause()}
+        AND e.lead_email IS NOT NULL
+    ),
+    first_sends AS (
+      SELECT
+        group_key,
+        lead_email,
+        MIN(timestamp) AS first_sent_at
+      FROM events_in_group
+      WHERE event_type = 'email_sent'
+        AND inferred = false
+      GROUP BY group_key, lead_email
+    ),
+    recipient_latencies AS (
+      SELECT
+        s.group_key,
+        s.lead_email,
+        MIN(EXTRACT(EPOCH FROM (e.timestamp - s.first_sent_at)) * 1000)
+          FILTER (WHERE e.event_type = 'email_link_clicked') AS click_latency_ms,
+        MIN(EXTRACT(EPOCH FROM (e.timestamp - s.first_sent_at)) * 1000)
+          FILTER (
+            WHERE e.event_type IN (
+              'lead_interested',
+              'lead_meeting_booked',
+              'lead_closed'
+            )
+          ) AS positive_reply_latency_ms
+      FROM first_sends s
+      LEFT JOIN events_in_group e
+        ON e.group_key = s.group_key
+        AND e.lead_email = s.lead_email
+        AND e.timestamp >= s.first_sent_at
+      GROUP BY s.group_key, s.lead_email
+    ),
+    aggregates AS (
+      SELECT
+        group_key,
+        COUNT(click_latency_ms)::int AS click_sample_size,
+        AVG(click_latency_ms)::float8 AS click_average_ms,
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY click_latency_ms)::float8 AS click_median_ms,
+        COUNT(positive_reply_latency_ms)::int AS positive_reply_sample_size,
+        AVG(positive_reply_latency_ms)::float8 AS positive_reply_average_ms,
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY positive_reply_latency_ms)::float8 AS positive_reply_median_ms
+      FROM recipient_latencies
+      GROUP BY group_key
+    )
+    SELECT
+      g.group_key AS "groupKey",
+      COALESCE(a.click_sample_size, 0)::int AS "clickSampleSize",
+      a.click_average_ms AS "clickAverageMs",
+      a.click_median_ms AS "clickMedianMs",
+      COALESCE(a.positive_reply_sample_size, 0)::int AS "positiveReplySampleSize",
+      a.positive_reply_average_ms AS "positiveReplyAverageMs",
+      a.positive_reply_median_ms AS "positiveReplyMedianMs"
+    FROM group_keys g
+    LEFT JOIN aggregates a ON a.group_key = g.group_key
+    ORDER BY g.group_key
+  `);
+
+  const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+  const rowByKey = new Map<string, Record<string, unknown>>(
+    rows.map((row: Record<string, unknown>) => [String(row.groupKey), row]),
+  );
+
+  return groups.map((group) => {
+    const row = rowByKey.get(group.key);
+    if (!row) {
+      return {
+        key: group.key,
+        workflowSlugs: group.workflowSlugs,
+        timeToFirstLinkClick: { ...ZERO_ENGAGEMENT_LATENCY_METRIC },
+        timeToFirstPositiveReply: { ...ZERO_ENGAGEMENT_LATENCY_METRIC },
+      };
+    }
+
+    return {
+      key: group.key,
+      workflowSlugs: group.workflowSlugs,
+      timeToFirstLinkClick: buildLatencyMetric(
+        row,
+        "clickSampleSize",
+        "clickAverageMs",
+        "clickMedianMs",
+      ),
+      timeToFirstPositiveReply: buildLatencyMetric(
+        row,
+        "positiveReplySampleSize",
+        "positiveReplyAverageMs",
+        "positiveReplyMedianMs",
+      ),
+    };
+  });
 }
 
 /** SQL fragment that filters out internal emails on the campaigns table (uses c.lead_email) */

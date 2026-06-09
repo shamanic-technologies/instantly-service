@@ -234,3 +234,163 @@ describe("GET /stats", () => {
   });
 
 });
+
+describe("GET /stats/engagement-latency", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("should aggregate public engagement latency for a workflow slug set", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        {
+          groupKey: "__total__",
+          clickSampleSize: 4,
+          clickAverageMs: 86_400_000,
+          clickMedianMs: 43_200_000,
+          positiveReplySampleSize: 3,
+          positiveReplyAverageMs: 172_800_000,
+          positiveReplyMedianMs: 129_600_000,
+        },
+      ],
+    });
+
+    const app = await createPublicStatsApp();
+    const response = await request(app)
+      .get("/stats/engagement-latency")
+      .query({ workflowSlugs: "sales-outreach-v1,sales-outreach-v2" });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      workflowSlugs: ["sales-outreach-v1", "sales-outreach-v2"],
+      timeToFirstLinkClick: {
+        averageMs: 86_400_000,
+        medianMs: 43_200_000,
+        sampleSize: 4,
+      },
+      timeToFirstPositiveReply: {
+        averageMs: 172_800_000,
+        medianMs: 129_600_000,
+        sampleSize: 3,
+      },
+    });
+
+    const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("workflow_slug");
+    expect(sqlText).toContain("email_sent");
+    expect(sqlText).toContain("email_link_clicked");
+    expect(sqlText).toContain("lead_interested");
+    expect(sqlText).not.toContain("c.org_id");
+  });
+
+  it("should return null averages and medians when sample sizes are zero", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        {
+          groupKey: "__total__",
+          clickSampleSize: 0,
+          clickAverageMs: null,
+          clickMedianMs: null,
+          positiveReplySampleSize: 0,
+          positiveReplyAverageMs: null,
+          positiveReplyMedianMs: null,
+        },
+      ],
+    });
+
+    const app = await createPublicStatsApp();
+    const response = await request(app)
+      .get("/stats/engagement-latency")
+      .query({ workflowSlugs: "sales-outreach-v1" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.timeToFirstLinkClick).toEqual({
+      averageMs: null,
+      medianMs: null,
+      sampleSize: 0,
+    });
+    expect(response.body.timeToFirstPositiveReply).toEqual({
+      averageMs: null,
+      medianMs: null,
+      sampleSize: 0,
+    });
+  });
+
+  it("should fail loudly when workflowSlugs is missing", async () => {
+    const app = await createPublicStatsApp();
+    const response = await request(app).get("/stats/engagement-latency");
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("Query parameter 'workflowSlugs' is required");
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it("should reject unsupported groupBy values", async () => {
+    const app = await createPublicStatsApp();
+    const response = await request(app)
+      .get("/stats/engagement-latency")
+      .query({ workflowSlugs: "sales-outreach-v1", groupBy: "workflowSlug" });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("Query parameter 'groupBy' is not supported; pass workflowSlugs instead");
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /stats/engagement-latency/grouped", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("should aggregate public engagement latency for workflow slug groups", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        {
+          groupKey: "sales-outreach",
+          clickSampleSize: 2,
+          clickAverageMs: 10,
+          clickMedianMs: 10,
+          positiveReplySampleSize: 0,
+          positiveReplyAverageMs: null,
+          positiveReplyMedianMs: null,
+        },
+        {
+          groupKey: "sales-outreach-premium",
+          clickSampleSize: 0,
+          clickAverageMs: null,
+          clickMedianMs: null,
+          positiveReplySampleSize: 1,
+          positiveReplyAverageMs: 20,
+          positiveReplyMedianMs: 20,
+        },
+      ],
+    });
+
+    const app = await createPublicStatsApp();
+    const response = await request(app)
+      .post("/stats/engagement-latency/grouped")
+      .send({
+        groups: {
+          "sales-outreach": { workflowSlugs: ["sales-outreach-v1", "sales-outreach-v2"] },
+          "sales-outreach-premium": { workflowSlugs: ["sales-outreach-premium-v1"] },
+        },
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.groups).toEqual([
+      {
+        key: "sales-outreach",
+        workflowSlugs: ["sales-outreach-v1", "sales-outreach-v2"],
+        timeToFirstLinkClick: { averageMs: 10, medianMs: 10, sampleSize: 2 },
+        timeToFirstPositiveReply: { averageMs: null, medianMs: null, sampleSize: 0 },
+      },
+      {
+        key: "sales-outreach-premium",
+        workflowSlugs: ["sales-outreach-premium-v1"],
+        timeToFirstLinkClick: { averageMs: null, medianMs: null, sampleSize: 0 },
+        timeToFirstPositiveReply: { averageMs: 20, medianMs: 20, sampleSize: 1 },
+      },
+    ]);
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+  });
+});

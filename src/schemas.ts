@@ -434,6 +434,50 @@ const StatsResponseSchema = z
   })
   .openapi("StatsResponse");
 
+const EngagementLatencyMetricSchema = z
+  .object({
+    averageMs: z.number().nullable().describe("Average elapsed time in milliseconds. Null when sampleSize is 0."),
+    medianMs: z.number().nullable().describe("Median elapsed time in milliseconds. Null when sampleSize is 0."),
+    sampleSize: z.number().int().describe("Number of recipients included in the aggregate."),
+  })
+  .openapi("EngagementLatencyMetric");
+
+const EngagementLatencyResponseSchema = z
+  .object({
+    workflowSlugs: z.array(z.string()).describe("Workflow slugs included in this aggregate."),
+    timeToFirstLinkClick: EngagementLatencyMetricSchema,
+    timeToFirstPositiveReply: EngagementLatencyMetricSchema,
+  })
+  .openapi("EngagementLatencyResponse");
+
+export const EngagementLatencyGroupedRequestSchema = z
+  .object({
+    groups: z.record(
+      z.string(),
+      z.object({
+        workflowSlugs: z.array(z.string().trim().min(1)).min(1).describe("Workflow slugs included in this public-safe group."),
+      }),
+    ),
+  })
+  .openapi("EngagementLatencyGroupedRequest");
+
+export type EngagementLatencyGroupedRequest = z.infer<typeof EngagementLatencyGroupedRequestSchema>;
+
+const EngagementLatencyGroupedEntrySchema = z
+  .object({
+    key: z.string().describe("Caller-owned public group key, for example a workflow dynasty slug."),
+    workflowSlugs: z.array(z.string()),
+    timeToFirstLinkClick: EngagementLatencyMetricSchema,
+    timeToFirstPositiveReply: EngagementLatencyMetricSchema,
+  })
+  .openapi("EngagementLatencyGroupedEntry");
+
+const EngagementLatencyGroupedResponseSchema = z
+  .object({
+    groups: z.array(EngagementLatencyGroupedEntrySchema),
+  })
+  .openapi("EngagementLatencyGroupedResponse");
+
 registry.registerPath({
   method: "get",
   path: "/orgs/stats",
@@ -475,6 +519,64 @@ registry.registerPath({
     200: {
       description: "Aggregated campaign stats",
       content: { "application/json": { schema: StatsResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/public/stats/engagement-latency",
+  summary: "Get public-safe engagement latency for workflow slugs",
+  description:
+    "Computes aggregate elapsed time from each recipient's first real send to first link click and first positive reply across the supplied workflow slugs. " +
+    "Returns only aggregate average, median, and sample size; no recipient, lead, campaign, or message data is exposed.",
+  request: {
+    query: z.object({
+      workflowSlugs: z.string().describe("Comma-separated workflow slugs to aggregate together."),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Engagement latency aggregate",
+      content: { "application/json": { schema: EngagementLatencyResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/public/stats/engagement-latency/grouped",
+  summary: "Get public-safe engagement latency for workflow slug groups",
+  description:
+    "Computes aggregate elapsed time from each recipient's first real send to first link click and first positive reply for caller-owned workflow slug groups. " +
+    "Use group keys such as workflow dynasty slugs when the consumer owns dynasty metadata. Returns no per-recipient rows or campaign internals.",
+  request: {
+    body: {
+      content: { "application/json": { schema: EngagementLatencyGroupedRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Engagement latency aggregates by caller-owned group",
+      content: { "application/json": { schema: EngagementLatencyGroupedResponseSchema } },
     },
     400: {
       description: "Invalid request",
