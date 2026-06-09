@@ -120,6 +120,13 @@
       "when": 1774915200000,
       "tag": "0016_add_metadata_gin_index",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1775001600000,
+      "tag": "0017_allow_sequence_costs_without_campaign",
+      "breakpoints": true
     }
   ]
 }

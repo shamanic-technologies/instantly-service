@@ -229,7 +229,7 @@ const StepRunSchema = z.object({
 const SendResponseSchema = z
   .object({
     success: z.boolean(),
-    campaignId: z.string(),
+    campaignId: z.string().nullable().optional(),
     leadId: z.string().nullable().optional(),
     added: z.number(),
     stepRuns: z.array(StepRunSchema).optional(),

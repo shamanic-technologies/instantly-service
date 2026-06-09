@@ -80,11 +80,13 @@ router.post("/", async (req: Request, res: Response) => {
 
   // Read from headers only (no body duplication)
   const brandIds: string[] = (res.locals.headerBrandIds as string[] | undefined) ?? [];
-  const campaignId = tracking.campaignId || "";
+  const campaignId = tracking.campaignId ?? null;
+  const campaignName = campaignId ? `Campaign ${campaignId}` : `Platform send ${body.to}`;
+  const brandId = brandIds.join(",") || undefined;
   const workflowSlug = tracking.workflowSlug;
 
-  console.log(`[send] POST /send to=${body.to} campaignId=${campaignId} brandIds=${brandIds.join(",")} subject="${body.subject}" steps=${body.sequence.length}`);
-    traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-start", detail: `to=${body.to}, campaignId=${campaignId}, steps=${body.sequence.length}` }, req.headers).catch(() => {});
+  console.log(`[send] POST /send to=${body.to} campaignId=${campaignId ?? "none"} brandIds=${brandIds.join(",")} subject="${body.subject}" steps=${body.sequence.length}`);
+  traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-start", detail: `to=${body.to}, campaignId=${campaignId ?? "none"}, steps=${body.sequence.length}` }, req.headers).catch(() => {});
 
   try {
     // 0. Resolve Instantly API key (auto-resolves org vs platform key)
@@ -107,8 +109,8 @@ router.post("/", async (req: Request, res: Response) => {
           orgId,
           userId,
           runId: res.locals.runId as string,
-          campaignId,
-          brandId: brandIds.join(","),
+          campaignId: campaignId ?? undefined,
+          brandId,
           workflowSlug,
           featureSlug: tracking.featureSlug,
         },
@@ -152,7 +154,7 @@ router.post("/", async (req: Request, res: Response) => {
       }
 
       // 4. Dedup: check if this (campaignId, leadEmail) pair already has a campaign
-      const existing = await findExistingCampaign(campaignId, body.to);
+      const existing = campaignId ? await findExistingCampaign(campaignId, body.to) : null;
 
       let savedLead: { id: string } | undefined;
       let added = 0;
@@ -178,7 +180,7 @@ router.post("/", async (req: Request, res: Response) => {
 
         const sendResult = await sendLeadToInstantly({
           apiKey,
-          campaignName: `Campaign ${campaignId}`,
+          campaignName,
           subject: body.subject,
           sortedSequence,
           lead,
@@ -186,7 +188,7 @@ router.post("/", async (req: Request, res: Response) => {
 
         if (!sendResult.ok) {
           const detail = "No active Instantly accounts available for this organization";
-          console.error(`[send] ${detail} for ${campaignId}/${body.to}`);
+          console.error(`[send] ${detail} for ${campaignId ?? "none"}/${body.to}`);
           return res.status(500).json({
             error: "Failed to send lead",
             details: detail,
@@ -213,7 +215,7 @@ router.post("/", async (req: Request, res: Response) => {
             leadEmail: body.to,
             leadId: body.leadId,
             instantlyCampaignId: sendResult.value.instantlyCampaignId,
-            name: `Campaign ${campaignId}`,
+            name: campaignName,
             status: "active",
             deliveryStatus: "contacted",
             orgId,
@@ -273,8 +275,8 @@ router.post("/", async (req: Request, res: Response) => {
         const stepRun = await createRun({
           serviceName: "instantly-service",
           taskName: `email-send-step-${s.step}`,
-          brandId: brandIds.join(","),
-          campaignId,
+          brandId,
+          campaignId: campaignId ?? undefined,
         }, parentIdentity);
 
         const stepIdentity = { orgId, userId, runId: stepRun.id, tracking };
@@ -309,8 +311,8 @@ router.post("/", async (req: Request, res: Response) => {
         stepRuns.push({ step: s.step, runId: stepRun.id });
       }
 
-      traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-done", detail: `to=${body.to}, campaignId=${campaignId}, added=${added}, stepRuns=${stepRuns.length}` }, req.headers).catch(() => {});
-      console.log(`[send] Done — to=${body.to} campaignId=${campaignId} added=${added} stepRuns=${stepRuns.length}`);
+      traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-done", detail: `to=${body.to}, campaignId=${campaignId ?? "none"}, added=${added}, stepRuns=${stepRuns.length}` }, req.headers).catch(() => {});
+      console.log(`[send] Done — to=${body.to} campaignId=${campaignId ?? "none"} added=${added} stepRuns=${stepRuns.length}`);
       res.status(200).json({
         success: true,
         campaignId,

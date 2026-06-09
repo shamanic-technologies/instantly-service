@@ -50,6 +50,50 @@ describe("runs-client", () => {
     expect(options.headers["x-run-id"]).toBe("parent-run-1");
   });
 
+  it("createRun should omit empty optional tracking fields from the body", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: "run-1", status: "running" }),
+    });
+
+    const { createRun } = await import("../../src/lib/runs-client");
+    await createRun(
+      {
+        serviceName: "instantly-service",
+        taskName: "test-task",
+        campaignId: "",
+        brandId: null,
+      },
+      { orgId: "org-1", userId: "user-1", runId: "parent-run-1" },
+    );
+
+    const [, options] = mockFetch.mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.campaignId).toBeUndefined();
+    expect(body.brandId).toBeUndefined();
+  });
+
+  it("createRun should preserve real campaignId in the body", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: "run-1", status: "running" }),
+    });
+
+    const { createRun } = await import("../../src/lib/runs-client");
+    await createRun(
+      {
+        serviceName: "instantly-service",
+        taskName: "test-task",
+        campaignId: "camp-1",
+      },
+      { orgId: "org-1", userId: "user-1", runId: "parent-run-1" },
+    );
+
+    const [, options] = mockFetch.mock.calls[0];
+    const body = JSON.parse(options.body);
+    expect(body.campaignId).toBe("camp-1");
+  });
+
   it("addCosts should include costSource on each item and forward identity headers", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
