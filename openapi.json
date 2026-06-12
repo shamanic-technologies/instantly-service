@@ -560,6 +560,122 @@
           "emailStats"
         ]
       },
+      "EngagementLatencyResponse": {
+        "type": "object",
+        "properties": {
+          "workflowSlugs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Workflow slugs included in this aggregate."
+          },
+          "timeToFirstLinkClick": {
+            "$ref": "#/components/schemas/EngagementLatencyMetric"
+          },
+          "timeToFirstPositiveReply": {
+            "$ref": "#/components/schemas/EngagementLatencyMetric"
+          }
+        },
+        "required": [
+          "workflowSlugs",
+          "timeToFirstLinkClick",
+          "timeToFirstPositiveReply"
+        ]
+      },
+      "EngagementLatencyMetric": {
+        "type": "object",
+        "properties": {
+          "averageMs": {
+            "type": "number",
+            "nullable": true,
+            "description": "Average elapsed time in milliseconds. Null when sampleSize is 0."
+          },
+          "medianMs": {
+            "type": "number",
+            "nullable": true,
+            "description": "Median elapsed time in milliseconds. Null when sampleSize is 0."
+          },
+          "sampleSize": {
+            "type": "integer",
+            "description": "Number of recipients included in the aggregate."
+          }
+        },
+        "required": [
+          "averageMs",
+          "medianMs",
+          "sampleSize"
+        ]
+      },
+      "EngagementLatencyGroupedResponse": {
+        "type": "object",
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EngagementLatencyGroupedEntry"
+            }
+          }
+        },
+        "required": [
+          "groups"
+        ]
+      },
+      "EngagementLatencyGroupedEntry": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Caller-owned public group key, for example a workflow dynasty slug."
+          },
+          "workflowSlugs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "timeToFirstLinkClick": {
+            "$ref": "#/components/schemas/EngagementLatencyMetric"
+          },
+          "timeToFirstPositiveReply": {
+            "$ref": "#/components/schemas/EngagementLatencyMetric"
+          }
+        },
+        "required": [
+          "key",
+          "workflowSlugs",
+          "timeToFirstLinkClick",
+          "timeToFirstPositiveReply"
+        ]
+      },
+      "EngagementLatencyGroupedRequest": {
+        "type": "object",
+        "properties": {
+          "groups": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "workflowSlugs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1,
+                  "description": "Workflow slugs included in this public-safe group."
+                }
+              },
+              "required": [
+                "workflowSlugs"
+              ]
+            }
+          }
+        },
+        "required": [
+          "groups"
+        ]
+      },
       "GroupedStatsResponse": {
         "type": "object",
         "properties": {
@@ -2439,6 +2555,109 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/public/stats/engagement-latency": {
+      "get": {
+        "summary": "Get public-safe engagement latency for workflow slugs",
+        "description": "Computes aggregate elapsed time from each recipient's first real send to first link click and first positive reply across the supplied workflow slugs. Returns only aggregate average, median, and sample size; no recipient, lead, campaign, or message data is exposed.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated workflow slugs to aggregate together."
+            },
+            "required": true,
+            "description": "Comma-separated workflow slugs to aggregate together.",
+            "name": "workflowSlugs",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Engagement latency aggregate",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementLatencyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/public/stats/engagement-latency/grouped": {
+      "post": {
+        "summary": "Get public-safe engagement latency for workflow slug groups",
+        "description": "Computes aggregate elapsed time from each recipient's first real send to first link click and first positive reply for caller-owned workflow slug groups. Use group keys such as workflow dynasty slugs when the consumer owns dynasty metadata. Returns no per-recipient rows or campaign internals.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EngagementLatencyGroupedRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Engagement latency aggregates by caller-owned group",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementLatencyGroupedResponse"
                 }
               }
             }
