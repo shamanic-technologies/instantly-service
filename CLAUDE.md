@@ -94,6 +94,18 @@ Historic bug 2026-05-28: the original `stripAccountSignature` matched only the p
 
 If you add a new HTML wrapper form (e.g. `<section>--</section>`), add a regex to `SIG_MARKERS` AND a unit test case covering both the marker shape and a 3-stacked case for that shape.
 
+## Send idempotency — reserve BEFORE the external Instantly call (DIS-148)
+
+`POST /orgs/send` is idempotent under retry/concurrency for `(campaignId, leadEmail)`: a retried or concurrent send creates **at most one** Instantly campaign, and the loser returns **200 duplicate** (`{success:true, added:0, duplicate:true}`), NEVER a fatal 409. Trigger for the original bug: when instantly-service is slow, email-gateway's 10s `AbortSignal.timeout` fires and it retries — the abort only cancels the caller's wait, so the retry races the original. Both used to pass a read-only dedup check, both called Instantly (each picking the next sender in rotation → two real campaigns), and the loser's insert hit the unique index → fatal 409 → email-gateway mapped it 502 → Windmill flow failed.
+
+**The fix is an ORDERING invariant in `src/routes/send.ts` — do NOT revert it to read-then-act.** The atomic claim on the `(campaignId, leadEmail)` unique index happens BEFORE `sendLeadToInstantly` (the external side-effect), not after:
+
+1. **Reserve** — one `INSERT … onConflictDoUpdate(target:[campaignId,leadEmail], setWhere: reservation-is-stale).returning({id})`. The reserved row carries a unique **`reserving:<uuid>` sentinel** in `instantlyCampaignId` (column stays `notNull().unique()` — the sentinel is the "in flight" marker; NO nullable column, NO migration, so the 6 reader services that assume non-null are untouched). Winner ⇔ `RETURNING` non-empty. The single upsert covers all four cases: fresh-insert (winner), already-committed real-id row (loser → 200 dup), fresh concurrent sentinel (loser → 200 dup), and **stale** sentinel older than `STALE_RESERVATION_MS` (30s — crashed mid-send → reclaim → winner).
+2. **Winner only** → `sendLeadToInstantly` → **phase-2** `UPDATE` overwrites the sentinel with the real `instantlyCampaignId`.
+3. **Release on failure** — `sendLeadToInstantly` `!ok`, or any throw in the inner try → `releaseReservation()` `DELETE`s the row **only while it still matches `reserving:%`** (no-op once phase-2 committed) so a later legit retry can re-claim. Fail loud — no swallow.
+
+`authorize` (credit affordability) + the leadId-conflict 409 stay BEFORE the reserve (they early-return without reserving). Cost provision/actualize (`addCosts`) is winner-only in the step loop — losers declare no cost. The leadId-conflict case (same email, different `lead_id`) is still a real **409**, unchanged. Platform sends (`campaignId=null`) never conflict (Postgres NULLs distinct) → always insert/win, exactly as before. Guard: the "Reservation idempotency (DIS-148)" tests + the rewritten duplicate/concurrent tests in `tests/unit/send.test.ts`. This is idempotency-under-retry for the SAME `(campaignId, leadEmail)` — it does NOT dedup across *different* logical campaigns (that's the separate cross-campaign concern below).
+
 ## Cross-campaign duplicate audit — read-only
 
 `POST /send` dedups on `(campaign_id, lead_email)` (`instantly_campaigns_campaign_lead_idx`), **not** on `(org_id, lead_email)` or `(brand, lead_email)`. So the same person reached by two **different** logical campaigns of the same org/brand creates two separate active Instantly campaigns — the same prospect gets double-contacted. DIS-77 healed this once (Phase A cancelled 6 same-wave dups, Phase B cancelled 51 re-contacts) but its **root-cause prevention in `POST /send` was never shipped**, so duplicates re-accumulate.

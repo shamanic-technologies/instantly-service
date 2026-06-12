@@ -19,6 +19,12 @@ export const instantlyCampaigns = pgTable(
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     campaignId: text("campaign_id"),
     leadEmail: text("lead_email"),
+    // A row is RESERVED (atomic claim on the (campaignId, leadEmail) unique
+    // index) BEFORE the external Instantly campaign exists, carrying a unique
+    // `reserving:<uuid>` sentinel here, then phase-2 updated with the real id.
+    // A value matching `reserving:%` is the "reservation in flight" marker —
+    // see POST /send in src/routes/send.ts. Column stays notNull+unique: the
+    // sentinel is unique per reservation, so readers never see a bare NULL.
     instantlyCampaignId: text("instantly_campaign_id").notNull().unique(),
     name: text("name").notNull(),
     status: text("status").notNull().default("active"),

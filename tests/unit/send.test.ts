@@ -4,15 +4,23 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const mockDbWhere = vi.fn();
 const mockDbReturning = vi.fn();
 const mockDbInsertValues = vi.fn();
+const mockDbDelete = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
     select: () => ({ from: (table: unknown) => ({ where: (...args: unknown[]) => { const result = mockDbWhere(...args); return Object.assign(result, { limit: () => result }); } }) }),
     insert: () => ({ values: (v: unknown) => {
       mockDbInsertValues(v);
-      return { onConflictDoNothing: () => ({ returning: mockDbReturning }), returning: mockDbReturning };
+      return {
+        // Reservation upsert (onConflictDoUpdate) and the lead insert
+        // (onConflictDoNothing) both resolve via the shared returning queue.
+        onConflictDoUpdate: () => ({ returning: mockDbReturning }),
+        onConflictDoNothing: () => ({ returning: mockDbReturning }),
+        returning: mockDbReturning,
+      };
     }}),
     update: () => ({ set: () => ({ where: vi.fn().mockResolvedValue([{}]) }) }),
+    delete: () => ({ where: (...args: unknown[]) => { mockDbDelete(...args); return Promise.resolve([]); } }),
   },
 }));
 
@@ -125,12 +133,11 @@ function acct(overrides: Partial<Account> = {}): Account {
 function mockNewCampaignFlow() {
   mockDbWhere.mockReset();
   mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check (no conflict)
-  mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign (not found → create)
 
   mockCreateCampaign.mockResolvedValue({ id: "inst-camp-new", status: "draft" });
   mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], not_sending_status: null }); // verify after PATCH
 
-  mockDbReturning.mockResolvedValueOnce([{ id: "sub-camp-1", campaignId: "camp-1", instantlyCampaignId: "inst-camp-new" }]); // campaign insert
+  mockDbReturning.mockResolvedValueOnce([{ id: "sub-camp-1", campaignId: "camp-1", instantlyCampaignId: "inst-camp-new" }]); // RESERVE upsert → winner
   mockDbReturning.mockResolvedValueOnce([{ id: "lead-1" }]); // lead insert
   mockUpdateCampaignStatus.mockResolvedValue({});
 }
@@ -750,12 +757,9 @@ describe("POST /send", () => {
   it("should skip Instantly API call and step runs when same lead already processed for campaign", async () => {
     mockDbWhere.mockReset();
     mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
-    mockDbWhere.mockResolvedValueOnce([{
-      id: "sub-camp-1",
-      campaignId: "camp-1",
-      leadEmail: "test@example.com",
-      instantlyCampaignId: "inst-camp-1",
-    }]);
+    // RESERVE upsert loses the claim (row already committed) → empty RETURNING.
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([]);
 
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
@@ -768,6 +772,8 @@ describe("POST /send", () => {
     // No step runs or costs should be created for duplicates
     expect(mockCreateRun).not.toHaveBeenCalled();
     expect(mockAddCosts).not.toHaveBeenCalled();
+    // AC2: no Instantly campaign created before the reservation is won.
+    expect(mockDbDelete).not.toHaveBeenCalled(); // nothing to release (we never reserved)
   });
 
   it("should create separate campaigns for different leads in the same campaign", async () => {
@@ -857,26 +863,26 @@ describe("POST /send", () => {
     expect(mockUpdateRun).toHaveBeenCalledWith("step-run-3", "completed", expect.objectContaining({ orgId: "org-1" }));
   });
 
-  it("should return 409 when concurrent request already claimed the lead", async () => {
+  it("should return 200 idempotent duplicate (NOT 409) when a concurrent request already claimed the lead", async () => {
     mockDbWhere.mockReset();
     mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
-    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign — not found (race condition: both requests pass this check)
 
-    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-race", status: "draft" });
-    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], not_sending_status: null }); // verify after PATCH
-    mockUpdateCampaignStatus.mockResolvedValue({});
-
-    // Campaign insert returns empty array — ON CONFLICT DO NOTHING (concurrent request won)
+    // RESERVE upsert loses the atomic claim — concurrent peer holds it. Empty
+    // RETURNING ⇒ idempotent 200 duplicate, NOT a fatal 409.
     mockDbReturning.mockReset();
-    mockDbReturning.mockResolvedValueOnce([]); // campaign insert → conflict, no row returned
+    mockDbReturning.mockResolvedValueOnce([]);
 
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toContain("possibly duplicate");
-    // No step runs should be created for the losing request
+    expect(res.status).toBe(200);
+    expect(res.body.duplicate).toBe(true);
+    expect(res.body.added).toBe(0);
+    // AC2: the loser creates NO Instantly campaign (claim lost before dispatch).
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    // No step runs/costs for the losing request, and nothing to release.
     expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockDbDelete).not.toHaveBeenCalled();
   });
 
   it("should return stepRuns array in response", async () => {
@@ -1065,5 +1071,83 @@ describe("POST /send", () => {
     expect(res.body.details).toContain("existing-lead-99");
     expect(res.body.details).toContain("different-lead-1");
     expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+
+  // ── Reservation idempotency (DIS-148) ──────────────────────────────────────
+
+  it("AC2: reserves the (campaignId, leadEmail) row with a reserving:<uuid> sentinel BEFORE any Instantly call", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    // First instantly_campaigns insert is the RESERVE — it carries the sentinel
+    // and must precede createCampaign (the external side-effect).
+    const reserveInsert = mockDbInsertValues.mock.calls.find(
+      ([v]: [any]) => v.campaignId === "camp-1" && v.leadEmail === "test@example.com",
+    );
+    expect(reserveInsert).toBeDefined();
+    expect(reserveInsert![0].instantlyCampaignId).toMatch(/^reserving:/);
+    expect(reserveInsert![0].deliveryStatus).toBe("contacted");
+
+    // Ordering: the reserve insert was recorded before createCampaign fired.
+    const reserveInsertOrder = mockDbInsertValues.mock.invocationCallOrder[0];
+    const createCampaignOrder = mockCreateCampaign.mock.invocationCallOrder[0];
+    expect(reserveInsertOrder).toBeLessThan(createCampaignOrder);
+  });
+
+  it("winner: overwrites the sentinel with the real Instantly campaign id (phase-2) and 200s", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(mockCreateCampaign).toHaveBeenCalled();
+    // Winner did NOT release its reservation.
+    expect(mockDbDelete).not.toHaveBeenCalled();
+  });
+
+  it("AC4: releases the reservation (delete) when sendLeadToInstantly finds no accounts", async () => {
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([{ id: "reserved-1", campaignId: "camp-1", instantlyCampaignId: "reserving:x" }]); // RESERVE → winner
+    // No healthy accounts → sendLeadToInstantly returns { ok: false }.
+    mockListAccounts.mockResolvedValue([
+      { email: "dead@test.com", warmup_status: 0, status: 0 },
+    ]);
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(500);
+    expect(res.body.details).toContain("No active Instantly accounts available");
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    // Reservation released so a later legit retry can re-claim.
+    expect(mockDbDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("AC4: releases the reservation when a later step throws after the campaign was dispatched", async () => {
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([{ id: "reserved-2", campaignId: "camp-1", instantlyCampaignId: "reserving:y" }]); // RESERVE → winner
+    mockDbReturning.mockResolvedValueOnce([{ id: "lead-1" }]); // lead insert
+    mockDbReturning.mockResolvedValue([]);
+    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-throw", status: "draft" });
+    mockGetCampaign.mockResolvedValue({ email_list: ["sender@example.com"], not_sending_status: null });
+    // Step-run creation throws → handler unwinds into the catch.
+    mockCreateRun.mockReset();
+    mockCreateRun.mockRejectedValue(new Error("runs-service down"));
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(500);
+    // releaseReservation runs in the catch (no-op at DB level once phase-2 ran,
+    // but the handler still attempts it for any still-open reservation).
+    expect(mockDbDelete).toHaveBeenCalledTimes(1);
   });
 });
