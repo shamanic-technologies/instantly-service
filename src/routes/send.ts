@@ -5,7 +5,7 @@ import {
   instantlyLeads,
   sequenceCosts,
 } from "../db/schema";
-import { eq, and, ne, isNotNull } from "drizzle-orm";
+import { eq, and, ne, isNotNull, sql } from "drizzle-orm";
 import {
   Lead,
 } from "../lib/instantly-client";
@@ -34,19 +34,34 @@ function getTracking(res: Response): TrackingHeaders {
 const router = Router();
 
 /**
- * Check if a campaign already exists for this (campaignId, leadEmail) pair.
+ * Sentinel prefix stored in `instantlyCampaignId` while a (campaignId,
+ * leadEmail) row is RESERVED but the real Instantly campaign does not yet
+ * exist. The column is notNull+unique, so each reservation carries a unique
+ * `reserving:<uuid>` value; phase-2 overwrites it with the real id.
  */
-async function findExistingCampaign(campaignId: string, leadEmail: string) {
-  const [existing] = await db
-    .select()
-    .from(instantlyCampaigns)
-    .where(
-      and(
-        eq(instantlyCampaigns.campaignId, campaignId),
-        eq(instantlyCampaigns.leadEmail, leadEmail),
-      ),
-    );
-  return existing ?? null;
+const RESERVATION_PREFIX = "reserving:";
+
+/** SQL predicate: this row is a reservation in flight (not a committed campaign). */
+const isReservationSql = sql`${instantlyCampaigns.instantlyCampaignId} LIKE ${RESERVATION_PREFIX + "%"}`;
+
+/**
+ * A reservation is considered crashed/abandoned once its sentinel row is older
+ * than this. A later legit retry then reclaims it (see the reserve upsert).
+ * Comfortably above the synchronous reserve→send→phase-2 window.
+ */
+const STALE_RESERVATION_MS = 30_000;
+
+/**
+ * Release a still-open reservation so a later legit retry can re-claim the
+ * (campaignId, leadEmail) pair. No-op once phase-2 has overwritten the
+ * sentinel with the real `instantlyCampaignId` (the row is then a committed
+ * campaign) — guarded by the `reserving:%` predicate. Fail loud: a DB error
+ * here propagates.
+ */
+async function releaseReservation(reservedId: string): Promise<void> {
+  await db
+    .delete(instantlyCampaigns)
+    .where(and(eq(instantlyCampaigns.id, reservedId), isReservationSql));
 }
 
 /**
@@ -126,6 +141,9 @@ router.post("/", async (req: Request, res: Response) => {
 
     // 2. Per-step runs are created AFTER successful campaign activation
     const stepRuns: { step: number; runId: string }[] = [];
+    // Reservation id, set once this request WINS the atomic claim below. Held
+    // out here so the inner catch can release a still-open reservation.
+    let reservedId: string | null = null;
 
     try {
       const sortedSequence = [...body.sequence].sort((a, b) => a.step - b.step);
@@ -153,108 +171,148 @@ router.post("/", async (req: Request, res: Response) => {
         }
       }
 
-      // 4. Dedup: check if this (campaignId, leadEmail) pair already has a campaign
-      const existing = campaignId ? await findExistingCampaign(campaignId, body.to) : null;
-
       let savedLead: { id: string } | undefined;
       let added = 0;
 
-      if (existing) {
-        // Already processed — return early, no new step runs or costs
-        console.log(`[send] Lead ${body.to} already processed for campaign ${campaignId}, skipping`);
+      // 4. RESERVE the (campaignId, leadEmail) pair BEFORE the external Instantly
+      //    call — atomic claim on the unique index. This makes /send idempotent
+      //    under retry/concurrency: exactly one request creates the Instantly
+      //    campaign; everyone else gets an idempotent 200 duplicate (NOT a 409).
+      //
+      //    The row is reserved with a unique `reserving:<uuid>` sentinel in
+      //    `instantlyCampaignId` (the "reservation in flight" marker) and
+      //    phase-2 overwrites it with the real id once the external call wins.
+      //
+      //    One atomic upsert covers all cases:
+      //    - no row               → INSERT → winner (fresh reservation).
+      //    - row, real id         → ON CONFLICT, setWhere(reserving) false →
+      //                             no-op → loser → 200 duplicate (already done).
+      //    - row, sentinel, fresh → setWhere(stale) false → no-op → loser →
+      //                             200 duplicate (concurrent in-flight peer).
+      //    - row, sentinel, stale → setWhere true → UPDATE (reclaim) → winner
+      //                             (the previous winner crashed mid-send).
+      //    Winner ⇔ RETURNING is non-empty.
+      const [reservation] = await db
+        .insert(instantlyCampaigns)
+        .values({
+          campaignId,
+          leadEmail: body.to,
+          leadId: body.leadId,
+          instantlyCampaignId: `${RESERVATION_PREFIX}${crypto.randomUUID()}`,
+          name: campaignName,
+          status: "active",
+          deliveryStatus: "contacted",
+          orgId,
+          userId,
+          brandIds,
+          workflowSlug,
+          featureSlug: tracking.featureSlug,
+          runId: res.locals.runId as string,
+        })
+        .onConflictDoUpdate({
+          target: [instantlyCampaigns.campaignId, instantlyCampaigns.leadEmail],
+          // Stale-reservation reclaim only: take ownership for this caller (new
+          // sentinel from excluded) and refresh the freshness clock.
+          set: {
+            instantlyCampaignId: sql`excluded.instantly_campaign_id`,
+            leadId: sql`excluded.lead_id`,
+            name: sql`excluded.name`,
+            orgId: sql`excluded.org_id`,
+            userId: sql`excluded.user_id`,
+            brandIds: sql`excluded.brand_ids`,
+            workflowSlug: sql`excluded.workflow_slug`,
+            featureSlug: sql`excluded.feature_slug`,
+            runId: sql`excluded.run_id`,
+            createdAt: sql`now()`,
+            updatedAt: sql`now()`,
+          },
+          setWhere: sql`${isReservationSql} AND ${instantlyCampaigns.createdAt} < now() - make_interval(secs => ${STALE_RESERVATION_MS / 1000})`,
+        })
+        .returning({ id: instantlyCampaigns.id });
+
+      if (!reservation) {
+        // Lost the claim — already processed, or a fresh concurrent peer is
+        // mid-flight. Idempotent success: no Instantly campaign created here,
+        // no cost declared. Same 200 shape as the historical early-return.
+        console.log(`[send] Duplicate send for campaign ${campaignId ?? "none"}/${body.to} — claim already held, returning idempotent 200`);
         return res.status(200).json({
           success: true,
           campaignId,
           added: 0,
           duplicate: true,
         });
-      } else {
-        // 5. Dispatch lead to a healthy Instantly account (retries internally).
-        const lead: Lead = {
-          email: body.to,
-          first_name: body.firstName,
-          last_name: body.lastName,
-          company_name: body.company,
-          variables: body.variables,
-        };
-
-        const sendResult = await sendLeadToInstantly({
-          apiKey,
-          campaignName,
-          subject: body.subject,
-          sortedSequence,
-          lead,
-        });
-
-        if (!sendResult.ok) {
-          const detail = "No active Instantly accounts available for this organization";
-          console.error(`[send] ${detail} for ${campaignId ?? "none"}/${body.to}`);
-          return res.status(500).json({
-            error: "Failed to send lead",
-            details: detail,
-          });
-        }
-
-        traceEvent(
-          res.locals.runId as string,
-          {
-            service: "instantly-service",
-            event: "send-campaign-created",
-            detail: `instantlyCampaignId=${sendResult.value.instantlyCampaignId}, added=${sendResult.value.added}, account=${sendResult.value.account.email}`,
-          },
-          req.headers,
-        ).catch(() => {});
-
-        added = sendResult.value.added;
-
-        // Success — save campaign to DB (atomic dedup via unique index)
-        const [insertedCampaign] = await db
-          .insert(instantlyCampaigns)
-          .values({
-            campaignId,
-            leadEmail: body.to,
-            leadId: body.leadId,
-            instantlyCampaignId: sendResult.value.instantlyCampaignId,
-            name: campaignName,
-            status: "active",
-            deliveryStatus: "contacted",
-            orgId,
-            userId,
-            brandIds,
-            workflowSlug,
-            featureSlug: tracking.featureSlug,
-            runId: res.locals.runId as string,
-          })
-          .onConflictDoNothing()
-          .returning();
-
-        if (!insertedCampaign) {
-          // A concurrent request already claimed this (campaignId, leadEmail) pair
-          console.warn(`[send] Race condition: lead ${body.to} for campaign ${campaignId} was already claimed by a concurrent request`);
-          return res.status(409).json({
-            error: "Lead was not added to campaign (possibly duplicate)",
-            details: `Lead ${body.to} is already being processed for campaign ${campaignId}`,
-          });
-        }
-
-        // Save lead to DB
-        const [createdLead] = await db
-          .insert(instantlyLeads)
-          .values({
-            instantlyCampaignId: sendResult.value.instantlyCampaignId,
-            email: body.to,
-            firstName: body.firstName,
-            lastName: body.lastName,
-            companyName: body.company,
-            customVariables: body.variables,
-            orgId,
-            runId: null,
-          })
-          .onConflictDoNothing()
-          .returning();
-
-        if (createdLead) savedLead = createdLead;
       }
+
+      reservedId = reservation.id;
+
+      // 5. WINNER only — dispatch lead to a healthy Instantly account.
+      const lead: Lead = {
+        email: body.to,
+        first_name: body.firstName,
+        last_name: body.lastName,
+        company_name: body.company,
+        variables: body.variables,
+      };
+
+      const sendResult = await sendLeadToInstantly({
+        apiKey,
+        campaignName,
+        subject: body.subject,
+        sortedSequence,
+        lead,
+      });
+
+      if (!sendResult.ok) {
+        // Release the reservation so a later legit retry can re-claim.
+        await releaseReservation(reservedId);
+        reservedId = null;
+        const detail = "No active Instantly accounts available for this organization";
+        console.error(`[send] ${detail} for ${campaignId ?? "none"}/${body.to}`);
+        return res.status(500).json({
+          error: "Failed to send lead",
+          details: detail,
+        });
+      }
+
+      traceEvent(
+        res.locals.runId as string,
+        {
+          service: "instantly-service",
+          event: "send-campaign-created",
+          detail: `instantlyCampaignId=${sendResult.value.instantlyCampaignId}, added=${sendResult.value.added}, account=${sendResult.value.account.email}`,
+        },
+        req.headers,
+      ).catch(() => {});
+
+      added = sendResult.value.added;
+
+      // 6. Phase-2: attach the real Instantly campaign id to the reserved row.
+      //    From here on the row is a committed campaign — release is a no-op.
+      await db
+        .update(instantlyCampaigns)
+        .set({
+          instantlyCampaignId: sendResult.value.instantlyCampaignId,
+          updatedAt: new Date(),
+        })
+        .where(eq(instantlyCampaigns.id, reservedId));
+
+      // Save lead to DB
+      const [createdLead] = await db
+        .insert(instantlyLeads)
+        .values({
+          instantlyCampaignId: sendResult.value.instantlyCampaignId,
+          email: body.to,
+          firstName: body.firstName,
+          lastName: body.lastName,
+          companyName: body.company,
+          customVariables: body.variables,
+          orgId,
+          runId: null,
+        })
+        .onConflictDoNothing()
+        .returning();
+
+      if (createdLead) savedLead = createdLead;
 
       // 4. Create per-step runs. Every step's email costs are inserted as
       //    `provisioned` and flipped to `actual` when the `email_sent` webhook
@@ -328,6 +386,11 @@ router.post("/", async (req: Request, res: Response) => {
         } catch {
           // Run may already be completed (step 1) — ignore
         }
+      }
+      // Release a still-open reservation (no-op once phase-2 attached the real
+      // id) so a later legit retry can re-claim. Fail loud if the delete errors.
+      if (reservedId) {
+        await releaseReservation(reservedId);
       }
       throw error;
     }
