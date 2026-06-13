@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
 import { StatsQuerySchema, GroupedStatsRequestSchema } from "../schemas";
+import { statsCacheKey, getCachedStats, setCachedStats } from "../lib/stats-cache";
 
 const router = Router();
 
@@ -586,39 +587,39 @@ export async function queryGroupedStats(
 
   const groupCol = sql.raw(col);
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
-  const result = await db.execute(sql`
-    SELECT
-      ${groupCol} AS "groupKey",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
-      COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
-      COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "esUnsubscribed",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "rsSent",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "rsOpened",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "rsClicked",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "rsBounced",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rsUnsubscribed",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
-    FROM instantly_events e
-    JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
-    ${lateralJoin}
-    WHERE ${whereClause}
-      AND ${internalExclusionClause()}
-      AND ${groupCol} IS NOT NULL
-    GROUP BY ${groupCol}
-  `);
+  // These three reads are independent — run them concurrently. aggregatesMap is
+  // campaign-level (contacted + notSending + cancelled), derived independently
+  // of the events table. sentimentMap is each lead's CURRENT sentiment (latest
+  // sentiment event, manual winning ties) — NOT every sentiment event ever
+  // recorded, which never drops a re-qualified reply (see SENTIMENT_EVENT_TYPES;
+  // `unsubscribe` stays an event count, a separate signal).
+  const [result, aggregatesMap, sentimentMap] = await Promise.all([
+    db.execute(sql`
+      SELECT
+        ${groupCol} AS "groupKey",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
+        COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
+        COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "esUnsubscribed",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "rsSent",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "rsOpened",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "rsClicked",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "rsBounced",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rsUnsubscribed",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
+      FROM instantly_events e
+      JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+      ${lateralJoin}
+      WHERE ${whereClause}
+        AND ${internalExclusionClause()}
+        AND ${groupCol} IS NOT NULL
+      GROUP BY ${groupCol}
+    `),
+    queryGroupedCampaignAggregates(whereClause, groupBy),
+    queryGroupedSentiment(whereClause, groupBy),
+  ]);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
-
-  // Fetch campaign-level aggregates (contacted + notSending + cancelled) from
-  // campaigns table — derived independently of the events table.
-  const aggregatesMap = await queryGroupedCampaignAggregates(whereClause, groupBy);
-
-  // Reply-sentiment counts come from each lead's CURRENT sentiment (latest
-  // sentiment event, manual winning ties) — NOT from counting every sentiment
-  // event ever recorded, which never drops a re-qualified reply. See
-  // SENTIMENT_EVENT_TYPES. `unsubscribe` stays an event count (separate signal).
-  const sentimentMap = await queryGroupedSentiment(whereClause, groupBy);
 
   const rawGroups = rows.map((row: any) => {
     const sentiment = sentimentMap.get(String(row.groupKey)) ?? ZERO_SENTIMENT_DETAIL;
@@ -668,31 +669,33 @@ export async function queryGroupedStats(
 
 /** Execute the aggregate stats query and return { recipientStats, emailStats } */
 export async function queryStats(whereClause: SQL): Promise<{ recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }> {
-  const result = await db.execute(sql`
-    SELECT
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
-      COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
-      COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "esUnsubscribed",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "rsSent",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "rsOpened",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "rsClicked",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "rsBounced",
-      COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rsUnsubscribed",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
-    FROM instantly_events e
-    JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
-    WHERE ${whereClause}
-      AND ${internalExclusionClause()}
-  `);
+  // These three reads are independent — run them concurrently to cut wall-clock
+  // latency (and the time each holds a pool connection) under load. Reply
+  // sentiment comes from each lead's CURRENT sentiment (latest sentiment event,
+  // manual winning ties) — see queryGroupedStats / SENTIMENT_EVENT_TYPES.
+  const [result, aggregates, sentiment] = await Promise.all([
+    db.execute(sql`
+      SELECT
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
+        COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
+        COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "esUnsubscribed",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "rsSent",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "rsOpened",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "rsClicked",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "rsBounced",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rsUnsubscribed",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
+      FROM instantly_events e
+      JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+      WHERE ${whereClause}
+        AND ${internalExclusionClause()}
+    `),
+    queryCampaignAggregates(whereClause),
+    querySentiment(whereClause),
+  ]);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
-
-  const aggregates = await queryCampaignAggregates(whereClause);
-
-  // Reply-sentiment counts come from each lead's CURRENT sentiment (latest
-  // sentiment event, manual winning ties) — see queryGroupedStats / SENTIMENT_EVENT_TYPES.
-  const sentiment = await querySentiment(whereClause);
 
   if (!rows.length) {
     return {
@@ -770,6 +773,109 @@ export function addSlugConditions(
   }
 }
 
+export interface StepStat {
+  step: number;
+  sent: number;
+  delivered: number;
+  opened: number;
+  bounced: number;
+  clicked: number;
+  unsubscribed: number;
+  repliesPositive: number;
+  repliesNegative: number;
+  repliesNeutral: number;
+  repliesAutoReply: number;
+  repliesDetail: typeof ZERO_REPLIES_DETAIL;
+}
+
+/**
+ * Per-step breakdown. Email metrics (sent/opened/clicked/bounced/unsubscribe)
+ * are genuinely per-step. Reply SENTIMENT, however, is ONE outcome per lead for
+ * the whole sequence — counted via queryStepSentiment, which attributes each
+ * lead's CURRENT sentiment to its last reached step (so a re-qualified negative
+ * never shows a stale positive on an earlier step; see queryStepSentiment).
+ *
+ * The step events query and the step-sentiment query are independent — run
+ * concurrently.
+ */
+export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
+  const [stepResult, stepSentimentMap] = await Promise.all([
+    db.execute(sql`
+      SELECT
+        e.step,
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "sent",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "opened",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "bounced",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "unsubscribed",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
+      FROM instantly_events e
+      JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+      WHERE ${whereClause}
+        AND ${internalExclusionClause()}
+        AND e.step IS NOT NULL
+      GROUP BY e.step
+      ORDER BY e.step
+    `),
+    queryStepSentiment(whereClause),
+  ]);
+  const stepRows = Array.isArray(stepResult) ? stepResult : (stepResult as any).rows ?? [];
+  return stepRows.map((sr: any) => {
+    const sentiment = stepSentimentMap.get(Number(sr.step));
+    const detail = {
+      interested: sentiment?.interested ?? 0,
+      meetingBooked: sentiment?.meetingBooked ?? 0,
+      closed: sentiment?.closed ?? 0,
+      notInterested: sentiment?.notInterested ?? 0,
+      wrongPerson: sentiment?.wrongPerson ?? 0,
+      unsubscribe: sr.rdUnsubscribe ?? 0,
+      neutral: sentiment?.neutral ?? 0,
+      autoReply: sentiment?.autoReply ?? 0,
+      outOfOffice: sentiment?.outOfOffice ?? 0,
+    };
+    const sent = sr.sent ?? 0;
+    const bounced = sr.bounced ?? 0;
+    return {
+      step: sr.step,
+      sent,
+      delivered: sent - bounced,
+      opened: sr.opened ?? 0,
+      bounced,
+      clicked: sr.clicked ?? 0,
+      unsubscribed: sr.unsubscribed ?? 0,
+      ...buildRepliesFromDetail(detail),
+    };
+  });
+}
+
+/**
+ * Full overall stats payload (recipientStats + emailStats, with per-step
+ * breakdown folded into emailStats.stepStats). The overall aggregate and the
+ * per-step breakdown are independent — run concurrently. The step breakdown is
+ * non-fatal: on failure the overall stats still return (stepStats omitted),
+ * mirroring the prior inline behavior.
+ */
+export async function computeStatsPayload(
+  whereClause: SQL,
+): Promise<{ recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: Record<string, unknown> }> {
+  const [overall, stepStats] = await Promise.all([
+    queryStats(whereClause),
+    computeStepStats(whereClause).catch((stepError: any) => {
+      console.error(
+        `[instantly-service] Step query failed (overall stats still returned): ${stepError.cause?.message ?? stepError.message}`,
+      );
+      return [] as StepStat[];
+    }),
+  ]);
+  return {
+    recipientStats: overall.recipientStats,
+    emailStats: {
+      ...overall.emailStats,
+      ...(stepStats.length > 0 && { stepStats }),
+    },
+  };
+}
+
 /**
  * GET /stats
  * Aggregated stats from webhook events. Filters via query params; runIds comma-separated.
@@ -796,11 +902,27 @@ router.get("/stats", async (req: Request, res: Response) => {
 
   const whereClause = sql.join(conditions, sql` AND `);
 
+  // Short-TTL cache: bursts of identical /orgs/stats calls re-aggregate over the
+  // silver log against a tiny Neon compute and saturate it. Serve repeats within
+  // the window from memory. Key is org-scoped so no cross-org leakage.
+  const cacheKey = statsCacheKey(`stats:${orgId}`, {
+    runIds: runIdsRaw,
+    brandId,
+    campaignId,
+    workflowSlugs,
+    featureSlugs,
+    groupBy,
+  });
+  const cached = getCachedStats(cacheKey);
+  if (cached) return res.json(cached);
+
   // Handle groupBy requests
   if (groupBy) {
     try {
       const groups = await queryGroupedStats(whereClause, groupBy);
-      return res.json({ groups });
+      const payload = { groups };
+      setCachedStats(cacheKey, payload);
+      return res.json(payload);
     } catch (error: any) {
       const msg = error.cause?.message ?? error.message ?? String(error);
       console.error(`[instantly-service] Failed to aggregate grouped stats: ${msg}`, error);
@@ -809,76 +931,9 @@ router.get("/stats", async (req: Request, res: Response) => {
   }
 
   try {
-    const { recipientStats, emailStats } = await queryStats(whereClause);
-
-    // Per-step breakdown (secondary stats) — non-fatal; overall stats still return on failure.
-    // Email metrics (sent/opened/clicked/bounced/unsubscribe) are genuinely
-    // per-step. Reply SENTIMENT, however, is ONE outcome per lead for the whole
-    // sequence — counted via queryStepSentiment, which attributes each lead's
-    // CURRENT sentiment to its last reached step (so a re-qualified negative
-    // never shows a stale positive on an earlier step; see queryStepSentiment).
-    let stepStats: Array<{
-      step: number; sent: number; delivered: number; opened: number; bounced: number; clicked: number; unsubscribed: number;
-      repliesPositive: number; repliesNegative: number; repliesNeutral: number; repliesAutoReply: number;
-      repliesDetail: typeof ZERO_REPLIES_DETAIL;
-    }> = [];
-    try {
-      const stepResult = await db.execute(sql`
-        SELECT
-          e.step,
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "sent",
-          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "opened",
-          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "bounced",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "unsubscribed",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
-        FROM instantly_events e
-        JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
-        WHERE ${whereClause}
-          AND ${internalExclusionClause()}
-          AND e.step IS NOT NULL
-        GROUP BY e.step
-        ORDER BY e.step
-      `);
-      const stepRows = Array.isArray(stepResult) ? stepResult : (stepResult as any).rows ?? [];
-      const stepSentimentMap = await queryStepSentiment(whereClause);
-      stepStats = stepRows.map((sr: any) => {
-        const sentiment = stepSentimentMap.get(Number(sr.step));
-        const detail = {
-          interested: sentiment?.interested ?? 0,
-          meetingBooked: sentiment?.meetingBooked ?? 0,
-          closed: sentiment?.closed ?? 0,
-          notInterested: sentiment?.notInterested ?? 0,
-          wrongPerson: sentiment?.wrongPerson ?? 0,
-          unsubscribe: sr.rdUnsubscribe ?? 0,
-          neutral: sentiment?.neutral ?? 0,
-          autoReply: sentiment?.autoReply ?? 0,
-          outOfOffice: sentiment?.outOfOffice ?? 0,
-        };
-        const sent = sr.sent ?? 0;
-        const bounced = sr.bounced ?? 0;
-        return {
-          step: sr.step,
-          sent,
-          delivered: sent - bounced,
-          opened: sr.opened ?? 0,
-          bounced,
-          clicked: sr.clicked ?? 0,
-          unsubscribed: sr.unsubscribed ?? 0,
-          ...buildRepliesFromDetail(detail),
-        };
-      });
-    } catch (stepError: any) {
-      console.error(`[instantly-service] Step query failed (overall stats still returned): ${stepError.cause?.message ?? stepError.message}`);
-    }
-
-    res.json({
-      recipientStats,
-      emailStats: {
-        ...emailStats,
-        ...(stepStats.length > 0 && { stepStats }),
-      },
-    });
+    const payload = await computeStatsPayload(whereClause);
+    setCachedStats(cacheKey, payload);
+    res.json(payload);
   } catch (error: any) {
     const msg = error.cause?.message ?? error.message ?? String(error);
     console.error(`[instantly-service] Failed to aggregate stats: ${msg}`, error);
