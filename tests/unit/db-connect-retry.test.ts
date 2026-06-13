@@ -23,6 +23,15 @@ describe("isTransientConnectError", () => {
     expect(isTransientConnectError(new Error("timeout expired"))).toBe(true);
   });
 
+  it("returns true for pg Pool's acquire-timeout message (prod /status + /analytics 500)", () => {
+    // pg-pool throws this exact string when no connection is available within
+    // connectionTimeoutMillis. It carries no `.code`, so only the message match
+    // catches it. This was the unretried prod failure.
+    expect(
+      isTransientConnectError(new Error("timeout exceeded when trying to connect")),
+    ).toBe(true);
+  });
+
   it("returns false for a real SQL error (undefined_table 42P01)", () => {
     expect(isTransientConnectError({ code: "42P01" })).toBe(false);
   });

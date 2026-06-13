@@ -29,6 +29,19 @@ const pool = new Pool({
   // hanging forever — the post-TCP startup phase is not covered by the
   // happy-eyeballs attempt timeout above.
   connectionTimeoutMillis: 15_000,
+  // Analytics / status routes fan out bursts of concurrent reads. The pg
+  // default max of 10 saturates under a batch caller, so the 11th acquire
+  // waits out connectionTimeoutMillis and throws "timeout exceeded when trying
+  // to connect" (a 500 on /orgs/status + /orgs/analytics). Give the pool more
+  // headroom — Neon's compute allows 450 connections.
+  max: 20,
+  // The Neon compute lives in ap-southeast-1; opening a fresh connection pays a
+  // multi-round-trip cross-region TLS handshake. The pg default idle timeout
+  // (10s) tears warm connections down between bursts, forcing a slow reconnect
+  // on the next one and amplifying acquire timeouts. Keep idle connections warm
+  // and enable TCP keepalive so they survive between bursts.
+  idleTimeoutMillis: 60_000,
+  keepAlive: true,
 });
 
 // Retry only connection-ACQUISITION failures (cold Neon resume). drizzle runs
