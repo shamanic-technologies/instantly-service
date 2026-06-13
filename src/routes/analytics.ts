@@ -528,6 +528,54 @@ export async function querySentiment(whereClause: SQL): Promise<SentimentDetail>
   return rowToSentimentDetail(rows[0] as Record<string, number> | undefined);
 }
 
+/**
+ * Per-step current-sentiment counts, keyed by step.
+ *
+ * A reply is ONE outcome per lead for the whole sequence — not a per-step event.
+ * So each lead contributes its CURRENT sentiment (latest event, manual winning
+ * ties) EXACTLY ONCE, attributed to its **last reached step** = `MAX(step)` of
+ * the lead's `email_sent` events. The sequence stops on reply, so the last sent
+ * step ≈ the step the prospect replied to (auto); for a manual negative
+ * (Instantly never saw the reply) it is simply the last step reached.
+ *
+ * Consequence: a reply re-qualified negative shows up ONLY as negative on the
+ * lead's last step — never as a stale positive on the step where the original
+ * auto `lead_interested` event happened. Step-level email metrics
+ * (sent/opened/clicked/bounced) stay genuinely per-step in the caller; only the
+ * reply *sentiment* is collapsed to the last step here.
+ */
+export async function queryStepSentiment(whereClause: SQL): Promise<Map<number, SentimentDetail>> {
+  const result = await db.execute(sql`
+    WITH latest_sentiment AS (${latestSentimentCteBody()}),
+    ls AS (
+      SELECT
+        lc.campaign_id,
+        lc.sentiment,
+        (
+          SELECT MAX(es.step) FROM instantly_events es
+          WHERE es.campaign_id = lc.campaign_id
+            AND es.lead_email = lc.lead_email
+            AND es.event_type = 'email_sent'
+        ) AS step
+      FROM latest_sentiment lc
+    )
+    SELECT
+      ls.step AS "step",
+      ${SENTIMENT_COUNT_COLUMNS}
+    FROM ls
+    JOIN instantly_campaigns c ON c.instantly_campaign_id = ls.campaign_id
+    WHERE ${whereClause}
+      AND ls.step IS NOT NULL
+    GROUP BY ls.step
+  `);
+  const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+  const map = new Map<number, SentimentDetail>();
+  for (const r of rows as Array<Record<string, number>>) {
+    map.set(Number(r.step), rowToSentimentDetail(r));
+  }
+  return map;
+}
+
 /** Execute grouped stats query and return array of { key, recipientStats, emailStats } */
 export async function queryGroupedStats(
   whereClause: SQL,
@@ -764,11 +812,11 @@ router.get("/stats", async (req: Request, res: Response) => {
     const { recipientStats, emailStats } = await queryStats(whereClause);
 
     // Per-step breakdown (secondary stats) — non-fatal; overall stats still return on failure.
-    // NOTE: step-level sentiment counts are raw event counts, NOT latest-per-lead.
-    // Manual re-qualifications (POST /orgs/manual-qualifications) carry no step
-    // (step = NULL) and are excluded here by `e.step IS NOT NULL`, so a reply
-    // re-qualified after the fact is reflected in the overall/grouped totals
-    // (queryStats / queryGroupedStats) but NOT in this per-step breakdown.
+    // Email metrics (sent/opened/clicked/bounced/unsubscribe) are genuinely
+    // per-step. Reply SENTIMENT, however, is ONE outcome per lead for the whole
+    // sequence — counted via queryStepSentiment, which attributes each lead's
+    // CURRENT sentiment to its last reached step (so a re-qualified negative
+    // never shows a stale positive on an earlier step; see queryStepSentiment).
     let stepStats: Array<{
       step: number; sent: number; delivered: number; opened: number; bounced: number; clicked: number; unsubscribed: number;
       repliesPositive: number; repliesNegative: number; repliesNeutral: number; repliesAutoReply: number;
@@ -783,15 +831,7 @@ router.get("/stats", async (req: Request, res: Response) => {
           COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "bounced",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "unsubscribed",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "rdNotInterested",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_wrong_person'), 0)::int AS "rdWrongPerson",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice"
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
         FROM instantly_events e
         JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
         WHERE ${whereClause}
@@ -801,17 +841,19 @@ router.get("/stats", async (req: Request, res: Response) => {
         ORDER BY e.step
       `);
       const stepRows = Array.isArray(stepResult) ? stepResult : (stepResult as any).rows ?? [];
+      const stepSentimentMap = await queryStepSentiment(whereClause);
       stepStats = stepRows.map((sr: any) => {
+        const sentiment = stepSentimentMap.get(Number(sr.step));
         const detail = {
-          interested: sr.rdInterested ?? 0,
-          meetingBooked: sr.rdMeetingBooked ?? 0,
-          closed: sr.rdClosed ?? 0,
-          notInterested: sr.rdNotInterested ?? 0,
-          wrongPerson: sr.rdWrongPerson ?? 0,
+          interested: sentiment?.interested ?? 0,
+          meetingBooked: sentiment?.meetingBooked ?? 0,
+          closed: sentiment?.closed ?? 0,
+          notInterested: sentiment?.notInterested ?? 0,
+          wrongPerson: sentiment?.wrongPerson ?? 0,
           unsubscribe: sr.rdUnsubscribe ?? 0,
-          neutral: sr.rdNeutral ?? 0,
-          autoReply: sr.rdAutoReply ?? 0,
-          outOfOffice: sr.rdOutOfOffice ?? 0,
+          neutral: sentiment?.neutral ?? 0,
+          autoReply: sentiment?.autoReply ?? 0,
+          outOfOffice: sentiment?.outOfOffice ?? 0,
         };
         const sent = sr.sent ?? 0;
         const bounced = sr.bounced ?? 0;
