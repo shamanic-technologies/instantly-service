@@ -28,7 +28,7 @@ Cold email outreach service via Instantly.ai API V2. Handles campaign management
 - `src/middleware/serviceAuth.ts` — API key auth middleware
 - `src/lib/instantly-client.ts` — Instantly API V2 HTTP client
 - `src/lib/runs-client.ts` — Runs service HTTP client for cost tracking
-- `src/db/schema.ts` — Drizzle ORM table definitions (campaigns, leads, accounts, events, analytics_snapshots)
+- `src/db/schema.ts` — Drizzle ORM table definitions (campaigns, leads, accounts, events). Gold stats are derived-on-read from silver in `analytics.ts`/`status.ts` — there is NO `analytics_snapshots` materialized table (a dropped legacy table; do not reintroduce a snapshot cache unless live aggregation is provably too slow).
 - `src/db/index.ts` — Database connection
 - `tests/unit/` — Unit tests
 - `tests/integration/` — Integration tests
