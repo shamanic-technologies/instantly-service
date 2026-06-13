@@ -154,6 +154,12 @@ The nightly reconcile (`reconcileAll` → `reconcileOneCampaign`, `src/lib/recon
 - **Kill-switch, default OFF:** gated by env `DELETE_FINISHED_CONTACTS_ENABLED` (`isDeleteFinishedEnabled` — exactly `"true"`, anything else incl. unset = OFF). Merge is safe with the var absent (reconcile stays read-only); enable after staging soak. Mirrors the `RETRY_STUCK_WORKER_ENABLED` convention.
 - **Fail-loud, 404-tolerant:** a `DELETE /leads` 404 (lead already gone) is tolerated (`isLeadAlreadyGone`) — idempotent. Any other Instantly error propagates → the per-campaign wrapper counts it `failed` and retries next run. No cost/runs declaration (deleteLeads spends nothing).
 
+**⚠️ LIVE IN PROD — `DELETE_FINISHED_CONTACTS_ENABLED=true` (production + staging, 2026-06-13, v0.42.0).** The recurring delete is ARMED. Operational consequence of locked **option A (no pause grace period)**: the instant a campaign is paused — including a **manual pause to edit-then-resume**, or an Instantly auto-pause (bounce/quota) — its contact is **deleted on Instantly at the next reconcile** (daily 03:00 UTC cron), irreversibly. Only pause when you mean "done". To disarm:
+
+```
+railway variables -s instantly-service --set "DELETE_FINISHED_CONTACTS_ENABLED=false"
+```
+
 ## Data layering — Bronze / Silver / Gold
 
 Three layers, doctrine per `~/.claude/skills/data-layering/SKILL.md`:
