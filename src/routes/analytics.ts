@@ -373,6 +373,161 @@ const GROUP_BY_COLUMNS: Record<string, string> = {
 /** SQL fragment for LATERAL unnest of brand_ids, used when groupBy=brandId */
 const BRAND_LATERAL_JOIN = sql`CROSS JOIN LATERAL unnest(c.brand_ids) AS brand_id`;
 
+/**
+ * The 8 mutually-exclusive reply-sentiment event types (mirrors
+ * REPLY_CLASSIFICATION_MAP in silver-promote.ts). A lead's CURRENT sentiment is
+ * the LATEST of these per (campaign_id, lead_email) — NOT every sentiment event
+ * ever recorded.
+ *
+ * Why this matters: a reply can be re-qualified. A webhook auto-classifies a
+ * reply `lead_interested`, then an operator manually re-qualifies it
+ * `lead_not_interested` via POST /orgs/manual-qualifications. The silver event
+ * log faithfully keeps BOTH rows (append-only audit trail). Counting raw events
+ * (`COUNT(*) FILTER (WHERE event_type = 'lead_interested')`) therefore never
+ * drops the stale positive when a reply is later re-qualified negative — the
+ * positive-reply totals at model/brand level stay frozen. Gold must instead
+ * count each lead's CURRENT sentiment (latest event, manual winning ties).
+ */
+export const SENTIMENT_EVENT_TYPES = [
+  "lead_interested",
+  "lead_meeting_booked",
+  "lead_closed",
+  "lead_not_interested",
+  "lead_wrong_person",
+  "lead_neutral",
+  "lead_out_of_office",
+  "auto_reply_received",
+] as const;
+
+export interface SentimentDetail {
+  interested: number;
+  meetingBooked: number;
+  closed: number;
+  notInterested: number;
+  wrongPerson: number;
+  neutral: number;
+  autoReply: number;
+  outOfOffice: number;
+}
+
+const ZERO_SENTIMENT_DETAIL: SentimentDetail = {
+  interested: 0,
+  meetingBooked: 0,
+  closed: 0,
+  notInterested: 0,
+  wrongPerson: 0,
+  neutral: 0,
+  autoReply: 0,
+  outOfOffice: 0,
+};
+
+/**
+ * Derived table (CTE body): one row per (campaign_id, lead_email) carrying ONLY
+ * that lead's CURRENT sentiment — the latest sentiment event, manual winning
+ * ties. This is the gold-layer projection of "current qualification"; bronze +
+ * silver are left untouched (the full reclassification history stays in the
+ * event log). The `e.` alias matches `internalExclusionClause()`.
+ */
+function latestSentimentCteBody(): SQL {
+  const typeList = sql.join(
+    SENTIMENT_EVENT_TYPES.map((t) => sql`${t}`),
+    sql`, `,
+  );
+  return sql`
+    SELECT DISTINCT ON (e.campaign_id, e.lead_email)
+      e.campaign_id AS campaign_id,
+      e.lead_email AS lead_email,
+      e.event_type AS sentiment
+    FROM instantly_events e
+    WHERE e.event_type IN (${typeList})
+      AND ${internalExclusionClause()}
+    ORDER BY e.campaign_id, e.lead_email,
+      e.timestamp DESC, (e.source = 'manual') DESC, e.created_at DESC, e.id DESC
+  `;
+}
+
+/** Per-sentiment COUNT FILTERs over the latest-sentiment derived table. */
+const SENTIMENT_COUNT_COLUMNS = sql`
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_interested')::int AS "rdInterested",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_meeting_booked')::int AS "rdMeetingBooked",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_closed')::int AS "rdClosed",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_not_interested')::int AS "rdNotInterested",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_wrong_person')::int AS "rdWrongPerson",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_neutral')::int AS "rdNeutral",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'auto_reply_received')::int AS "rdAutoReply",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_out_of_office')::int AS "rdOutOfOffice"
+`;
+
+function rowToSentimentDetail(row: Record<string, number> | undefined): SentimentDetail {
+  if (!row) return { ...ZERO_SENTIMENT_DETAIL };
+  return {
+    interested: row.rdInterested ?? 0,
+    meetingBooked: row.rdMeetingBooked ?? 0,
+    closed: row.rdClosed ?? 0,
+    notInterested: row.rdNotInterested ?? 0,
+    wrongPerson: row.rdWrongPerson ?? 0,
+    neutral: row.rdNeutral ?? 0,
+    autoReply: row.rdAutoReply ?? 0,
+    outOfOffice: row.rdOutOfOffice ?? 0,
+  };
+}
+
+/** Group column map for the sentiment query — outer scope exposes `ls` + `c`
+ *  (NOT `e`), so leadEmail resolves to `ls.lead_email`. */
+const SENTIMENT_GROUP_BY_COLUMNS: Record<string, string> = {
+  brandId: "brand_id",
+  campaignId: "c.campaign_id",
+  workflowSlug: "c.workflow_slug",
+  featureSlug: "c.feature_slug",
+  leadEmail: "ls.lead_email",
+};
+
+/**
+ * Current-sentiment counts grouped by dimension, derived from the latest
+ * sentiment event per lead. One DB roundtrip; merged into repliesDetail by the
+ * caller. Mirrors the queryGroupedCampaignAggregates pattern.
+ */
+export async function queryGroupedSentiment(
+  whereClause: SQL,
+  groupBy: string,
+): Promise<Map<string, SentimentDetail>> {
+  const col = SENTIMENT_GROUP_BY_COLUMNS[groupBy];
+  if (!col) return new Map();
+
+  const groupCol = sql.raw(col);
+  const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
+  const result = await db.execute(sql`
+    WITH latest_sentiment AS (${latestSentimentCteBody()})
+    SELECT
+      ${groupCol} AS "groupKey",
+      ${SENTIMENT_COUNT_COLUMNS}
+    FROM latest_sentiment ls
+    JOIN instantly_campaigns c ON c.instantly_campaign_id = ls.campaign_id
+    ${lateralJoin}
+    WHERE ${whereClause}
+      AND ${groupCol} IS NOT NULL
+    GROUP BY ${groupCol}
+  `);
+  const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+  return new Map(
+    rows.map((r: any) => [String(r.groupKey), rowToSentimentDetail(r)]),
+  );
+}
+
+/** Aggregate current-sentiment counts (no grouping). */
+export async function querySentiment(whereClause: SQL): Promise<SentimentDetail> {
+  const result = await db.execute(sql`
+    WITH latest_sentiment AS (${latestSentimentCteBody()})
+    SELECT
+      ${SENTIMENT_COUNT_COLUMNS}
+    FROM latest_sentiment ls
+    JOIN instantly_campaigns c ON c.instantly_campaign_id = ls.campaign_id
+    WHERE ${whereClause}
+  `);
+  const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+  return rowToSentimentDetail(rows[0] as Record<string, number> | undefined);
+}
+
 /** Execute grouped stats query and return array of { key, recipientStats, emailStats } */
 export async function queryGroupedStats(
   whereClause: SQL,
@@ -396,15 +551,7 @@ export async function queryGroupedStats(
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "rsClicked",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "rsBounced",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rsUnsubscribed",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "rdNotInterested",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_wrong_person'), 0)::int AS "rdWrongPerson",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice"
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
     FROM instantly_events e
     JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
     ${lateralJoin}
@@ -419,17 +566,24 @@ export async function queryGroupedStats(
   // campaigns table — derived independently of the events table.
   const aggregatesMap = await queryGroupedCampaignAggregates(whereClause, groupBy);
 
+  // Reply-sentiment counts come from each lead's CURRENT sentiment (latest
+  // sentiment event, manual winning ties) — NOT from counting every sentiment
+  // event ever recorded, which never drops a re-qualified reply. See
+  // SENTIMENT_EVENT_TYPES. `unsubscribe` stays an event count (separate signal).
+  const sentimentMap = await queryGroupedSentiment(whereClause, groupBy);
+
   const rawGroups = rows.map((row: any) => {
+    const sentiment = sentimentMap.get(String(row.groupKey)) ?? ZERO_SENTIMENT_DETAIL;
     const detail = {
-      interested: row.rdInterested ?? 0,
-      meetingBooked: row.rdMeetingBooked ?? 0,
-      closed: row.rdClosed ?? 0,
-      notInterested: row.rdNotInterested ?? 0,
-      wrongPerson: row.rdWrongPerson ?? 0,
+      interested: sentiment.interested,
+      meetingBooked: sentiment.meetingBooked,
+      closed: sentiment.closed,
+      notInterested: sentiment.notInterested,
+      wrongPerson: sentiment.wrongPerson,
       unsubscribe: row.rdUnsubscribe ?? 0,
-      neutral: row.rdNeutral ?? 0,
-      autoReply: row.rdAutoReply ?? 0,
-      outOfOffice: row.rdOutOfOffice ?? 0,
+      neutral: sentiment.neutral,
+      autoReply: sentiment.autoReply,
+      outOfOffice: sentiment.outOfOffice,
     };
     const rsSent = row.rsSent ?? 0;
     const rsBounced = row.rsBounced ?? 0;
@@ -478,15 +632,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "rsClicked",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "rsBounced",
       COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rsUnsubscribed",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "rdNotInterested",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_wrong_person'), 0)::int AS "rdWrongPerson",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
-      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice"
+      COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
     FROM instantly_events e
     JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
     WHERE ${whereClause}
@@ -495,6 +641,10 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
   const aggregates = await queryCampaignAggregates(whereClause);
+
+  // Reply-sentiment counts come from each lead's CURRENT sentiment (latest
+  // sentiment event, manual winning ties) — see queryGroupedStats / SENTIMENT_EVENT_TYPES.
+  const sentiment = await querySentiment(whereClause);
 
   if (!rows.length) {
     return {
@@ -511,15 +661,15 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
 
   const row = rows[0] as Record<string, number>;
   const detail = {
-    interested: row.rdInterested ?? 0,
-    meetingBooked: row.rdMeetingBooked ?? 0,
-    closed: row.rdClosed ?? 0,
-    notInterested: row.rdNotInterested ?? 0,
-    wrongPerson: row.rdWrongPerson ?? 0,
+    interested: sentiment.interested,
+    meetingBooked: sentiment.meetingBooked,
+    closed: sentiment.closed,
+    notInterested: sentiment.notInterested,
+    wrongPerson: sentiment.wrongPerson,
     unsubscribe: row.rdUnsubscribe ?? 0,
-    neutral: row.rdNeutral ?? 0,
-    autoReply: row.rdAutoReply ?? 0,
-    outOfOffice: row.rdOutOfOffice ?? 0,
+    neutral: sentiment.neutral,
+    autoReply: sentiment.autoReply,
+    outOfOffice: sentiment.outOfOffice,
   };
   const rsSent = row.rsSent ?? 0;
   const rsBounced = row.rsBounced ?? 0;
@@ -613,7 +763,12 @@ router.get("/stats", async (req: Request, res: Response) => {
   try {
     const { recipientStats, emailStats } = await queryStats(whereClause);
 
-    // Per-step breakdown (secondary stats) — non-fatal; overall stats still return on failure
+    // Per-step breakdown (secondary stats) — non-fatal; overall stats still return on failure.
+    // NOTE: step-level sentiment counts are raw event counts, NOT latest-per-lead.
+    // Manual re-qualifications (POST /orgs/manual-qualifications) carry no step
+    // (step = NULL) and are excluded here by `e.step IS NOT NULL`, so a reply
+    // re-qualified after the fact is reflected in the overall/grouped totals
+    // (queryStats / queryGroupedStats) but NOT in this per-step breakdown.
     let stepStats: Array<{
       step: number; sent: number; delivered: number; opened: number; bounced: number; clicked: number; unsubscribed: number;
       repliesPositive: number; repliesNegative: number; repliesNeutral: number; repliesAutoReply: number;
