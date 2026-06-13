@@ -45,13 +45,25 @@ async function createStatsApp() {
   return app;
 }
 
-/** Helper: full stats row with all fields (new column names) */
+/** Helper: full stats row with all fields. Reply-sentiment counts (rdInterested
+ *  etc.) no longer come from this query — the main events query keeps only
+ *  rdUnsubscribe; sentiment counts come from the separate latest-sentiment query
+ *  (see makeSentimentRow). */
 function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
   return {
     esSent: 0, esOpened: 0, esClicked: 0, esBounced: 0, esUnsubscribed: 0,
     rsSent: 0, rsOpened: 0, rsClicked: 0, rsBounced: 0, rsUnsubscribed: 0,
+    rdUnsubscribe: 0,
+    ...overrides,
+  };
+}
+
+/** Helper: a row from the latest-sentiment query (queryGroupedSentiment / querySentiment).
+ *  Optionally carries a groupKey for grouped responses. */
+function makeSentimentRow(overrides: Partial<Record<string, number | string>> = {}) {
+  return {
     rdInterested: 0, rdMeetingBooked: 0, rdClosed: 0,
-    rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0,
+    rdNotInterested: 0, rdWrongPerson: 0,
     rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0,
     ...overrides,
   };
@@ -60,6 +72,11 @@ function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
 describe("GET /stats", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset clears the mockResolvedValueOnce queue too; default fallback so any
+    // call not explicitly queued (e.g. the latest-sentiment query, step query)
+    // returns empty rows → ZERO instead of crashing on undefined.
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValue({ rows: [] });
   });
 
   it("should strip trailing commas from x-org-id before querying", async () => {
@@ -115,11 +132,13 @@ describe("GET /stats", () => {
       rows: [makeStatsRow({
         esSent: 100, esOpened: 55, esClicked: 5, esBounced: 5,
         rsSent: 90, rsOpened: 50, rsClicked: 4, rsBounced: 3,
-        rdInterested: 3, rdAutoReply: 1, rdNotInterested: 2, rdOutOfOffice: 1,
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 120 }] });
-    mockExecute.mockResolvedValueOnce({ rows: [] });
+    // latest-sentiment query
+    mockExecute.mockResolvedValueOnce({
+      rows: [makeSentimentRow({ rdInterested: 3, rdAutoReply: 1, rdNotInterested: 2, rdOutOfOffice: 1 })],
+    });
 
     const app = await createStatsApp();
 
@@ -168,11 +187,12 @@ describe("GET /stats", () => {
       rows: [makeStatsRow({
         esSent: 80, esOpened: 45, esClicked: 3, esBounced: 5,
         rsSent: 75, rsOpened: 40, rsClicked: 2, rsBounced: 4,
-        rdInterested: 1, rdAutoReply: 1, rdNotInterested: 1, rdOutOfOffice: 2,
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 80 }] });
-    mockExecute.mockResolvedValueOnce({ rows: [] });
+    mockExecute.mockResolvedValueOnce({
+      rows: [makeSentimentRow({ rdInterested: 1, rdAutoReply: 1, rdNotInterested: 1, rdOutOfOffice: 2 })],
+    });
 
     const app = await createStatsApp();
 
@@ -188,18 +208,24 @@ describe("GET /stats", () => {
   });
 
   it("should compute reply aggregates from detail correctly", async () => {
+    // unsubscribe stays an event count on the main query; the 8 sentiment types
+    // come from the latest-sentiment query.
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         esSent: 500, esOpened: 210, esBounced: 20,
         rsSent: 400, rsOpened: 200, rsBounced: 15,
+        rdUnsubscribe: 2,
+      })],
+    });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 500 }] });
+    mockExecute.mockResolvedValueOnce({
+      rows: [makeSentimentRow({
         rdInterested: 3, rdMeetingBooked: 2, rdClosed: 1,
-        rdNotInterested: 4, rdWrongPerson: 1, rdUnsubscribe: 2,
+        rdNotInterested: 4, rdWrongPerson: 1,
         rdNeutral: 5,
         rdAutoReply: 11, rdOutOfOffice: 13,
       })],
     });
-    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 500 }] });
-    mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
 
@@ -207,7 +233,7 @@ describe("GET /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.recipientStats.repliesPositive).toBe(6);  // 3+2+1
-    expect(response.body.recipientStats.repliesNegative).toBe(7);  // 4+1+2
+    expect(response.body.recipientStats.repliesNegative).toBe(7);  // 4+1+2 (notInterested+wrongPerson+unsubscribe)
     expect(response.body.recipientStats.repliesNeutral).toBe(5);
     expect(response.body.recipientStats.repliesAutoReply).toBe(24); // 11+13
     expect(response.body.recipientStats.repliesDetail.interested).toBe(3);
@@ -222,10 +248,11 @@ describe("GET /stats", () => {
       rows: [makeStatsRow({
         esSent: 30, esOpened: 16, esClicked: 1, esBounced: 2,
         rsSent: 10, rsOpened: 8, rsClicked: 1, rsBounced: 1,
-        rdInterested: 3,
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 10 }] });
+    // latest-sentiment query (overall) — step sentiment still comes from the step query
+    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdInterested: 3 })] });
     mockExecute.mockResolvedValueOnce({
       rows: [
         { step: 1, sent: 10, opened: 8, clicked: 3, bounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
@@ -299,13 +326,14 @@ describe("GET /stats", () => {
   it("should exclude internal emails and sender from stats query", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // latest-sentiment query
     mockExecute.mockResolvedValueOnce({ rows: [] }); // step query
     const app = await createStatsApp();
 
     await request(app).get("/stats").set(identityHeadersObj);
 
-    // Stats query + campaign-aggregates + step query
-    expect(mockExecute).toHaveBeenCalledTimes(3);
+    // Stats query + campaign-aggregates + latest-sentiment + step query
+    expect(mockExecute).toHaveBeenCalledTimes(4);
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
@@ -333,10 +361,10 @@ describe("GET /stats", () => {
       rows: [makeStatsRow({
         esSent: 50, esOpened: 22, esBounced: 2,
         rsSent: 40, rsOpened: 20, rsBounced: 1,
-        rdInterested: 5, rdNotInterested: 1,
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 50 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdInterested: 5, rdNotInterested: 1 })] });
     mockExecute.mockRejectedValueOnce(new Error("step query timeout"));
 
     const app = await createStatsApp();
@@ -359,6 +387,7 @@ describe("GET /stats", () => {
       rows: [makeStatsRow({ esSent: 10, rsSent: 10 })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 10 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // latest-sentiment query
     const pgError = new Error("canceling statement due to statement timeout");
     const drizzleError = new Error("Failed query: SELECT ...");
     drizzleError.cause = pgError;
@@ -378,25 +407,59 @@ describe("GET /stats", () => {
     consoleSpy.mockRestore();
   });
 
-  it("should query all 9 reply event types in SQL", async () => {
+  it("should query all 9 reply event types across the stats SQL", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
     const app = await createStatsApp();
 
     await request(app).get("/stats").set(identityHeadersObj);
 
-    const sqlObj = mockExecute.mock.calls[0][0];
-    const sqlText = extractSqlText(sqlObj);
-    expect(sqlText).toContain("lead_interested");
-    expect(sqlText).toContain("lead_meeting_booked");
-    expect(sqlText).toContain("lead_closed");
-    expect(sqlText).toContain("lead_not_interested");
-    expect(sqlText).toContain("lead_wrong_person");
-    expect(sqlText).toContain("lead_unsubscribed");
-    expect(sqlText).toContain("lead_neutral");
-    expect(sqlText).toContain("auto_reply_received");
-    expect(sqlText).toContain("lead_out_of_office");
-    expect(sqlText).not.toMatch(/event_type = 'reply_received'/);
+    // Sentiment types now live in the latest-sentiment query; lead_unsubscribed
+    // stays in the main events query. Scan all issued SQL.
+    const allSql = mockExecute.mock.calls.map((c) => extractSqlText(c[0])).join(" ");
+    expect(allSql).toContain("lead_interested");
+    expect(allSql).toContain("lead_meeting_booked");
+    expect(allSql).toContain("lead_closed");
+    expect(allSql).toContain("lead_not_interested");
+    expect(allSql).toContain("lead_wrong_person");
+    expect(allSql).toContain("lead_unsubscribed");
+    expect(allSql).toContain("lead_neutral");
+    expect(allSql).toContain("auto_reply_received");
+    expect(allSql).toContain("lead_out_of_office");
+    expect(allSql).not.toMatch(/event_type = 'reply_received'/);
+  });
+
+  it("should derive current sentiment from the LATEST event per lead (manual wins ties)", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
+    const app = await createStatsApp();
+
+    await request(app).get("/stats").set(identityHeadersObj);
+
+    // The sentiment query is the one carrying the latest-per-lead CTE.
+    const sentimentSql = mockExecute.mock.calls
+      .map((c) => extractSqlText(c[0]))
+      .find((t) => t.includes("latest_sentiment"));
+    expect(sentimentSql).toBeDefined();
+    expect(sentimentSql).toContain("DISTINCT ON (e.campaign_id, e.lead_email)");
+    expect(sentimentSql).toContain("e.timestamp DESC");
+    expect(sentimentSql).toContain("e.source = 'manual'");
+  });
+
+  it("should count a re-qualified reply by its CURRENT sentiment, not the stale one", async () => {
+    // A reply auto-classified lead_interested then manually re-qualified
+    // lead_not_interested: the latest-sentiment query returns ONLY the current
+    // (negative) sentiment — positive must be 0, negative 1.
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow({ rsSent: 1, esSent: 1 })] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 1 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdNotInterested: 1 })] });
+    const app = await createStatsApp();
+
+    const response = await request(app).get("/stats").set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    expect(response.body.recipientStats.repliesPositive).toBe(0);
+    expect(response.body.recipientStats.repliesNegative).toBe(1);
   });
 
   // ─── featureSlug filter ──────────────────────────────────────────────────────
@@ -572,15 +635,18 @@ describe("GET /stats", () => {
 describe("POST /stats/grouped", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValue({ rows: [] });
   });
 
   it("should return recipientStats and emailStats per group", async () => {
+    // queryStats runs per group via Promise.all: both mains first (microtask
+    // FIFO), then both aggregates, then both sentiment queries.
     // Group 1 events query
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         esSent: 800, esOpened: 320, esBounced: 20,
         rsSent: 400, rsOpened: 310, rsBounced: 10,
-        rdInterested: 3,
       })],
     });
     // Group 2 events query
@@ -588,13 +654,15 @@ describe("POST /stats/grouped", () => {
       rows: [makeStatsRow({
         esSent: 200, esOpened: 85, esBounced: 5,
         rsSent: 100, rsOpened: 80, rsBounced: 3,
-        rdInterested: 1,
       })],
     });
     // Group 1 contacted count
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 450 }] });
     // Group 2 contacted count
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 120 }] });
+    // Group 1 sentiment, Group 2 sentiment
+    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdInterested: 3 })] });
+    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdInterested: 1 })] });
 
     const app = await createStatsApp();
 
@@ -717,8 +785,8 @@ describe("POST /stats/grouped", () => {
         },
       });
 
-    // Stats query + campaign-aggregates (per group)
-    expect(mockExecute).toHaveBeenCalledTimes(2);
+    // Stats query + campaign-aggregates + latest-sentiment (per group)
+    expect(mockExecute).toHaveBeenCalledTimes(3);
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
     expect(sqlText).toContain("run_id IN");

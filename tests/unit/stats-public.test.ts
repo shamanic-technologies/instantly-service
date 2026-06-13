@@ -42,8 +42,16 @@ function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
   return {
     esSent: 0, esOpened: 0, esClicked: 0, esBounced: 0, esUnsubscribed: 0,
     rsSent: 0, rsOpened: 0, rsClicked: 0, rsBounced: 0, rsUnsubscribed: 0,
+    rdUnsubscribe: 0,
+    ...overrides,
+  };
+}
+
+/** A row from the latest-sentiment query (querySentiment). */
+function makeSentimentRow(overrides: Partial<Record<string, number>> = {}) {
+  return {
     rdInterested: 0, rdMeetingBooked: 0, rdClosed: 0,
-    rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0,
+    rdNotInterested: 0, rdWrongPerson: 0,
     rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0,
     ...overrides,
   };
@@ -52,6 +60,8 @@ function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
 describe("GET /stats", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValue({ rows: [] });
   });
 
   it("should return stats without requiring identity headers", async () => {
@@ -59,11 +69,10 @@ describe("GET /stats", () => {
       rows: [makeStatsRow({
         esSent: 100, esOpened: 55, esBounced: 5,
         rsSent: 90, rsOpened: 50, rsBounced: 3,
-        rdInterested: 3,
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 110 }] });
-    mockExecute.mockResolvedValueOnce({ rows: [] });
+    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdInterested: 3 })] });
 
     const app = await createPublicStatsApp();
 
@@ -133,6 +142,7 @@ describe("GET /stats", () => {
       rows: [makeStatsRow({ esSent: 30, rsSent: 10 })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 10 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow()] }); // latest-sentiment query
     mockExecute.mockResolvedValueOnce({
       rows: [
         { step: 1, sent: 10, opened: 8, clicked: 0, bounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
@@ -178,9 +188,10 @@ describe("GET /stats", () => {
 
   it("should return overall stats when step query fails", async () => {
     mockExecute.mockResolvedValueOnce({
-      rows: [makeStatsRow({ esSent: 50, rsSent: 40, rdInterested: 5 })],
+      rows: [makeStatsRow({ esSent: 50, rsSent: 40 })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 50 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdInterested: 5 })] });
     mockExecute.mockRejectedValueOnce(new Error("step query timeout"));
 
     const app = await createPublicStatsApp();
