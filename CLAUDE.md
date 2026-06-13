@@ -143,6 +143,17 @@ Two paths:
 
 **Running it locally against prod** — same as `audit:dupes`/`heal:dupes`: set `INSTANTLY_API_KEY` directly (bypasses key-service, which is internal-DNS-only): `railway run -s instantly-service -- bash -lc 'export INSTANTLY_API_KEY=…; npm run cleanup:finished-contacts'`. Run the dry-run first and read the counts before `--commit`.
 
+### Recurring finished-contact deletion (reconcile)
+
+The nightly reconcile (`reconcileAll` → `reconcileOneCampaign`, `src/lib/reconcile.ts`) deletes finished contacts on an ongoing basis so quota doesn't re-accumulate. Decision logic is pure + unit-tested in `src/lib/finished-contacts.ts` (`tests/unit/finished-contacts.test.ts`); reconcile is the IO glue.
+
+- **Signal, zero extra API calls:** Phase 0 already fetches `GET /campaigns/{id}` for `not_sending_status`. It now also reads `config["status"]` (`parseInstantlyStatus`) — the campaign lifecycle code (1 active / 2 paused / 3 completed). Previously fetched and discarded.
+- **ORDERING INVARIANT (load-bearing):** the status is *read* in Phase 0 but the delete *executes last*, via the `finish(result)` closure wrapping every return of `reconcileOneCampaign`. So the delete happens AFTER Phases 1-3 (analytics + `/leads/list` + `/emails` backfill) have captured all current state — a late reply/bounce is never dropped by the delete. Do NOT move the delete into Phase 0.
+- **What it does** (`deleteFinishedContact`): for a finished campaign (`isFinishedInstantlyStatus` → status 2 or 3), campaign-level `deleteLeads(apiKey, instantlyCampaignId, [leadEmail])` (frees quota), then sets the local `instantly_campaigns.status` to `completed` (3) / `paused` (2) (`localTerminalStatus`). The leadEmail comes from our own row (1 campaign = 1 lead), not a live fetch.
+- **Skip terminal rows:** when deletion is enabled, `reconcileAll` filters out rows already locally terminal (`isLocallyTerminal` → status paused/completed) so a deleted contact is never re-polled — kills the nightly log noise. When disabled, every row is scanned (unchanged).
+- **Kill-switch, default OFF:** gated by env `DELETE_FINISHED_CONTACTS_ENABLED` (`isDeleteFinishedEnabled` — exactly `"true"`, anything else incl. unset = OFF). Merge is safe with the var absent (reconcile stays read-only); enable after staging soak. Mirrors the `RETRY_STUCK_WORKER_ENABLED` convention.
+- **Fail-loud, 404-tolerant:** a `DELETE /leads` 404 (lead already gone) is tolerated (`isLeadAlreadyGone`) — idempotent. Any other Instantly error propagates → the per-campaign wrapper counts it `failed` and retries next run. No cost/runs declaration (deleteLeads spends nothing).
+
 ## Data layering — Bronze / Silver / Gold
 
 Three layers, doctrine per `~/.claude/skills/data-layering/SKILL.md`:
