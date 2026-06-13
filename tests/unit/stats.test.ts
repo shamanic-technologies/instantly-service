@@ -251,13 +251,22 @@ describe("GET /stats", () => {
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 10 }] });
-    // latest-sentiment query (overall) — step sentiment still comes from the step query
+    // overall latest-sentiment query
     mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdInterested: 3 })] });
+    // step email-metrics query (sentiment columns no longer read here)
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { step: 1, sent: 10, opened: 8, clicked: 3, bounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
-        { step: 2, sent: 10, opened: 5, clicked: 1, bounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
-        { step: 3, sent: 10, opened: 2, clicked: 0, bounced: 0, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+        { step: 1, sent: 10, opened: 8, clicked: 3, bounced: 1, rdUnsubscribe: 0 },
+        { step: 2, sent: 10, opened: 5, clicked: 1, bounced: 1, rdUnsubscribe: 0 },
+        { step: 3, sent: 10, opened: 2, clicked: 0, bounced: 0, rdUnsubscribe: 0 },
+      ],
+    });
+    // queryStepSentiment: current sentiment attributed to each lead's last step
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        makeSentimentRow({ step: 1, rdInterested: 1 }),
+        makeSentimentRow({ step: 2, rdInterested: 1 }),
+        makeSentimentRow({ step: 3, rdInterested: 1 }),
       ],
     });
 
@@ -281,6 +290,51 @@ describe("GET /stats", () => {
     expect(response.body.emailStats.stepStats[2].bounced).toBe(0);
     expect(response.body.emailStats.stepStats[2].delivered).toBe(10); // 10 - 0
     expect(response.body.emailStats.stepStats[2].repliesPositive).toBe(1);
+  });
+
+  it("should attribute a re-qualified NEGATIVE reply to the last step, never positive on an earlier one", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow({ rsSent: 1, esSent: 2 })] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 1 }] });
+    // overall sentiment: the lead's current sentiment is negative
+    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdNotInterested: 1 })] });
+    // step email metrics for steps 1 and 2 (2 emails sent before the reply)
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { step: 1, sent: 1, opened: 1, clicked: 0, bounced: 0, rdUnsubscribe: 0 },
+        { step: 2, sent: 1, opened: 1, clicked: 0, bounced: 0, rdUnsubscribe: 0 },
+      ],
+    });
+    // queryStepSentiment: current sentiment lands on the LAST step (2), as negative
+    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ step: 2, rdNotInterested: 1 })] });
+
+    const app = await createStatsApp();
+    const response = await request(app).get("/stats").query({ campaignId: "c1" }).set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    const steps = response.body.emailStats.stepStats;
+    const step1 = steps.find((s: any) => s.step === 1);
+    const step2 = steps.find((s: any) => s.step === 2);
+    // No stale positive anywhere; negative only on the last step.
+    expect(step1.repliesPositive).toBe(0);
+    expect(step1.repliesNegative).toBe(0);
+    expect(step2.repliesPositive).toBe(0);
+    expect(step2.repliesNegative).toBe(1);
+  });
+
+  it("queryStepSentiment SQL attributes sentiment to MAX(email_sent step) per lead", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow({ rsSent: 1 })] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 1 }] });
+    const app = await createStatsApp();
+
+    await request(app).get("/stats").set(identityHeadersObj);
+
+    const stepSentimentSql = mockExecute.mock.calls
+      .map((c) => extractSqlText(c[0]))
+      .find((t) => t.includes("latest_sentiment") && t.includes("GROUP BY ls.step"));
+    expect(stepSentimentSql).toBeDefined();
+    expect(stepSentimentSql).toContain("MAX(es.step)");
+    expect(stepSentimentSql).toContain("es.event_type = 'email_sent'");
+    expect(stepSentimentSql).toContain("DISTINCT ON (e.campaign_id, e.lead_email)");
   });
 
   it("should return zero stats when db returns empty rows", async () => {
@@ -327,13 +381,14 @@ describe("GET /stats", () => {
     mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] }); // latest-sentiment query
-    mockExecute.mockResolvedValueOnce({ rows: [] }); // step query
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // step email-metrics query
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // step-sentiment query
     const app = await createStatsApp();
 
     await request(app).get("/stats").set(identityHeadersObj);
 
-    // Stats query + campaign-aggregates + latest-sentiment + step query
-    expect(mockExecute).toHaveBeenCalledTimes(4);
+    // Stats query + campaign-aggregates + latest-sentiment + step + step-sentiment
+    expect(mockExecute).toHaveBeenCalledTimes(5);
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);

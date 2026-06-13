@@ -16,7 +16,7 @@ import { db } from "../../src/db";
 import { instantlyCampaigns, instantlyEvents } from "../../src/db/schema";
 import { sql } from "drizzle-orm";
 import { cleanTestData, closeDb } from "../helpers/test-db";
-import { queryStats, queryGroupedStats } from "../../src/routes/analytics";
+import { queryStats, queryGroupedStats, queryStepSentiment } from "../../src/routes/analytics";
 
 const SKIP = !process.env.INSTANTLY_SERVICE_DATABASE_URL;
 
@@ -110,6 +110,29 @@ describe.skipIf(SKIP)("reply-sentiment reclassification (DB-backed)", () => {
     const { recipientStats } = await queryStats(whereOrg);
     expect(recipientStats.repliesPositive).toBe(0);
     expect(recipientStats.repliesNegative).toBe(1);
+  });
+
+  it("per-step: a re-qualified negative lands on the LAST step, never positive on an earlier one", async () => {
+    await db.insert(instantlyCampaigns).values({
+      ...BASE,
+      leadEmail: "step@external.com",
+      instantlyCampaignId: "inst-step",
+    });
+    await db.insert(instantlyEvents).values([
+      // 2 emails sent: steps 1 and 2
+      { eventType: "email_sent", campaignId: "inst-step", leadEmail: "step@external.com", step: 1, timestamp: new Date("2026-06-01T09:00:00Z"), source: "webhook" },
+      { eventType: "email_sent", campaignId: "inst-step", leadEmail: "step@external.com", step: 2, timestamp: new Date("2026-06-02T09:00:00Z"), source: "webhook" },
+      // auto interested at step 2, then manual not_interested
+      { eventType: "lead_interested", campaignId: "inst-step", leadEmail: "step@external.com", step: 2, timestamp: new Date("2026-06-02T10:00:00Z"), source: "webhook" },
+      { eventType: "lead_not_interested", campaignId: "inst-step", leadEmail: "step@external.com", step: null, timestamp: new Date("2026-06-03T10:00:00Z"), source: "manual" },
+    ]);
+
+    const byStep = await queryStepSentiment(whereOrg);
+    // Current sentiment (negative) attributed to the last sent step (2), nowhere positive.
+    expect(byStep.get(2)?.notInterested).toBe(1);
+    expect(byStep.get(2)?.interested).toBe(0);
+    expect(byStep.get(1)?.interested ?? 0).toBe(0);
+    expect(byStep.get(1)?.notInterested ?? 0).toBe(0);
   });
 
   it("a still-positive reply (no reclassification) stays positive", async () => {

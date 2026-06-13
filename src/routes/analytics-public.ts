@@ -5,6 +5,7 @@ import { EngagementLatencyGroupedRequestSchema, StatsQuerySchema } from "../sche
 import {
   queryStats,
   queryGroupedStats,
+  queryStepSentiment,
   queryEngagementLatencyGroups,
   internalExclusionClause,
   addSlugConditions,
@@ -164,15 +165,7 @@ router.get("/stats", async (req: Request, res: Response) => {
           COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "bounced",
           COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "unsubscribed",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_interested'), 0)::int AS "rdInterested",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_meeting_booked'), 0)::int AS "rdMeetingBooked",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_closed'), 0)::int AS "rdClosed",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_not_interested'), 0)::int AS "rdNotInterested",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_wrong_person'), 0)::int AS "rdWrongPerson",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_neutral'), 0)::int AS "rdNeutral",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'auto_reply_received'), 0)::int AS "rdAutoReply",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_out_of_office'), 0)::int AS "rdOutOfOffice"
+          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
         FROM instantly_events e
         JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
         WHERE ${whereClause}
@@ -182,17 +175,20 @@ router.get("/stats", async (req: Request, res: Response) => {
         ORDER BY e.step
       `);
       const stepRows = Array.isArray(stepResult) ? stepResult : (stepResult as any).rows ?? [];
+      // Reply sentiment is per-lead-once, attributed to the last reached step.
+      const stepSentimentMap = await queryStepSentiment(whereClause);
       stepStats = stepRows.map((sr: any) => {
+        const sentiment = stepSentimentMap.get(Number(sr.step));
         const detail = {
-          interested: sr.rdInterested ?? 0,
-          meetingBooked: sr.rdMeetingBooked ?? 0,
-          closed: sr.rdClosed ?? 0,
-          notInterested: sr.rdNotInterested ?? 0,
-          wrongPerson: sr.rdWrongPerson ?? 0,
+          interested: sentiment?.interested ?? 0,
+          meetingBooked: sentiment?.meetingBooked ?? 0,
+          closed: sentiment?.closed ?? 0,
+          notInterested: sentiment?.notInterested ?? 0,
+          wrongPerson: sentiment?.wrongPerson ?? 0,
           unsubscribe: sr.rdUnsubscribe ?? 0,
-          neutral: sr.rdNeutral ?? 0,
-          autoReply: sr.rdAutoReply ?? 0,
-          outOfOffice: sr.rdOutOfOffice ?? 0,
+          neutral: sentiment?.neutral ?? 0,
+          autoReply: sentiment?.autoReply ?? 0,
+          outOfOffice: sentiment?.outOfOffice ?? 0,
         };
         const sent = sr.sent ?? 0;
         const bounced = sr.bounced ?? 0;
