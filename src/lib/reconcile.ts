@@ -18,16 +18,25 @@
  */
 import { db } from "../db";
 import { instantlyCampaigns } from "../db/schema";
-import { sql } from "drizzle-orm";
+import { sql, eq } from "drizzle-orm";
 import {
   getCampaign,
   getCampaignAnalytics,
   listLeadsFull,
   listEmails,
+  deleteLeads,
   type CampaignAnalytics,
   type LeadFull,
   type EmailRecord,
 } from "./instantly-client";
+import {
+  isDeleteFinishedEnabled,
+  parseInstantlyStatus,
+  isFinishedInstantlyStatus,
+  localTerminalStatus,
+  isLocallyTerminal,
+  isLeadAlreadyGone,
+} from "./finished-contacts";
 import { resolveInstantlyApiKey, KeyServiceError } from "./key-client";
 import {
   insertAnalyticsSnapshot,
@@ -70,6 +79,50 @@ interface CampaignRow {
   id: string;
   instantlyCampaignId: string;
   orgId: string | null;
+  /** Our known recipient for this per-lead campaign (used to delete the contact). */
+  leadEmail: string | null;
+  /** Local funnel/lifecycle status; "paused"/"completed" = already terminal. */
+  status: string;
+}
+
+/**
+ * Delete a finished campaign's contact on Instantly to reclaim plan quota, then
+ * mark the local row terminal so reconcile stops re-polling it. Called at the
+ * END of reconcileOneCampaign (AFTER the read phases backfilled all current
+ * state) so a late reply/bounce is never lost to the delete.
+ *
+ * Campaign-level `DELETE /leads` (the only delete that frees quota). A 404 (lead
+ * already gone) is tolerated — the op is idempotent; everything else fails loud
+ * (propagates to the per-campaign wrapper → counted failed, retried next run).
+ */
+async function deleteFinishedContact(
+  campaign: CampaignRow,
+  apiKey: string,
+  instantlyStatus: number,
+): Promise<void> {
+  const local = localTerminalStatus(instantlyStatus);
+
+  if (campaign.leadEmail) {
+    try {
+      await deleteLeads(apiKey, campaign.instantlyCampaignId, [campaign.leadEmail]);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isLeadAlreadyGone(message)) throw error;
+      console.warn(
+        `[instantly-service] reconcile: lead already gone campaign=${campaign.instantlyCampaignId} — ${message}`,
+      );
+    }
+  }
+
+  await db
+    .update(instantlyCampaigns)
+    .set({ status: local, updatedAt: new Date() })
+    .where(eq(instantlyCampaigns.instantlyCampaignId, campaign.instantlyCampaignId));
+
+  console.log(
+    `[instantly-service] reconcile: deleted finished contact campaign=${campaign.instantlyCampaignId} ` +
+      `instantlyStatus=${instantlyStatus} localStatus=${local}`,
+  );
 }
 
 interface LocalCounts {
@@ -159,6 +212,20 @@ async function reconcileOneCampaign(
     leadStatusUpdates: 0,
   };
 
+  // Instantly campaign status read in Phase 0 (1 active / 2 paused / 3 completed),
+  // acted on only at the very end via `finish` — AFTER every read phase has
+  // backfilled current state, so deleting a finished contact never drops a late
+  // reply/bounce. Gated by the DELETE_FINISHED_CONTACTS_ENABLED kill-switch.
+  let instantlyStatus: number | null = null;
+  const finish = async (
+    result: CampaignReconcileResult,
+  ): Promise<CampaignReconcileResult> => {
+    if (isDeleteFinishedEnabled() && isFinishedInstantlyStatus(instantlyStatus)) {
+      await deleteFinishedContact(campaign, apiKey, instantlyStatus as number);
+    }
+    return result;
+  };
+
   // ─── Phase 0: campaign config → not_sending_status observability ───────────
   // Pull full /campaigns/{id} payload into bronze, promote `not_sending_status`
   // to silver. Failures here MUST NOT abort the rest of reconcile — observability
@@ -182,6 +249,8 @@ async function reconcileOneCampaign(
         instantlyCampaignId: campaign.instantlyCampaignId,
         notSendingStatus,
       });
+      // Capture the campaign lifecycle status (acted on at the end via `finish`).
+      instantlyStatus = parseInstantlyStatus(config["status"]);
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -193,7 +262,7 @@ async function reconcileOneCampaign(
   // ─── Phase 1: aggregate sanity check ───────────────────────────────────────
   const analytics = await getCampaignAnalytics(apiKey, campaign.instantlyCampaignId);
   if (!analytics) {
-    return { drifted: false, drift };
+    return finish({ drifted: false, drift });
   }
 
   const analyticsRef = await insertAnalyticsSnapshot(
@@ -206,7 +275,7 @@ async function reconcileOneCampaign(
   const drifted = detectDrift(localCounts, analytics);
   const forcePhase2 = isForcePhase2Enabled();
   if (!drifted && !forcePhase2) {
-    return { drifted: false, drift };
+    return finish({ drifted: false, drift });
   }
 
   console.log(
@@ -300,7 +369,7 @@ async function reconcileOneCampaign(
   await insertEmailsBatch(campaign.instantlyCampaignId, campaign.orgId, emails);
 
   if (emails.length === 0) {
-    return { drifted: true, drift };
+    return finish({ drifted: true, drift });
   }
 
   const bronzeLookup = await db.execute(sql`
@@ -331,7 +400,7 @@ async function reconcileOneCampaign(
     }
   }
 
-  return { drifted: true, drift };
+  return finish({ drifted: true, drift });
 }
 
 /** Limited-concurrency map. */
@@ -387,15 +456,28 @@ function mergeDrift(a: DriftReport, b: DriftReport): DriftReport {
 export async function reconcileAll(): Promise<ReconcileSummary> {
   const startedAt = Date.now();
 
-  const campaigns: CampaignRow[] = await db
+  const allRows: CampaignRow[] = await db
     .select({
       id: instantlyCampaigns.id,
       instantlyCampaignId: instantlyCampaigns.instantlyCampaignId,
       orgId: instantlyCampaigns.orgId,
+      leadEmail: instantlyCampaigns.leadEmail,
+      status: instantlyCampaigns.status,
     })
     .from(instantlyCampaigns);
 
-  console.log(`[instantly-service] reconcile: starting, total=${campaigns.length}`);
+  // When finished-contact deletion is enabled, skip rows already marked terminal
+  // locally (lead deleted on a prior run) — no point re-polling a gone contact.
+  // When disabled (default), behaviour is unchanged: scan every row.
+  const deleteEnabled = isDeleteFinishedEnabled();
+  const campaigns = deleteEnabled
+    ? allRows.filter((c) => !isLocallyTerminal(c.status))
+    : allRows;
+
+  console.log(
+    `[instantly-service] reconcile: starting, total=${campaigns.length}` +
+      (deleteEnabled ? ` (skipped ${allRows.length - campaigns.length} locally-terminal)` : ""),
+  );
 
   const byOrg = new Map<string | null, CampaignRow[]>();
   for (const c of campaigns) {
