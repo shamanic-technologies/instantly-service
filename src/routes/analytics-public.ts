@@ -1,44 +1,15 @@
 import { Router, Request, Response } from "express";
-import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
 import { EngagementLatencyGroupedRequestSchema, StatsQuerySchema } from "../schemas";
 import {
-  queryStats,
+  computeStatsPayload,
   queryGroupedStats,
-  queryStepSentiment,
   queryEngagementLatencyGroups,
-  internalExclusionClause,
   addSlugConditions,
-  buildRepliesFromDetail,
-  ZERO_REPLIES_DETAIL,
 } from "./analytics";
+import { statsCacheKey, getCachedStats, setCachedStats } from "../lib/stats-cache";
 
 const router = Router();
-
-const ZERO_RECIPIENT_STATS = {
-  contacted: 0,
-  sent: 0,
-  delivered: 0,
-  opened: 0,
-  bounced: 0,
-  clicked: 0,
-  unsubscribed: 0,
-  notSending: 0,
-  repliesPositive: 0,
-  repliesNegative: 0,
-  repliesNeutral: 0,
-  repliesAutoReply: 0,
-  repliesDetail: { ...ZERO_REPLIES_DETAIL },
-};
-
-const ZERO_EMAIL_STATS = {
-  sent: 0,
-  delivered: 0,
-  opened: 0,
-  clicked: 0,
-  bounced: 0,
-  unsubscribed: 0,
-};
 
 function parseWorkflowSlugs(raw: unknown): string[] | null {
   if (typeof raw !== "string") return null;
@@ -136,11 +107,28 @@ router.get("/stats", async (req: Request, res: Response) => {
     ? sql.join(conditions, sql` AND `)
     : sql`TRUE`;
 
+  // Short-TTL cache: the no-filter public total is byte-identical for every
+  // caller (leaderboard / landing). Without it, a burst of identical calls
+  // re-aggregates the whole silver log against a tiny Neon compute and saturates
+  // it. No org scope here (public, cross-org) so the key has no org prefix.
+  const cacheKey = statsCacheKey("public-stats", {
+    runIds: runIdsRaw,
+    brandId,
+    campaignId,
+    workflowSlugs,
+    featureSlugs,
+    groupBy,
+  });
+  const cached = getCachedStats(cacheKey);
+  if (cached) return res.json(cached);
+
   // Handle groupBy requests
   if (groupBy) {
     try {
       const groups = await queryGroupedStats(whereClause, groupBy);
-      return res.json({ groups });
+      const payload = { groups };
+      setCachedStats(cacheKey, payload);
+      return res.json(payload);
     } catch (error: any) {
       const msg = error.cause?.message ?? error.message ?? String(error);
       console.error(`[instantly-service] Failed to aggregate grouped stats: ${msg}`, error);
@@ -149,71 +137,9 @@ router.get("/stats", async (req: Request, res: Response) => {
   }
 
   try {
-    const { recipientStats, emailStats } = await queryStats(whereClause);
-
-    let stepStats: Array<{
-      step: number; sent: number; delivered: number; opened: number; bounced: number; clicked: number; unsubscribed: number;
-      repliesPositive: number; repliesNegative: number; repliesNeutral: number; repliesAutoReply: number;
-      repliesDetail: typeof ZERO_REPLIES_DETAIL;
-    }> = [];
-    try {
-      const stepResult = await db.execute(sql`
-        SELECT
-          e.step,
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "sent",
-          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "opened",
-          COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "bounced",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "unsubscribed",
-          COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
-        FROM instantly_events e
-        JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
-        WHERE ${whereClause}
-          AND ${internalExclusionClause()}
-          AND e.step IS NOT NULL
-        GROUP BY e.step
-        ORDER BY e.step
-      `);
-      const stepRows = Array.isArray(stepResult) ? stepResult : (stepResult as any).rows ?? [];
-      // Reply sentiment is per-lead-once, attributed to the last reached step.
-      const stepSentimentMap = await queryStepSentiment(whereClause);
-      stepStats = stepRows.map((sr: any) => {
-        const sentiment = stepSentimentMap.get(Number(sr.step));
-        const detail = {
-          interested: sentiment?.interested ?? 0,
-          meetingBooked: sentiment?.meetingBooked ?? 0,
-          closed: sentiment?.closed ?? 0,
-          notInterested: sentiment?.notInterested ?? 0,
-          wrongPerson: sentiment?.wrongPerson ?? 0,
-          unsubscribe: sr.rdUnsubscribe ?? 0,
-          neutral: sentiment?.neutral ?? 0,
-          autoReply: sentiment?.autoReply ?? 0,
-          outOfOffice: sentiment?.outOfOffice ?? 0,
-        };
-        const sent = sr.sent ?? 0;
-        const bounced = sr.bounced ?? 0;
-        return {
-          step: sr.step,
-          sent,
-          delivered: sent - bounced,
-          opened: sr.opened ?? 0,
-          bounced,
-          clicked: sr.clicked ?? 0,
-          unsubscribed: sr.unsubscribed ?? 0,
-          ...buildRepliesFromDetail(detail),
-        };
-      });
-    } catch (stepError: any) {
-      console.error(`[instantly-service] Step query failed (overall stats still returned): ${stepError.cause?.message ?? stepError.message}`);
-    }
-
-    res.json({
-      recipientStats,
-      emailStats: {
-        ...emailStats,
-        ...(stepStats.length > 0 && { stepStats }),
-      },
-    });
+    const payload = await computeStatsPayload(whereClause);
+    setCachedStats(cacheKey, payload);
+    res.json(payload);
   } catch (error: any) {
     const msg = error.cause?.message ?? error.message ?? String(error);
     console.error(`[instantly-service] Failed to aggregate stats: ${msg}`, error);

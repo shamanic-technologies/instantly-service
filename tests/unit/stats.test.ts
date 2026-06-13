@@ -34,6 +34,7 @@ vi.mock("../../src/db/schema", () => ({
 process.env.INSTANTLY_SERVICE_API_KEY = "test-api-key";
 
 import { requireOrgId } from "../../src/middleware/requireOrgId";
+import { clearStatsCache } from "../../src/lib/stats-cache";
 
 const identityHeadersObj = { "x-org-id": "test-org", "x-user-id": "test-user", "x-run-id": "test-run" };
 
@@ -77,6 +78,7 @@ describe("GET /stats", () => {
     // returns empty rows → ZERO instead of crashing on undefined.
     mockExecute.mockReset();
     mockExecute.mockResolvedValue({ rows: [] });
+    clearStatsCache();
   });
 
   it("should strip trailing commas from x-org-id before querying", async () => {
@@ -692,31 +694,31 @@ describe("POST /stats/grouped", () => {
     vi.clearAllMocks();
     mockExecute.mockReset();
     mockExecute.mockResolvedValue({ rows: [] });
+    clearStatsCache();
   });
 
   it("should return recipientStats and emailStats per group", async () => {
-    // queryStats runs per group via Promise.all: both mains first (microtask
-    // FIFO), then both aggregates, then both sentiment queries.
-    // Group 1 events query
+    // queryStats now parallelizes its 3 reads internally (main / aggregates /
+    // sentiment) via Promise.all, so each group's 3 calls are issued together
+    // before the next group's. Call order is therefore group-sequential:
+    // [main1, aggregates1, sentiment1, main2, aggregates2, sentiment2].
+    // Group 1: events, contacted, sentiment
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         esSent: 800, esOpened: 320, esBounced: 20,
         rsSent: 400, rsOpened: 310, rsBounced: 10,
       })],
     });
-    // Group 2 events query
+    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 450 }] });
+    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdInterested: 3 })] });
+    // Group 2: events, contacted, sentiment
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
         esSent: 200, esOpened: 85, esBounced: 5,
         rsSent: 100, rsOpened: 80, rsBounced: 3,
       })],
     });
-    // Group 1 contacted count
-    mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 450 }] });
-    // Group 2 contacted count
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 120 }] });
-    // Group 1 sentiment, Group 2 sentiment
-    mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdInterested: 3 })] });
     mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow({ rdInterested: 1 })] });
 
     const app = await createStatsApp();
@@ -867,5 +869,53 @@ describe("POST /stats/grouped", () => {
     const sqlText = extractSqlText(sqlObj);
     expect(sqlText).toContain("account_email IS NULL OR e.lead_email != e.account_email");
     expect(sqlText).toContain("lead_email NOT IN");
+  });
+});
+
+describe("GET /stats caching (DIS perf)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValue({ rows: [] });
+    clearStatsCache();
+  });
+
+  it("serves a repeated identical request from cache (no second DB roundtrip)", async () => {
+    const app = await createStatsApp();
+
+    const first = await request(app).get("/stats").set(identityHeadersObj);
+    expect(first.status).toBe(200);
+    const callsAfterFirst = mockExecute.mock.calls.length;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+
+    const second = await request(app).get("/stats").set(identityHeadersObj);
+    expect(second.status).toBe(200);
+    // No new db.execute calls — served from cache.
+    expect(mockExecute.mock.calls.length).toBe(callsAfterFirst);
+    expect(second.body).toEqual(first.body);
+  });
+
+  it("does not serve a different query from cache (cache key includes params)", async () => {
+    const app = await createStatsApp();
+
+    await request(app).get("/stats").set(identityHeadersObj);
+    const callsAfterFirst = mockExecute.mock.calls.length;
+
+    await request(app).get("/stats").query({ brandId: "brand-xyz" }).set(identityHeadersObj);
+    // Different params → cache miss → DB hit again.
+    expect(mockExecute.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+  });
+
+  it("scopes the cache by org (different org bypasses another org's cached entry)", async () => {
+    const app = await createStatsApp();
+
+    await request(app).get("/stats").set(identityHeadersObj);
+    const callsAfterFirst = mockExecute.mock.calls.length;
+
+    await request(app)
+      .get("/stats")
+      .set({ ...identityHeadersObj, "x-org-id": "other-org" });
+    // Different org → different cache key → DB hit again.
+    expect(mockExecute.mock.calls.length).toBeGreaterThan(callsAfterFirst);
   });
 });

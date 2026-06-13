@@ -127,6 +127,13 @@
       "when": 1775001600000,
       "tag": "0017_allow_sequence_costs_without_campaign",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1775088000000,
+      "tag": "0018_add_stats_covering_index",
+      "breakpoints": true
     }
   ]
 }

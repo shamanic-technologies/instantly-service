@@ -30,6 +30,8 @@ vi.mock("../../src/db/schema", () => ({
 
 process.env.INSTANTLY_SERVICE_API_KEY = "test-api-key";
 
+import { clearStatsCache } from "../../src/lib/stats-cache";
+
 async function createPublicStatsApp() {
   const publicRouter = (await import("../../src/routes/analytics-public")).default;
   const app = express();
@@ -62,6 +64,7 @@ describe("GET /stats", () => {
     vi.clearAllMocks();
     mockExecute.mockReset();
     mockExecute.mockResolvedValue({ rows: [] });
+    clearStatsCache();
   });
 
   it("should return stats without requiring identity headers", async () => {
