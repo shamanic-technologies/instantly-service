@@ -27,8 +27,12 @@ const pool = new Pool({
   connectionString: enforceSslMode(process.env.INSTANTLY_SERVICE_DATABASE_URL),
   // Bound the connect wait so a genuinely dead host fails loud instead of
   // hanging forever — the post-TCP startup phase is not covered by the
-  // happy-eyeballs attempt timeout above.
-  connectionTimeoutMillis: 15_000,
+  // happy-eyeballs attempt timeout above. Under a stats burst the pool can
+  // saturate (all `max` connections busy on a slow aggregation); the 15s
+  // default left the next acquire BLOCKED for 15s before withConnectRetry even
+  // retried, stacking latency. 5s fails fast → retry, while still covering a
+  // staging/dev cold Neon resume (1-7s) on the first attempt.
+  connectionTimeoutMillis: 5_000,
   // Analytics / status routes fan out bursts of concurrent reads. The pg
   // default max of 10 saturates under a batch caller, so the 11th acquire
   // waits out connectionTimeoutMillis and throws "timeout exceeded when trying
@@ -67,6 +71,17 @@ pool.query = function retryingQuery(...args: any[]): any {
   });
 } as typeof pool.query;
 /* eslint-enable @typescript-eslint/no-explicit-any */
+
+// The gold stats aggregations (analytics.ts / status.ts) run
+// COUNT(DISTINCT lead_email) over ~88k events; at the pg default work_mem (4MB)
+// that sort spills to temp disk (EXPLAIN: "external merge  Disk: 7616kB"),
+// adding I/O contention and holding the pool connection longer under burst.
+// Raise work_mem per session so the sort stays in memory — faster scans,
+// connections released sooner. Safe on RAM: the compute autoscales to 1 CU /
+// 4GB precisely under this load, and idle (0.25 CU floor) runs no such sorts.
+pool.on("connect", (client) => {
+  void client.query("SET work_mem = '32MB'");
+});
 
 export const db = drizzle(pool);
 
