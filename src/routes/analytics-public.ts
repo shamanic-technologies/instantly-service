@@ -94,6 +94,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     });
   }
   const { runIds: runIdsRaw, brandId, campaignId, workflowSlugs, featureSlugs, groupBy } = parsed.data;
+  const timezone = parsed.data.timezone ?? "UTC";
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
 
   const conditions: SQL[] = [];
@@ -118,6 +119,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     workflowSlugs,
     featureSlugs,
     groupBy,
+    timezone,
   });
   const cached = getCachedStats(cacheKey);
   if (cached) return res.json(cached);
@@ -125,7 +127,7 @@ router.get("/stats", async (req: Request, res: Response) => {
   // Handle groupBy requests
   if (groupBy) {
     try {
-      const groups = await queryGroupedStats(whereClause, groupBy);
+      const groups = await queryGroupedStats(whereClause, groupBy, timezone);
       const payload = { groups };
       setCachedStats(cacheKey, payload);
       return res.json(payload);
