@@ -20,6 +20,7 @@ import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { authorizeCreditSpend } from "../lib/billing-client";
 import { SendRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
+import { refreshLeadStatusCurrent } from "../lib/status-gold";
 
 /** Extract tracking headers from res.locals (set by requireOrgId middleware) */
 function getTracking(res: Response): TrackingHeaders {
@@ -295,6 +296,8 @@ router.post("/", async (req: Request, res: Response) => {
           updatedAt: new Date(),
         })
         .where(eq(instantlyCampaigns.id, reservedId));
+
+      await refreshLeadStatusCurrent(sendResult.value.instantlyCampaignId, body.to);
 
       // Save lead to DB
       const [createdLead] = await db

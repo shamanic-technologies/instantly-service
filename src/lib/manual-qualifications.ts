@@ -17,6 +17,7 @@ import {
 } from "../db/schema";
 import { and, desc, eq } from "drizzle-orm";
 import { promoteEvent } from "./silver-promote";
+import { refreshLeadStatusCurrent } from "./status-gold";
 
 // Mirrors the 8 keys of REPLY_CLASSIFICATION_MAP in silver-promote.ts. Kept in
 // sync deliberately: when a human qualifies a reply, the status is the same
@@ -231,6 +232,8 @@ export async function applyManualQualificationSideEffects(
       updatedAt: new Date(),
     })
     .where(eq(instantlyCampaigns.instantlyCampaignId, input.instantlyCampaignId));
+
+  await refreshLeadStatusCurrent(input.instantlyCampaignId, input.leadEmail);
 
   console.log(
     `[instantly-service] manual qualification applied: campaign=${input.instantlyCampaignId} lead=${input.leadEmail} status=${input.status}`,

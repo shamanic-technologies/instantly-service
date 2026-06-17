@@ -17,6 +17,7 @@ import { instantlyCampaigns, instantlyEvents, sequenceCosts } from "../db/schema
 import { and, eq, isNull } from "drizzle-orm";
 import { updateCostStatus, type IdentityContext } from "./runs-client";
 import type { LeadFull, EmailRecord } from "./instantly-client";
+import { refreshLeadStatusCurrent } from "./status-gold";
 
 const SEQUENCE_STOP_EVENTS = new Set([
   "reply_received",
@@ -535,6 +536,10 @@ export async function promoteEvent(input: PromoteEventInput): Promise<PromoteEve
         await cancelRemainingProvisions(campaign, input.leadEmail);
       }
     }
+  }
+
+  if (input.leadEmail) {
+    await refreshLeadStatusCurrent(input.instantlyCampaignId, input.leadEmail);
   }
 
   // Run inference on the freshly-promoted event. Inferred trigger events

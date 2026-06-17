@@ -61,7 +61,7 @@ describe("POST /internal/transfer-brand", () => {
     expect(res.body).toEqual({
       updatedTables: [{ tableName: "instantly_campaigns", count: 3 }],
     });
-    expect(mockExecute).toHaveBeenCalledTimes(1);
+    expect(mockExecute).toHaveBeenCalledTimes(2);
   });
 
   it("transfers and rewrites brand_id when targetBrandId is present (conflict)", async () => {
@@ -81,7 +81,7 @@ describe("POST /internal/transfer-brand", () => {
     expect(res.body).toEqual({
       updatedTables: [{ tableName: "instantly_campaigns", count: 2 }],
     });
-    expect(mockExecute).toHaveBeenCalledTimes(1);
+    expect(mockExecute).toHaveBeenCalledTimes(2);
   });
 
   it("returns count 0 when no rows match (idempotent)", async () => {

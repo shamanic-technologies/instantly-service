@@ -5,6 +5,7 @@ const mockDbWhere = vi.fn();
 const mockDbReturning = vi.fn();
 const mockDbInsertValues = vi.fn();
 const mockDbDelete = vi.fn();
+const mockRefreshLeadStatusCurrent = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
@@ -83,6 +84,10 @@ const mockAuthorizeCreditSpend = vi.fn();
 
 vi.mock("../../src/lib/billing-client", () => ({
   authorizeCreditSpend: (...args: unknown[]) => mockAuthorizeCreditSpend(...args),
+}));
+
+vi.mock("../../src/lib/status-gold", () => ({
+  refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
 }));
 
 import { autolinkifyHtml, buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps, stripAccountSignature } from "../../src/lib/send-lead";
@@ -493,6 +498,7 @@ describe("POST /send", () => {
     mockGetCampaign.mockResolvedValue({ email_list: [], bcc_list: [], not_sending_status: null, status: "active" });
     mockDbReturning.mockResolvedValue([{ id: "lead-1" }]);
     mockDbInsertValues.mockReset();
+    mockRefreshLeadStatusCurrent.mockResolvedValue(undefined);
   });
 
   it("should exclude @arcadiaquest.org accounts from new campaign creation", async () => {
@@ -509,6 +515,19 @@ describe("POST /send", () => {
       "test-instantly-key",
       "inst-camp-new",
       expect.objectContaining({ email_list: ["active@growthagency.dev"] }),
+    );
+  });
+
+  it("refreshes the Gold status row after attaching the real Instantly campaign id", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockRefreshLeadStatusCurrent).toHaveBeenCalledWith(
+      "inst-camp-new",
+      validBody.to,
     );
   });
 

@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockDbWhere = vi.fn();
 const mockDbSetWhere = vi.fn();
 const mockDbInsertValues = vi.fn();
+const mockRefreshLeadStatusCurrent = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
@@ -57,6 +58,10 @@ vi.mock("../../src/lib/email-client", () => ({
   sendEmail: (...args: unknown[]) => mockSendEmail(...args),
 }));
 
+vi.mock("../../src/lib/status-gold", () => ({
+  refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
+}));
+
 import { handleCampaignError } from "../../src/lib/campaign-error-handler";
 
 const baseCampaign = {
@@ -78,6 +83,7 @@ describe("handleCampaignError", () => {
     mockUpdateRun.mockResolvedValue({});
     mockUpdateCostStatus.mockResolvedValue({});
     mockSendEmail.mockResolvedValue({});
+    mockRefreshLeadStatusCurrent.mockResolvedValue(undefined);
   });
 
   it("should update DB status to error and store reason in metadata", async () => {
@@ -92,6 +98,10 @@ describe("handleCampaignError", () => {
         deliveryStatus: "failed",
         metadata: { errorReason: "account disconnected" },
       }),
+    );
+    expect(mockRefreshLeadStatusCurrent).toHaveBeenCalledWith(
+      "inst-camp-1",
+      "lead@test.com",
     );
   });
 

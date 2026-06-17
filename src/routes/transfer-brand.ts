@@ -34,6 +34,20 @@ router.post("/", async (req, res) => {
 
   const campaignsCount = Number(campaignsResult.rowCount ?? 0);
 
+  if (campaignsCount > 0) {
+    await db.execute(sql`
+      UPDATE instantly_lead_status_current g
+      SET org_id = c.org_id,
+          brand_ids = c.brand_ids,
+          updated_at = now()
+      FROM instantly_campaigns c
+      WHERE g.instantly_campaign_id = c.instantly_campaign_id
+        AND g.lead_email = c.lead_email
+        AND g.org_id = ${sourceOrgId}
+        AND c.org_id = ${targetOrgId}
+    `);
+  }
+
   return res.json({
     updatedTables: [
       { tableName: "instantly_campaigns", count: campaignsCount },

@@ -17,6 +17,8 @@ const mockDbExecute = vi.fn();
 const mockDbUpdateSet = vi.fn();
 const mockDbInsertValues = vi.fn();
 const mockDbSelectQueue: unknown[][] = [];
+const mockDeleteLeadStatusCurrent = vi.fn();
+const mockRefreshLeadStatusCurrent = vi.fn();
 
 function nextDbSelectResponse(): unknown[] {
   return mockDbSelectQueue.shift() ?? [];
@@ -108,6 +110,11 @@ vi.mock("../../src/lib/campaign-error-handler", () => ({
   handleCampaignError: (...args: unknown[]) => mockHandleCampaignError(...args),
 }));
 
+vi.mock("../../src/lib/status-gold", () => ({
+  deleteLeadStatusCurrent: (...args: unknown[]) => mockDeleteLeadStatusCurrent(...args),
+  refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
+}));
+
 import {
   selectOneStuckRow,
   processRow,
@@ -196,6 +203,8 @@ beforeEach(() => {
   mockUpdateCostStatus.mockResolvedValue({});
   mockHandleCampaignError.mockResolvedValue(undefined);
   mockUpdateCampaignStatus.mockResolvedValue({});
+  mockDeleteLeadStatusCurrent.mockResolvedValue(undefined);
+  mockRefreshLeadStatusCurrent.mockResolvedValue(undefined);
 });
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -352,6 +361,14 @@ describe("processRow — success path", () => {
     expect(v.metadata.redispatchCount).toBe(2);
     expect(v.metadata.redispatchHistory).toHaveLength(2);
     expect(typeof v.metadata.lastAttemptAt).toBe("string");
+    expect(mockDeleteLeadStatusCurrent).toHaveBeenCalledWith(
+      "inst-camp-1",
+      "lead@test.com",
+    );
+    expect(mockRefreshLeadStatusCurrent).toHaveBeenCalledWith(
+      "inst-camp-NEW",
+      "lead@test.com",
+    );
   });
 
   it("charges a fresh instantly-contact-uploaded (actual) at step 1 of the re-send", async () => {

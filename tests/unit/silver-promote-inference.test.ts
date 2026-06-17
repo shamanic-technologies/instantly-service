@@ -17,6 +17,7 @@ const mockDbSelect = vi.fn();
 const mockDbUpdate = vi.fn();
 const mockDbInsertValues = vi.fn();
 const mockDbInsertReturning = vi.fn();
+const mockRefreshLeadStatusCurrent = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
@@ -66,6 +67,10 @@ vi.mock("../../src/lib/runs-client", () => ({
   updateCostStatus: (...args: unknown[]) => mockUpdateCostStatus(...args),
 }));
 
+vi.mock("../../src/lib/status-gold", () => ({
+  refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
+}));
+
 import { promoteFromWebhookPayload } from "../../src/lib/silver-promote";
 
 const CAMPAIGN_ROW = {
@@ -108,6 +113,7 @@ describe("inference — strong-implication rules", () => {
     mockDbSelect.mockResolvedValue([]);
     mockDbInsertReturning.mockResolvedValue([]);
     mockUpdateCostStatus.mockResolvedValue({});
+    mockRefreshLeadStatusCurrent.mockResolvedValue(undefined);
   });
 
   it("email_opened ⇒ synthesizes inferred email_sent at same step + timestamp", async () => {
