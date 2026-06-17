@@ -46,6 +46,14 @@ async function createStatsApp() {
   return app;
 }
 
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 /** Helper: full stats row with all fields. Reply-sentiment counts (rdInterested
  *  etc.) no longer come from this query — the main events query keeps only
  *  rdUnsubscribe; sentiment counts come from the separate latest-sentiment query
@@ -1117,6 +1125,36 @@ describe("GET /stats caching (DIS perf)", () => {
     // No new db.execute calls — served from cache.
     expect(mockExecute.mock.calls.length).toBe(callsAfterFirst);
     expect(second.body).toEqual(first.body);
+  });
+
+  it("shares one in-flight aggregation for concurrent identical requests", async () => {
+    let releaseDb!: () => void;
+    const dbGate = new Promise<void>((resolve) => {
+      releaseDb = resolve;
+    });
+    mockExecute.mockImplementation(async () => {
+      await dbGate;
+      return { rows: [] };
+    });
+
+    const app = await createStatsApp();
+
+    const first = request(app).get("/stats").set(identityHeadersObj).then((res) => res);
+    const second = request(app).get("/stats").set(identityHeadersObj).then((res) => res);
+
+    await waitUntil(() => mockExecute.mock.calls.length > 0);
+    const callsBeforeRelease = mockExecute.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockExecute.mock.calls.length).toBe(callsBeforeRelease);
+
+    releaseDb();
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(secondResponse.body).toEqual(firstResponse.body);
+    expect(mockExecute.mock.calls.length).toBe(callsBeforeRelease);
   });
 
   it("does not serve a different query from cache (cache key includes params)", async () => {

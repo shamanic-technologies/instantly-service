@@ -7,7 +7,7 @@ import {
   queryEngagementLatencyGroups,
   addSlugConditions,
 } from "./analytics";
-import { statsCacheKey, getCachedStats, setCachedStats } from "../lib/stats-cache";
+import { statsCacheKey, getOrSetCachedStats } from "../lib/stats-cache";
 
 const router = Router();
 
@@ -140,31 +140,19 @@ router.get("/stats", async (req: Request, res: Response) => {
     groupBy,
     timezone,
   });
-  const cached = getCachedStats(cacheKey);
-  if (cached) return res.json(cached);
-
-  // Handle groupBy requests
-  if (groupBy) {
-    try {
-      const groups = await queryGroupedStats(whereClause, groupBy, timezone);
-      const payload = { groups };
-      setCachedStats(cacheKey, payload);
-      return res.json(payload);
-    } catch (error: any) {
-      const msg = error.cause?.message ?? error.message ?? String(error);
-      console.error(`[instantly-service] Failed to aggregate grouped stats: ${msg}`, error);
-      return res.status(500).json({ error: "Failed to aggregate stats" });
-    }
-  }
-
   try {
-    const payload = await computeStatsPayload(whereClause);
-    setCachedStats(cacheKey, payload);
-    res.json(payload);
+    const payload = await getOrSetCachedStats(cacheKey, async () => {
+      if (groupBy) {
+        const groups = await queryGroupedStats(whereClause, groupBy, timezone);
+        return { groups };
+      }
+      return computeStatsPayload(whereClause);
+    });
+    return res.json(payload);
   } catch (error: any) {
     const msg = error.cause?.message ?? error.message ?? String(error);
     console.error(`[instantly-service] Failed to aggregate stats: ${msg}`, error);
-    res.status(500).json({ error: "Failed to aggregate stats" });
+    return res.status(500).json({ error: "Failed to aggregate stats" });
   }
 });
 

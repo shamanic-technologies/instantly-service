@@ -40,6 +40,14 @@ async function createPublicStatsApp() {
   return app;
 }
 
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
   return {
     esSent: 0, esOpened: 0, esClicked: 0, esBounced: 0, esUnsubscribed: 0,
@@ -205,6 +213,36 @@ describe("GET /stats", () => {
     expect(response.body.recipientStats.sent).toBe(40);
     expect(response.body.emailStats.sent).toBe(50);
     expect(response.body.emailStats.stepStats).toBeUndefined();
+  });
+
+  it("shares one in-flight aggregation for concurrent identical public requests", async () => {
+    let releaseDb!: () => void;
+    const dbGate = new Promise<void>((resolve) => {
+      releaseDb = resolve;
+    });
+    mockExecute.mockImplementation(async () => {
+      await dbGate;
+      return { rows: [] };
+    });
+
+    const app = await createPublicStatsApp();
+
+    const first = request(app).get("/stats").then((res) => res);
+    const second = request(app).get("/stats").then((res) => res);
+
+    await waitUntil(() => mockExecute.mock.calls.length > 0);
+    const callsBeforeRelease = mockExecute.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockExecute.mock.calls.length).toBe(callsBeforeRelease);
+
+    releaseDb();
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(secondResponse.body).toEqual(firstResponse.body);
+    expect(mockExecute.mock.calls.length).toBe(callsBeforeRelease);
   });
 
   // ─── workflowSlugs (plural, comma-separated) filter ─────────────────────────
