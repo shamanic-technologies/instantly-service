@@ -859,8 +859,16 @@ describe("GET /stats", () => {
     expect(eventSqlText).toContain("e.timestamp");
     expect(eventSqlText).toContain("AT TIME ZONE 'UTC'");
     expect(eventSqlText).toContain("YYYY-MM-DD");
+    expect(eventSqlText).toContain("AS group_key");
+    expect(eventSqlText).toContain("GROUP BY e.group_key");
+    expect(eventSqlText).toContain("ORDER BY e.group_key");
+    expect(eventSqlText).not.toContain("GROUP BY TO_CHAR");
     expect(sentimentSqlText).toContain("ls.timestamp");
     expect(sentimentSqlText).toContain("AT TIME ZONE 'UTC'");
+    expect(sentimentSqlText).toContain("AS group_key");
+    expect(sentimentSqlText).toContain("FROM grouped_sentiment ls");
+    expect(sentimentSqlText).toContain("GROUP BY ls.group_key");
+    expect(sentimentSqlText).not.toContain("GROUP BY TO_CHAR");
     expect(allChunks).toContain("America/New_York");
   });
 
