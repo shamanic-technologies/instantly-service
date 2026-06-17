@@ -134,6 +134,13 @@
       "when": 1775088000000,
       "tag": "0018_add_stats_covering_index",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1775174400000,
+      "tag": "0019_add_status_gold_projection",
+      "breakpoints": true
     }
   ]
 }

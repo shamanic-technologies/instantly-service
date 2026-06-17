@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockDbInsertValues = vi.fn();
 const mockDbUpdateSet = vi.fn();
+const mockRefreshLeadStatusCurrent = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
@@ -39,11 +40,16 @@ vi.mock("../../src/lib/silver-promote", () => ({
   promoteEvent: (...args: unknown[]) => mockPromoteEvent(...args),
 }));
 
+vi.mock("../../src/lib/status-gold", () => ({
+  refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
+}));
+
 import { applyManualQualificationSideEffects } from "../../src/lib/manual-qualifications";
 
 beforeEach(() => {
   vi.resetAllMocks();
   mockPromoteEvent.mockResolvedValue({ promoted: true, silverEventId: "ev-1" });
+  mockRefreshLeadStatusCurrent.mockResolvedValue(undefined);
 });
 
 describe("applyManualQualificationSideEffects", () => {
@@ -107,6 +113,18 @@ describe("applyManualQualificationSideEffects", () => {
     const v = updateCall![0] as Record<string, unknown>;
     expect(v.replyClassification).toBe("positive");
     expect(v.replyClassificationSource).toBe("manual");
+  });
+
+  it("refreshes the Gold status row after pinning the manual classification", async () => {
+    await applyManualQualificationSideEffects({
+      ...baseInput,
+      status: "lead_not_interested",
+    });
+
+    expect(mockRefreshLeadStatusCurrent).toHaveBeenCalledWith(
+      "inst-camp-1",
+      "lead@test.com",
+    );
   });
 
   it("maps lead_not_interested to negative", async () => {
