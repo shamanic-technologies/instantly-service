@@ -371,6 +371,22 @@ const GROUP_BY_COLUMNS: Record<string, string> = {
   leadEmail: "e.lead_email",
 };
 
+function localDayKey(timestampExpr: SQL, timezone: string): SQL {
+  return sql`TO_CHAR(((${timestampExpr}) AT TIME ZONE 'UTC') AT TIME ZONE ${timezone}, 'YYYY-MM-DD')`;
+}
+
+function eventGroupColumn(groupBy: string, timezone: string): SQL | null {
+  if (groupBy === "day") return localDayKey(sql`e.timestamp`, timezone);
+  const col = GROUP_BY_COLUMNS[groupBy];
+  return col ? sql.raw(col) : null;
+}
+
+function sentimentGroupColumn(groupBy: string, timezone: string): SQL | null {
+  if (groupBy === "day") return localDayKey(sql`ls.timestamp`, timezone);
+  const col = SENTIMENT_GROUP_BY_COLUMNS[groupBy];
+  return col ? sql.raw(col) : null;
+}
+
 /** SQL fragment for LATERAL unnest of brand_ids, used when groupBy=brandId */
 const BRAND_LATERAL_JOIN = sql`CROSS JOIN LATERAL unnest(c.brand_ids) AS brand_id`;
 
@@ -438,6 +454,7 @@ function latestSentimentCteBody(): SQL {
     SELECT DISTINCT ON (e.campaign_id, e.lead_email)
       e.campaign_id AS campaign_id,
       e.lead_email AS lead_email,
+      e.timestamp AS timestamp,
       e.event_type AS sentiment
     FROM instantly_events e
     WHERE e.event_type IN (${typeList})
@@ -491,11 +508,11 @@ const SENTIMENT_GROUP_BY_COLUMNS: Record<string, string> = {
 export async function queryGroupedSentiment(
   whereClause: SQL,
   groupBy: string,
+  timezone = "UTC",
 ): Promise<Map<string, SentimentDetail>> {
-  const col = SENTIMENT_GROUP_BY_COLUMNS[groupBy];
-  if (!col) return new Map();
+  const groupCol = sentimentGroupColumn(groupBy, timezone);
+  if (!groupCol) return new Map();
 
-  const groupCol = sql.raw(col);
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
   const result = await db.execute(sql`
     WITH latest_sentiment AS (${latestSentimentCteBody()})
@@ -581,11 +598,11 @@ export async function queryStepSentiment(whereClause: SQL): Promise<Map<number, 
 export async function queryGroupedStats(
   whereClause: SQL,
   groupBy: string,
+  timezone = "UTC",
 ): Promise<Array<{ key: string; recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }>> {
-  const col = GROUP_BY_COLUMNS[groupBy];
-  if (!col) return [];
+  const groupCol = eventGroupColumn(groupBy, timezone);
+  if (!groupCol) return [];
 
-  const groupCol = sql.raw(col);
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
   // These three reads are independent — run them concurrently. aggregatesMap is
   // campaign-level (contacted + notSending + cancelled), derived independently
@@ -615,9 +632,12 @@ export async function queryGroupedStats(
         AND ${internalExclusionClause()}
         AND ${groupCol} IS NOT NULL
       GROUP BY ${groupCol}
+      ORDER BY ${groupCol}
     `),
-    queryGroupedCampaignAggregates(whereClause, groupBy),
-    queryGroupedSentiment(whereClause, groupBy),
+    groupBy === "day"
+      ? Promise.resolve(new Map<string, CampaignAggregates>())
+      : queryGroupedCampaignAggregates(whereClause, groupBy),
+    queryGroupedSentiment(whereClause, groupBy, timezone),
   ]);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
@@ -889,6 +909,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     });
   }
   const { runIds: runIdsRaw, brandId, campaignId, workflowSlugs, featureSlugs, groupBy } = parsed.data;
+  const timezone = parsed.data.timezone ?? "UTC";
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
   const orgId = res.locals.orgId as string;
 
@@ -912,6 +933,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     workflowSlugs,
     featureSlugs,
     groupBy,
+    timezone,
   });
   const cached = getCachedStats(cacheKey);
   if (cached) return res.json(cached);
@@ -919,7 +941,7 @@ router.get("/stats", async (req: Request, res: Response) => {
   // Handle groupBy requests
   if (groupBy) {
     try {
-      const groups = await queryGroupedStats(whereClause, groupBy);
+      const groups = await queryGroupedStats(whereClause, groupBy, timezone);
       const payload = { groups };
       setCachedStats(cacheKey, payload);
       return res.json(payload);

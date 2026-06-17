@@ -414,6 +414,15 @@ registry.registerPath({
 
 // ─── Stats ──────────────────────────────────────────────────────────────────
 
+export function isValidIanaTimezone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(new Date(0));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const StatsQuerySchema = z
   .object({
     runIds: z.string().optional().describe("Comma-separated list of run IDs"),
@@ -421,7 +430,8 @@ export const StatsQuerySchema = z
     campaignId: z.string().optional(),
     workflowSlugs: z.string().optional().describe("Comma-separated list of workflow slugs to filter by"),
     featureSlugs: z.string().optional().describe("Comma-separated list of feature slugs to filter by"),
-    groupBy: z.enum(["brandId", "campaignId", "workflowSlug", "featureSlug", "leadEmail"]).optional().describe("Group results by dimension"),
+    groupBy: z.enum(["brandId", "campaignId", "workflowSlug", "featureSlug", "leadEmail", "day"]).optional().describe("Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone."),
+    timezone: z.string().trim().refine(isValidIanaTimezone, "Invalid IANA timezone").optional().describe("IANA timezone for groupBy=day buckets. Defaults to UTC."),
   })
   .openapi("StatsQuery");
 
@@ -433,6 +443,20 @@ const StatsResponseSchema = z
     emailStats: EmailStatsSchema,
   })
   .openapi("StatsResponse");
+
+const StatsGroupedEntrySchema = z.object({
+  key: z.string().describe("Group key. For groupBy=day this is YYYY-MM-DD in the requested timezone."),
+  recipientStats: RecipientStatsSchema,
+  emailStats: EmailStatsSchema,
+});
+
+const StatsGroupedResponseSchema = z
+  .object({
+    groups: z.array(StatsGroupedEntrySchema),
+  })
+  .openapi("StatsGroupedResponse");
+
+const StatsOrGroupedResponseSchema = z.union([StatsResponseSchema, StatsGroupedResponseSchema]);
 
 const EngagementLatencyMetricSchema = z
   .object({
@@ -491,7 +515,7 @@ registry.registerPath({
   responses: {
     200: {
       description: "Aggregated campaign stats",
-      content: { "application/json": { schema: StatsResponseSchema } },
+      content: { "application/json": { schema: StatsOrGroupedResponseSchema } },
     },
     400: {
       description: "No filter provided",
@@ -518,7 +542,7 @@ registry.registerPath({
   responses: {
     200: {
       description: "Aggregated campaign stats",
-      content: { "application/json": { schema: StatsResponseSchema } },
+      content: { "application/json": { schema: StatsOrGroupedResponseSchema } },
     },
     400: {
       description: "Invalid request",
