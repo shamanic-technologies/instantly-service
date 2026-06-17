@@ -21,6 +21,10 @@ describe("billing-client", () => {
     brandId: "brand-1",
     workflowSlug: "wf-1",
     featureSlug: "cold-outreach",
+    goal: "signup",
+    brandProfileId: "brand-profile-1",
+    customerPersonaId: "persona-1",
+    customerProfileId: "customer-profile-1",
   };
 
   const items = [{ costName: "instantly-email-send", quantity: 3 }];
@@ -71,6 +75,10 @@ describe("billing-client", () => {
       "x-brand-id": "brand-1",
       "x-workflow-slug": "wf-1",
       "x-feature-slug": "cold-outreach",
+      "x-goal": "signup",
+      "x-brand-profile-id": "brand-profile-1",
+      "x-customer-persona-id": "persona-1",
+      "x-customer-profile-id": "customer-profile-1",
     });
   });
 
@@ -91,6 +99,10 @@ describe("billing-client", () => {
     expect(options.headers).not.toHaveProperty("x-brand-id");
     expect(options.headers).not.toHaveProperty("x-workflow-slug");
     expect(options.headers).not.toHaveProperty("x-feature-slug");
+    expect(options.headers).not.toHaveProperty("x-goal");
+    expect(options.headers).not.toHaveProperty("x-brand-profile-id");
+    expect(options.headers).not.toHaveProperty("x-customer-persona-id");
+    expect(options.headers).not.toHaveProperty("x-customer-profile-id");
   });
 
   it("should throw on non-ok response", async () => {

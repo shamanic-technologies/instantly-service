@@ -91,6 +91,10 @@ describe("traceEvent", () => {
         "x-campaign-id": "camp-1",
         "x-workflow-slug": "wf-slug",
         "x-feature-slug": "feat-slug",
+        "x-goal": "signup",
+        "x-brand-profile-id": "brand-profile-1",
+        "x-customer-persona-id": "persona-1",
+        "x-customer-profile-id": "customer-profile-1",
       }
     );
 
@@ -100,6 +104,10 @@ describe("traceEvent", () => {
     expect(headers["x-campaign-id"]).toBe("camp-1");
     expect(headers["x-workflow-slug"]).toBe("wf-slug");
     expect(headers["x-feature-slug"]).toBe("feat-slug");
+    expect(headers["x-goal"]).toBe("signup");
+    expect(headers["x-brand-profile-id"]).toBe("brand-profile-1");
+    expect(headers["x-customer-persona-id"]).toBe("persona-1");
+    expect(headers["x-customer-profile-id"]).toBe("customer-profile-1");
   });
 
   it("should omit undefined identity headers", async () => {
@@ -119,5 +127,9 @@ describe("traceEvent", () => {
     expect(headers["x-org-id"]).toBe("org-1");
     expect(headers).not.toHaveProperty("x-brand-id");
     expect(headers).not.toHaveProperty("x-campaign-id");
+    expect(headers).not.toHaveProperty("x-goal");
+    expect(headers).not.toHaveProperty("x-brand-profile-id");
+    expect(headers).not.toHaveProperty("x-customer-persona-id");
+    expect(headers).not.toHaveProperty("x-customer-profile-id");
   });
 });

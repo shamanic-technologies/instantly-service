@@ -369,6 +369,8 @@ const GROUP_BY_COLUMNS: Record<string, string> = {
   workflowSlug: "c.workflow_slug",
   featureSlug: "c.feature_slug",
   leadEmail: "e.lead_email",
+  customerPersonaId: "c.metadata->>'customerPersonaId'",
+  customerProfileId: "c.metadata->>'customerProfileId'",
 };
 
 function localDayKey(timestampExpr: SQL, timezone: string): SQL {
@@ -498,6 +500,8 @@ const SENTIMENT_GROUP_BY_COLUMNS: Record<string, string> = {
   workflowSlug: "c.workflow_slug",
   featureSlug: "c.feature_slug",
   leadEmail: "ls.lead_email",
+  customerPersonaId: "c.metadata->>'customerPersonaId'",
+  customerProfileId: "c.metadata->>'customerProfileId'",
 };
 
 /**
@@ -514,6 +518,30 @@ export async function queryGroupedSentiment(
   if (!groupCol) return new Map();
 
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
+  if (groupBy === "day") {
+    const result = await db.execute(sql`
+      WITH latest_sentiment AS (${latestSentimentCteBody()}),
+      grouped_sentiment AS (
+        SELECT
+          ${groupCol} AS group_key,
+          ls.sentiment
+        FROM latest_sentiment ls
+        JOIN instantly_campaigns c ON c.instantly_campaign_id = ls.campaign_id
+        WHERE ${whereClause}
+      )
+      SELECT
+        ls.group_key AS "groupKey",
+        ${SENTIMENT_COUNT_COLUMNS}
+      FROM grouped_sentiment ls
+      WHERE ls.group_key IS NOT NULL
+      GROUP BY ls.group_key
+    `);
+    const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+    return new Map(
+      rows.map((r: any) => [String(r.groupKey), rowToSentimentDetail(r)]),
+    );
+  }
+
   const result = await db.execute(sql`
     WITH latest_sentiment AS (${latestSentimentCteBody()})
     SELECT
@@ -604,14 +632,37 @@ export async function queryGroupedStats(
   if (!groupCol) return [];
 
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
-  // These three reads are independent — run them concurrently. aggregatesMap is
-  // campaign-level (contacted + notSending + cancelled), derived independently
-  // of the events table. sentimentMap is each lead's CURRENT sentiment (latest
-  // sentiment event, manual winning ties) — NOT every sentiment event ever
-  // recorded, which never drops a re-qualified reply (see SENTIMENT_EVENT_TYPES;
-  // `unsubscribe` stays an event count, a separate signal).
-  const [result, aggregatesMap, sentimentMap] = await Promise.all([
-    db.execute(sql`
+  const eventsQuery = groupBy === "day" ? sql`
+      WITH grouped_events AS (
+        SELECT
+          ${groupCol} AS group_key,
+          e.event_type,
+          e.lead_email,
+          e.campaign_id,
+          e.step
+        FROM instantly_events e
+        JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+        WHERE ${whereClause}
+          AND ${internalExclusionClause()}
+      )
+      SELECT
+        e.group_key AS "groupKey",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
+        COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
+        COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "esUnsubscribed",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "rsSent",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "rsOpened",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "rsClicked",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "rsBounced",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rsUnsubscribed",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
+      FROM grouped_events e
+      WHERE e.group_key IS NOT NULL
+      GROUP BY e.group_key
+      ORDER BY e.group_key
+    ` : sql`
       SELECT
         ${groupCol} AS "groupKey",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
@@ -633,7 +684,15 @@ export async function queryGroupedStats(
         AND ${groupCol} IS NOT NULL
       GROUP BY ${groupCol}
       ORDER BY ${groupCol}
-    `),
+    `;
+  // These three reads are independent — run them concurrently. aggregatesMap is
+  // campaign-level (contacted + notSending + cancelled), derived independently
+  // of the events table. sentimentMap is each lead's CURRENT sentiment (latest
+  // sentiment event, manual winning ties) — NOT every sentiment event ever
+  // recorded, which never drops a re-qualified reply (see SENTIMENT_EVENT_TYPES;
+  // `unsubscribe` stays an event count, a separate signal).
+  const [result, aggregatesMap, sentimentMap] = await Promise.all([
+    db.execute(eventsQuery),
     groupBy === "day"
       ? Promise.resolve(new Map<string, CampaignAggregates>())
       : queryGroupedCampaignAggregates(whereClause, groupBy),
@@ -908,7 +967,18 @@ router.get("/stats", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds: runIdsRaw, brandId, campaignId, workflowSlugs, featureSlugs, groupBy } = parsed.data;
+  const {
+    runIds: runIdsRaw,
+    brandId,
+    campaignId,
+    goal,
+    brandProfileId,
+    customerPersonaId,
+    customerProfileId,
+    workflowSlugs,
+    featureSlugs,
+    groupBy,
+  } = parsed.data;
   const timezone = parsed.data.timezone ?? "UTC";
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
   const orgId = res.locals.orgId as string;
@@ -918,6 +988,10 @@ router.get("/stats", async (req: Request, res: Response) => {
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
   if (brandId) conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
+  if (goal) conditions.push(sql`c.metadata->>'goal' = ${goal}`);
+  if (brandProfileId) conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
+  if (customerPersonaId) conditions.push(sql`c.metadata->>'customerPersonaId' = ${customerPersonaId}`);
+  if (customerProfileId) conditions.push(sql`c.metadata->>'customerProfileId' = ${customerProfileId}`);
 
   addSlugConditions(conditions, { workflowSlugs, featureSlugs });
 
@@ -930,6 +1004,10 @@ router.get("/stats", async (req: Request, res: Response) => {
     runIds: runIdsRaw,
     brandId,
     campaignId,
+    goal,
+    brandProfileId,
+    customerPersonaId,
+    customerProfileId,
     workflowSlugs,
     featureSlugs,
     groupBy,

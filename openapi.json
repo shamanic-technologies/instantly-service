@@ -2236,6 +2236,46 @@
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -2335,6 +2375,46 @@
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
+            "in": "header"
           }
         ],
         "responses": {
@@ -2400,6 +2480,46 @@
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
+            "in": "header"
           }
         ],
         "responses": {
@@ -2462,6 +2582,46 @@
             "required": false,
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
             "in": "header"
           }
         ],
@@ -2613,6 +2773,46 @@
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
+            "in": "header"
           }
         ],
         "responses": {
@@ -2671,6 +2871,46 @@
           {
             "schema": {
               "type": "string",
+              "description": "Filter by explicit goal attribution stored in campaign metadata"
+            },
+            "required": false,
+            "description": "Filter by explicit goal attribution stored in campaign metadata",
+            "name": "goal",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by explicit brand-profile attribution stored in campaign metadata"
+            },
+            "required": false,
+            "description": "Filter by explicit brand-profile attribution stored in campaign metadata",
+            "name": "brandProfileId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by explicit customer persona attribution stored in campaign metadata"
+            },
+            "required": false,
+            "description": "Filter by explicit customer persona attribution stored in campaign metadata",
+            "name": "customerPersonaId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by explicit customer profile attribution stored in campaign metadata"
+            },
+            "required": false,
+            "description": "Filter by explicit customer profile attribution stored in campaign metadata",
+            "name": "customerProfileId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "description": "Comma-separated list of workflow slugs to filter by"
             },
             "required": false,
@@ -2697,12 +2937,14 @@
                 "workflowSlug",
                 "featureSlug",
                 "leadEmail",
+                "customerPersonaId",
+                "customerProfileId",
                 "day"
               ],
-              "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone."
+              "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/profile groupings use only explicit campaign metadata."
             },
             "required": false,
-            "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone.",
+            "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/profile groupings use only explicit campaign metadata.",
             "name": "groupBy",
             "in": "query"
           },
@@ -2754,6 +2996,46 @@
             "required": false,
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
             "in": "header"
           }
         ],
@@ -2837,6 +3119,46 @@
           {
             "schema": {
               "type": "string",
+              "description": "Filter by explicit goal attribution stored in campaign metadata"
+            },
+            "required": false,
+            "description": "Filter by explicit goal attribution stored in campaign metadata",
+            "name": "goal",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by explicit brand-profile attribution stored in campaign metadata"
+            },
+            "required": false,
+            "description": "Filter by explicit brand-profile attribution stored in campaign metadata",
+            "name": "brandProfileId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by explicit customer persona attribution stored in campaign metadata"
+            },
+            "required": false,
+            "description": "Filter by explicit customer persona attribution stored in campaign metadata",
+            "name": "customerPersonaId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by explicit customer profile attribution stored in campaign metadata"
+            },
+            "required": false,
+            "description": "Filter by explicit customer profile attribution stored in campaign metadata",
+            "name": "customerProfileId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
               "description": "Comma-separated list of workflow slugs to filter by"
             },
             "required": false,
@@ -2863,12 +3185,14 @@
                 "workflowSlug",
                 "featureSlug",
                 "leadEmail",
+                "customerPersonaId",
+                "customerProfileId",
                 "day"
               ],
-              "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone."
+              "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/profile groupings use only explicit campaign metadata."
             },
             "required": false,
-            "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone.",
+            "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/profile groupings use only explicit campaign metadata.",
             "name": "groupBy",
             "in": "query"
           },
@@ -3074,6 +3398,46 @@
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -3177,6 +3541,46 @@
             "required": false,
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
             "in": "header"
           }
         ],
@@ -3298,6 +3702,46 @@
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
+            "in": "header"
           }
         ],
         "requestBody": {
@@ -3379,6 +3823,46 @@
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
+            "in": "header"
           }
         ],
         "responses": {
@@ -3434,6 +3918,46 @@
             "required": false,
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
             "in": "header"
           }
         ],
@@ -3559,6 +4083,46 @@
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
             "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
+            "in": "header"
           }
         ],
         "responses": {
@@ -3631,6 +4195,46 @@
             "required": false,
             "description": "Feature slug — propagated through the full call chain for tracking",
             "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer persona attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer persona attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-persona-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-customer-profile-id",
             "in": "header"
           }
         ],

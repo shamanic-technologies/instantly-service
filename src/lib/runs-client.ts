@@ -13,6 +13,10 @@ export interface TrackingHeaders {
   brandId?: string;
   workflowSlug?: string;
   featureSlug?: string;
+  goal?: string;
+  brandProfileId?: string;
+  customerPersonaId?: string;
+  customerProfileId?: string;
 }
 
 export interface IdentityContext {
@@ -93,6 +97,18 @@ async function runsRequest<T>(
   }
   if (identity.tracking?.featureSlug) {
     headers["x-feature-slug"] = identity.tracking.featureSlug;
+  }
+  if (identity.tracking?.goal) {
+    headers["x-goal"] = identity.tracking.goal;
+  }
+  if (identity.tracking?.brandProfileId) {
+    headers["x-brand-profile-id"] = identity.tracking.brandProfileId;
+  }
+  if (identity.tracking?.customerPersonaId) {
+    headers["x-customer-persona-id"] = identity.tracking.customerPersonaId;
+  }
+  if (identity.tracking?.customerProfileId) {
+    headers["x-customer-profile-id"] = identity.tracking.customerProfileId;
   }
 
   const response = await fetch(`${RUNS_SERVICE_URL}${path}`, {
