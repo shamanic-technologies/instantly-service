@@ -687,6 +687,151 @@ describe("GET /stats", () => {
     expect(response.body.groups).toHaveLength(1);
     expect(response.body.groups[0].key).toBe("feat-1");
   });
+
+  // ─── groupBy: day ──────────────────────────────────────────────────────────
+
+  it("should support groupBy day with stats grouped by local YYYY-MM-DD key", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        {
+          groupKey: "2026-06-17",
+          esSent: 8,
+          esOpened: 4,
+          esClicked: 2,
+          esBounced: 1,
+          esUnsubscribed: 0,
+          rsSent: 6,
+          rsOpened: 3,
+          rsClicked: 2,
+          rsBounced: 1,
+          rsUnsubscribed: 0,
+          rdUnsubscribe: 0,
+        },
+      ],
+    });
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        makeSentimentRow({ groupKey: "2026-06-17", rdInterested: 1, rdNotInterested: 1 }),
+      ],
+    });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .query({ groupBy: "day", timezone: "UTC" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    expect(response.body.groups).toEqual([
+      {
+        key: "2026-06-17",
+        recipientStats: {
+          contacted: 0,
+          sent: 6,
+          delivered: 5,
+          opened: 3,
+          bounced: 1,
+          clicked: 2,
+          unsubscribed: 0,
+          notSending: 0,
+          cancelled: 0,
+          repliesPositive: 1,
+          repliesNegative: 1,
+          repliesNeutral: 0,
+          repliesAutoReply: 0,
+          repliesDetail: {
+            interested: 1,
+            meetingBooked: 0,
+            closed: 0,
+            notInterested: 1,
+            wrongPerson: 0,
+            unsubscribe: 0,
+            neutral: 0,
+            autoReply: 0,
+            outOfOffice: 0,
+          },
+        },
+        emailStats: {
+          sent: 8,
+          delivered: 7,
+          opened: 4,
+          clicked: 2,
+          bounced: 1,
+          unsubscribed: 0,
+        },
+      },
+    ]);
+    // Day grouping is event-derived; campaign-table current-status aggregates
+    // are not queried for fake per-day contacted/notSending/cancelled values.
+    expect(mockExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it("should group day buckets with the requested IANA timezone", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [{ groupKey: "2026-06-16", ...makeStatsRow({ esSent: 1, rsSent: 1 }) }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .query({ groupBy: "day", timezone: "America/New_York" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    expect(response.body.groups[0].key).toBe("2026-06-16");
+
+    const eventSqlText = extractSqlText(mockExecute.mock.calls[0][0]);
+    const sentimentSqlText = extractSqlText(mockExecute.mock.calls[1][0]);
+    const allChunks = JSON.stringify(mockExecute.mock.calls.map((call) => call[0]));
+
+    expect(eventSqlText).toContain("e.timestamp");
+    expect(eventSqlText).toContain("AT TIME ZONE 'UTC'");
+    expect(eventSqlText).toContain("YYYY-MM-DD");
+    expect(sentimentSqlText).toContain("ls.timestamp");
+    expect(sentimentSqlText).toContain("AT TIME ZONE 'UTC'");
+    expect(allChunks).toContain("America/New_York");
+  });
+
+  it("should apply existing filters to groupBy day", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [{ groupKey: "2026-06-17", ...makeStatsRow({ esSent: 1, rsSent: 1 }) }] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .query({
+        groupBy: "day",
+        brandId: "brand-1",
+        campaignId: "camp-1",
+        workflowSlugs: "wf-a,wf-b",
+        featureSlugs: "feat-a,feat-b",
+        runIds: "run-1,run-2",
+      })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("run_id IN");
+    expect(sqlText).toContain("brand_ids");
+    expect(sqlText).toContain("campaign_id");
+    expect(sqlText).toContain("workflow_slug IN");
+    expect(sqlText).toContain("feature_slug IN");
+  });
+
+  it("should reject invalid groupBy day timezone values", async () => {
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .query({ groupBy: "day", timezone: "not-a-zone" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("Invalid request");
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /stats/grouped", () => {
