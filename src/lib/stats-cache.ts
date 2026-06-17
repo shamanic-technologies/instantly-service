@@ -26,6 +26,7 @@ interface CacheEntry {
 }
 
 const store = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<unknown>>();
 
 /** Default TTL (ms) applied when a caller does not pass one explicitly. */
 export const STATS_CACHE_TTL_MS = DEFAULT_TTL_MS;
@@ -59,7 +60,36 @@ export function setCachedStats(key: string, value: unknown, ttlMs: number = DEFA
   store.set(key, { expiresAt: Date.now() + ttlMs, value });
 }
 
+/**
+ * Return a cached value or share one in-flight loader for this key. This avoids
+ * a burst of identical requests all missing the cache and re-running the same
+ * expensive stats aggregation before the first response has stored the value.
+ */
+export async function getOrSetCachedStats<T>(
+  key: string,
+  loader: () => Promise<T>,
+  ttlMs: number = DEFAULT_TTL_MS,
+): Promise<T> {
+  const cached = getCachedStats<T>(key);
+  if (cached !== undefined) return cached;
+
+  const existing = inFlight.get(key);
+  if (existing) return existing as Promise<T>;
+
+  const pending = loader()
+    .then((value) => {
+      setCachedStats(key, value, ttlMs);
+      return value;
+    })
+    .finally(() => {
+      inFlight.delete(key);
+    });
+  inFlight.set(key, pending);
+  return pending;
+}
+
 /** Drop all cached entries. Used by tests for isolation. */
 export function clearStatsCache(): void {
   store.clear();
+  inFlight.clear();
 }
