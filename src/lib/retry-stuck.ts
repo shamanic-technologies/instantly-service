@@ -68,6 +68,7 @@ import {
   type IdentityContext,
 } from "./runs-client";
 import { handleCampaignError } from "./campaign-error-handler";
+import { deleteLeadStatusCurrent, refreshLeadStatusCurrent } from "./status-gold";
 
 /** Age (hours) a row must reach before retry-stuck picks it up. */
 export const STUCK_AGE_HOURS = 72;
@@ -657,6 +658,9 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
         updatedAt: new Date(),
       })
       .where(eq(instantlyCampaigns.id, row.id));
+
+    await deleteLeadStatusCurrent(row.instantlyCampaignId, row.leadEmail);
+    await refreshLeadStatusCurrent(result.value.instantlyCampaignId, row.leadEmail);
 
     console.log(
       `[instantly-service] retry-stuck: re-sent row=${row.id} ` +

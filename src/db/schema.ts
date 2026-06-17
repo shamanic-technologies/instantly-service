@@ -7,6 +7,7 @@ import {
   integer,
   uniqueIndex,
   index,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -167,6 +168,58 @@ export const instantlyEvents = pgTable(
       table.leadEmail,
       table.step,
     ),
+  ],
+);
+
+// Gold: current delivery/status projection for the hot /orgs/status read path.
+//
+// Rebuildable from silver (`instantly_campaigns` + `instantly_events`) and kept
+// fresh by the promotion paths. One row = one current campaign/lead status.
+export const instantlyLeadStatusCurrent = pgTable(
+  "instantly_lead_status_current",
+  {
+    orgId: text("org_id").notNull(),
+    campaignId: text("campaign_id"),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    brandIds: text("brand_ids").array().notNull(),
+    contacted: boolean("contacted").notNull().default(true),
+    sent: boolean("sent").notNull().default(false),
+    delivered: boolean("delivered").notNull().default(false),
+    opened: boolean("opened").notNull().default(false),
+    clicked: boolean("clicked").notNull().default(false),
+    replied: boolean("replied").notNull().default(false),
+    replyClassification: text("reply_classification"),
+    bounced: boolean("bounced").notNull().default(false),
+    unsubscribed: boolean("unsubscribed").notNull().default(false),
+    cancelled: boolean("cancelled").notNull().default(false),
+    lastDeliveredAt: timestamp("last_delivered_at"),
+    firstContactedAt: timestamp("first_contacted_at"),
+    firstSentAt: timestamp("first_sent_at"),
+    firstDeliveredAt: timestamp("first_delivered_at"),
+    firstOpenedAt: timestamp("first_opened_at"),
+    firstClickedAt: timestamp("first_clicked_at"),
+    firstRepliedAt: timestamp("first_replied_at"),
+    firstBouncedAt: timestamp("first_bounced_at"),
+    firstUnsubscribedAt: timestamp("first_unsubscribed_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "instantly_lead_status_current_pk",
+      columns: [table.instantlyCampaignId, table.leadEmail],
+    }),
+    index("instantly_lead_status_current_org_email_idx").on(
+      table.orgId,
+      table.leadEmail,
+    ),
+    index("instantly_lead_status_current_org_campaign_email_idx").on(
+      table.orgId,
+      table.campaignId,
+      table.leadEmail,
+    ),
+    index("instantly_lead_status_current_brand_ids_idx").using("gin", table.brandIds),
   ],
 );
 

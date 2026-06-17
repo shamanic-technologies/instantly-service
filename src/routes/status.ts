@@ -81,112 +81,68 @@ function sqlIn(values: string[]) {
 }
 
 /** Scoped query grouped by email only — used for campaign mode */
-function scopedQueryByEmail(filterClause: ReturnType<typeof sql>, emails: string[]) {
+function scopedQueryByEmail(orgId: string, filterClause: ReturnType<typeof sql>, emails: string[]) {
   return db.execute(sql`
     SELECT
-      c.lead_email AS "key",
+      s.lead_email AS "key",
       CAST(NULL AS text) AS "campaignId",
-      TRUE AS "contacted",
-      BOOL_OR(se.campaign_id IS NOT NULL) AS "sent",
-      (BOOL_OR(se.campaign_id IS NOT NULL) AND NOT BOOL_OR(be.campaign_id IS NOT NULL)) AS "delivered",
-      BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
-      BOOL_OR(ce.campaign_id IS NOT NULL) AS "clicked",
-      BOOL_OR(re.campaign_id IS NOT NULL) AS "replied",
-      (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
-      BOOL_OR(be.campaign_id IS NOT NULL) AS "bounced",
-      BOOL_OR(ue.campaign_id IS NOT NULL) AS "unsubscribed",
-      BOOL_OR(c.delivery_status = 'cancelled') AS "cancelled",
-      MAX(se.timestamp) AS "lastDeliveredAt",
-      MIN(c.created_at) AS "firstContactedAt",
-      MIN(se.timestamp) AS "firstSentAt",
-      CASE WHEN BOOL_OR(se.campaign_id IS NOT NULL) AND NOT BOOL_OR(be.campaign_id IS NOT NULL) THEN MIN(se.timestamp) ELSE NULL END AS "firstDeliveredAt",
-      MIN(oe.timestamp) AS "firstOpenedAt",
-      MIN(ce.timestamp) AS "firstClickedAt",
-      MIN(re.timestamp) AS "firstRepliedAt",
-      MIN(be.timestamp) AS "firstBouncedAt",
-      MIN(ue.timestamp) AS "firstUnsubscribedAt"
-    FROM instantly_campaigns c
-    LEFT JOIN instantly_events se
-      ON se.campaign_id = c.instantly_campaign_id
-      AND se.lead_email = c.lead_email
-      AND se.event_type = 'email_sent'
-    LEFT JOIN instantly_events be
-      ON be.campaign_id = c.instantly_campaign_id
-      AND be.lead_email = c.lead_email
-      AND be.event_type = 'email_bounced'
-    LEFT JOIN instantly_events oe
-      ON oe.campaign_id = c.instantly_campaign_id
-      AND oe.lead_email = c.lead_email
-      AND oe.event_type = 'email_opened'
-    LEFT JOIN instantly_events ce
-      ON ce.campaign_id = c.instantly_campaign_id
-      AND ce.lead_email = c.lead_email
-      AND ce.event_type = 'email_link_clicked'
-    LEFT JOIN instantly_events re
-      ON re.campaign_id = c.instantly_campaign_id
-      AND re.lead_email = c.lead_email
-      AND re.event_type = 'reply_received'
-    LEFT JOIN instantly_events ue
-      ON ue.campaign_id = c.instantly_campaign_id
-      AND ue.lead_email = c.lead_email
-      AND ue.event_type = 'lead_unsubscribed'
-    WHERE c.lead_email IN (${sqlIn(emails)}) AND ${filterClause}
-    GROUP BY c.lead_email
+      BOOL_OR(s.contacted) AS "contacted",
+      BOOL_OR(s.sent) AS "sent",
+      (BOOL_OR(s.sent) AND NOT BOOL_OR(s.bounced)) AS "delivered",
+      BOOL_OR(s.opened) AS "opened",
+      BOOL_OR(s.clicked) AS "clicked",
+      BOOL_OR(s.replied) AS "replied",
+      (array_agg(s.reply_classification ORDER BY s.updated_at DESC) FILTER (WHERE s.reply_classification IS NOT NULL))[1] AS "replyClassification",
+      BOOL_OR(s.bounced) AS "bounced",
+      BOOL_OR(s.unsubscribed) AS "unsubscribed",
+      BOOL_OR(s.cancelled) AS "cancelled",
+      MAX(s.last_delivered_at) AS "lastDeliveredAt",
+      MIN(s.first_contacted_at) AS "firstContactedAt",
+      MIN(s.first_sent_at) AS "firstSentAt",
+      CASE WHEN BOOL_OR(s.sent) AND NOT BOOL_OR(s.bounced) THEN MIN(s.first_sent_at) ELSE NULL END AS "firstDeliveredAt",
+      MIN(s.first_opened_at) AS "firstOpenedAt",
+      MIN(s.first_clicked_at) AS "firstClickedAt",
+      MIN(s.first_replied_at) AS "firstRepliedAt",
+      MIN(s.first_bounced_at) AS "firstBouncedAt",
+      MIN(s.first_unsubscribed_at) AS "firstUnsubscribedAt"
+    FROM instantly_lead_status_current s
+    WHERE s.org_id = ${orgId}
+      AND s.lead_email IN (${sqlIn(emails)})
+      AND ${filterClause}
+    GROUP BY s.lead_email
   `);
 }
 
 /** Brand breakdown query — grouped by (email, campaign_id) for per-campaign detail */
-function brandBreakdownQuery(brandId: string, emails: string[]) {
+function brandBreakdownQuery(orgId: string, brandId: string, emails: string[]) {
   return db.execute(sql`
     SELECT
-      c.lead_email AS "key",
-      c.campaign_id AS "campaignId",
-      TRUE AS "contacted",
-      BOOL_OR(se.campaign_id IS NOT NULL) AS "sent",
-      (BOOL_OR(se.campaign_id IS NOT NULL) AND NOT BOOL_OR(be.campaign_id IS NOT NULL)) AS "delivered",
-      BOOL_OR(oe.campaign_id IS NOT NULL) AS "opened",
-      BOOL_OR(ce.campaign_id IS NOT NULL) AS "clicked",
-      BOOL_OR(re.campaign_id IS NOT NULL) AS "replied",
-      (array_agg(c.reply_classification ORDER BY c.updated_at DESC) FILTER (WHERE c.reply_classification IS NOT NULL))[1] AS "replyClassification",
-      BOOL_OR(be.campaign_id IS NOT NULL) AS "bounced",
-      BOOL_OR(ue.campaign_id IS NOT NULL) AS "unsubscribed",
-      BOOL_OR(c.delivery_status = 'cancelled') AS "cancelled",
-      MAX(se.timestamp) AS "lastDeliveredAt",
-      MIN(c.created_at) AS "firstContactedAt",
-      MIN(se.timestamp) AS "firstSentAt",
-      CASE WHEN BOOL_OR(se.campaign_id IS NOT NULL) AND NOT BOOL_OR(be.campaign_id IS NOT NULL) THEN MIN(se.timestamp) ELSE NULL END AS "firstDeliveredAt",
-      MIN(oe.timestamp) AS "firstOpenedAt",
-      MIN(ce.timestamp) AS "firstClickedAt",
-      MIN(re.timestamp) AS "firstRepliedAt",
-      MIN(be.timestamp) AS "firstBouncedAt",
-      MIN(ue.timestamp) AS "firstUnsubscribedAt"
-    FROM instantly_campaigns c
-    LEFT JOIN instantly_events se
-      ON se.campaign_id = c.instantly_campaign_id
-      AND se.lead_email = c.lead_email
-      AND se.event_type = 'email_sent'
-    LEFT JOIN instantly_events be
-      ON be.campaign_id = c.instantly_campaign_id
-      AND be.lead_email = c.lead_email
-      AND be.event_type = 'email_bounced'
-    LEFT JOIN instantly_events oe
-      ON oe.campaign_id = c.instantly_campaign_id
-      AND oe.lead_email = c.lead_email
-      AND oe.event_type = 'email_opened'
-    LEFT JOIN instantly_events ce
-      ON ce.campaign_id = c.instantly_campaign_id
-      AND ce.lead_email = c.lead_email
-      AND ce.event_type = 'email_link_clicked'
-    LEFT JOIN instantly_events re
-      ON re.campaign_id = c.instantly_campaign_id
-      AND re.lead_email = c.lead_email
-      AND re.event_type = 'reply_received'
-    LEFT JOIN instantly_events ue
-      ON ue.campaign_id = c.instantly_campaign_id
-      AND ue.lead_email = c.lead_email
-      AND ue.event_type = 'lead_unsubscribed'
-    WHERE c.lead_email IN (${sqlIn(emails)}) AND ${brandId} = ANY(c.brand_ids)
-    GROUP BY c.lead_email, c.campaign_id
+      s.lead_email AS "key",
+      s.campaign_id AS "campaignId",
+      BOOL_OR(s.contacted) AS "contacted",
+      BOOL_OR(s.sent) AS "sent",
+      (BOOL_OR(s.sent) AND NOT BOOL_OR(s.bounced)) AS "delivered",
+      BOOL_OR(s.opened) AS "opened",
+      BOOL_OR(s.clicked) AS "clicked",
+      BOOL_OR(s.replied) AS "replied",
+      (array_agg(s.reply_classification ORDER BY s.updated_at DESC) FILTER (WHERE s.reply_classification IS NOT NULL))[1] AS "replyClassification",
+      BOOL_OR(s.bounced) AS "bounced",
+      BOOL_OR(s.unsubscribed) AS "unsubscribed",
+      BOOL_OR(s.cancelled) AS "cancelled",
+      MAX(s.last_delivered_at) AS "lastDeliveredAt",
+      MIN(s.first_contacted_at) AS "firstContactedAt",
+      MIN(s.first_sent_at) AS "firstSentAt",
+      CASE WHEN BOOL_OR(s.sent) AND NOT BOOL_OR(s.bounced) THEN MIN(s.first_sent_at) ELSE NULL END AS "firstDeliveredAt",
+      MIN(s.first_opened_at) AS "firstOpenedAt",
+      MIN(s.first_clicked_at) AS "firstClickedAt",
+      MIN(s.first_replied_at) AS "firstRepliedAt",
+      MIN(s.first_bounced_at) AS "firstBouncedAt",
+      MIN(s.first_unsubscribed_at) AS "firstUnsubscribedAt"
+    FROM instantly_lead_status_current s
+    WHERE s.org_id = ${orgId}
+      AND s.lead_email IN (${sqlIn(emails)})
+      AND ${brandId} = ANY(s.brand_ids)
+    GROUP BY s.lead_email, s.campaign_id
   `);
 }
 
@@ -270,44 +226,38 @@ router.post("/", async (req: Request, res: Response) => {
   const { brandId, campaignId, items } = parsed.data;
 
   const emails = items.map((i) => i.email);
+  const orgId = String(res.locals.orgId ?? "");
   const isBrandMode = !!brandId && !campaignId;
   const isCampaignMode = !!campaignId;
 
   try {
-    // Global: bounced + unsubscribed across the entire org, derived from events.
+    // Global: bounced + unsubscribed across the entire org, read from Gold.
     const globalEmailPromise = db.execute(sql`
       SELECT
-        c.lead_email AS "key",
+        s.lead_email AS "key",
         CAST(NULL AS text) AS "campaignId",
         CAST(NULL AS boolean) AS "contacted",
         CAST(NULL AS boolean) AS "sent",
         CAST(NULL AS boolean) AS "delivered",
         CAST(NULL AS boolean) AS "replied",
-        BOOL_OR(be.campaign_id IS NOT NULL) AS "bounced",
-        BOOL_OR(ue.campaign_id IS NOT NULL) AS "unsubscribed",
+        BOOL_OR(s.bounced) AS "bounced",
+        BOOL_OR(s.unsubscribed) AS "unsubscribed",
         CAST(NULL AS timestamp) AS "lastDeliveredAt"
-      FROM instantly_campaigns c
-      LEFT JOIN instantly_events be
-        ON be.campaign_id = c.instantly_campaign_id
-        AND be.lead_email = c.lead_email
-        AND be.event_type = 'email_bounced'
-      LEFT JOIN instantly_events ue
-        ON ue.campaign_id = c.instantly_campaign_id
-        AND ue.lead_email = c.lead_email
-        AND ue.event_type = 'lead_unsubscribed'
-      WHERE c.lead_email IN (${sqlIn(emails)})
-      GROUP BY c.lead_email
+      FROM instantly_lead_status_current s
+      WHERE s.org_id = ${orgId}
+        AND s.lead_email IN (${sqlIn(emails)})
+      GROUP BY s.lead_email
     `);
 
     let brandBreakdownPromise: Promise<unknown> | null = null;
     if (isBrandMode) {
-      brandBreakdownPromise = brandBreakdownQuery(brandId, emails);
+      brandBreakdownPromise = brandBreakdownQuery(orgId, brandId, emails);
     }
 
     let campPromise: Promise<unknown> | null = null;
     if (isCampaignMode) {
-      const campFilter = sql`c.campaign_id = ${campaignId}`;
-      campPromise = scopedQueryByEmail(campFilter, emails);
+      const campFilter = sql`s.campaign_id = ${campaignId}`;
+      campPromise = scopedQueryByEmail(orgId, campFilter, emails);
     }
 
     const [globalEmailResult, brandBreakdownResult, campResult] =

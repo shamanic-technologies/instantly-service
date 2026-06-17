@@ -20,6 +20,7 @@ import { instantlyCampaigns, sequenceCosts } from "../db/schema";
 import { eq, and, or } from "drizzle-orm";
 import { updateRun, updateCostStatus, type IdentityContext } from "./runs-client";
 import { sendEmail } from "./email-client";
+import { refreshLeadStatusCurrent } from "./status-gold";
 
 const ADMIN_EMAIL = process.env.ADMIN_NOTIFICATION_EMAIL || "kevin@distribute.you";
 
@@ -95,6 +96,10 @@ export async function handleCampaignError(
       updatedAt: new Date(),
     })
     .where(eq(instantlyCampaigns.id, campaign.id));
+
+  if (campaign.leadEmail) {
+    await refreshLeadStatusCurrent(instantlyCampaignId, campaign.leadEmail);
+  }
 
   // 3. Cancel all remaining provisioned costs
   if (campaign.campaignId && campaign.leadEmail) {

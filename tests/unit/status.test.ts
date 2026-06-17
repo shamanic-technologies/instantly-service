@@ -24,6 +24,24 @@ async function createStatusApp() {
 
 const emptyScoped = { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
 
+/** Recursively concatenate every string fragment in a drizzle SQL query. */
+function chunkText(query: unknown): string {
+  if (query == null) return "";
+  if (typeof query === "string") return query;
+  if (typeof query !== "object") return String(query);
+
+  const chunks = (query as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(chunks)) {
+    return chunks.map(chunkText).join("");
+  }
+
+  const v = (query as { value?: unknown }).value;
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) return v.map(chunkText).join("");
+
+  return "";
+}
+
 describe("POST /status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -348,6 +366,21 @@ describe("POST /status", () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     await request(app).post("/").send({ brandId: "b-1", campaignId: "c-1", items: [{ email: "a@test.com" }] });
     expect(mockExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads status from the Gold projection, not raw silver event joins", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // campaign
+
+    const app = await createStatusApp();
+    await request(app).post("/").send({
+      campaignId: "camp-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    const sqlText = mockExecute.mock.calls.map((c) => chunkText(c[0])).join("\n");
+    expect(sqlText).toContain("instantly_lead_status_current");
+    expect(sqlText).not.toContain("instantly_events");
   });
 
   // ── Error handling ─────────────────────────────────────────────────────

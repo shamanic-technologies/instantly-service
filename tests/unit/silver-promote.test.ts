@@ -6,6 +6,7 @@ const mockDbSelect = vi.fn();
 const mockDbUpdate = vi.fn();
 const mockDbInsertReturning = vi.fn();
 const mockDbInsertValues = vi.fn();
+const mockRefreshLeadStatusCurrent = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
@@ -55,6 +56,10 @@ vi.mock("../../src/lib/runs-client", () => ({
   updateCostStatus: (...args: unknown[]) => mockUpdateCostStatus(...args),
 }));
 
+vi.mock("../../src/lib/status-gold", () => ({
+  refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
+}));
+
 // Import under test AFTER mocks
 import {
   promoteFromWebhookPayload,
@@ -99,6 +104,7 @@ describe("promoteFromWebhookPayload", () => {
     mockDbSelect.mockResolvedValue([]);
     mockDbInsertReturning.mockResolvedValue([]);
     mockUpdateCostStatus.mockResolvedValue({});
+    mockRefreshLeadStatusCurrent.mockResolvedValue(undefined);
   });
 
   it("returns promoted=false when campaign not found", async () => {
@@ -125,6 +131,26 @@ describe("promoteFromWebhookPayload", () => {
 
     expect(result.promoted).toBe(true);
     expect(result.silverEventId).toBe("silver-1");
+  });
+
+  it("refreshes the Gold status projection after a promoted lead event", async () => {
+    mockCampaign();
+    mockNewSilverRow("silver-1");
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-1",
+      payload: {
+        event_type: "email_opened",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 1,
+      },
+    });
+
+    expect(mockRefreshLeadStatusCurrent).toHaveBeenCalledWith(
+      "inst-camp-1",
+      "lead@test.com",
+    );
   });
 
   it("returns promoted=false when silver dedup hits unique index", async () => {
