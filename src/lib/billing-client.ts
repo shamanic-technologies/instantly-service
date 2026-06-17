@@ -29,6 +29,10 @@ export interface BillingIdentity {
   brandId?: string;
   workflowSlug?: string;
   featureSlug?: string;
+  goal?: string;
+  brandProfileId?: string;
+  customerPersonaId?: string;
+  customerProfileId?: string;
 }
 
 export interface AuthorizeResult {
@@ -64,6 +68,10 @@ export async function authorizeCreditSpend(
   if (identity.brandId) headers["x-brand-id"] = identity.brandId;
   if (identity.workflowSlug) headers["x-workflow-slug"] = identity.workflowSlug;
   if (identity.featureSlug) headers["x-feature-slug"] = identity.featureSlug;
+  if (identity.goal) headers["x-goal"] = identity.goal;
+  if (identity.brandProfileId) headers["x-brand-profile-id"] = identity.brandProfileId;
+  if (identity.customerPersonaId) headers["x-customer-persona-id"] = identity.customerPersonaId;
+  if (identity.customerProfileId) headers["x-customer-profile-id"] = identity.customerProfileId;
 
   const response = await fetch(`${BILLING_SERVICE_URL}/v1/customer_balance/authorize`, {
     method: "POST",

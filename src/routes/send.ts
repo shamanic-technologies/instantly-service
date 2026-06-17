@@ -29,7 +29,20 @@ function getTracking(res: Response): TrackingHeaders {
   if (res.locals.headerBrandId) t.brandId = res.locals.headerBrandId;
   if (res.locals.headerWorkflowSlug) t.workflowSlug = res.locals.headerWorkflowSlug;
   if (res.locals.headerFeatureSlug) t.featureSlug = res.locals.headerFeatureSlug;
+  if (res.locals.headerGoal) t.goal = res.locals.headerGoal;
+  if (res.locals.headerBrandProfileId) t.brandProfileId = res.locals.headerBrandProfileId;
+  if (res.locals.headerCustomerPersonaId) t.customerPersonaId = res.locals.headerCustomerPersonaId;
+  if (res.locals.headerCustomerProfileId) t.customerProfileId = res.locals.headerCustomerProfileId;
   return t;
+}
+
+function buildAttributionMetadata(tracking: TrackingHeaders): Record<string, string> | null {
+  const metadata: Record<string, string> = {};
+  if (tracking.goal) metadata.goal = tracking.goal;
+  if (tracking.brandProfileId) metadata.brandProfileId = tracking.brandProfileId;
+  if (tracking.customerPersonaId) metadata.customerPersonaId = tracking.customerPersonaId;
+  if (tracking.customerProfileId) metadata.customerProfileId = tracking.customerProfileId;
+  return Object.keys(metadata).length > 0 ? metadata : null;
 }
 
 const router = Router();
@@ -100,6 +113,7 @@ router.post("/", async (req: Request, res: Response) => {
   const campaignName = campaignId ? `Campaign ${campaignId}` : `Platform send ${body.to}`;
   const brandId = brandIds.join(",") || undefined;
   const workflowSlug = tracking.workflowSlug;
+  const attributionMetadata = buildAttributionMetadata(tracking);
 
   console.log(`[send] POST /send to=${body.to} campaignId=${campaignId ?? "none"} brandIds=${brandIds.join(",")} subject="${body.subject}" steps=${body.sequence.length}`);
   traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-start", detail: `to=${body.to}, campaignId=${campaignId ?? "none"}, steps=${body.sequence.length}` }, req.headers).catch(() => {});
@@ -129,6 +143,10 @@ router.post("/", async (req: Request, res: Response) => {
           brandId,
           workflowSlug,
           featureSlug: tracking.featureSlug,
+          goal: tracking.goal,
+          brandProfileId: tracking.brandProfileId,
+          customerPersonaId: tracking.customerPersonaId,
+          customerProfileId: tracking.customerProfileId,
         },
       );
       if (!auth.sufficient) {
@@ -209,6 +227,7 @@ router.post("/", async (req: Request, res: Response) => {
           workflowSlug,
           featureSlug: tracking.featureSlug,
           runId: res.locals.runId as string,
+          metadata: attributionMetadata,
         })
         .onConflictDoUpdate({
           target: [instantlyCampaigns.campaignId, instantlyCampaigns.leadEmail],
@@ -224,6 +243,10 @@ router.post("/", async (req: Request, res: Response) => {
             workflowSlug: sql`excluded.workflow_slug`,
             featureSlug: sql`excluded.feature_slug`,
             runId: sql`excluded.run_id`,
+            metadata: sql`CASE
+              WHEN excluded.metadata IS NULL THEN ${instantlyCampaigns.metadata}
+              ELSE COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || excluded.metadata
+            END`,
             createdAt: sql`now()`,
             updatedAt: sql`now()`,
           },
