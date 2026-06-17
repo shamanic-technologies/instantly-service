@@ -93,7 +93,18 @@ router.get("/stats", async (req: Request, res: Response) => {
       details: parsed.error.flatten(),
     });
   }
-  const { runIds: runIdsRaw, brandId, campaignId, workflowSlugs, featureSlugs, groupBy } = parsed.data;
+  const {
+    runIds: runIdsRaw,
+    brandId,
+    campaignId,
+    goal,
+    brandProfileId,
+    customerPersonaId,
+    customerProfileId,
+    workflowSlugs,
+    featureSlugs,
+    groupBy,
+  } = parsed.data;
   const timezone = parsed.data.timezone ?? "UTC";
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
 
@@ -101,6 +112,10 @@ router.get("/stats", async (req: Request, res: Response) => {
   if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
   if (brandId) conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
+  if (goal) conditions.push(sql`c.metadata->>'goal' = ${goal}`);
+  if (brandProfileId) conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
+  if (customerPersonaId) conditions.push(sql`c.metadata->>'customerPersonaId' = ${customerPersonaId}`);
+  if (customerProfileId) conditions.push(sql`c.metadata->>'customerProfileId' = ${customerProfileId}`);
 
   addSlugConditions(conditions, { workflowSlugs, featureSlugs });
 
@@ -116,6 +131,10 @@ router.get("/stats", async (req: Request, res: Response) => {
     runIds: runIdsRaw,
     brandId,
     campaignId,
+    goal,
+    brandProfileId,
+    customerPersonaId,
+    customerProfileId,
     workflowSlugs,
     featureSlugs,
     groupBy,

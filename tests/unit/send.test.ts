@@ -969,8 +969,23 @@ describe("POST /send", () => {
         "x-brand-id": "header-brand",
         "x-campaign-id": "header-camp",
         "x-workflow-slug": "header-wf",
+        "x-goal": "signup",
+        "x-brand-profile-id": "brand-profile-1",
+        "x-customer-persona-id": "persona-1",
+        "x-customer-profile-id": "customer-profile-1",
       })
       .send(validBody);
+
+    const campaignInsert = mockDbInsertValues.mock.calls.find(
+      ([v]: [any]) => v.leadEmail === "test@example.com" && v.instantlyCampaignId,
+    );
+    expect(campaignInsert).toBeDefined();
+    expect(campaignInsert![0].metadata).toEqual({
+      goal: "signup",
+      brandProfileId: "brand-profile-1",
+      customerPersonaId: "persona-1",
+      customerProfileId: "customer-profile-1",
+    });
 
     // createRun should receive tracking in identity context
     expect(mockCreateRun).toHaveBeenCalledWith(
@@ -980,6 +995,10 @@ describe("POST /send", () => {
           brandId: "header-brand",
           campaignId: "header-camp",
           workflowSlug: "header-wf",
+          goal: "signup",
+          brandProfileId: "brand-profile-1",
+          customerPersonaId: "persona-1",
+          customerProfileId: "customer-profile-1",
         }),
       }),
     );
