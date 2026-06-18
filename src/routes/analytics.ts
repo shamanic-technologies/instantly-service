@@ -337,7 +337,35 @@ export async function queryGroupedCampaignAggregates(
   if (!groupCol) return new Map();
 
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
-  const result = await db.execute(sql`
+  // For groupBy=day, groupCol is the parameterized localDayKey fragment (it
+  // carries the timezone bind). Emitting it more than once in the same statement
+  // re-emits the bind and drifts param positions — that fragility broke this
+  // query twice (42803 when groupCol sat in both SELECT and GROUP BY; 08P01 when
+  // the ordinal-fix's own comment still interpolated ${groupCol}). Mirror
+  // queryGroupedSentiment / queryGroupedStats: compute the group key ONCE inside
+  // a CTE, then reference the `group_key` alias in the outer WHERE/GROUP BY. For
+  // non-day groupings groupCol is a bare column (sql.raw, no params) so the
+  // inline form stays safe.
+  const query = groupBy === "day" ? sql`
+    WITH grouped_campaigns AS (
+      SELECT
+        ${groupCol} AS group_key,
+        c.lead_email,
+        c.not_sending_status,
+        c.delivery_status
+      FROM instantly_campaigns c
+      WHERE ${whereClause}
+        AND ${campaignExclusionClause()}
+    )
+    SELECT
+      c.group_key AS "groupKey",
+      COUNT(*)::int AS "emailsContacted",
+      COUNT(DISTINCT c.lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)::int AS "notSending",
+      COUNT(*) FILTER (WHERE c.delivery_status = 'cancelled')::int AS "cancelled"
+    FROM grouped_campaigns c
+    WHERE c.group_key IS NOT NULL
+    GROUP BY c.group_key
+  ` : sql`
     SELECT
       ${groupCol} AS "groupKey",
       COUNT(*)::int AS "emailsContacted",
@@ -348,14 +376,9 @@ export async function queryGroupedCampaignAggregates(
     WHERE ${whereClause}
       AND ${campaignExclusionClause()}
       AND ${groupCol} IS NOT NULL
-    -- GROUP BY ordinal, NOT ${groupCol}: for groupBy=day, groupCol is the
-    -- parameterized localDayKey fragment. Embedding it in both SELECT and
-    -- GROUP BY makes drizzle re-emit the timezone bind ($1 in SELECT, $N in
-    -- GROUP BY) — Postgres matches grouped columns by exact expression, so the
-    -- mismatched param positions trip 42803 (c.created_at must appear in GROUP
-    -- BY). Ordinal 1 references the SELECT groupKey with nothing to match.
-    GROUP BY 1
-  `);
+    GROUP BY ${groupCol}
+  `;
+  const result = await db.execute(query);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
   return new Map(
     rows.map((r: any) => [
