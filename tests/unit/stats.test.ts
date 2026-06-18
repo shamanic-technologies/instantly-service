@@ -884,6 +884,11 @@ describe("GET /stats", () => {
     expect(aggregateSqlText).toContain("AT TIME ZONE 'UTC'");
     expect(aggregateSqlText).toContain("YYYY-MM-DD");
     expect(aggregateSqlText).toContain('"emailsContacted"');
+    // GROUP BY must NOT repeat the parameterized localDayKey fragment — doing so
+    // re-emits the timezone bind under a different $N than the SELECT, tripping
+    // Postgres 42803 (c.created_at must appear in GROUP BY). Group by ordinal.
+    expect(aggregateSqlText).toContain("GROUP BY 1");
+    expect(aggregateSqlText).not.toContain("GROUP BY TO_CHAR");
     expect(sentimentSqlText).toContain("ls.timestamp");
     expect(sentimentSqlText).toContain("AT TIME ZONE 'UTC'");
     expect(sentimentSqlText).toContain("AS group_key");
