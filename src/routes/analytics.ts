@@ -348,7 +348,13 @@ export async function queryGroupedCampaignAggregates(
     WHERE ${whereClause}
       AND ${campaignExclusionClause()}
       AND ${groupCol} IS NOT NULL
-    GROUP BY ${groupCol}
+    -- GROUP BY ordinal, NOT ${groupCol}: for groupBy=day, groupCol is the
+    -- parameterized localDayKey fragment. Embedding it in both SELECT and
+    -- GROUP BY makes drizzle re-emit the timezone bind ($1 in SELECT, $N in
+    -- GROUP BY) — Postgres matches grouped columns by exact expression, so the
+    -- mismatched param positions trip 42803 (c.created_at must appear in GROUP
+    -- BY). Ordinal 1 references the SELECT groupKey with nothing to match.
+    GROUP BY 1
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
   return new Map(
