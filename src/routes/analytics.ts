@@ -331,11 +331,11 @@ export async function queryCampaignAggregates(whereClause: SQL): Promise<Campaig
 export async function queryGroupedCampaignAggregates(
   whereClause: SQL,
   groupBy: string,
+  timezone = "UTC",
 ): Promise<Map<string, CampaignAggregates>> {
-  const col = GROUP_BY_COLUMNS[groupBy];
-  if (!col) return new Map();
+  const groupCol = campaignGroupColumn(groupBy, timezone);
+  if (!groupCol) return new Map();
 
-  const groupCol = sql.raw(col);
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
   const result = await db.execute(sql`
     SELECT
@@ -379,6 +379,20 @@ function localDayKey(timestampExpr: SQL, timezone: string): SQL {
 
 function eventGroupColumn(groupBy: string, timezone: string): SQL | null {
   if (groupBy === "day") return localDayKey(sql`e.timestamp`, timezone);
+  const col = GROUP_BY_COLUMNS[groupBy];
+  return col ? sql.raw(col) : null;
+}
+
+/**
+ * Group column for the campaign-table aggregates (contacted / notSending /
+ * cancelled). For `day` we bucket each campaign row by its `created_at` local
+ * day — `created_at` IS the contacted timestamp (one campaign row = one lead
+ * pushed; CLAUDE.md: firstContactedAt = MIN(c.created_at)). Bucketing the SAME
+ * rows that feed the cumulative COUNT(*) guarantees day-sum == cumulative
+ * contacted by construction.
+ */
+function campaignGroupColumn(groupBy: string, timezone: string): SQL | null {
+  if (groupBy === "day") return localDayKey(sql`c.created_at`, timezone);
   const col = GROUP_BY_COLUMNS[groupBy];
   return col ? sql.raw(col) : null;
 }
@@ -693,41 +707,39 @@ export async function queryGroupedStats(
   // `unsubscribe` stays an event count, a separate signal).
   const [result, aggregatesMap, sentimentMap] = await Promise.all([
     db.execute(eventsQuery),
-    groupBy === "day"
-      ? Promise.resolve(new Map<string, CampaignAggregates>())
-      : queryGroupedCampaignAggregates(whereClause, groupBy),
+    queryGroupedCampaignAggregates(whereClause, groupBy, timezone),
     queryGroupedSentiment(whereClause, groupBy, timezone),
   ]);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
-  const rawGroups = rows.map((row: any) => {
-    const sentiment = sentimentMap.get(String(row.groupKey)) ?? ZERO_SENTIMENT_DETAIL;
+  const buildGroup = (key: string, row: any | undefined) => {
+    const sentiment = sentimentMap.get(String(key)) ?? ZERO_SENTIMENT_DETAIL;
     const detail = {
       interested: sentiment.interested,
       meetingBooked: sentiment.meetingBooked,
       closed: sentiment.closed,
       notInterested: sentiment.notInterested,
       wrongPerson: sentiment.wrongPerson,
-      unsubscribe: row.rdUnsubscribe ?? 0,
+      unsubscribe: row?.rdUnsubscribe ?? 0,
       neutral: sentiment.neutral,
       autoReply: sentiment.autoReply,
       outOfOffice: sentiment.outOfOffice,
     };
-    const rsSent = row.rsSent ?? 0;
-    const rsBounced = row.rsBounced ?? 0;
-    const esSent = row.esSent ?? 0;
-    const esBounced = row.esBounced ?? 0;
-    const aggregates = aggregatesMap.get(row.groupKey) ?? ZERO_CAMPAIGN_AGGREGATES;
+    const rsSent = row?.rsSent ?? 0;
+    const rsBounced = row?.rsBounced ?? 0;
+    const esSent = row?.esSent ?? 0;
+    const esBounced = row?.esBounced ?? 0;
+    const aggregates = aggregatesMap.get(key) ?? ZERO_CAMPAIGN_AGGREGATES;
     return {
-      key: row.groupKey as string,
+      key,
       recipientStats: {
         contacted: aggregates.contacted,
         sent: rsSent,
         delivered: rsSent - rsBounced,
-        opened: row.rsOpened ?? 0,
+        opened: row?.rsOpened ?? 0,
         bounced: rsBounced,
-        clicked: row.rsClicked ?? 0,
-        unsubscribed: row.rsUnsubscribed ?? 0,
+        clicked: row?.rsClicked ?? 0,
+        unsubscribed: row?.rsUnsubscribed ?? 0,
         notSending: aggregates.notSending,
         cancelled: aggregates.cancelled,
         ...buildRepliesFromDetail(detail),
@@ -735,15 +747,29 @@ export async function queryGroupedStats(
       emailStats: {
         sent: esSent,
         delivered: esSent - esBounced,
-        opened: row.esOpened ?? 0,
-        clicked: row.esClicked ?? 0,
+        opened: row?.esOpened ?? 0,
+        clicked: row?.esClicked ?? 0,
         bounced: esBounced,
-        unsubscribed: row.esUnsubscribed ?? 0,
+        unsubscribed: row?.esUnsubscribed ?? 0,
       },
     };
-  });
+  };
 
-  return rawGroups;
+  const eventGroups = rows.map((row: any) => buildGroup(row.groupKey as string, row));
+  if (groupBy !== "day") return eventGroups;
+
+  // Day mode only: `contacted` is a campaign-table fact (lead pushed), not an
+  // event. A day with contacted leads but zero email events would be dropped if
+  // we built groups from the events query alone — so UNION the aggregate-only
+  // day keys (contacted/notSending/cancelled present, every event metric 0).
+  const eventKeys = new Set(rows.map((r: any) => String(r.groupKey)));
+  const extraGroups = [...aggregatesMap.keys()]
+    .filter((key) => !eventKeys.has(String(key)))
+    .map((key) => buildGroup(key, undefined));
+
+  return [...eventGroups, ...extraGroups].sort((a, b) =>
+    a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
+  );
 }
 
 /** Execute the aggregate stats query and return { recipientStats, emailStats } */

@@ -770,6 +770,7 @@ describe("GET /stats", () => {
   // ─── groupBy: day ──────────────────────────────────────────────────────────
 
   it("should support groupBy day with stats grouped by local YYYY-MM-DD key", async () => {
+    // Call order under Promise.all: [events, campaign-aggregates, sentiment].
     mockExecute.mockResolvedValueOnce({
       rows: [
         {
@@ -789,6 +790,9 @@ describe("GET /stats", () => {
       ],
     });
     mockExecute.mockResolvedValueOnce({
+      rows: [{ groupKey: "2026-06-17", emailsContacted: 12, notSending: 2, cancelled: 1 }],
+    });
+    mockExecute.mockResolvedValueOnce({
       rows: [
         makeSentimentRow({ groupKey: "2026-06-17", rdInterested: 1, rdNotInterested: 1 }),
       ],
@@ -806,15 +810,15 @@ describe("GET /stats", () => {
       {
         key: "2026-06-17",
         recipientStats: {
-          contacted: 0,
+          contacted: 12,
           sent: 6,
           delivered: 5,
           opened: 3,
           bounced: 1,
           clicked: 2,
           unsubscribed: 0,
-          notSending: 0,
-          cancelled: 0,
+          notSending: 2,
+          cancelled: 1,
           repliesPositive: 1,
           repliesNegative: 1,
           repliesNeutral: 0,
@@ -841,13 +845,15 @@ describe("GET /stats", () => {
         },
       },
     ]);
-    // Day grouping is event-derived; campaign-table current-status aggregates
-    // are not queried for fake per-day contacted/notSending/cancelled values.
-    expect(mockExecute).toHaveBeenCalledTimes(2);
+    // Day grouping now queries campaign-table aggregates (contacted /
+    // notSending / cancelled) bucketed by c.created_at, same as other groupings.
+    expect(mockExecute).toHaveBeenCalledTimes(3);
   });
 
   it("should group day buckets with the requested IANA timezone", async () => {
+    // Call order: [events, campaign-aggregates, sentiment].
     mockExecute.mockResolvedValueOnce({ rows: [{ groupKey: "2026-06-16", ...makeStatsRow({ esSent: 1, rsSent: 1 }) }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ groupKey: "2026-06-16", emailsContacted: 3, notSending: 0, cancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
@@ -859,9 +865,11 @@ describe("GET /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.groups[0].key).toBe("2026-06-16");
+    expect(response.body.groups[0].recipientStats.contacted).toBe(3);
 
     const eventSqlText = extractSqlText(mockExecute.mock.calls[0][0]);
-    const sentimentSqlText = extractSqlText(mockExecute.mock.calls[1][0]);
+    const aggregateSqlText = extractSqlText(mockExecute.mock.calls[1][0]);
+    const sentimentSqlText = extractSqlText(mockExecute.mock.calls[2][0]);
     const allChunks = JSON.stringify(mockExecute.mock.calls.map((call) => call[0]));
 
     expect(eventSqlText).toContain("e.timestamp");
@@ -871,6 +879,11 @@ describe("GET /stats", () => {
     expect(eventSqlText).toContain("GROUP BY e.group_key");
     expect(eventSqlText).toContain("ORDER BY e.group_key");
     expect(eventSqlText).not.toContain("GROUP BY TO_CHAR");
+    // Contacted is bucketed by the campaign row's created_at in the same TZ.
+    expect(aggregateSqlText).toContain("c.created_at");
+    expect(aggregateSqlText).toContain("AT TIME ZONE 'UTC'");
+    expect(aggregateSqlText).toContain("YYYY-MM-DD");
+    expect(aggregateSqlText).toContain('"emailsContacted"');
     expect(sentimentSqlText).toContain("ls.timestamp");
     expect(sentimentSqlText).toContain("AT TIME ZONE 'UTC'");
     expect(sentimentSqlText).toContain("AS group_key");
@@ -881,7 +894,9 @@ describe("GET /stats", () => {
   });
 
   it("should apply existing filters to groupBy day", async () => {
+    // Call order: [events, campaign-aggregates, sentiment].
     mockExecute.mockResolvedValueOnce({ rows: [{ groupKey: "2026-06-17", ...makeStatsRow({ esSent: 1, rsSent: 1 }) }] });
+    mockExecute.mockResolvedValueOnce({ rows: [{ groupKey: "2026-06-17", emailsContacted: 1, notSending: 0, cancelled: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
 
     const app = await createStatsApp();
@@ -899,12 +914,15 @@ describe("GET /stats", () => {
       .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
-    const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
-    expect(sqlText).toContain("run_id IN");
-    expect(sqlText).toContain("brand_ids");
-    expect(sqlText).toContain("campaign_id");
-    expect(sqlText).toContain("workflow_slug IN");
-    expect(sqlText).toContain("feature_slug IN");
+    // Same filters reach both the events query and the campaign-aggregate query.
+    for (const idx of [0, 1]) {
+      const sqlText = extractSqlText(mockExecute.mock.calls[idx][0]);
+      expect(sqlText).toContain("run_id IN");
+      expect(sqlText).toContain("brand_ids");
+      expect(sqlText).toContain("campaign_id");
+      expect(sqlText).toContain("workflow_slug IN");
+      expect(sqlText).toContain("feature_slug IN");
+    }
   });
 
   it("should reject invalid groupBy day timezone values", async () => {
@@ -918,6 +936,51 @@ describe("GET /stats", () => {
     expect(response.status).toBe(400);
     expect(response.body.error).toBe("Invalid request");
     expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it("should surface a day with contacted leads but zero email events", async () => {
+    // Events query: only 2026-06-17 has email activity.
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ groupKey: "2026-06-17", ...makeStatsRow({ esSent: 5, rsSent: 4 }) }],
+    });
+    // Campaign aggregates: 2026-06-17 (10 contacted) AND 2026-06-18 (22 contacted,
+    // no email events yet — leads pushed today, nothing sent).
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { groupKey: "2026-06-17", emailsContacted: 10, notSending: 1, cancelled: 0 },
+        { groupKey: "2026-06-18", emailsContacted: 22, notSending: 3, cancelled: 2 },
+      ],
+    });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .query({ groupBy: "day", timezone: "Europe/Paris" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    const groups = response.body.groups;
+    // Both days present, sorted ascending — the contacted-only day is NOT dropped.
+    expect(groups.map((g: any) => g.key)).toEqual(["2026-06-17", "2026-06-18"]);
+
+    const noEventDay = groups.find((g: any) => g.key === "2026-06-18");
+    expect(noEventDay.recipientStats.contacted).toBe(22);
+    expect(noEventDay.recipientStats.notSending).toBe(3);
+    expect(noEventDay.recipientStats.cancelled).toBe(2);
+    // Zero email activity on that day.
+    expect(noEventDay.recipientStats.sent).toBe(0);
+    expect(noEventDay.recipientStats.opened).toBe(0);
+    expect(noEventDay.recipientStats.clicked).toBe(0);
+    expect(noEventDay.emailStats).toEqual({
+      sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, unsubscribed: 0,
+    });
+
+    // AC1: day-grouped contacted summed over the window == cumulative contacted
+    // (cumulative = COUNT(*) over the SAME campaign rows = 10 + 22).
+    const daySum = groups.reduce((acc: number, g: any) => acc + g.recipientStats.contacted, 0);
+    expect(daySum).toBe(32);
   });
 });
 
