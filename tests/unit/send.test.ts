@@ -972,7 +972,7 @@ describe("POST /send", () => {
         "x-goal": "signup",
         "x-brand-profile-id": "brand-profile-1",
         "x-customer-persona-id": "persona-1",
-        "x-customer-profile-id": "customer-profile-1",
+        "x-audience-id": "audience-1",
       })
       .send(validBody);
 
@@ -984,7 +984,7 @@ describe("POST /send", () => {
       goal: "signup",
       brandProfileId: "brand-profile-1",
       customerPersonaId: "persona-1",
-      customerProfileId: "customer-profile-1",
+      audienceId: "audience-1",
     });
 
     // createRun should receive tracking in identity context
@@ -998,7 +998,7 @@ describe("POST /send", () => {
           goal: "signup",
           brandProfileId: "brand-profile-1",
           customerPersonaId: "persona-1",
-          customerProfileId: "customer-profile-1",
+          audienceId: "audience-1",
         }),
       }),
     );

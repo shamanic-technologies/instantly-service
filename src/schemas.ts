@@ -67,7 +67,7 @@ export const TrackingHeadersSchema = z.object({
   "x-goal": z.string().optional().describe("Explicit active goal attribution. Stored only when supplied; never inferred."),
   "x-brand-profile-id": z.string().optional().describe("Explicit brand-profile attribution. Stored only when supplied; never inferred."),
   "x-customer-persona-id": z.string().optional().describe("Explicit customer persona attribution. Stored only when supplied; never inferred."),
-  "x-customer-profile-id": z.string().optional().describe("Explicit customer profile attribution. Stored only when supplied; never inferred."),
+  "x-audience-id": z.string().optional().describe("Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."),
 });
 
 // ─── Error ──────────────────────────────────────────────────────────────────
@@ -435,10 +435,10 @@ export const StatsQuerySchema = z
     goal: z.string().optional().describe("Filter by explicit goal attribution stored in campaign metadata"),
     brandProfileId: z.string().optional().describe("Filter by explicit brand-profile attribution stored in campaign metadata"),
     customerPersonaId: z.string().optional().describe("Filter by explicit customer persona attribution stored in campaign metadata"),
-    customerProfileId: z.string().optional().describe("Filter by explicit customer profile attribution stored in campaign metadata"),
+    audienceId: z.string().optional().describe("Filter by explicit audience attribution stored in campaign metadata"),
     workflowSlugs: z.string().optional().describe("Comma-separated list of workflow slugs to filter by"),
     featureSlugs: z.string().optional().describe("Comma-separated list of feature slugs to filter by"),
-    groupBy: z.enum(["brandId", "campaignId", "workflowSlug", "featureSlug", "leadEmail", "customerPersonaId", "customerProfileId", "day"]).optional().describe("Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/profile groupings use only explicit campaign metadata."),
+    groupBy: z.enum(["brandId", "campaignId", "workflowSlug", "featureSlug", "leadEmail", "customerPersonaId", "audienceId", "day"]).optional().describe("Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/audience groupings use only explicit campaign metadata."),
     timezone: z.string().trim().refine(isValidIanaTimezone, "Invalid IANA timezone").optional().describe("IANA timezone for groupBy=day buckets. Defaults to UTC."),
   })
   .openapi("StatsQuery");

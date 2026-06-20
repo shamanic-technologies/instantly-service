@@ -100,7 +100,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     goal,
     brandProfileId,
     customerPersonaId,
-    customerProfileId,
+    audienceId,
     workflowSlugs,
     featureSlugs,
     groupBy,
@@ -115,7 +115,7 @@ router.get("/stats", async (req: Request, res: Response) => {
   if (goal) conditions.push(sql`c.metadata->>'goal' = ${goal}`);
   if (brandProfileId) conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
   if (customerPersonaId) conditions.push(sql`c.metadata->>'customerPersonaId' = ${customerPersonaId}`);
-  if (customerProfileId) conditions.push(sql`c.metadata->>'customerProfileId' = ${customerProfileId}`);
+  if (audienceId) conditions.push(sql`c.metadata->>'audienceId' = ${audienceId}`);
 
   addSlugConditions(conditions, { workflowSlugs, featureSlugs });
 
@@ -134,7 +134,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     goal,
     brandProfileId,
     customerPersonaId,
-    customerProfileId,
+    audienceId,
     workflowSlugs,
     featureSlugs,
     groupBy,

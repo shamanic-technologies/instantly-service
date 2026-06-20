@@ -16,7 +16,7 @@ export interface TrackingHeaders {
   goal?: string;
   brandProfileId?: string;
   customerPersonaId?: string;
-  customerProfileId?: string;
+  audienceId?: string;
 }
 
 export interface IdentityContext {
@@ -107,8 +107,8 @@ async function runsRequest<T>(
   if (identity.tracking?.customerPersonaId) {
     headers["x-customer-persona-id"] = identity.tracking.customerPersonaId;
   }
-  if (identity.tracking?.customerProfileId) {
-    headers["x-customer-profile-id"] = identity.tracking.customerProfileId;
+  if (identity.tracking?.audienceId) {
+    headers["x-audience-id"] = identity.tracking.audienceId;
   }
 
   const response = await fetch(`${RUNS_SERVICE_URL}${path}`, {
