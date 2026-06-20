@@ -49,7 +49,7 @@ interface TrackingHeaders {
   goal?: string;
   brandProfileId?: string;
   customerPersonaId?: string;
-  customerProfileId?: string;
+  audienceId?: string;
 }
 
 async function keyServiceRequest<T>(
@@ -86,8 +86,8 @@ async function keyServiceRequest<T>(
   if (identity.tracking?.customerPersonaId) {
     headers["x-customer-persona-id"] = identity.tracking.customerPersonaId;
   }
-  if (identity.tracking?.customerProfileId) {
-    headers["x-customer-profile-id"] = identity.tracking.customerProfileId;
+  if (identity.tracking?.audienceId) {
+    headers["x-audience-id"] = identity.tracking.audienceId;
   }
 
   const response = await fetch(`${KEY_SERVICE_URL}${path}`, {

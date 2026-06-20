@@ -32,7 +32,7 @@ export interface BillingIdentity {
   goal?: string;
   brandProfileId?: string;
   customerPersonaId?: string;
-  customerProfileId?: string;
+  audienceId?: string;
 }
 
 export interface AuthorizeResult {
@@ -71,7 +71,7 @@ export async function authorizeCreditSpend(
   if (identity.goal) headers["x-goal"] = identity.goal;
   if (identity.brandProfileId) headers["x-brand-profile-id"] = identity.brandProfileId;
   if (identity.customerPersonaId) headers["x-customer-persona-id"] = identity.customerPersonaId;
-  if (identity.customerProfileId) headers["x-customer-profile-id"] = identity.customerProfileId;
+  if (identity.audienceId) headers["x-audience-id"] = identity.audienceId;
 
   const response = await fetch(`${BILLING_SERVICE_URL}/v1/customer_balance/authorize`, {
     method: "POST",
