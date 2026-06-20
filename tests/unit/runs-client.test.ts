@@ -136,7 +136,7 @@ describe("runs-client", () => {
           goal: "signup",
           brandProfileId: "brand-profile-1",
           customerPersonaId: "persona-1",
-          customerProfileId: "customer-profile-1",
+          audienceId: "audience-1",
         },
       },
     );
@@ -149,7 +149,7 @@ describe("runs-client", () => {
     expect(options.headers["x-goal"]).toBe("signup");
     expect(options.headers["x-brand-profile-id"]).toBe("brand-profile-1");
     expect(options.headers["x-customer-persona-id"]).toBe("persona-1");
-    expect(options.headers["x-customer-profile-id"]).toBe("customer-profile-1");
+    expect(options.headers["x-audience-id"]).toBe("audience-1");
   });
 
   it("updateCostStatus PATCHes /v1/runs/:runId/costs/:costId with status='actual'", async () => {
@@ -228,6 +228,6 @@ describe("runs-client", () => {
     expect(options.headers["x-goal"]).toBeUndefined();
     expect(options.headers["x-brand-profile-id"]).toBeUndefined();
     expect(options.headers["x-customer-persona-id"]).toBeUndefined();
-    expect(options.headers["x-customer-profile-id"]).toBeUndefined();
+    expect(options.headers["x-audience-id"]).toBeUndefined();
   });
 });

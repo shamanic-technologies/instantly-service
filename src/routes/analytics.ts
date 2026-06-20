@@ -399,7 +399,7 @@ const GROUP_BY_COLUMNS: Record<string, string> = {
   featureSlug: "c.feature_slug",
   leadEmail: "e.lead_email",
   customerPersonaId: "c.metadata->>'customerPersonaId'",
-  customerProfileId: "c.metadata->>'customerProfileId'",
+  audienceId: "c.metadata->>'audienceId'",
 };
 
 function localDayKey(timestampExpr: SQL, timezone: string): SQL {
@@ -544,7 +544,7 @@ const SENTIMENT_GROUP_BY_COLUMNS: Record<string, string> = {
   featureSlug: "c.feature_slug",
   leadEmail: "ls.lead_email",
   customerPersonaId: "c.metadata->>'customerPersonaId'",
-  customerProfileId: "c.metadata->>'customerProfileId'",
+  audienceId: "c.metadata->>'audienceId'",
 };
 
 /**
@@ -1029,7 +1029,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     goal,
     brandProfileId,
     customerPersonaId,
-    customerProfileId,
+    audienceId,
     workflowSlugs,
     featureSlugs,
     groupBy,
@@ -1046,7 +1046,7 @@ router.get("/stats", async (req: Request, res: Response) => {
   if (goal) conditions.push(sql`c.metadata->>'goal' = ${goal}`);
   if (brandProfileId) conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
   if (customerPersonaId) conditions.push(sql`c.metadata->>'customerPersonaId' = ${customerPersonaId}`);
-  if (customerProfileId) conditions.push(sql`c.metadata->>'customerProfileId' = ${customerProfileId}`);
+  if (audienceId) conditions.push(sql`c.metadata->>'audienceId' = ${audienceId}`);
 
   addSlugConditions(conditions, { workflowSlugs, featureSlugs });
 
@@ -1062,7 +1062,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     goal,
     brandProfileId,
     customerPersonaId,
-    customerProfileId,
+    audienceId,
     workflowSlugs,
     featureSlugs,
     groupBy,

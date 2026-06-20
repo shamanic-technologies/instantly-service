@@ -709,7 +709,7 @@ describe("GET /stats", () => {
         goal: "signup",
         brandProfileId: "brand-profile-1",
         customerPersonaId: "persona-1",
-        customerProfileId: "customer-profile-1",
+        audienceId: "audience-1",
       })
       .set(identityHeadersObj);
 
@@ -719,27 +719,27 @@ describe("GET /stats", () => {
       expect(sqlText).toContain("metadata->>'goal'");
       expect(sqlText).toContain("metadata->>'brandProfileId'");
       expect(sqlText).toContain("metadata->>'customerPersonaId'");
-      expect(sqlText).toContain("metadata->>'customerProfileId'");
+      expect(sqlText).toContain("metadata->>'audienceId'");
     }
   });
 
-  it("should support groupBy customerProfileId without fallback rows", async () => {
+  it("should support groupBy audienceId without fallback rows", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { groupKey: "customer-profile-a", esSent: 10, esOpened: 5, esClicked: 4, esBounced: 0, rsSent: 5, rsOpened: 3, rsClicked: 2, rsBounced: 0, rdUnsubscribe: 0 },
-        { groupKey: "customer-profile-b", esSent: 3, esOpened: 1, esClicked: 1, esBounced: 0, rsSent: 2, rsOpened: 1, rsClicked: 1, rsBounced: 0, rdUnsubscribe: 0 },
+        { groupKey: "audience-a", esSent: 10, esOpened: 5, esClicked: 4, esBounced: 0, rsSent: 5, rsOpened: 3, rsClicked: 2, rsBounced: 0, rdUnsubscribe: 0 },
+        { groupKey: "audience-b", esSent: 3, esOpened: 1, esClicked: 1, esBounced: 0, rsSent: 2, rsOpened: 1, rsClicked: 1, rsBounced: 0, rdUnsubscribe: 0 },
       ],
     });
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { groupKey: "customer-profile-a", emailsContacted: 5 },
-        { groupKey: "customer-profile-b", emailsContacted: 2 },
+        { groupKey: "audience-a", emailsContacted: 5 },
+        { groupKey: "audience-b", emailsContacted: 2 },
       ],
     });
     mockExecute.mockResolvedValueOnce({
       rows: [
-        makeSentimentRow({ groupKey: "customer-profile-a", rdInterested: 2 }),
-        makeSentimentRow({ groupKey: "customer-profile-b", rdInterested: 1 }),
+        makeSentimentRow({ groupKey: "audience-a", rdInterested: 2 }),
+        makeSentimentRow({ groupKey: "audience-b", rdInterested: 1 }),
       ],
     });
 
@@ -747,13 +747,13 @@ describe("GET /stats", () => {
 
     const response = await request(app)
       .get("/stats")
-      .query({ groupBy: "customerProfileId", goal: "signup", brandProfileId: "brand-profile-1" })
+      .query({ groupBy: "audienceId", goal: "signup", brandProfileId: "brand-profile-1" })
       .set(identityHeadersObj);
 
     expect(response.status).toBe(200);
     expect(response.body.groups.map((g: { key: string }) => g.key)).toEqual([
-      "customer-profile-a",
-      "customer-profile-b",
+      "audience-a",
+      "audience-b",
     ]);
     expect(response.body.groups[0].recipientStats.clicked).toBe(2);
     expect(response.body.groups[0].recipientStats.repliesPositive).toBe(2);
@@ -762,8 +762,8 @@ describe("GET /stats", () => {
 
     for (const call of mockExecute.mock.calls) {
       const sqlText = extractSqlText(call[0]);
-      expect(sqlText).toContain("metadata->>'customerProfileId'");
-      expect(sqlText).toContain("metadata->>'customerProfileId' IS NOT NULL");
+      expect(sqlText).toContain("metadata->>'audienceId'");
+      expect(sqlText).toContain("metadata->>'audienceId' IS NOT NULL");
     }
   });
 

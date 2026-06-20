@@ -24,7 +24,7 @@ describe("billing-client", () => {
     goal: "signup",
     brandProfileId: "brand-profile-1",
     customerPersonaId: "persona-1",
-    customerProfileId: "customer-profile-1",
+    audienceId: "audience-1",
   };
 
   const items = [{ costName: "instantly-email-send", quantity: 3 }];
@@ -78,7 +78,7 @@ describe("billing-client", () => {
       "x-goal": "signup",
       "x-brand-profile-id": "brand-profile-1",
       "x-customer-persona-id": "persona-1",
-      "x-customer-profile-id": "customer-profile-1",
+      "x-audience-id": "audience-1",
     });
   });
 
@@ -102,7 +102,7 @@ describe("billing-client", () => {
     expect(options.headers).not.toHaveProperty("x-goal");
     expect(options.headers).not.toHaveProperty("x-brand-profile-id");
     expect(options.headers).not.toHaveProperty("x-customer-persona-id");
-    expect(options.headers).not.toHaveProperty("x-customer-profile-id");
+    expect(options.headers).not.toHaveProperty("x-audience-id");
   });
 
   it("should throw on non-ok response", async () => {

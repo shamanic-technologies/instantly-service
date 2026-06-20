@@ -2270,11 +2270,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -2409,11 +2409,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -2514,11 +2514,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -2617,11 +2617,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -2807,11 +2807,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -2901,11 +2901,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Filter by explicit customer profile attribution stored in campaign metadata"
+              "description": "Filter by explicit audience attribution stored in campaign metadata"
             },
             "required": false,
-            "description": "Filter by explicit customer profile attribution stored in campaign metadata",
-            "name": "customerProfileId",
+            "description": "Filter by explicit audience attribution stored in campaign metadata",
+            "name": "audienceId",
             "in": "query"
           },
           {
@@ -2938,13 +2938,13 @@
                 "featureSlug",
                 "leadEmail",
                 "customerPersonaId",
-                "customerProfileId",
+                "audienceId",
                 "day"
               ],
-              "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/profile groupings use only explicit campaign metadata."
+              "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/audience groupings use only explicit campaign metadata."
             },
             "required": false,
-            "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/profile groupings use only explicit campaign metadata.",
+            "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/audience groupings use only explicit campaign metadata.",
             "name": "groupBy",
             "in": "query"
           },
@@ -3031,11 +3031,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -3149,11 +3149,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Filter by explicit customer profile attribution stored in campaign metadata"
+              "description": "Filter by explicit audience attribution stored in campaign metadata"
             },
             "required": false,
-            "description": "Filter by explicit customer profile attribution stored in campaign metadata",
-            "name": "customerProfileId",
+            "description": "Filter by explicit audience attribution stored in campaign metadata",
+            "name": "audienceId",
             "in": "query"
           },
           {
@@ -3186,13 +3186,13 @@
                 "featureSlug",
                 "leadEmail",
                 "customerPersonaId",
-                "customerProfileId",
+                "audienceId",
                 "day"
               ],
-              "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/profile groupings use only explicit campaign metadata."
+              "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/audience groupings use only explicit campaign metadata."
             },
             "required": false,
-            "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/profile groupings use only explicit campaign metadata.",
+            "description": "Group results by dimension. groupBy=day keys buckets as YYYY-MM-DD in the requested timezone. Persona/audience groupings use only explicit campaign metadata.",
             "name": "groupBy",
             "in": "query"
           },
@@ -3432,11 +3432,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -3576,11 +3576,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -3736,11 +3736,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -3857,11 +3857,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -3953,11 +3953,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -4117,11 +4117,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],
@@ -4230,11 +4230,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Explicit customer profile attribution. Stored only when supplied; never inferred."
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
             },
             "required": false,
-            "description": "Explicit customer profile attribution. Stored only when supplied; never inferred.",
-            "name": "x-customer-profile-id",
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
             "in": "header"
           }
         ],

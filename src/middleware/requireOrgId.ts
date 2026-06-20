@@ -12,7 +12,7 @@ function cleanHeader(value: string | undefined): string | undefined {
  *
  * Required: x-org-id (returns 400 if missing)
  * Optional: x-user-id, x-run-id, x-campaign-id, x-brand-id, x-workflow-slug, x-feature-slug,
- * x-goal, x-brand-profile-id, x-customer-persona-id, x-customer-profile-id
+ * x-goal, x-brand-profile-id, x-customer-persona-id, x-audience-id
  */
 export function requireOrgId(
   req: Request,
@@ -44,7 +44,7 @@ export function requireOrgId(
   const headerGoal = cleanHeader(req.headers["x-goal"] as string | undefined);
   const headerBrandProfileId = cleanHeader(req.headers["x-brand-profile-id"] as string | undefined);
   const headerCustomerPersonaId = cleanHeader(req.headers["x-customer-persona-id"] as string | undefined);
-  const headerCustomerProfileId = cleanHeader(req.headers["x-customer-profile-id"] as string | undefined);
+  const headerAudienceId = cleanHeader(req.headers["x-audience-id"] as string | undefined);
 
   if (headerCampaignId) res.locals.headerCampaignId = headerCampaignId;
   if (headerBrandId) {
@@ -56,7 +56,7 @@ export function requireOrgId(
   if (headerGoal) res.locals.headerGoal = headerGoal;
   if (headerBrandProfileId) res.locals.headerBrandProfileId = headerBrandProfileId;
   if (headerCustomerPersonaId) res.locals.headerCustomerPersonaId = headerCustomerPersonaId;
-  if (headerCustomerProfileId) res.locals.headerCustomerProfileId = headerCustomerProfileId;
+  if (headerAudienceId) res.locals.headerAudienceId = headerAudienceId;
 
   next();
 }
