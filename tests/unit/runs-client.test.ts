@@ -135,7 +135,6 @@ describe("runs-client", () => {
           featureSlug: "cold-outreach",
           goal: "signup",
           brandProfileId: "brand-profile-1",
-          customerPersonaId: "persona-1",
           audienceId: "audience-1",
         },
       },
@@ -148,7 +147,6 @@ describe("runs-client", () => {
     expect(options.headers["x-feature-slug"]).toBe("cold-outreach");
     expect(options.headers["x-goal"]).toBe("signup");
     expect(options.headers["x-brand-profile-id"]).toBe("brand-profile-1");
-    expect(options.headers["x-customer-persona-id"]).toBe("persona-1");
     expect(options.headers["x-audience-id"]).toBe("audience-1");
   });
 
@@ -227,7 +225,6 @@ describe("runs-client", () => {
     expect(options.headers["x-feature-slug"]).toBeUndefined();
     expect(options.headers["x-goal"]).toBeUndefined();
     expect(options.headers["x-brand-profile-id"]).toBeUndefined();
-    expect(options.headers["x-customer-persona-id"]).toBeUndefined();
     expect(options.headers["x-audience-id"]).toBeUndefined();
   });
 });

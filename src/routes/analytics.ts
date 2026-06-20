@@ -398,7 +398,6 @@ const GROUP_BY_COLUMNS: Record<string, string> = {
   workflowSlug: "c.workflow_slug",
   featureSlug: "c.feature_slug",
   leadEmail: "e.lead_email",
-  customerPersonaId: "c.metadata->>'customerPersonaId'",
   audienceId: "c.metadata->>'audienceId'",
 };
 
@@ -543,7 +542,6 @@ const SENTIMENT_GROUP_BY_COLUMNS: Record<string, string> = {
   workflowSlug: "c.workflow_slug",
   featureSlug: "c.feature_slug",
   leadEmail: "ls.lead_email",
-  customerPersonaId: "c.metadata->>'customerPersonaId'",
   audienceId: "c.metadata->>'audienceId'",
 };
 
@@ -1028,7 +1026,6 @@ router.get("/stats", async (req: Request, res: Response) => {
     campaignId,
     goal,
     brandProfileId,
-    customerPersonaId,
     audienceId,
     workflowSlugs,
     featureSlugs,
@@ -1045,7 +1042,6 @@ router.get("/stats", async (req: Request, res: Response) => {
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
   if (goal) conditions.push(sql`c.metadata->>'goal' = ${goal}`);
   if (brandProfileId) conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
-  if (customerPersonaId) conditions.push(sql`c.metadata->>'customerPersonaId' = ${customerPersonaId}`);
   if (audienceId) conditions.push(sql`c.metadata->>'audienceId' = ${audienceId}`);
 
   addSlugConditions(conditions, { workflowSlugs, featureSlugs });
@@ -1061,7 +1057,6 @@ router.get("/stats", async (req: Request, res: Response) => {
     campaignId,
     goal,
     brandProfileId,
-    customerPersonaId,
     audienceId,
     workflowSlugs,
     featureSlugs,

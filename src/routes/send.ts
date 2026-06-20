@@ -31,7 +31,6 @@ function getTracking(res: Response): TrackingHeaders {
   if (res.locals.headerFeatureSlug) t.featureSlug = res.locals.headerFeatureSlug;
   if (res.locals.headerGoal) t.goal = res.locals.headerGoal;
   if (res.locals.headerBrandProfileId) t.brandProfileId = res.locals.headerBrandProfileId;
-  if (res.locals.headerCustomerPersonaId) t.customerPersonaId = res.locals.headerCustomerPersonaId;
   if (res.locals.headerAudienceId) t.audienceId = res.locals.headerAudienceId;
   return t;
 }
@@ -40,7 +39,6 @@ function buildAttributionMetadata(tracking: TrackingHeaders): Record<string, str
   const metadata: Record<string, string> = {};
   if (tracking.goal) metadata.goal = tracking.goal;
   if (tracking.brandProfileId) metadata.brandProfileId = tracking.brandProfileId;
-  if (tracking.customerPersonaId) metadata.customerPersonaId = tracking.customerPersonaId;
   if (tracking.audienceId) metadata.audienceId = tracking.audienceId;
   return Object.keys(metadata).length > 0 ? metadata : null;
 }
@@ -145,7 +143,6 @@ router.post("/", async (req: Request, res: Response) => {
           featureSlug: tracking.featureSlug,
           goal: tracking.goal,
           brandProfileId: tracking.brandProfileId,
-          customerPersonaId: tracking.customerPersonaId,
           audienceId: tracking.audienceId,
         },
       );

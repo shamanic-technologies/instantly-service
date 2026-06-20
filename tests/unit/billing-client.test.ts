@@ -23,7 +23,6 @@ describe("billing-client", () => {
     featureSlug: "cold-outreach",
     goal: "signup",
     brandProfileId: "brand-profile-1",
-    customerPersonaId: "persona-1",
     audienceId: "audience-1",
   };
 
@@ -77,7 +76,6 @@ describe("billing-client", () => {
       "x-feature-slug": "cold-outreach",
       "x-goal": "signup",
       "x-brand-profile-id": "brand-profile-1",
-      "x-customer-persona-id": "persona-1",
       "x-audience-id": "audience-1",
     });
   });
@@ -101,7 +99,6 @@ describe("billing-client", () => {
     expect(options.headers).not.toHaveProperty("x-feature-slug");
     expect(options.headers).not.toHaveProperty("x-goal");
     expect(options.headers).not.toHaveProperty("x-brand-profile-id");
-    expect(options.headers).not.toHaveProperty("x-customer-persona-id");
     expect(options.headers).not.toHaveProperty("x-audience-id");
   });
 
