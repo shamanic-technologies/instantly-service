@@ -93,7 +93,6 @@ describe("traceEvent", () => {
         "x-feature-slug": "feat-slug",
         "x-goal": "signup",
         "x-brand-profile-id": "brand-profile-1",
-        "x-customer-persona-id": "persona-1",
         "x-audience-id": "audience-1",
       }
     );
@@ -106,7 +105,6 @@ describe("traceEvent", () => {
     expect(headers["x-feature-slug"]).toBe("feat-slug");
     expect(headers["x-goal"]).toBe("signup");
     expect(headers["x-brand-profile-id"]).toBe("brand-profile-1");
-    expect(headers["x-customer-persona-id"]).toBe("persona-1");
     expect(headers["x-audience-id"]).toBe("audience-1");
   });
 
@@ -129,7 +127,6 @@ describe("traceEvent", () => {
     expect(headers).not.toHaveProperty("x-campaign-id");
     expect(headers).not.toHaveProperty("x-goal");
     expect(headers).not.toHaveProperty("x-brand-profile-id");
-    expect(headers).not.toHaveProperty("x-customer-persona-id");
     expect(headers).not.toHaveProperty("x-audience-id");
   });
 });

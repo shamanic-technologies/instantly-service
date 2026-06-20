@@ -31,7 +31,6 @@ export interface BillingIdentity {
   featureSlug?: string;
   goal?: string;
   brandProfileId?: string;
-  customerPersonaId?: string;
   audienceId?: string;
 }
 
@@ -70,7 +69,6 @@ export async function authorizeCreditSpend(
   if (identity.featureSlug) headers["x-feature-slug"] = identity.featureSlug;
   if (identity.goal) headers["x-goal"] = identity.goal;
   if (identity.brandProfileId) headers["x-brand-profile-id"] = identity.brandProfileId;
-  if (identity.customerPersonaId) headers["x-customer-persona-id"] = identity.customerPersonaId;
   if (identity.audienceId) headers["x-audience-id"] = identity.audienceId;
 
   const response = await fetch(`${BILLING_SERVICE_URL}/v1/customer_balance/authorize`, {

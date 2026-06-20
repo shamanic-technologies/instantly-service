@@ -29,7 +29,6 @@ export async function traceEvent(
         ...(headers["x-feature-slug"] ? { "x-feature-slug": headers["x-feature-slug"] as string } : {}),
         ...(headers["x-goal"] ? { "x-goal": headers["x-goal"] as string } : {}),
         ...(headers["x-brand-profile-id"] ? { "x-brand-profile-id": headers["x-brand-profile-id"] as string } : {}),
-        ...(headers["x-customer-persona-id"] ? { "x-customer-persona-id": headers["x-customer-persona-id"] as string } : {}),
         ...(headers["x-audience-id"] ? { "x-audience-id": headers["x-audience-id"] as string } : {}),
       },
       body: JSON.stringify(payload),

@@ -971,7 +971,6 @@ describe("POST /send", () => {
         "x-workflow-slug": "header-wf",
         "x-goal": "signup",
         "x-brand-profile-id": "brand-profile-1",
-        "x-customer-persona-id": "persona-1",
         "x-audience-id": "audience-1",
       })
       .send(validBody);
@@ -983,7 +982,6 @@ describe("POST /send", () => {
     expect(campaignInsert![0].metadata).toEqual({
       goal: "signup",
       brandProfileId: "brand-profile-1",
-      customerPersonaId: "persona-1",
       audienceId: "audience-1",
     });
 
@@ -997,7 +995,6 @@ describe("POST /send", () => {
           workflowSlug: "header-wf",
           goal: "signup",
           brandProfileId: "brand-profile-1",
-          customerPersonaId: "persona-1",
           audienceId: "audience-1",
         }),
       }),
