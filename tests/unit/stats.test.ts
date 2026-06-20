@@ -708,7 +708,6 @@ describe("GET /stats", () => {
       .query({
         goal: "signup",
         brandProfileId: "brand-profile-1",
-        customerPersonaId: "persona-1",
         audienceId: "audience-1",
       })
       .set(identityHeadersObj);
@@ -718,7 +717,6 @@ describe("GET /stats", () => {
       const sqlText = extractSqlText(call[0]);
       expect(sqlText).toContain("metadata->>'goal'");
       expect(sqlText).toContain("metadata->>'brandProfileId'");
-      expect(sqlText).toContain("metadata->>'customerPersonaId'");
       expect(sqlText).toContain("metadata->>'audienceId'");
     }
   });

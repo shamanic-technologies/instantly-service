@@ -48,7 +48,6 @@ interface TrackingHeaders {
   featureSlug?: string;
   goal?: string;
   brandProfileId?: string;
-  customerPersonaId?: string;
   audienceId?: string;
 }
 
@@ -82,9 +81,6 @@ async function keyServiceRequest<T>(
   }
   if (identity.tracking?.brandProfileId) {
     headers["x-brand-profile-id"] = identity.tracking.brandProfileId;
-  }
-  if (identity.tracking?.customerPersonaId) {
-    headers["x-customer-persona-id"] = identity.tracking.customerPersonaId;
   }
   if (identity.tracking?.audienceId) {
     headers["x-audience-id"] = identity.tracking.audienceId;
