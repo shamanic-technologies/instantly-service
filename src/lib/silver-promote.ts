@@ -235,9 +235,12 @@ async function handleEmailSent(
 
 /**
  * When sequence stops (reply, bounce, unsub, not_interested), cancel all
- * remaining provisioned costs for this lead.
+ * remaining provisioned costs for this lead. Also called by reconcile when a
+ * campaign reaches a terminal Instantly status (paused/completed) — a finished
+ * campaign never sends its remaining steps and emits no stop event, so its
+ * still-provisioned holds must be cancelled here or they leak forever.
  */
-async function cancelRemainingProvisions(
+export async function cancelRemainingProvisions(
   campaign: CampaignRow,
   leadEmail: string,
 ): Promise<void> {
