@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -9,6 +9,7 @@ vi.mock("../../src/db", () => ({
   db: {
     select: () => ({ from: () => mockDbSelectFrom() }),
     execute: (...args: unknown[]) => mockDbExecute(...args),
+    update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
   },
 }));
 
@@ -26,11 +27,14 @@ const mockGetCampaignAnalytics = vi.fn();
 const mockListLeadsFull = vi.fn();
 const mockListEmails = vi.fn();
 
+const mockDeleteLeads = vi.fn();
+
 vi.mock("../../src/lib/instantly-client", () => ({
   getCampaign: (...args: unknown[]) => mockGetCampaign(...args),
   getCampaignAnalytics: (...args: unknown[]) => mockGetCampaignAnalytics(...args),
   listLeadsFull: (...args: unknown[]) => mockListLeadsFull(...args),
   listEmails: (...args: unknown[]) => mockListEmails(...args),
+  deleteLeads: (...args: unknown[]) => mockDeleteLeads(...args),
 }));
 
 const mockResolveInstantlyApiKey = vi.fn();
@@ -81,7 +85,11 @@ vi.mock("../../src/lib/silver-promote", () => ({
     mockPromoteSyntheticClicksFromLead(...args),
   promoteSyntheticInterestFromLead: (...args: unknown[]) =>
     mockPromoteSyntheticInterestFromLead(...args),
+  cancelRemainingProvisions: (...args: unknown[]) =>
+    mockCancelRemainingProvisions(...args),
 }));
+
+const mockCancelRemainingProvisions = vi.fn();
 
 // Import under test AFTER mocks
 import { reconcileAll } from "../../src/lib/reconcile";
@@ -411,5 +419,90 @@ describe("reconcileAll", () => {
     expect(mockInsertCampaignConfigSnapshot).not.toHaveBeenCalled();
     expect(mockPromoteFromCampaignConfig).not.toHaveBeenCalled();
     expect(mockGetCampaignAnalytics).toHaveBeenCalledTimes(1);
+  });
+
+  // ─── Credit-leak fix: cancel provisioned holds on terminal Instantly status ──
+  describe("cancels remaining provisioned holds when Instantly status is finished", () => {
+    const originalDeleteFlag = process.env.DELETE_FINISHED_CONTACTS_ENABLED;
+    afterEach(() => {
+      if (originalDeleteFlag === undefined) delete process.env.DELETE_FINISHED_CONTACTS_ENABLED;
+      else process.env.DELETE_FINISHED_CONTACTS_ENABLED = originalDeleteFlag;
+    });
+
+    it("cancels provisioned holds on a PAUSED (2) campaign even with delete OFF", async () => {
+      delete process.env.DELETE_FINISHED_CONTACTS_ENABLED;
+      mockDbSelectFrom.mockResolvedValue([
+        {
+          id: "db-1",
+          instantlyCampaignId: "inst-1",
+          orgId: "org-1",
+          campaignId: "camp-1",
+          userId: "user-1",
+          leadEmail: "lead@example.com",
+          status: "active",
+        },
+      ]);
+      // status 2 = paused → finished. No drift → returns finish() after phase 1.
+      mockGetCampaign.mockResolvedValue({ id: "inst-1", status: 2 });
+      mockGetCampaignAnalytics.mockResolvedValue(makeAnalytics());
+      mockLocalCounts({ sent: 0, replies: 0, bounces: 0, unsubs: 0 });
+
+      await reconcileAll();
+
+      expect(mockCancelRemainingProvisions).toHaveBeenCalledWith(
+        expect.objectContaining({ campaignId: "camp-1", orgId: "org-1", userId: "user-1" }),
+        "lead@example.com",
+      );
+      // Delete OFF → contact is NOT deleted (credit refund is independent of quota reclaim).
+      expect(mockDeleteLeads).not.toHaveBeenCalled();
+    });
+
+    it("cancels holds AND deletes the contact on a COMPLETED (3) campaign with delete ON", async () => {
+      process.env.DELETE_FINISHED_CONTACTS_ENABLED = "true";
+      mockDbSelectFrom.mockResolvedValue([
+        {
+          id: "db-1",
+          instantlyCampaignId: "inst-1",
+          orgId: "org-1",
+          campaignId: "camp-1",
+          userId: "user-1",
+          leadEmail: "lead@example.com",
+          status: "active",
+        },
+      ]);
+      mockGetCampaign.mockResolvedValue({ id: "inst-1", status: 3 });
+      mockGetCampaignAnalytics.mockResolvedValue(makeAnalytics());
+      mockLocalCounts({ sent: 0, replies: 0, bounces: 0, unsubs: 0 });
+
+      await reconcileAll();
+
+      expect(mockCancelRemainingProvisions).toHaveBeenCalledWith(
+        expect.objectContaining({ campaignId: "camp-1" }),
+        "lead@example.com",
+      );
+      expect(mockDeleteLeads).toHaveBeenCalledWith("fake-api-key", "inst-1", ["lead@example.com"]);
+    });
+
+    it("does NOT cancel holds on an ACTIVE (1) campaign", async () => {
+      delete process.env.DELETE_FINISHED_CONTACTS_ENABLED;
+      mockDbSelectFrom.mockResolvedValue([
+        {
+          id: "db-1",
+          instantlyCampaignId: "inst-1",
+          orgId: "org-1",
+          campaignId: "camp-1",
+          userId: "user-1",
+          leadEmail: "lead@example.com",
+          status: "active",
+        },
+      ]);
+      mockGetCampaign.mockResolvedValue({ id: "inst-1", status: 1 });
+      mockGetCampaignAnalytics.mockResolvedValue(makeAnalytics());
+      mockLocalCounts({ sent: 0, replies: 0, bounces: 0, unsubs: 0 });
+
+      await reconcileAll();
+
+      expect(mockCancelRemainingProvisions).not.toHaveBeenCalled();
+    });
   });
 });

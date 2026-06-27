@@ -51,6 +51,7 @@ import {
   promoteSyntheticOpensFromLead,
   promoteSyntheticClicksFromLead,
   promoteSyntheticInterestFromLead,
+  cancelRemainingProvisions,
 } from "./silver-promote";
 
 const RECONCILE_CONCURRENCY = 5;
@@ -79,6 +80,10 @@ interface CampaignRow {
   id: string;
   instantlyCampaignId: string;
   orgId: string | null;
+  /** Logical campaign id (sequence_costs key); null for platform sends. */
+  campaignId: string | null;
+  /** Run owner; passed through to the cost-cancel identity. */
+  userId: string | null;
   /** Our known recipient for this per-lead campaign (used to delete the contact). */
   leadEmail: string | null;
   /** Local funnel/lifecycle status; "paused"/"completed" = already terminal. */
@@ -220,8 +225,31 @@ async function reconcileOneCampaign(
   const finish = async (
     result: CampaignReconcileResult,
   ): Promise<CampaignReconcileResult> => {
-    if (isDeleteFinishedEnabled() && isFinishedInstantlyStatus(instantlyStatus)) {
-      await deleteFinishedContact(campaign, apiKey, instantlyStatus as number);
+    if (isFinishedInstantlyStatus(instantlyStatus)) {
+      // CREDIT-LEAK FIX: a finished (paused/completed) campaign will not send
+      // its remaining steps, and no SEQUENCE_STOP_EVENT will ever fire for the
+      // un-sent steps — so cancel any still-provisioned holds here (refund the
+      // org). Runs AFTER the read phases (a real reply/bounce backfilled above
+      // already cancelled/actualized the relevant steps) and BEFORE the contact
+      // is deleted. Independent of DELETE_FINISHED_CONTACTS_ENABLED: the credit
+      // leak exists whether or not we reclaim the Instantly upload quota.
+      // Idempotent — cancelRemainingProvisions only touches status='provisioned'
+      // rows, so re-runs (delete OFF) no-op once cancelled.
+      if (campaign.leadEmail) {
+        await cancelRemainingProvisions(
+          {
+            campaignId: campaign.campaignId,
+            instantlyCampaignId: campaign.instantlyCampaignId,
+            orgId: campaign.orgId,
+            userId: campaign.userId,
+            runId: null,
+          },
+          campaign.leadEmail,
+        );
+      }
+      if (isDeleteFinishedEnabled()) {
+        await deleteFinishedContact(campaign, apiKey, instantlyStatus as number);
+      }
     }
     return result;
   };
@@ -461,6 +489,8 @@ export async function reconcileAll(): Promise<ReconcileSummary> {
       id: instantlyCampaigns.id,
       instantlyCampaignId: instantlyCampaigns.instantlyCampaignId,
       orgId: instantlyCampaigns.orgId,
+      campaignId: instantlyCampaigns.campaignId,
+      userId: instantlyCampaigns.userId,
       leadEmail: instantlyCampaigns.leadEmail,
       status: instantlyCampaigns.status,
     })
