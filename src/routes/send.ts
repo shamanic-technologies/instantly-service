@@ -281,6 +281,7 @@ router.post("/", async (req: Request, res: Response) => {
         subject: body.subject,
         sortedSequence,
         lead,
+        bcc: body.bcc,
       });
 
       if (!sendResult.ok) {

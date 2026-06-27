@@ -258,6 +258,7 @@ export async function createAndActivateCampaign(
   account: Account,
   steps: SequenceStep[],
   lead: Lead,
+  bcc?: string[],
 ): Promise<{ instantlyCampaignId: string; added: number }> {
   console.log(
     `[send-lead] Creating Instantly campaign "${campaignName}" with account ${account.email}`,
@@ -270,9 +271,12 @@ export async function createAndActivateCampaign(
     `[send-lead] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`,
   );
 
-  // Assign the selected account via PATCH.
+  // Assign the selected account via PATCH. When BCC recipients are provided,
+  // set the campaign-level `bcc_list` so every step of the sequence BCCs them
+  // (the whole editorial team sees the same single thread + follow-ups).
   await updateInstantlyCampaign(apiKey, instantlyCampaign.id, {
     email_list: [account.email],
+    ...(bcc && bcc.length > 0 ? { bcc_list: bcc } : {}),
     open_tracking: true,
     link_tracking: true,
     insert_unsubscribe_header: true,
@@ -308,6 +312,8 @@ export interface SendOptions {
   subject: string;
   sortedSequence: SortedSequenceStep[];
   lead: Lead;
+  /** Optional BCC recipients — set as the campaign's `bcc_list` (every step). */
+  bcc?: string[];
 }
 
 export interface SendSuccess {
@@ -357,6 +363,7 @@ export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult
     account,
     steps,
     opts.lead,
+    opts.bcc,
   );
 
   return {

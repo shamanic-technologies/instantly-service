@@ -518,6 +518,45 @@ describe("POST /send", () => {
     );
   });
 
+  it("sets bcc_list on the campaign PATCH when bcc is provided", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app)
+      .post("/send")
+      .set(identityHeadersObj)
+      .send({ ...validBody, bcc: ["a@x.com", "b@x.com"] });
+
+    expect(mockUpdateCampaign).toHaveBeenCalledWith(
+      "test-instantly-key",
+      "inst-camp-new",
+      expect.objectContaining({ bcc_list: ["a@x.com", "b@x.com"] }),
+    );
+  });
+
+  it("omits bcc_list from the campaign PATCH when bcc absent", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    const patchArg = mockUpdateCampaign.mock.calls[0][2] as Record<string, unknown>;
+    expect(patchArg).not.toHaveProperty("bcc_list");
+  });
+
+  it("omits bcc_list from the campaign PATCH when bcc is an empty array", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app)
+      .post("/send")
+      .set(identityHeadersObj)
+      .send({ ...validBody, bcc: [] });
+
+    const patchArg = mockUpdateCampaign.mock.calls[0][2] as Record<string, unknown>;
+    expect(patchArg).not.toHaveProperty("bcc_list");
+  });
+
   it("refreshes the Gold status row after attaching the real Instantly campaign id", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();

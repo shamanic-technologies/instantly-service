@@ -200,6 +200,13 @@
             "type": "string",
             "description": "Shared subject for all steps in the sequence"
           },
+          "bcc": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional BCC recipients — set as the created campaign's bcc_list so every step of the sequence BCCs these addresses. Absent/empty = no BCC."
+          },
           "sequence": {
             "type": "array",
             "items": {

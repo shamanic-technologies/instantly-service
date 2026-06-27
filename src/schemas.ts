@@ -215,6 +215,12 @@ export const SendRequestSchema = z
     company: z.string().optional(),
     variables: z.record(z.string(), z.string()).optional(),
     subject: z.string().describe("Shared subject for all steps in the sequence"),
+    bcc: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Optional BCC recipients — set as the created campaign's bcc_list so every step of the sequence BCCs these addresses. Absent/empty = no BCC.",
+      ),
     sequence: z
       .array(SequenceStepSchema)
       .min(1)
