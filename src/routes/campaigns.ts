@@ -8,6 +8,7 @@ import { resolveInstantlyApiKey } from "../lib/key-client";
 import { UpdateStatusRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
 import { reconcileAll } from "../lib/reconcile";
+import { refundStrandedHolds } from "../lib/refund-stranded-holds";
 
 const router = Router();
 
@@ -138,6 +139,30 @@ router.post("/reconcile", (_req: Request, res: Response) => {
   reconcileAll().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[instantly-service] reconcile run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /campaigns/refund-stranded-holds
+ * One-time backlog refund for the provisioned-hold leak (issue #335): cancels
+ * `provisioned` sequence_costs stranded on locally-terminal (paused/completed)
+ * campaigns. Idempotent + resumable — safe to call repeatedly. Optional
+ * `{ limit }` body bounds the batch (campaign count). MUST run in-cluster
+ * (cancelling calls runs-service over `*.railway.internal`).
+ *
+ * Mirrors /reconcile: 202 + background execution (the sweep can exceed proxy
+ * timeouts over ~12k rows). Watch Railway logs for `refund-stranded-holds: done`.
+ */
+router.post("/refund-stranded-holds", (req: Request, res: Response) => {
+  const rawLimit = (req.body as { limit?: unknown })?.limit;
+  const limit = typeof rawLimit === "number" && rawLimit > 0 ? Math.floor(rawLimit) : undefined;
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+  console.log(`[instantly-service] refund-stranded-holds: dispatched run=${runId} limit=${limit ?? "all"}`);
+  res.status(202).json({ runId, startedAt, limit: limit ?? null });
+  refundStrandedHolds({ limit }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] refund-stranded-holds run=${runId} failed: ${message}`);
   });
 });
 
