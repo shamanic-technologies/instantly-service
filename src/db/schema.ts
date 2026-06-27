@@ -64,10 +64,25 @@ export const instantlyCampaigns = pgTable(
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (table) => [
+    // Reservation arbiter for NON-platform sends — see POST /send. campaignId is
+    // non-null here, so (campaignId, leadEmail) collides on a timeout-retry.
     uniqueIndex("instantly_campaigns_campaign_lead_idx").on(
       table.campaignId,
       table.leadEmail,
     ),
+    // Reservation arbiter for PLATFORM sends (campaignId IS NULL). Postgres treats
+    // NULLs as DISTINCT in a unique index, so (campaignId, leadEmail) NEVER
+    // collides when campaignId is null → every email-gateway timeout-retry used to
+    // create a fresh duplicate campaign. This partial unique index keys on
+    // (run_id, leadEmail) instead — the retry forwards the same x-run-id, so it is
+    // the stable idempotency key — scoped to status='active' so it covers exactly
+    // the live reservation/in-flight window and never collides with already
+    // paused/completed historical duplicates. Defined in migration
+    // 0020_platform_send_dedupe.sql (drizzle-kit does not track partial indexes,
+    // same convention as instantly_events_one_shot_dedupe_idx); send.ts targets it
+    // via onConflictDoUpdate when campaignId is null. Do NOT drop it on a
+    // db:generate diff.
+    //   UNIQUE (run_id, lead_email) WHERE campaign_id IS NULL AND status = 'active'
     index("instantly_campaigns_campaign_id_idx").on(table.campaignId),
     index("instantly_campaigns_lead_id_idx").on(table.leadId),
     index("instantly_campaigns_lead_email_idx").on(table.leadEmail),

@@ -5,6 +5,7 @@ const mockDbWhere = vi.fn();
 const mockDbReturning = vi.fn();
 const mockDbInsertValues = vi.fn();
 const mockDbDelete = vi.fn();
+const mockOnConflictDoUpdate = vi.fn();
 const mockRefreshLeadStatusCurrent = vi.fn();
 
 vi.mock("../../src/db", () => ({
@@ -15,7 +16,7 @@ vi.mock("../../src/db", () => ({
       return {
         // Reservation upsert (onConflictDoUpdate) and the lead insert
         // (onConflictDoNothing) both resolve via the shared returning queue.
-        onConflictDoUpdate: () => ({ returning: mockDbReturning }),
+        onConflictDoUpdate: (cfg: unknown) => { mockOnConflictDoUpdate(cfg); return { returning: mockDbReturning }; },
         onConflictDoNothing: () => ({ returning: mockDbReturning }),
         returning: mockDbReturning,
       };
@@ -31,6 +32,8 @@ vi.mock("../../src/db/schema", () => ({
     campaignId: "campaign_id",
     leadEmail: "lead_email",
     instantlyCampaignId: "instantly_campaign_id",
+    runId: "run_id",
+    status: "status",
   },
   instantlyLeads: { instantlyCampaignId: "instantly_campaign_id", email: "email" },
   sequenceCosts: {},
@@ -1082,6 +1085,79 @@ describe("POST /send", () => {
     for (const [value] of sequenceCostInserts) {
       expect(value.campaignId).toBeNull();
     }
+  });
+
+  // ── Platform-send idempotency (campaignId NULL) ─────────────────────────────
+  // A platform send carries no x-campaign-id, so campaignId is null. The
+  // reservation must collide on a retry via the (run_id, lead_email) partial
+  // unique index — NOT (campaign_id, lead_email), which never collides on null
+  // campaign (Postgres NULLs are DISTINCT). Guards the 2026-06-27 dup incident.
+  const platformHeaders = {
+    "x-org-id": "org-1",
+    "x-user-id": "user-1",
+    "x-run-id": "run-1",
+    "x-brand-id": "brand-1",
+  };
+
+  function mockPlatformWinnerFlow() {
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check (no conflict)
+    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-plat", status: "draft" });
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["sender@example.com"], not_sending_status: null });
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([{ id: "sub-plat", campaignId: null, instantlyCampaignId: "inst-camp-plat" }]); // RESERVE → winner
+    mockDbReturning.mockResolvedValueOnce([{ id: "lead-1" }]); // lead insert
+    mockDbReturning.mockResolvedValue([]);
+    mockUpdateCampaignStatus.mockResolvedValue({});
+  }
+
+  it("platform send (campaignId null) reserves on the (run_id, lead_email) arbiter", async () => {
+    mockPlatformWinnerFlow();
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(platformHeaders).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.campaignId).toBeNull();
+    const cfg = mockOnConflictDoUpdate.mock.calls[0][0];
+    expect(cfg.target).toEqual(["run_id", "lead_email"]);
+    expect(cfg.targetWhere).toBeDefined(); // partial index predicate (campaign_id IS NULL AND status='active')
+  });
+
+  it("campaign send (campaignId present) reserves on the (campaign_id, lead_email) arbiter", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    const cfg = mockOnConflictDoUpdate.mock.calls[0][0];
+    expect(cfg.target).toEqual(["campaign_id", "lead_email"]);
+    expect(cfg.targetWhere).toBeUndefined(); // full unique index, no partial predicate
+  });
+
+  it("platform retry (same leadEmail + same runId, campaignId null) is an idempotent duplicate — no 2nd campaign", async () => {
+    const app = await createSendApp();
+
+    // 1st send: wins the reservation, creates the Instantly campaign.
+    mockPlatformWinnerFlow();
+    const res1 = await request(app).post("/send").set(platformHeaders).send(validBody);
+    expect(res1.status).toBe(200);
+    expect(res1.body.duplicate).toBeUndefined();
+    expect(mockCreateCampaign).toHaveBeenCalledTimes(1);
+
+    // 2nd send (the timeout-retry): the (run_id, lead_email) reservation
+    // collides → empty RETURNING → idempotent 200 duplicate, NO 2nd campaign.
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([]); // RESERVE upsert loses the claim
+
+    const res2 = await request(app).post("/send").set(platformHeaders).send(validBody);
+    expect(res2.status).toBe(200);
+    expect(res2.body.duplicate).toBe(true);
+    expect(res2.body.added).toBe(0);
+    expect(mockCreateCampaign).toHaveBeenCalledTimes(1); // still ONE — no duplicate campaign
   });
 
   it("should return 402 when credit authorization fails for platform keySource", async () => {

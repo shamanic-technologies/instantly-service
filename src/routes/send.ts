@@ -190,10 +190,20 @@ router.post("/", async (req: Request, res: Response) => {
       let savedLead: { id: string } | undefined;
       let added = 0;
 
-      // 4. RESERVE the (campaignId, leadEmail) pair BEFORE the external Instantly
-      //    call — atomic claim on the unique index. This makes /send idempotent
-      //    under retry/concurrency: exactly one request creates the Instantly
+      // 4. RESERVE the lead pair BEFORE the external Instantly call — atomic
+      //    claim on the unique index. This makes /send idempotent under
+      //    retry/concurrency: exactly one request creates the Instantly
       //    campaign; everyone else gets an idempotent 200 duplicate (NOT a 409).
+      //
+      //    The arbiter index depends on whether this is a platform send:
+      //    - campaignId present → (campaignId, leadEmail) unique index.
+      //    - campaignId NULL (platform send) → partial unique index on
+      //      (runId, leadEmail) WHERE campaign_id IS NULL AND status='active'.
+      //      Postgres treats NULLs as DISTINCT, so (campaignId, leadEmail) never
+      //      collides when campaignId is null — every email-gateway timeout-retry
+      //      would otherwise create a fresh duplicate campaign. The retry forwards
+      //      the same x-run-id, so (runId, leadEmail) is the stable idempotency
+      //      key (migration 0020_platform_send_dedupe.sql).
       //
       //    The row is reserved with a unique `reserving:<uuid>` sentinel in
       //    `instantlyCampaignId` (the "reservation in flight" marker) and
@@ -208,6 +218,7 @@ router.post("/", async (req: Request, res: Response) => {
       //    - row, sentinel, stale → setWhere true → UPDATE (reclaim) → winner
       //                             (the previous winner crashed mid-send).
       //    Winner ⇔ RETURNING is non-empty.
+      const isPlatformSend = campaignId === null;
       const [reservation] = await db
         .insert(instantlyCampaigns)
         .values({
@@ -227,7 +238,13 @@ router.post("/", async (req: Request, res: Response) => {
           metadata: attributionMetadata,
         })
         .onConflictDoUpdate({
-          target: [instantlyCampaigns.campaignId, instantlyCampaigns.leadEmail],
+          target: isPlatformSend
+            ? [instantlyCampaigns.runId, instantlyCampaigns.leadEmail]
+            : [instantlyCampaigns.campaignId, instantlyCampaigns.leadEmail],
+          // Must match the partial index predicate for the platform arbiter.
+          targetWhere: isPlatformSend
+            ? sql`${instantlyCampaigns.campaignId} IS NULL AND ${instantlyCampaigns.status} = 'active'`
+            : undefined,
           // Stale-reservation reclaim only: take ownership for this caller (new
           // sentinel from excluded) and refresh the freshness clock.
           set: {
