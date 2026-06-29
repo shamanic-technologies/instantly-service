@@ -159,31 +159,38 @@ export function autolinkifyHtml(html: string): string {
 }
 
 /**
- * The canonical signature (HTML-formatted), identical for every sender
- * regardless of which sending account `pickRandomAccount` selected:
+ * Fixed brand line, identical for every sender. The PERSON line above it is
+ * derived per-account (see `buildDefaultSignature`).
  *
- *   Kevin Lourd | Founder
+ * Plain text, no `<a>` link — `buildEmailBodyWithSignature` autolinkifies only
+ * the prospect body, never the signature.
+ */
+const SIGNATURE_BRAND_LINE = "Distribute.you | Marketing Agency";
+
+/** Fallback sender name when an account carries no first/last name. */
+const DEFAULT_SENDER_NAME = "Kevin Lourd";
+
+/**
+ * Per-account signature (HTML-formatted):
+ *
+ *   {account first + last name}
  *   Distribute.you | Marketing Agency
+ *
+ * The PERSON line is the account's own name so the From-name and the signature
+ * agree (multi-persona sending: amy@… signs "Amy Moore", not a fixed name). NO
+ * title — a fixed "Founder" can't apply across many distinct sender personas.
+ * Falls back to `DEFAULT_SENDER_NAME` when the account has no name.
  *
  * Wrapped in `<p>...<br>...</p>` because Instantly's HTML sanitizer aggressively
  * strips plain text and bare `--` outside element wrappers on PATCH round-trip
  * (only tag-wrapped content survives). Historic damage 2026-05-28: a plain-text
  * signature was reduced to a stray `<a>distribute.you</a>` anchor on every PATCH.
- *
- * The brand line is intentionally PLAIN TEXT (no `<a>` link) — `buildEmail-
- * BodyWithSignature` autolinkifies only the prospect body, never the signature.
  */
-const DEFAULT_SIGNATURE =
-  "<p>Kevin Lourd | Founder<br>Distribute.you | Marketing Agency</p>";
-
-/**
- * Returns the canonical signature. Kept as a function (rather than inlining the
- * constant) so a future change can re-introduce per-account derivation without
- * touching `buildEmailBodyWithSignature`. The `account` param is currently
- * unused — every sender shares one brand line.
- */
-export function buildDefaultSignature(_account: Account): string {
-  return DEFAULT_SIGNATURE;
+export function buildDefaultSignature(account: Account): string {
+  const name =
+    [account.first_name, account.last_name].filter(Boolean).join(" ").trim() ||
+    DEFAULT_SENDER_NAME;
+  return `<p>${name}<br>${SIGNATURE_BRAND_LINE}</p>`;
 }
 
 /**

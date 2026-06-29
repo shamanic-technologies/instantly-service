@@ -272,7 +272,8 @@ describe("buildEmailBodyWithSignature", () => {
     const body = "Hello\n\n{{accountSignature}}";
     const result = buildEmailBodyWithSignature(body, acct({ email: "kevinl@growthagency.dev", signature: "" }));
     expect(result).toContain("<p>--</p>");
-    expect(result).toContain("Kevin Lourd | Founder");
+    expect(result).toContain("Kevin Lourd");
+    expect(result).not.toContain("Founder");
     expect(result).toContain("Distribute.you | Marketing Agency");
     expect((result.match(/<p>--<\/p>/g) ?? []).length).toBe(1);
   });
@@ -281,7 +282,7 @@ describe("buildEmailBodyWithSignature", () => {
     // Brand line is plain text — NOT auto-linkified into an <a>.
     const result = buildEmailBodyWithSignature("Hello", acct({ email: "kevinl@growthagency.dev" }));
     expect(result).toBe(
-      "Hello<p>--</p><p>Kevin Lourd | Founder<br>Distribute.you | Marketing Agency</p>",
+      "Hello<p>--</p><p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>",
     );
     expect(result).not.toContain("<a ");
   });
@@ -293,6 +294,18 @@ describe("buildEmailBodyWithSignature", () => {
     expect(b).toContain("Distribute.you | Marketing Agency");
     expect(a).not.toContain("<a ");
     expect(b).not.toContain("<a ");
+  });
+
+  it("signs with the account's OWN name so From-name and signature agree (multi-persona)", () => {
+    const result = buildEmailBodyWithSignature(
+      "Hello",
+      acct({ email: "amy@gildcultivatecoil.com", first_name: "Amy", last_name: "Moore" }),
+    );
+    expect(result).toBe(
+      "Hello<p>--</p><p>Amy Moore<br>Distribute.you | Marketing Agency</p>",
+    );
+    expect(result).not.toContain("Kevin Lourd");
+    expect(result).not.toContain("Founder");
   });
 
   it("autolinkifies URLs in the body but NOT in the appended signature", () => {
@@ -378,7 +391,7 @@ describe("buildEmailBodyWithSignature", () => {
   it("canonical fallback also strips stacked sigs (idempotence preserved)", () => {
     const body = "<p>Hello</p>\n\n--\n<p>Old Sig 1</p>\n\n--\n<p>Old Sig 2</p>";
     const result = buildEmailBodyWithSignature(body, acct({ email: "kevinl@growthagency.dev", signature: "" }));
-    expect(result).toContain("<p>Hello</p><p>--</p><p>Kevin Lourd | Founder<br>Distribute.you | Marketing Agency</p>");
+    expect(result).toContain("<p>Hello</p><p>--</p><p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>");
     expect(result).not.toContain("Old Sig 1");
     expect(result).not.toContain("Old Sig 2");
   });
