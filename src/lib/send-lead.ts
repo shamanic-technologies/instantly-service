@@ -88,6 +88,20 @@ const BLOCKED_DOMAINS = [
   "teamdistribute.com",
   "trialdistribute.com",
   "yourdistribute.com",
+
+  // ─── WARMING GUARD — new Google Workspace (Primeforge) domains, 2026-06-29 ──
+  // These are the Gmail-trusted replacement infra, freshly imported and WARMING
+  // (~2 weeks). Blocked from cold here ON PURPOSE: the Health-Score>=100 gate
+  // alone is NOT a safe go-live signal — we proved Health 100 != Gmail inbox.
+  // A fresh account's warmup score can hit 100 in days, well before it's truly
+  // Gmail-ready. Keep these blocked until BOTH (a) ~2 weeks warmup elapsed AND
+  // (b) an Instantly inbox-placement seed test CONFIRMS Gmail inbox. Remove a
+  // domain from this block only after its seed test passes — not on the score.
+  "maildistribute.com",
+  "boostdistribute.com",
+  "growdistribute.com",
+  "hellodistribute.com",
+  "startdistribute.com",
 ];
 
 /**
