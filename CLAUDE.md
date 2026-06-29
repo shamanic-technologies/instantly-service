@@ -67,18 +67,18 @@ Historic bug 2026-05-28: `listAccounts` shipped without pagination. Only 10 of 1
 **Signature source priority:**
 
 1. `account.signature` — per-sender override configured in Instantly's UI (account settings). Intentionally empty in prod.
-2. `buildDefaultSignature(account)` (`src/lib/send-lead.ts`) — returns the `DEFAULT_SIGNATURE` constant. **Source of truth in prod.**
+2. `buildDefaultSignature(account)` (`src/lib/send-lead.ts`) — **per-account name + fixed brand line**. **Source of truth in prod.**
 
-**One fixed brand line for every sender.** Identical regardless of which account `pickRandomAccount` selected:
+**PERSON line = the account's OWN name; brand line fixed.** The signature is now derived per-account so the From-name and the signature agree under multi-persona sending (e.g. `amy@…` signs "Amy Moore", `kevin@…` signs "Kevin Lourd"):
 
 ```
-Kevin Lourd | Founder
-Distribute.you | Marketing Agency
+{account.first_name} {account.last_name}     ← derived from the sending account
+Distribute.you | Marketing Agency            ← fixed SIGNATURE_BRAND_LINE
 ```
 
-`buildDefaultSignature(account)` ignores its `account` arg today (kept so per-account derivation can be reintroduced without touching the caller). The brand line renders as **plain text — NOT a clickable `<a>` link**: `buildEmailBodyWithSignature` autolinkifies the prospect body ONLY, appending the signature block verbatim. Do NOT reintroduce sig-wide autolinkify. When the copy/title/brand changes, edit `DEFAULT_SIGNATURE` and ship a hotfix.
+`buildDefaultSignature(account)` joins `account.first_name` + `last_name` (falls back to `DEFAULT_SENDER_NAME = "Kevin Lourd"` when both are absent). **NO title** — a fixed "Founder" cannot apply across many distinct sender personas (DFY pre-warmed accounts ship with names like Amy Moore / Louis Williams), so the title line was dropped 2026-06-30. The brand line renders as **plain text — NOT a clickable `<a>` link**: `buildEmailBodyWithSignature` autolinkifies the prospect body ONLY, appending the signature block verbatim. Do NOT reintroduce sig-wide autolinkify.
 
-The signature is intentionally code-derived (not Instantly-UI driven). When the copy/title/format changes, edit `buildDefaultSignature` and ship a hotfix. Do NOT re-add per-account UI signatures without updating this rule — code prefers the UI value over the derived default.
+The signature is intentionally code-derived (not Instantly-UI driven). When the brand line / format changes, edit `SIGNATURE_BRAND_LINE` / `buildDefaultSignature` and ship a hotfix. Do NOT re-add per-account UI signatures without updating this rule — code prefers the UI value over the derived default. Guard: the "signs with the account's OWN name" + canonical-fallback tests in `tests/unit/send.test.ts`.
 
 **HTML-formatted, HTML-separated.** The signature MUST be wrapped in `<p>...</p>` (use `<br>` for in-sig line breaks). Separator is `<p>--</p>`, NOT `\n\n--\n`. Reason: Instantly's HTML sanitizer aggressively strips plain text and bare `--` outside element wrappers on PATCH round-trip — only `<a>` anchors and tag-wrapped content survive. An earlier plain-text signature was reduced to a stray `<a>distribute.you</a>` anchor on every PATCH (historic damage 2026-05-28: ~700 rows shipped with stacked broken anchors and no signature text). Guard: `should append HTML <p>--</p> separator + signature to body` + sibling cumulative-strip tests in `tests/unit/send.test.ts` assert the `<p>--</p>` form.
 
