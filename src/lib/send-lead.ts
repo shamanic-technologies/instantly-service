@@ -35,7 +35,23 @@ import {
  */
 const BLOCKED_DOMAINS = [
   "arcadiaquest.org",
+  // Brand / product domains pulled from cold sending — never load new
+  // sequences onto these (already-loaded campaigns drain via their Instantly
+  // daily_limit). distribute.you = primary brand domain; growthagency.dev =
+  // live Vercel product domain (CTD cert blocked by the Vercel claim).
+  "distribute.you",
+  "growthagency.dev",
 ];
+
+/**
+ * Minimum Instantly Health Score (the account `stat_warmup_score`, an integer
+ * 0-100) required to start a NEW sequence from an account. We dispatch only
+ * from fully-warmed senders (100): an account whose score has dipped is held
+ * out until it recovers. The score fluctuates daily, so the eligible pool
+ * breathes around this threshold — if it ever empties, `sendLeadToInstantly`
+ * returns `no_healthy_accounts_available` (no silent fallback to weaker senders).
+ */
+const MIN_WARMUP_SCORE = 100;
 
 /**
  * Pick an account using a single-pool weighted random:
@@ -226,6 +242,7 @@ export function buildSequenceSteps(
 /**
  * Filter the raw Instantly account list to senders we can send from now:
  *   - `status > 0` (active in Instantly's account state machine)
+ *   - `stat_warmup_score >= MIN_WARMUP_SCORE` (fully-warmed Health Score only)
  *   - domain not in BLOCKED_DOMAINS
  *
  * The returned list is unsorted; pacing/warmup weighting happens in
@@ -234,6 +251,12 @@ export function buildSequenceSteps(
 export function filterHealthyAccounts(accounts: Account[]): Account[] {
   return accounts.filter((a) => {
     if (a.status <= 0) return false;
+    if ((a.stat_warmup_score ?? 0) < MIN_WARMUP_SCORE) {
+      console.log(
+        `[send-lead] Skipping under-warmed account: ${a.email} (score=${a.stat_warmup_score ?? "null"})`,
+      );
+      return false;
+    }
     const domain = a.email.split("@")[1];
     if (BLOCKED_DOMAINS.includes(domain)) {
       console.log(`[send-lead] Skipping blocked-domain account: ${a.email}`);

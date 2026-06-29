@@ -107,6 +107,18 @@ If you add a new HTML wrapper form (e.g. `<section>--</section>`), add a regex t
 
 `authorize` (credit affordability) + the leadId-conflict 409 stay BEFORE the reserve (they early-return without reserving). Cost provision/actualize (`addCosts`) is winner-only in the step loop — losers declare no cost. The leadId-conflict case (same email, different `lead_id`) is still a real **409**, unchanged. Platform sends (`campaignId=null`) never conflict (Postgres NULLs distinct) → always insert/win, exactly as before. Guard: the "Reservation idempotency (DIS-148)" tests + the rewritten duplicate/concurrent tests in `tests/unit/send.test.ts`. This is idempotency-under-retry for the SAME `(campaignId, leadEmail)` — it does NOT dedup across *different* logical campaigns (that's the separate cross-campaign concern below).
 
+## Account selection — health-gated + blocked domains
+
+`sendLeadToInstantly` picks the sending account in two stages (`src/lib/send-lead.ts`):
+
+1. **`filterHealthyAccounts`** — the eligible pool. An account is sendable only if ALL hold:
+   - `status > 0` (active in Instantly's account state machine — status 2 "active+warming" counts).
+   - **`stat_warmup_score >= MIN_WARMUP_SCORE` (= 100).** Only fully-warmed senders start a NEW sequence; an account whose Health Score has dipped is held out until it recovers. The score (Instantly's per-account "Health Score", integer 0-100) fluctuates daily, so the eligible pool **breathes** around this bar. If the pool ever empties, `sendLeadToInstantly` returns `no_healthy_accounts_available` (a 500 upstream) — **there is NO silent fallback to weaker senders**. Lower `MIN_WARMUP_SCORE` if the bar proves too strict (e.g. the pool keeps emptying); it's a single constant.
+   - **domain not in `BLOCKED_DOMAINS`** = `arcadiaquest.org`, **`distribute.you`** (primary brand domain), **`growthagency.dev`** (live Vercel product domain). Brand/product domains are pulled from cold so cold-email reputation never touches them. Blocking only stops NEW loads; already-loaded campaigns drain via their Instantly `daily_limit` (e.g. distribute.you was set to `daily_limit:10` to finish its backlog, then code-blocked from new sends).
+2. **`pickRandomAccount`** — weighted random over the eligible pool, `weight = Math.max(1, stat_warmup_score ?? 0)` (the `max` is a FLOOR at 1 so a score-0 account still has nonzero weight — NOT a cap; `min(…)` would collapse the weighting). Under `MIN_WARMUP_SCORE = 100` every eligible account weighs 100 → effectively uniform; the weighting only bites if the threshold is lowered.
+
+Guard: the blocked-domain / under-warmed / fully-warmed `POST /send` tests in `tests/unit/send.test.ts`.
+
 ## Cross-campaign duplicate audit — read-only
 
 `POST /send` dedups on `(campaign_id, lead_email)` (`instantly_campaigns_campaign_lead_idx`), **not** on `(org_id, lead_email)` or `(brand, lead_email)`. So the same person reached by two **different** logical campaigns of the same org/brand creates two separate active Instantly campaigns — the same prospect gets double-contacted. DIS-77 healed this once (Phase A cancelled 6 same-wave dups, Phase B cancelled 51 re-contacts) but its **root-cause prevention in `POST /send` was never shipped**, so duplicates re-accumulate.

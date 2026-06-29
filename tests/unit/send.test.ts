@@ -496,7 +496,7 @@ describe("POST /send", () => {
       });
     });
     mockUpdateRun.mockResolvedValue({});
-    mockListAccounts.mockResolvedValue([{ email: "sender@example.com", warmup_status: 1, status: 1, signature: "<p>Best,<br>Sender</p>" }]);
+    mockListAccounts.mockResolvedValue([{ email: "sender@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Best,<br>Sender</p>" }]);
     mockUpdateCampaign.mockResolvedValue({});
     mockGetCampaign.mockResolvedValue({ email_list: [], bcc_list: [], not_sending_status: null, status: "active" });
     mockDbReturning.mockResolvedValue([{ id: "lead-1" }]);
@@ -504,10 +504,10 @@ describe("POST /send", () => {
     mockRefreshLeadStatusCurrent.mockResolvedValue(undefined);
   });
 
-  it("should exclude @arcadiaquest.org accounts from new campaign creation", async () => {
+  it("should exclude blocked-domain accounts from new campaign creation", async () => {
     mockListAccounts.mockResolvedValue([
-      { email: "blocked@arcadiaquest.org", warmup_status: 1, status: 1, signature: "<p>Sig</p>" },
-      { email: "active@growthagency.dev", warmup_status: 1, status: 1, signature: "<p>Sig</p>" },
+      { email: "blocked@arcadiaquest.org", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
+      { email: "active@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
     ]);
     mockNewCampaignFlow();
     const app = await createSendApp();
@@ -517,7 +517,58 @@ describe("POST /send", () => {
     expect(mockUpdateCampaign).toHaveBeenCalledWith(
       "test-instantly-key",
       "inst-camp-new",
-      expect.objectContaining({ email_list: ["active@growthagency.dev"] }),
+      expect.objectContaining({ email_list: ["active@example.com"] }),
+    );
+  });
+
+  it("should exclude @distribute.you and @growthagency.dev (pulled-from-cold) accounts", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "k@distribute.you", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
+      { email: "k@growthagency.dev", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
+      { email: "active@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
+    ]);
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(mockUpdateCampaign).toHaveBeenCalledWith(
+      "test-instantly-key",
+      "inst-camp-new",
+      expect.objectContaining({ email_list: ["active@example.com"] }),
+    );
+  });
+
+  it("should exclude under-warmed accounts (Health Score < 100)", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "warming@example.com", warmup_status: 1, status: 1, stat_warmup_score: 99 },
+      { email: "noscore@example.com", warmup_status: 1, status: 1 },
+    ]);
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
+    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(500);
+    expect(res.body.details).toContain("No active Instantly accounts available");
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+
+  it("should send from a fully-warmed (score 100) account", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "warming@example.com", warmup_status: 1, status: 1, stat_warmup_score: 95, signature: "<p>Sig</p>" },
+      { email: "warmed@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
+    ]);
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(mockUpdateCampaign).toHaveBeenCalledWith(
+      "test-instantly-key",
+      "inst-camp-new",
+      expect.objectContaining({ email_list: ["warmed@example.com"] }),
     );
   });
 
@@ -607,7 +658,7 @@ describe("POST /send", () => {
 
   it("should treat status 2 (active+warming) accounts as active", async () => {
     mockListAccounts.mockResolvedValue([
-      { email: "warming@test.com", warmup_status: 1, status: 2, signature: "<p>Sig</p>" },
+      { email: "warming@test.com", warmup_status: 1, status: 2, stat_warmup_score: 100, signature: "<p>Sig</p>" },
     ]);
     mockNewCampaignFlow();
     const app = await createSendApp();
@@ -638,7 +689,7 @@ describe("POST /send", () => {
   it("should only use active accounts and ignore inactive ones", async () => {
     mockListAccounts.mockResolvedValue([
       { email: "inactive@test.com", warmup_status: 0, status: 0 },
-      { email: "active@test.com", warmup_status: 1, status: 1, signature: "<p>Sig</p>" },
+      { email: "active@test.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
     ]);
     mockNewCampaignFlow();
     const app = await createSendApp();
