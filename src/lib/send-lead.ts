@@ -300,7 +300,12 @@ export async function createAndActivateCampaign(
   await updateInstantlyCampaign(apiKey, instantlyCampaign.id, {
     email_list: [account.email],
     ...(bcc && bcc.length > 0 ? { bcc_list: bcc } : {}),
-    open_tracking: true,
+    // Open tracking OFF: the open pixel is an invisible 1x1 tracking image —
+    // a recognized bulk-mail spam signal — and Apple Mail Privacy Protection
+    // pre-fetches it, so the "open" data is garbage anyway. Link tracking stays
+    // ON (functional redirects via the custom tracking domain) for reliable
+    // click data. See CLAUDE.md "Account selection" / deliverability notes.
+    open_tracking: false,
     link_tracking: true,
     insert_unsubscribe_header: true,
     stop_on_reply: true,
