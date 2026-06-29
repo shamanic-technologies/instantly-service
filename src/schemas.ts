@@ -214,6 +214,14 @@ export const SendRequestSchema = z
     lastName: z.string().optional(),
     company: z.string().optional(),
     variables: z.record(z.string(), z.string()).optional(),
+    timezone: z
+      .string()
+      .trim()
+      .refine(isValidIanaTimezone, "Invalid IANA timezone")
+      .optional()
+      .describe(
+        "Recipient's IANA timezone (e.g. America/New_York). Sets the Instantly campaign sending-schedule timezone so business-hours sends land in the lead's local time. Absent/invalid → America/Chicago default.",
+      ),
     subject: z.string().describe("Shared subject for all steps in the sequence"),
     bcc: z
       .array(z.string())

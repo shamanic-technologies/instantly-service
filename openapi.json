@@ -196,6 +196,10 @@
               "type": "string"
             }
           },
+          "timezone": {
+            "type": "string",
+            "description": "Recipient's IANA timezone (e.g. America/New_York). Sets the Instantly campaign sending-schedule timezone so business-hours sends land in the lead's local time. Absent/invalid → America/Chicago default."
+          },
           "subject": {
             "type": "string",
             "description": "Shared subject for all steps in the sequence"
