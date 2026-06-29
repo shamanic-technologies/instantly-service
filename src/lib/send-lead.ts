@@ -41,6 +41,14 @@ const BLOCKED_DOMAINS = [
   // live Vercel product domain (CTD cert blocked by the Vercel claim).
   "distribute.you",
   "growthagency.dev",
+  // TEMPORARY — CTD (custom tracking domain) TLS cert stuck on itrackly's side
+  // after these were freed from Vercel; blocked from sending until the cert
+  // issues. REMOVE each once `GET /accounts/ctd/status?host=inst.<domain>`
+  // returns ssl:true (then set tracking_domain_name on the accounts).
+  "salescoldemails.com",
+  "growthservice.org",
+  "salesmolt.com",
+  "pressbeat.io",
 ];
 
 /**
@@ -282,6 +290,7 @@ export async function createAndActivateCampaign(
   steps: SequenceStep[],
   lead: Lead,
   bcc?: string[],
+  timezone?: string,
 ): Promise<{ instantlyCampaignId: string; added: number }> {
   console.log(
     `[send-lead] Creating Instantly campaign "${campaignName}" with account ${account.email}`,
@@ -289,6 +298,7 @@ export async function createAndActivateCampaign(
   const instantlyCampaign = await createInstantlyCampaign(apiKey, {
     name: campaignName,
     steps,
+    timezone,
   });
   console.log(
     `[send-lead] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`,
@@ -342,6 +352,12 @@ export interface SendOptions {
   lead: Lead;
   /** Optional BCC recipients — set as the campaign's `bcc_list` (every step). */
   bcc?: string[];
+  /**
+   * Optional IANA timezone of the recipient (lead). Sets the Instantly campaign
+   * sending-schedule timezone so business-hours sends land in the prospect's
+   * local time. Falls back to America/Chicago when absent.
+   */
+  timezone?: string;
 }
 
 export interface SendSuccess {
@@ -392,6 +408,7 @@ export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult
     steps,
     opts.lead,
     opts.bcc,
+    opts.timezone,
   );
 
   return {

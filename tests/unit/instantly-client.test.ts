@@ -90,6 +90,37 @@ describe("instantly-client", () => {
     expect(options.headers.Authorization).toBe(`Bearer ${TEST_API_KEY}`);
   });
 
+  it("createCampaign schedules business hours on weekdays, default tz when none given", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: () => Promise.resolve({ id: "camp-1", name: "T", status: "draft", created_at: "", updated_at: "" }),
+    });
+    const { createCampaign } = await import("../../src/lib/instantly-client");
+    await createCampaign(TEST_API_KEY, { name: "T", steps: [{ subject: "s", bodyHtml: "<p>b</p>", daysSinceLastStep: 0 }] });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const sched = body.campaign_schedule.schedules[0];
+    expect(sched.timing).toEqual({ from: "08:00", to: "17:00" });
+    expect(sched.days).toEqual({ "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false });
+    expect(sched.timezone).toBe("America/Chicago");
+  });
+
+  it("createCampaign uses the supplied recipient timezone", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: () => Promise.resolve({ id: "camp-1", name: "T", status: "draft", created_at: "", updated_at: "" }),
+    });
+    const { createCampaign } = await import("../../src/lib/instantly-client");
+    await createCampaign(TEST_API_KEY, {
+      name: "T",
+      steps: [{ subject: "s", bodyHtml: "<p>b</p>", daysSinceLastStep: 0 }],
+      timezone: "America/New_York",
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.campaign_schedule.schedules[0].timezone).toBe("America/New_York");
+  });
+
   it("createCampaign should correctly shift delays for 3-step sequences", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
