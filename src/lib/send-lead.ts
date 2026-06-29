@@ -34,21 +34,60 @@ import {
  * even an "active" status is misleading.
  */
 const BLOCKED_DOMAINS = [
-  "arcadiaquest.org",
-  // Brand / product domains pulled from cold sending — never load new
-  // sequences onto these (already-loaded campaigns drain via their Instantly
-  // daily_limit). distribute.you = primary brand domain; growthagency.dev =
-  // live Vercel product domain (CTD cert blocked by the Vercel claim).
+  "arcadiaquest.org", // permanent
+
+  // ─── TEMPORARY FULL HALT — 2026-06-29 (remove when re-tested OK) ──────────
+  // Inbox-placement seed testing proved the ENTIRE current cold fleet lands in
+  // Gmail SPAM (0-4% Gmail inbox) across EVERY domain — independent of domain,
+  // warmup (Health Score 100), copy (clean plain-text tested), or auth
+  // (SPF+DKIM+DMARC all PASS). Root cause = shared-IP sending reputation that
+  // Gmail distrusts: Gandi `_mailcust.gandi.net` + Mailforge relay. NOT the
+  // domains themselves. Outlook placement is fine (~100% inbox).
+  //
+  // → New cold sends are HALTED on all current domains until the migration to
+  //   Google Workspace mailboxes (Primeforge — Gmail-trusted infra) is warmed
+  //   + seed-tested OK. Those new domains are NOT in this list, so they send
+  //   once imported + warmed.
+  // → daily_limit on Instantly is intentionally LEFT AS-IS (not zeroed) so
+  //   already-loaded campaigns keep draining on these domains.
+  // → RE-TEST inbox placement (Instantly inbox-placement test) before removing
+  //   ANY domain below. Do not un-block on a guess.
   "distribute.you",
+  "growthagency.agency",
+  "growthagency.bio",
+  "growthagency.ch",
+  "growthagency.click",
+  "growthagency.cloud",
   "growthagency.dev",
-  // TEMPORARY — CTD (custom tracking domain) TLS cert stuck on itrackly's side
-  // after these were freed from Vercel; blocked from sending until the cert
-  // issues. REMOVE each once `GET /accounts/ctd/status?host=inst.<domain>`
-  // returns ssl:true (then set tracking_domain_name on the accounts).
-  "salescoldemails.com",
+  "growthagency.diy",
+  "growthagency.email",
+  "growthagency.forum",
+  "growthagency.group",
+  "growthagency.life",
+  "growthagency.live",
+  "growthagency.media",
+  "growthagency.network",
+  "growthagency.news",
+  "growthagency.store",
+  "growthagency.studio",
   "growthservice.org",
-  "salesmolt.com",
+  "heydistribute.com",
+  "joindistribute.com",
+  "marketingagency.bio",
+  "marketingagency.email",
+  "marketingagency.forum",
+  "marketingagency.group",
+  "marketingagency.life",
+  "marketingagency.network",
+  "marketingagency.studio",
+  "outcaged.com",
+  "pressbeat.ai",
   "pressbeat.io",
+  "salescoldemails.com",
+  "salesmolt.com",
+  "teamdistribute.com",
+  "trialdistribute.com",
+  "yourdistribute.com",
 ];
 
 /**
