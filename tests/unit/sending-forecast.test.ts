@@ -147,4 +147,80 @@ describe("projectDailySchedule", () => {
     );
     expect(total).toBe(5); // 3 + 2 steps, all placed, none dropped, no tail
   });
+
+  describe("contiguous zero-fill", () => {
+    it("returns a gapless UTC-day series from asOf through the last scheduled day", () => {
+      // step 1 today (Wed 07-01), step 2 +3 → Sat 07-04 snaps to Mon 07-06.
+      const leads: PendingLead[] = [
+        { provisionedSteps: [1, 2], lastSentStep: null, lastSentAt: null },
+      ];
+      const days = projectDailySchedule(leads, wed);
+      expect(days.map((d) => d.date)).toEqual([
+        "2026-07-01",
+        "2026-07-02",
+        "2026-07-03",
+        "2026-07-04",
+        "2026-07-05",
+        "2026-07-06",
+      ]);
+      // no missing calendar days between first and last
+      const step = 86_400_000;
+      for (let i = 1; i < days.length; i++) {
+        const prev = new Date(`${days[i - 1].date}T00:00:00.000Z`).getTime();
+        const cur = new Date(`${days[i].date}T00:00:00.000Z`).getTime();
+        expect(cur - prev).toBe(step);
+      }
+    });
+
+    it("zero-fills a gap between two scheduled days", () => {
+      const leads: PendingLead[] = [
+        { provisionedSteps: [1, 2], lastSentStep: null, lastSentAt: null },
+      ];
+      const days = projectDailySchedule(leads, wed);
+      // 07-01 and 07-06 carry sends; the days between are real zero bars.
+      expect(days).toContainEqual({ date: "2026-07-01", scheduledCount: 1 });
+      expect(days).toContainEqual({ date: "2026-07-02", scheduledCount: 0 });
+      expect(days).toContainEqual({ date: "2026-07-03", scheduledCount: 0 });
+      expect(days).toContainEqual({ date: "2026-07-06", scheduledCount: 1 });
+    });
+
+    it("includes weekend days inside the range with count 0", () => {
+      const leads: PendingLead[] = [
+        { provisionedSteps: [1, 2], lastSentStep: null, lastSentAt: null },
+      ];
+      const days = projectDailySchedule(leads, wed);
+      // Sat 07-04 + Sun 07-05 present as zero bars (projection snaps off them).
+      const sat = days.find((d) => d.date === "2026-07-04");
+      const sun = days.find((d) => d.date === "2026-07-05");
+      expect(sat).toEqual({ date: "2026-07-04", scheduledCount: 0 });
+      expect(sun).toEqual({ date: "2026-07-05", scheduledCount: 0 });
+    });
+
+    it("zero-fills a leading gap when the first scheduled day is after asOf", () => {
+      // Contacted lead, next step +3 → Mon 07-06; nothing lands on asOf (07-01).
+      const leads: PendingLead[] = [
+        {
+          provisionedSteps: [2],
+          lastSentStep: 1,
+          lastSentAt: new Date("2026-07-01T09:00:00.000Z"),
+        },
+      ];
+      const days = projectDailySchedule(leads, wed);
+      expect(days[0]).toEqual({ date: "2026-07-01", scheduledCount: 0 });
+      expect(days[days.length - 1]).toEqual({ date: "2026-07-06", scheduledCount: 1 });
+      // every day from asOf through the send is present, all zero except the last
+      expect(days.map((d) => d.date)).toEqual([
+        "2026-07-01",
+        "2026-07-02",
+        "2026-07-03",
+        "2026-07-04",
+        "2026-07-05",
+        "2026-07-06",
+      ]);
+    });
+
+    it("empty input still returns [] (chart shows its empty state)", () => {
+      expect(projectDailySchedule([], wed)).toEqual([]);
+    });
+  });
 });
