@@ -1127,3 +1127,79 @@ registry.registerPath({
     },
   },
 });
+
+const InboxPlacementSchema = z
+  .object({
+    inboxPct: z.number().describe("Percentage of test emails landing in inbox"),
+    spamPct: z.number().describe("Percentage landing in spam"),
+    missingPct: z.number().describe("Percentage not delivered / missing"),
+    testedAt: z.string().describe("ISO8601 timestamp of the placement test"),
+  })
+  .openapi("InboxPlacement");
+
+const AccountHealthSchema = z
+  .object({
+    email: z.string().describe("Sending account email"),
+    domain: z
+      .string()
+      .nullable()
+      .describe("Sending domain (part after @); null if the email is malformed"),
+    status: z
+      .string()
+      .describe("Existing status representation — 'active' when Instantly status > 0, else 'inactive'"),
+    warmupScore: z
+      .number()
+      .int()
+      .nullable()
+      .describe("Instantly Health Score stat_warmup_score (0-100); null if unknown"),
+    dailyLimit: z
+      .number()
+      .int()
+      .nullable()
+      .describe("Per-account daily send limit; null if unknown"),
+    blocked: z
+      .boolean()
+      .describe(
+        "True when the account is NOT send-eligible per the live send gate (filterHealthyAccounts/classifyAccountBlock)",
+      ),
+    blockReason: z
+      .enum(["inactive", "under-warmed", "blacklisted-domain"])
+      .nullable()
+      .describe("Short reason when blocked (first failing gate); null when send-eligible"),
+    inboxPlacement: InboxPlacementSchema.nullable().describe(
+      "Inbox-placement breakdown — ALWAYS null in v1: the Instantly V2 API exposes no per-account placement property (only test-scoped, subscription-gated inbox-placement-test results). Never fabricated.",
+    ),
+  })
+  .openapi("AccountHealth");
+
+const AccountHealthResponseSchema = z
+  .object({
+    asOf: z.string().describe("ISO8601 timestamp of computation"),
+    accounts: z
+      .array(AccountHealthSchema)
+      .describe(
+        "Per-account deliverability health across the shared workspace. Always present; may be [].",
+      ),
+  })
+  .openapi("AccountHealthResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/audit/account-health",
+  summary: "Per-account deliverability health — identity, sending config, blocked state",
+  description:
+    "Platform-scoped (no org). Returns every sending account with its identity (email/domain), sending config (status, warmup Health Score, daily send limit), and blocked state (blocked + short blockReason, from the SAME gate the live send path uses — filterHealthyAccounts/classifyAccountBlock). `inboxPlacement` is null for every account: the Instantly V2 API does not expose inbox placement as a per-account property — placement exists only as test-scoped, subscription-gated, point-in-time inbox-placement-test results, so no reliable per-account current-placement figure is available. Never fabricated. Fails loud (500) on any missing source; no silent fallbacks.",
+  responses: {
+    200: {
+      description: "Per-account deliverability health",
+      content: {
+        "application/json": { schema: AccountHealthResponseSchema },
+      },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error (e.g. shared workspace key unavailable)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});

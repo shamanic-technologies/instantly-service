@@ -308,6 +308,33 @@ export function buildSequenceSteps(
 }
 
 /**
+ * Why an account is NOT send-eligible, in the exact precedence
+ * `filterHealthyAccounts` applies its gates:
+ *   - `inactive`           — `status <= 0` (Instantly's account state machine)
+ *   - `under-warmed`       — `stat_warmup_score < MIN_WARMUP_SCORE`
+ *   - `blacklisted-domain` — domain in `BLOCKED_DOMAINS`
+ * `null` ⇒ the account passes every gate (send-eligible).
+ */
+export type AccountBlockReason =
+  | "inactive"
+  | "under-warmed"
+  | "blacklisted-domain";
+
+/**
+ * Single source of truth for the live-send eligibility gate. Returns the FIRST
+ * failing reason (same order `filterHealthyAccounts` checks) or `null` when the
+ * account is sendable. Both `filterHealthyAccounts` (the send path) and the
+ * staff account-health audit view derive from this one function — no divergent
+ * second copy of the blacklist / warmup / status rules.
+ */
+export function classifyAccountBlock(a: Account): AccountBlockReason | null {
+  if (a.status <= 0) return "inactive";
+  if ((a.stat_warmup_score ?? 0) < MIN_WARMUP_SCORE) return "under-warmed";
+  if (isBlockedDomain(a.email)) return "blacklisted-domain";
+  return null;
+}
+
+/**
  * Filter the raw Instantly account list to senders we can send from now:
  *   - `status > 0` (active in Instantly's account state machine)
  *   - `stat_warmup_score >= MIN_WARMUP_SCORE` (fully-warmed Health Score only)
@@ -318,18 +345,15 @@ export function buildSequenceSteps(
  */
 export function filterHealthyAccounts(accounts: Account[]): Account[] {
   return accounts.filter((a) => {
-    if (a.status <= 0) return false;
-    if ((a.stat_warmup_score ?? 0) < MIN_WARMUP_SCORE) {
+    const reason = classifyAccountBlock(a);
+    if (reason === "under-warmed") {
       console.log(
         `[send-lead] Skipping under-warmed account: ${a.email} (score=${a.stat_warmup_score ?? "null"})`,
       );
-      return false;
-    }
-    if (isBlockedDomain(a.email)) {
+    } else if (reason === "blacklisted-domain") {
       console.log(`[send-lead] Skipping blocked-domain account: ${a.email}`);
-      return false;
     }
-    return true;
+    return reason === null;
   });
 }
 
