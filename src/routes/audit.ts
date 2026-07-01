@@ -8,6 +8,7 @@ import {
   projectDailySchedule,
   type PendingLead,
 } from "../lib/sending-forecast";
+import { buildAccountHealth } from "../lib/account-health";
 
 const router = Router();
 
@@ -85,6 +86,42 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] sending-forecast failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * GET /internal/audit/account-health
+ *
+ * Platform-scoped (no org). Returns per sending account its deliverability
+ * health: identity (email/domain), sending config (status/warmupScore/
+ * dailyLimit), and blocked state (blocked/blockReason from the SAME gate the
+ * live send path uses — `classifyAccountBlock`/`filterHealthyAccounts`).
+ *
+ * `inboxPlacement` is null for every account: the Instantly V2 API does not
+ * expose inbox placement as a per-account property (it exists only as
+ * test-scoped, subscription-gated, point-in-time inbox-placement-test results —
+ * see lib/account-health.ts). Never fabricated.
+ *
+ * Fails loud (500) on any missing source; no silent fallbacks.
+ */
+router.get("/account-health", async (_req: Request, res: Response) => {
+  try {
+    const asOf = new Date();
+
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "GET",
+      path: "/internal/audit/account-health",
+    });
+    const accounts = await listAccounts(apiKey);
+
+    res.json({
+      asOf: asOf.toISOString(),
+      accounts: buildAccountHealth(accounts),
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] account-health failed: ${message}`);
     res.status(500).json({ error: message });
   }
 });

@@ -19,9 +19,9 @@
  *     terminal.
  * So no local status write, no cost cancel, no contact delete is duplicated here.
  *
- * Kill-switch: env `STOP_ON_CLICK_ON_SIGNUP_ENABLED`, default OFF. Mirrors the
- * `DELETE_FINISHED_CONTACTS_ENABLED` convention — exactly "true" = ON, anything
- * else (incl. unset) = OFF, so a typo never arms it.
+ * Always-on: gated only by the brand's runtime goal (`current_goal === 'signup'`)
+ * and by fail-soft availability of brand-service. No env kill-switch — a click on
+ * a non-signup brand is a natural no-op, and any error leaves the sequence running.
  */
 
 import { resolveInstantlyApiKey } from "./key-client";
@@ -30,15 +30,6 @@ import { getCurrentGoals } from "./brand-client";
 
 /** The `current_goal` value that means "maximize signups". */
 export const SIGNUP_GOAL = "signup";
-
-/**
- * Env kill-switch. Stop-on-click runs ONLY when
- * `STOP_ON_CLICK_ON_SIGNUP_ENABLED` is exactly "true". Any other value —
- * including unset — means OFF (webhook behaves exactly as before).
- */
-export function isStopOnClickEnabled(): boolean {
-  return process.env.STOP_ON_CLICK_ON_SIGNUP_ENABLED === "true";
-}
 
 /**
  * True iff ANY brand in the set is currently maximizing signups. Multi-brand
@@ -57,17 +48,16 @@ export interface StopOnClickCampaign {
 }
 
 /**
- * Pause the lead's Instantly campaign iff the flag is ON and the campaign's
- * brand is maximizing signups. Fully fail-soft: any error (brand-service down,
- * key resolution, Instantly pause) is swallowed and logged — the sequence
- * simply continues. NEVER throws into the webhook promote path (a 5xx would
- * make Instantly auto-pause the webhook).
+ * Pause the lead's Instantly campaign iff the campaign's brand is maximizing
+ * signups. Fully fail-soft: any error (brand-service down, key resolution,
+ * Instantly pause) is swallowed and logged — the sequence simply continues.
+ * NEVER throws into the webhook promote path (a 5xx would make Instantly
+ * auto-pause the webhook).
  */
 export async function maybeStopOnClickForSignup(
   campaign: StopOnClickCampaign,
   leadEmail: string,
 ): Promise<void> {
-  if (!isStopOnClickEnabled()) return;
   if (!campaign.orgId) return;
   if (!campaign.brandIds || campaign.brandIds.length === 0) return;
 
