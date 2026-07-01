@@ -132,9 +132,17 @@ export function scheduleLead(lead: PendingLead, asOf: Date): Date[] {
 
 /**
  * Bucket every pending lead's projected step-sends into calendar days, from
- * today (asOf) forward. Returns chronological `ForecastDay[]`; `[]` when nothing
- * is scheduled. Horizon is bounded by the sequence structure (finite steps ×
- * finite gap) — there is no unbounded tail.
+ * today (asOf) forward, then ZERO-FILL every gap so the series is a CONTIGUOUS
+ * one-bar-per-calendar-day range (the ops chart renders exactly the array it
+ * receives and must not fabricate missing days client-side).
+ *
+ * Range = asOf's UTC date (inclusive) through the LAST scheduled day
+ * (inclusive). Every UTC calendar day in between — INCLUDING weekends, which the
+ * projection snaps sends off of, so Sat/Sun surface as real `scheduledCount:0`
+ * bars — is present. Returns chronological `ForecastDay[]`; `[]` when nothing is
+ * scheduled at all (empty forecast → chart shows its "nothing scheduled" empty
+ * state). Horizon is bounded by the sequence structure (finite steps × finite
+ * gap) — there is no unbounded tail.
  */
 export function projectDailySchedule(leads: PendingLead[], asOf: Date): ForecastDay[] {
   const buckets = new Map<string, number>();
@@ -144,7 +152,17 @@ export function projectDailySchedule(leads: PendingLead[], asOf: Date): Forecast
       buckets.set(key, (buckets.get(key) ?? 0) + 1);
     }
   }
-  return [...buckets.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([date, scheduledCount]) => ({ date, scheduledCount }));
+  if (buckets.size === 0) return [];
+
+  // Contiguous range: asOf's UTC day → the max scheduled day, both inclusive.
+  const lastKey = [...buckets.keys()].reduce((max, k) => (k > max ? k : max));
+  const start = new Date(`${dateKeyUTC(asOf)}T00:00:00.000Z`);
+  const end = new Date(`${lastKey}T00:00:00.000Z`);
+
+  const days: ForecastDay[] = [];
+  for (let d = start; d.getTime() <= end.getTime(); d = new Date(d.getTime() + MS_PER_DAY)) {
+    const key = dateKeyUTC(d);
+    days.push({ date: key, scheduledCount: buckets.get(key) ?? 0 });
+  }
+  return days;
 }
