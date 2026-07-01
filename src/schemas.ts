@@ -1188,7 +1188,7 @@ registry.registerPath({
   path: "/internal/audit/account-health",
   summary: "Per-account deliverability health — identity, sending config, blocked state",
   description:
-    "Platform-scoped (no org). Returns every sending account with its identity (email/domain), sending config (status, warmup Health Score, daily send limit), and blocked state (blocked + short blockReason, from the SAME gate the live send path uses — filterHealthyAccounts/classifyAccountBlock). `inboxPlacement` is null for every account: the Instantly V2 API does not expose inbox placement as a per-account property — placement exists only as test-scoped, subscription-gated, point-in-time inbox-placement-test results, so no reliable per-account current-placement figure is available. Never fabricated. Fails loud (500) on any missing source; no silent fallbacks.",
+    "Platform-scoped (no org). Returns every sending account with its identity (email/domain), sending config (status, warmup Health Score, daily send limit), and blocked state (blocked + short blockReason, from the SAME gate the live send path uses — filterHealthyAccounts/classifyAccountBlock). `inboxPlacement` is the latest inbox/spam/missing breakdown from our own Bronze/Silver/Gold placement history (recurring inbox-placement tests promoted to silver, latest test per account blended across ESP); null when the account has never been in a test. The Instantly V2 API exposes no standing per-account placement property — this figure is derived from real test results, never fabricated. Fails loud (500) on any missing REQUIRED source (account list); no silent fallbacks.",
   responses: {
     200: {
       description: "Per-account deliverability health",
@@ -1199,6 +1199,108 @@ registry.registerPath({
     401: { description: "Unauthorized" },
     500: {
       description: "Server error (e.g. shared workspace key unavailable)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const PlacementHistoryEntrySchema = z
+  .object({
+    testId: z.string().describe("Instantly inbox-placement test ID"),
+    inboxPct: z.number().describe("Percentage of seed emails landing in inbox"),
+    spamPct: z.number().describe("Percentage landing in spam"),
+    missingPct: z.number().describe("Percentage not delivered / missing"),
+    testedAt: z.string().describe("ISO8601 timestamp of the test"),
+  })
+  .openapi("PlacementHistoryEntry");
+
+const AccountHealthHistoryResponseSchema = z
+  .object({
+    email: z.string().describe("The queried sending account email"),
+    history: z
+      .array(PlacementHistoryEntrySchema)
+      .describe("Blended placement per test, newest first. [] when never tested."),
+  })
+  .openapi("AccountHealthHistoryResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/audit/account-health/history",
+  summary: "Per-account inbox-placement history (blended per test, newest first)",
+  description:
+    "Platform-scoped (no org). Returns the inbox-placement history for one sending account (`email` query param, required) — one blended inbox/spam/missing entry per inbox-placement test, newest first, from our silver placement results. Empty history when the account has never been in a test.",
+  request: {
+    query: z.object({
+      email: z.string().describe("Sending account email (required)"),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Per-account placement history",
+      content: {
+        "application/json": { schema: AccountHealthHistoryResponseSchema },
+      },
+    },
+    400: {
+      description: "Missing email query param",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const PlacementSyncAcceptedSchema = z
+  .object({
+    accepted: z.boolean(),
+    runId: z.string().describe("Background run identifier (watch logs)"),
+  })
+  .openapi("PlacementSyncAccepted");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/audit/placement-test/sync",
+  summary: "Poll Instantly placement tests + analytics → promote to silver",
+  description:
+    "Platform-scoped (no org). Polls every Instantly inbox-placement test and its analytics rows, mirrors them to bronze, and promotes to silver so account-health + history reflect the latest results. Read-only against Instantly (spends no test quota). 202 + background; watch logs for `placement-sync: done`.",
+  responses: {
+    202: {
+      description: "Accepted — sync runs in the background",
+      content: { "application/json": { schema: PlacementSyncAcceptedSchema } },
+    },
+    401: { description: "Unauthorized" },
+  },
+});
+
+const PlacementEnsureResponseSchema = z
+  .object({
+    existing: z.number().int().describe("Automated placement tests already present"),
+    created: z.number().int().describe("Automated placement tests created this call"),
+    perDay: z.number().int().describe("Target automated tests per day"),
+  })
+  .openapi("PlacementEnsureResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/audit/placement-test/ensure",
+  summary: "Ensure the recurring automated inbox-placement tests exist",
+  description:
+    "Platform-scoped (no org). Ensures PLACEMENT_TESTS_PER_DAY automated (type 2) inbox-placement tests exist, staggered across the day, so Instantly runs the fleet placement test on a schedule server-side. Idempotent (creates only the missing ones). SPENDS Growth-sub test quota → gated behind PLACEMENT_TESTS_ENABLED=true (returns 409 when disabled). Fails loud (500) on a create rejection (402 quota / 400).",
+  responses: {
+    200: {
+      description: "Schedule ensured",
+      content: { "application/json": { schema: PlacementEnsureResponseSchema } },
+    },
+    401: { description: "Unauthorized" },
+    409: {
+      description: "Placement scheduling disabled (PLACEMENT_TESTS_ENABLED != true)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Server error (e.g. Instantly 402 quota / 400)",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },

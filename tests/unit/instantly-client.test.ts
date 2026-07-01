@@ -625,4 +625,27 @@ describe("instantly-client", () => {
     expect(accounts).toHaveLength(100);
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
+
+  it("listAllCampaignAnalytics: one non-paginated GET /campaigns/analytics (no id), returns the whole array", async () => {
+    // Instantly returns ALL campaigns' analytics as a single flat array when id
+    // is omitted — this endpoint has no cursor, so exactly ONE call is made.
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve([
+          { campaign_id: "a", campaign_status: 1, emails_sent_count: 3 },
+          { campaign_id: "b", campaign_status: 2, emails_sent_count: 1 },
+        ]),
+    });
+
+    const { listAllCampaignAnalytics } = await import("../../src/lib/instantly-client");
+    const rows = await listAllCampaignAnalytics(TEST_API_KEY);
+
+    expect(rows).toHaveLength(2);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [url] = mockFetch.mock.calls[0];
+    expect(url).toContain("/campaigns/analytics");
+    expect(url).not.toContain("id=");
+  });
 });
