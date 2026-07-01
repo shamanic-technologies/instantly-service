@@ -271,7 +271,13 @@ router.get("/reconcile", async (_req: Request, res: Response) => {
           (SELECT COUNT(DISTINCT (campaign_id, lead_email))
              FROM instantly_events WHERE event_type = 'email_sent')::int
             AS "contactedDispatched",
-          (SELECT COUNT(*) FROM sequence_costs sc
+          -- Count STEP-SENDS, not cost rows. Each step provisions TWO
+          -- sequence_costs rows (account + domain), so COUNT(*) double-counts
+          -- vs Instantly's remaining = stepCount − sent (one per step). Collapse
+          -- the account/domain pair with DISTINCT (campaign, lead, step) so the
+          -- unit matches Instantly's derived pendingSends.
+          (SELECT COUNT(DISTINCT (sc.campaign_id, sc.lead_email, sc.step))
+             FROM sequence_costs sc
              WHERE sc.status = 'provisioned'
                AND EXISTS (
                  SELECT 1 FROM instantly_campaigns c
