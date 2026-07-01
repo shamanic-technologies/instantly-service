@@ -126,3 +126,38 @@ export async function resolveInstantlyApiKey(
   );
   return { key: result.key, keySource: result.keySource };
 }
+
+/**
+ * Resolve the PLATFORM (global, no-org) Instantly key via key-service's
+ * `GET /keys/platform/instantly/decrypt`. Platform keys are global — no
+ * orgId/userId — so this is the correct source for a platform-scoped fleet
+ * read (e.g. the sending-forecast endpoint). Only `x-api-key` + `X-Caller-*`
+ * headers are sent. Throws `KeyServiceError` (404 when the platform key is not
+ * configured) — fail loud, no fallback.
+ */
+export async function resolvePlatformInstantlyApiKey(
+  caller: CallerInfo,
+): Promise<string> {
+  const headers: Record<string, string> = {
+    "x-api-key": KEY_SERVICE_API_KEY,
+    "X-Caller-Service": CALLER_SERVICE,
+    "X-Caller-Method": caller.method,
+    "X-Caller-Path": caller.path,
+  };
+
+  const response = await fetch(
+    `${KEY_SERVICE_URL}/keys/platform/instantly/decrypt`,
+    { method: "GET", headers },
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new KeyServiceError(
+      response.status,
+      `key-service GET /keys/platform/instantly/decrypt failed: ${response.status} - ${errorText}`,
+    );
+  }
+
+  const result = (await response.json()) as { provider: string; key: string };
+  return result.key;
+}

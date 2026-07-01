@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { listAccounts } from "../lib/instantly-client";
+import { resolvePlatformInstantlyApiKey } from "../lib/key-client";
 import {
   computeCapacitySummary,
   projectDailySchedule,
@@ -9,25 +10,6 @@ import {
 } from "../lib/sending-forecast";
 
 const router = Router();
-
-/**
- * Resolve the SHARED cold-email workspace's Instantly key.
- *
- * This is a platform-scoped fleet view (no org), so it targets the shared
- * workspace directly via `INSTANTLY_API_KEY` — the same key the audit / heal /
- * cleanup CLIs use against prod (key-service resolves keys per-org and is not
- * reachable here without an org). Fail loud when unset: no key ⇒ no capacity
- * source ⇒ 500, never a fabricated zero.
- */
-function resolvePlatformInstantlyKey(): string {
-  const key = process.env.INSTANTLY_API_KEY?.trim();
-  if (!key) {
-    throw new Error(
-      "INSTANTLY_API_KEY not configured — cannot resolve the shared workspace for the sending forecast",
-    );
-  }
-  return key;
-}
 
 /**
  * Load every active-campaign lead that still carries un-sent (provisioned)
@@ -82,7 +64,10 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
   try {
     const asOf = new Date();
 
-    const apiKey = resolvePlatformInstantlyKey();
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "GET",
+      path: "/internal/audit/sending-forecast",
+    });
     const accounts = await listAccounts(apiKey);
     const capacity = computeCapacitySummary(accounts);
 
