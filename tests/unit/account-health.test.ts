@@ -82,12 +82,30 @@ describe("buildAccountHealth", () => {
     expect(buildAccountHealth([])).toEqual([]);
   });
 
-  it("inboxPlacement is null for every account (API exposes no per-account placement)", () => {
+  it("inboxPlacement is null when no placement map is provided (never tested)", () => {
     const rows = buildAccountHealth([
       acc({ email: "a@good.com" }),
       acc({ email: "b@distribute.you" }),
       acc({ email: "c@good.com", status: 0 }),
     ]);
     expect(rows.every((r) => r.inboxPlacement === null)).toBe(true);
+  });
+
+  it("injects placement from the map, null for accounts absent from it", () => {
+    const placement = new Map([
+      ["a@good.com", { inboxPct: 82, spamPct: 12, missingPct: 6, testedAt: "2026-06-30T09:00:00.000Z" }],
+    ]);
+    const rows = buildAccountHealth(
+      [acc({ email: "a@good.com" }), acc({ email: "b@good.com" })],
+      placement,
+    );
+    const byEmail = Object.fromEntries(rows.map((r) => [r.email, r]));
+    expect(byEmail["a@good.com"].inboxPlacement).toEqual({
+      inboxPct: 82,
+      spamPct: 12,
+      missingPct: 6,
+      testedAt: "2026-06-30T09:00:00.000Z",
+    });
+    expect(byEmail["b@good.com"].inboxPlacement).toBeNull();
   });
 });

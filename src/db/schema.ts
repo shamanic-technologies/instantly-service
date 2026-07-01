@@ -378,3 +378,80 @@ export const instantlyManualQualificationsRaw = pgTable(
     index("instantly_manual_qualifications_raw_qualified_at_idx").on(table.qualifiedAt),
   ],
 );
+
+// ─── Inbox-placement (deliverability) — Bronze / Silver ─────────────────────
+// Instantly inbox-placement TESTS are the only source of real per-account inbox
+// vs spam vs missing data (the V2 API exposes no standing per-account placement
+// field). A test is a point-in-time event; the recurring sync captures each test
+// + its analytics rows in bronze (append-only) and promotes them to a silver
+// per-(test, account, ESP) result. Gold (account-health) reads the latest test
+// per account. See lib/placement-promote.ts + CLAUDE.md "Inbox-placement history".
+
+// Bronze A: inbox-placement test objects we created / observed (one row per test).
+export const instantlyPlacementTestsRaw = pgTable(
+  "instantly_placement_tests_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    // Instantly's inbox-placement-test UUID.
+    testId: text("test_id").notNull(),
+    // Our ptid_ test_code marker (identifies tests this service created).
+    testCode: text("test_code"),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("instantly_placement_tests_raw_test_id_idx").on(table.testId),
+    index("instantly_placement_tests_raw_fetched_at_idx").on(table.fetchedAt),
+  ],
+);
+
+// Bronze B: raw inbox-placement-analytics rows (one per (test, sender, recipient)).
+// Dedupe on Instantly's analytics row id so re-polls of the same test are idempotent.
+export const instantlyPlacementAnalyticsRaw = pgTable(
+  "instantly_placement_analytics_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    analyticsId: text("analytics_id").notNull(),
+    testId: text("test_id").notNull(),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("instantly_placement_analytics_raw_analytics_id_idx").on(table.analyticsId),
+    index("instantly_placement_analytics_raw_test_id_idx").on(table.testId),
+  ],
+);
+
+// Silver: canonical placement result per (test, sending account, recipient ESP).
+// Aggregated across the seed recipients of that (test, account, ESP): inbox /
+// spam / missing counts + percentages, plus representative auth-pass flags.
+// `tested_at` is the test's run timestamp. Gold reads the latest test per account
+// (DISTINCT ON account_email ORDER BY tested_at DESC) and blends across ESP.
+export const instantlyPlacementResults = pgTable(
+  "instantly_placement_results",
+  {
+    testId: text("test_id").notNull(),
+    accountEmail: text("account_email").notNull(),
+    // Recipient ESP enum from Instantly (1=Google, 2=Outlook, 12/13=others).
+    recipientEsp: integer("recipient_esp").notNull(),
+    testedAt: timestamp("tested_at").notNull(),
+    seedTotal: integer("seed_total").notNull(),
+    inboxCount: integer("inbox_count").notNull(),
+    spamCount: integer("spam_count").notNull(),
+    missingCount: integer("missing_count").notNull(),
+    inboxPct: integer("inbox_pct").notNull(),
+    spamPct: integer("spam_pct").notNull(),
+    missingPct: integer("missing_pct").notNull(),
+    spfPass: boolean("spf_pass"),
+    dkimPass: boolean("dkim_pass"),
+    dmarcPass: boolean("dmarc_pass"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.testId, table.accountEmail, table.recipientEsp] }),
+    index("instantly_placement_results_account_tested_idx").on(
+      table.accountEmail,
+      table.testedAt,
+    ),
+  ],
+);

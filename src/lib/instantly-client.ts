@@ -546,3 +546,144 @@ export async function listEmails(
   }
   return results;
 }
+
+// ─── Inbox-placement (deliverability) tests + analytics ─────────────────────
+
+/** An inbox-placement test object (POST/GET /inbox-placement-tests). */
+export interface InboxPlacementTest {
+  id: string;
+  organization_id?: string;
+  name: string;
+  /** 1 = one-time, 2 = automated (recurring on `schedule`). */
+  type: number;
+  test_code?: string | null;
+  status?: number | null;
+  timestamp_created?: string;
+  timestamp_next_run?: string | null;
+  recipients?: string[];
+}
+
+/**
+ * One inbox-placement-analytics row: the result for a single seed email in a
+ * test. `record_type` 2 (received) rows carry `is_spam` + the sender/recipient
+ * ESP + SPF/DKIM/DMARC; `record_type` 1 (sent) rows are the dispatch side.
+ */
+export interface InboxPlacementAnalyticsRow {
+  id: string;
+  test_id: string;
+  is_spam: boolean | null;
+  sender_email: string | null;
+  sender_esp: number | null;
+  recipient_email: string | null;
+  recipient_esp: number | null;
+  spf_pass: boolean | null;
+  dkim_pass: boolean | null;
+  dmarc_pass: boolean | null;
+  record_type: number | null;
+  timestamp_created?: string;
+}
+
+/** One ESP option for `recipients_labels` (GET .../email-service-provider-options). */
+export interface EmailServiceProviderOption {
+  region: string;
+  sub_region?: string;
+  type: string;
+  esp: string;
+}
+
+/** Params for creating an inbox-placement test. */
+export interface CreateInboxPlacementTestParams {
+  name: string;
+  /** 1 = one-time, 2 = automated (recurring). */
+  type: number;
+  /** 1 = send from Instantly. */
+  sending_method: number;
+  email_subject: string;
+  email_body: string;
+  /** Seed recipient inboxes (Instantly-managed) to send to. */
+  emails: string[];
+  recipients_labels: EmailServiceProviderOption[];
+  text_only?: boolean;
+  test_code?: string;
+  run_immediately?: boolean;
+  status?: number;
+  schedule?: {
+    days: boolean[];
+    timing: { from: string };
+    timezone: string;
+  };
+}
+
+/** POST /inbox-placement-tests — create a one-time or automated placement test. */
+export async function createInboxPlacementTest(
+  apiKey: string,
+  params: CreateInboxPlacementTestParams,
+): Promise<InboxPlacementTest> {
+  return instantlyRequest<InboxPlacementTest>(apiKey, "/inbox-placement-tests", {
+    method: "POST",
+    body: params,
+  });
+}
+
+/**
+ * GET /inbox-placement-tests — ALL placement tests in the workspace, paginated
+ * via the `next_starting_after` cursor (default page size 10). See CLAUDE.md
+ * "Instantly client — pagination convention".
+ */
+export async function listInboxPlacementTests(
+  apiKey: string,
+  limit = 100,
+): Promise<InboxPlacementTest[]> {
+  const results: InboxPlacementTest[] = [];
+  let startingAfter: string | undefined;
+  for (;;) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (startingAfter) query.set("starting_after", startingAfter);
+    const response = await instantlyRequest<{
+      items: InboxPlacementTest[];
+      next_starting_after?: string;
+    }>(apiKey, `/inbox-placement-tests?${query.toString()}`);
+    const items = response.items ?? [];
+    results.push(...items);
+    if (!response.next_starting_after || items.length === 0) break;
+    startingAfter = response.next_starting_after;
+  }
+  return results;
+}
+
+/**
+ * GET /inbox-placement-analytics?test_id=X — ALL analytics rows for one test,
+ * paginated via `next_starting_after`. Instantly silently returns an empty list
+ * for `limit > 100`.
+ */
+export async function listInboxPlacementAnalytics(
+  apiKey: string,
+  testId: string,
+  limit = 100,
+): Promise<InboxPlacementAnalyticsRow[]> {
+  const results: InboxPlacementAnalyticsRow[] = [];
+  let startingAfter: string | undefined;
+  for (;;) {
+    const query = new URLSearchParams({ test_id: testId, limit: String(limit) });
+    if (startingAfter) query.set("starting_after", startingAfter);
+    const response = await instantlyRequest<{
+      items: InboxPlacementAnalyticsRow[];
+      next_starting_after?: string;
+    }>(apiKey, `/inbox-placement-analytics?${query.toString()}`);
+    const items = response.items ?? [];
+    results.push(...items);
+    if (!response.next_starting_after || items.length === 0) break;
+    startingAfter = response.next_starting_after;
+  }
+  return results;
+}
+
+/** GET /inbox-placement-tests/email-service-provider-options — ESP label choices. */
+export async function getEmailServiceProviderOptions(
+  apiKey: string,
+): Promise<EmailServiceProviderOption[]> {
+  const response = await instantlyRequest<
+    EmailServiceProviderOption[] | { items: EmailServiceProviderOption[] }
+  >(apiKey, "/inbox-placement-tests/email-service-provider-options");
+  return Array.isArray(response) ? response : (response.items ?? []);
+}
