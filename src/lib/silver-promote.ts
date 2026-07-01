@@ -191,7 +191,7 @@ async function updateReplyClassification(
  * Step 1's costs were inserted as provisioned at /send time (POST /send no
  * longer marks them actual upfront), so this handler runs for every step.
  */
-async function handleEmailSent(
+export async function handleEmailSent(
   campaign: CampaignRow,
   leadEmail: string,
   step: number,

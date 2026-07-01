@@ -158,9 +158,24 @@ function metric(
 
 /**
  * Pair each local count with its Instantly counterpart (and the `delta`). Order
- * is stable for the dashboard. Every metric — including `pendingSends`, which is
- * derived from Instantly's sequence lengths minus sent — has a true Instantly
- * counterpart, so all five carry a real `delta`.
+ * is stable for the dashboard.
+ *
+ * Only the THREE truly-comparable facts are emitted — `activeCampaigns`,
+ * `emailsSent`, `pendingSends`. Two former rows were REMOVED because their two
+ * sides measure different quantities, so their delta is a structural artifact,
+ * not drift an operator can act on:
+ *
+ *   - `contactedDispatched` ("Leads dispatched"): Instantly's fleet-aggregate
+ *     `contacted_count` tracks per-step DISPATCHES (≈ `emails_sent_count`), NOT
+ *     distinct leads, while the local side counts distinct `(campaign, lead)`.
+ *     Comparing distinct-leads vs dispatch-count always shows a huge fake gap.
+ *   - `contactsStored`: local counts ALL `instantly_campaigns` rows ever created
+ *     (never decrements), while Instantly's `leads_count` is CURRENTLY-stored and
+ *     drops as the armed finished-contact cleanup deletes contacts to reclaim
+ *     quota — so the delta is guaranteed-positive by design, not drift.
+ *
+ * The two counts are still computed (snapshot + local SQL) but no longer paired
+ * into the reconcile output.
  */
 export function buildReconciliation(
   local: LocalReconcileCounts,
@@ -169,8 +184,6 @@ export function buildReconciliation(
   return [
     metric("activeCampaigns", "Active campaigns", local.activeCampaigns, instantly.activeCampaigns),
     metric("emailsSent", "Emails sent", local.emailsSent, instantly.emailsSent),
-    metric("contactedDispatched", "Leads dispatched", local.contactedDispatched, instantly.contactedDispatched),
-    metric("contactsStored", "Contacts stored", local.contactsStored, instantly.contactsStored),
     metric("pendingSends", "Pending sends (forecast volume)", local.pendingSends, instantly.pendingSends),
   ];
 }

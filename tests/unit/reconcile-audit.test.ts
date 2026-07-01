@@ -118,15 +118,16 @@ describe("buildReconciliation", () => {
     pendingSends: 1502,
   };
 
-  it("emits five metrics in stable order with local, instantly, and delta = local - instantly", () => {
+  it("emits ONLY the three comparable metrics in stable order (dispatched + stored dropped)", () => {
     const metrics = buildReconciliation(local, instantly);
     expect(metrics.map((m) => m.key)).toEqual([
       "activeCampaigns",
       "emailsSent",
-      "contactedDispatched",
-      "contactsStored",
       "pendingSends",
     ]);
+    // The two structurally non-comparable rows are gone from the output.
+    expect(metrics.map((m) => m.key)).not.toContain("contactedDispatched");
+    expect(metrics.map((m) => m.key)).not.toContain("contactsStored");
     expect(metrics[0]).toEqual({
       key: "activeCampaigns",
       label: "Active campaigns",
@@ -136,7 +137,6 @@ describe("buildReconciliation", () => {
       sourceOfTruth: "instantly",
     });
     expect(metrics[1].delta).toBe(32); // 41230 - 41198
-    expect(metrics[3].delta).toBe(12); // 812 - 800 (cleanup drift)
   });
 
   it("pendingSends now reconciles against Instantly's derived count (real delta)", () => {
