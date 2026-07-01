@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
@@ -18,11 +18,7 @@ vi.mock("../../src/lib/instantly-client", () => ({
   updateCampaignStatus: (...args: unknown[]) => mockUpdateCampaignStatus(...args),
 }));
 
-import {
-  isStopOnClickEnabled,
-  anyGoalIsSignup,
-  maybeStopOnClickForSignup,
-} from "../../src/lib/stop-on-click";
+import { anyGoalIsSignup, maybeStopOnClickForSignup } from "../../src/lib/stop-on-click";
 
 const campaign = {
   instantlyCampaignId: "inst-camp-1",
@@ -31,19 +27,6 @@ const campaign = {
 };
 
 describe("stop-on-click pure helpers", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("isStopOnClickEnabled: true only for exactly 'true'", () => {
-    vi.stubEnv("STOP_ON_CLICK_ON_SIGNUP_ENABLED", "true");
-    expect(isStopOnClickEnabled()).toBe(true);
-    vi.stubEnv("STOP_ON_CLICK_ON_SIGNUP_ENABLED", "false");
-    expect(isStopOnClickEnabled()).toBe(false);
-    vi.stubEnv("STOP_ON_CLICK_ON_SIGNUP_ENABLED", "");
-    expect(isStopOnClickEnabled()).toBe(false);
-  });
-
   it("anyGoalIsSignup: ANY-brand semantics", () => {
     expect(anyGoalIsSignup(["signup"])).toBe(true);
     expect(anyGoalIsSignup(["purchase"])).toBe(false);
@@ -61,19 +44,7 @@ describe("maybeStopOnClickForSignup", () => {
     mockUpdateCampaignStatus.mockResolvedValue({});
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("flag OFF: no goal fetch, no pause", async () => {
-    vi.stubEnv("STOP_ON_CLICK_ON_SIGNUP_ENABLED", "false");
-    await maybeStopOnClickForSignup(campaign, "lead@x.com");
-    expect(mockGetCurrentGoals).not.toHaveBeenCalled();
-    expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
-  });
-
-  it("flag ON + brand goal signup: pauses the Instantly campaign", async () => {
-    vi.stubEnv("STOP_ON_CLICK_ON_SIGNUP_ENABLED", "true");
+  it("brand goal signup: pauses the Instantly campaign", async () => {
     mockGetCurrentGoals.mockResolvedValue(["signup"]);
 
     await maybeStopOnClickForSignup(campaign, "lead@x.com");
@@ -82,8 +53,7 @@ describe("maybeStopOnClickForSignup", () => {
     expect(mockUpdateCampaignStatus).toHaveBeenCalledWith("api-key-1", "inst-camp-1", "paused");
   });
 
-  it("flag ON + brand goal purchase: no pause", async () => {
-    vi.stubEnv("STOP_ON_CLICK_ON_SIGNUP_ENABLED", "true");
+  it("brand goal purchase: no pause", async () => {
     mockGetCurrentGoals.mockResolvedValue(["purchase"]);
 
     await maybeStopOnClickForSignup(campaign, "lead@x.com");
@@ -91,8 +61,7 @@ describe("maybeStopOnClickForSignup", () => {
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
   });
 
-  it("flag ON + multi-brand, one signup: pauses (ANY)", async () => {
-    vi.stubEnv("STOP_ON_CLICK_ON_SIGNUP_ENABLED", "true");
+  it("multi-brand, one signup: pauses (ANY)", async () => {
     mockGetCurrentGoals.mockResolvedValue(["purchase", "signup"]);
 
     await maybeStopOnClickForSignup(
@@ -103,26 +72,21 @@ describe("maybeStopOnClickForSignup", () => {
     expect(mockUpdateCampaignStatus).toHaveBeenCalledTimes(1);
   });
 
-  it("flag ON + brand-service throws: no pause, no throw (fail-soft)", async () => {
-    vi.stubEnv("STOP_ON_CLICK_ON_SIGNUP_ENABLED", "true");
+  it("brand-service throws: no pause, no throw (fail-soft)", async () => {
     mockGetCurrentGoals.mockRejectedValue(new Error("brand-service down"));
 
     await expect(maybeStopOnClickForSignup(campaign, "lead@x.com")).resolves.toBeUndefined();
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
   });
 
-  it("flag ON + no brandIds: no pause", async () => {
-    vi.stubEnv("STOP_ON_CLICK_ON_SIGNUP_ENABLED", "true");
-
+  it("no brandIds: no pause", async () => {
     await maybeStopOnClickForSignup({ ...campaign, brandIds: [] }, "lead@x.com");
 
     expect(mockGetCurrentGoals).not.toHaveBeenCalled();
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
   });
 
-  it("flag ON + null orgId: no pause", async () => {
-    vi.stubEnv("STOP_ON_CLICK_ON_SIGNUP_ENABLED", "true");
-
+  it("null orgId: no pause", async () => {
     await maybeStopOnClickForSignup({ ...campaign, orgId: null }, "lead@x.com");
 
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
