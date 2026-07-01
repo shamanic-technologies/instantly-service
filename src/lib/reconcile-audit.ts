@@ -12,9 +12,11 @@
  * throttling, pauses). So the forecast timing cannot be "reconciled". What CAN
  * be reconciled are the countable facts feeding it (active campaigns, emails
  * sent, leads dispatched, contacts stored) — those have a true counterpart on
- * both sides. `pendingSends` (the forecast's volume magnitude) is exposed too
- * but as LOCAL-ONLY: Instantly does not expose a remaining-step count, so there
- * is no honest counterpart to diff it against.
+ * both sides. `pendingSends` (the forecast's volume magnitude) reconciles too:
+ * Instantly does not expose a ready-made remaining-step FIELD, but it exposes
+ * everything to DERIVE it — each campaign's `sequences` carry the loaded
+ * followup steps (`stepCount`) and analytics carry `emails_sent_count`, so
+ * (since one campaign = one lead) Instantly's remaining = `stepCount − sent`.
  *
  * Source-of-truth per metric: wherever Instantly performs the terminal action
  * (runs the campaign, dispatches the email, stores the contact against the plan
@@ -22,7 +24,7 @@
  * `delta` (local − instantly) is the drift our own records have accumulated.
  */
 
-import type { CampaignAnalytics } from "./instantly-client";
+import type { CampaignAnalytics, CampaignSequenceInfo } from "./instantly-client";
 
 /** Instantly's campaign lifecycle code for an ACTIVE campaign. */
 const INSTANTLY_ACTIVE_STATUS = 1;
@@ -47,9 +49,11 @@ export interface InstantlyReconcileCounts {
   emailsSent: number;
   contactedDispatched: number;
   contactsStored: number;
+  /** Remaining un-sent steps across active campaigns, derived `stepCount − sent`. */
+  pendingSends: number;
 }
 
-export type SourceOfTruth = "instantly" | "local";
+export type SourceOfTruth = "instantly";
 
 export interface ReconcileMetric {
   /** Stable machine key. */
@@ -58,68 +62,92 @@ export interface ReconcileMetric {
   label: string;
   /** Our local number. */
   local: number;
-  /** Instantly's number, or `null` when Instantly exposes no counterpart. */
-  instantly: number | null;
-  /** `local − instantly`; `null` when there is no Instantly counterpart. */
-  delta: number | null;
-  /** Which side is authoritative (`local` = no Instantly counterpart exists). */
+  /** Instantly's number. */
+  instantly: number;
+  /** `local − instantly` — the drift. */
+  delta: number;
+  /** Authoritative side. Instantly runs the sends, so it is SoT for every metric. */
   sourceOfTruth: SourceOfTruth;
 }
 
 /**
- * Aggregate the fleet-wide per-campaign analytics array into the four
- * reconcilable Instantly counts. `activeCampaigns` counts campaigns whose
- * lifecycle code is ACTIVE (1); the other three sum across ALL campaigns
- * (their cumulative all-time counters), matching the local all-time totals.
+ * Instantly's own remaining-sends count, derived per campaign. For each ACTIVE
+ * campaign, remaining = `stepCount − emailsSent` (one campaign = one lead, so
+ * `emails_sent_count` is how many sequence steps already fired), floored at 0.
+ * A campaign present in the sequence list but absent from analytics contributes
+ * its full `stepCount` (nothing sent yet). Non-active campaigns are excluded —
+ * they send no more steps (mirrors the local `pendingSends` active gate).
+ */
+export function computeInstantlyPendingSends(
+  campaigns: CampaignSequenceInfo[],
+  sentByCampaign: Map<string, number>,
+): number {
+  let total = 0;
+  for (const c of campaigns) {
+    if (c.status !== INSTANTLY_ACTIVE_STATUS) continue;
+    const sent = sentByCampaign.get(c.id) ?? 0;
+    total += Math.max(0, c.stepCount - sent);
+  }
+  return total;
+}
+
+/**
+ * Aggregate the fleet-wide analytics array + campaign sequence lengths into the
+ * five reconcilable Instantly counts. `activeCampaigns` counts campaigns whose
+ * lifecycle code is ACTIVE (1); `emailsSent`/`contactedDispatched`/
+ * `contactsStored` sum across ALL campaigns (cumulative all-time counters,
+ * matching the local all-time totals); `pendingSends` is derived per active
+ * campaign as `stepCount − sent` (see `computeInstantlyPendingSends`).
  */
 export function summarizeInstantlyCounts(
   rows: CampaignAnalytics[],
+  campaigns: CampaignSequenceInfo[],
 ): InstantlyReconcileCounts {
   let activeCampaigns = 0;
   let emailsSent = 0;
   let contactedDispatched = 0;
   let contactsStored = 0;
+  const sentByCampaign = new Map<string, number>();
   for (const r of rows) {
     if (r.campaign_status === INSTANTLY_ACTIVE_STATUS) activeCampaigns += 1;
     emailsSent += r.emails_sent_count;
     contactedDispatched += r.contacted_count;
     contactsStored += r.leads_count;
+    sentByCampaign.set(r.campaign_id, r.emails_sent_count);
   }
-  return { activeCampaigns, emailsSent, contactedDispatched, contactsStored };
+  return {
+    activeCampaigns,
+    emailsSent,
+    contactedDispatched,
+    contactsStored,
+    pendingSends: computeInstantlyPendingSends(campaigns, sentByCampaign),
+  };
 }
 
 function metric(
   key: string,
   label: string,
   local: number,
-  instantly: number | null,
-  sourceOfTruth: SourceOfTruth,
+  instantly: number,
 ): ReconcileMetric {
-  return {
-    key,
-    label,
-    local,
-    instantly,
-    delta: instantly === null ? null : local - instantly,
-    sourceOfTruth,
-  };
+  return { key, label, local, instantly, delta: local - instantly, sourceOfTruth: "instantly" };
 }
 
 /**
  * Pair each local count with its Instantly counterpart (and the `delta`). Order
- * is stable for the dashboard. `pendingSends` is emitted last, local-only
- * (Instantly exposes no remaining-step count), so its `instantly`/`delta` are
- * `null` and it renders as a single-number row.
+ * is stable for the dashboard. Every metric — including `pendingSends`, which is
+ * derived from Instantly's sequence lengths minus sent — has a true Instantly
+ * counterpart, so all five carry a real `delta`.
  */
 export function buildReconciliation(
   local: LocalReconcileCounts,
   instantly: InstantlyReconcileCounts,
 ): ReconcileMetric[] {
   return [
-    metric("activeCampaigns", "Active campaigns", local.activeCampaigns, instantly.activeCampaigns, "instantly"),
-    metric("emailsSent", "Emails sent", local.emailsSent, instantly.emailsSent, "instantly"),
-    metric("contactedDispatched", "Leads dispatched", local.contactedDispatched, instantly.contactedDispatched, "instantly"),
-    metric("contactsStored", "Contacts stored", local.contactsStored, instantly.contactsStored, "instantly"),
-    metric("pendingSends", "Pending sends (forecast volume)", local.pendingSends, null, "local"),
+    metric("activeCampaigns", "Active campaigns", local.activeCampaigns, instantly.activeCampaigns),
+    metric("emailsSent", "Emails sent", local.emailsSent, instantly.emailsSent),
+    metric("contactedDispatched", "Leads dispatched", local.contactedDispatched, instantly.contactedDispatched),
+    metric("contactsStored", "Contacts stored", local.contactsStored, instantly.contactsStored),
+    metric("pendingSends", "Pending sends (forecast volume)", local.pendingSends, instantly.pendingSends),
   ];
 }
