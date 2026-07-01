@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
 import express from "express";
 
@@ -15,6 +15,12 @@ vi.mock("../../src/lib/instantly-client", () => ({
   listAccounts: (...args: unknown[]) => mockListAccounts(...args),
 }));
 
+const mockResolvePlatformKey = vi.fn();
+vi.mock("../../src/lib/key-client", () => ({
+  resolvePlatformInstantlyApiKey: (...args: unknown[]) =>
+    mockResolvePlatformKey(...args),
+}));
+
 async function makeApp() {
   const router = (await import("../../src/routes/audit")).default;
   const app = express();
@@ -24,15 +30,9 @@ async function makeApp() {
 }
 
 describe("GET /internal/audit/account-health", () => {
-  const OLD_KEY = process.env.INSTANTLY_API_KEY;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.INSTANTLY_API_KEY = "test-key";
-  });
-
-  afterEach(() => {
-    process.env.INSTANTLY_API_KEY = OLD_KEY;
+    mockResolvePlatformKey.mockResolvedValue("test-key");
   });
 
   it("returns the locked shape — all scalar fields present + typed, inboxPlacement null", async () => {
@@ -90,15 +90,17 @@ describe("GET /internal/audit/account-health", () => {
     expect(typeof res.body.asOf).toBe("string");
   });
 
-  it("fails loud (500) when the shared workspace key is unset — no fabricated list", async () => {
-    delete process.env.INSTANTLY_API_KEY;
+  it("fails loud (500) when the platform key cannot be resolved — no fabricated list", async () => {
+    mockResolvePlatformKey.mockRejectedValue(
+      new Error("key-service GET /keys/platform/instantly/decrypt failed: 404"),
+    );
     mockListAccounts.mockResolvedValue([]);
 
     const app = await makeApp();
     const res = await request(app).get("/internal/audit/account-health");
 
     expect(res.status).toBe(500);
-    expect(res.body.error).toMatch(/INSTANTLY_API_KEY/);
+    expect(res.body.error).toMatch(/key-service/);
     expect(mockListAccounts).not.toHaveBeenCalled();
   });
 

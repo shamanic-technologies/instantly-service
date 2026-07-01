@@ -9,7 +9,6 @@ import {
   type PendingLead,
 } from "../lib/sending-forecast";
 import { buildAccountHealth } from "../lib/account-health";
-import { resolvePlatformInstantlyKey } from "../lib/platform-key";
 
 const router = Router();
 
@@ -110,7 +109,10 @@ router.get("/account-health", async (_req: Request, res: Response) => {
   try {
     const asOf = new Date();
 
-    const apiKey = resolvePlatformInstantlyKey();
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "GET",
+      path: "/internal/audit/account-health",
+    });
     const accounts = await listAccounts(apiKey);
 
     res.json({
