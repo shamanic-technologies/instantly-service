@@ -148,6 +148,13 @@
       "when": 1775260800000,
       "tag": "0020_platform_send_dedupe",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1775347200000,
+      "tag": "0021_placement_inbox_history",
+      "breakpoints": true
     }
   ]
 }

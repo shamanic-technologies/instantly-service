@@ -9,6 +9,13 @@ import {
   type PendingLead,
 } from "../lib/sending-forecast";
 import { buildAccountHealth } from "../lib/account-health";
+import {
+  syncPlacement,
+  ensurePlacementSchedule,
+  fetchLatestPlacementByAccount,
+  fetchPlacementHistory,
+  isPlacementSchedulingEnabled,
+} from "../lib/placement-sync";
 
 const router = Router();
 
@@ -113,15 +120,98 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       method: "GET",
       path: "/internal/audit/account-health",
     });
-    const accounts = await listAccounts(apiKey);
+    // Account list (Instantly) + latest placement per account (our silver) run
+    // independently — parallelize. Placement is best-effort per contract (null
+    // when never tested); a live account list is required (fail loud).
+    const [accounts, placementByEmail] = await Promise.all([
+      listAccounts(apiKey),
+      fetchLatestPlacementByAccount(),
+    ]);
 
     res.json({
       asOf: asOf.toISOString(),
-      accounts: buildAccountHealth(accounts),
+      accounts: buildAccountHealth(accounts, placementByEmail),
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] account-health failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * GET /internal/audit/account-health/history?email=<sender>
+ *
+ * Platform-scoped. Per-account inbox-placement history (one blended entry per
+ * test, newest first) from our silver placement results. Empty array when the
+ * account has never been in a test. `email` query param is required.
+ */
+router.get("/account-health/history", async (req: Request, res: Response) => {
+  try {
+    const email = typeof req.query.email === "string" ? req.query.email.trim() : "";
+    if (!email) {
+      return res.status(400).json({ error: "email query param is required" });
+    }
+    const history = await fetchPlacementHistory(email);
+    res.json({ email, history });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] account-health/history failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * POST /internal/audit/placement-test/sync
+ *
+ * Platform-scoped. Polls every Instantly inbox-placement test + its analytics
+ * rows, mirrors them to bronze, and promotes to silver (so account-health +
+ * history reflect the latest results). Read-only against Instantly (spends no
+ * quota) — safe to run any time. 202 + background (the sweep can outlast the
+ * proxy timeout); watch logs for `placement-sync: done`.
+ */
+router.post("/placement-test/sync", async (_req: Request, res: Response) => {
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, runId });
+  console.log(`[audit] placement-sync: dispatched run=${runId}`);
+
+  (async () => {
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/placement-test/sync",
+    });
+    const summary = await syncPlacement(apiKey);
+    console.log(`[audit] placement-sync: done run=${runId} ${JSON.stringify(summary)}`);
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] placement-sync run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/audit/placement-test/ensure
+ *
+ * Platform-scoped. Ensures the recurring automated placement tests exist (so
+ * Instantly runs the fleet placement test on a schedule server-side). SPENDS
+ * Growth-sub quota → gated behind `PLACEMENT_TESTS_ENABLED=true`; returns 409
+ * when disabled. Fails loud on a create rejection (402 quota / 400).
+ */
+router.post("/placement-test/ensure", async (_req: Request, res: Response) => {
+  try {
+    if (!isPlacementSchedulingEnabled()) {
+      return res.status(409).json({
+        error: "placement scheduling disabled — set PLACEMENT_TESTS_ENABLED=true to arm",
+      });
+    }
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/placement-test/ensure",
+    });
+    const summary = await ensurePlacementSchedule(apiKey);
+    res.json({ ...summary });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] placement-test/ensure failed: ${message}`);
     res.status(500).json({ error: message });
   }
 });

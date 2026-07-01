@@ -208,6 +208,21 @@ The nightly reconcile (`reconcileAll` → `reconcileOneCampaign`, `src/lib/recon
 railway variables -s instantly-service --set "DELETE_FINISHED_CONTACTS_ENABLED=false"
 ```
 
+## Inbox-placement history (Bronze/Silver/Gold) — per-account deliverability
+
+**Feasibility (verified against the Instantly V2 API docs, 2026-07-01):** the V2 API exposes **NO standing per-account inbox-placement property**. The account object (`GET /accounts`) carries none. Placement exists ONLY as the output of an **inbox-placement TEST** — a point-in-time, subscription-gated (Growth Inbox Placement, else 402) event. `GET /inbox-placement-analytics?test_id=X` returns one row per **(test, sender, recipient)**: `is_spam` boolean + `recipient_esp` + SPF/DKIM/DMARC, **no per-account inbox/spam/missing percentage**. So the per-account figure is DERIVED by us, not read off the account. Do NOT re-add an "inboxPlacement from the account object" path — it does not exist.
+
+**B/S/G pipeline** (`src/lib/placement-promote.ts` pure + `src/lib/placement-sync.ts` IO):
+- **Bronze** (append-only): `instantly_placement_tests_raw` (one row/test), `instantly_placement_analytics_raw` (raw rows, deduped on Instantly's `analytics_id`).
+- **Silver**: `instantly_placement_results`, PK `(test_id, account_email, recipient_esp)`. `aggregatePlacementRows` counts per (account, ESP): `inbox = received & !is_spam`, `spam = received & is_spam`, `seedTotal = distinct recipients`, `missing = seedTotal − inbox − spam`. Rows missing `sender_email`/`recipient_esp` are unattributable → skipped. **Per-ESP grain is deliberate** (Gmail-spam vs Outlook-fine is the whole deliverability finding — never blend it away in silver).
+- **Gold**: `GET /internal/audit/account-health` injects the **latest test per account, blended across ESP** (`blendEspRows` — pooled counts, newest `testedAt`, null when never tested / seedTotal 0, never a fabricated 0%). `GET /internal/audit/account-health/history?email=` = per-test series. `buildAccountHealth(accounts, placementByEmail)` stays a pure mapper; the route does the silver read.
+
+**Ingestion + cadence:**
+- `POST /internal/audit/placement-test/sync` — polls tests + analytics → bronze → silver. **Read-only against Instantly (spends no quota)**, 202 + background (`placement-sync: done`). Idempotent/resumable (bronze dedupe + silver upsert).
+- `POST /internal/audit/placement-test/ensure` — maintains `PLACEMENT_TESTS_PER_DAY` (=4) **automated (type 2)** tests staggered across the day, so **Instantly runs them server-side (no maison cron)**. Idempotent (creates only the missing ones, matched by the `ptid_autohealth` `test_code` prefix). **SPENDS Growth-sub quota** → gated behind **`PLACEMENT_TESTS_ENABLED=true`** (default OFF → 409). Fail loud on 402/400.
+
+**⚠️ Two EMPIRICAL unknowns to validate BEFORE arming `PLACEMENT_TESTS_ENABLED=true`** (need the real platform key + Growth sub): (1) **sender-account selection** — the create body has no explicit "sender accounts" field; confirm one test actually sends from the whole fleet (per-`sender_email` rows) vs needing tags/campaign scoping; (2) **type-2 schedule granularity** — confirm an automated test fires once/day per its `schedule` (the staggering assumes 1×/day/test → 4 tests = 4×/day). Also confirm `missing` is derivable (sent-side rows carrying `recipient_esp`). Cadence lives in the single `PLACEMENT_TESTS_PER_DAY` constant — drop to 2 if the Growth quota can't absorb 4 (4×/day ≈ 120 tests/mo). **Cost:** placement runs on a FLAT Growth subscription (not per-unit metered to us) → no runs-service cost declared, consistent with other flat-sub external calls. If Instantly moves to per-test billing, add a costs-catalog row + a platform-run per created test.
+
 ## Data layering — Bronze / Silver / Gold
 
 Three layers, doctrine per `~/.claude/skills/data-layering/SKILL.md`:
