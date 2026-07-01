@@ -106,4 +106,43 @@ describe("key-client", () => {
     const [, options] = mockFetch.mock.calls[0];
     expect(options.headers["x-user-id"]).toBe("system");
   });
+
+  it("resolvePlatformInstantlyApiKey hits the platform decrypt endpoint with NO org/user headers", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({ provider: "instantly", key: "platform-key-xyz" }),
+    });
+
+    const { resolvePlatformInstantlyApiKey } = await import(
+      "../../src/lib/key-client"
+    );
+    const key = await resolvePlatformInstantlyApiKey({
+      method: "GET",
+      path: "/internal/audit/sending-forecast",
+    });
+
+    expect(key).toBe("platform-key-xyz");
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe("http://localhost:3001/keys/platform/instantly/decrypt");
+    expect(options.headers["x-api-key"]).toBe("test-key-service-key");
+    expect(options.headers["X-Caller-Service"]).toBe("instantly");
+    expect(options.headers["x-org-id"]).toBeUndefined();
+    expect(options.headers["x-user-id"]).toBeUndefined();
+  });
+
+  it("resolvePlatformInstantlyApiKey throws KeyServiceError on 404 (no fallback)", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      text: () => Promise.resolve("Platform key not configured"),
+    });
+
+    const { resolvePlatformInstantlyApiKey, KeyServiceError } = await import(
+      "../../src/lib/key-client"
+    );
+    await expect(
+      resolvePlatformInstantlyApiKey({ method: "GET", path: "/x" }),
+    ).rejects.toBeInstanceOf(KeyServiceError);
+  });
 });

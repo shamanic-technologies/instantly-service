@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
 import express from "express";
 
@@ -17,6 +17,19 @@ vi.mock("../../src/lib/instantly-client", () => ({
   listAccounts: (...args: unknown[]) => mockListAccounts(...args),
 }));
 
+class KeyServiceError extends Error {
+  constructor(public readonly statusCode: number, message: string) {
+    super(message);
+    this.name = "KeyServiceError";
+  }
+}
+const mockResolvePlatformKey = vi.fn();
+vi.mock("../../src/lib/key-client", () => ({
+  resolvePlatformInstantlyApiKey: (...args: unknown[]) =>
+    mockResolvePlatformKey(...args),
+  KeyServiceError,
+}));
+
 async function makeApp() {
   const router = (await import("../../src/routes/audit")).default;
   const app = express();
@@ -26,15 +39,9 @@ async function makeApp() {
 }
 
 describe("GET /internal/audit/sending-forecast", () => {
-  const OLD_KEY = process.env.INSTANTLY_API_KEY;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.INSTANTLY_API_KEY = "test-key";
-  });
-
-  afterEach(() => {
-    process.env.INSTANTLY_API_KEY = OLD_KEY;
+    mockResolvePlatformKey.mockResolvedValue("test-key");
   });
 
   it("returns the locked shape with all fields present + typed", async () => {
@@ -84,8 +91,10 @@ describe("GET /internal/audit/sending-forecast", () => {
     expect(res.body.totalAccountCount).toBe(0);
   });
 
-  it("fails loud (500) when the shared workspace key is unset — no silent zero", async () => {
-    delete process.env.INSTANTLY_API_KEY;
+  it("fails loud (500) when key-service has no platform key (404) — no silent zero", async () => {
+    mockResolvePlatformKey.mockRejectedValue(
+      new KeyServiceError(404, "Platform key not configured"),
+    );
     mockListAccounts.mockResolvedValue([]);
     mockExecute.mockResolvedValue({ rows: [] });
 
@@ -93,7 +102,7 @@ describe("GET /internal/audit/sending-forecast", () => {
     const res = await request(app).get("/internal/audit/sending-forecast");
 
     expect(res.status).toBe(500);
-    expect(res.body.error).toMatch(/INSTANTLY_API_KEY/);
+    expect(res.body.error).toMatch(/Platform key not configured/);
     expect(mockListAccounts).not.toHaveBeenCalled();
   });
 
