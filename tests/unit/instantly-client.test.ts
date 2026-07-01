@@ -648,4 +648,38 @@ describe("instantly-client", () => {
     expect(url).toContain("/campaigns/analytics");
     expect(url).not.toContain("id=");
   });
+
+  it("listAllCampaignSequenceLengths: paginates /campaigns and sums steps across sequences", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            items: [
+              { id: "a", status: 1, sequences: [{ steps: [{}, {}, {}] }] }, // 3 steps
+              { id: "b", status: 2, sequences: [{ steps: [{}] }, { steps: [{}, {}] }] }, // 1 + 2 = 3
+            ],
+            next_starting_after: "cursor-1",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            items: [{ id: "c", status: 1, sequences: [] }], // 0 steps
+          }),
+      });
+
+    const { listAllCampaignSequenceLengths } = await import("../../src/lib/instantly-client");
+    const campaigns = await listAllCampaignSequenceLengths(TEST_API_KEY);
+
+    expect(mockFetch).toHaveBeenCalledTimes(2); // followed the cursor
+    expect(campaigns).toEqual([
+      { id: "a", status: 1, stepCount: 3 },
+      { id: "b", status: 2, stepCount: 3 },
+      { id: "c", status: 1, stepCount: 0 },
+    ]);
+  });
 });
