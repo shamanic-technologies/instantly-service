@@ -4,6 +4,8 @@ import {
   summarizeInstantlyCounts,
   computeInstantlyPendingSends,
   buildReconciliation,
+  isSnapshotStale,
+  RECONCILE_SNAPSHOT_TTL_MS,
   type LocalReconcileCounts,
   type InstantlyReconcileCounts,
 } from "../../src/lib/reconcile-audit";
@@ -165,5 +167,43 @@ describe("buildReconciliation", () => {
     for (const m of metrics) {
       expect(m.delta).toBe(0);
     }
+  });
+});
+
+describe("isSnapshotStale", () => {
+  const now = new Date("2026-07-01T12:00:00.000Z");
+
+  it("null snapshot timestamp is stale (must be seeded)", () => {
+    expect(isSnapshotStale(null, now)).toBe(true);
+  });
+
+  it("invalid Date is stale", () => {
+    expect(isSnapshotStale(new Date("nope"), now)).toBe(true);
+  });
+
+  it("fresh snapshot (just refreshed) is NOT stale", () => {
+    const justNow = new Date(now.getTime() - 1000);
+    expect(isSnapshotStale(justNow, now)).toBe(false);
+  });
+
+  it("snapshot younger than the TTL is NOT stale", () => {
+    const young = new Date(now.getTime() - (RECONCILE_SNAPSHOT_TTL_MS - 1));
+    expect(isSnapshotStale(young, now)).toBe(false);
+  });
+
+  it("snapshot exactly at the TTL boundary is stale", () => {
+    const boundary = new Date(now.getTime() - RECONCILE_SNAPSHOT_TTL_MS);
+    expect(isSnapshotStale(boundary, now)).toBe(true);
+  });
+
+  it("snapshot older than the TTL is stale", () => {
+    const old = new Date(now.getTime() - (RECONCILE_SNAPSHOT_TTL_MS + 60_000));
+    expect(isSnapshotStale(old, now)).toBe(true);
+  });
+
+  it("honors an explicit ttlMs override", () => {
+    const t = new Date(now.getTime() - 5_000);
+    expect(isSnapshotStale(t, now, 10_000)).toBe(false);
+    expect(isSnapshotStale(t, now, 1_000)).toBe(true);
   });
 });
