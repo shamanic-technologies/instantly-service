@@ -124,6 +124,29 @@ export function summarizeInstantlyCounts(
   };
 }
 
+/**
+ * How long a pre-aggregated Instantly snapshot stays "fresh" before an on-read
+ * refresh is triggered (stale-while-revalidate). The reconcile audit is a drift
+ * monitor, not a live counter — 30 min balances freshness against the cost of a
+ * fleet-wide throttled Instantly sweep. See lib/reconcile-snapshot.ts.
+ */
+export const RECONCILE_SNAPSHOT_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * True when the snapshot should be refreshed: it is missing, its timestamp is
+ * invalid, or it is older than `ttlMs`. A stale snapshot is still SERVED (the
+ * caller revalidates in the background) — this only decides whether to KICK a
+ * refresh.
+ */
+export function isSnapshotStale(
+  refreshedAt: Date | null,
+  now: Date,
+  ttlMs = RECONCILE_SNAPSHOT_TTL_MS,
+): boolean {
+  if (!refreshedAt || Number.isNaN(refreshedAt.getTime())) return true;
+  return now.getTime() - refreshedAt.getTime() >= ttlMs;
+}
+
 function metric(
   key: string,
   label: string,
