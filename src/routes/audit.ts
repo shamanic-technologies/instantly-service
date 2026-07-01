@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { listAccounts } from "../lib/instantly-client";
+import { resolvePlatformInstantlyApiKey } from "../lib/key-client";
 import {
   computeCapacitySummary,
   projectDailySchedule,
@@ -65,7 +66,10 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
   try {
     const asOf = new Date();
 
-    const apiKey = resolvePlatformInstantlyKey();
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "GET",
+      path: "/internal/audit/sending-forecast",
+    });
     const accounts = await listAccounts(apiKey);
     const capacity = computeCapacitySummary(accounts);
 
