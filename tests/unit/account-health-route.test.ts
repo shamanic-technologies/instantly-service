@@ -1,0 +1,114 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import request from "supertest";
+import express from "express";
+
+vi.mock("../../src/db", () => ({
+  db: { execute: vi.fn() },
+}));
+vi.mock("../../src/db/schema", () => ({
+  instantlyCampaigns: {},
+  sequenceCosts: {},
+}));
+
+const mockListAccounts = vi.fn();
+vi.mock("../../src/lib/instantly-client", () => ({
+  listAccounts: (...args: unknown[]) => mockListAccounts(...args),
+}));
+
+async function makeApp() {
+  const router = (await import("../../src/routes/audit")).default;
+  const app = express();
+  app.use(express.json());
+  app.use("/internal/audit", router);
+  return app;
+}
+
+describe("GET /internal/audit/account-health", () => {
+  const OLD_KEY = process.env.INSTANTLY_API_KEY;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.INSTANTLY_API_KEY = "test-key";
+  });
+
+  afterEach(() => {
+    process.env.INSTANTLY_API_KEY = OLD_KEY;
+  });
+
+  it("returns the locked shape — all scalar fields present + typed, inboxPlacement null", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "a@good.com", status: 1, stat_warmup_score: 100, daily_limit: 30 },
+      { email: "b@distribute.you", status: 1, stat_warmup_score: 100, daily_limit: 40 }, // blocked domain
+      { email: "c@good.com", status: 0, stat_warmup_score: 100, daily_limit: 20 }, // inactive
+    ]);
+
+    const app = await makeApp();
+    const res = await request(app).get("/internal/audit/account-health");
+
+    expect(res.status).toBe(200);
+    const b = res.body;
+    expect(typeof b.asOf).toBe("string");
+    expect(Number.isNaN(Date.parse(b.asOf))).toBe(false);
+    expect(Array.isArray(b.accounts)).toBe(true);
+    expect(b.accounts).toHaveLength(3);
+
+    for (const a of b.accounts) {
+      expect(typeof a.email).toBe("string");
+      expect(a.domain === null || typeof a.domain === "string").toBe(true);
+      expect(typeof a.status).toBe("string");
+      expect(a.warmupScore === null || typeof a.warmupScore === "number").toBe(true);
+      expect(a.dailyLimit === null || typeof a.dailyLimit === "number").toBe(true);
+      expect(typeof a.blocked).toBe("boolean");
+      expect(a.blockReason === null || typeof a.blockReason === "string").toBe(true);
+      expect(a.inboxPlacement).toBeNull();
+    }
+
+    const byEmail = Object.fromEntries(b.accounts.map((a: any) => [a.email, a]));
+    expect(byEmail["a@good.com"]).toMatchObject({
+      domain: "good.com",
+      status: "active",
+      blocked: false,
+      blockReason: null,
+    });
+    expect(byEmail["b@distribute.you"]).toMatchObject({
+      blocked: true,
+      blockReason: "blacklisted-domain",
+    });
+    expect(byEmail["c@good.com"]).toMatchObject({
+      status: "inactive",
+      blocked: true,
+      blockReason: "inactive",
+    });
+  });
+
+  it("accounts is [] (still present) when the workspace has no accounts", async () => {
+    mockListAccounts.mockResolvedValue([]);
+    const app = await makeApp();
+    const res = await request(app).get("/internal/audit/account-health");
+    expect(res.status).toBe(200);
+    expect(res.body.accounts).toEqual([]);
+    expect(typeof res.body.asOf).toBe("string");
+  });
+
+  it("fails loud (500) when the shared workspace key is unset — no fabricated list", async () => {
+    delete process.env.INSTANTLY_API_KEY;
+    mockListAccounts.mockResolvedValue([]);
+
+    const app = await makeApp();
+    const res = await request(app).get("/internal/audit/account-health");
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/INSTANTLY_API_KEY/);
+    expect(mockListAccounts).not.toHaveBeenCalled();
+  });
+
+  it("fails loud (500) when the account source throws — no silent fallback", async () => {
+    mockListAccounts.mockRejectedValue(new Error("instantly boom"));
+
+    const app = await makeApp();
+    const res = await request(app).get("/internal/audit/account-health");
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/instantly boom/);
+  });
+});

@@ -7,27 +7,10 @@ import {
   projectDailySchedule,
   type PendingLead,
 } from "../lib/sending-forecast";
+import { buildAccountHealth } from "../lib/account-health";
+import { resolvePlatformInstantlyKey } from "../lib/platform-key";
 
 const router = Router();
-
-/**
- * Resolve the SHARED cold-email workspace's Instantly key.
- *
- * This is a platform-scoped fleet view (no org), so it targets the shared
- * workspace directly via `INSTANTLY_API_KEY` — the same key the audit / heal /
- * cleanup CLIs use against prod (key-service resolves keys per-org and is not
- * reachable here without an org). Fail loud when unset: no key ⇒ no capacity
- * source ⇒ 500, never a fabricated zero.
- */
-function resolvePlatformInstantlyKey(): string {
-  const key = process.env.INSTANTLY_API_KEY?.trim();
-  if (!key) {
-    throw new Error(
-      "INSTANTLY_API_KEY not configured — cannot resolve the shared workspace for the sending forecast",
-    );
-  }
-  return key;
-}
 
 /**
  * Load every active-campaign lead that still carries un-sent (provisioned)
@@ -100,6 +83,39 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] sending-forecast failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * GET /internal/audit/account-health
+ *
+ * Platform-scoped (no org). Returns per sending account its deliverability
+ * health: identity (email/domain), sending config (status/warmupScore/
+ * dailyLimit), and blocked state (blocked/blockReason from the SAME gate the
+ * live send path uses — `classifyAccountBlock`/`filterHealthyAccounts`).
+ *
+ * `inboxPlacement` is null for every account: the Instantly V2 API does not
+ * expose inbox placement as a per-account property (it exists only as
+ * test-scoped, subscription-gated, point-in-time inbox-placement-test results —
+ * see lib/account-health.ts). Never fabricated.
+ *
+ * Fails loud (500) on any missing source; no silent fallbacks.
+ */
+router.get("/account-health", async (_req: Request, res: Response) => {
+  try {
+    const asOf = new Date();
+
+    const apiKey = resolvePlatformInstantlyKey();
+    const accounts = await listAccounts(apiKey);
+
+    res.json({
+      asOf: asOf.toISOString(),
+      accounts: buildAccountHealth(accounts),
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] account-health failed: ${message}`);
     res.status(500).json({ error: message });
   }
 });
