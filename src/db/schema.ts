@@ -455,3 +455,27 @@ export const instantlyPlacementResults = pgTable(
     ),
   ],
 );
+
+// ─── Reconcile snapshot (Instantly-side counts cache) ───────────────────────
+// GET /internal/audit/reconcile compares OUR live local counts against
+// INSTANTLY's counts. The Instantly side requires a fleet-wide THROTTLED API
+// sweep (`listAllCampaignAnalytics` + `listAllCampaignSequenceLengths`, the
+// latter paginating `/campaigns` across thousands of campaigns at ~110ms/page)
+// that takes MINUTES — far past the gateway/browser timeout, so doing it
+// synchronously in the request left the dashboard on an infinite skeleton.
+// The Instantly side is therefore PRE-AGGREGATED here by a background refresh
+// (POST /internal/audit/reconcile/refresh + on-read stale-while-revalidate), and
+// the GET reads this single row in one fast query. Single-row table keyed on a
+// fixed sentinel id ('singleton'); the refresh upserts it. Fail loud (503) when
+// absent — never fabricate an Instantly number. See lib/reconcile-snapshot.ts +
+// CLAUDE.md "Reconciliation audit".
+export const instantlyReconcileSnapshot = pgTable("instantly_reconcile_snapshot", {
+  // Fixed sentinel — exactly one row. See RECONCILE_SNAPSHOT_ID.
+  id: text("id").primaryKey(),
+  activeCampaigns: integer("active_campaigns").notNull(),
+  emailsSent: integer("emails_sent").notNull(),
+  contactedDispatched: integer("contacted_dispatched").notNull(),
+  contactsStored: integer("contacts_stored").notNull(),
+  pendingSends: integer("pending_sends").notNull(),
+  refreshedAt: timestamp("refreshed_at").defaultNow().notNull(),
+});

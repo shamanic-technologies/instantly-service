@@ -1,11 +1,7 @@
 import { Router, Request, Response } from "express";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
-import {
-  listAccounts,
-  listAllCampaignAnalytics,
-  listAllCampaignSequenceLengths,
-} from "../lib/instantly-client";
+import { listAccounts } from "../lib/instantly-client";
 import { resolvePlatformInstantlyApiKey } from "../lib/key-client";
 import {
   computeCapacitySummary,
@@ -21,10 +17,15 @@ import {
   isPlacementSchedulingEnabled,
 } from "../lib/placement-sync";
 import {
-  summarizeInstantlyCounts,
   buildReconciliation,
+  isSnapshotStale,
   type LocalReconcileCounts,
 } from "../lib/reconcile-audit";
+import {
+  readInstantlySnapshot,
+  refreshInstantlySnapshot,
+  maybeTriggerRefresh,
+} from "../lib/reconcile-snapshot";
 
 const router = Router();
 
@@ -235,8 +236,16 @@ router.post("/placement-test/ensure", async (_req: Request, res: Response) => {
  * lib/reconcile-audit.ts for why this reconciles COUNTS, not the forecast's
  * future dates (which exist nowhere and cannot be reconciled).
  *
- * Local counts (silver DB) and the Instantly fleet analytics are fetched in
- * parallel; either failing → fail loud (500), no fabricated zero.
+ * The local counts (silver DB) are read live in one fast round-trip. The
+ * Instantly side is NOT swept live here — a fleet-wide throttled Instantly sweep
+ * (analytics + per-campaign sequence lengths across thousands of campaigns) runs
+ * for minutes and blew past the gateway/browser timeout, leaving the staff
+ * dashboard stuck on a loading skeleton. Instead the Instantly counts are
+ * pre-aggregated into a single-row snapshot by a background refresh; this handler
+ * reads that snapshot in one fast query (local + snapshot in parallel), so it
+ * returns in a few seconds cold. Stale-while-revalidate: a stale snapshot is
+ * still served while a background refresh is kicked; a missing snapshot fails
+ * loud (503) and kicks the seeding refresh — never a fabricated Instantly number.
  */
 router.get("/reconcile", async (_req: Request, res: Response) => {
   try {
@@ -247,7 +256,7 @@ router.get("/reconcile", async (_req: Request, res: Response) => {
       path: "/internal/audit/reconcile",
     });
 
-    const [localResult, analytics, campaignSequences] = await Promise.all([
+    const [localResult, snapshot] = await Promise.all([
       // One round-trip: all five local counts as scalar subqueries. `pendingSends`
       // reuses the EXACT gate `loadPendingLeads` uses, so its number equals the
       // total steps the sending-forecast projects.
@@ -273,11 +282,26 @@ router.get("/reconcile", async (_req: Request, res: Response) => {
                ))::int
             AS "pendingSends"
       `),
-      listAllCampaignAnalytics(apiKey),
-      // Sequence lengths (paginated /campaigns) → Instantly's own remaining-sends
-      // count (stepCount − sent) for the pendingSends reconciliation.
-      listAllCampaignSequenceLengths(apiKey),
+      // Fast single-row read of the pre-aggregated Instantly counts.
+      readInstantlySnapshot(),
     ]);
+
+    if (!snapshot) {
+      // Cold path: the Instantly snapshot has never been computed. Kick a
+      // background refresh so the next request succeeds, and fail loud now —
+      // never fabricate an Instantly count.
+      maybeTriggerRefresh(apiKey, "cold-read");
+      return res.status(503).json({
+        error:
+          "reconcile snapshot not yet computed — refreshing in background, retry shortly",
+      });
+    }
+
+    // Stale-while-revalidate: serve the snapshot immediately; if it is older than
+    // the TTL, kick a background refresh (guarded against stacking).
+    if (isSnapshotStale(snapshot.refreshedAt, asOf)) {
+      maybeTriggerRefresh(apiKey, "stale-read");
+    }
 
     const rows = Array.isArray(localResult)
       ? localResult
@@ -291,17 +315,46 @@ router.get("/reconcile", async (_req: Request, res: Response) => {
       pendingSends: Number(r.pendingSends),
     };
 
-    const instantly = summarizeInstantlyCounts(analytics, campaignSequences);
-
     res.json({
       asOf: asOf.toISOString(),
-      metrics: buildReconciliation(local, instantly),
+      metrics: buildReconciliation(local, snapshot.counts),
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] reconcile failed: ${message}`);
     res.status(500).json({ error: message });
   }
+});
+
+/**
+ * POST /internal/audit/reconcile/refresh
+ *
+ * Platform-scoped. Runs the fleet-wide Instantly sweep and upserts the reconcile
+ * snapshot the GET reads. 202 + background (the sweep can run for minutes, far
+ * past the proxy timeout); watch logs for `reconcile-snapshot: done`. Use this to
+ * SEED the snapshot right after deploy (so the first dashboard GET is 200) and as
+ * a manual/cron freshness trigger. Explicit refreshes always run (bypass the
+ * on-read in-flight guard). Read-only against our DB except the single snapshot
+ * upsert; fail loud in the background on any Instantly error.
+ */
+router.post("/reconcile/refresh", async (_req: Request, res: Response) => {
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, runId });
+  console.log(`[audit] reconcile-snapshot: dispatched run=${runId}`);
+
+  (async () => {
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/reconcile/refresh",
+    });
+    const counts = await refreshInstantlySnapshot(apiKey);
+    console.log(
+      `[audit] reconcile-snapshot: done run=${runId} ${JSON.stringify(counts)}`,
+    );
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] reconcile-snapshot: run=${runId} failed: ${message}`);
+  });
 });
 
 export default router;
