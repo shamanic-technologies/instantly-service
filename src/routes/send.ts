@@ -299,6 +299,7 @@ router.post("/", async (req: Request, res: Response) => {
         sortedSequence,
         lead,
         bcc: body.bcc,
+        timezone: body.timezone,
       });
 
       if (!sendResult.ok) {

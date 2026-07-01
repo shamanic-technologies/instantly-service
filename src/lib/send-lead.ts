@@ -33,9 +33,86 @@ import {
  * status. Add domains here when a sender's deliverability is so poor that
  * even an "active" status is misleading.
  */
-const BLOCKED_DOMAINS = [
-  "arcadiaquest.org",
+export const BLOCKED_DOMAINS = [
+  "arcadiaquest.org", // permanent
+
+  // ─── TEMPORARY FULL HALT — 2026-06-29 (remove when re-tested OK) ──────────
+  // Inbox-placement seed testing proved the ENTIRE current cold fleet lands in
+  // Gmail SPAM (0-4% Gmail inbox) across EVERY domain — independent of domain,
+  // warmup (Health Score 100), copy (clean plain-text tested), or auth
+  // (SPF+DKIM+DMARC all PASS). Root cause = shared-IP sending reputation that
+  // Gmail distrusts: Gandi `_mailcust.gandi.net` + Mailforge relay. NOT the
+  // domains themselves. Outlook placement is fine (~100% inbox).
+  //
+  // → New cold sends are HALTED on all current domains until the migration to
+  //   Google Workspace mailboxes (Primeforge — Gmail-trusted infra) is warmed
+  //   + seed-tested OK. Those new domains are NOT in this list, so they send
+  //   once imported + warmed.
+  // → daily_limit on Instantly is intentionally LEFT AS-IS (not zeroed) so
+  //   already-loaded campaigns keep draining on these domains.
+  // → RE-TEST inbox placement (Instantly inbox-placement test) before removing
+  //   ANY domain below. Do not un-block on a guess.
+  "distribute.you",
+  "growthagency.agency",
+  "growthagency.bio",
+  "growthagency.ch",
+  "growthagency.click",
+  "growthagency.cloud",
+  "growthagency.dev",
+  "growthagency.diy",
+  "growthagency.email",
+  "growthagency.forum",
+  "growthagency.group",
+  "growthagency.life",
+  "growthagency.live",
+  "growthagency.media",
+  "growthagency.network",
+  "growthagency.news",
+  "growthagency.store",
+  "growthagency.studio",
+  "growthservice.org",
+  "heydistribute.com",
+  "joindistribute.com",
+  "marketingagency.bio",
+  "marketingagency.email",
+  "marketingagency.forum",
+  "marketingagency.group",
+  "marketingagency.life",
+  "marketingagency.network",
+  "marketingagency.studio",
+  "outcaged.com",
+  "pressbeat.ai",
+  "pressbeat.io",
+  "salescoldemails.com",
+  "salesmolt.com",
+  "teamdistribute.com",
+  "trialdistribute.com",
+  "yourdistribute.com",
+
+  // ─── WARMING GUARD — new Google Workspace (Primeforge) domains, 2026-06-29 ──
+  // These are the Gmail-trusted replacement infra, freshly imported and WARMING
+  // (~2 weeks). Blocked from cold here ON PURPOSE: the Health-Score>=100 gate
+  // alone is NOT a safe go-live signal — we proved Health 100 != Gmail inbox.
+  // A fresh account's warmup score can hit 100 in days, well before it's truly
+  // Gmail-ready. Keep these blocked until BOTH (a) ~2 weeks warmup elapsed AND
+  // (b) an Instantly inbox-placement seed test CONFIRMS Gmail inbox. Remove a
+  // domain from this block only after its seed test passes — not on the score.
+  "maildistribute.com",
+  "boostdistribute.com",
+  "growdistribute.com",
+  "hellodistribute.com",
+  "startdistribute.com",
 ];
+
+/**
+ * Minimum Instantly Health Score (the account `stat_warmup_score`, an integer
+ * 0-100) required to start a NEW sequence from an account. We dispatch only
+ * from fully-warmed senders (100): an account whose score has dipped is held
+ * out until it recovers. The score fluctuates daily, so the eligible pool
+ * breathes around this threshold — if it ever empties, `sendLeadToInstantly`
+ * returns `no_healthy_accounts_available` (no silent fallback to weaker senders).
+ */
+const MIN_WARMUP_SCORE = 100;
 
 /**
  * Pick an account using a single-pool weighted random:
@@ -82,31 +159,38 @@ export function autolinkifyHtml(html: string): string {
 }
 
 /**
- * The canonical signature (HTML-formatted), identical for every sender
- * regardless of which sending account `pickRandomAccount` selected:
+ * Fixed brand line, identical for every sender. The PERSON line above it is
+ * derived per-account (see `buildDefaultSignature`).
  *
- *   Kevin Lourd | Founder
+ * Plain text, no `<a>` link — `buildEmailBodyWithSignature` autolinkifies only
+ * the prospect body, never the signature.
+ */
+const SIGNATURE_BRAND_LINE = "Distribute.you | Marketing Agency";
+
+/** Fallback sender name when an account carries no first/last name. */
+const DEFAULT_SENDER_NAME = "Kevin Lourd";
+
+/**
+ * Per-account signature (HTML-formatted):
+ *
+ *   {account first + last name}
  *   Distribute.you | Marketing Agency
+ *
+ * The PERSON line is the account's own name so the From-name and the signature
+ * agree (multi-persona sending: amy@… signs "Amy Moore", not a fixed name). NO
+ * title — a fixed "Founder" can't apply across many distinct sender personas.
+ * Falls back to `DEFAULT_SENDER_NAME` when the account has no name.
  *
  * Wrapped in `<p>...<br>...</p>` because Instantly's HTML sanitizer aggressively
  * strips plain text and bare `--` outside element wrappers on PATCH round-trip
  * (only tag-wrapped content survives). Historic damage 2026-05-28: a plain-text
  * signature was reduced to a stray `<a>distribute.you</a>` anchor on every PATCH.
- *
- * The brand line is intentionally PLAIN TEXT (no `<a>` link) — `buildEmail-
- * BodyWithSignature` autolinkifies only the prospect body, never the signature.
  */
-const DEFAULT_SIGNATURE =
-  "<p>Kevin Lourd | Founder<br>Distribute.you | Marketing Agency</p>";
-
-/**
- * Returns the canonical signature. Kept as a function (rather than inlining the
- * constant) so a future change can re-introduce per-account derivation without
- * touching `buildEmailBodyWithSignature`. The `account` param is currently
- * unused — every sender shares one brand line.
- */
-export function buildDefaultSignature(_account: Account): string {
-  return DEFAULT_SIGNATURE;
+export function buildDefaultSignature(account: Account): string {
+  const name =
+    [account.first_name, account.last_name].filter(Boolean).join(" ").trim() ||
+    DEFAULT_SENDER_NAME;
+  return `<p>${name}<br>${SIGNATURE_BRAND_LINE}</p>`;
 }
 
 /**
@@ -226,6 +310,7 @@ export function buildSequenceSteps(
 /**
  * Filter the raw Instantly account list to senders we can send from now:
  *   - `status > 0` (active in Instantly's account state machine)
+ *   - `stat_warmup_score >= MIN_WARMUP_SCORE` (fully-warmed Health Score only)
  *   - domain not in BLOCKED_DOMAINS
  *
  * The returned list is unsorted; pacing/warmup weighting happens in
@@ -234,13 +319,28 @@ export function buildSequenceSteps(
 export function filterHealthyAccounts(accounts: Account[]): Account[] {
   return accounts.filter((a) => {
     if (a.status <= 0) return false;
-    const domain = a.email.split("@")[1];
-    if (BLOCKED_DOMAINS.includes(domain)) {
+    if ((a.stat_warmup_score ?? 0) < MIN_WARMUP_SCORE) {
+      console.log(
+        `[send-lead] Skipping under-warmed account: ${a.email} (score=${a.stat_warmup_score ?? "null"})`,
+      );
+      return false;
+    }
+    if (isBlockedDomain(a.email)) {
       console.log(`[send-lead] Skipping blocked-domain account: ${a.email}`);
       return false;
     }
     return true;
   });
+}
+
+/**
+ * True when the account's email domain is in `BLOCKED_DOMAINS`. Extracted so
+ * the sending-forecast fleet view can count blocked accounts using the exact
+ * same blacklist that gates real sends (no divergent second copy).
+ */
+export function isBlockedDomain(email: string): boolean {
+  const domain = email.split("@")[1] ?? "";
+  return BLOCKED_DOMAINS.includes(domain);
 }
 
 /**
@@ -259,6 +359,7 @@ export async function createAndActivateCampaign(
   steps: SequenceStep[],
   lead: Lead,
   bcc?: string[],
+  timezone?: string,
 ): Promise<{ instantlyCampaignId: string; added: number }> {
   console.log(
     `[send-lead] Creating Instantly campaign "${campaignName}" with account ${account.email}`,
@@ -266,6 +367,7 @@ export async function createAndActivateCampaign(
   const instantlyCampaign = await createInstantlyCampaign(apiKey, {
     name: campaignName,
     steps,
+    timezone,
   });
   console.log(
     `[send-lead] Created instantly campaign id=${instantlyCampaign.id} status=${instantlyCampaign.status}`,
@@ -277,7 +379,12 @@ export async function createAndActivateCampaign(
   await updateInstantlyCampaign(apiKey, instantlyCampaign.id, {
     email_list: [account.email],
     ...(bcc && bcc.length > 0 ? { bcc_list: bcc } : {}),
-    open_tracking: true,
+    // Open tracking OFF: the open pixel is an invisible 1x1 tracking image —
+    // a recognized bulk-mail spam signal — and Apple Mail Privacy Protection
+    // pre-fetches it, so the "open" data is garbage anyway. Link tracking stays
+    // ON (functional redirects via the custom tracking domain) for reliable
+    // click data. See CLAUDE.md "Account selection" / deliverability notes.
+    open_tracking: false,
     link_tracking: true,
     insert_unsubscribe_header: true,
     stop_on_reply: true,
@@ -314,6 +421,12 @@ export interface SendOptions {
   lead: Lead;
   /** Optional BCC recipients — set as the campaign's `bcc_list` (every step). */
   bcc?: string[];
+  /**
+   * Optional IANA timezone of the recipient (lead). Sets the Instantly campaign
+   * sending-schedule timezone so business-hours sends land in the prospect's
+   * local time. Falls back to America/Chicago when absent.
+   */
+  timezone?: string;
 }
 
 export interface SendSuccess {
@@ -364,6 +477,7 @@ export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult
     steps,
     opts.lead,
     opts.bcc,
+    opts.timezone,
   );
 
   return {

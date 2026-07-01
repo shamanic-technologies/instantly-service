@@ -122,6 +122,12 @@ export interface SequenceStep {
 export interface CreateCampaignParams {
   name: string;
   steps: SequenceStep[];
+  /**
+   * IANA timezone for the campaign sending schedule (recipient's local time).
+   * Falls back to America/Chicago when absent. 1 campaign = 1 lead, so this is
+   * effectively the lead's timezone when the caller supplies it.
+   */
+  timezone?: string;
 }
 
 /**
@@ -311,9 +317,15 @@ export async function createCampaign(apiKey: string, params: CreateCampaignParam
       schedules: [
         {
           name: "Default",
-          timing: { from: "00:00", to: "23:59" },
-          days: { "0": true, "1": true, "2": true, "3": true, "4": true, "5": true, "6": true },
-          timezone: "America/Chicago",
+          // Business hours, weekdays only — sending 24/7 (incl. 3am / weekends)
+          // is an unnatural pattern that filters read as bulk/spam. Days are
+          // Instantly's 0=Sunday..6=Saturday, so Mon-Fri = "1".."5".
+          // Per-recipient timezone when the caller supplies it (1 campaign = 1
+          // lead, so params.timezone is the lead's tz threaded from upstream);
+          // America/Chicago (US Central) fallback when absent/unknown.
+          timing: { from: "08:00", to: "17:00" },
+          days: { "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false },
+          timezone: params.timezone ?? "America/Chicago",
         },
       ],
     },

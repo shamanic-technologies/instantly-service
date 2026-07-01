@@ -272,7 +272,8 @@ describe("buildEmailBodyWithSignature", () => {
     const body = "Hello\n\n{{accountSignature}}";
     const result = buildEmailBodyWithSignature(body, acct({ email: "kevinl@growthagency.dev", signature: "" }));
     expect(result).toContain("<p>--</p>");
-    expect(result).toContain("Kevin Lourd | Founder");
+    expect(result).toContain("Kevin Lourd");
+    expect(result).not.toContain("Founder");
     expect(result).toContain("Distribute.you | Marketing Agency");
     expect((result.match(/<p>--<\/p>/g) ?? []).length).toBe(1);
   });
@@ -281,7 +282,7 @@ describe("buildEmailBodyWithSignature", () => {
     // Brand line is plain text — NOT auto-linkified into an <a>.
     const result = buildEmailBodyWithSignature("Hello", acct({ email: "kevinl@growthagency.dev" }));
     expect(result).toBe(
-      "Hello<p>--</p><p>Kevin Lourd | Founder<br>Distribute.you | Marketing Agency</p>",
+      "Hello<p>--</p><p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>",
     );
     expect(result).not.toContain("<a ");
   });
@@ -293,6 +294,18 @@ describe("buildEmailBodyWithSignature", () => {
     expect(b).toContain("Distribute.you | Marketing Agency");
     expect(a).not.toContain("<a ");
     expect(b).not.toContain("<a ");
+  });
+
+  it("signs with the account's OWN name so From-name and signature agree (multi-persona)", () => {
+    const result = buildEmailBodyWithSignature(
+      "Hello",
+      acct({ email: "amy@gildcultivatecoil.com", first_name: "Amy", last_name: "Moore" }),
+    );
+    expect(result).toBe(
+      "Hello<p>--</p><p>Amy Moore<br>Distribute.you | Marketing Agency</p>",
+    );
+    expect(result).not.toContain("Kevin Lourd");
+    expect(result).not.toContain("Founder");
   });
 
   it("autolinkifies URLs in the body but NOT in the appended signature", () => {
@@ -378,7 +391,7 @@ describe("buildEmailBodyWithSignature", () => {
   it("canonical fallback also strips stacked sigs (idempotence preserved)", () => {
     const body = "<p>Hello</p>\n\n--\n<p>Old Sig 1</p>\n\n--\n<p>Old Sig 2</p>";
     const result = buildEmailBodyWithSignature(body, acct({ email: "kevinl@growthagency.dev", signature: "" }));
-    expect(result).toContain("<p>Hello</p><p>--</p><p>Kevin Lourd | Founder<br>Distribute.you | Marketing Agency</p>");
+    expect(result).toContain("<p>Hello</p><p>--</p><p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>");
     expect(result).not.toContain("Old Sig 1");
     expect(result).not.toContain("Old Sig 2");
   });
@@ -496,7 +509,7 @@ describe("POST /send", () => {
       });
     });
     mockUpdateRun.mockResolvedValue({});
-    mockListAccounts.mockResolvedValue([{ email: "sender@example.com", warmup_status: 1, status: 1, signature: "<p>Best,<br>Sender</p>" }]);
+    mockListAccounts.mockResolvedValue([{ email: "sender@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Best,<br>Sender</p>" }]);
     mockUpdateCampaign.mockResolvedValue({});
     mockGetCampaign.mockResolvedValue({ email_list: [], bcc_list: [], not_sending_status: null, status: "active" });
     mockDbReturning.mockResolvedValue([{ id: "lead-1" }]);
@@ -504,10 +517,10 @@ describe("POST /send", () => {
     mockRefreshLeadStatusCurrent.mockResolvedValue(undefined);
   });
 
-  it("should exclude @arcadiaquest.org accounts from new campaign creation", async () => {
+  it("should exclude blocked-domain accounts from new campaign creation", async () => {
     mockListAccounts.mockResolvedValue([
-      { email: "blocked@arcadiaquest.org", warmup_status: 1, status: 1, signature: "<p>Sig</p>" },
-      { email: "active@growthagency.dev", warmup_status: 1, status: 1, signature: "<p>Sig</p>" },
+      { email: "blocked@arcadiaquest.org", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
+      { email: "active@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
     ]);
     mockNewCampaignFlow();
     const app = await createSendApp();
@@ -517,7 +530,58 @@ describe("POST /send", () => {
     expect(mockUpdateCampaign).toHaveBeenCalledWith(
       "test-instantly-key",
       "inst-camp-new",
-      expect.objectContaining({ email_list: ["active@growthagency.dev"] }),
+      expect.objectContaining({ email_list: ["active@example.com"] }),
+    );
+  });
+
+  it("should exclude @distribute.you and @growthagency.dev (pulled-from-cold) accounts", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "k@distribute.you", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
+      { email: "k@growthagency.dev", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
+      { email: "active@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
+    ]);
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(mockUpdateCampaign).toHaveBeenCalledWith(
+      "test-instantly-key",
+      "inst-camp-new",
+      expect.objectContaining({ email_list: ["active@example.com"] }),
+    );
+  });
+
+  it("should exclude under-warmed accounts (Health Score < 100)", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "warming@example.com", warmup_status: 1, status: 1, stat_warmup_score: 99 },
+      { email: "noscore@example.com", warmup_status: 1, status: 1 },
+    ]);
+    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
+    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(500);
+    expect(res.body.details).toContain("No active Instantly accounts available");
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+
+  it("should send from a fully-warmed (score 100) account", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "warming@example.com", warmup_status: 1, status: 1, stat_warmup_score: 95, signature: "<p>Sig</p>" },
+      { email: "warmed@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
+    ]);
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(mockUpdateCampaign).toHaveBeenCalledWith(
+      "test-instantly-key",
+      "inst-camp-new",
+      expect.objectContaining({ email_list: ["warmed@example.com"] }),
     );
   });
 
@@ -607,7 +671,7 @@ describe("POST /send", () => {
 
   it("should treat status 2 (active+warming) accounts as active", async () => {
     mockListAccounts.mockResolvedValue([
-      { email: "warming@test.com", warmup_status: 1, status: 2, signature: "<p>Sig</p>" },
+      { email: "warming@test.com", warmup_status: 1, status: 2, stat_warmup_score: 100, signature: "<p>Sig</p>" },
     ]);
     mockNewCampaignFlow();
     const app = await createSendApp();
@@ -638,7 +702,7 @@ describe("POST /send", () => {
   it("should only use active accounts and ignore inactive ones", async () => {
     mockListAccounts.mockResolvedValue([
       { email: "inactive@test.com", warmup_status: 0, status: 0 },
-      { email: "active@test.com", warmup_status: 1, status: 1, signature: "<p>Sig</p>" },
+      { email: "active@test.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
     ]);
     mockNewCampaignFlow();
     const app = await createSendApp();
