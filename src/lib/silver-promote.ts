@@ -18,6 +18,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { updateCostStatus, type IdentityContext } from "./runs-client";
 import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
+import { maybeStopOnClickForSignup } from "./stop-on-click";
 
 const SEQUENCE_STOP_EVENTS = new Set([
   "reply_received",
@@ -120,6 +121,9 @@ interface CampaignRow {
   orgId: string | null;
   userId: string | null;
   runId: string | null;
+  // Present at runtime (findCampaign selects all columns); used by the
+  // stop-on-click side effect to read the brand's runtime goal.
+  brandIds?: string[] | null;
 }
 
 async function findCampaign(instantlyCampaignId: string): Promise<CampaignRow | null> {
@@ -537,6 +541,12 @@ export async function promoteEvent(input: PromoteEventInput): Promise<PromoteEve
         await handleEmailSent(campaign, input.leadEmail, input.step);
       } else if (SEQUENCE_STOP_EVENTS.has(input.eventType)) {
         await cancelRemainingProvisions(campaign, input.leadEmail);
+      }
+
+      // Stop-on-click: a real click on a signup-maximizing brand's campaign
+      // pauses the sequence (flag-gated, fail-soft — never throws here).
+      if (input.eventType === "email_link_clicked") {
+        await maybeStopOnClickForSignup(campaign, input.leadEmail);
       }
     }
   }
