@@ -9,6 +9,7 @@ import { UpdateStatusRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
 import { reconcileAll } from "../lib/reconcile";
 import { refundStrandedHolds } from "../lib/refund-stranded-holds";
+import { actualizeOrphanedSends } from "../lib/actualize-orphaned-sends";
 
 const router = Router();
 
@@ -163,6 +164,32 @@ router.post("/refund-stranded-holds", (req: Request, res: Response) => {
   refundStrandedHolds({ limit }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[instantly-service] refund-stranded-holds run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /campaigns/actualize-orphaned-sends
+ * One-time repair for orphaned holds: actualizes `provisioned` sequence_costs
+ * whose step already has a real `email_sent` silver event (the send fired but a
+ * transient runs-service error left the hold un-actualized, and reconcile's
+ * event-count drift gate never retries it). Mirror of refund-stranded-holds.
+ * Idempotent + resumable. Optional `{ limit }` body bounds the batch (step
+ * count). MUST run in-cluster (actualizing calls runs-service over
+ * `*.railway.internal`).
+ *
+ * 202 + background execution. Watch Railway logs for
+ * `actualize-orphaned-sends: done`.
+ */
+router.post("/actualize-orphaned-sends", (req: Request, res: Response) => {
+  const rawLimit = (req.body as { limit?: unknown })?.limit;
+  const limit = typeof rawLimit === "number" && rawLimit > 0 ? Math.floor(rawLimit) : undefined;
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+  console.log(`[instantly-service] actualize-orphaned-sends: dispatched run=${runId} limit=${limit ?? "all"}`);
+  res.status(202).json({ runId, startedAt, limit: limit ?? null });
+  actualizeOrphanedSends({ limit }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] actualize-orphaned-sends run=${runId} failed: ${message}`);
   });
 });
 
