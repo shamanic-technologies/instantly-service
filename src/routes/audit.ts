@@ -1,7 +1,11 @@
 import { Router, Request, Response } from "express";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
-import { listAccounts, listAllCampaignAnalytics } from "../lib/instantly-client";
+import {
+  listAccounts,
+  listAllCampaignAnalytics,
+  listAllCampaignSequenceLengths,
+} from "../lib/instantly-client";
 import { resolvePlatformInstantlyApiKey } from "../lib/key-client";
 import {
   computeCapacitySummary,
@@ -243,7 +247,7 @@ router.get("/reconcile", async (_req: Request, res: Response) => {
       path: "/internal/audit/reconcile",
     });
 
-    const [localResult, analytics] = await Promise.all([
+    const [localResult, analytics, campaignSequences] = await Promise.all([
       // One round-trip: all five local counts as scalar subqueries. `pendingSends`
       // reuses the EXACT gate `loadPendingLeads` uses, so its number equals the
       // total steps the sending-forecast projects.
@@ -270,6 +274,9 @@ router.get("/reconcile", async (_req: Request, res: Response) => {
             AS "pendingSends"
       `),
       listAllCampaignAnalytics(apiKey),
+      // Sequence lengths (paginated /campaigns) → Instantly's own remaining-sends
+      // count (stepCount − sent) for the pendingSends reconciliation.
+      listAllCampaignSequenceLengths(apiKey),
     ]);
 
     const rows = Array.isArray(localResult)
@@ -284,7 +291,7 @@ router.get("/reconcile", async (_req: Request, res: Response) => {
       pendingSends: Number(r.pendingSends),
     };
 
-    const instantly = summarizeInstantlyCounts(analytics);
+    const instantly = summarizeInstantlyCounts(analytics, campaignSequences);
 
     res.json({
       asOf: asOf.toISOString(),

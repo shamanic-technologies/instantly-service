@@ -474,6 +474,62 @@ export async function getCampaignAnalytics(apiKey: string, campaignId: string): 
   return results[0] ?? null;
 }
 
+/** One campaign's sequence structure (id + lifecycle status + total step count). */
+export interface CampaignSequenceInfo {
+  id: string;
+  /** Instantly lifecycle code (1=active, 2=paused, 3=completed). */
+  status: number;
+  /** Total number of email steps across all of the campaign's sequences. */
+  stepCount: number;
+}
+
+/**
+ * Shape of the raw campaign object from `GET /campaigns` that we read: the id,
+ * numeric status, and the `sequences` array (each sequence carrying its
+ * `steps`). Other campaign fields are ignored.
+ */
+interface RawCampaignWithSequences {
+  id: string;
+  status?: number | string;
+  sequences?: { steps?: unknown[] }[];
+}
+
+/**
+ * Fleet-wide campaign sequence lengths, paginated over `GET /campaigns`. Each
+ * campaign object carries its full `sequences` (the loaded followup steps), so
+ * `stepCount = Σ sequences[].steps.length` is exactly how many sends the whole
+ * sequence contains. Combined with per-campaign `emails_sent_count` from
+ * `listAllCampaignAnalytics`, this yields Instantly's own remaining-sends count
+ * (`stepCount − sent`) — the reconciliation counterpart for local pendingSends.
+ * Paginates via `next_starting_after` like `listAccounts` (page limit 100).
+ */
+export async function listAllCampaignSequenceLengths(
+  apiKey: string,
+): Promise<CampaignSequenceInfo[]> {
+  const PAGE_LIMIT = 100;
+  const results: CampaignSequenceInfo[] = [];
+  let startingAfter: string | undefined;
+  for (;;) {
+    const query = new URLSearchParams({ limit: String(PAGE_LIMIT) });
+    if (startingAfter) query.set("starting_after", startingAfter);
+    const response = await instantlyRequest<PaginatedResponse<RawCampaignWithSequences>>(
+      apiKey,
+      `/campaigns?${query.toString()}`,
+    );
+    const items = response.items ?? [];
+    for (const c of items) {
+      const stepCount = (c.sequences ?? []).reduce(
+        (sum, seq) => sum + (seq.steps?.length ?? 0),
+        0,
+      );
+      results.push({ id: c.id, status: Number(c.status), stepCount });
+    }
+    if (!response.next_starting_after || items.length === 0) break;
+    startingAfter = response.next_starting_after;
+  }
+  return results;
+}
+
 /**
  * Fleet-wide per-campaign analytics in ONE call. Instantly's
  * `GET /campaigns/analytics` returns analytics for ALL campaigns as a single
