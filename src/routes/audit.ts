@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
-import { listAccounts } from "../lib/instantly-client";
+import { listAccounts, listAllCampaignAnalytics } from "../lib/instantly-client";
 import { resolvePlatformInstantlyApiKey } from "../lib/key-client";
 import {
   computeCapacitySummary,
@@ -16,6 +16,11 @@ import {
   fetchPlacementHistory,
   isPlacementSchedulingEnabled,
 } from "../lib/placement-sync";
+import {
+  summarizeInstantlyCounts,
+  buildReconciliation,
+  type LocalReconcileCounts,
+} from "../lib/reconcile-audit";
 
 const router = Router();
 
@@ -212,6 +217,82 @@ router.post("/placement-test/ensure", async (_req: Request, res: Response) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] placement-test/ensure failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * GET /internal/audit/reconcile
+ *
+ * Platform-scoped (no org). For each countable fact, returns OUR local number
+ * next to INSTANTLY's number + the `delta` (local − instantly), so an operator
+ * can spot a divergence on the dashboard and investigate the underlying bug
+ * (lost webhook, lagging reconcile, a pause/throttle we missed). See
+ * lib/reconcile-audit.ts for why this reconciles COUNTS, not the forecast's
+ * future dates (which exist nowhere and cannot be reconciled).
+ *
+ * Local counts (silver DB) and the Instantly fleet analytics are fetched in
+ * parallel; either failing → fail loud (500), no fabricated zero.
+ */
+router.get("/reconcile", async (_req: Request, res: Response) => {
+  try {
+    const asOf = new Date();
+
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "GET",
+      path: "/internal/audit/reconcile",
+    });
+
+    const [localResult, analytics] = await Promise.all([
+      // One round-trip: all five local counts as scalar subqueries. `pendingSends`
+      // reuses the EXACT gate `loadPendingLeads` uses, so its number equals the
+      // total steps the sending-forecast projects.
+      db.execute(sql`
+        SELECT
+          (SELECT COUNT(*) FROM instantly_campaigns WHERE status = 'active')::int
+            AS "activeCampaigns",
+          (SELECT COUNT(*) FROM instantly_campaigns)::int
+            AS "contactsStored",
+          (SELECT COUNT(*) FROM instantly_events WHERE event_type = 'email_sent')::int
+            AS "emailsSent",
+          (SELECT COUNT(DISTINCT (campaign_id, lead_email))
+             FROM instantly_events WHERE event_type = 'email_sent')::int
+            AS "contactedDispatched",
+          (SELECT COUNT(*) FROM sequence_costs sc
+             WHERE sc.status = 'provisioned'
+               AND EXISTS (
+                 SELECT 1 FROM instantly_campaigns c
+                 WHERE c.lead_email = sc.lead_email
+                   AND c.campaign_id IS NOT DISTINCT FROM sc.campaign_id
+                   AND c.status = 'active'
+                   AND c.delivery_status IN ('contacted', 'sent')
+               ))::int
+            AS "pendingSends"
+      `),
+      listAllCampaignAnalytics(apiKey),
+    ]);
+
+    const rows = Array.isArray(localResult)
+      ? localResult
+      : ((localResult as any).rows ?? []);
+    const r = (rows[0] ?? {}) as Record<string, unknown>;
+    const local: LocalReconcileCounts = {
+      activeCampaigns: Number(r.activeCampaigns),
+      emailsSent: Number(r.emailsSent),
+      contactedDispatched: Number(r.contactedDispatched),
+      contactsStored: Number(r.contactsStored),
+      pendingSends: Number(r.pendingSends),
+    };
+
+    const instantly = summarizeInstantlyCounts(analytics);
+
+    res.json({
+      asOf: asOf.toISOString(),
+      metrics: buildReconciliation(local, instantly),
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] reconcile failed: ${message}`);
     res.status(500).json({ error: message });
   }
 });
