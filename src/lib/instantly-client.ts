@@ -474,6 +474,20 @@ export async function getCampaignAnalytics(apiKey: string, campaignId: string): 
   return results[0] ?? null;
 }
 
+/**
+ * Fleet-wide per-campaign analytics in ONE call. Instantly's
+ * `GET /campaigns/analytics` returns analytics for ALL campaigns as a single
+ * NON-paginated array when `id`/`ids` are omitted (confirmed via
+ * developer.instantly.ai/api-reference/campaign/get-campaigns-analytics — the
+ * endpoint exposes NO cursor/limit params), so unlike `listAccounts` /
+ * `listLeadsFull` / `listEmails` this helper deliberately does NOT paginate.
+ * `exclude_total_leads_count` is intentionally left unset — the reconciliation
+ * audit needs `leads_count` for the contacts-stored comparison.
+ */
+export async function listAllCampaignAnalytics(apiKey: string): Promise<CampaignAnalytics[]> {
+  return instantlyRequest<CampaignAnalytics[]>(apiKey, "/campaigns/analytics");
+}
+
 export async function getCampaignStepsAnalytics(
   apiKey: string,
   campaignId: string,
