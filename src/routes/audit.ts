@@ -1,0 +1,107 @@
+import { Router, Request, Response } from "express";
+import { sql } from "drizzle-orm";
+import { db } from "../db";
+import { listAccounts } from "../lib/instantly-client";
+import {
+  computeCapacitySummary,
+  projectDailySchedule,
+  type PendingLead,
+} from "../lib/sending-forecast";
+
+const router = Router();
+
+/**
+ * Resolve the SHARED cold-email workspace's Instantly key.
+ *
+ * This is a platform-scoped fleet view (no org), so it targets the shared
+ * workspace directly via `INSTANTLY_API_KEY` — the same key the audit / heal /
+ * cleanup CLIs use against prod (key-service resolves keys per-org and is not
+ * reachable here without an org). Fail loud when unset: no key ⇒ no capacity
+ * source ⇒ 500, never a fabricated zero.
+ */
+function resolvePlatformInstantlyKey(): string {
+  const key = process.env.INSTANTLY_API_KEY?.trim();
+  if (!key) {
+    throw new Error(
+      "INSTANTLY_API_KEY not configured — cannot resolve the shared workspace for the sending forecast",
+    );
+  }
+  return key;
+}
+
+/**
+ * Load every active-campaign lead that still carries un-sent (provisioned)
+ * sequence steps. A `sequence_costs` row is `provisioned` until its
+ * `email_sent` webhook actualizes it, so provisioned steps on a live campaign
+ * are exactly the future scheduled sends. Gated to genuinely-live campaigns
+ * (`status='active'` and a non-terminal `delivery_status`) so a replied /
+ * bounced / paused lead whose holds have not yet been reconciled is excluded.
+ */
+async function loadPendingLeads(): Promise<PendingLead[]> {
+  const result = await db.execute(sql`
+    SELECT
+      ARRAY_AGG(DISTINCT sc.step) FILTER (WHERE sc.status = 'provisioned') AS "provisionedSteps",
+      MAX(sc.step) FILTER (WHERE sc.status = 'actual') AS "lastSentStep",
+      MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS "lastSentAt"
+    FROM sequence_costs sc
+    WHERE EXISTS (
+      SELECT 1 FROM instantly_campaigns c
+      WHERE c.lead_email = sc.lead_email
+        AND c.campaign_id IS NOT DISTINCT FROM sc.campaign_id
+        AND c.status = 'active'
+        AND c.delivery_status IN ('contacted', 'sent')
+    )
+    GROUP BY sc.campaign_id, sc.lead_email
+    HAVING COUNT(*) FILTER (WHERE sc.status = 'provisioned') > 0
+  `);
+
+  const rows = Array.isArray(result) ? result : ((result as any).rows ?? []);
+  return rows.map((r: Record<string, unknown>): PendingLead => {
+    const provisionedSteps = (r.provisionedSteps as number[] | null) ?? [];
+    const lastSentStep =
+      r.lastSentStep === null || r.lastSentStep === undefined
+        ? null
+        : Number(r.lastSentStep);
+    const lastSentAt = r.lastSentAt ? new Date(r.lastSentAt as string) : null;
+    return {
+      provisionedSteps: provisionedSteps.map((s) => Number(s)),
+      lastSentStep,
+      lastSentAt,
+    };
+  });
+}
+
+/**
+ * GET /internal/audit/sending-forecast
+ *
+ * Platform-scoped (no org). Returns the fleet's available daily capacity AND a
+ * per-day projection of upcoming scheduled send volume from today forward.
+ * Fails loud (500) on any missing source — no silent zero fallbacks.
+ */
+router.get("/sending-forecast", async (_req: Request, res: Response) => {
+  try {
+    const asOf = new Date();
+
+    const apiKey = resolvePlatformInstantlyKey();
+    const accounts = await listAccounts(apiKey);
+    const capacity = computeCapacitySummary(accounts);
+
+    const pendingLeads = await loadPendingLeads();
+    const days = projectDailySchedule(pendingLeads, asOf);
+
+    res.json({
+      asOf: asOf.toISOString(),
+      dailyCapacity: capacity.dailyCapacity,
+      healthyAccountCount: capacity.healthyAccountCount,
+      totalAccountCount: capacity.totalAccountCount,
+      blockedDomainCount: capacity.blockedDomainCount,
+      days,
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] sending-forecast failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
+});
+
+export default router;

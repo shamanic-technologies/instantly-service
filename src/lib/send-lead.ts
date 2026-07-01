@@ -33,7 +33,7 @@ import {
  * status. Add domains here when a sender's deliverability is so poor that
  * even an "active" status is misleading.
  */
-const BLOCKED_DOMAINS = [
+export const BLOCKED_DOMAINS = [
   "arcadiaquest.org", // permanent
 
   // ─── TEMPORARY FULL HALT — 2026-06-29 (remove when re-tested OK) ──────────
@@ -325,13 +325,22 @@ export function filterHealthyAccounts(accounts: Account[]): Account[] {
       );
       return false;
     }
-    const domain = a.email.split("@")[1];
-    if (BLOCKED_DOMAINS.includes(domain)) {
+    if (isBlockedDomain(a.email)) {
       console.log(`[send-lead] Skipping blocked-domain account: ${a.email}`);
       return false;
     }
     return true;
   });
+}
+
+/**
+ * True when the account's email domain is in `BLOCKED_DOMAINS`. Extracted so
+ * the sending-forecast fleet view can count blocked accounts using the exact
+ * same blacklist that gates real sends (no divergent second copy).
+ */
+export function isBlockedDomain(email: string): boolean {
+  const domain = email.split("@")[1] ?? "";
+  return BLOCKED_DOMAINS.includes(domain);
 }
 
 /**

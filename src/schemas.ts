@@ -1065,3 +1065,65 @@ registry.registerPath({
     },
   },
 });
+
+// ─── Audit — sending forecast (staff ops) ───────────────────────────────────
+
+const ForecastDaySchema = z
+  .object({
+    date: z.string().describe("Calendar day, YYYY-MM-DD (UTC)"),
+    scheduledCount: z
+      .number()
+      .int()
+      .describe("Emails scheduled to send that day across the whole fleet"),
+  })
+  .openapi("ForecastDay");
+
+const SendingForecastResponseSchema = z
+  .object({
+    asOf: z.string().describe("ISO8601 timestamp of computation"),
+    dailyCapacity: z
+      .number()
+      .int()
+      .describe(
+        "Emails/day the healthy fleet can send — Σ daily send limit over accounts passing filterHealthyAccounts (Instantly-active + warmup ≥ 100 + domain not blocked)",
+      ),
+    healthyAccountCount: z
+      .number()
+      .int()
+      .describe("Accounts passing filterHealthyAccounts"),
+    totalAccountCount: z
+      .number()
+      .int()
+      .describe("All accounts in the shared workspace before filtering"),
+    blockedDomainCount: z
+      .number()
+      .int()
+      .describe("Accounts excluded because their domain is in BLOCKED_DOMAINS"),
+    days: z
+      .array(ForecastDaySchema)
+      .describe(
+        "Per-day scheduled send volume from today forward, chronological. Bounded: stops when the active-campaign backlog drains. May be [] when nothing is scheduled.",
+      ),
+  })
+  .openapi("SendingForecastResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/audit/sending-forecast",
+  summary: "Fleet sending forecast — daily capacity vs upcoming scheduled volume",
+  description:
+    "Platform-scoped (no org). Returns the cold-email fleet's available daily sending CAPACITY (sum of the daily send limit over only healthy accounts) alongside a TRUE per-day projection of upcoming scheduled send VOLUME (active campaigns' remaining un-sent sequence steps projected across the business-hours weekday send schedule). The volume projection is capacity-INDEPENDENT and bounded by the sequence structure — not a backlog÷capacity approximation. Fails loud (500) on any missing source; no silent zero fallbacks.",
+  responses: {
+    200: {
+      description: "Sending forecast",
+      content: {
+        "application/json": { schema: SendingForecastResponseSchema },
+      },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error (e.g. shared workspace key unavailable)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
