@@ -1169,6 +1169,24 @@ const AccountHealthSchema = z
     inboxPlacement: InboxPlacementSchema.nullable().describe(
       "Inbox-placement breakdown — ALWAYS null in v1: the Instantly V2 API exposes no per-account placement property (only test-scoped, subscription-gated inbox-placement-test results). Never fabricated.",
     ),
+    sentToday: z
+      .number()
+      .int()
+      .describe(
+        "Real (non-inferred) email_sent events observed today (UTC) from this account, from our silver log — the N in an N/dailyLimit read. 0 when none today, never fabricated.",
+      ),
+    queueSize: z
+      .number()
+      .int()
+      .describe(
+        "Emails queued to Instantly for this account but not yet sent — still-provisioned sequence-cost holds on active campaigns attributed to this account (1 campaign = 1 account). 0 when nothing queued. Campaigns not yet sending have an unknown account and are unattributed.",
+      ),
+    accountType: z
+      .string()
+      .nullable()
+      .describe(
+        "Connection provider from Instantly's provider_code — 'google' / 'microsoft' / 'imap'; null when unreported. This is the sending type, NOT the provisioning class (DFY-prewarmed vs legacy), which Instantly does not expose.",
+      ),
   })
   .openapi("AccountHealth");
 
