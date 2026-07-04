@@ -227,10 +227,14 @@ export async function fetchPlacementHistory(
 /** Even-staggered schedule for the Nth automated test of the day (00:00, 06:00, …). */
 function staggeredSchedule(index: number, perDay: number) {
   const hour = Math.floor((24 / perDay) * index);
-  const from = `${String(hour).padStart(2, "0")}:00`;
+  const hh = String(hour).padStart(2, "0");
   return {
-    days: [true, true, true, true, true, true, true], // every day
-    timing: { from },
+    // Instantly wants an OBJECT keyed by day-of-week (0=Sunday..6=Saturday), NOT
+    // an array (an array 400s: `body/schedule/days must be object`). Every day —
+    // placement seed sends are not cold outreach, so weekends are fine.
+    days: { "0": true, "1": true, "2": true, "3": true, "4": true, "5": true, "6": true },
+    // A one-hour send window at the staggered hour. `to` is required alongside `from`.
+    timing: { from: `${hh}:00`, to: `${hh}:59` },
     timezone: "Etc/UTC",
   };
 }
