@@ -10,6 +10,10 @@ import {
 } from "../lib/sending-forecast";
 import { buildAccountHealth } from "../lib/account-health";
 import {
+  fetchSentTodayByAccount,
+  fetchQueueSizeByAccount,
+} from "../lib/account-sending-stats";
+import {
   syncPlacement,
   ensurePlacementSchedule,
   fetchLatestPlacementByAccount,
@@ -120,6 +124,10 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
  * test-scoped, subscription-gated, point-in-time inbox-placement-test results —
  * see lib/account-health.ts). Never fabricated.
  *
+ * `sentToday` / `queueSize` are derived from OUR silver + cost-hold data
+ * (Instantly's account object exposes neither) — see lib/account-sending-stats.ts.
+ * `accountType` maps Instantly's provider_code (google/microsoft/imap).
+ *
  * Fails loud (500) on any missing source; no silent fallbacks.
  */
 router.get("/account-health", async (_req: Request, res: Response) => {
@@ -130,17 +138,26 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       method: "GET",
       path: "/internal/audit/account-health",
     });
-    // Account list (Instantly) + latest placement per account (our silver) run
-    // independently — parallelize. Placement is best-effort per contract (null
-    // when never tested); a live account list is required (fail loud).
-    const [accounts, placementByEmail] = await Promise.all([
-      listAccounts(apiKey),
-      fetchLatestPlacementByAccount(),
-    ]);
+    // Account list (Instantly) + latest placement, sent-today, and queue-size
+    // per account (our silver + cost holds) run independently — parallelize.
+    // Placement/sent/queue are best-effort per contract (null/0 when absent); a
+    // live account list is required (fail loud).
+    const [accounts, placementByEmail, sentTodayByEmail, queueSizeByEmail] =
+      await Promise.all([
+        listAccounts(apiKey),
+        fetchLatestPlacementByAccount(),
+        fetchSentTodayByAccount(),
+        fetchQueueSizeByAccount(),
+      ]);
 
     res.json({
       asOf: asOf.toISOString(),
-      accounts: buildAccountHealth(accounts, placementByEmail),
+      accounts: buildAccountHealth(
+        accounts,
+        placementByEmail,
+        sentTodayByEmail,
+        queueSizeByEmail,
+      ),
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);

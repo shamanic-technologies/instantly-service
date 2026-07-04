@@ -32,6 +32,10 @@ export interface Account {
   signature?: string;
   stat_warmup_score?: number;
   daily_limit?: number;
+  // Instantly's ESP provider code for the mailbox connection. Descriptive of
+  // the account TYPE (how it sends), not its provisioning class: 1=Google,
+  // 2=Microsoft, 3/4=IMAP/SMTP. Absent on older account payloads → null type.
+  provider_code?: number;
 }
 
 interface PaginatedResponse<T> {

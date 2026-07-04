@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildAccountHealth } from "../../src/lib/account-health";
+import { buildAccountHealth, mapProviderCode } from "../../src/lib/account-health";
 import type { Account } from "../../src/lib/instantly-client";
 
 function acc(overrides: Partial<Account> & { email: string }): Account {
@@ -27,6 +27,9 @@ describe("buildAccountHealth", () => {
       blocked: false,
       blockReason: null,
       inboxPlacement: null,
+      sentToday: 0,
+      queueSize: 0,
+      accountType: null,
     });
   });
 
@@ -107,5 +110,51 @@ describe("buildAccountHealth", () => {
       testedAt: "2026-06-30T09:00:00.000Z",
     });
     expect(byEmail["b@good.com"].inboxPlacement).toBeNull();
+  });
+
+  it("injects sentToday / queueSize from their maps, 0 when absent (never fabricated)", () => {
+    const sent = new Map([["a@good.com", 4]]);
+    const queue = new Map([["a@good.com", 12]]);
+    const rows = buildAccountHealth(
+      [acc({ email: "a@good.com" }), acc({ email: "b@good.com" })],
+      new Map(),
+      sent,
+      queue,
+    );
+    const byEmail = Object.fromEntries(rows.map((r) => [r.email, r]));
+    expect(byEmail["a@good.com"].sentToday).toBe(4);
+    expect(byEmail["a@good.com"].queueSize).toBe(12);
+    // Absent from both maps → honest 0, not fabricated.
+    expect(byEmail["b@good.com"].sentToday).toBe(0);
+    expect(byEmail["b@good.com"].queueSize).toBe(0);
+  });
+
+  it("maps provider_code to accountType (google/microsoft/imap), null otherwise", () => {
+    const rows = buildAccountHealth([
+      acc({ email: "g@good.com", provider_code: 1 }),
+      acc({ email: "m@good.com", provider_code: 2 }),
+      acc({ email: "i@good.com", provider_code: 3 }),
+      acc({ email: "j@good.com", provider_code: 4 }),
+      acc({ email: "n@good.com" }),
+      acc({ email: "u@good.com", provider_code: 99 }),
+    ]);
+    const byEmail = Object.fromEntries(rows.map((r) => [r.email, r.accountType]));
+    expect(byEmail["g@good.com"]).toBe("google");
+    expect(byEmail["m@good.com"]).toBe("microsoft");
+    expect(byEmail["i@good.com"]).toBe("imap");
+    expect(byEmail["j@good.com"]).toBe("imap");
+    expect(byEmail["n@good.com"]).toBeNull();
+    expect(byEmail["u@good.com"]).toBeNull();
+  });
+});
+
+describe("mapProviderCode", () => {
+  it("maps known codes and returns null for unknown/absent", () => {
+    expect(mapProviderCode(1)).toBe("google");
+    expect(mapProviderCode(2)).toBe("microsoft");
+    expect(mapProviderCode(3)).toBe("imap");
+    expect(mapProviderCode(4)).toBe("imap");
+    expect(mapProviderCode(0)).toBeNull();
+    expect(mapProviderCode(undefined)).toBeNull();
   });
 });

@@ -1,0 +1,89 @@
+name: Inbox-placement tests (maintain + sync)
+
+# Keeps the fleet inbox-placement deliverability history fresh. Two steps:
+#   1. POST /internal/audit/placement-test/ensure — ensure the recurring
+#      automated (type-2) placement tests exist so Instantly runs them
+#      server-side on a schedule. Idempotent (creates only the missing ones).
+#      SPENDS Growth-sub quota only when it creates a test, and is GATED behind
+#      PLACEMENT_TESTS_ENABLED=true on the service — returns 409 (tolerated
+#      here) until armed, so this workflow is safe to land before arming.
+#   2. POST /internal/audit/placement-test/sync — poll the tests + analytics
+#      into our Bronze/Silver/Gold tables so account-health reflects the latest
+#      results. Read-only against Instantly (spends no quota).
+#
+# Runs every 6h. `ensure` is idempotent so 4x/day never over-creates; `sync`
+# 4x/day keeps results fresh. Scheduled runs fire from the DEFAULT branch (main).
+#
+# Required secrets (already used by reconcile-cron.yml):
+#   INSTANTLY_SERVICE_URL       — production service URL
+#   INSTANTLY_SERVICE_API_KEY   — service API key for /internal/* routes
+#
+# Manually trigger via the workflow_dispatch button on the GitHub Actions page.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  placement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: POST /internal/audit/placement-test/ensure
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
+            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
+            exit 1
+          fi
+
+          response_file=$(mktemp)
+          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time 120 \
+            "${SERVICE_URL}/internal/audit/placement-test/ensure")
+
+          echo "HTTP ${status}"
+          cat "${response_file}"
+          echo
+
+          # 200 = tests ensured. 409 = PLACEMENT_TESTS_ENABLED not armed yet —
+          # tolerated (sync still runs, no scheduling created). Anything else
+          # (402 quota, 400, 5xx) is a real failure.
+          if [ "${status}" != "200" ] && [ "${status}" != "409" ]; then
+            echo "placement-test/ensure failed with HTTP ${status}"
+            exit 1
+          fi
+
+      - name: POST /internal/audit/placement-test/sync
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          response_file=$(mktemp)
+          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time 60 \
+            "${SERVICE_URL}/internal/audit/placement-test/sync")
+
+          echo "HTTP ${status}"
+          cat "${response_file}"
+          echo
+
+          # Endpoint returns 202 Accepted and runs the sweep in the background.
+          # Verify completion via Railway logs (`placement-sync: done`), NOT this
+          # curl exit code.
+          if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
+            echo "placement-test/sync dispatch failed with HTTP ${status}"
+            exit 1
+          fi

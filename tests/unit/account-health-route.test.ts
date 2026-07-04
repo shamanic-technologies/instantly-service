@@ -61,6 +61,12 @@ describe("GET /internal/audit/account-health", () => {
       expect(typeof a.blocked).toBe("boolean");
       expect(a.blockReason === null || typeof a.blockReason === "string").toBe(true);
       expect(a.inboxPlacement).toBeNull();
+      // New per-account throughput fields — present + typed, honest defaults.
+      expect(typeof a.sentToday).toBe("number");
+      expect(typeof a.queueSize).toBe("number");
+      expect(a.accountType === null || typeof a.accountType === "string").toBe(true);
+      expect(a.sentToday).toBe(0);
+      expect(a.queueSize).toBe(0);
     }
 
     const byEmail = Object.fromEntries(b.accounts.map((a: any) => [a.email, a]));
