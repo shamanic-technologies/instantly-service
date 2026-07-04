@@ -2210,6 +2210,19 @@
           },
           "inboxPlacement": {
             "$ref": "#/components/schemas/InboxPlacement"
+          },
+          "sentToday": {
+            "type": "integer",
+            "description": "Real (non-inferred) email_sent events observed today (UTC) from this account, from our silver log — the N in an N/dailyLimit read. 0 when none today, never fabricated."
+          },
+          "queueSize": {
+            "type": "integer",
+            "description": "Emails queued to Instantly for this account but not yet sent — still-provisioned sequence-cost holds on active campaigns attributed to this account (1 campaign = 1 account). 0 when nothing queued. Campaigns not yet sending have an unknown account and are unattributed."
+          },
+          "accountType": {
+            "type": "string",
+            "nullable": true,
+            "description": "Connection provider from Instantly's provider_code — 'google' / 'microsoft' / 'imap'; null when unreported. This is the sending type, NOT the provisioning class (DFY-prewarmed vs legacy), which Instantly does not expose."
           }
         },
         "required": [
@@ -2220,7 +2233,10 @@
           "dailyLimit",
           "blocked",
           "blockReason",
-          "inboxPlacement"
+          "inboxPlacement",
+          "sentToday",
+          "queueSize",
+          "accountType"
         ]
       },
       "InboxPlacement": {

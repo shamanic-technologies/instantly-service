@@ -51,6 +51,47 @@ export interface AccountHealth {
   blockReason: AccountBlockReason | null;
   /** Latest blended placement from our BSG history; null when never tested. */
   inboxPlacement: InboxPlacement | null;
+  /**
+   * Count of REAL (non-inferred) `email_sent` events observed today (UTC) from
+   * this account, derived from our silver event log. The "N" in a "N/dailyLimit"
+   * read. 0 when the account has not sent today (honest 0, never fabricated).
+   */
+  sentToday: number;
+  /**
+   * Emails queued to Instantly for this account but not yet sent — the count of
+   * still-`provisioned` sequence-cost holds on active campaigns whose observed
+   * sending account is this one (one campaign = one lead = one account). 0 when
+   * nothing is queued to it. Campaigns pushed but not yet sending have no
+   * observed account, so their imminent step-1 holds are not attributed to any
+   * account (documented gap — the account is unknown until the first send).
+   */
+  queueSize: number;
+  /**
+   * Descriptive account type from Instantly's `provider_code` — how the mailbox
+   * sends: "google" / "microsoft" / "imap". Null when Instantly reports no code.
+   * NOTE: this is the connection provider, NOT the provisioning class
+   * (DFY-prewarmed vs legacy shared-IP), which Instantly's account object does
+   * not expose — that deeper classification is a separate follow-up (see #389).
+   */
+  accountType: string | null;
+}
+
+/**
+ * Map Instantly's `provider_code` to a human account type. 1=Google, 2=Microsoft,
+ * 3/4=IMAP/SMTP. Any other / absent code → null (never fabricated).
+ */
+export function mapProviderCode(code: number | undefined): string | null {
+  switch (code) {
+    case 1:
+      return "google";
+    case 2:
+      return "microsoft";
+    case 3:
+    case 4:
+      return "imap";
+    default:
+      return null;
+  }
 }
 
 /** Existing status representation, mirroring the accounts-sync mapping. */
@@ -74,6 +115,8 @@ function domainOf(email: string): string | null {
 export function buildAccountHealth(
   accounts: Account[],
   placementByEmail: Map<string, InboxPlacement> = new Map(),
+  sentTodayByEmail: Map<string, number> = new Map(),
+  queueSizeByEmail: Map<string, number> = new Map(),
 ): AccountHealth[] {
   return accounts.map((a) => {
     const blockReason = classifyAccountBlock(a);
@@ -86,6 +129,9 @@ export function buildAccountHealth(
       blocked: blockReason !== null,
       blockReason,
       inboxPlacement: placementByEmail.get(a.email) ?? null,
+      sentToday: sentTodayByEmail.get(a.email) ?? 0,
+      queueSize: queueSizeByEmail.get(a.email) ?? 0,
+      accountType: mapProviderCode(a.provider_code),
     };
   });
 }
