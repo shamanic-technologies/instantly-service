@@ -682,8 +682,11 @@ export interface CreateInboxPlacementTestParams {
   run_immediately?: boolean;
   status?: number;
   schedule?: {
-    days: boolean[];
-    timing: { from: string };
+    // Instantly wants `days` as an OBJECT keyed by day-of-week (0=Sunday..6=Saturday)
+    // → boolean, same shape as campaign_schedule.days — NOT a boolean[] (that
+    // 400s: `body/schedule/days must be object`). `timing` needs both from AND to.
+    days: Record<string, boolean>;
+    timing: { from: string; to: string };
     timezone: string;
   };
 }
