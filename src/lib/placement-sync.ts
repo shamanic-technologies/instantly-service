@@ -235,7 +235,11 @@ function staggeredSchedule(index: number, perDay: number) {
     days: { "0": true, "1": true, "2": true, "3": true, "4": true, "5": true, "6": true },
     // A one-hour send window at the staggered hour. `to` is required alongside `from`.
     timing: { from: `${hh}:00`, to: `${hh}:59` },
-    timezone: "Etc/UTC",
+    // Instantly's schedule `timezone` is a fixed enum — "Etc/UTC" is rejected
+    // (`must be equal to one of the allowed values`). America/Chicago is the
+    // proven-accepted IANA value (createCampaign uses it); the staggered hours
+    // are then Chicago-local, which is fine for a daily fleet placement test.
+    timezone: "America/Chicago",
   };
 }
 
