@@ -14,10 +14,12 @@ vi.mock("../../src/db", () => ({
   },
 }));
 
-// ── Mock the Instantly warmup PATCH ──────────────────────────────────────────
+// ── Mock the Instantly warmup + daily-limit PATCHes ──────────────────────────
 const mockSetWarmup = vi.fn(async () => ({}));
+const mockSetDaily = vi.fn(async () => ({}));
 vi.mock("../../src/lib/instantly-client", () => ({
   setWarmupDailyLimit: (...a: unknown[]) => mockSetWarmup(...a),
+  setDailyLimit: (...a: unknown[]) => mockSetDaily(...a),
   listAccounts: vi.fn(async () => []),
 }));
 
@@ -45,6 +47,7 @@ beforeEach(() => {
   mockUpdateSet.mockClear();
   mockUpdateWhere.mockClear();
   mockSetWarmup.mockClear();
+  mockSetDaily.mockClear();
 });
 
 describe("reconcileLifecycle", () => {
@@ -64,8 +67,10 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 1, failed: 0 });
+    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 1, dailyLimitPatched: 1, failed: 0 });
     expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "prod@dfy.com", 10);
+    // in_production also opens the campaign daily max-send to 40.
+    expect(mockSetDaily).toHaveBeenCalledWith("api-key", "prod@dfy.com", 40);
     expect(mockInsertValues).toHaveBeenCalledTimes(1);
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(event.fromStatus).toBe("in_recovery");
@@ -90,7 +95,7 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, failed: 0 });
+    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, dailyLimitPatched: 0, failed: 0 });
     expect(mockSetWarmup).not.toHaveBeenCalled();
     expect(mockInsertValues).not.toHaveBeenCalled();
     expect(mockUpdateSet).not.toHaveBeenCalled();
@@ -159,7 +164,8 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 0, failed: 0 });
+    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 0, dailyLimitPatched: 0, failed: 0 });
+    expect(mockSetDaily).not.toHaveBeenCalled();
     expect(mockSetWarmup).not.toHaveBeenCalled();
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(event.toStatus).toBe("deactivated_by_instantly");
@@ -204,7 +210,7 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, failed: 1 });
+    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, dailyLimitPatched: 0, failed: 1 });
     expect(mockInsertValues).not.toHaveBeenCalled();
     expect(mockUpdateSet).not.toHaveBeenCalled();
   });

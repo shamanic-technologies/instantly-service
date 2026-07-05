@@ -2,10 +2,12 @@ import { describe, it, expect } from "vitest";
 import {
   deriveLifecycle,
   warmupDailyForStatus,
+  dailyLimitForStatus,
   emailDomain,
   isDeliveryFull,
   IN_PRODUCTION_WARMUP_DAILY,
   RECOVERY_WARMUP_DAILY,
+  IN_PRODUCTION_DAILY_LIMIT,
   type DeriveLifecycleInput,
 } from "../../src/lib/account-lifecycle";
 
@@ -117,6 +119,18 @@ describe("warmupDailyForStatus", () => {
   });
   it("deactivated_by_instantly → null (do NOT touch warmup)", () => {
     expect(warmupDailyForStatus("deactivated_by_instantly")).toBeNull();
+  });
+});
+
+describe("dailyLimitForStatus", () => {
+  it("in_production → 40 (opens the campaign daily max-send)", () => {
+    expect(dailyLimitForStatus("in_production")).toBe(IN_PRODUCTION_DAILY_LIMIT);
+    expect(IN_PRODUCTION_DAILY_LIMIT).toBe(40);
+  });
+  it("every other state → null (leave daily_limit untouched, queue drains)", () => {
+    expect(dailyLimitForStatus("in_recovery")).toBeNull();
+    expect(dailyLimitForStatus("deactivated_by_user")).toBeNull();
+    expect(dailyLimitForStatus("deactivated_by_instantly")).toBeNull();
   });
 });
 
