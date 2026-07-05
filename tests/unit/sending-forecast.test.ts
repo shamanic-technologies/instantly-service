@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Account } from "../../src/lib/instantly-client";
+import type { LifecycleView } from "../../src/lib/account-lifecycle-sync";
 import {
   computeCapacitySummary,
   projectDailySchedule,
@@ -19,34 +20,63 @@ function acct(overrides: Partial<Account>): Account {
   };
 }
 
+function lc(status: LifecycleView["status"]): LifecycleView {
+  return { status, reason: null, updatedAt: "2026-07-05T00:00:00.000Z" };
+}
+
 describe("computeCapacitySummary", () => {
-  it("sums daily_limit over ONLY healthy accounts; counts totals + blocked", () => {
+  it("sums daily_limit over ONLY in_production accounts; counts totals + deactivated-by-user", () => {
     const accounts: Account[] = [
-      acct({ email: "a@good.com", daily_limit: 30 }), // healthy
-      acct({ email: "b@good.com", daily_limit: 20 }), // healthy
-      acct({ email: "c@good.com", stat_warmup_score: 80, daily_limit: 50 }), // under-warmed → excluded
-      acct({ email: "d@good.com", status: 0, daily_limit: 50 }), // inactive → excluded
-      acct({ email: "e@distribute.you", daily_limit: 40 }), // blocked domain → excluded
-      acct({ email: "f@arcadiaquest.org", daily_limit: 40 }), // blocked domain → excluded
+      acct({ email: "a@good.com", daily_limit: 30 }), // in_production
+      acct({ email: "b@good.com", daily_limit: 20 }), // in_production
+      acct({ email: "c@good.com", daily_limit: 50 }), // in_recovery → excluded
+      acct({ email: "d@good.com", daily_limit: 50 }), // deactivated_by_instantly → excluded
+      acct({ email: "e@good.com", daily_limit: 40 }), // deactivated_by_user → excluded, blocked
+      acct({ email: "f@good.com", daily_limit: 40 }), // deactivated_by_user → excluded, blocked
     ];
-    const s = computeCapacitySummary(accounts);
+    const lifecycle = new Map<string, LifecycleView>([
+      ["a@good.com", lc("in_production")],
+      ["b@good.com", lc("in_production")],
+      ["c@good.com", lc("in_recovery")],
+      ["d@good.com", lc("deactivated_by_instantly")],
+      ["e@good.com", lc("deactivated_by_user")],
+      ["f@good.com", lc("deactivated_by_user")],
+    ]);
+    const s = computeCapacitySummary(accounts, lifecycle);
     expect(s.dailyCapacity).toBe(50); // 30 + 20 only
     expect(s.healthyAccountCount).toBe(2);
     expect(s.totalAccountCount).toBe(6);
-    expect(s.blockedDomainCount).toBe(2);
+    expect(s.blockedDomainCount).toBe(2); // two deactivated_by_user
   });
 
-  it("healthy account missing daily_limit contributes 0 (no fabricated number)", () => {
-    const s = computeCapacitySummary([
-      acct({ email: "a@good.com", daily_limit: undefined }),
-      acct({ email: "b@good.com", daily_limit: 15 }),
-    ]);
+  it("in_production account missing daily_limit contributes 0 (no fabricated number)", () => {
+    const s = computeCapacitySummary(
+      [
+        acct({ email: "a@good.com", daily_limit: undefined }),
+        acct({ email: "b@good.com", daily_limit: 15 }),
+      ],
+      new Map<string, LifecycleView>([
+        ["a@good.com", lc("in_production")],
+        ["b@good.com", lc("in_production")],
+      ]),
+    );
     expect(s.dailyCapacity).toBe(15);
     expect(s.healthyAccountCount).toBe(2);
   });
 
+  it("account absent from the lifecycle map contributes no capacity and is not blocked-domain", () => {
+    const s = computeCapacitySummary(
+      [acct({ email: "a@good.com", daily_limit: 30 })],
+      new Map(),
+    );
+    expect(s.dailyCapacity).toBe(0);
+    expect(s.healthyAccountCount).toBe(0);
+    expect(s.totalAccountCount).toBe(1);
+    expect(s.blockedDomainCount).toBe(0);
+  });
+
   it("empty fleet → all zeros (real number, blocked ≤ total)", () => {
-    const s = computeCapacitySummary([]);
+    const s = computeCapacitySummary([], new Map());
     expect(s).toEqual({
       dailyCapacity: 0,
       healthyAccountCount: 0,

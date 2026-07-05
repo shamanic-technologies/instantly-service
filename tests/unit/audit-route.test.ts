@@ -42,20 +42,29 @@ describe("GET /internal/audit/sending-forecast", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockResolvePlatformKey.mockResolvedValue("test-key");
+    mockExecute.mockResolvedValue({ rows: [] });
   });
 
   it("returns the locked shape with all fields present + typed", async () => {
     mockListAccounts.mockResolvedValue([
       { email: "a@good.com", status: 1, stat_warmup_score: 100, daily_limit: 30 },
       { email: "b@good.com", status: 1, stat_warmup_score: 100, daily_limit: 20 },
-      { email: "c@distribute.you", status: 1, stat_warmup_score: 100, daily_limit: 40 }, // blocked
+      { email: "c@distribute.you", status: 1, stat_warmup_score: 100, daily_limit: 40 },
     ]);
-    // One never-contacted lead with 2 pending steps.
-    mockExecute.mockResolvedValue({
-      rows: [
-        { provisionedSteps: [1, 2], lastSentStep: null, lastSentAt: null },
-      ],
-    });
+    // Route reads lifecycle (Promise.all) then pending leads. Seed in that order:
+    // a + b are in_production (capacity 50); c is deactivated_by_user (blocked).
+    mockExecute
+      .mockResolvedValueOnce({
+        rows: [
+          { email: "a@good.com", status: "in_production", reason: "passed", updatedAt: "2026-07-05T00:00:00.000Z" },
+          { email: "b@good.com", status: "in_production", reason: "passed", updatedAt: "2026-07-05T00:00:00.000Z" },
+          { email: "c@distribute.you", status: "deactivated_by_user", reason: "brand_domain", updatedAt: "2026-07-05T00:00:00.000Z" },
+        ],
+      })
+      // One never-contacted lead with 2 pending steps.
+      .mockResolvedValueOnce({
+        rows: [{ provisionedSteps: [1, 2], lastSentStep: null, lastSentAt: null }],
+      });
 
     const app = await makeApp();
     const res = await request(app).get("/internal/audit/sending-forecast");
@@ -64,7 +73,7 @@ describe("GET /internal/audit/sending-forecast", () => {
     const b = res.body;
     expect(typeof b.asOf).toBe("string");
     expect(Number.isNaN(Date.parse(b.asOf))).toBe(false);
-    expect(b.dailyCapacity).toBe(50); // 30 + 20 healthy only
+    expect(b.dailyCapacity).toBe(50); // 30 + 20 in_production only
     expect(b.healthyAccountCount).toBe(2);
     expect(b.totalAccountCount).toBe(3);
     expect(b.blockedDomainCount).toBe(1);
