@@ -66,6 +66,14 @@ export const IN_PRODUCTION_WARMUP_DAILY = 10; // fully warmed → maintenance vo
 export const RECOVERY_WARMUP_DAILY = 50; // recover reputation → warm harder
 
 /**
+ * Campaign daily max-send pushed to Instantly ONLY when an account flips INTO
+ * in_production (fully warmed → open the tap to 40). Other states leave the
+ * campaign `daily_limit` untouched so an in_recovery/deactivated account keeps
+ * draining its already-loaded queue at whatever limit it had.
+ */
+export const IN_PRODUCTION_DAILY_LIMIT = 40;
+
+/**
  * Pure lifecycle derivation. First match wins (order is load-bearing — a domain
  * in the policy is deactivated_by_user even if Instantly-disabled or under-warmed).
  */
@@ -96,7 +104,6 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
 /**
  * Warmup daily volume to PATCH into Instantly when an account flips INTO a state.
  * `null` ⇒ do NOT touch warmup (deactivated_by_instantly — the account is off).
- * The campaign `daily_limit` (max send) is NEVER touched here (queue keeps draining).
  */
 export function warmupDailyForStatus(status: LifecycleStatus): number | null {
   switch (status) {
@@ -108,6 +115,16 @@ export function warmupDailyForStatus(status: LifecycleStatus): number | null {
     case "deactivated_by_instantly":
       return null;
   }
+}
+
+/**
+ * Campaign daily max-send to PATCH into Instantly on a flip. Only in_production
+ * opens the tap (→ 40); every other state returns `null` = do NOT touch the
+ * campaign daily_limit, so an in_recovery/deactivated account keeps draining its
+ * already-loaded queue at its current limit.
+ */
+export function dailyLimitForStatus(status: LifecycleStatus): number | null {
+  return status === "in_production" ? IN_PRODUCTION_DAILY_LIMIT : null;
 }
 
 /** Domain part of an email (lowercased), or "" when there is no `@domain`. */
