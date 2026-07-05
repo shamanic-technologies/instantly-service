@@ -2341,11 +2341,12 @@
         "properties": {
           "created": {
             "type": "integer",
-            "description": "One-time placement tests created this call (1)"
+            "description": "One-time placement tests created this call (1, or 0 when no healthy senders)"
           },
           "testCode": {
             "type": "string",
-            "description": "test_code assigned to the created one-time test"
+            "nullable": true,
+            "description": "test_code of the created one-time test; null when nothing was created"
           },
           "recipientEsps": {
             "type": "array",
@@ -2353,12 +2354,17 @@
               "type": "string"
             },
             "description": "Recipient ESPs the test seeds (Google/Outlook)"
+          },
+          "senderCount": {
+            "type": "integer",
+            "description": "Number of live-send-eligible accounts the test seeds from"
           }
         },
         "required": [
           "created",
           "testCode",
-          "recipientEsps"
+          "recipientEsps",
+          "senderCount"
         ]
       },
       "PlacementEnsureResponse": {
