@@ -674,7 +674,9 @@ export interface CreateInboxPlacementTestParams {
   sending_method: number;
   email_subject: string;
   email_body: string;
-  /** Seed recipient inboxes (Instantly-managed) to send to. */
+  /** Delivery mode — required by Instantly. 1 = send from the connected accounts. */
+  delivery_mode?: number;
+  /** Sender accounts to test from (required — a test never auto-sends fleet-wide). */
   emails: string[];
   recipients_labels: EmailServiceProviderOption[];
   text_only?: boolean;
