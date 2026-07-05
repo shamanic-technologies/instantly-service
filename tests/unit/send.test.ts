@@ -93,11 +93,12 @@ vi.mock("../../src/lib/status-gold", () => ({
   refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
 }));
 
-// Manual-blacklist set: default empty so the send path stays healthy unless a
-// test overrides it. Isolates the send route from the DB read.
-const mockFetchManuallyBlacklisted = vi.fn(async () => new Set<string>());
-vi.mock("../../src/lib/account-blacklist", () => ({
-  fetchManuallyBlacklistedEmails: () => mockFetchManuallyBlacklisted(),
+// The live-send pool is the silver `in_production` lifecycle set, read via
+// fetchInProductionAccounts. Reuse mockListAccounts as the pool source so the
+// existing POST /send tests that seed accounts via mockListAccounts keep working
+// (both return Account[]); a test can still override it per-case.
+vi.mock("../../src/lib/account-lifecycle-sync", () => ({
+  fetchInProductionAccounts: () => mockListAccounts(),
 }));
 
 import {
@@ -106,8 +107,7 @@ import {
   pickRandomAccount,
   buildSequenceSteps,
   stripAccountSignature,
-  classifyAccountBlock,
-  filterHealthyAccounts,
+  sendLeadToInstantly,
 } from "../../src/lib/send-lead";
 import { requireOrgId } from "../../src/middleware/requireOrgId";
 import type { Account } from "../../src/lib/instantly-client";
@@ -231,52 +231,42 @@ describe("pickRandomAccount", () => {
   });
 });
 
-describe("classifyAccountBlock — manual blacklist precedence", () => {
-  it("returns 'manual' when the email is in the manual-blacklist set (highest precedence)", () => {
-    const set = new Set(["rested@x.com"]);
-    // Otherwise fully healthy account still reports manual.
-    const a = acct({ email: "rested@x.com", status: 1, stat_warmup_score: 100 });
-    expect(classifyAccountBlock(a, set)).toBe("manual");
+describe("send gate — only in_production accounts (lifecycle)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const seq = [{ step: 1, bodyHtml: "<p>x</p>", daysSinceLastStep: 0 }];
+  const lead = { email: "lead@x.com", firstName: "L" } as any;
+
+  it("returns no_healthy_accounts_available when the in_production pool is empty", async () => {
+    mockListAccounts.mockResolvedValueOnce([]);
+    const res = await sendLeadToInstantly({
+      apiKey: "k",
+      campaignName: "c",
+      subject: "s",
+      sortedSequence: seq,
+      lead,
+    });
+    expect(res).toEqual({ ok: false, reason: "no_healthy_accounts_available" });
   });
 
-  it("'manual' wins over inactive / under-warmed / blacklisted-domain", () => {
-    const set = new Set(["c@distribute.you"]);
-    // distribute.you is a blocked domain, inactive, and under-warmed — manual still wins.
-    const a = acct({ email: "c@distribute.you", status: 0, stat_warmup_score: 10 });
-    expect(classifyAccountBlock(a, set)).toBe("manual");
-  });
-
-  it("falls through to the derived reasons when not manually blacklisted", () => {
-    const set = new Set(["someone-else@x.com"]);
-    expect(classifyAccountBlock(acct({ email: "y@good.com", status: 0 }), set)).toBe("inactive");
-    expect(classifyAccountBlock(acct({ email: "z@good.com", stat_warmup_score: 42 }), set)).toBe("under-warmed");
-    expect(classifyAccountBlock(acct({ email: "ok@good.com", status: 1, stat_warmup_score: 100 }), set)).toBeNull();
-  });
-
-  it("defaults to no manual blacklist when the set is omitted", () => {
-    expect(classifyAccountBlock(acct({ email: "ok@good.com", status: 1, stat_warmup_score: 100 }))).toBeNull();
-  });
-});
-
-describe("filterHealthyAccounts — excludes manually-blacklisted", () => {
-  it("drops a manually-blacklisted account from the eligible pool", () => {
-    const accounts = [
-      acct({ email: "keep@good.com", status: 1, stat_warmup_score: 100 }),
-      acct({ email: "rest@good.com", status: 1, stat_warmup_score: 100 }),
-    ];
-    const healthy = filterHealthyAccounts(accounts, new Set(["rest@good.com"]));
-    expect(healthy.map((a) => a.email)).toEqual(["keep@good.com"]);
-  });
-
-  it("keeps everything otherwise-healthy when the manual set is empty", () => {
-    const accounts = [
-      acct({ email: "a@good.com", status: 1, stat_warmup_score: 100 }),
-      acct({ email: "b@good.com", status: 1, stat_warmup_score: 100 }),
-    ];
-    expect(filterHealthyAccounts(accounts).map((a) => a.email)).toEqual([
-      "a@good.com",
-      "b@good.com",
+  it("picks an account from the in_production pool", async () => {
+    mockListAccounts.mockResolvedValueOnce([
+      acct({ email: "prod@good.com", stat_warmup_score: 100 }),
     ]);
+    mockCreateCampaign.mockResolvedValue({ id: "ic", status: "draft" });
+    mockUpdateCampaign.mockResolvedValue({});
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["prod@good.com"], not_sending_status: null });
+    mockAddLeads.mockResolvedValue({ added: 1 });
+    mockUpdateCampaignStatus.mockResolvedValue({});
+    const res = await sendLeadToInstantly({
+      apiKey: "k",
+      campaignName: "c",
+      subject: "s",
+      sortedSequence: seq,
+      lead,
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.value.account.email).toBe("prod@good.com");
   });
 });
 
@@ -581,10 +571,12 @@ describe("POST /send", () => {
     mockRefreshLeadStatusCurrent.mockResolvedValue(undefined);
   });
 
-  it("should exclude blocked-domain accounts from new campaign creation", async () => {
+  it("sends from the in_production pool (silver-gated, pre-filtered)", async () => {
+    // The send path reads the pre-derived in_production pool from silver
+    // (fetchInProductionAccounts). It does NOT re-filter by status/warmup/domain
+    // at send time — that eligibility is owned by the lifecycle reconcile.
     mockListAccounts.mockResolvedValue([
-      { email: "blocked@arcadiaquest.org", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
-      { email: "active@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
+      { email: "prod@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
     ]);
     mockNewCampaignFlow();
     const app = await createSendApp();
@@ -594,58 +586,7 @@ describe("POST /send", () => {
     expect(mockUpdateCampaign).toHaveBeenCalledWith(
       "test-instantly-key",
       "inst-camp-new",
-      expect.objectContaining({ email_list: ["active@example.com"] }),
-    );
-  });
-
-  it("should exclude @distribute.you and @growthagency.dev (pulled-from-cold) accounts", async () => {
-    mockListAccounts.mockResolvedValue([
-      { email: "k@distribute.you", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
-      { email: "k@growthagency.dev", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
-      { email: "active@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
-    ]);
-    mockNewCampaignFlow();
-    const app = await createSendApp();
-
-    await request(app).post("/send").set(identityHeadersObj).send(validBody);
-
-    expect(mockUpdateCampaign).toHaveBeenCalledWith(
-      "test-instantly-key",
-      "inst-camp-new",
-      expect.objectContaining({ email_list: ["active@example.com"] }),
-    );
-  });
-
-  it("should exclude under-warmed accounts (Health Score < 100)", async () => {
-    mockListAccounts.mockResolvedValue([
-      { email: "warming@example.com", warmup_status: 1, status: 1, stat_warmup_score: 99 },
-      { email: "noscore@example.com", warmup_status: 1, status: 1 },
-    ]);
-    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
-    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
-
-    const app = await createSendApp();
-    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-
-    expect(res.status).toBe(500);
-    expect(res.body.details).toContain("No active Instantly accounts available");
-    expect(mockCreateCampaign).not.toHaveBeenCalled();
-  });
-
-  it("should send from a fully-warmed (score 100) account", async () => {
-    mockListAccounts.mockResolvedValue([
-      { email: "warming@example.com", warmup_status: 1, status: 1, stat_warmup_score: 95, signature: "<p>Sig</p>" },
-      { email: "warmed@example.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
-    ]);
-    mockNewCampaignFlow();
-    const app = await createSendApp();
-
-    await request(app).post("/send").set(identityHeadersObj).send(validBody);
-
-    expect(mockUpdateCampaign).toHaveBeenCalledWith(
-      "test-instantly-key",
-      "inst-camp-new",
-      expect.objectContaining({ email_list: ["warmed@example.com"] }),
+      expect.objectContaining({ email_list: ["prod@example.com"] }),
     );
   });
 
@@ -701,11 +642,8 @@ describe("POST /send", () => {
     );
   });
 
-  it("should return 500 when only blocked-domain accounts are available", async () => {
-    mockListAccounts.mockResolvedValue([
-      { email: "a@arcadiaquest.org", warmup_status: 1, status: 1 },
-      { email: "b@arcadiaquest.org", warmup_status: 1, status: 2 },
-    ]);
+  it("should return 500 when the in_production pool is empty", async () => {
+    mockListAccounts.mockResolvedValue([]); // no in_production accounts
     mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
     mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
 
@@ -715,70 +653,6 @@ describe("POST /send", () => {
     expect(res.status).toBe(500);
     expect(res.body.details).toContain("No active Instantly accounts available");
     expect(mockCreateCampaign).not.toHaveBeenCalled();
-  });
-
-  it("should return 500 when all accounts are inactive", async () => {
-    mockListAccounts.mockResolvedValue([
-      { email: "inactive1@test.com", warmup_status: 0, status: 0 },
-      { email: "inactive2@test.com", warmup_status: 0, status: 0 },
-    ]);
-    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
-    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
-
-    const app = await createSendApp();
-    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-
-    expect(res.status).toBe(500);
-    expect(res.body.details).toContain("No active Instantly accounts available");
-    expect(mockCreateCampaign).not.toHaveBeenCalled();
-  });
-
-  it("should treat status 2 (active+warming) accounts as active", async () => {
-    mockListAccounts.mockResolvedValue([
-      { email: "warming@test.com", warmup_status: 1, status: 2, stat_warmup_score: 100, signature: "<p>Sig</p>" },
-    ]);
-    mockNewCampaignFlow();
-    const app = await createSendApp();
-
-    await request(app).post("/send").set(identityHeadersObj).send(validBody);
-
-    expect(mockUpdateCampaign).toHaveBeenCalledWith(
-      "test-instantly-key",
-      "inst-camp-new",
-      expect.objectContaining({ email_list: ["warming@test.com"] }),
-    );
-  });
-
-  it("should reject accounts with negative status", async () => {
-    mockListAccounts.mockResolvedValue([
-      { email: "suspended@test.com", warmup_status: 0, status: -3 },
-    ]);
-    mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
-    mockDbWhere.mockResolvedValueOnce([]); // findExistingCampaign
-
-    const app = await createSendApp();
-    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-
-    expect(res.status).toBe(500);
-    expect(res.body.details).toContain("No active Instantly accounts available");
-  });
-
-  it("should only use active accounts and ignore inactive ones", async () => {
-    mockListAccounts.mockResolvedValue([
-      { email: "inactive@test.com", warmup_status: 0, status: 0 },
-      { email: "active@test.com", warmup_status: 1, status: 1, stat_warmup_score: 100, signature: "<p>Sig</p>" },
-    ]);
-    mockNewCampaignFlow();
-    const app = await createSendApp();
-
-    await request(app).post("/send").set(identityHeadersObj).send(validBody);
-
-    // The campaign should be assigned to the active account only
-    expect(mockUpdateCampaign).toHaveBeenCalledWith(
-      "test-instantly-key",
-      "inst-camp-new",
-      expect.objectContaining({ email_list: ["active@test.com"] }),
-    );
   });
 
   it("should reject the old email format", async () => {
@@ -1392,10 +1266,8 @@ describe("POST /send", () => {
     mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
     mockDbReturning.mockReset();
     mockDbReturning.mockResolvedValueOnce([{ id: "reserved-1", campaignId: "camp-1", instantlyCampaignId: "reserving:x" }]); // RESERVE → winner
-    // No healthy accounts → sendLeadToInstantly returns { ok: false }.
-    mockListAccounts.mockResolvedValue([
-      { email: "dead@test.com", warmup_status: 0, status: 0 },
-    ]);
+    // Empty in_production pool → sendLeadToInstantly returns { ok: false }.
+    mockListAccounts.mockResolvedValue([]);
 
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);

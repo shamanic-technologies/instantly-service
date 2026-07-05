@@ -23,7 +23,8 @@
  */
 
 import type { Account } from "./instantly-client";
-import { classifyAccountBlock, type AccountBlockReason } from "./send-lead";
+import type { LifecycleStatus } from "./account-lifecycle";
+import type { LifecycleView } from "./account-lifecycle-sync";
 
 /** Inbox-placement breakdown for one account. Null until the API exposes it. */
 export interface InboxPlacement {
@@ -45,10 +46,20 @@ export interface AccountHealth {
   warmupScore: number | null;
   /** Per-account daily send limit, null if unknown. */
   dailyLimit: number | null;
-  /** True when the account is NOT send-eligible (see `classifyAccountBlock`). */
+  /** True when the account is NOT send-eligible (lifecycle != in_production). */
   blocked: boolean;
-  /** Short reason string when blocked, null when send-eligible. */
-  blockReason: AccountBlockReason | null;
+  /**
+   * Short reason string when blocked, null when send-eligible. Now the account's
+   * lifecycle_status when blocked (in_recovery / deactivated_by_instantly /
+   * deactivated_by_user), or "unclassified" when the lifecycle has not yet run.
+   */
+  blockReason: string | null;
+  /** Auto-derived lifecycle state (null until reconcileLifecycle first runs). */
+  lifecycleStatus: LifecycleStatus | null;
+  /** Snapshot reason on the latest lifecycle transition (null until classified). */
+  lifecycleReason: string | null;
+  /** ISO8601 timestamp of the latest lifecycle transition (null until classified). */
+  lifecycleUpdatedAt: string | null;
   /** Latest blended placement from our BSG history; null when never tested. */
   inboxPlacement: InboxPlacement | null;
   /**
@@ -107,30 +118,37 @@ function domainOf(email: string): string | null {
 
 /**
  * Map raw Instantly accounts to the account-health contract rows. `blocked` /
- * `blockReason` come from `classifyAccountBlock` — the SAME gate the live send
- * path (`filterHealthyAccounts`) uses, so the audit view can never disagree with
- * who actually gets to send. `manuallyBlacklisted` (staff "rest an account"
- * override) is passed through to that gate: a member reports blockReason
- * "manual" (highest precedence). `inboxPlacement` is injected from the caller's
- * placement map (our BSG history); an account absent from the map gets null.
+ * `blockReason` derive from the account's silver LIFECYCLE (the SAME projection
+ * the live send path reads: send-eligible ⇔ lifecycle_status == 'in_production'),
+ * so the audit view can never disagree with who actually gets to send. An account
+ * not yet classified (no lifecycle row) is reported blocked with reason
+ * "unclassified" — never a fabricated in_production. `inboxPlacement` is injected
+ * from the caller's placement map (our BSG history); an account absent from the
+ * map gets null.
  */
 export function buildAccountHealth(
   accounts: Account[],
   placementByEmail: Map<string, InboxPlacement> = new Map(),
   sentTodayByEmail: Map<string, number> = new Map(),
   queueSizeByEmail: Map<string, number> = new Map(),
-  manuallyBlacklisted: ReadonlySet<string> = new Set<string>(),
+  lifecycleByEmail: Map<string, LifecycleView> = new Map(),
 ): AccountHealth[] {
   return accounts.map((a) => {
-    const blockReason = classifyAccountBlock(a, manuallyBlacklisted);
+    const lifecycle = lifecycleByEmail.get(a.email) ?? null;
+    const lifecycleStatus = lifecycle?.status ?? null;
+    const blocked = lifecycleStatus !== "in_production";
+    const blockReason = blocked ? (lifecycleStatus ?? "unclassified") : null;
     return {
       email: a.email,
       domain: domainOf(a.email),
       status: statusLabel(a.status),
       warmupScore: a.stat_warmup_score ?? null,
       dailyLimit: a.daily_limit ?? null,
-      blocked: blockReason !== null,
+      blocked,
       blockReason,
+      lifecycleStatus,
+      lifecycleReason: lifecycle?.reason ?? null,
+      lifecycleUpdatedAt: lifecycle?.updatedAt ?? null,
       inboxPlacement: placementByEmail.get(a.email) ?? null,
       sentToday: sentTodayByEmail.get(a.email) ?? 0,
       queueSize: queueSizeByEmail.get(a.email) ?? 0,

@@ -31,6 +31,40 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: POST /internal/audit/accounts-sync
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
+            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
+            exit 1
+          fi
+
+          # Snapshot Instantly accounts → bronze/silver, then reconcile the
+          # per-account lifecycle (health refreshed). 202 + background; the flip
+          # to in_production/in_recovery lands via the reconcile after the sync
+          # below refreshes placement delivery too.
+          response_file=$(mktemp)
+          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time 60 \
+            "${SERVICE_URL}/internal/audit/accounts-sync")
+
+          echo "HTTP ${status}"
+          cat "${response_file}"
+          echo
+
+          # Endpoint returns 202 Accepted and runs in the background. Verify via
+          # Railway logs (`accounts-sync: done`), NOT this curl exit code.
+          if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
+            echo "accounts-sync dispatch failed with HTTP ${status}"
+            exit 1
+          fi
+
       - name: POST /internal/audit/placement-test/run
         env:
           SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}

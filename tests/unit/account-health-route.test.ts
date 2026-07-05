@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
 import express from "express";
 
+const mockExecute = vi.fn(async () => ({ rows: [] }));
 vi.mock("../../src/db", () => ({
-  db: { execute: vi.fn() },
+  db: { execute: (...a: unknown[]) => mockExecute(...a) },
 }));
 vi.mock("../../src/db/schema", () => ({
   instantlyCampaigns: {},
@@ -33,14 +34,28 @@ describe("GET /internal/audit/account-health", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockResolvePlatformKey.mockResolvedValue("test-key");
+    mockExecute.mockResolvedValue({ rows: [] });
   });
 
   it("returns the locked shape — all scalar fields present + typed, inboxPlacement null", async () => {
     mockListAccounts.mockResolvedValue([
       { email: "a@good.com", status: 1, stat_warmup_score: 100, daily_limit: 30 },
-      { email: "b@distribute.you", status: 1, stat_warmup_score: 100, daily_limit: 40 }, // blocked domain
-      { email: "c@good.com", status: 0, stat_warmup_score: 100, daily_limit: 20 }, // inactive
+      { email: "b@distribute.you", status: 1, stat_warmup_score: 100, daily_limit: 40 },
+      { email: "c@good.com", status: 0, stat_warmup_score: 100, daily_limit: 20 },
     ]);
+    // Route reads placement, sentToday, queueSize, lifecycle via db.execute (in
+    // that order under Promise.all). Seed the first three empty, lifecycle last.
+    mockExecute
+      .mockResolvedValueOnce({ rows: [] }) // placement
+      .mockResolvedValueOnce({ rows: [] }) // sentToday
+      .mockResolvedValueOnce({ rows: [] }) // queueSize
+      .mockResolvedValueOnce({
+        rows: [
+          { email: "a@good.com", status: "in_production", reason: "passed", updatedAt: "2026-07-05T00:00:00.000Z" },
+          { email: "b@distribute.you", status: "deactivated_by_user", reason: "brand_domain", updatedAt: "2026-07-05T00:00:00.000Z" },
+          { email: "c@good.com", status: "deactivated_by_instantly", reason: "deactivated_by_instantly", updatedAt: "2026-07-05T00:00:00.000Z" },
+        ],
+      });
 
     const app = await makeApp();
     const res = await request(app).get("/internal/audit/account-health");
@@ -75,15 +90,19 @@ describe("GET /internal/audit/account-health", () => {
       status: "active",
       blocked: false,
       blockReason: null,
+      lifecycleStatus: "in_production",
+      lifecycleReason: "passed",
     });
     expect(byEmail["b@distribute.you"]).toMatchObject({
       blocked: true,
-      blockReason: "blacklisted-domain",
+      blockReason: "deactivated_by_user",
+      lifecycleStatus: "deactivated_by_user",
     });
     expect(byEmail["c@good.com"]).toMatchObject({
       status: "inactive",
       blocked: true,
-      blockReason: "inactive",
+      blockReason: "deactivated_by_instantly",
+      lifecycleStatus: "deactivated_by_instantly",
     });
   });
 

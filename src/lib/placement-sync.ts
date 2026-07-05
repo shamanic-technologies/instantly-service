@@ -18,14 +18,13 @@ import {
   instantlyPlacementResults,
 } from "../db/schema";
 import {
-  listAccounts,
   listInboxPlacementTests,
   listInboxPlacementAnalytics,
   createInboxPlacementTest,
   getEmailServiceProviderOptions,
   type InboxPlacementTest,
 } from "./instantly-client";
-import { filterHealthyAccounts } from "./send-lead";
+import { fetchTestablePoolEmails } from "./account-lifecycle-sync";
 import { aggregatePlacementRows, blendEspRows, type LatestEspRow } from "./placement-promote";
 import type { InboxPlacement } from "./account-health";
 
@@ -319,13 +318,13 @@ export async function runOneTimeFleetPlacementTest(
 ): Promise<RunPlacementTestSummary> {
   // Instantly requires explicit sender accounts (`emails`) — a placement test
   // does NOT auto-send from the whole workspace (empty `emails` 400s: "Either
-  // tags or emails must be provided"). Test the live-send pool: the exact
-  // accounts sequences start from (filterHealthyAccounts — active + fully
-  // warmed + domain not blocked), so the placement we measure is the placement
-  // that matters. Empty pool → nothing to test (created 0, no Instantly call,
-  // no fabricated result).
-  const accounts = await listAccounts(apiKey);
-  const senders = filterHealthyAccounts(accounts).map((a) => a.email);
+  // tags or emails must be provided"). Test the lifecycle TESTABLE pool
+  // (lifecycle_status IN in_recovery | in_production — active + not brand-blocked),
+  // read from silver: an in_recovery account MUST be testable to earn the
+  // delivery == 100 that promotes it to in_production (seeding from in_production
+  // only would deadlock — a recovering account would never get tested). Empty
+  // pool → nothing to test (created 0, no Instantly call, no fabricated result).
+  const senders = await fetchTestablePoolEmails();
   if (senders.length === 0) {
     return { created: 0, testCode: null, recipientEsps: [], senderCount: 0 };
   }

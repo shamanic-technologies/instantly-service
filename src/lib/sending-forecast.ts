@@ -5,9 +5,9 @@
  * daily CAPACITY.
  *
  * Two independent halves:
- *   1. Capacity — sum of the daily send limit over ONLY healthy senders
- *      (`filterHealthyAccounts`: Instantly-active + warmup ≥ 100 + domain not in
- *      `BLOCKED_DOMAINS`). Reuses the exact live-send gate, not a copy.
+ *   1. Capacity — sum of the daily send limit over ONLY `in_production` senders
+ *      (the exact live-send gate: silver lifecycle_status == 'in_production').
+ *      Reuses the lifecycle projection, not a copy.
  *   2. Future volume — a TRUE per-day projection of every active campaign's
  *      remaining (un-sent) sequence steps onto future business days, using the
  *      fleet's real send schedule (business-hours weekdays only). This is NOT a
@@ -18,7 +18,7 @@
  */
 
 import type { Account } from "./instantly-client";
-import { filterHealthyAccounts, isBlockedDomain } from "./send-lead";
+import type { LifecycleView } from "./account-lifecycle-sync";
 
 /**
  * Canonical inter-step gap (calendar days) used to project a lead's remaining
@@ -35,29 +35,37 @@ import { filterHealthyAccounts, isBlockedDomain } from "./send-lead";
 export const STEP_GAP_CALENDAR_DAYS = 3;
 
 export interface CapacitySummary {
-  /** Emails/day the healthy fleet can send (Σ daily_limit over healthy accounts). */
+  /** Emails/day the fleet can send (Σ daily_limit over in_production accounts). */
   dailyCapacity: number;
-  /** Accounts passing `filterHealthyAccounts`. */
+  /** Accounts currently in_production (send-eligible). */
   healthyAccountCount: number;
   /** All accounts before any filtering. */
   totalAccountCount: number;
-  /** Accounts whose email domain is in `BLOCKED_DOMAINS`. */
+  /** Accounts blocked by domain policy (lifecycle == deactivated_by_user). */
   blockedDomainCount: number;
 }
 
 /**
- * Fleet capacity summary. `dailyCapacity` sums `daily_limit` over healthy
- * senders only; a healthy account missing `daily_limit` contributes 0 (Instantly
- * always returns it in practice — 0 fails loud-ish as "no capacity", never a
- * fabricated number).
+ * Fleet capacity summary. `dailyCapacity` sums `daily_limit` over `in_production`
+ * senders only (the live-send gate); a production account missing `daily_limit`
+ * contributes 0 (Instantly always returns it in practice — 0 fails loud-ish as
+ * "no capacity", never a fabricated number). Lifecycle is read from silver and
+ * passed in as `lifecycleByEmail`; an account absent from the map (never
+ * classified) is NOT in_production and contributes no capacity.
  */
-export function computeCapacitySummary(accounts: Account[]): CapacitySummary {
-  const healthy = filterHealthyAccounts(accounts);
-  const dailyCapacity = healthy.reduce((sum, a) => sum + (a.daily_limit ?? 0), 0);
-  const blockedDomainCount = accounts.filter((a) => isBlockedDomain(a.email)).length;
+export function computeCapacitySummary(
+  accounts: Account[],
+  lifecycleByEmail: Map<string, LifecycleView>,
+): CapacitySummary {
+  const statusOf = (email: string) => lifecycleByEmail.get(email)?.status ?? null;
+  const production = accounts.filter((a) => statusOf(a.email) === "in_production");
+  const dailyCapacity = production.reduce((sum, a) => sum + (a.daily_limit ?? 0), 0);
+  const blockedDomainCount = accounts.filter(
+    (a) => statusOf(a.email) === "deactivated_by_user",
+  ).length;
   return {
     dailyCapacity,
-    healthyAccountCount: healthy.length,
+    healthyAccountCount: production.length,
     totalAccountCount: accounts.length,
     blockedDomainCount,
   };
