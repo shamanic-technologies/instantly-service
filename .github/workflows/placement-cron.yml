@@ -12,7 +12,7 @@ name: Inbox-placement tests (maintain + sync)
 #      into our Bronze/Silver/Gold tables so account-health reflects the latest
 #      results. Read-only against Instantly (spends no quota).
 #
-# Runs every 6h → one one-time test per tick (4/day); `sync` pulls results.
+# Runs once a day → one one-time test per day; `sync` pulls results.
 # Scheduled runs fire from the DEFAULT branch (main).
 #
 # Required secrets (already used by reconcile-cron.yml):
@@ -23,7 +23,7 @@ name: Inbox-placement tests (maintain + sync)
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 6 * * *"
   workflow_dispatch:
 
 jobs:
