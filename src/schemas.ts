@@ -1295,11 +1295,18 @@ registry.registerPath({
 
 const PlacementRunResponseSchema = z
   .object({
-    created: z.number().int().describe("One-time placement tests created this call (1)"),
-    testCode: z.string().describe("test_code assigned to the created one-time test"),
+    created: z.number().int().describe("One-time placement tests created this call (1, or 0 when no healthy senders)"),
+    testCode: z
+      .string()
+      .nullable()
+      .describe("test_code of the created one-time test; null when nothing was created"),
     recipientEsps: z
       .array(z.string())
       .describe("Recipient ESPs the test seeds (Google/Outlook)"),
+    senderCount: z
+      .number()
+      .int()
+      .describe("Number of live-send-eligible accounts the test seeds from"),
   })
   .openapi("PlacementRunResponse");
 

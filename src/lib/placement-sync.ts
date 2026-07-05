@@ -18,12 +18,14 @@ import {
   instantlyPlacementResults,
 } from "../db/schema";
 import {
+  listAccounts,
   listInboxPlacementTests,
   listInboxPlacementAnalytics,
   createInboxPlacementTest,
   getEmailServiceProviderOptions,
   type InboxPlacementTest,
 } from "./instantly-client";
+import { filterHealthyAccounts } from "./send-lead";
 import { aggregatePlacementRows, blendEspRows, type LatestEspRow } from "./placement-promote";
 import type { InboxPlacement } from "./account-health";
 
@@ -293,8 +295,9 @@ export async function ensurePlacementSchedule(apiKey: string): Promise<EnsureSch
 
 export interface RunPlacementTestSummary {
   created: number;
-  testCode: string;
+  testCode: string | null;
   recipientEsps: string[];
+  senderCount: number;
 }
 
 /**
@@ -313,6 +316,19 @@ export interface RunPlacementTestSummary {
 export async function runOneTimeFleetPlacementTest(
   apiKey: string,
 ): Promise<RunPlacementTestSummary> {
+  // Instantly requires explicit sender accounts (`emails`) — a placement test
+  // does NOT auto-send from the whole workspace (empty `emails` 400s: "Either
+  // tags or emails must be provided"). Test the live-send pool: the exact
+  // accounts sequences start from (filterHealthyAccounts — active + fully
+  // warmed + domain not blocked), so the placement we measure is the placement
+  // that matters. Empty pool → nothing to test (created 0, no Instantly call,
+  // no fabricated result).
+  const accounts = await listAccounts(apiKey);
+  const senders = filterHealthyAccounts(accounts).map((a) => a.email);
+  if (senders.length === 0) {
+    return { created: 0, testCode: null, recipientEsps: [], senderCount: 0 };
+  }
+
   const espOptions = await getEmailServiceProviderOptions(apiKey);
   // Test Gmail + Outlook (the two ESPs the deliverability finding hinges on).
   const recipientsLabels = espOptions.filter(
@@ -326,7 +342,7 @@ export async function runOneTimeFleetPlacementTest(
     sending_method: 1,
     email_subject: "Quick question",
     email_body: "Hi, just checking in on the note I sent over. Any thoughts?",
-    emails: [],
+    emails: senders,
     recipients_labels: recipientsLabels,
     text_only: true,
     test_code: testCode,
@@ -337,5 +353,6 @@ export async function runOneTimeFleetPlacementTest(
     created: 1,
     testCode,
     recipientEsps: recipientsLabels.map((o) => o.esp),
+    senderCount: senders.length,
   };
 }
