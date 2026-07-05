@@ -2099,11 +2099,11 @@
           },
           "dailyCapacity": {
             "type": "integer",
-            "description": "Emails/day the healthy fleet can send — Σ daily send limit over accounts passing filterHealthyAccounts (Instantly-active + warmup ≥ 100 + domain not blocked)"
+            "description": "Emails/day the fleet can send — Σ daily send limit over accounts whose lifecycle_status == 'in_production' (the live send gate)"
           },
           "healthyAccountCount": {
             "type": "integer",
-            "description": "Accounts passing filterHealthyAccounts"
+            "description": "Accounts currently in_production (send-eligible)"
           },
           "totalAccountCount": {
             "type": "integer",
@@ -2111,7 +2111,7 @@
           },
           "blockedDomainCount": {
             "type": "integer",
-            "description": "Accounts excluded because their domain is in BLOCKED_DOMAINS"
+            "description": "Accounts blocked by domain policy (lifecycle deactivated_by_user)"
           },
           "days": {
             "type": "array",
@@ -2195,19 +2195,34 @@
           },
           "blocked": {
             "type": "boolean",
-            "description": "True when the account is NOT send-eligible per the live send gate (filterHealthyAccounts/classifyAccountBlock)"
+            "description": "True when the account is NOT send-eligible (lifecycle_status != 'in_production')"
           },
           "blockReason": {
             "type": "string",
             "nullable": true,
+            "description": "Short reason when blocked — the account's lifecycle_status (in_recovery / deactivated_by_instantly / deactivated_by_user), or 'unclassified' when the lifecycle has not yet run; null when in_production."
+          },
+          "lifecycleStatus": {
+            "type": "string",
+            "nullable": true,
             "enum": [
-              "manual",
-              "inactive",
-              "under-warmed",
-              "blacklisted-domain",
+              "in_production",
+              "in_recovery",
+              "deactivated_by_instantly",
+              "deactivated_by_user",
               null
             ],
-            "description": "Short reason when blocked (first failing gate); null when send-eligible. 'manual' = staff manually blacklisted this account (highest precedence — reported even if also under-warmed/inactive/blacklisted-domain)."
+            "description": "Auto-derived lifecycle state; null until reconcileLifecycle first runs"
+          },
+          "lifecycleReason": {
+            "type": "string",
+            "nullable": true,
+            "description": "Snapshot reason on the latest lifecycle transition; null until classified"
+          },
+          "lifecycleUpdatedAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO8601 timestamp of the latest lifecycle transition; null until classified"
           },
           "inboxPlacement": {
             "$ref": "#/components/schemas/InboxPlacement"
@@ -2234,6 +2249,9 @@
           "dailyLimit",
           "blocked",
           "blockReason",
+          "lifecycleStatus",
+          "lifecycleReason",
+          "lifecycleUpdatedAt",
           "inboxPlacement",
           "sentToday",
           "queueSize",
@@ -2319,46 +2337,6 @@
           "spamPct",
           "missingPct",
           "testedAt"
-        ]
-      },
-      "AccountBlacklistResponse": {
-        "type": "object",
-        "properties": {
-          "email": {
-            "type": "string",
-            "description": "The toggled sending account email"
-          },
-          "manuallyBlacklisted": {
-            "type": "boolean",
-            "description": "New manual-blacklist state (mirrors the request)"
-          },
-          "warmupDailyLimit": {
-            "type": "integer",
-            "description": "The Instantly warmup daily send volume now set — 50 when blacklisted (warm harder to recover), 10 when allowed. The account's Instantly daily_limit (max send) is left intact so its queue keeps draining."
-          }
-        },
-        "required": [
-          "email",
-          "manuallyBlacklisted",
-          "warmupDailyLimit"
-        ]
-      },
-      "AccountBlacklistRequest": {
-        "type": "object",
-        "properties": {
-          "email": {
-            "type": "string",
-            "minLength": 1,
-            "description": "Sending account email to toggle"
-          },
-          "blacklisted": {
-            "type": "boolean",
-            "description": "true = rest (stop new sends + warmup harder); false = re-allow"
-          }
-        },
-        "required": [
-          "email",
-          "blacklisted"
         ]
       },
       "PlacementSyncAccepted": {
@@ -4517,7 +4495,7 @@
     "/internal/audit/account-health": {
       "get": {
         "summary": "Per-account deliverability health — identity, sending config, blocked state",
-        "description": "Platform-scoped (no org). Returns every sending account with its identity (email/domain), sending config (status, warmup Health Score, daily send limit), and blocked state (blocked + short blockReason, from the SAME gate the live send path uses — filterHealthyAccounts/classifyAccountBlock). `inboxPlacement` is the latest inbox/spam/missing breakdown from our own Bronze/Silver/Gold placement history (recurring inbox-placement tests promoted to silver, latest test per account blended across ESP); null when the account has never been in a test. The Instantly V2 API exposes no standing per-account placement property — this figure is derived from real test results, never fabricated. Fails loud (500) on any missing REQUIRED source (account list); no silent fallbacks.",
+        "description": "Platform-scoped (no org). Returns every sending account with its identity (email/domain), sending config (status, warmup Health Score, daily send limit), and lifecycle state (lifecycleStatus/lifecycleReason/lifecycleUpdatedAt + blocked + blockReason, from the SAME auto-derived lifecycle the live send path reads: send-eligible ⇔ lifecycle_status == 'in_production'). `inboxPlacement` is the latest inbox/spam/missing breakdown from our own Bronze/Silver/Gold placement history (recurring inbox-placement tests promoted to silver, latest test per account blended across ESP); null when the account has never been in a test. The Instantly V2 API exposes no standing per-account placement property — this figure is derived from real test results, never fabricated. Fails loud (500) on any missing REQUIRED source (account list); no silent fallbacks.",
         "responses": {
           "200": {
             "description": "Per-account deliverability health",
@@ -4587,56 +4565,6 @@
           },
           "500": {
             "description": "Server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/internal/audit/account-blacklist": {
-      "post": {
-        "summary": "Rest (manually blacklist) or re-allow a sending account",
-        "description": "Platform-scoped (no org; api-service injects X-API-Key + forwards x-email for attribution). Staff toggle to 'rest' a sending account or re-allow it. Blacklisting (blacklisted:true) raises the account's Instantly WARMUP daily volume to 50 (warm harder to recover reputation) and persists a per-account manual override so the live send gate excludes it from NEW sends (account-health reports blockReason 'manual', highest precedence) — while its Instantly daily_limit (max send) is LEFT INTACT so already-queued emails keep draining. Re-allowing (blacklisted:false) drops the warmup volume back to 10 and clears the override. The Instantly warmup PATCH runs FIRST; the local flag is persisted only on success. Fails loud (500) if the Instantly PATCH fails — the flag is never persisted on a failed PATCH.",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AccountBlacklistRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Toggle applied",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountBlacklistResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request body",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "500": {
-            "description": "Server error (e.g. Instantly warmup PATCH failed)",
             "content": {
               "application/json": {
                 "schema": {

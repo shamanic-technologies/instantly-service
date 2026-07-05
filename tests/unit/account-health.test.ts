@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { buildAccountHealth, mapProviderCode } from "../../src/lib/account-health";
 import type { Account } from "../../src/lib/instantly-client";
+import type { LifecycleView } from "../../src/lib/account-lifecycle-sync";
+import type { LifecycleStatus } from "../../src/lib/account-lifecycle";
 
 function acc(overrides: Partial<Account> & { email: string }): Account {
   return {
@@ -12,11 +14,23 @@ function acc(overrides: Partial<Account> & { email: string }): Account {
   };
 }
 
+function lifecycle(
+  status: LifecycleStatus,
+  reason: string | null = null,
+  updatedAt: string | null = "2026-07-05T00:00:00.000Z",
+): LifecycleView {
+  return { status, reason, updatedAt };
+}
+
 describe("buildAccountHealth", () => {
-  it("maps a healthy account to the locked shape, all scalars typed, placement null", () => {
-    const [row] = buildAccountHealth([
-      acc({ email: "jane@send-domain.com", stat_warmup_score: 100, daily_limit: 40 }),
-    ]);
+  it("maps an in_production account to the locked shape, all scalars typed, placement null", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "jane@send-domain.com", stat_warmup_score: 100, daily_limit: 40 })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([["jane@send-domain.com", lifecycle("in_production", "passed")]]),
+    );
 
     expect(row).toEqual({
       email: "jane@send-domain.com",
@@ -26,6 +40,9 @@ describe("buildAccountHealth", () => {
       dailyLimit: 40,
       blocked: false,
       blockReason: null,
+      lifecycleStatus: "in_production",
+      lifecycleReason: "passed",
+      lifecycleUpdatedAt: "2026-07-05T00:00:00.000Z",
       inboxPlacement: null,
       sentToday: 0,
       queueSize: 0,
@@ -33,29 +50,79 @@ describe("buildAccountHealth", () => {
     });
   });
 
-  it("blocks a blacklisted domain with reason 'blacklisted-domain' (same gate as send)", () => {
-    // distribute.you is in BLOCKED_DOMAINS; account is otherwise active + warmed.
-    const [row] = buildAccountHealth([
-      acc({ email: "c@distribute.you", status: 1, stat_warmup_score: 100 }),
-    ]);
-    expect(row.blocked).toBe(true);
-    expect(row.blockReason).toBe("blacklisted-domain");
+  it("in_production lifecycle → not blocked", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "a@good.com" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([["a@good.com", lifecycle("in_production", "passed")]]),
+    );
+    expect(row.blocked).toBe(false);
+    expect(row.blockReason).toBeNull();
+    expect(row.lifecycleStatus).toBe("in_production");
   });
 
-  it("blocks an inactive account (status <= 0) with reason 'inactive'", () => {
-    const [row] = buildAccountHealth([acc({ email: "x@good.com", status: 0 })]);
+  it("in_recovery lifecycle → blocked with reason 'in_recovery'", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "r@good.com" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([["r@good.com", lifecycle("in_recovery", "low placement")]]),
+    );
     expect(row.blocked).toBe(true);
-    expect(row.blockReason).toBe("inactive");
-    expect(row.status).toBe("inactive");
+    expect(row.blockReason).toBe("in_recovery");
+    expect(row.lifecycleStatus).toBe("in_recovery");
+    expect(row.lifecycleReason).toBe("low placement");
   });
 
-  it("blocks an under-warmed account (score < 100) with reason 'under-warmed'", () => {
-    const [row] = buildAccountHealth([
-      acc({ email: "y@good.com", status: 1, stat_warmup_score: 42 }),
-    ]);
+  it("deactivated_by_user lifecycle → blocked with reason 'deactivated_by_user'", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "u@good.com" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([["u@good.com", lifecycle("deactivated_by_user")]]),
+    );
     expect(row.blocked).toBe(true);
-    expect(row.blockReason).toBe("under-warmed");
-    expect(row.warmupScore).toBe(42);
+    expect(row.blockReason).toBe("deactivated_by_user");
+    expect(row.lifecycleStatus).toBe("deactivated_by_user");
+  });
+
+  it("deactivated_by_instantly lifecycle → blocked with reason 'deactivated_by_instantly'", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "i@good.com" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([["i@good.com", lifecycle("deactivated_by_instantly")]]),
+    );
+    expect(row.blocked).toBe(true);
+    expect(row.blockReason).toBe("deactivated_by_instantly");
+    expect(row.lifecycleStatus).toBe("deactivated_by_instantly");
+  });
+
+  it("account absent from the lifecycle map → blocked 'unclassified', null lifecycle fields", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "n@good.com" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+    );
+    expect(row.blocked).toBe(true);
+    expect(row.blockReason).toBe("unclassified");
+    expect(row.lifecycleStatus).toBeNull();
+    expect(row.lifecycleReason).toBeNull();
+    expect(row.lifecycleUpdatedAt).toBeNull();
+  });
+
+  it("no lifecycle map at all → every account blocked 'unclassified'", () => {
+    const [row] = buildAccountHealth([acc({ email: "z@good.com" })]);
+    expect(row.blocked).toBe(true);
+    expect(row.blockReason).toBe("unclassified");
+    expect(row.lifecycleStatus).toBeNull();
   });
 
   it("uses null (not 0) for genuinely-unknown warmupScore / dailyLimit", () => {
@@ -64,16 +131,6 @@ describe("buildAccountHealth", () => {
     ]);
     expect(row.warmupScore).toBeNull();
     expect(row.dailyLimit).toBeNull();
-    // A missing score fails the warmup gate → under-warmed (0 < 100), not silent pass.
-    expect(row.blocked).toBe(true);
-    expect(row.blockReason).toBe("under-warmed");
-  });
-
-  it("precedence mirrors the send gate: inactive wins over domain/warmup", () => {
-    const [row] = buildAccountHealth([
-      acc({ email: "c@distribute.you", status: 0, stat_warmup_score: 10 }),
-    ]);
-    expect(row.blockReason).toBe("inactive");
   });
 
   it("returns null domain for a malformed email (no @)", () => {
@@ -129,42 +186,28 @@ describe("buildAccountHealth", () => {
     expect(byEmail["b@good.com"].queueSize).toBe(0);
   });
 
-  it("reports blockReason 'manual' when the account is in the manually-blacklisted set", () => {
-    const [row] = buildAccountHealth(
-      [acc({ email: "rested@good.com", status: 1, stat_warmup_score: 100 })],
-      new Map(),
-      new Map(),
-      new Map(),
-      new Set(["rested@good.com"]),
-    );
-    expect(row.blocked).toBe(true);
-    expect(row.blockReason).toBe("manual");
-  });
-
-  it("'manual' outranks under-warmed / inactive / blacklisted-domain", () => {
+  it("lifecycle status drives blocked per account, mixed fleet", () => {
     const rows = buildAccountHealth(
       [
-        acc({ email: "u@good.com", status: 1, stat_warmup_score: 10 }), // under-warmed
-        acc({ email: "i@good.com", status: 0 }), // inactive
-        acc({ email: "d@distribute.you", status: 1, stat_warmup_score: 100 }), // blocked domain
+        acc({ email: "prod@good.com" }),
+        acc({ email: "rec@good.com" }),
+        acc({ email: "off@good.com" }),
+        acc({ email: "none@good.com" }),
       ],
       new Map(),
       new Map(),
       new Map(),
-      new Set(["u@good.com", "i@good.com", "d@distribute.you"]),
+      new Map<string, LifecycleView>([
+        ["prod@good.com", lifecycle("in_production")],
+        ["rec@good.com", lifecycle("in_recovery")],
+        ["off@good.com", lifecycle("deactivated_by_user")],
+      ]),
     );
-    expect(rows.every((r) => r.blockReason === "manual")).toBe(true);
-  });
-
-  it("accounts NOT in the manual set keep their derived blockReason", () => {
-    const [row] = buildAccountHealth(
-      [acc({ email: "y@good.com", status: 1, stat_warmup_score: 42 })],
-      new Map(),
-      new Map(),
-      new Map(),
-      new Set(["someone-else@good.com"]),
-    );
-    expect(row.blockReason).toBe("under-warmed");
+    const byEmail = Object.fromEntries(rows.map((r) => [r.email, r]));
+    expect(byEmail["prod@good.com"].blocked).toBe(false);
+    expect(byEmail["rec@good.com"].blockReason).toBe("in_recovery");
+    expect(byEmail["off@good.com"].blockReason).toBe("deactivated_by_user");
+    expect(byEmail["none@good.com"].blockReason).toBe("unclassified");
   });
 
   it("maps provider_code to accountType (google/microsoft/imap), null otherwise", () => {

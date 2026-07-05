@@ -1,21 +1,20 @@
 import { Router, Request, Response } from "express";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
-import { listAccounts, setWarmupDailyLimit } from "../lib/instantly-client";
+import { listAccounts } from "../lib/instantly-client";
 import { resolvePlatformInstantlyApiKey } from "../lib/key-client";
-import {
-  fetchManuallyBlacklistedEmails,
-  setAccountManualBlacklist,
-  BLACKLIST_WARMUP_DAILY_LIMIT,
-  ALLOWED_WARMUP_DAILY_LIMIT,
-} from "../lib/account-blacklist";
-import { AccountBlacklistRequestSchema } from "../schemas";
 import {
   computeCapacitySummary,
   projectDailySchedule,
   type PendingLead,
 } from "../lib/sending-forecast";
 import { buildAccountHealth } from "../lib/account-health";
+import {
+  snapshotAccounts,
+  reconcileLifecycle,
+  fetchLifecycleByEmail,
+} from "../lib/account-lifecycle-sync";
+import { fetchCapacityHistory } from "../lib/capacity-history";
 import {
   fetchSentTodayByAccount,
   fetchQueueSizeByAccount,
@@ -98,8 +97,11 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
       method: "GET",
       path: "/internal/audit/sending-forecast",
     });
-    const accounts = await listAccounts(apiKey);
-    const capacity = computeCapacitySummary(accounts);
+    const [accounts, lifecycleByEmail] = await Promise.all([
+      listAccounts(apiKey),
+      fetchLifecycleByEmail(),
+    ]);
+    const capacity = computeCapacitySummary(accounts, lifecycleByEmail);
 
     const pendingLeads = await loadPendingLeads();
     const days = projectDailySchedule(pendingLeads, asOf);
@@ -124,8 +126,9 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
  *
  * Platform-scoped (no org). Returns per sending account its deliverability
  * health: identity (email/domain), sending config (status/warmupScore/
- * dailyLimit), and blocked state (blocked/blockReason from the SAME gate the
- * live send path uses — `classifyAccountBlock`/`filterHealthyAccounts`).
+ * dailyLimit), and lifecycle state (lifecycleStatus/Reason/UpdatedAt + blocked/
+ * blockReason from the SAME auto-derived lifecycle the live send path reads —
+ * send-eligible ⇔ lifecycle_status == 'in_production').
  *
  * `inboxPlacement` is null for every account: the Instantly V2 API does not
  * expose inbox placement as a per-account property (it exists only as
@@ -155,13 +158,13 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       placementByEmail,
       sentTodayByEmail,
       queueSizeByEmail,
-      manuallyBlacklisted,
+      lifecycleByEmail,
     ] = await Promise.all([
       listAccounts(apiKey),
       fetchLatestPlacementByAccount(),
       fetchSentTodayByAccount(),
       fetchQueueSizeByAccount(),
-      fetchManuallyBlacklistedEmails(),
+      fetchLifecycleByEmail(),
     ]);
 
     res.json({
@@ -171,7 +174,7 @@ router.get("/account-health", async (_req: Request, res: Response) => {
         placementByEmail,
         sentTodayByEmail,
         queueSizeByEmail,
-        manuallyBlacklisted,
+        lifecycleByEmail,
       ),
     });
   } catch (error: unknown) {
@@ -204,52 +207,53 @@ router.get("/account-health/history", async (req: Request, res: Response) => {
 });
 
 /**
- * POST /internal/audit/account-blacklist
+ * GET /internal/audit/capacity-history?days=N
  *
- * Platform-scoped (no org; api-service injects X-API-Key + forwards x-email for
- * attribution). Staff toggle to "rest" a sending account or re-allow it:
- *
- *   { email, blacklisted: true }  → raise its Instantly WARMUP daily volume to 50
- *     (warm harder to recover reputation), then persist manually_blacklisted=true.
- *     The account's Instantly daily_limit (max send) is LEFT INTACT so its already-
- *     queued emails keep draining; the live send gate stops NEW sends from it.
- *   { email, blacklisted: false } → drop WARMUP daily volume back to 10, clear the
- *     flag → the send gate includes it again if otherwise healthy.
- *
- * ORDERING: PATCH Instantly warmup FIRST; only persist the local flag on success.
- * Fails loud (5xx) if the Instantly PATCH fails — the flag is never persisted on a
- * failed PATCH.
+ * Platform-scoped. Reconstructs the fleet's `in_production` daily capacity for
+ * each of the last N days (default 30, clamped 1-365) from the append-only Bronze
+ * layers (lifecycle events + account snapshots). One point per UTC day.
  */
-router.post("/account-blacklist", async (req: Request, res: Response) => {
+router.get("/capacity-history", async (req: Request, res: Response) => {
   try {
-    const parsed = AccountBlacklistRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: parsed.error.message });
-    }
-    const { email, blacklisted } = parsed.data;
-
-    const apiKey = await resolvePlatformInstantlyApiKey({
-      method: "POST",
-      path: "/internal/audit/account-blacklist",
-    });
-
-    const warmupDailyLimit = blacklisted
-      ? BLACKLIST_WARMUP_DAILY_LIMIT
-      : ALLOWED_WARMUP_DAILY_LIMIT;
-
-    // Instantly warmup PATCH FIRST (fail loud) — never persist the flag if it fails.
-    await setWarmupDailyLimit(apiKey, email, warmupDailyLimit);
-    await setAccountManualBlacklist(email, blacklisted);
-
-    console.log(
-      `[audit] account-blacklist: ${email} blacklisted=${blacklisted} warmupDailyLimit=${warmupDailyLimit}`,
-    );
-    res.json({ email, manuallyBlacklisted: blacklisted, warmupDailyLimit });
+    const raw = typeof req.query.days === "string" ? parseInt(req.query.days, 10) : NaN;
+    const days = Number.isFinite(raw) && raw > 0 ? raw : 30;
+    const series = await fetchCapacityHistory(days);
+    res.json({ series });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[audit] account-blacklist failed: ${message}`);
+    console.error(`[audit] capacity-history failed: ${message}`);
     res.status(500).json({ error: message });
   }
+});
+
+/**
+ * POST /internal/audit/accounts-sync
+ *
+ * Platform-scoped. Snapshots Instantly GET /accounts to Bronze + refreshes the
+ * Silver health columns, then runs reconcileLifecycle (health refreshed → some
+ * accounts may flip state). Read-only against Instantly except the warmup PATCHes
+ * reconcile issues on real transitions. 202 + background; watch logs for
+ * `accounts-sync: done`. Wired into the placement cron (every 6h).
+ */
+router.post("/accounts-sync", async (_req: Request, res: Response) => {
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, runId });
+  console.log(`[audit] accounts-sync: dispatched run=${runId}`);
+
+  (async () => {
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/accounts-sync",
+    });
+    const snapshot = await snapshotAccounts(apiKey);
+    const lifecycle = await reconcileLifecycle(apiKey);
+    console.log(
+      `[audit] accounts-sync: done run=${runId} ${JSON.stringify({ snapshot, lifecycle })}`,
+    );
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] accounts-sync run=${runId} failed: ${message}`);
+  });
 });
 
 /**
@@ -272,7 +276,12 @@ router.post("/placement-test/sync", async (_req: Request, res: Response) => {
       path: "/internal/audit/placement-test/sync",
     });
     const summary = await syncPlacement(apiKey);
-    console.log(`[audit] placement-sync: done run=${runId} ${JSON.stringify(summary)}`);
+    // Delivery just refreshed → recompute the lifecycle (accounts that hit 100%
+    // inbox may promote to in_production; regressions demote to in_recovery).
+    const lifecycle = await reconcileLifecycle(apiKey);
+    console.log(
+      `[audit] placement-sync: done run=${runId} ${JSON.stringify({ ...summary, lifecycle })}`,
+    );
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] placement-sync run=${runId} failed: ${message}`);

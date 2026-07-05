@@ -119,6 +119,15 @@ export const instantlyLeads = pgTable(
 );
 
 // Email accounts table
+// Silver: current-state projection of every Instantly sending account.
+//
+// The `lifecycle_*` columns hold the auto-derived per-account LIFECYCLE (see
+// lib/account-lifecycle.ts). The health snapshot columns (instantly_status /
+// warmup_score / daily_limit / provider_code) + first/last name are refreshed by
+// the accounts-sync (POST /internal/audit/accounts-sync). The live send gate
+// reads `lifecycle_status = 'in_production'` from THIS table (no live listAccounts
+// on the hot path); reconcileLifecycle recomputes lifecycle_status from these
+// snapshot columns + the latest placement delivery + instantly_domain_policy.
 export const instantlyAccounts = pgTable("instantly_accounts", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   email: text("email").notNull().unique(),
@@ -126,16 +135,77 @@ export const instantlyAccounts = pgTable("instantly_accounts", {
   status: text("status").notNull().default("active"),
   dailySendLimit: integer("daily_send_limit"),
   orgId: text("org_id"),
-  // Staff-driven manual override on the account-health "rest an account" toggle
-  // (POST /internal/audit/account-blacklist). true ⇒ the live send gate excludes
-  // this account from NEW sends (classifyAccountBlock returns "manual", highest
-  // precedence) while its Instantly daily_limit stays intact so already-queued
-  // emails drain. Independent of the derived status/warmup/BLOCKED_DOMAINS gates.
-  // Default false ⇒ zero behavior change until staff toggles one.
-  manuallyBlacklisted: boolean("manually_blacklisted").notNull().default(false),
-  manuallyBlacklistedAt: timestamp("manually_blacklisted_at", { withTimezone: true }),
+  // ── Health snapshot (from the accounts-sync — mirrors the Instantly account) ──
+  instantlyStatus: integer("instantly_status"),
+  warmupScore: integer("warmup_score"),
+  dailyLimit: integer("daily_limit"),
+  providerCode: integer("provider_code"),
+  firstName: text("first_name"),
+  lastName: text("last_name"),
+  // ── Lifecycle (auto-derived; projection of the latest lifecycle event) ────────
+  // One of: in_production | in_recovery | deactivated_by_instantly |
+  // deactivated_by_user. Null until the first reconcileLifecycle classifies it.
+  lifecycleStatus: text("lifecycle_status"),
+  lifecycleReason: text("lifecycle_reason"),
+  lifecycleUpdatedAt: timestamp("lifecycle_updated_at", { withTimezone: true }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Bronze: periodic full snapshot of Instantly GET /accounts (append-only, never
+// mutated). One row per (account, fetch) — gives health / daily_limit HISTORY,
+// the raw material for the capacity-over-time reconstruction.
+export const instantlyAccountsRaw = pgTable(
+  "instantly_accounts_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    accountEmail: text("account_email").notNull(),
+    status: integer("status"),
+    warmupScore: integer("warmup_score"),
+    dailyLimit: integer("daily_limit"),
+    providerCode: integer("provider_code"),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("instantly_accounts_raw_email_idx").on(table.accountEmail),
+    index("instantly_accounts_raw_fetched_at_idx").on(table.fetchedAt),
+  ],
+);
+
+// Bronze: one row per lifecycle TRANSITION (append-only audit trail). Joined with
+// instantly_accounts_raw daily_limit history to reconstruct in_production capacity
+// for any past day. `from_status` is null on an account's first classification.
+export const instantlyAccountLifecycleEvents = pgTable(
+  "instantly_account_lifecycle_events",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    accountEmail: text("account_email").notNull(),
+    fromStatus: text("from_status"),
+    toStatus: text("to_status").notNull(),
+    reason: text("reason").notNull(),
+    healthScore: integer("health_score"),
+    deliveryPct: integer("delivery_pct"),
+    dailyLimit: integer("daily_limit"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("instantly_account_lifecycle_events_email_created_idx").on(
+      table.accountEmail,
+      table.createdAt,
+    ),
+  ],
+);
+
+// Silver/config: brand/product domains. Any account whose email domain is here →
+// deactivated_by_user (never auto-promoted). Lives in the DB (NOT a code
+// constant) so ops can add a brand domain without a deploy. The legacy shared-IP
+// fleet is deliberately NOT listed — it is handled by delivery < 100 → in_recovery.
+export const instantlyDomainPolicy = pgTable("instantly_domain_policy", {
+  domain: text("domain").primaryKey(),
+  reason: text("reason").notNull().default("brand"),
+  note: text("note"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 // Silver: canonical event log derived from bronze sources (webhooks + reconcile polls)

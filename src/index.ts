@@ -109,6 +109,32 @@ async function start() {
           `[instantly-service] failed to start retry-stuck worker: ${message}`,
         );
       });
+
+    // Seed the account lifecycle shortly after boot (fire-and-forget, AFTER the
+    // port is bound — snapshot + reconcile is O(fleet size) paginated Instantly
+    // calls, must never block listen). Idempotent: a subsequent boot finds the
+    // lifecycle unchanged (silver persists across deploys) → no event, no PATCH.
+    // Without this the send gate would be dead until the 6h placement cron fires.
+    (async () => {
+      const { resolvePlatformInstantlyApiKey } = await import("./lib/key-client");
+      const { snapshotAccounts, reconcileLifecycle } = await import(
+        "./lib/account-lifecycle-sync"
+      );
+      const apiKey = await resolvePlatformInstantlyApiKey({
+        method: "POST",
+        path: "/boot/account-lifecycle-seed",
+      });
+      const snapshot = await snapshotAccounts(apiKey);
+      const lifecycle = await reconcileLifecycle(apiKey);
+      console.log(
+        `[instantly-service] account-lifecycle seed done ${JSON.stringify({ snapshot, lifecycle })}`,
+      );
+    })().catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[instantly-service] account-lifecycle seed failed (non-fatal): ${message}`,
+      );
+    });
   });
 }
 

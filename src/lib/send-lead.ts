@@ -22,98 +22,11 @@ import {
   getCampaign as getInstantlyCampaign,
   addLeads as addInstantlyLeads,
   updateCampaignStatus,
-  listAccounts,
   type Account,
   type Lead,
   type SequenceStep,
 } from "./instantly-client";
-import { fetchManuallyBlacklistedEmails } from "./account-blacklist";
-
-/**
- * Accounts whose domain we refuse to send from regardless of Instantly
- * status. Add domains here when a sender's deliverability is so poor that
- * even an "active" status is misleading.
- */
-export const BLOCKED_DOMAINS = [
-  "arcadiaquest.org", // permanent
-
-  // ─── TEMPORARY FULL HALT — 2026-06-29 (remove when re-tested OK) ──────────
-  // Inbox-placement seed testing proved the ENTIRE current cold fleet lands in
-  // Gmail SPAM (0-4% Gmail inbox) across EVERY domain — independent of domain,
-  // warmup (Health Score 100), copy (clean plain-text tested), or auth
-  // (SPF+DKIM+DMARC all PASS). Root cause = shared-IP sending reputation that
-  // Gmail distrusts: Gandi `_mailcust.gandi.net` + Mailforge relay. NOT the
-  // domains themselves. Outlook placement is fine (~100% inbox).
-  //
-  // → New cold sends are HALTED on all current domains until the migration to
-  //   Google Workspace mailboxes (Primeforge — Gmail-trusted infra) is warmed
-  //   + seed-tested OK. Those new domains are NOT in this list, so they send
-  //   once imported + warmed.
-  // → daily_limit on Instantly is intentionally LEFT AS-IS (not zeroed) so
-  //   already-loaded campaigns keep draining on these domains.
-  // → RE-TEST inbox placement (Instantly inbox-placement test) before removing
-  //   ANY domain below. Do not un-block on a guess.
-  "distribute.you",
-  "growthagency.agency",
-  "growthagency.bio",
-  "growthagency.ch",
-  "growthagency.click",
-  "growthagency.cloud",
-  "growthagency.dev",
-  "growthagency.diy",
-  "growthagency.email",
-  "growthagency.forum",
-  "growthagency.group",
-  "growthagency.life",
-  "growthagency.live",
-  "growthagency.media",
-  "growthagency.network",
-  "growthagency.news",
-  "growthagency.store",
-  "growthagency.studio",
-  "growthservice.org",
-  "heydistribute.com",
-  "joindistribute.com",
-  "marketingagency.bio",
-  "marketingagency.email",
-  "marketingagency.forum",
-  "marketingagency.group",
-  "marketingagency.life",
-  "marketingagency.network",
-  "marketingagency.studio",
-  "outcaged.com",
-  "pressbeat.ai",
-  "pressbeat.io",
-  "salescoldemails.com",
-  "salesmolt.com",
-  "teamdistribute.com",
-  "trialdistribute.com",
-  "yourdistribute.com",
-
-  // ─── WARMING GUARD — new Google Workspace (Primeforge) domains, 2026-06-29 ──
-  // These are the Gmail-trusted replacement infra, freshly imported and WARMING
-  // (~2 weeks). Blocked from cold here ON PURPOSE: the Health-Score>=100 gate
-  // alone is NOT a safe go-live signal — we proved Health 100 != Gmail inbox.
-  // A fresh account's warmup score can hit 100 in days, well before it's truly
-  // Gmail-ready. Keep these blocked until BOTH (a) ~2 weeks warmup elapsed AND
-  // (b) an Instantly inbox-placement seed test CONFIRMS Gmail inbox. Remove a
-  // domain from this block only after its seed test passes — not on the score.
-  "maildistribute.com",
-  "boostdistribute.com",
-  "growdistribute.com",
-  "hellodistribute.com",
-  "startdistribute.com",
-];
-
-/**
- * Minimum Instantly Health Score (the account `stat_warmup_score`, an integer
- * 0-100) required to start a NEW sequence from an account. We dispatch only
- * from fully-warmed senders (100): an account whose score has dipped is held
- * out until it recovers. The score fluctuates daily, so the eligible pool
- * breathes around this threshold — if it ever empties, `sendLeadToInstantly`
- * returns `no_healthy_accounts_available` (no silent fallback to weaker senders).
- */
-const MIN_WARMUP_SCORE = 100;
+import { fetchInProductionAccounts } from "./account-lifecycle-sync";
 
 /**
  * Pick an account using a single-pool weighted random:
@@ -309,87 +222,6 @@ export function buildSequenceSteps(
 }
 
 /**
- * Why an account is NOT send-eligible, in the exact precedence
- * `filterHealthyAccounts` applies its gates:
- *   - `manual`             — staff manually blacklisted this account (highest
- *                            precedence — reported even if also under-warmed /
- *                            inactive / blacklisted-domain)
- *   - `inactive`           — `status <= 0` (Instantly's account state machine)
- *   - `under-warmed`       — `stat_warmup_score < MIN_WARMUP_SCORE`
- *   - `blacklisted-domain` — domain in `BLOCKED_DOMAINS`
- * `null` ⇒ the account passes every gate (send-eligible).
- */
-export type AccountBlockReason =
-  | "manual"
-  | "inactive"
-  | "under-warmed"
-  | "blacklisted-domain";
-
-/** Reused empty set so the default arg allocates nothing per call. */
-const NO_MANUAL_BLACKLIST: ReadonlySet<string> = new Set<string>();
-
-/**
- * Single source of truth for the live-send eligibility gate. Returns the FIRST
- * failing reason (same order `filterHealthyAccounts` checks) or `null` when the
- * account is sendable. Both `filterHealthyAccounts` (the send path) and the
- * staff account-health audit view derive from this one function — no divergent
- * second copy of the blacklist / warmup / status rules.
- *
- * `manuallyBlacklisted` is the set of emails staff have manually rested (loaded
- * once per call from `instantly_accounts`); a member reports `"manual"` FIRST,
- * ahead of every derived reason.
- */
-export function classifyAccountBlock(
-  a: Account,
-  manuallyBlacklisted: ReadonlySet<string> = NO_MANUAL_BLACKLIST,
-): AccountBlockReason | null {
-  if (manuallyBlacklisted.has(a.email)) return "manual";
-  if (a.status <= 0) return "inactive";
-  if ((a.stat_warmup_score ?? 0) < MIN_WARMUP_SCORE) return "under-warmed";
-  if (isBlockedDomain(a.email)) return "blacklisted-domain";
-  return null;
-}
-
-/**
- * Filter the raw Instantly account list to senders we can send from now:
- *   - NOT manually blacklisted by staff (per-account "rest" override)
- *   - `status > 0` (active in Instantly's account state machine)
- *   - `stat_warmup_score >= MIN_WARMUP_SCORE` (fully-warmed Health Score only)
- *   - domain not in BLOCKED_DOMAINS
- *
- * The returned list is unsorted; pacing/warmup weighting happens in
- * `pickRandomAccount`.
- */
-export function filterHealthyAccounts(
-  accounts: Account[],
-  manuallyBlacklisted: ReadonlySet<string> = NO_MANUAL_BLACKLIST,
-): Account[] {
-  return accounts.filter((a) => {
-    const reason = classifyAccountBlock(a, manuallyBlacklisted);
-    if (reason === "manual") {
-      console.log(`[send-lead] Skipping manually-blacklisted account: ${a.email}`);
-    } else if (reason === "under-warmed") {
-      console.log(
-        `[send-lead] Skipping under-warmed account: ${a.email} (score=${a.stat_warmup_score ?? "null"})`,
-      );
-    } else if (reason === "blacklisted-domain") {
-      console.log(`[send-lead] Skipping blocked-domain account: ${a.email}`);
-    }
-    return reason === null;
-  });
-}
-
-/**
- * True when the account's email domain is in `BLOCKED_DOMAINS`. Extracted so
- * the sending-forecast fleet view can count blocked accounts using the exact
- * same blacklist that gates real sends (no divergent second copy).
- */
-export function isBlockedDomain(email: string): boolean {
-  const domain = email.split("@")[1] ?? "";
-  return BLOCKED_DOMAINS.includes(domain);
-}
-
-/**
  * Create an Instantly campaign, assign one account, add the lead, activate.
  * Returns the new Instantly campaign ID + the number of leads added.
  *
@@ -488,26 +320,28 @@ export type SendResult =
   | { ok: false; reason: SendFailureReason };
 
 /**
- * Find a healthy Instantly account for the given org's API key and send
- * the lead onto a fresh campaign. One-shot — no retry on post-activate
- * NSS (retry-stuck owns the eventual catch-up).
+ * Find an eligible Instantly account and send the lead onto a fresh campaign.
+ * One-shot — no retry on post-activate NSS (retry-stuck owns the eventual
+ * catch-up).
+ *
+ * ELIGIBILITY = the account's silver `lifecycle_status = 'in_production'` (see
+ * lib/account-lifecycle.ts). The pool is read PURELY from silver — no live
+ * `listAccounts` on the send hot-path. An account reaches in_production only when
+ * BOTH its Instantly health score == 100 AND its latest placement test is 100%
+ * inbox across every ESP; the old under-warmed / blacklisted-domain / manual
+ * gates are subsumed by that lifecycle.
  *
  * Returns:
  *   - `{ok: true, ...}` on success with the new Instantly campaign ID + chosen account.
- *   - `{ok: false, reason: "no_healthy_accounts_available"}` when `listAccounts`
- *     returns zero senders that pass `filterHealthyAccounts` — caller surfaces
- *     this to the upstream (no row created).
+ *   - `{ok: false, reason: "no_healthy_accounts_available"}` when zero accounts are
+ *     currently in_production — caller surfaces this upstream (no row created).
  */
 export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult> {
-  const [allAccounts, manuallyBlacklisted] = await Promise.all([
-    listAccounts(opts.apiKey),
-    fetchManuallyBlacklistedEmails(),
-  ]);
-  const accounts = filterHealthyAccounts(allAccounts, manuallyBlacklisted);
+  const accounts = await fetchInProductionAccounts();
 
   if (accounts.length === 0) {
     console.warn(
-      `[send-lead] No healthy accounts available (raw=${allAccounts.length}) for "${opts.campaignName}"`,
+      `[send-lead] No in_production accounts available for "${opts.campaignName}"`,
     );
     return { ok: false, reason: "no_healthy_accounts_available" };
   }

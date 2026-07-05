@@ -1085,12 +1085,12 @@ const SendingForecastResponseSchema = z
       .number()
       .int()
       .describe(
-        "Emails/day the healthy fleet can send — Σ daily send limit over accounts passing filterHealthyAccounts (Instantly-active + warmup ≥ 100 + domain not blocked)",
+        "Emails/day the fleet can send — Σ daily send limit over accounts whose lifecycle_status == 'in_production' (the live send gate)",
       ),
     healthyAccountCount: z
       .number()
       .int()
-      .describe("Accounts passing filterHealthyAccounts"),
+      .describe("Accounts currently in_production (send-eligible)"),
     totalAccountCount: z
       .number()
       .int()
@@ -1098,7 +1098,7 @@ const SendingForecastResponseSchema = z
     blockedDomainCount: z
       .number()
       .int()
-      .describe("Accounts excluded because their domain is in BLOCKED_DOMAINS"),
+      .describe("Accounts blocked by domain policy (lifecycle deactivated_by_user)"),
     days: z
       .array(ForecastDaySchema)
       .describe(
@@ -1160,14 +1160,31 @@ const AccountHealthSchema = z
     blocked: z
       .boolean()
       .describe(
-        "True when the account is NOT send-eligible per the live send gate (filterHealthyAccounts/classifyAccountBlock)",
+        "True when the account is NOT send-eligible (lifecycle_status != 'in_production')",
       ),
     blockReason: z
-      .enum(["manual", "inactive", "under-warmed", "blacklisted-domain"])
+      .string()
       .nullable()
       .describe(
-        "Short reason when blocked (first failing gate); null when send-eligible. 'manual' = staff manually blacklisted this account (highest precedence — reported even if also under-warmed/inactive/blacklisted-domain).",
+        "Short reason when blocked — the account's lifecycle_status (in_recovery / deactivated_by_instantly / deactivated_by_user), or 'unclassified' when the lifecycle has not yet run; null when in_production.",
       ),
+    lifecycleStatus: z
+      .enum([
+        "in_production",
+        "in_recovery",
+        "deactivated_by_instantly",
+        "deactivated_by_user",
+      ])
+      .nullable()
+      .describe("Auto-derived lifecycle state; null until reconcileLifecycle first runs"),
+    lifecycleReason: z
+      .string()
+      .nullable()
+      .describe("Snapshot reason on the latest lifecycle transition; null until classified"),
+    lifecycleUpdatedAt: z
+      .string()
+      .nullable()
+      .describe("ISO8601 timestamp of the latest lifecycle transition; null until classified"),
     inboxPlacement: InboxPlacementSchema.nullable().describe(
       "Inbox-placement breakdown — ALWAYS null in v1: the Instantly V2 API exposes no per-account placement property (only test-scoped, subscription-gated inbox-placement-test results). Never fabricated.",
     ),
@@ -1208,7 +1225,7 @@ registry.registerPath({
   path: "/internal/audit/account-health",
   summary: "Per-account deliverability health — identity, sending config, blocked state",
   description:
-    "Platform-scoped (no org). Returns every sending account with its identity (email/domain), sending config (status, warmup Health Score, daily send limit), and blocked state (blocked + short blockReason, from the SAME gate the live send path uses — filterHealthyAccounts/classifyAccountBlock). `inboxPlacement` is the latest inbox/spam/missing breakdown from our own Bronze/Silver/Gold placement history (recurring inbox-placement tests promoted to silver, latest test per account blended across ESP); null when the account has never been in a test. The Instantly V2 API exposes no standing per-account placement property — this figure is derived from real test results, never fabricated. Fails loud (500) on any missing REQUIRED source (account list); no silent fallbacks.",
+    "Platform-scoped (no org). Returns every sending account with its identity (email/domain), sending config (status, warmup Health Score, daily send limit), and lifecycle state (lifecycleStatus/lifecycleReason/lifecycleUpdatedAt + blocked + blockReason, from the SAME auto-derived lifecycle the live send path reads: send-eligible ⇔ lifecycle_status == 'in_production'). `inboxPlacement` is the latest inbox/spam/missing breakdown from our own Bronze/Silver/Gold placement history (recurring inbox-placement tests promoted to silver, latest test per account blended across ESP); null when the account has never been in a test. The Instantly V2 API exposes no standing per-account placement property — this figure is derived from real test results, never fabricated. Fails loud (500) on any missing REQUIRED source (account list); no silent fallbacks.",
   responses: {
     200: {
       description: "Per-account deliverability health",
@@ -1268,64 +1285,6 @@ registry.registerPath({
     401: { description: "Unauthorized" },
     500: {
       description: "Server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-// ─── Audit — manual per-account blacklist ("rest an account") ───────────────
-
-export const AccountBlacklistRequestSchema = z
-  .object({
-    email: z.string().min(1).describe("Sending account email to toggle"),
-    blacklisted: z
-      .boolean()
-      .describe("true = rest (stop new sends + warmup harder); false = re-allow"),
-  })
-  .openapi("AccountBlacklistRequest");
-
-const AccountBlacklistResponseSchema = z
-  .object({
-    email: z.string().describe("The toggled sending account email"),
-    manuallyBlacklisted: z
-      .boolean()
-      .describe("New manual-blacklist state (mirrors the request)"),
-    warmupDailyLimit: z
-      .number()
-      .int()
-      .describe(
-        "The Instantly warmup daily send volume now set — 50 when blacklisted (warm harder to recover), 10 when allowed. The account's Instantly daily_limit (max send) is left intact so its queue keeps draining.",
-      ),
-  })
-  .openapi("AccountBlacklistResponse");
-
-registry.registerPath({
-  method: "post",
-  path: "/internal/audit/account-blacklist",
-  summary: "Rest (manually blacklist) or re-allow a sending account",
-  description:
-    "Platform-scoped (no org; api-service injects X-API-Key + forwards x-email for attribution). Staff toggle to 'rest' a sending account or re-allow it. Blacklisting (blacklisted:true) raises the account's Instantly WARMUP daily volume to 50 (warm harder to recover reputation) and persists a per-account manual override so the live send gate excludes it from NEW sends (account-health reports blockReason 'manual', highest precedence) — while its Instantly daily_limit (max send) is LEFT INTACT so already-queued emails keep draining. Re-allowing (blacklisted:false) drops the warmup volume back to 10 and clears the override. The Instantly warmup PATCH runs FIRST; the local flag is persisted only on success. Fails loud (500) if the Instantly PATCH fails — the flag is never persisted on a failed PATCH.",
-  request: {
-    body: {
-      content: {
-        "application/json": { schema: AccountBlacklistRequestSchema },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: "Toggle applied",
-      content: {
-        "application/json": { schema: AccountBlacklistResponseSchema },
-      },
-    },
-    400: {
-      description: "Invalid request body",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: { description: "Unauthorized" },
-    500: {
-      description: "Server error (e.g. Instantly warmup PATCH failed)",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
