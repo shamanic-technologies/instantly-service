@@ -16,6 +16,7 @@ import {
 import {
   syncPlacement,
   ensurePlacementSchedule,
+  runOneTimeFleetPlacementTest,
   fetchLatestPlacementByAccount,
   fetchPlacementHistory,
   isPlacementSchedulingEnabled,
@@ -216,12 +217,43 @@ router.post("/placement-test/sync", async (_req: Request, res: Response) => {
 });
 
 /**
- * POST /internal/audit/placement-test/ensure
+ * POST /internal/audit/placement-test/run
  *
- * Platform-scoped. Ensures the recurring automated placement tests exist (so
- * Instantly runs the fleet placement test on a schedule server-side). SPENDS
+ * Platform-scoped. Creates ONE one-time (type 1) fleet inbox-placement test that
+ * runs immediately — the plan-compatible recurring path (the cron calls this
+ * every 6h; automated type-2 tests are HyperGrowth-gated, see /ensure). SPENDS
  * Growth-sub quota → gated behind `PLACEMENT_TESTS_ENABLED=true`; returns 409
  * when disabled. Fails loud on a create rejection (402 quota / 400).
+ */
+router.post("/placement-test/run", async (_req: Request, res: Response) => {
+  try {
+    if (!isPlacementSchedulingEnabled()) {
+      return res.status(409).json({
+        error: "placement testing disabled — set PLACEMENT_TESTS_ENABLED=true to arm",
+      });
+    }
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/placement-test/run",
+    });
+    const summary = await runOneTimeFleetPlacementTest(apiKey);
+    res.json({ ...summary });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] placement-test/run failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * POST /internal/audit/placement-test/ensure
+ *
+ * Platform-scoped. Ensures the recurring AUTOMATED (type 2) placement tests exist
+ * so Instantly runs them on a schedule server-side. ⚠️ Automated tests require an
+ * Instantly HyperGrowth plan — on the Growth sub this 402s; use /run instead
+ * (one-time test per cron tick). Kept for when the workspace is on HyperGrowth.
+ * SPENDS Growth-sub quota → gated behind `PLACEMENT_TESTS_ENABLED=true`; returns
+ * 409 when disabled. Fails loud on a create rejection (402 quota / 400).
  */
 router.post("/placement-test/ensure", async (_req: Request, res: Response) => {
   try {
