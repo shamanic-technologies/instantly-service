@@ -1163,9 +1163,11 @@ const AccountHealthSchema = z
         "True when the account is NOT send-eligible per the live send gate (filterHealthyAccounts/classifyAccountBlock)",
       ),
     blockReason: z
-      .enum(["inactive", "under-warmed", "blacklisted-domain"])
+      .enum(["manual", "inactive", "under-warmed", "blacklisted-domain"])
       .nullable()
-      .describe("Short reason when blocked (first failing gate); null when send-eligible"),
+      .describe(
+        "Short reason when blocked (first failing gate); null when send-eligible. 'manual' = staff manually blacklisted this account (highest precedence — reported even if also under-warmed/inactive/blacklisted-domain).",
+      ),
     inboxPlacement: InboxPlacementSchema.nullable().describe(
       "Inbox-placement breakdown — ALWAYS null in v1: the Instantly V2 API exposes no per-account placement property (only test-scoped, subscription-gated inbox-placement-test results). Never fabricated.",
     ),
@@ -1266,6 +1268,64 @@ registry.registerPath({
     401: { description: "Unauthorized" },
     500: {
       description: "Server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ─── Audit — manual per-account blacklist ("rest an account") ───────────────
+
+export const AccountBlacklistRequestSchema = z
+  .object({
+    email: z.string().min(1).describe("Sending account email to toggle"),
+    blacklisted: z
+      .boolean()
+      .describe("true = rest (stop new sends + warmup harder); false = re-allow"),
+  })
+  .openapi("AccountBlacklistRequest");
+
+const AccountBlacklistResponseSchema = z
+  .object({
+    email: z.string().describe("The toggled sending account email"),
+    manuallyBlacklisted: z
+      .boolean()
+      .describe("New manual-blacklist state (mirrors the request)"),
+    warmupDailyLimit: z
+      .number()
+      .int()
+      .describe(
+        "The Instantly warmup daily send volume now set — 50 when blacklisted (warm harder to recover), 10 when allowed. The account's Instantly daily_limit (max send) is left intact so its queue keeps draining.",
+      ),
+  })
+  .openapi("AccountBlacklistResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/audit/account-blacklist",
+  summary: "Rest (manually blacklist) or re-allow a sending account",
+  description:
+    "Platform-scoped (no org; api-service injects X-API-Key + forwards x-email for attribution). Staff toggle to 'rest' a sending account or re-allow it. Blacklisting (blacklisted:true) raises the account's Instantly WARMUP daily volume to 50 (warm harder to recover reputation) and persists a per-account manual override so the live send gate excludes it from NEW sends (account-health reports blockReason 'manual', highest precedence) — while its Instantly daily_limit (max send) is LEFT INTACT so already-queued emails keep draining. Re-allowing (blacklisted:false) drops the warmup volume back to 10 and clears the override. The Instantly warmup PATCH runs FIRST; the local flag is persisted only on success. Fails loud (500) if the Instantly PATCH fails — the flag is never persisted on a failed PATCH.",
+  request: {
+    body: {
+      content: {
+        "application/json": { schema: AccountBlacklistRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Toggle applied",
+      content: {
+        "application/json": { schema: AccountBlacklistResponseSchema },
+      },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "Server error (e.g. Instantly warmup PATCH failed)",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },

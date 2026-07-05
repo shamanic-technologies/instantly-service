@@ -126,6 +126,14 @@ export const instantlyAccounts = pgTable("instantly_accounts", {
   status: text("status").notNull().default("active"),
   dailySendLimit: integer("daily_send_limit"),
   orgId: text("org_id"),
+  // Staff-driven manual override on the account-health "rest an account" toggle
+  // (POST /internal/audit/account-blacklist). true ⇒ the live send gate excludes
+  // this account from NEW sends (classifyAccountBlock returns "manual", highest
+  // precedence) while its Instantly daily_limit stays intact so already-queued
+  // emails drain. Independent of the derived status/warmup/BLOCKED_DOMAINS gates.
+  // Default false ⇒ zero behavior change until staff toggles one.
+  manuallyBlacklisted: boolean("manually_blacklisted").notNull().default(false),
+  manuallyBlacklistedAt: timestamp("manually_blacklisted_at", { withTimezone: true }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

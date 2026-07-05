@@ -682,4 +682,53 @@ describe("instantly-client", () => {
       { id: "c", status: 1, stepCount: 0 },
     ]);
   });
+
+  it("setWarmupDailyLimit GETs the account, merges warmup.limit, PATCHes without daily_limit", async () => {
+    // 1) GET /accounts/{email} — current warmup config + top-level daily_limit.
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          email: "rest@x.com",
+          warmup_status: 1,
+          status: 1,
+          daily_limit: 30,
+          warmup: {
+            limit: 10,
+            increment: "2",
+            advanced: { warm_ctd: true, read_emulation: true, weekday_only: true },
+          },
+        }),
+    });
+    // 2) PATCH /accounts/{email} — echo back.
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ email: "rest@x.com", warmup_status: 1, status: 1 }),
+    });
+
+    const { setWarmupDailyLimit } = await import("../../src/lib/instantly-client");
+    await setWarmupDailyLimit(TEST_API_KEY, "rest@x.com", 50);
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const [getUrl, getInit] = mockFetch.mock.calls[0];
+    expect(getUrl).toContain("/accounts/rest%40x.com");
+    expect(getInit?.method ?? "GET").toBe("GET");
+
+    const [patchUrl, patchInit] = mockFetch.mock.calls[1];
+    expect(patchUrl).toContain("/accounts/rest%40x.com");
+    expect(patchInit.method).toBe("PATCH");
+    const body = JSON.parse(patchInit.body);
+    // Preserves increment + advanced, sets the new limit, and NEVER sends daily_limit.
+    expect(body).toEqual({
+      warmup: {
+        limit: 50,
+        increment: "2",
+        advanced: { warm_ctd: true, read_emulation: true, weekday_only: true },
+      },
+    });
+    expect(body).not.toHaveProperty("daily_limit");
+    expect(body.warmup).not.toHaveProperty("daily_limit");
+  });
 });
