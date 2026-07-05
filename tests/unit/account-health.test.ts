@@ -129,6 +129,44 @@ describe("buildAccountHealth", () => {
     expect(byEmail["b@good.com"].queueSize).toBe(0);
   });
 
+  it("reports blockReason 'manual' when the account is in the manually-blacklisted set", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "rested@good.com", status: 1, stat_warmup_score: 100 })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Set(["rested@good.com"]),
+    );
+    expect(row.blocked).toBe(true);
+    expect(row.blockReason).toBe("manual");
+  });
+
+  it("'manual' outranks under-warmed / inactive / blacklisted-domain", () => {
+    const rows = buildAccountHealth(
+      [
+        acc({ email: "u@good.com", status: 1, stat_warmup_score: 10 }), // under-warmed
+        acc({ email: "i@good.com", status: 0 }), // inactive
+        acc({ email: "d@distribute.you", status: 1, stat_warmup_score: 100 }), // blocked domain
+      ],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Set(["u@good.com", "i@good.com", "d@distribute.you"]),
+    );
+    expect(rows.every((r) => r.blockReason === "manual")).toBe(true);
+  });
+
+  it("accounts NOT in the manual set keep their derived blockReason", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "y@good.com", status: 1, stat_warmup_score: 42 })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Set(["someone-else@good.com"]),
+    );
+    expect(row.blockReason).toBe("under-warmed");
+  });
+
   it("maps provider_code to accountType (google/microsoft/imap), null otherwise", () => {
     const rows = buildAccountHealth([
       acc({ email: "g@good.com", provider_code: 1 }),

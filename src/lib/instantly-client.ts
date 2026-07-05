@@ -23,6 +23,21 @@ export interface Lead {
   variables?: Record<string, string>;
 }
 
+/**
+ * Instantly account `warmup` object. Separate from the top-level `daily_limit`
+ * (the real send cap). `limit` is the numeric daily WARMUP send volume; the
+ * other subfields (increment / advanced) MUST be preserved when patching limit.
+ * Verified live 2026-07-05: `{ limit, increment, advanced:{ warm_ctd,
+ * read_emulation, weekday_only } }`.
+ */
+export interface WarmupConfig {
+  limit?: number;
+  increment?: string | number;
+  reply_rate?: number;
+  advanced?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface Account {
   email: string;
   warmup_status: number;
@@ -36,6 +51,9 @@ export interface Account {
   // the account TYPE (how it sends), not its provisioning class: 1=Google,
   // 2=Microsoft, 3/4=IMAP/SMTP. Absent on older account payloads → null type.
   provider_code?: number;
+  // Warmup config object (present on GET /accounts/{email}). Carries the numeric
+  // warmup daily send volume (`limit`) + increment/advanced subfields.
+  warmup?: WarmupConfig;
 }
 
 interface PaginatedResponse<T> {
@@ -446,6 +464,41 @@ export async function listAccounts(apiKey: string): Promise<Account[]> {
     startingAfter = response.next_starting_after;
   }
   return results;
+}
+
+/** GET /accounts/{email} — single account, incl. its `warmup` config object. */
+export async function getAccount(apiKey: string, email: string): Promise<Account> {
+  const encoded = encodeURIComponent(email);
+  return instantlyRequest<Account>(apiKey, `/accounts/${encoded}`);
+}
+
+/**
+ * Set the account's WARMUP daily send volume (`warmup.limit`) WITHOUT touching
+ * its top-level `daily_limit` (the real max-send cap — must stay intact so the
+ * account's already-queued emails keep draining).
+ *
+ * GET the account first to read its existing warmup subfields (increment /
+ * advanced / reply_rate), merge the new `limit`, then PATCH `{ warmup }` — so
+ * the other warmup config is never clobbered. `daily_limit` is a SEPARATE
+ * top-level field and is deliberately not included in the PATCH body.
+ *
+ * Verified against the live Instantly V2 API 2026-07-05: warmup is
+ * `{ limit, increment, advanced:{...} }`; a PATCH of `{ warmup:{...current,
+ * limit} }` returns 200, preserves increment/advanced, and leaves daily_limit
+ * unchanged. Fails loud on any non-2xx (instantlyRequest throws).
+ */
+export async function setWarmupDailyLimit(
+  apiKey: string,
+  email: string,
+  limit: number,
+): Promise<Account> {
+  const current = await getAccount(apiKey, email);
+  const warmup: WarmupConfig = { ...(current.warmup ?? {}), limit };
+  const encoded = encodeURIComponent(email);
+  return instantlyRequest<Account>(apiKey, `/accounts/${encoded}`, {
+    method: "PATCH",
+    body: { warmup },
+  });
 }
 
 export async function enableWarmup(apiKey: string, email: string): Promise<Account> {
