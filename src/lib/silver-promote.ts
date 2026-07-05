@@ -15,7 +15,7 @@
 import { db } from "../db";
 import { instantlyCampaigns, instantlyEvents, sequenceCosts } from "../db/schema";
 import { and, eq, isNull } from "drizzle-orm";
-import { updateCostStatus, type IdentityContext } from "./runs-client";
+import { updateCostStatus, isRunGoneError, type IdentityContext } from "./runs-client";
 import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
 import { maybeStopOnClickForSignup } from "./stop-on-click";
@@ -186,17 +186,40 @@ async function updateReplyClassification(
 }
 
 /**
+ * Per-call outcome of {@link handleEmailSent}, counted per cost row (each step
+ * has 2 — account + domain). Lets callers (e.g. the actualize-orphaned-sends
+ * sweep) distinguish billed vs terminally-cancelled vs left-for-retry.
+ */
+export interface EmailSentOutcome {
+  /** provisioned → actual (runs-service PATCH succeeded). */
+  actualized: number;
+  /** provisioned → cancelled locally — terminal runs-service 404 (run purged). */
+  cancelled: number;
+  /** left provisioned — a transient error; reconcile / sweep retries later. */
+  transient: number;
+}
+
+/**
  * When `email_sent` arrives for any step, convert that step's provisioned
  * email costs to actual. Each step has 2 email costs (account + domain).
  * Step 1's costs were inserted as provisioned at /send time (POST /send no
  * longer marks them actual upfront), so this handler runs for every step.
+ *
+ * Error handling distinguishes a TERMINAL runs-service 404 from a TRANSIENT
+ * error. A 404 means retention purged the run — the hold can NEVER actualize
+ * (reconcile's event-count drift gate never retries it because the `email_sent`
+ * event exists), so we cancel it locally (the send happened; it's unbillable),
+ * else it strands `provisioned` forever and inflates the reconcile
+ * `pendingSends` metric. A transient error (cold-start / 5xx / timeout / 403)
+ * leaves the hold `provisioned` so it retries later — unchanged behavior.
  */
 export async function handleEmailSent(
   campaign: CampaignRow,
   leadEmail: string,
   step: number,
-): Promise<void> {
-  if (!campaign.campaignId) return;
+): Promise<EmailSentOutcome> {
+  const outcome: EmailSentOutcome = { actualized: 0, cancelled: 0, transient: 0 };
+  if (!campaign.campaignId) return outcome;
 
   const costs = await db
     .select()
@@ -210,7 +233,7 @@ export async function handleEmailSent(
       ),
     );
 
-  if (costs.length === 0) return;
+  if (costs.length === 0) return outcome;
 
   for (const cost of costs) {
     const identity: IdentityContext = {
@@ -225,16 +248,34 @@ export async function handleEmailSent(
         .update(sequenceCosts)
         .set({ status: "actual", updatedAt: new Date() })
         .where(eq(sequenceCosts.id, cost.id));
+      outcome.actualized++;
       console.log(
         `[instantly-service] silver: cost ${cost.costId} provisioned→actual step=${step}`,
       );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(
-        `[instantly-service] silver: failed to convert cost ${cost.costId}: ${message}`,
-      );
+      if (isRunGoneError(error)) {
+        // Terminal: the run is gone (retention purged it). Cancel locally — the
+        // send fired but can never be billed. No runs-service PATCH (it 404s).
+        await db
+          .update(sequenceCosts)
+          .set({ status: "cancelled", updatedAt: new Date() })
+          .where(eq(sequenceCosts.id, cost.id));
+        outcome.cancelled++;
+        console.warn(
+          `[instantly-service] silver: cost ${cost.costId} run gone (404) → cancelled step=${step}`,
+        );
+      } else {
+        // Transient — leave provisioned; retried by reconcile / the sweep.
+        outcome.transient++;
+        console.error(
+          `[instantly-service] silver: failed to convert cost ${cost.costId} (transient, left provisioned): ${message}`,
+        );
+      }
     }
   }
+
+  return outcome;
 }
 
 /**

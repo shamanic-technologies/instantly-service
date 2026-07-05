@@ -227,4 +227,34 @@ describe("runs-client", () => {
     expect(options.headers["x-brand-profile-id"]).toBeUndefined();
     expect(options.headers["x-audience-id"]).toBeUndefined();
   });
+
+  describe("isRunGoneError", () => {
+    it("matches a terminal runs-service 404 (run purged)", async () => {
+      const { isRunGoneError } = await import("../../src/lib/runs-client");
+      expect(
+        isRunGoneError(
+          new Error("runs-service PATCH /v1/runs/r/costs/c failed: 404 - Run not found"),
+        ),
+      ).toBe(true);
+    });
+
+    it("does NOT match transient conditions (403 / 5xx / timeout / connection)", async () => {
+      const { isRunGoneError } = await import("../../src/lib/runs-client");
+      expect(
+        isRunGoneError(new Error("runs-service PATCH /x failed: 403 - forbidden")),
+      ).toBe(false);
+      expect(
+        isRunGoneError(new Error("runs-service PATCH /x failed: 503 - upstream")),
+      ).toBe(false);
+      expect(isRunGoneError(new Error("ETIMEDOUT"))).toBe(false);
+      expect(isRunGoneError(new Error("fetch failed"))).toBe(false);
+    });
+
+    it("does not false-match a 404 embedded in a longer status (e.g. 4040)", async () => {
+      const { isRunGoneError } = await import("../../src/lib/runs-client");
+      expect(
+        isRunGoneError(new Error("runs-service PATCH /x failed: 4040 - weird")),
+      ).toBe(false);
+    });
+  });
 });

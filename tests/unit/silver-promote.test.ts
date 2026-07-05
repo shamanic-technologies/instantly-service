@@ -54,6 +54,10 @@ vi.mock("../../src/db/schema", () => ({
 const mockUpdateCostStatus = vi.fn();
 vi.mock("../../src/lib/runs-client", () => ({
   updateCostStatus: (...args: unknown[]) => mockUpdateCostStatus(...args),
+  // real implementation — a terminal runs-service 404 (run purged) is detected
+  // off the `... failed: 404 - ...` error string handleEmailSent's catch receives.
+  isRunGoneError: (error: unknown) =>
+    /failed: 404\b/.test(error instanceof Error ? error.message : String(error)),
 }));
 
 vi.mock("../../src/lib/status-gold", () => ({
@@ -429,6 +433,88 @@ describe("promoteFromWebhookPayload", () => {
     });
 
     expect(mockUpdateCostStatus).not.toHaveBeenCalled();
+  });
+
+  it("cancels the hold locally when runs-service returns 404 (run purged) on email_sent", async () => {
+    // Terminal 404: the run is gone (retention), so the hold can NEVER
+    // actualize. handleEmailSent cancels it locally instead of leaving it
+    // stranded `provisioned` forever (issue #416).
+    mockCampaign();
+    mockNewSilverRow();
+    mockProvisions({
+      id: "sc-1",
+      campaignId: "camp-1",
+      leadEmail: "lead@test.com",
+      step: 2,
+      runId: "gone-run",
+      costId: "cost-2",
+      status: "provisioned",
+    });
+    mockUpdateCostStatus.mockRejectedValueOnce(
+      new Error("runs-service PATCH /v1/runs/gone-run/costs/cost-2 failed: 404 - Run not found"),
+    );
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-1",
+      payload: {
+        event_type: "email_sent",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 2,
+      },
+    });
+
+    // Attempted the actualize PATCH...
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith(
+      "gone-run",
+      "cost-2",
+      "actual",
+      expect.anything(),
+    );
+    // ...then, on the 404, flipped the local row to cancelled.
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "cancelled" }),
+    );
+    expect(mockDbUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "actual" }),
+    );
+  });
+
+  it("leaves the hold provisioned on a TRANSIENT runs-service error (5xx) on email_sent", async () => {
+    // Transient: keep current behavior — no local cancel, retried later by
+    // reconcile / the actualize-orphaned-sends sweep.
+    mockCampaign();
+    mockNewSilverRow();
+    mockProvisions({
+      id: "sc-1",
+      campaignId: "camp-1",
+      leadEmail: "lead@test.com",
+      step: 2,
+      runId: "step-run-2",
+      costId: "cost-2",
+      status: "provisioned",
+    });
+    mockUpdateCostStatus.mockRejectedValueOnce(
+      new Error("runs-service PATCH /v1/runs/step-run-2/costs/cost-2 failed: 503 - upstream timeout"),
+    );
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-1",
+      payload: {
+        event_type: "email_sent",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 2,
+      },
+    });
+
+    // No status write of any kind for this cost — the hold stays provisioned.
+    expect(mockDbUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "cancelled" }),
+    );
+    expect(mockDbUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "actual" }),
+    );
   });
 
   it("cancels remaining provisions on reply_received", async () => {
