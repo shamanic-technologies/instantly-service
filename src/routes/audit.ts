@@ -1,8 +1,15 @@
 import { Router, Request, Response } from "express";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
-import { listAccounts } from "../lib/instantly-client";
+import { listAccounts, setWarmupDailyLimit } from "../lib/instantly-client";
 import { resolvePlatformInstantlyApiKey } from "../lib/key-client";
+import {
+  fetchManuallyBlacklistedEmails,
+  setAccountManualBlacklist,
+  BLACKLIST_WARMUP_DAILY_LIMIT,
+  ALLOWED_WARMUP_DAILY_LIMIT,
+} from "../lib/account-blacklist";
+import { AccountBlacklistRequestSchema } from "../schemas";
 import {
   computeCapacitySummary,
   projectDailySchedule,
@@ -143,13 +150,19 @@ router.get("/account-health", async (_req: Request, res: Response) => {
     // per account (our silver + cost holds) run independently — parallelize.
     // Placement/sent/queue are best-effort per contract (null/0 when absent); a
     // live account list is required (fail loud).
-    const [accounts, placementByEmail, sentTodayByEmail, queueSizeByEmail] =
-      await Promise.all([
-        listAccounts(apiKey),
-        fetchLatestPlacementByAccount(),
-        fetchSentTodayByAccount(),
-        fetchQueueSizeByAccount(),
-      ]);
+    const [
+      accounts,
+      placementByEmail,
+      sentTodayByEmail,
+      queueSizeByEmail,
+      manuallyBlacklisted,
+    ] = await Promise.all([
+      listAccounts(apiKey),
+      fetchLatestPlacementByAccount(),
+      fetchSentTodayByAccount(),
+      fetchQueueSizeByAccount(),
+      fetchManuallyBlacklistedEmails(),
+    ]);
 
     res.json({
       asOf: asOf.toISOString(),
@@ -158,6 +171,7 @@ router.get("/account-health", async (_req: Request, res: Response) => {
         placementByEmail,
         sentTodayByEmail,
         queueSizeByEmail,
+        manuallyBlacklisted,
       ),
     });
   } catch (error: unknown) {
@@ -185,6 +199,55 @@ router.get("/account-health/history", async (req: Request, res: Response) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] account-health/history failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * POST /internal/audit/account-blacklist
+ *
+ * Platform-scoped (no org; api-service injects X-API-Key + forwards x-email for
+ * attribution). Staff toggle to "rest" a sending account or re-allow it:
+ *
+ *   { email, blacklisted: true }  → raise its Instantly WARMUP daily volume to 50
+ *     (warm harder to recover reputation), then persist manually_blacklisted=true.
+ *     The account's Instantly daily_limit (max send) is LEFT INTACT so its already-
+ *     queued emails keep draining; the live send gate stops NEW sends from it.
+ *   { email, blacklisted: false } → drop WARMUP daily volume back to 10, clear the
+ *     flag → the send gate includes it again if otherwise healthy.
+ *
+ * ORDERING: PATCH Instantly warmup FIRST; only persist the local flag on success.
+ * Fails loud (5xx) if the Instantly PATCH fails — the flag is never persisted on a
+ * failed PATCH.
+ */
+router.post("/account-blacklist", async (req: Request, res: Response) => {
+  try {
+    const parsed = AccountBlacklistRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.message });
+    }
+    const { email, blacklisted } = parsed.data;
+
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/account-blacklist",
+    });
+
+    const warmupDailyLimit = blacklisted
+      ? BLACKLIST_WARMUP_DAILY_LIMIT
+      : ALLOWED_WARMUP_DAILY_LIMIT;
+
+    // Instantly warmup PATCH FIRST (fail loud) — never persist the flag if it fails.
+    await setWarmupDailyLimit(apiKey, email, warmupDailyLimit);
+    await setAccountManualBlacklist(email, blacklisted);
+
+    console.log(
+      `[audit] account-blacklist: ${email} blacklisted=${blacklisted} warmupDailyLimit=${warmupDailyLimit}`,
+    );
+    res.json({ email, manuallyBlacklisted: blacklisted, warmupDailyLimit });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] account-blacklist failed: ${message}`);
     res.status(500).json({ error: message });
   }
 });

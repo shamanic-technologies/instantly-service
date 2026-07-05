@@ -109,7 +109,9 @@ function domainOf(email: string): string | null {
  * Map raw Instantly accounts to the account-health contract rows. `blocked` /
  * `blockReason` come from `classifyAccountBlock` — the SAME gate the live send
  * path (`filterHealthyAccounts`) uses, so the audit view can never disagree with
- * who actually gets to send. `inboxPlacement` is injected from the caller's
+ * who actually gets to send. `manuallyBlacklisted` (staff "rest an account"
+ * override) is passed through to that gate: a member reports blockReason
+ * "manual" (highest precedence). `inboxPlacement` is injected from the caller's
  * placement map (our BSG history); an account absent from the map gets null.
  */
 export function buildAccountHealth(
@@ -117,9 +119,10 @@ export function buildAccountHealth(
   placementByEmail: Map<string, InboxPlacement> = new Map(),
   sentTodayByEmail: Map<string, number> = new Map(),
   queueSizeByEmail: Map<string, number> = new Map(),
+  manuallyBlacklisted: ReadonlySet<string> = new Set<string>(),
 ): AccountHealth[] {
   return accounts.map((a) => {
-    const blockReason = classifyAccountBlock(a);
+    const blockReason = classifyAccountBlock(a, manuallyBlacklisted);
     return {
       email: a.email,
       domain: domainOf(a.email),

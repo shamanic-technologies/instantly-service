@@ -93,7 +93,22 @@ vi.mock("../../src/lib/status-gold", () => ({
   refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
 }));
 
-import { autolinkifyHtml, buildEmailBodyWithSignature, pickRandomAccount, buildSequenceSteps, stripAccountSignature } from "../../src/lib/send-lead";
+// Manual-blacklist set: default empty so the send path stays healthy unless a
+// test overrides it. Isolates the send route from the DB read.
+const mockFetchManuallyBlacklisted = vi.fn(async () => new Set<string>());
+vi.mock("../../src/lib/account-blacklist", () => ({
+  fetchManuallyBlacklistedEmails: () => mockFetchManuallyBlacklisted(),
+}));
+
+import {
+  autolinkifyHtml,
+  buildEmailBodyWithSignature,
+  pickRandomAccount,
+  buildSequenceSteps,
+  stripAccountSignature,
+  classifyAccountBlock,
+  filterHealthyAccounts,
+} from "../../src/lib/send-lead";
 import { requireOrgId } from "../../src/middleware/requireOrgId";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
@@ -213,6 +228,55 @@ describe("pickRandomAccount", () => {
     // equal weights → each domain equally likely; pool whitelisting is gone
     vi.spyOn(Math, "random").mockReturnValue(0.75); // target = 1.5 → bob
     expect(pickRandomAccount(accounts).email).toBe("bob@randomdomain.com");
+  });
+});
+
+describe("classifyAccountBlock — manual blacklist precedence", () => {
+  it("returns 'manual' when the email is in the manual-blacklist set (highest precedence)", () => {
+    const set = new Set(["rested@x.com"]);
+    // Otherwise fully healthy account still reports manual.
+    const a = acct({ email: "rested@x.com", status: 1, stat_warmup_score: 100 });
+    expect(classifyAccountBlock(a, set)).toBe("manual");
+  });
+
+  it("'manual' wins over inactive / under-warmed / blacklisted-domain", () => {
+    const set = new Set(["c@distribute.you"]);
+    // distribute.you is a blocked domain, inactive, and under-warmed — manual still wins.
+    const a = acct({ email: "c@distribute.you", status: 0, stat_warmup_score: 10 });
+    expect(classifyAccountBlock(a, set)).toBe("manual");
+  });
+
+  it("falls through to the derived reasons when not manually blacklisted", () => {
+    const set = new Set(["someone-else@x.com"]);
+    expect(classifyAccountBlock(acct({ email: "y@good.com", status: 0 }), set)).toBe("inactive");
+    expect(classifyAccountBlock(acct({ email: "z@good.com", stat_warmup_score: 42 }), set)).toBe("under-warmed");
+    expect(classifyAccountBlock(acct({ email: "ok@good.com", status: 1, stat_warmup_score: 100 }), set)).toBeNull();
+  });
+
+  it("defaults to no manual blacklist when the set is omitted", () => {
+    expect(classifyAccountBlock(acct({ email: "ok@good.com", status: 1, stat_warmup_score: 100 }))).toBeNull();
+  });
+});
+
+describe("filterHealthyAccounts — excludes manually-blacklisted", () => {
+  it("drops a manually-blacklisted account from the eligible pool", () => {
+    const accounts = [
+      acct({ email: "keep@good.com", status: 1, stat_warmup_score: 100 }),
+      acct({ email: "rest@good.com", status: 1, stat_warmup_score: 100 }),
+    ];
+    const healthy = filterHealthyAccounts(accounts, new Set(["rest@good.com"]));
+    expect(healthy.map((a) => a.email)).toEqual(["keep@good.com"]);
+  });
+
+  it("keeps everything otherwise-healthy when the manual set is empty", () => {
+    const accounts = [
+      acct({ email: "a@good.com", status: 1, stat_warmup_score: 100 }),
+      acct({ email: "b@good.com", status: 1, stat_warmup_score: 100 }),
+    ];
+    expect(filterHealthyAccounts(accounts).map((a) => a.email)).toEqual([
+      "a@good.com",
+      "b@good.com",
+    ]);
   });
 });
 

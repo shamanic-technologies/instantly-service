@@ -27,6 +27,7 @@ import {
   type Lead,
   type SequenceStep,
 } from "./instantly-client";
+import { fetchManuallyBlacklistedEmails } from "./account-blacklist";
 
 /**
  * Accounts whose domain we refuse to send from regardless of Instantly
@@ -310,15 +311,22 @@ export function buildSequenceSteps(
 /**
  * Why an account is NOT send-eligible, in the exact precedence
  * `filterHealthyAccounts` applies its gates:
+ *   - `manual`             — staff manually blacklisted this account (highest
+ *                            precedence — reported even if also under-warmed /
+ *                            inactive / blacklisted-domain)
  *   - `inactive`           — `status <= 0` (Instantly's account state machine)
  *   - `under-warmed`       — `stat_warmup_score < MIN_WARMUP_SCORE`
  *   - `blacklisted-domain` — domain in `BLOCKED_DOMAINS`
  * `null` ⇒ the account passes every gate (send-eligible).
  */
 export type AccountBlockReason =
+  | "manual"
   | "inactive"
   | "under-warmed"
   | "blacklisted-domain";
+
+/** Reused empty set so the default arg allocates nothing per call. */
+const NO_MANUAL_BLACKLIST: ReadonlySet<string> = new Set<string>();
 
 /**
  * Single source of truth for the live-send eligibility gate. Returns the FIRST
@@ -326,8 +334,16 @@ export type AccountBlockReason =
  * account is sendable. Both `filterHealthyAccounts` (the send path) and the
  * staff account-health audit view derive from this one function — no divergent
  * second copy of the blacklist / warmup / status rules.
+ *
+ * `manuallyBlacklisted` is the set of emails staff have manually rested (loaded
+ * once per call from `instantly_accounts`); a member reports `"manual"` FIRST,
+ * ahead of every derived reason.
  */
-export function classifyAccountBlock(a: Account): AccountBlockReason | null {
+export function classifyAccountBlock(
+  a: Account,
+  manuallyBlacklisted: ReadonlySet<string> = NO_MANUAL_BLACKLIST,
+): AccountBlockReason | null {
+  if (manuallyBlacklisted.has(a.email)) return "manual";
   if (a.status <= 0) return "inactive";
   if ((a.stat_warmup_score ?? 0) < MIN_WARMUP_SCORE) return "under-warmed";
   if (isBlockedDomain(a.email)) return "blacklisted-domain";
@@ -336,6 +352,7 @@ export function classifyAccountBlock(a: Account): AccountBlockReason | null {
 
 /**
  * Filter the raw Instantly account list to senders we can send from now:
+ *   - NOT manually blacklisted by staff (per-account "rest" override)
  *   - `status > 0` (active in Instantly's account state machine)
  *   - `stat_warmup_score >= MIN_WARMUP_SCORE` (fully-warmed Health Score only)
  *   - domain not in BLOCKED_DOMAINS
@@ -343,10 +360,15 @@ export function classifyAccountBlock(a: Account): AccountBlockReason | null {
  * The returned list is unsorted; pacing/warmup weighting happens in
  * `pickRandomAccount`.
  */
-export function filterHealthyAccounts(accounts: Account[]): Account[] {
+export function filterHealthyAccounts(
+  accounts: Account[],
+  manuallyBlacklisted: ReadonlySet<string> = NO_MANUAL_BLACKLIST,
+): Account[] {
   return accounts.filter((a) => {
-    const reason = classifyAccountBlock(a);
-    if (reason === "under-warmed") {
+    const reason = classifyAccountBlock(a, manuallyBlacklisted);
+    if (reason === "manual") {
+      console.log(`[send-lead] Skipping manually-blacklisted account: ${a.email}`);
+    } else if (reason === "under-warmed") {
       console.log(
         `[send-lead] Skipping under-warmed account: ${a.email} (score=${a.stat_warmup_score ?? "null"})`,
       );
@@ -477,8 +499,11 @@ export type SendResult =
  *     this to the upstream (no row created).
  */
 export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult> {
-  const allAccounts = await listAccounts(opts.apiKey);
-  const accounts = filterHealthyAccounts(allAccounts);
+  const [allAccounts, manuallyBlacklisted] = await Promise.all([
+    listAccounts(opts.apiKey),
+    fetchManuallyBlacklistedEmails(),
+  ]);
+  const accounts = filterHealthyAccounts(allAccounts, manuallyBlacklisted);
 
   if (accounts.length === 0) {
     console.warn(
