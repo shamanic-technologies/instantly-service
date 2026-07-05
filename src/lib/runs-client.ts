@@ -188,6 +188,20 @@ export async function addCosts(
   });
 }
 
+/**
+ * True when a runs-service error is a TERMINAL 404 — the run (or its cost) no
+ * longer exists (retention purged it), so the operation can NEVER succeed on
+ * retry. Deliberately narrower than `getRun`'s `40[34]` matcher: only 404 is
+ * terminal for a cost actualize/cancel. A 403 is a transient cross-org/auth
+ * condition and 5xx/timeout/connection errors are transient too — none of those
+ * should trigger a local cancel. Matches the `... failed: <status> - <body>`
+ * shape `runsRequest` throws.
+ */
+export function isRunGoneError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /failed: 404\b/.test(message);
+}
+
 export async function updateCostStatus(
   runId: string,
   costId: string,
