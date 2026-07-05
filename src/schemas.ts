@@ -1293,6 +1293,39 @@ registry.registerPath({
   },
 });
 
+const PlacementRunResponseSchema = z
+  .object({
+    created: z.number().int().describe("One-time placement tests created this call (1)"),
+    testCode: z.string().describe("test_code assigned to the created one-time test"),
+    recipientEsps: z
+      .array(z.string())
+      .describe("Recipient ESPs the test seeds (Google/Outlook)"),
+  })
+  .openapi("PlacementRunResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/audit/placement-test/run",
+  summary: "Run one one-time inbox-placement test now (plan-compatible)",
+  description:
+    "Platform-scoped (no org). Creates ONE one-time (type 1) fleet inbox-placement test that runs immediately — the plan-compatible recurring path (the cron calls this every 6h). Automated (type 2) tests are HyperGrowth-gated (see /ensure); one-time tests run on the Growth Inbox Placement sub. SPENDS Growth-sub test quota → gated behind PLACEMENT_TESTS_ENABLED=true (returns 409 when disabled). Fails loud (500) on a create rejection (402 quota / 400).",
+  responses: {
+    200: {
+      description: "One-time test created",
+      content: { "application/json": { schema: PlacementRunResponseSchema } },
+    },
+    401: { description: "Unauthorized" },
+    409: {
+      description: "Placement testing disabled (PLACEMENT_TESTS_ENABLED != true)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Server error (e.g. Instantly 402 quota / 400)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 const PlacementEnsureResponseSchema = z
   .object({
     existing: z.number().int().describe("Automated placement tests already present"),

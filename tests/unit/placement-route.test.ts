@@ -95,4 +95,22 @@ describe("placement audit routes", () => {
       expect(res.status).toBe(409);
     });
   });
+
+  describe("POST /internal/audit/placement-test/run", () => {
+    it("409 when placement testing is disabled (default off)", async () => {
+      delete process.env.PLACEMENT_TESTS_ENABLED;
+      const app = await makeApp();
+      const res = await request(app).post("/internal/audit/placement-test/run");
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/PLACEMENT_TESTS_ENABLED/);
+      expect(mockResolveKey).not.toHaveBeenCalled();
+    });
+
+    it("409 when PLACEMENT_TESTS_ENABLED is any value other than 'true'", async () => {
+      process.env.PLACEMENT_TESTS_ENABLED = "nope";
+      const app = await makeApp();
+      const res = await request(app).post("/internal/audit/placement-test/run");
+      expect(res.status).toBe(409);
+    });
+  });
 });

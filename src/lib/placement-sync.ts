@@ -290,3 +290,52 @@ export async function ensurePlacementSchedule(apiKey: string): Promise<EnsureSch
 
   return { existing: ours.length, created, perDay };
 }
+
+export interface RunPlacementTestSummary {
+  created: number;
+  testCode: string;
+  recipientEsps: string[];
+}
+
+/**
+ * Create ONE one-time (type 1) fleet inbox-placement test that runs immediately.
+ *
+ * This is the plan-compatible path: automated (type 2) tests are gated to
+ * Instantly HyperGrowth plans (402 on Growth), but one-time tests run on the
+ * Growth Inbox Placement sub. The recurrence comes from OUR cron
+ * (.github/workflows/placement-cron.yml) calling this every 6h — Instantly runs
+ * each test once, server-side, from the whole workspace fleet; `sync` then pulls
+ * the per-(sender, ESP) results into silver.
+ *
+ * Spends Growth-sub quota — caller MUST gate on `isPlacementSchedulingEnabled()`.
+ * Fail loud on a create rejection (402 quota / 400).
+ */
+export async function runOneTimeFleetPlacementTest(
+  apiKey: string,
+): Promise<RunPlacementTestSummary> {
+  const espOptions = await getEmailServiceProviderOptions(apiKey);
+  // Test Gmail + Outlook (the two ESPs the deliverability finding hinges on).
+  const recipientsLabels = espOptions.filter(
+    (o) => o.esp === "Google" || o.esp === "Outlook",
+  );
+
+  const testCode = `${PLACEMENT_TEST_CODE_PREFIX}_onetime`;
+  await createInboxPlacementTest(apiKey, {
+    name: "Fleet inbox placement (one-time)",
+    type: 1,
+    sending_method: 1,
+    email_subject: "Quick question",
+    email_body: "Hi, just checking in on the note I sent over. Any thoughts?",
+    emails: [],
+    recipients_labels: recipientsLabels,
+    text_only: true,
+    test_code: testCode,
+    run_immediately: true,
+  });
+
+  return {
+    created: 1,
+    testCode,
+    recipientEsps: recipientsLabels.map((o) => o.esp),
+  };
+}
