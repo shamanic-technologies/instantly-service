@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   aggregatePlacementRows,
   blendEspRows,
+  selectDailyTestBatch,
   type LatestEspRow,
 } from "../../src/lib/placement-promote";
 import type { InboxPlacementAnalyticsRow } from "../../src/lib/instantly-client";
@@ -158,5 +159,59 @@ describe("blendEspRows", () => {
   it("returns null for empty input or zero pooled seed (never fabricates 0%)", () => {
     expect(blendEspRows([])).toBeNull();
     expect(blendEspRows([row({ seedTotal: 0 })])).toBeNull();
+  });
+});
+
+describe("selectDailyTestBatch", () => {
+  const d = (iso: string) => new Date(iso);
+
+  it("empty pool → []", () => {
+    expect(selectDailyTestBatch([], new Map())).toEqual([]);
+  });
+
+  it("N = ceil(pool / 7)", () => {
+    const pool = Array.from({ length: 14 }, (_, i) => `a${i}@x.com`);
+    expect(selectDailyTestBatch(pool, new Map())).toHaveLength(2);
+    expect(selectDailyTestBatch(pool.slice(0, 10), new Map())).toHaveLength(2); // ceil(10/7)=2
+    expect(selectDailyTestBatch(pool.slice(0, 7), new Map())).toHaveLength(1);
+    expect(selectDailyTestBatch(pool.slice(0, 3), new Map())).toHaveLength(1);
+  });
+
+  it("never-tested accounts sort FIRST (highest priority)", () => {
+    const pool = ["tested@x.com", "never@x.com"];
+    const last = new Map<string, Date | null>([["tested@x.com", d("2026-07-05T00:00:00Z")]]);
+    // N = ceil(2/7) = 1 → the never-tested one wins.
+    expect(selectDailyTestBatch(pool, last)).toEqual(["never@x.com"]);
+  });
+
+  it("least-recently-tested first among tested accounts", () => {
+    const pool = ["fresh@x.com", "stale@x.com", "mid@x.com"];
+    const last = new Map<string, Date | null>([
+      ["fresh@x.com", d("2026-07-05T00:00:00Z")],
+      ["stale@x.com", d("2026-07-01T00:00:00Z")],
+      ["mid@x.com", d("2026-07-03T00:00:00Z")],
+    ]);
+    // N = ceil(3/7) = 1 → the stalest.
+    expect(selectDailyTestBatch(pool, last)).toEqual(["stale@x.com"]);
+  });
+
+  it("ties (same last-tested / both null) break deterministically by email", () => {
+    const pool = ["b@x.com", "a@x.com"];
+    expect(selectDailyTestBatch(pool, new Map())).toEqual(["a@x.com"]);
+  });
+
+  it("covers the whole pool within 7 rounds (rotation, no starvation)", () => {
+    const pool = Array.from({ length: 14 }, (_, i) => `a${String(i).padStart(2, "0")}@x.com`);
+    const last = new Map<string, Date | null>(); // all never-tested
+    const seen = new Set<string>();
+    let clock = 0;
+    for (let day = 0; day < 7; day++) {
+      const batch = selectDailyTestBatch(pool, last);
+      for (const email of batch) {
+        seen.add(email);
+        last.set(email, d(`2026-07-${String(10 + clock++).padStart(2, "0")}T00:00:00Z`));
+      }
+    }
+    expect(seen.size).toBe(pool.length); // every account tested once across the week
   });
 });
