@@ -22,10 +22,16 @@ import {
   instantlyAccountsRaw,
   instantlyAccountLifecycleEvents,
 } from "../db/schema";
-import { listAccounts, setWarmupDailyLimit, type Account } from "./instantly-client";
+import {
+  listAccounts,
+  setWarmupDailyLimit,
+  setDailyLimit,
+  type Account,
+} from "./instantly-client";
 import {
   deriveLifecycle,
   warmupDailyForStatus,
+  dailyLimitForStatus,
   emailDomain,
   isDeliveryFull,
   type LifecycleStatus,
@@ -259,6 +265,7 @@ export interface ReconcileLifecycleSummary {
   scanned: number;
   changed: number;
   warmupPatched: number;
+  dailyLimitPatched: number;
   failed: number;
 }
 
@@ -301,6 +308,7 @@ export async function reconcileLifecycle(
   const accounts = rowsOf<SilverAccountRow>(accountsResult);
   let changed = 0;
   let warmupPatched = 0;
+  let dailyLimitPatched = 0;
   let failed = 0;
 
   for (const row of accounts) {
@@ -329,19 +337,26 @@ export async function reconcileLifecycle(
         : reason;
 
     const warmupTarget = warmupDailyForStatus(status);
+    const dailyLimitTarget = dailyLimitForStatus(status);
 
     try {
-      // ORDERING (load-bearing): PATCH Instantly warmup FIRST. On failure we do
-      // NOT persist the event/status (no half-applied state) — next run retries.
+      // ORDERING (load-bearing): PATCH Instantly FIRST. On failure we do NOT
+      // persist the event/status (no half-applied state) — next run retries.
       if (warmupTarget !== null) {
         await setWarmupDailyLimit(apiKey, row.email, warmupTarget);
         warmupPatched += 1;
+      }
+      // in_production also opens the campaign daily max-send to 40. Other states
+      // leave daily_limit untouched (queue keeps draining at its current cap).
+      if (dailyLimitTarget !== null) {
+        await setDailyLimit(apiKey, row.email, dailyLimitTarget);
+        dailyLimitPatched += 1;
       }
     } catch (error: unknown) {
       failed += 1;
       const message = error instanceof Error ? error.message : String(error);
       console.error(
-        `[account-lifecycle] warmup PATCH failed for ${row.email} → ${status}: ${message}`,
+        `[account-lifecycle] Instantly PATCH failed for ${row.email} → ${status}: ${message}`,
       );
       continue;
     }
@@ -373,5 +388,5 @@ export async function reconcileLifecycle(
     );
   }
 
-  return { scanned: accounts.length, changed, warmupPatched, failed };
+  return { scanned: accounts.length, changed, warmupPatched, dailyLimitPatched, failed };
 }

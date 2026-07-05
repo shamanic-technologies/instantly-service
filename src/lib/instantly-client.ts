@@ -501,6 +501,23 @@ export async function setWarmupDailyLimit(
   });
 }
 
+/**
+ * Set the account's top-level campaign `daily_limit` (max sends/day) via
+ * `PATCH /accounts/{email}`. Distinct from the warmup `limit` above — this is the
+ * real cold-send cap. Fails loud on any non-2xx (instantlyRequest throws).
+ */
+export async function setDailyLimit(
+  apiKey: string,
+  email: string,
+  limit: number,
+): Promise<Account> {
+  const encoded = encodeURIComponent(email);
+  return instantlyRequest<Account>(apiKey, `/accounts/${encoded}`, {
+    method: "PATCH",
+    body: { daily_limit: limit },
+  });
+}
+
 export async function enableWarmup(apiKey: string, email: string): Promise<Account> {
   const encoded = encodeURIComponent(email);
   return instantlyRequest<Account>(apiKey, `/accounts/${encoded}/warmup`, {
