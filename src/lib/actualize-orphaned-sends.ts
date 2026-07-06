@@ -22,9 +22,12 @@
  *                   MUST run inside Railway (the `/internal/campaigns/actualize-
  *                   orphaned-sends` endpoint), NOT a laptop shell.
  *
- * A hold whose run is gone (runs-service 404/403) can't be actualized — the
- * `handleEmailSent` try/catch swallows it, the hold stays provisioned, and the
- * sweep counts it under `failed` for a later look. Never fabricates.
+ * A hold whose run is GONE (runs-service 404 — retention purged the run) can
+ * never be actualized. `handleEmailSent` now detects that terminal 404 and
+ * cancels the hold locally (the send fired, it's unbillable); the sweep tallies
+ * those under `costsCancelled` instead of re-stranding them. A TRANSIENT error
+ * (5xx / timeout / 403) leaves the hold provisioned (`costsTransient`) for the
+ * next run. Never fabricates.
  *
  * NOTE: keyed on `(campaignId, leadEmail)` like refund-stranded-holds. Platform
  * sends (`campaignId IS NULL`) are skipped (same pre-existing gap).
@@ -43,7 +46,15 @@ export interface OrphanedSend {
 }
 
 export interface ActualizeSummary {
+  /** Candidate steps iterated (both cost rows handled per step). */
   stepsProcessed: number;
+  /** Cost rows converted provisioned→actual (send billed). */
+  costsActualized: number;
+  /** Cost rows cancelled locally — runs-service 404, run purged (unbillable). */
+  costsCancelled: number;
+  /** Cost rows left provisioned — transient error, retried next run. */
+  costsTransient: number;
+  /** Steps where `handleEmailSent` threw (e.g. local DB write failure). */
   stepsFailed: number;
 }
 
@@ -105,11 +116,14 @@ export async function actualizeOrphanedSends(
   );
 
   let processed = 0;
+  let actualized = 0;
+  let cancelled = 0;
+  let transient = 0;
   let failed = 0;
 
   for (const o of orphans) {
     try {
-      await handleEmailSent(
+      const outcome = await handleEmailSent(
         {
           campaignId: o.campaignId,
           instantlyCampaignId: o.instantlyCampaignId,
@@ -121,6 +135,9 @@ export async function actualizeOrphanedSends(
         o.step,
       );
       processed++;
+      actualized += outcome.actualized;
+      cancelled += outcome.cancelled;
+      transient += outcome.transient;
     } catch (error: unknown) {
       failed++;
       const message = error instanceof Error ? error.message : String(error);
@@ -132,8 +149,15 @@ export async function actualizeOrphanedSends(
   }
 
   console.log(
-    `[instantly-service] actualize-orphaned-sends: done, processed=${processed} ` +
+    `[instantly-service] actualize-orphaned-sends: done, steps=${processed} ` +
+      `actualized=${actualized} cancelled=${cancelled} transient=${transient} ` +
       `failed=${failed} durationMs=${Date.now() - startedAt}`,
   );
-  return { stepsProcessed: processed, stepsFailed: failed };
+  return {
+    stepsProcessed: processed,
+    costsActualized: actualized,
+    costsCancelled: cancelled,
+    costsTransient: transient,
+    stepsFailed: failed,
+  };
 }

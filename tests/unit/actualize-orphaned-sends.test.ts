@@ -33,10 +33,16 @@ function orphanRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// Each step has 2 cost rows (account + domain). handleEmailSent reports the
+// per-call outcome across those rows.
+const OUTCOME_ACTUALIZED = { actualized: 2, cancelled: 0, transient: 0 };
+const OUTCOME_CANCELLED = { actualized: 0, cancelled: 2, transient: 0 };
+const OUTCOME_TRANSIENT = { actualized: 0, cancelled: 0, transient: 2 };
+
 describe("actualizeOrphanedSends", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    mockHandleEmailSent.mockResolvedValue(undefined);
+    mockHandleEmailSent.mockResolvedValue(OUTCOME_ACTUALIZED);
   });
 
   it("actualizes each orphaned (campaign, lead, step) via handleEmailSent", async () => {
@@ -49,7 +55,13 @@ describe("actualizeOrphanedSends", () => {
 
     const summary = await actualizeOrphanedSends();
 
-    expect(summary).toEqual({ stepsProcessed: 2, stepsFailed: 0 });
+    expect(summary).toEqual({
+      stepsProcessed: 2,
+      costsActualized: 4,
+      costsCancelled: 0,
+      costsTransient: 0,
+      stepsFailed: 0,
+    });
     expect(mockHandleEmailSent).toHaveBeenCalledTimes(2);
     expect(mockHandleEmailSent).toHaveBeenCalledWith(
       expect.objectContaining({ campaignId: "camp-1", instantlyCampaignId: "inst-1", runId: null }),
@@ -63,17 +75,60 @@ describe("actualizeOrphanedSends", () => {
     );
   });
 
-  it("isolates a per-step failure (counted, sweep continues) — e.g. runs-service 404 on a gone run", async () => {
+  it("counts a gone-run (404) step under costsCancelled, not failed — auto-cleaned, not re-stranded", async () => {
+    mockDbExecute.mockResolvedValue({
+      rows: [orphanRow({ step: 1 }), orphanRow({ step: 2 })],
+    });
+    // handleEmailSent now swallows the terminal 404 and cancels locally, so the
+    // sweep sees it as a `cancelled` outcome (never throws for a gone run).
+    mockHandleEmailSent
+      .mockResolvedValueOnce(OUTCOME_CANCELLED)
+      .mockResolvedValueOnce(OUTCOME_ACTUALIZED);
+
+    const summary = await actualizeOrphanedSends();
+
+    expect(summary).toEqual({
+      stepsProcessed: 2,
+      costsActualized: 2,
+      costsCancelled: 2,
+      costsTransient: 0,
+      stepsFailed: 0,
+    });
+    expect(mockHandleEmailSent).toHaveBeenCalledTimes(2);
+  });
+
+  it("counts a transient-error step under costsTransient (left provisioned for next run)", async () => {
+    mockDbExecute.mockResolvedValue({ rows: [orphanRow({ step: 1 })] });
+    mockHandleEmailSent.mockResolvedValueOnce(OUTCOME_TRANSIENT);
+
+    const summary = await actualizeOrphanedSends();
+
+    expect(summary).toEqual({
+      stepsProcessed: 1,
+      costsActualized: 0,
+      costsCancelled: 0,
+      costsTransient: 2,
+      stepsFailed: 0,
+    });
+  });
+
+  it("isolates a hard-thrown per-step failure (counted, sweep continues)", async () => {
     mockDbExecute.mockResolvedValue({
       rows: [orphanRow({ step: 1 }), orphanRow({ step: 2 })],
     });
     mockHandleEmailSent
-      .mockRejectedValueOnce(new Error("runs-service 404 - run gone"))
-      .mockResolvedValueOnce(undefined);
+      .mockRejectedValueOnce(new Error("local DB write failed"))
+      .mockResolvedValueOnce(OUTCOME_ACTUALIZED);
 
     const summary = await actualizeOrphanedSends();
 
-    expect(summary).toEqual({ stepsProcessed: 1, stepsFailed: 1 });
+    expect(summary).toEqual({
+      stepsProcessed: 1,
+      costsActualized: 2,
+      costsCancelled: 0,
+      costsTransient: 0,
+      stepsFailed: 1,
+    });
     expect(mockHandleEmailSent).toHaveBeenCalledTimes(2);
   });
 
@@ -82,7 +137,13 @@ describe("actualizeOrphanedSends", () => {
 
     const summary = await actualizeOrphanedSends();
 
-    expect(summary).toEqual({ stepsProcessed: 0, stepsFailed: 0 });
+    expect(summary).toEqual({
+      stepsProcessed: 0,
+      costsActualized: 0,
+      costsCancelled: 0,
+      costsTransient: 0,
+      stepsFailed: 0,
+    });
     expect(mockHandleEmailSent).not.toHaveBeenCalled();
   });
 
