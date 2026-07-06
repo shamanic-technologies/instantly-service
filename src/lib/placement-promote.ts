@@ -147,3 +147,37 @@ export function blendEspRows(rows: LatestEspRow[]): InboxPlacement | null {
     testedAt: testedAt.toISOString(),
   };
 }
+
+/**
+ * Pick the daily placement-test batch: the ~1/7 of the testable pool that is
+ * LEAST recently tested, so each account is tested ~once per week WITHOUT any
+ * cursor/bucket state — the rotation is derived purely from each account's last
+ * test date (silver `MAX(tested_at)`), self-balancing as the pool changes.
+ * Never-tested accounts (`null`) sort FIRST (they need the test most to earn
+ * promotion out of in_recovery). Ties break by email for determinism.
+ *
+ * `N = ceil(pool / weeklyDivisor)` guarantees full weekly coverage even with
+ * rounding; a pool smaller than the divisor just gets tested more often. Pure —
+ * no IO. The DAILY cron calling this gives each account a weekly cadence, keeping
+ * the placement seed volume (~30-50 sends/account) to one day per week (best
+ * practice — a mailbox's safe daily volume is ~50, already used by 40 send + 10
+ * warmup, so a test can't run daily on top).
+ */
+export function selectDailyTestBatch(
+  pool: string[],
+  lastTestedByEmail: Map<string, Date | null>,
+  weeklyDivisor = 7,
+): string[] {
+  if (pool.length === 0) return [];
+  const n = Math.ceil(pool.length / weeklyDivisor);
+  const sorted = [...pool].sort((a, b) => {
+    const ta = lastTestedByEmail.get(a) ?? null;
+    const tb = lastTestedByEmail.get(b) ?? null;
+    if (ta === null && tb === null) return a < b ? -1 : a > b ? 1 : 0;
+    if (ta === null) return -1; // never-tested first
+    if (tb === null) return 1;
+    const diff = ta.getTime() - tb.getTime();
+    return diff !== 0 ? diff : a < b ? -1 : a > b ? 1 : 0;
+  });
+  return sorted.slice(0, n);
+}
