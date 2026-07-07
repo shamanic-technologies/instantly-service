@@ -101,10 +101,18 @@ vi.mock("../../src/lib/account-lifecycle-sync", () => ({
   fetchInProductionAccounts: () => mockListAccounts(),
 }));
 
+// Per-account send-load snapshot feeding least-loaded selection. Defaults to an
+// empty map (all accounts load 0 ⇒ tie ⇒ uniform random) so the existing send
+// flow tests keep passing; a test overrides it per-case to steer the pick.
+const mockFetchAccountLoad = vi.fn(async () => new Map<string, number>());
+vi.mock("../../src/lib/account-sending-stats", () => ({
+  fetchAccountLoadCached: (...args: unknown[]) => mockFetchAccountLoad(...args),
+}));
+
 import {
   autolinkifyHtml,
   buildEmailBodyWithSignature,
-  pickRandomAccount,
+  pickLeastLoadedAccount,
   buildSequenceSteps,
   stripAccountSignature,
   sendLeadToInstantly,
@@ -165,69 +173,78 @@ function mockNewCampaignFlow() {
   mockUpdateCampaignStatus.mockResolvedValue({});
 }
 
-describe("pickRandomAccount", () => {
+describe("pickLeastLoadedAccount", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
+  const load = (entries: [string, number][]) => new Map<string, number>(entries);
+
   it("should throw when no accounts are available", () => {
-    expect(() => pickRandomAccount([])).toThrow("No accounts available");
+    expect(() => pickLeastLoadedAccount([], load([]))).toThrow(
+      "No accounts available",
+    );
   });
 
   it("should return the only account when only one is available", () => {
     const a = acct({ email: "only@x.com" });
-    expect(pickRandomAccount([a])).toBe(a);
+    expect(pickLeastLoadedAccount([a], load([["only@x.com", 42]]))).toBe(a);
   });
 
-  it("should weight pick by stat_warmup_score", () => {
+  it("should pick the account with the lowest queue+sent load", () => {
     const accounts = [
-      acct({ email: "low@x.com", stat_warmup_score: 1 }),
-      acct({ email: "high@x.com", stat_warmup_score: 99 }),
+      acct({ email: "busy@x.com" }),
+      acct({ email: "idle@x.com" }),
+      acct({ email: "mid@x.com" }),
     ];
-    // total weight = 100. target = random * 100. low wins on [0, 1), high on [1, 100).
+    const byEmail = load([
+      ["busy@x.com", 40],
+      ["idle@x.com", 3],
+      ["mid@x.com", 12],
+    ]);
+    // deterministic single minimum → no random needed
+    expect(pickLeastLoadedAccount(accounts, byEmail).email).toBe("idle@x.com");
+  });
+
+  it("should treat an account absent from the load map as load 0 (preferred)", () => {
+    const accounts = [
+      acct({ email: "known@x.com" }),
+      acct({ email: "fresh@x.com" }), // not in the map ⇒ load 0
+    ];
+    const byEmail = load([["known@x.com", 5]]);
+    expect(pickLeastLoadedAccount(accounts, byEmail).email).toBe("fresh@x.com");
+  });
+
+  it("should break ties with a uniform random over ONLY the least-loaded set", () => {
+    const accounts = [
+      acct({ email: "a@x.com" }), // load 2 (tied min)
+      acct({ email: "heavy@x.com" }), // load 9
+      acct({ email: "b@x.com" }), // load 2 (tied min)
+    ];
+    const byEmail = load([
+      ["a@x.com", 2],
+      ["heavy@x.com", 9],
+      ["b@x.com", 2],
+    ]);
+    // leastLoaded = [a, b]. random 0.0 → a; random 0.99 → b. heavy never chosen.
     const randomSpy = vi.spyOn(Math, "random");
-
-    randomSpy.mockReturnValueOnce(0.005); // 0.5 → low
-    expect(pickRandomAccount(accounts).email).toBe("low@x.com");
-
-    randomSpy.mockReturnValueOnce(0.5); // 50 → high
-    expect(pickRandomAccount(accounts).email).toBe("high@x.com");
+    randomSpy.mockReturnValueOnce(0.0);
+    expect(pickLeastLoadedAccount(accounts, byEmail).email).toBe("a@x.com");
+    randomSpy.mockReturnValueOnce(0.99);
+    expect(pickLeastLoadedAccount(accounts, byEmail).email).toBe("b@x.com");
   });
 
-  it("should treat absent stat_warmup_score as weight 1", () => {
+  it("should never pick a heavier account even at the random boundary", () => {
     const accounts = [
-      acct({ email: "noscore@x.com" }),
-      acct({ email: "scored@x.com", stat_warmup_score: 9 }),
+      acct({ email: "light@x.com" }),
+      acct({ email: "heavy@x.com" }),
     ];
-    // weights = [1, 9], total = 10. noscore wins on [0, 1), scored on [1, 10).
-    const randomSpy = vi.spyOn(Math, "random");
-
-    randomSpy.mockReturnValueOnce(0.05); // 0.5 → noscore
-    expect(pickRandomAccount(accounts).email).toBe("noscore@x.com");
-
-    randomSpy.mockReturnValueOnce(0.5); // 5 → scored
-    expect(pickRandomAccount(accounts).email).toBe("scored@x.com");
-  });
-
-  it("should fall back to uniform pick when no account has a score", () => {
-    const accounts = [
-      acct({ email: "a@x.com" }),
-      acct({ email: "b@x.com" }),
-      acct({ email: "c@x.com" }),
-    ];
-    // all weights = 1, total = 3. random = 0.5 → target = 1.5 → index 1
-    vi.spyOn(Math, "random").mockReturnValue(0.5);
-    expect(pickRandomAccount(accounts).email).toBe("b@x.com");
-  });
-
-  it("should pick across all accounts regardless of domain", () => {
-    const accounts = [
-      acct({ email: "alice@growthagency.dev", stat_warmup_score: 1 }),
-      acct({ email: "bob@randomdomain.com", stat_warmup_score: 1 }),
-    ];
-    // equal weights → each domain equally likely; pool whitelisting is gone
-    vi.spyOn(Math, "random").mockReturnValue(0.75); // target = 1.5 → bob
-    expect(pickRandomAccount(accounts).email).toBe("bob@randomdomain.com");
+    const byEmail = load([
+      ["light@x.com", 1],
+      ["heavy@x.com", 100],
+    ]);
+    vi.spyOn(Math, "random").mockReturnValue(0.9999);
+    expect(pickLeastLoadedAccount(accounts, byEmail).email).toBe("light@x.com");
   });
 });
 
@@ -267,6 +284,35 @@ describe("send gate — only in_production accounts (lifecycle)", () => {
     });
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.value.account.email).toBe("prod@good.com");
+  });
+
+  it("picks the LEAST-LOADED account from the pool", async () => {
+    mockListAccounts.mockResolvedValueOnce([
+      acct({ email: "busy@good.com", stat_warmup_score: 100 }),
+      acct({ email: "idle@good.com", stat_warmup_score: 100 }),
+    ]);
+    // busy has more queued+sent load → idle must be chosen (deterministic min).
+    mockFetchAccountLoad.mockResolvedValueOnce(
+      new Map<string, number>([
+        ["busy@good.com", 37],
+        ["idle@good.com", 2],
+      ]),
+    );
+    mockCreateCampaign.mockResolvedValue({ id: "ic", status: "draft" });
+    mockUpdateCampaign.mockResolvedValue({});
+    mockGetCampaign.mockResolvedValueOnce({ email_list: ["idle@good.com"], not_sending_status: null });
+    mockAddLeads.mockResolvedValue({ added: 1 });
+    mockUpdateCampaignStatus.mockResolvedValue({});
+    const res = await sendLeadToInstantly({
+      apiKey: "k",
+      campaignName: "c",
+      subject: "s",
+      sortedSequence: seq,
+      lead,
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.value.account.email).toBe("idle@good.com");
+    expect(mockFetchAccountLoad).toHaveBeenCalled();
   });
 });
 
