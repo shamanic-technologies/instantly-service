@@ -36,6 +36,14 @@ export const instantlyCampaigns = pgTable(
     featureSlug: text("feature_slug"),
     runId: text("run_id"),
     leadId: text("lead_id"),
+    // The Instantly sending account chosen for this lead at send/redispatch time
+    // (send.ts phase-2, retry-stuck redispatch). Persisted here so per-account
+    // load (queue size) is known the instant the row is `contacted` — the chosen
+    // account is already in hand at write time, so deriving it from the first
+    // observed `email_sent` webhook (which lags by minutes) is unnecessary. NULL
+    // on historical rows written before this column existed; readers COALESCE to
+    // the observed-send attribution for those. See account-sending-stats.ts.
+    accountEmail: text("account_email"),
     // 4-stage funnel:
     //   contacted   = lead pushed to Instantly (POST /send success — DEFAULT)
     //   sent        = Instantly dispatched at least one email (webhook email_sent)
@@ -90,6 +98,7 @@ export const instantlyCampaigns = pgTable(
     index("instantly_campaigns_org_id_idx").on(table.orgId),
     index("instantly_campaigns_run_id_idx").on(table.runId),
     index("instantly_campaigns_workflow_slug_idx").on(table.workflowSlug),
+    index("instantly_campaigns_account_email_idx").on(table.accountEmail),
   ],
 );
 

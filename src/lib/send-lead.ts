@@ -8,8 +8,8 @@
  *     `delivery_status='contacted'` past STUCK_AGE_HOURS without any silver
  *     proof Instantly actually sent — see lib/retry-stuck.ts)
  *
- * One-shot: picks a single healthy account (weighted by warmup score),
- * creates a fresh Instantly campaign, adds the lead, activates. Returns
+ * One-shot: picks the least-loaded healthy account (fewest queued + sent-today
+ * emails), creates a fresh Instantly campaign, adds the lead, activates. Returns
  * success regardless of post-activate `not_sending_status` (NSS is pacing
  * diagnostic, not error signal — retry-stuck owns the eventual catch-up
  * 72h later if the campaign never sends).
@@ -27,31 +27,44 @@ import {
   type SequenceStep,
 } from "./instantly-client";
 import { fetchInProductionAccounts } from "./account-lifecycle-sync";
+import { fetchAccountLoadCached } from "./account-sending-stats";
 
 /**
- * Pick an account using a single-pool weighted random:
- *   weight = max(1, stat_warmup_score ?? 0)
+ * Pick the LEAST-LOADED account, where
+ *   load = queued (un-sent provisioned) steps + emails sent today.
  *
- * Accounts without a score still get a baseline weight of 1, so they remain
- * eligible while warmer accounts are favoured proportionally. Falls back to
- * uniform random when no account has a score (all weights collapse to 1).
+ * This balances new sends onto the account currently carrying the least work
+ * instead of a warmup-weighted random. An account absent from `loadByEmail` has
+ * load 0 (never sent, nothing queued) ⇒ maximally preferred. Ties at the minimum
+ * are broken by a uniform random pick among the tied accounts only, so a burst
+ * of concurrent sends spreads across equally-idle accounts rather than always
+ * landing on the same one.
+ *
+ * Correctness of the balancing depends on `loadByEmail` reflecting queued work
+ * the instant a lead is `contacted`; that is why the sending account is
+ * persisted on the campaign row at send time (see account-sending-stats.ts
+ * fetchQueueSizeByAccount) rather than derived from the lagging email_sent
+ * webhook.
  */
-export function pickRandomAccount(accounts: Account[]): Account {
+export function pickLeastLoadedAccount(
+  accounts: Account[],
+  loadByEmail: Map<string, number>,
+): Account {
   if (accounts.length === 0) {
     throw new Error("No accounts available");
   }
 
-  const weights = accounts.map((a) => Math.max(1, a.stat_warmup_score ?? 0));
-  const total = weights.reduce((sum, w) => sum + w, 0);
-  const target = Math.random() * total;
+  const loadOf = (a: Account): number => loadByEmail.get(a.email) ?? 0;
 
-  let acc = 0;
-  for (let i = 0; i < accounts.length; i++) {
-    acc += weights[i];
-    if (target < acc) return accounts[i];
+  let minLoad = Infinity;
+  for (const a of accounts) {
+    const load = loadOf(a);
+    if (load < minLoad) minLoad = load;
   }
 
-  return accounts[accounts.length - 1];
+  const leastLoaded = accounts.filter((a) => loadOf(a) === minLoad);
+  const idx = Math.floor(Math.random() * leastLoaded.length);
+  return leastLoaded[idx];
 }
 
 /**
@@ -346,7 +359,8 @@ export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult
     return { ok: false, reason: "no_healthy_accounts_available" };
   }
 
-  const account = pickRandomAccount(accounts);
+  const loadByEmail = await fetchAccountLoadCached();
+  const account = pickLeastLoadedAccount(accounts, loadByEmail);
   const steps = buildSequenceSteps(opts.subject, opts.sortedSequence, account);
 
   console.log(

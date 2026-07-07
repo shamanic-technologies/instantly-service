@@ -16,6 +16,7 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "../db";
+import { getOrSetCachedStats } from "./stats-cache";
 
 interface CountRow {
   account_email: string;
@@ -61,8 +62,19 @@ export async function fetchSentTodayByAccount(): Promise<Map<string, number>> {
  * gate from loadPendingLeads (active campaign + delivery_status in
  * contacted/sent + status='provisioned'), collapses each lead's provisioned
  * holds to its distinct un-sent steps, then attributes those steps to the
- * account that sent the campaign's already-observed emails. Campaigns with no
- * observed real send yet have an unknown account and are not attributed.
+ * campaign's sending account.
+ *
+ * Attribution is `COALESCE(persisted account_email, observed email_sent account)`:
+ *   - The account is persisted on the campaign row at send time (send.ts phase-2,
+ *     retry-stuck redispatch), so a lead is attributed the instant it is
+ *     `contacted` — no dependency on the first `email_sent` webhook.
+ *   - Historical rows written before the account_email column existed are NULL;
+ *     they fall back to the account observed from their real email_sent events
+ *     (the pre-column behaviour). The LEFT JOIN keeps a persisted-but-not-yet-
+ *     sent campaign in the result — the INNER JOIN used to drop it, which was
+ *     the attribution gap that let a burst over-concentrate on one account.
+ * A row with neither a persisted nor an observed account is unattributable and
+ * excluded (never fabricated).
  */
 export async function fetchQueueSizeByAccount(): Promise<Map<string, number>> {
   const result = await db.execute(sql`
@@ -78,6 +90,7 @@ export async function fetchQueueSizeByAccount(): Promise<Map<string, number>> {
     ),
     pending AS (
       SELECT c.instantly_campaign_id,
+             MIN(c.account_email) AS persisted_account,
              COUNT(DISTINCT sc.step) AS pending_steps
       FROM sequence_costs sc
       JOIN instantly_campaigns c
@@ -88,11 +101,50 @@ export async function fetchQueueSizeByAccount(): Promise<Map<string, number>> {
       WHERE sc.status = 'provisioned'
       GROUP BY c.instantly_campaign_id
     )
-    SELECT ca.account_email, SUM(p.pending_steps)::int AS count
+    SELECT COALESCE(p.persisted_account, ca.account_email) AS account_email,
+           SUM(p.pending_steps)::int AS count
     FROM pending p
-    JOIN campaign_account ca
+    LEFT JOIN campaign_account ca
       ON ca.instantly_campaign_id = p.instantly_campaign_id
-    GROUP BY ca.account_email
+    WHERE COALESCE(p.persisted_account, ca.account_email) IS NOT NULL
+    GROUP BY COALESCE(p.persisted_account, ca.account_email)
   `);
   return toMap(rowsOf(result));
+}
+
+/** Default TTL for the send-selection load snapshot (per replica). */
+export const ACCOUNT_LOAD_TTL_MS = 60_000;
+const ACCOUNT_LOAD_CACHE_KEY = "account-load|send-selection";
+
+/**
+ * Combined per-account load = sentToday + queueSize, merged into one map. Used
+ * as the input to least-loaded account selection on the send path. Absent from
+ * both maps ⇒ load 0 (never sent, nothing queued) ⇒ maximally preferred.
+ */
+export async function fetchAccountLoad(): Promise<Map<string, number>> {
+  const [sent, queue] = await Promise.all([
+    fetchSentTodayByAccount(),
+    fetchQueueSizeByAccount(),
+  ]);
+  const merged = new Map<string, number>(sent);
+  for (const [email, n] of queue) {
+    merged.set(email, (merged.get(email) ?? 0) + n);
+  }
+  return merged;
+}
+
+/**
+ * Short-TTL cached wrapper around fetchAccountLoad for the send hot-path. Two
+ * fleet-wide aggregations per uncached call (email_sent-today scan + a
+ * sequence_costs join) would saturate the 0.25-1 CU Neon compute under a send
+ * burst — the same flood the /stats cache guards against — so a 60s window
+ * collapses a burst down to ~1 snapshot per replica. Reuses the /stats TTL cache
+ * (getOrSetCachedStats) rather than a second cache module.
+ */
+export function fetchAccountLoadCached(): Promise<Map<string, number>> {
+  return getOrSetCachedStats(
+    ACCOUNT_LOAD_CACHE_KEY,
+    fetchAccountLoad,
+    ACCOUNT_LOAD_TTL_MS,
+  );
 }

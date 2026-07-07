@@ -332,6 +332,7 @@ router.post("/", async (req: Request, res: Response) => {
         .update(instantlyCampaigns)
         .set({
           instantlyCampaignId: sendResult.value.instantlyCampaignId,
+          accountEmail: sendResult.value.account.email,
           updatedAt: new Date(),
         })
         .where(eq(instantlyCampaigns.id, reservedId));
