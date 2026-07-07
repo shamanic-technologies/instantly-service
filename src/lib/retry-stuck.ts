@@ -640,6 +640,7 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
       .update(instantlyCampaigns)
       .set({
         instantlyCampaignId: result.value.instantlyCampaignId,
+        accountEmail: result.value.account.email,
         name: campaignName,
         metadata: {
           ...existingMetadata,
