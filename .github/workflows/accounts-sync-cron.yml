@@ -1,0 +1,64 @@
+name: Accounts lifecycle sync (every 2h)
+
+# Snapshots Instantly GET /accounts → bronze/silver and reconciles the
+# per-account lifecycle (health + placement delivery → in_production /
+# in_recovery / deactivated). Runs every 2 hours so an account that reaches
+# Health 100 + 100% inbox is promoted to in_production within ~2h instead of
+# waiting for the once-a-day placement cron.
+#
+# WHY a separate cron from placement-cron.yml: this endpoint is FREE and safe
+# to run often — read-only against Instantly (spends no quota), PATCHes warmup /
+# daily_limit ONLY on an actual lifecycle flip, idempotent (a no-change run
+# writes nothing). The placement-cron `run` step, by contrast, spends Growth-sub
+# quota and sends ~30-50 seed emails per account against the 50/day mailbox cap,
+# so it MUST stay daily. Decoupling lets promotion latency drop to ~2h without
+# touching placement cadence.
+#
+# Required secrets (already used by reconcile-cron.yml / placement-cron.yml):
+#   INSTANTLY_SERVICE_URL      — production service URL
+#   INSTANTLY_SERVICE_API_KEY  — service API key for /internal/* routes
+#
+# Scheduled runs fire from the DEFAULT branch (main). Manually trigger via the
+# workflow_dispatch button on the GitHub Actions page.
+
+on:
+  schedule:
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+
+jobs:
+  accounts-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: POST /internal/audit/accounts-sync
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
+            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
+            exit 1
+          fi
+
+          # Snapshot Instantly accounts → bronze/silver, then reconcile the
+          # per-account lifecycle (health + placement delivery refreshed).
+          response_file=$(mktemp)
+          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time 60 \
+            "${SERVICE_URL}/internal/audit/accounts-sync")
+
+          echo "HTTP ${status}"
+          cat "${response_file}"
+          echo
+
+          # Endpoint returns 202 Accepted and runs in the background. Verify via
+          # Railway logs (`accounts-sync: done`), NOT this curl exit code.
+          if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
+            echo "accounts-sync dispatch failed with HTTP ${status}"
+            exit 1
+          fi
