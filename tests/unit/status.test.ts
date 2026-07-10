@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
 import express from "express";
 
+import { clearStatsCache } from "../../src/lib/stats-cache";
+
 const mockExecute = vi.fn();
 
 vi.mock("../../src/db", () => ({
@@ -45,6 +47,9 @@ function chunkText(query: unknown): string {
 describe("POST /status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Cross-test isolation: the route uses the in-process stats cache; a hit from a
+    // prior test would skip the DB and break call-count / shape assertions.
+    clearStatsCache();
   });
 
   // ── Validation ──────────────────────────────────────────────────────────
@@ -700,5 +705,35 @@ describe("POST /status", () => {
     expect(sqlText).toContain("e.event_type = 'email_sent'");
     expect(sqlText).toContain('sc.campaign_id = s.instantly_campaign_id');
     expect(sqlText).toContain('COALESCE(SUM(sc.cnt), 0) AS "sentCount"');
+  });
+
+  // ── Stats-cache: in-flight dedup + short-TTL collapse the retry storm ─────
+
+  it("caches: a repeated identical request is served from cache (DB queried once)", async () => {
+    // Campaign mode = 2 DB calls per uncached request (global + campaign-scoped).
+    mockExecute.mockResolvedValue({ rows: [] });
+
+    const app = await createStatusApp();
+    const body = { campaignId: "camp-1", items: [{ email: "john@acme.com" }] };
+
+    const first = await request(app).post("/").send(body);
+    const second = await request(app).post("/").send(body);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual(first.body);
+    // Second call hit the cache → no additional DB queries beyond the first request's 2.
+    expect(mockExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it("caches: a different email batch misses the cache and re-queries the DB", async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+
+    const app = await createStatusApp();
+    await request(app).post("/").send({ campaignId: "camp-1", items: [{ email: "a@acme.com" }] });
+    await request(app).post("/").send({ campaignId: "camp-1", items: [{ email: "b@acme.com" }] });
+
+    // Distinct cache keys → each request runs its own 2 DB queries.
+    expect(mockExecute).toHaveBeenCalledTimes(4);
   });
 });
