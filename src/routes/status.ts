@@ -25,6 +25,9 @@ interface AggRow {
   bounced: boolean | null;
   unsubscribed: boolean | null;
   cancelled: boolean | null;
+  // Per-scope count of emails actually sent to this recipient (email_sent events,
+  // distinct steps). pg returns COUNT/SUM as bigint → string; coerce with Number().
+  sentCount: number | string | null;
   lastDeliveredAt: string | null;
   // Per-event first-occurrence (MIN) timestamps — mirror of lastDeliveredAt (MAX).
   firstContactedAt: string | null;
@@ -43,7 +46,7 @@ function extractRows(result: unknown): AggRow[] {
 }
 
 function emptyScoped() {
-  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
+  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
 }
 
 function formatTimestamp(val: string | null | undefined): string | null {
@@ -63,6 +66,7 @@ function buildScopedStatus(row: AggRow | undefined) {
         bounced: row.bounced === true,
         unsubscribed: row.unsubscribed === true,
         cancelled: row.cancelled === true,
+        sentCount: Number(row.sentCount ?? 0),
         lastDeliveredAt: formatTimestamp(row.lastDeliveredAt),
         firstContactedAt: formatTimestamp(row.firstContactedAt),
         firstSentAt: formatTimestamp(row.firstSentAt),
@@ -78,6 +82,29 @@ function buildScopedStatus(row: AggRow | undefined) {
 
 function sqlIn(values: string[]) {
   return sql.join(values.map((v) => sql`${v}`), sql`, `);
+}
+
+/**
+ * Pre-aggregated send-count per (Instantly campaign, recipient), bounded by the
+ * request's emails. `sentCount` (contract v1.2.0) = the number of distinct
+ * sequence steps that produced an `email_sent` event for a recipient — i.e. how
+ * many emails of the sequence actually went out (1 = initial, 2 = first
+ * follow-up, ...). Counts inferred sends too: an inferred `email_sent` marks a
+ * provably-dispatched predecessor (sequence cascade / lost-webhook backfill), so
+ * including it yields the true sequence position rather than only webhook-observed
+ * dispatches. `instantly_events.campaign_id` holds the Instantly campaign id, so
+ * the caller joins `sc.campaign_id = s.instantly_campaign_id`. Emitted as a
+ * subquery joined 1:1 with the status rows (no fan-out of the BOOL_OR/MIN/MAX
+ * aggregates). Absent recipient → no `sc` row → COALESCE(SUM(...), 0) = 0.
+ */
+function sentCountSubquery(emails: string[]) {
+  return sql`
+    SELECT e.campaign_id, e.lead_email, COUNT(DISTINCT e.step) AS cnt
+    FROM instantly_events e
+    WHERE e.event_type = 'email_sent'
+      AND e.lead_email IN (${sqlIn(emails)})
+    GROUP BY e.campaign_id, e.lead_email
+  `;
 }
 
 /** Scoped query grouped by email only — used for campaign mode */
@@ -96,6 +123,7 @@ function scopedQueryByEmail(orgId: string, filterClause: ReturnType<typeof sql>,
       BOOL_OR(s.bounced) AS "bounced",
       BOOL_OR(s.unsubscribed) AS "unsubscribed",
       BOOL_OR(s.cancelled) AS "cancelled",
+      COALESCE(SUM(sc.cnt), 0) AS "sentCount",
       MAX(s.last_delivered_at) AS "lastDeliveredAt",
       MIN(s.first_contacted_at) AS "firstContactedAt",
       MIN(s.first_sent_at) AS "firstSentAt",
@@ -106,6 +134,8 @@ function scopedQueryByEmail(orgId: string, filterClause: ReturnType<typeof sql>,
       MIN(s.first_bounced_at) AS "firstBouncedAt",
       MIN(s.first_unsubscribed_at) AS "firstUnsubscribedAt"
     FROM instantly_lead_status_current s
+    LEFT JOIN (${sentCountSubquery(emails)}) sc
+      ON sc.campaign_id = s.instantly_campaign_id AND sc.lead_email = s.lead_email
     WHERE s.org_id = ${orgId}
       AND s.lead_email IN (${sqlIn(emails)})
       AND ${filterClause}
@@ -129,6 +159,7 @@ function brandBreakdownQuery(orgId: string, brandId: string, emails: string[]) {
       BOOL_OR(s.bounced) AS "bounced",
       BOOL_OR(s.unsubscribed) AS "unsubscribed",
       BOOL_OR(s.cancelled) AS "cancelled",
+      COALESCE(SUM(sc.cnt), 0) AS "sentCount",
       MAX(s.last_delivered_at) AS "lastDeliveredAt",
       MIN(s.first_contacted_at) AS "firstContactedAt",
       MIN(s.first_sent_at) AS "firstSentAt",
@@ -139,6 +170,8 @@ function brandBreakdownQuery(orgId: string, brandId: string, emails: string[]) {
       MIN(s.first_bounced_at) AS "firstBouncedAt",
       MIN(s.first_unsubscribed_at) AS "firstUnsubscribedAt"
     FROM instantly_lead_status_current s
+    LEFT JOIN (${sentCountSubquery(emails)}) sc
+      ON sc.campaign_id = s.instantly_campaign_id AND sc.lead_email = s.lead_email
     WHERE s.org_id = ${orgId}
       AND s.lead_email IN (${sqlIn(emails)})
       AND ${brandId} = ANY(s.brand_ids)
@@ -196,6 +229,9 @@ function aggregateBrandStatus(rows: AggRow[]) {
     bounced: rows.some((r) => r.bounced === true),
     unsubscribed: rows.some((r) => r.unsubscribed === true),
     cancelled: rows.some((r) => r.cancelled === true),
+    // Brand scope = total emails sent to this recipient across the brand's
+    // campaigns (SUM across the per-campaign breakdown rows), per contract v1.2.0.
+    sentCount: rows.reduce((acc, r) => acc + Number(r.sentCount ?? 0), 0),
     lastDeliveredAt: formatTimestamp(maxDeliveredAt),
     firstContactedAt: minAt((r) => r.firstContactedAt),
     firstSentAt: minAt((r) => r.firstSentAt),
