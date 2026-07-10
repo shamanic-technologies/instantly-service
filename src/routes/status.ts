@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { StatusRequestSchema } from "../schemas";
+import { getOrSetCachedStats, statsCacheKey } from "../lib/stats-cache";
 
 const router = Router();
 
@@ -266,7 +267,24 @@ router.post("/", async (req: Request, res: Response) => {
   const isBrandMode = !!brandId && !campaignId;
   const isCampaignMode = !!campaignId;
 
+  // Short-TTL cache + in-flight dedup (src/lib/stats-cache.ts), same mitigation as
+  // GET /orgs/stats. This route live-aggregates over the silver event log on every
+  // call (now including a COUNT(DISTINCT step) sentCount subquery per scope), and
+  // email-gateway retries the SAME batch on its ~10s AbortSignal timeout — the abort
+  // does NOT cancel the server-side query, so each retry piles another identical
+  // heavy aggregation onto the pool (max 20) until acquire times out. The in-flight
+  // dedup collapses a burst of identical (org, brand, campaign, emails) requests down
+  // to ONE query; the 60s TTL collapses repeat status polls. Deterministic response
+  // for fixed inputs → 60s staleness is acceptable (same contract as /stats).
+  const cacheKey = statsCacheKey("orgs-status", {
+    orgId,
+    brandId: brandId ?? "",
+    campaignId: campaignId ?? "",
+    emails: [...emails].sort().join(","),
+  });
+
   try {
+    const payload = await getOrSetCachedStats(cacheKey, async () => {
     // Global: bounced + unsubscribed across the entire org, read from Gold.
     const globalEmailPromise = db.execute(sql`
       SELECT
@@ -353,7 +371,10 @@ router.post("/", async (req: Request, res: Response) => {
       return result;
     });
 
-    res.json({ results });
+      return { results };
+    });
+
+    res.json(payload);
   } catch (error: any) {
     console.error(`[instantly-service] Failed to get status: ${error.message}`);
     res.status(500).json({ error: "Failed to get delivery status" });
