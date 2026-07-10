@@ -1711,6 +1711,11 @@
                         "type": "string",
                         "nullable": true,
                         "description": "First-occurrence (MIN) ISO 8601 timestamp of an unsubscribed event in this scope; null if it never happened in scope"
+                      },
+                      "sentCount": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Number of emails actually sent to the recipient in this scope (send-event count, not a boolean); 0 when no send. Sequence position derives from it: 1 = initial, 2 = first follow-up, 3 = second follow-up. Optional in contract v1; brand scope = SUM across the brand's campaigns."
                       }
                     },
                     "required": [
@@ -1823,6 +1828,11 @@
                       "type": "string",
                       "nullable": true,
                       "description": "First-occurrence (MIN) ISO 8601 timestamp of an unsubscribed event in this scope; null if it never happened in scope"
+                    },
+                    "sentCount": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Number of emails actually sent to the recipient in this scope (send-event count, not a boolean); 0 when no send. Sequence position derives from it: 1 = initial, 2 = first follow-up, 3 = second follow-up. Optional in contract v1; brand scope = SUM across the brand's campaigns."
                     }
                   },
                   "required": [
@@ -1934,6 +1944,11 @@
                       "type": "string",
                       "nullable": true,
                       "description": "First-occurrence (MIN) ISO 8601 timestamp of an unsubscribed event in this scope; null if it never happened in scope"
+                    },
+                    "sentCount": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Number of emails actually sent to the recipient in this scope (send-event count, not a boolean); 0 when no send. Sequence position derives from it: 1 = initial, 2 = first follow-up, 3 = second follow-up. Optional in contract v1; brand scope = SUM across the brand's campaigns."
                     }
                   },
                   "required": [

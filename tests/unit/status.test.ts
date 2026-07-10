@@ -22,7 +22,7 @@ async function createStatusApp() {
   return app;
 }
 
-const emptyScoped = { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
+const emptyScoped = { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
 
 /** Recursively concatenate every string fragment in a drizzle SQL query. */
 function chunkText(query: unknown): string {
@@ -368,7 +368,7 @@ describe("POST /status", () => {
     expect(mockExecute).toHaveBeenCalledTimes(2);
   });
 
-  it("reads status from the Gold projection, not raw silver event joins", async () => {
+  it("reads status booleans from the Gold projection; only the bounded sentCount subquery touches events", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] }); // global
     mockExecute.mockResolvedValueOnce({ rows: [] }); // campaign
 
@@ -380,7 +380,10 @@ describe("POST /status", () => {
 
     const sqlText = mockExecute.mock.calls.map((c) => chunkText(c[0])).join("\n");
     expect(sqlText).toContain("instantly_lead_status_current");
-    expect(sqlText).not.toContain("instantly_events");
+    // The status booleans/timestamps still come from Gold; the ONLY events read
+    // is the send-count subquery, and it stays bounded to the request emails.
+    expect(sqlText).toContain("FROM instantly_events e");
+    expect(sqlText).toContain("e.event_type = 'email_sent'");
   });
 
   // ── Error handling ─────────────────────────────────────────────────────
@@ -602,5 +605,100 @@ describe("POST /status", () => {
     expect(c.contacted).toBe(true);
     expect(c.firstContactedAt).toBe(T);
     expect(c.firstSentAt).toBeNull();
+  });
+
+  // ── sentCount (contract v1.2.0) ───────────────────────────────────────────
+
+  it("campaign scope: sentCount = that (recipient, campaign) send count", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", campaignId: null, contacted: true, sent: true, delivered: true, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, sentCount: 3, lastDeliveredAt: null }],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      campaignId: "camp-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    // 3 emails sent = initial + 2 follow-ups → sequence position derivable.
+    expect(res.body.results[0].campaign.sentCount).toBe(3);
+  });
+
+  it("sentCount coerces a pg bigint string to a number", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "john@acme.com", campaignId: null, contacted: true, sent: true, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, sentCount: "2", lastDeliveredAt: null }],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      campaignId: "camp-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results[0].campaign.sentCount).toBe(2);
+  });
+
+  it("absent-safe: a recipient with no send reads sentCount 0", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      // no sentCount field on the row (COALESCE(...,0) would emit 0; here we
+      // assert the JS side defaults absent → 0)
+      rows: [{ key: "john@acme.com", campaignId: null, contacted: true, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, lastDeliveredAt: null }],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      campaignId: "camp-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results[0].campaign.sentCount).toBe(0);
+  });
+
+  it("brand scope: sentCount = SUM across the brand's campaigns; byCampaign carries per-campaign counts", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "alice@media.com", campaignId: null, bounced: false, unsubscribed: false }],
+    }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { key: "alice@media.com", campaignId: "camp-1", contacted: true, sent: true, delivered: true, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, sentCount: 3, lastDeliveredAt: "2026-03-01T10:00:00.000Z" },
+        { key: "alice@media.com", campaignId: "camp-2", contacted: true, sent: true, delivered: true, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, sentCount: 2, lastDeliveredAt: "2026-03-02T12:00:00.000Z" },
+      ],
+    }); // brand breakdown
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      brandId: "brand-1",
+      items: [{ email: "alice@media.com" }],
+    });
+
+    expect(res.status).toBe(200);
+    const r = res.body.results[0];
+    expect(r.byCampaign["camp-1"].sentCount).toBe(3);
+    expect(r.byCampaign["camp-2"].sentCount).toBe(2);
+    expect(r.brand.sentCount).toBe(5); // SUM across campaigns
+  });
+
+  it("SQL: scoped queries count distinct-step email_sent events, bounded by emails", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // campaign
+
+    const app = await createStatusApp();
+    await request(app).post("/").send({
+      campaignId: "camp-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    // 2nd execute = the campaign-scoped query — assert the send-count subquery shape.
+    const sqlText = chunkText(mockExecute.mock.calls[1][0]);
+    expect(sqlText).toContain('COUNT(DISTINCT e.step) AS cnt');
+    expect(sqlText).toContain("e.event_type = 'email_sent'");
+    expect(sqlText).toContain('sc.campaign_id = s.instantly_campaign_id');
+    expect(sqlText).toContain('COALESCE(SUM(sc.cnt), 0) AS "sentCount"');
   });
 });
