@@ -15,6 +15,7 @@ import {
   fetchLifecycleByEmail,
 } from "../lib/account-lifecycle-sync";
 import { fetchCapacityHistory } from "../lib/capacity-history";
+import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
 import {
   fetchSentTodayByAccount,
   fetchQueueSizeByAccount,
@@ -253,6 +254,40 @@ router.post("/accounts-sync", async (_req: Request, res: Response) => {
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] accounts-sync run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/audit/daily-limit-sync
+ *
+ * Platform-scoped. One-time (idempotent, resumable) sweep that PATCHes every
+ * currently-`in_production` account's Instantly campaign `daily_limit` to
+ * `IN_PRODUCTION_DAILY_LIMIT`. Needed after bumping that constant: reconcile only
+ * PATCHes daily_limit on a state FLIP, so accounts already in_production keep the
+ * OLD cap until they re-flip — this closes that gap across the live-send pool.
+ * Only PATCHes accounts whose silver daily_limit differs from the target
+ * (skips the aligned ones), fail-loud per account. Optional `{limit}` bounds the
+ * batch. 202 + background; watch logs for `daily-limit-sync: done`.
+ */
+router.post("/daily-limit-sync", async (req: Request, res: Response) => {
+  const runId = crypto.randomUUID();
+  const rawLimit = (req.body as { limit?: unknown } | undefined)?.limit;
+  const limit = typeof rawLimit === "number" && rawLimit > 0 ? rawLimit : undefined;
+  res.status(202).json({ accepted: true, runId });
+  console.log(`[audit] daily-limit-sync: dispatched run=${runId} limit=${limit ?? "all"}`);
+
+  (async () => {
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/daily-limit-sync",
+    });
+    const summary = await syncInProductionDailyLimit(apiKey, limit);
+    console.log(
+      `[audit] daily-limit-sync: done run=${runId} ${JSON.stringify(summary)}`,
+    );
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] daily-limit-sync run=${runId} failed: ${message}`);
   });
 });
 
