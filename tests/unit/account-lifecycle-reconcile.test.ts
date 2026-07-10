@@ -69,8 +69,8 @@ describe("reconcileLifecycle", () => {
 
     expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 1, dailyLimitPatched: 1, failed: 0 });
     expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "prod@dfy.com", 10);
-    // in_production also opens the campaign daily max-send to 40.
-    expect(mockSetDaily).toHaveBeenCalledWith("api-key", "prod@dfy.com", 40);
+    // in_production also opens the campaign daily max-send to 50.
+    expect(mockSetDaily).toHaveBeenCalledWith("api-key", "prod@dfy.com", 50);
     expect(mockInsertValues).toHaveBeenCalledTimes(1);
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(event.fromStatus).toBe("in_recovery");
