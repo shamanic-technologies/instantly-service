@@ -123,9 +123,9 @@ describe("warmupDailyForStatus", () => {
 });
 
 describe("dailyLimitForStatus", () => {
-  it("in_production → 40 (opens the campaign daily max-send)", () => {
+  it("in_production → 50 (opens the campaign daily max-send)", () => {
     expect(dailyLimitForStatus("in_production")).toBe(IN_PRODUCTION_DAILY_LIMIT);
-    expect(IN_PRODUCTION_DAILY_LIMIT).toBe(40);
+    expect(IN_PRODUCTION_DAILY_LIMIT).toBe(50);
   });
   it("every other state → null (leave daily_limit untouched, queue drains)", () => {
     expect(dailyLimitForStatus("in_recovery")).toBeNull();

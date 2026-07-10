@@ -67,11 +67,11 @@ export const RECOVERY_WARMUP_DAILY = 50; // recover reputation → warm harder
 
 /**
  * Campaign daily max-send pushed to Instantly ONLY when an account flips INTO
- * in_production (fully warmed → open the tap to 40). Other states leave the
+ * in_production (fully warmed → open the tap to 50). Other states leave the
  * campaign `daily_limit` untouched so an in_recovery/deactivated account keeps
  * draining its already-loaded queue at whatever limit it had.
  */
-export const IN_PRODUCTION_DAILY_LIMIT = 40;
+export const IN_PRODUCTION_DAILY_LIMIT = 50;
 
 /**
  * Pure lifecycle derivation. First match wins (order is load-bearing — a domain
@@ -119,7 +119,7 @@ export function warmupDailyForStatus(status: LifecycleStatus): number | null {
 
 /**
  * Campaign daily max-send to PATCH into Instantly on a flip. Only in_production
- * opens the tap (→ 40); every other state returns `null` = do NOT touch the
+ * opens the tap (→ 50); every other state returns `null` = do NOT touch the
  * campaign daily_limit, so an in_recovery/deactivated account keeps draining its
  * already-loaded queue at its current limit.
  */
