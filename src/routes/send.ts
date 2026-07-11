@@ -399,6 +399,10 @@ router.post("/", async (req: Request, res: Response) => {
           if (cost.costName === "instantly-contact-uploaded") continue;
           await db.insert(sequenceCosts).values({
             campaignId,
+            // Persist the per-lead Instantly campaign id so the webhook/reconcile
+            // resolvers can actualize/cancel this hold even for platform sends
+            // (campaignId NULL). See migration 0027.
+            instantlyCampaignId: sendResult.value.instantlyCampaignId,
             leadEmail: body.to,
             step: s.step,
             runId: stepRun.id,

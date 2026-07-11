@@ -331,6 +331,14 @@ export const sequenceCosts = pgTable(
   {
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     campaignId: text("campaign_id"),
+    // Per-lead Instantly campaign id (globally unique, 1 campaign = 1 lead).
+    // Persisted at send time so the cost-lifecycle resolvers (handleEmailSent /
+    // cancelRemainingProvisions) can match a hold by it — the ONLY stable key
+    // that works for platform sends (campaign_id NULL). Nullable: historical
+    // rows stay NULL (resolvers fall back to campaign_id for org rows; the
+    // reconcile-provisioned-holds sweep drains historical platform rows). See
+    // migration 0027 + CLAUDE.md "Send cost lifecycle".
+    instantlyCampaignId: text("instantly_campaign_id"),
     leadEmail: text("lead_email").notNull(),
     step: integer("step").notNull(),
     runId: text("run_id").notNull(),
@@ -343,6 +351,9 @@ export const sequenceCosts = pgTable(
     index("sequence_costs_campaign_lead_idx").on(
       table.campaignId,
       table.leadEmail,
+    ),
+    index("sequence_costs_instantly_campaign_id_idx").on(
+      table.instantlyCampaignId,
     ),
     uniqueIndex("sequence_costs_cost_id_idx").on(table.costId),
   ],
