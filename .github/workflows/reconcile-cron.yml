@@ -4,6 +4,18 @@ name: Reconcile webhook catch-up (daily)
 # missed by the webhook into the silver event log. Idempotent — re-running has
 # no effect when nothing drifted.
 #
+# Two steps, in order:
+#   1. /internal/campaigns/reconcile           — pull Instantly state → silver.
+#   2. /internal/campaigns/actualize-orphaned-sends — bill any provisioned
+#      email-send hold whose step ALREADY has a real `email_sent` silver event.
+#      The live webhook-actualize can be dropped transiently (cold-start
+#      ECONNRESET / runs-service 5xx); reconcile's drift gate keys on event
+#      COUNTS, and the `email_sent` event IS present, so `remote == local` → no
+#      drift → the stuck hold is never retried. Without this recurring sweep the
+#      sent-but-unbilled holds accumulate indefinitely (platform usage
+#      under-recorded). Idempotent + resumable: only touches `provisioned` rows
+#      whose step has a real send, so a re-run with nothing orphaned no-ops.
+#
 # Required secrets:
 #   INSTANTLY_SERVICE_URL  — production URL (e.g. https://instantly.example.com)
 #   INSTANTLY_SERVICE_API_KEY — service API key for /internal/* routes
@@ -48,5 +60,35 @@ jobs:
           # `instantly_*_raw` bronze tables — NOT via this curl exit code.
           if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
             echo "Reconcile dispatch failed with HTTP ${status}"
+            exit 1
+          fi
+
+      - name: POST /internal/campaigns/actualize-orphaned-sends
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
+            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
+            exit 1
+          fi
+
+          response_file=$(mktemp)
+          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time 60 \
+            "${SERVICE_URL}/internal/campaigns/actualize-orphaned-sends")
+
+          echo "HTTP ${status}"
+          cat "${response_file}"
+          echo
+
+          # 202 Accepted + background execution. Verify via Railway logs
+          # (`actualize-orphaned-sends: done`) — NOT via this curl exit code.
+          if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
+            echo "actualize-orphaned-sends dispatch failed with HTTP ${status}"
             exit 1
           fi
