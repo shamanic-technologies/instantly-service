@@ -51,8 +51,12 @@ export interface Account {
   // the account TYPE (how it sends), not its provisioning class: 1=Google,
   // 2=Microsoft, 3/4=IMAP/SMTP. Absent on older account payloads → null type.
   provider_code?: number;
-  // Warmup config object (present on GET /accounts/{email}). Carries the numeric
-  // warmup daily send volume (`limit`) + increment/advanced subfields.
+  // Warmup config object. Present on BOTH the LIST (GET /accounts) and the
+  // single-account (GET /accounts/{email}) responses — but the LIST returns it
+  // ABBREVIATED to `{ limit }` only, while the single-account GET carries the
+  // full `{ limit, increment, advanced }`. So `warmup.limit` (the daily warmup
+  // send volume) is readable off a list row with no extra IO; increment/advanced
+  // are NOT — fetch the single account for those (see setWarmupDailyLimit).
   warmup?: WarmupConfig;
 }
 
