@@ -141,23 +141,28 @@ interface BreakdownRow {
   account_email: string;
   last_sent_step: number | string | null;
   last_sent_at: string | Date | null;
-  next_delay_days: number | string | null;
+  provisioned_steps: (number | string)[] | null;
+  step_config: Array<{ delay?: number | string | null }> | null;
 }
 
 /**
- * Per-account queue BREAKDOWN — splits the queued sequences (one campaign = one
- * lead = one sequence) into firstUnsent / nextToday / nextTomorrow / nextLater
- * by the projected timing of each sequence's next un-sent step. Partitions the
- * account's queued-sequence total (see queue-breakdown.ts for the invariant +
- * the nominal-cadence-lower-bound caveat).
+ * Per-account queue BREAKDOWN — splits the queued STEPS (every remaining un-sent
+ * email across the account's queued sequences) into firstUnsent / nextToday /
+ * nextTomorrow / nextLater by the projected send date of EACH step. Partitions
+ * the account's queued-STEPS total (= its queueSize) — the four buckets sum to
+ * that total, not to the sequence count. See queue-breakdown.ts for the
+ * invariant + the compounding nominal-cadence-lower-bound caveat.
  *
  * Same queued gate + account attribution as fetchQueueSizeByAccount (active +
- * delivery_status in contacted/sent, COALESCE persisted/observed account) but
- * grouped per SEQUENCE (campaign) rather than summed to steps. Per sequence it
- * also resolves, from the campaign's LATEST bronze sequence config, the real
- * `delay` (days) of the step AFTER the last-sent one — `steps[lastSentStep-1]`
- * (cost steps are 1-based, the config `steps` array is 0-based). Projection +
- * classification are pure (aggregateQueueBreakdown); this only does the read.
+ * delivery_status in contacted/sent, COALESCE persisted/observed account). Per
+ * SEQUENCE it loads:
+ *   - the distinct un-sent (provisioned) step numbers (the same set
+ *     fetchQueueSizeByAccount counts — so `breakdown.steps` equals `queueSize`);
+ *   - last-sent step + timestamp (the projection anchor);
+ *   - the FULL per-step `delay` array from the campaign's LATEST bronze sequence
+ *     config (0-based `steps[].delay`), so the pure layer can CHAIN delays across
+ *     every remaining step, not just the immediate next one.
+ * Projection + classification are pure (aggregateQueueBreakdown); this only reads.
  */
 export async function fetchQueueBreakdownByAccount(
   asOf: Date = new Date(),
@@ -177,26 +182,24 @@ export async function fetchQueueBreakdownByAccount(
       SELECT c.instantly_campaign_id,
              MIN(c.account_email) AS persisted_account,
              MAX(sc.step) FILTER (WHERE sc.status = 'actual') AS last_sent_step,
-             MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at
+             MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at,
+             array_agg(DISTINCT sc.step) FILTER (WHERE sc.status = 'provisioned')
+               AS provisioned_steps
       FROM sequence_costs sc
       JOIN instantly_campaigns c
         ON c.lead_email = sc.lead_email
        AND c.campaign_id IS NOT DISTINCT FROM sc.campaign_id
        AND c.status = 'active'
        AND c.delivery_status IN ('contacted', 'sent')
-      WHERE EXISTS (
-        SELECT 1 FROM sequence_costs p
-        WHERE p.lead_email = sc.lead_email
-          AND p.campaign_id IS NOT DISTINCT FROM sc.campaign_id
-          AND p.status = 'provisioned'
-      )
       GROUP BY c.instantly_campaign_id
+      HAVING array_agg(DISTINCT sc.step) FILTER (WHERE sc.status = 'provisioned')
+               IS NOT NULL
     )
     SELECT COALESCE(s.persisted_account, ca.account_email) AS account_email,
            s.last_sent_step,
            s.last_sent_at,
-           (cfg.payload->'sequences'->0->'steps'->GREATEST(s.last_sent_step - 1, 0)->>'delay')::numeric
-             AS next_delay_days
+           s.provisioned_steps,
+           cfg.payload->'sequences'->0->'steps' AS step_config
     FROM seq s
     LEFT JOIN campaign_account ca
       ON ca.instantly_campaign_id = s.instantly_campaign_id
@@ -216,10 +219,13 @@ export async function fetchQueueBreakdownByAccount(
         ? null
         : Number(r.last_sent_step),
     lastSentAt: r.last_sent_at ? new Date(r.last_sent_at) : null,
-    nextDelayDays:
-      r.next_delay_days === null || r.next_delay_days === undefined
-        ? null
-        : Number(r.next_delay_days),
+    provisionedSteps: (r.provisioned_steps ?? []).map(Number),
+    stepDelays: Array.isArray(r.step_config)
+      ? r.step_config.map((s) => {
+          const d = s?.delay;
+          return d === null || d === undefined ? null : Number(d);
+        })
+      : null,
   }));
   return aggregateQueueBreakdown(inputs, asOf);
 }
