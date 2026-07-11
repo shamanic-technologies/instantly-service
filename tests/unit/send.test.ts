@@ -101,18 +101,22 @@ vi.mock("../../src/lib/account-lifecycle-sync", () => ({
   fetchInProductionAccounts: () => mockListAccounts(),
 }));
 
-// Per-account send-load snapshot feeding least-loaded selection. Defaults to an
-// empty map (all accounts load 0 ⇒ tie ⇒ uniform random) so the existing send
-// flow tests keep passing; a test overrides it per-case to steer the pick.
-const mockFetchAccountLoad = vi.fn(async () => new Map<string, number>());
+// Per-account capacity snapshot feeding capacity-aware selection. Defaults to an
+// empty map (all accounts all-zeros ⇒ room today ⇒ uniform random) so the
+// existing send flow tests keep passing; a test overrides it per-case.
+import type { AccountCapacity } from "../../src/lib/account-sending-stats";
+const mockFetchAccountCapacity = vi.fn(
+  async () => new Map<string, AccountCapacity>(),
+);
 vi.mock("../../src/lib/account-sending-stats", () => ({
-  fetchAccountLoadCached: (...args: unknown[]) => mockFetchAccountLoad(...args),
+  fetchAccountCapacityCached: (...args: unknown[]) =>
+    mockFetchAccountCapacity(...args),
 }));
 
 import {
   autolinkifyHtml,
   buildEmailBodyWithSignature,
-  pickLeastLoadedAccount,
+  pickCapacityAwareAccount,
   buildSequenceSteps,
   stripAccountSignature,
   sendLeadToInstantly,
@@ -173,78 +177,130 @@ function mockNewCampaignFlow() {
   mockUpdateCampaignStatus.mockResolvedValue({});
 }
 
-describe("pickLeastLoadedAccount", () => {
+describe("pickCapacityAwareAccount", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  const load = (entries: [string, number][]) => new Map<string, number>(entries);
+  /** Build a capacity map from partial per-account overrides. */
+  const caps = (
+    entries: [string, Partial<AccountCapacity>][],
+  ): Map<string, AccountCapacity> =>
+    new Map(
+      entries.map(([email, o]) => [
+        email,
+        { sentToday: 0, q0first: 0, q0next: 0, q1next: 0, totalQueue: 0, ...o },
+      ]),
+    );
 
   it("should throw when no accounts are available", () => {
-    expect(() => pickLeastLoadedAccount([], load([]))).toThrow(
+    expect(() => pickCapacityAwareAccount([], caps([]))).toThrow(
       "No accounts available",
     );
   });
 
   it("should return the only account when only one is available", () => {
-    const a = acct({ email: "only@x.com" });
-    expect(pickLeastLoadedAccount([a], load([["only@x.com", 42]]))).toBe(a);
+    const a = acct({ email: "only@x.com", daily_limit: 50 });
+    expect(
+      pickCapacityAwareAccount([a], caps([["only@x.com", { sentToday: 42 }]])),
+    ).toBe(a);
   });
 
-  it("should pick the account with the lowest queue+sent load", () => {
+  it("picks argMIN todayOcc among accounts with room today (< MDL)", () => {
     const accounts = [
-      acct({ email: "busy@x.com" }),
-      acct({ email: "idle@x.com" }),
-      acct({ email: "mid@x.com" }),
+      acct({ email: "busy@x.com", daily_limit: 50 }), // todayOcc 40
+      acct({ email: "idle@x.com", daily_limit: 50 }), // todayOcc 3
+      acct({ email: "mid@x.com", daily_limit: 50 }), // todayOcc 12
     ];
-    const byEmail = load([
-      ["busy@x.com", 40],
-      ["idle@x.com", 3],
-      ["mid@x.com", 12],
+    const byEmail = caps([
+      ["busy@x.com", { sentToday: 40 }],
+      ["idle@x.com", { sentToday: 1, q0first: 1, q0next: 1 }],
+      ["mid@x.com", { sentToday: 12 }],
     ]);
-    // deterministic single minimum → no random needed
-    expect(pickLeastLoadedAccount(accounts, byEmail).email).toBe("idle@x.com");
+    expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("idle@x.com");
   });
 
-  it("should treat an account absent from the load map as load 0 (preferred)", () => {
+  it("treats an account absent from the map as all-zeros (preferred today)", () => {
     const accounts = [
-      acct({ email: "known@x.com" }),
-      acct({ email: "fresh@x.com" }), // not in the map ⇒ load 0
+      acct({ email: "known@x.com", daily_limit: 50 }),
+      acct({ email: "fresh@x.com", daily_limit: 50 }), // absent ⇒ todayOcc 0
     ];
-    const byEmail = load([["known@x.com", 5]]);
-    expect(pickLeastLoadedAccount(accounts, byEmail).email).toBe("fresh@x.com");
+    const byEmail = caps([["known@x.com", { sentToday: 5 }]]);
+    expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("fresh@x.com");
   });
 
-  it("should break ties with a uniform random over ONLY the least-loaded set", () => {
+  it("breaks a today tie with a uniform random over ONLY the tied-min set", () => {
     const accounts = [
-      acct({ email: "a@x.com" }), // load 2 (tied min)
-      acct({ email: "heavy@x.com" }), // load 9
-      acct({ email: "b@x.com" }), // load 2 (tied min)
+      acct({ email: "a@x.com", daily_limit: 50 }), // todayOcc 2
+      acct({ email: "heavy@x.com", daily_limit: 50 }), // todayOcc 9
+      acct({ email: "b@x.com", daily_limit: 50 }), // todayOcc 2
     ];
-    const byEmail = load([
-      ["a@x.com", 2],
-      ["heavy@x.com", 9],
-      ["b@x.com", 2],
+    const byEmail = caps([
+      ["a@x.com", { sentToday: 2 }],
+      ["heavy@x.com", { sentToday: 9 }],
+      ["b@x.com", { sentToday: 2 }],
     ]);
-    // leastLoaded = [a, b]. random 0.0 → a; random 0.99 → b. heavy never chosen.
     const randomSpy = vi.spyOn(Math, "random");
     randomSpy.mockReturnValueOnce(0.0);
-    expect(pickLeastLoadedAccount(accounts, byEmail).email).toBe("a@x.com");
+    expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("a@x.com");
     randomSpy.mockReturnValueOnce(0.99);
-    expect(pickLeastLoadedAccount(accounts, byEmail).email).toBe("b@x.com");
+    expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("b@x.com");
   });
 
-  it("should never pick a heavier account even at the random boundary", () => {
+  it("Q0-first (never-contacted sequences) counts toward today occupancy", () => {
     const accounts = [
-      acct({ email: "light@x.com" }),
-      acct({ email: "heavy@x.com" }),
+      acct({ email: "free@x.com", daily_limit: 50 }), // todayOcc 5
+      acct({ email: "newbie@x.com", daily_limit: 50 }), // todayOcc 60 (all q0first) → no room today
     ];
-    const byEmail = load([
-      ["light@x.com", 1],
-      ["heavy@x.com", 100],
+    const byEmail = caps([
+      ["free@x.com", { sentToday: 5 }],
+      ["newbie@x.com", { q0first: 60 }],
     ]);
-    vi.spyOn(Math, "random").mockReturnValue(0.9999);
-    expect(pickLeastLoadedAccount(accounts, byEmail).email).toBe("light@x.com");
+    expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("free@x.com");
+  });
+
+  it("respects a per-account MDL from daily_limit (low-limit acct excluded)", () => {
+    const accounts = [
+      acct({ email: "small@x.com", daily_limit: 10 }), // todayOcc 12 ≥ 10 → no room
+      acct({ email: "big@x.com", daily_limit: 50 }), // todayOcc 12 < 50 → room
+    ];
+    const byEmail = caps([
+      ["small@x.com", { sentToday: 12 }],
+      ["big@x.com", { sentToday: 12 }],
+    ]);
+    // If MDL were a fixed 50, small would also have room and tie; the per-account
+    // limit excludes it → big is the only candidate today.
+    expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("big@x.com");
+  });
+
+  it("falls to tomorrow when no account has room today: argMIN tomorrowOcc", () => {
+    // MDL 50 both. Neither has room today (todayOcc ≥ 50).
+    //   A: todayOcc 55 → O1 5, q1next 2 → tomorrowOcc 7
+    //   B: todayOcc 60 → O1 10, q1next 30 → tomorrowOcc 40
+    const accounts = [
+      acct({ email: "A@x.com", daily_limit: 50 }),
+      acct({ email: "B@x.com", daily_limit: 50 }),
+    ];
+    const byEmail = caps([
+      ["A@x.com", { sentToday: 50, q0next: 5, q1next: 2 }],
+      ["B@x.com", { sentToday: 55, q0next: 5, q1next: 30 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("A@x.com");
+  });
+
+  it("falls to argMIN totalQueue when no account has room today or tomorrow", () => {
+    // MDL 50 both. Saturated today AND tomorrow → step-7 fallback on totalQueue.
+    //   A: todayOcc 60 → O1 10, q1next 45 → tomorrowOcc 55 (≥50); totalQueue 100
+    //   B: todayOcc 70 → O1 20, q1next 40 → tomorrowOcc 60 (≥50); totalQueue 80
+    const accounts = [
+      acct({ email: "A@x.com", daily_limit: 50 }),
+      acct({ email: "B@x.com", daily_limit: 50 }),
+    ];
+    const byEmail = caps([
+      ["A@x.com", { sentToday: 60, q1next: 45, totalQueue: 100 }],
+      ["B@x.com", { sentToday: 70, q1next: 40, totalQueue: 80 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("B@x.com");
   });
 });
 
@@ -286,16 +342,16 @@ describe("send gate — only in_production accounts (lifecycle)", () => {
     if (res.ok) expect(res.value.account.email).toBe("prod@good.com");
   });
 
-  it("picks the LEAST-LOADED account from the pool", async () => {
+  it("picks the account with the most room today from the pool", async () => {
     mockListAccounts.mockResolvedValueOnce([
-      acct({ email: "busy@good.com", stat_warmup_score: 100 }),
-      acct({ email: "idle@good.com", stat_warmup_score: 100 }),
+      acct({ email: "busy@good.com", stat_warmup_score: 100, daily_limit: 50 }),
+      acct({ email: "idle@good.com", stat_warmup_score: 100, daily_limit: 50 }),
     ]);
-    // busy has more queued+sent load → idle must be chosen (deterministic min).
-    mockFetchAccountLoad.mockResolvedValueOnce(
-      new Map<string, number>([
-        ["busy@good.com", 37],
-        ["idle@good.com", 2],
+    // busy has higher today occupancy (both under MDL) → idle wins (argMIN today).
+    mockFetchAccountCapacity.mockResolvedValueOnce(
+      new Map<string, AccountCapacity>([
+        ["busy@good.com", { sentToday: 37, q0first: 0, q0next: 0, q1next: 0, totalQueue: 37 }],
+        ["idle@good.com", { sentToday: 2, q0first: 0, q0next: 0, q1next: 0, totalQueue: 2 }],
       ]),
     );
     mockCreateCampaign.mockResolvedValue({ id: "ic", status: "draft" });
@@ -312,7 +368,7 @@ describe("send gate — only in_production accounts (lifecycle)", () => {
     });
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.value.account.email).toBe("idle@good.com");
-    expect(mockFetchAccountLoad).toHaveBeenCalled();
+    expect(mockFetchAccountCapacity).toHaveBeenCalled();
   });
 });
 

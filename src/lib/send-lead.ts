@@ -8,8 +8,10 @@
  *     `delivery_status='contacted'` past STUCK_AGE_HOURS without any silver
  *     proof Instantly actually sent — see lib/retry-stuck.ts)
  *
- * One-shot: picks the least-loaded healthy account (fewest queued + sent-today
- * emails), creates a fresh Instantly campaign, adds the lead, activates. Returns
+ * One-shot: picks a healthy account via the capacity-aware policy (fill the
+ * account that can absorb one more email soonest under its daily limit — see
+ * pickCapacityAwareAccount), creates a fresh Instantly campaign, adds the lead,
+ * activates. Returns
  * success regardless of post-activate `not_sending_status` (NSS is pacing
  * diagnostic, not error signal — retry-stuck owns the eventual catch-up
  * 72h later if the campaign never sends).
@@ -27,44 +29,90 @@ import {
   type SequenceStep,
 } from "./instantly-client";
 import { fetchInProductionAccounts } from "./account-lifecycle-sync";
-import { fetchAccountLoadCached } from "./account-sending-stats";
+import {
+  fetchAccountCapacityCached,
+  type AccountCapacity,
+} from "./account-sending-stats";
+import { IN_PRODUCTION_DAILY_LIMIT } from "./account-lifecycle";
+
+/** All-zero capacity for an account absent from the snapshot (idle ⇒ preferred). */
+const EMPTY_CAPACITY: AccountCapacity = {
+  sentToday: 0,
+  q0first: 0,
+  q0next: 0,
+  q1next: 0,
+  totalQueue: 0,
+};
 
 /**
- * Pick the LEAST-LOADED account, where
- *   load = queued (un-sent provisioned) steps + emails sent today.
- *
- * This balances new sends onto the account currently carrying the least work
- * instead of a warmup-weighted random. An account absent from `loadByEmail` has
- * load 0 (never sent, nothing queued) ⇒ maximally preferred. Ties at the minimum
- * are broken by a uniform random pick among the tied accounts only, so a burst
- * of concurrent sends spreads across equally-idle accounts rather than always
- * landing on the same one.
- *
- * Correctness of the balancing depends on `loadByEmail` reflecting queued work
- * the instant a lead is `contacted`; that is why the sending account is
- * persisted on the campaign row at send time (see account-sending-stats.ts
- * fetchQueueSizeByAccount) rather than derived from the lagging email_sent
- * webhook.
+ * argMIN over `accounts` by `metric`, ties broken by a uniform random pick among
+ * ONLY the tied minimum set — so a burst of concurrent sends spreads across
+ * equally-preferred accounts rather than always landing on the first one, and a
+ * heavier account is NEVER chosen even at the random boundary.
  */
-export function pickLeastLoadedAccount(
+function argMinRandom(
   accounts: Account[],
-  loadByEmail: Map<string, number>,
+  metric: (a: Account) => number,
+): Account {
+  let min = Infinity;
+  for (const a of accounts) {
+    const m = metric(a);
+    if (m < min) min = m;
+  }
+  const tied = accounts.filter((a) => metric(a) === min);
+  return tied[Math.floor(Math.random() * tied.length)];
+}
+
+/**
+ * Capacity-aware account selection — fill the account that can absorb one more
+ * email SOONEST under its own daily limit (MDL), not merely the globally
+ * least-loaded one.
+ *
+ * Per account, from the send-selection snapshot (see fetchAccountCapacity):
+ *   MDL         = account.daily_limit (fallback IN_PRODUCTION_DAILY_LIMIT=50)
+ *   S0          = sentToday (real dispatches today)
+ *   Q0-first    = never-contacted sequences (1 first-email each ≈ today)
+ *   Q0-next     = followup steps projected today/overdue
+ *   Q1-next     = followup steps projected tomorrow
+ *   todayOcc    = S0 + Q0-first + Q0-next          (projected volume today)
+ *   tomorrowOcc = max(todayOcc − MDL, 0) + Q1-next (today's overflow O1 + tomorrow's due)
+ *
+ * Policy (first tier with a candidate wins; argMIN + random tie-break within):
+ *   1. Accounts with todayOcc < MDL       → pick argMIN todayOcc (fill emptiest today).
+ *   2. Else accounts with tomorrowOcc < MDL → pick argMIN tomorrowOcc (soonest room tomorrow).
+ *   3. Else                                → pick argMIN totalQueue (globally emptiest queue).
+ *
+ * An account absent from `byEmail` is all-zeros ⇒ maximally preferred. Correctness
+ * of the today/tomorrow buckets depends on the sending account being persisted on
+ * the campaign row at send time (see account-sending-stats.ts) so a just-contacted
+ * lead counts against its account immediately, not after the lagging first
+ * email_sent webhook.
+ */
+export function pickCapacityAwareAccount(
+  accounts: Account[],
+  byEmail: Map<string, AccountCapacity>,
 ): Account {
   if (accounts.length === 0) {
     throw new Error("No accounts available");
   }
 
-  const loadOf = (a: Account): number => loadByEmail.get(a.email) ?? 0;
+  const capOf = (a: Account): AccountCapacity =>
+    byEmail.get(a.email) ?? EMPTY_CAPACITY;
+  const mdlOf = (a: Account): number => a.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT;
+  const todayOcc = (a: Account): number => {
+    const c = capOf(a);
+    return c.sentToday + c.q0first + c.q0next;
+  };
+  const tomorrowOcc = (a: Account): number =>
+    Math.max(todayOcc(a) - mdlOf(a), 0) + capOf(a).q1next;
 
-  let minLoad = Infinity;
-  for (const a of accounts) {
-    const load = loadOf(a);
-    if (load < minLoad) minLoad = load;
-  }
+  const roomToday = accounts.filter((a) => todayOcc(a) < mdlOf(a));
+  if (roomToday.length > 0) return argMinRandom(roomToday, todayOcc);
 
-  const leastLoaded = accounts.filter((a) => loadOf(a) === minLoad);
-  const idx = Math.floor(Math.random() * leastLoaded.length);
-  return leastLoaded[idx];
+  const roomTomorrow = accounts.filter((a) => tomorrowOcc(a) < mdlOf(a));
+  if (roomTomorrow.length > 0) return argMinRandom(roomTomorrow, tomorrowOcc);
+
+  return argMinRandom(accounts, (a) => capOf(a).totalQueue);
 }
 
 /**
@@ -359,8 +407,8 @@ export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult
     return { ok: false, reason: "no_healthy_accounts_available" };
   }
 
-  const loadByEmail = await fetchAccountLoadCached();
-  const account = pickLeastLoadedAccount(accounts, loadByEmail);
+  const capacityByEmail = await fetchAccountCapacityCached();
+  const account = pickCapacityAwareAccount(accounts, capacityByEmail);
   const steps = buildSequenceSteps(opts.subject, opts.sortedSequence, account);
 
   console.log(
