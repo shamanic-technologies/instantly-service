@@ -10,6 +10,7 @@ vi.mock("../../src/db", () => ({
 
 import {
   fetchQueueSizeByAccount,
+  fetchSentYesterdayByAccount,
   fetchAccountLoad,
   fetchAccountLoadCached,
 } from "../../src/lib/account-sending-stats";
@@ -39,6 +40,32 @@ describe("fetchQueueSizeByAccount — persisted-account attribution", () => {
     // (the INNER JOIN used to drop it — the over-concentration gap).
     expect(text).toContain("left join");
     expect(text).not.toMatch(/\binner join\b/);
+  });
+});
+
+describe("fetchSentYesterdayByAccount — previous full UTC day", () => {
+  it("counts real email_sent events bounded to [prev-midnight, today-midnight)", async () => {
+    mockExecute.mockResolvedValueOnce([
+      { account_email: "a@x.com", count: 7 },
+    ]);
+    const map = await fetchSentYesterdayByAccount();
+    expect(map.get("a@x.com")).toBe(7);
+
+    const text = executedSqlText(0).toLowerCase();
+    // Same provenance/filters as sentToday — real dispatches only.
+    expect(text).toContain("event_type");
+    expect(text).toContain("'email_sent'");
+    expect(text).toContain("inferred = false");
+    // Window: >= yesterday-midnight AND < today-midnight (excludes today + older).
+    expect(text).toContain("date_trunc('day'");
+    expect(text).toContain("interval '1 day'");
+    expect(text).toMatch(/timestamp\s+<\s+date_trunc/);
+  });
+
+  it("returns an empty map (honest 0 upstream) when no account sent yesterday", async () => {
+    mockExecute.mockResolvedValueOnce([]);
+    const map = await fetchSentYesterdayByAccount();
+    expect(map.size).toBe(0);
   });
 });
 
