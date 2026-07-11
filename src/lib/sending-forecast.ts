@@ -15,24 +15,60 @@
  *      2026-06-29 Gmail-spam full halt), so a capacity-paced drain would never
  *      terminate. The projection is capacity-INDEPENDENT and bounded by the
  *      sequence structure — that decoupling is the whole point of the ops view.
+ *
+ * ── Cadence source = the SAME real per-step delays the per-account queue
+ *    breakdown uses ─────────────────────────────────────────────────────────
+ * The inter-step gap is the REAL configured `delay` (calendar days) of each
+ * sequence step, read from the campaign's LATEST bronze config
+ * (`instantly_campaigns_config_raw.payload->'sequences'->0->'steps'`) and passed
+ * in per lead as `PendingLead.stepDelays`. This is IDENTICAL to the cadence the
+ * per-account queue-bucket projection (`queue-breakdown.ts`) uses, so the two ops
+ * views agree on WHEN the same future steps land. `STEP_GAP_CALENDAR_DAYS` is now
+ * only the per-gap FALLBACK for a sequence whose bronze config is missing that
+ * step's delay (in practice bronze covers the whole active queued set).
+ *
+ * Same honesty caveat as the queue breakdown: the projected date is a
+ * NOMINAL-CADENCE LOWER BOUND (the earliest a step is eligible per its sequence
+ * cadence), NOT Instantly's exact dispatch date — the real send slips LATER under
+ * daily-limit saturation / throttling / pauses. Additionally, this forecast
+ * (unlike the breakdown, which buckets on the raw nominal UTC day) snaps each
+ * landing forward off weekends, modeling the fleet's business-hours-weekday send
+ * schedule; that weekday snap is a deliberate presentation choice of THIS view,
+ * orthogonal to the now-shared cadence source.
  */
 
 import type { Account } from "./instantly-client";
 import type { LifecycleView } from "./account-lifecycle-sync";
 
 /**
- * Canonical inter-step gap (calendar days) used to project a lead's remaining
- * sequence steps onto future days.
+ * Per-gap FALLBACK inter-step gap (calendar days), used ONLY when a sequence's
+ * bronze config does not carry a real `delay` for a given step.
  *
- * The real per-campaign step delays (`daysSinceLastStep`) are caller-driven and
- * NOT persisted locally, so the forecast models every follow-up as landing this
- * many calendar days after its predecessor, then snaps the landing forward off
- * weekends (the fleet sends business-hours weekdays only — see
- * `instantly-client.createCampaign`'s `campaign_schedule`). v1 modeling constant;
- * observed real delays cluster at 3 days (`daysSinceLastStep: 3`). Bump here if
- * the standard cadence changes.
+ * The forecast's primary cadence source is the REAL per-step `delay` from bronze
+ * config (`PendingLead.stepDelays`), matching the per-account queue-breakdown
+ * projection. This constant is the last-resort per-gap default so a step is never
+ * dropped when its config delay is absent; it is also the value the queue
+ * breakdown falls back to (`queue-breakdown.ts` imports it), so both views share
+ * ONE fallback too. Observed real delays cluster at 3 days. Bump here only to
+ * change the missing-config default — the standard cadence now comes from config.
  */
 export const STEP_GAP_CALENDAR_DAYS = 3;
+
+/**
+ * Resolve the real gap (calendar days) from cost-step `fromStep` to `fromStep+1`.
+ *
+ * Cost steps are 1-based; the bronze config `steps` array (surfaced here as
+ * `stepDelays`) is 0-based, and the gap from cost-step `k` to `k+1` is
+ * `steps[k-1].delay` (verified empirically — same indexing the queue breakdown
+ * uses). A missing / null / negative / non-finite delay falls back to
+ * `STEP_GAP_CALENDAR_DAYS` so no step is ever dropped from the projection.
+ */
+export function delayForGap(fromStep: number, stepDelays: readonly (number | null)[]): number {
+  const d = stepDelays[fromStep - 1];
+  return d === null || d === undefined || !Number.isFinite(d) || d < 0
+    ? STEP_GAP_CALENDAR_DAYS
+    : d;
+}
 
 export interface CapacitySummary {
   /** Emails/day the fleet can send (Σ daily_limit over in_production accounts). */
@@ -79,6 +115,15 @@ export interface PendingLead {
   lastSentStep: number | null;
   /** Timestamp of the last sent step, or null when nothing has sent yet. */
   lastSentAt: Date | null;
+  /**
+   * Real per-step delays (calendar days) from the campaign's LATEST bronze
+   * sequence config, config-ordered 0-based: `stepDelays[i]` = the gap from
+   * cost-step `i+1` to cost-step `i+2` (i.e. `steps[i].delay`). A null / missing
+   * entry falls back per-gap to `STEP_GAP_CALENDAR_DAYS`. Optional / empty ⇒ the
+   * whole sequence uses the fallback (config unavailable). Same source + indexing
+   * as the per-account queue breakdown, so the two views share one cadence model.
+   */
+  stepDelays?: (number | null)[];
 }
 
 export interface ForecastDay {
@@ -113,18 +158,27 @@ function addDaysSnapWeekday(d: Date, n: number): Date {
 }
 
 /**
- * Project one lead's remaining steps onto calendar dates.
+ * Project one lead's remaining steps onto calendar dates, using the REAL
+ * configured per-step delays (`lead.stepDelays`) as the inter-step cadence.
  *
  * - Never-contacted lead (`lastSentStep === null`): the first pending step fires
- *   ~now (asOf, snapped to a weekday); each later step +GAP after the previous.
- * - Contacted lead: the next step fires GAP days after the last sent step (or
- *   after asOf if that slot already elapsed — a past-due follow-up schedules
- *   from today, never in the past).
+ *   ~now (asOf, snapped to a weekday); each later step lands after accumulating
+ *   the real configured delays of the gaps between it and the first step.
+ * - Contacted lead: each un-sent step lands after accumulating the real delays of
+ *   the gaps from the last sent step (base = last-sent timestamp, or asOf if that
+ *   slot already elapsed — a past-due follow-up schedules from today, never in
+ *   the past).
+ *
+ * The accumulated gap from cost-step `anchor` to cost-step `s` is
+ * `Σ delayForGap(j)` for `j` in `[anchor, s-1]`, each resolved from config with a
+ * per-gap `STEP_GAP_CALENDAR_DAYS` fallback. Each landing is snapped forward off
+ * weekends (this view's business-hours-weekday model).
  */
 export function scheduleLead(lead: PendingLead, asOf: Date): Date[] {
   const steps = [...lead.provisionedSteps].sort((a, b) => a - b);
   if (steps.length === 0) return [];
 
+  const stepDelays = lead.stepDelays ?? [];
   const contacted = lead.lastSentStep !== null && lead.lastSentAt !== null;
   const anchorStep = contacted ? (lead.lastSentStep as number) : steps[0];
   const rawBase = contacted ? (lead.lastSentAt as Date) : asOf;
@@ -132,10 +186,10 @@ export function scheduleLead(lead: PendingLead, asOf: Date): Date[] {
   const baseDate = rawBase.getTime() < asOf.getTime() ? asOf : rawBase;
 
   return steps.map((s) => {
-    const gaps = s - anchorStep; // fresh: >=0 (first step 0); contacted: >=1
-    return gaps <= 0
-      ? snapToWeekdayUTC(baseDate)
-      : addDaysSnapWeekday(baseDate, gaps * STEP_GAP_CALENDAR_DAYS);
+    if (s <= anchorStep) return snapToWeekdayUTC(baseDate); // fresh first step / anchor
+    let cumulativeDays = 0;
+    for (let j = anchorStep; j < s; j++) cumulativeDays += delayForGap(j, stepDelays);
+    return addDaysSnapWeekday(baseDate, cumulativeDays);
   });
 }
 

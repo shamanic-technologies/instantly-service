@@ -50,23 +50,61 @@ const router = Router();
  * are exactly the future scheduled sends. Gated to genuinely-live campaigns
  * (`status='active'` and a non-terminal `delivery_status`) so a replied /
  * bounced / paused lead whose holds have not yet been reconciled is excluded.
+ *
+ * `stepDelays` carries the REAL per-step `delay` (calendar days) from the
+ * campaign's LATEST bronze sequence config (config-ordered 0-based, same path +
+ * indexing the per-account queue breakdown uses:
+ * `payload->'sequences'->0->'steps'->i->>'delay'`). This makes the forecast's
+ * inter-step cadence identical to the queue-bucket projection — one cadence
+ * source of truth. A campaign whose config is absent yields an empty array; the
+ * pure projection then falls back per-gap to `STEP_GAP_CALENDAR_DAYS`.
  */
 async function loadPendingLeads(): Promise<PendingLead[]> {
   const result = await db.execute(sql`
-    SELECT
-      ARRAY_AGG(DISTINCT sc.step) FILTER (WHERE sc.status = 'provisioned') AS "provisionedSteps",
-      MAX(sc.step) FILTER (WHERE sc.status = 'actual') AS "lastSentStep",
-      MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS "lastSentAt"
-    FROM sequence_costs sc
-    WHERE EXISTS (
-      SELECT 1 FROM instantly_campaigns c
-      WHERE c.lead_email = sc.lead_email
-        AND c.campaign_id IS NOT DISTINCT FROM sc.campaign_id
-        AND c.status = 'active'
-        AND c.delivery_status IN ('contacted', 'sent')
+    WITH pending AS (
+      SELECT
+        sc.campaign_id,
+        sc.lead_email,
+        ARRAY_AGG(DISTINCT sc.step) FILTER (WHERE sc.status = 'provisioned') AS provisioned_steps,
+        MAX(sc.step) FILTER (WHERE sc.status = 'actual') AS last_sent_step,
+        MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at,
+        (
+          SELECT MIN(c.instantly_campaign_id)
+          FROM instantly_campaigns c
+          WHERE c.lead_email = sc.lead_email
+            AND c.campaign_id IS NOT DISTINCT FROM sc.campaign_id
+            AND c.status = 'active'
+            AND c.delivery_status IN ('contacted', 'sent')
+        ) AS instantly_campaign_id
+      FROM sequence_costs sc
+      WHERE EXISTS (
+        SELECT 1 FROM instantly_campaigns c
+        WHERE c.lead_email = sc.lead_email
+          AND c.campaign_id IS NOT DISTINCT FROM sc.campaign_id
+          AND c.status = 'active'
+          AND c.delivery_status IN ('contacted', 'sent')
+      )
+      GROUP BY sc.campaign_id, sc.lead_email
+      HAVING COUNT(*) FILTER (WHERE sc.status = 'provisioned') > 0
     )
-    GROUP BY sc.campaign_id, sc.lead_email
-    HAVING COUNT(*) FILTER (WHERE sc.status = 'provisioned') > 0
+    SELECT
+      p.provisioned_steps AS "provisionedSteps",
+      p.last_sent_step AS "lastSentStep",
+      p.last_sent_at AS "lastSentAt",
+      cfg.step_delays AS "stepDelays"
+    FROM pending p
+    LEFT JOIN LATERAL (
+      SELECT ARRAY(
+        SELECT (elem->>'delay')::numeric
+        FROM jsonb_array_elements(r.payload->'sequences'->0->'steps')
+          WITH ORDINALITY AS t(elem, ord)
+        ORDER BY t.ord
+      ) AS step_delays
+      FROM instantly_campaigns_config_raw r
+      WHERE r.instantly_campaign_id = p.instantly_campaign_id
+      ORDER BY r.fetched_at DESC
+      LIMIT 1
+    ) cfg ON true
   `);
 
   const rows = Array.isArray(result) ? result : ((result as any).rows ?? []);
@@ -77,10 +115,15 @@ async function loadPendingLeads(): Promise<PendingLead[]> {
         ? null
         : Number(r.lastSentStep);
     const lastSentAt = r.lastSentAt ? new Date(r.lastSentAt as string) : null;
+    const rawDelays = (r.stepDelays as (number | string | null)[] | null) ?? [];
+    const stepDelays = rawDelays.map((d) =>
+      d === null || d === undefined ? null : Number(d),
+    );
     return {
       provisionedSteps: provisionedSteps.map((s) => Number(s)),
       lastSentStep,
       lastSentAt,
+      stepDelays,
     };
   });
 }
