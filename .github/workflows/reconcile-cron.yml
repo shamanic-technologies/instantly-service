@@ -4,6 +4,20 @@ name: Reconcile webhook catch-up (daily)
 # missed by the webhook into the silver event log. Idempotent — re-running has
 # no effect when nothing drifted.
 #
+# Two steps, in order:
+#   1. /internal/campaigns/reconcile — pull Instantly state → silver.
+#   2. /internal/campaigns/reconcile-provisioned-holds (commit) — evidence-based
+#      self-heal of stranded provisioned email-send holds. For each hold, from
+#      real (inferred=false) silver evidence: actualize a step with a real
+#      `email_sent` (the live webhook-actualize can be dropped transiently on a
+#      cold-start ECONNRESET / runs-service 5xx, and reconcile's drift gate keys
+#      on event COUNTS so it never retries the stuck hold); cancel a terminal
+#      send (lead replied/bounced/unsubscribed, campaign paused/completed, or no
+#      active platform campaign left); SKIP an in-flight hold (never cancel on
+#      assumption). Covers org AND platform sends. Idempotent + resumable: only
+#      touches `provisioned` rows, so a re-run with nothing stranded no-ops.
+#      Supersedes the older actualize-orphaned-sends + refund-stranded-holds sweeps.
+#
 # Required secrets:
 #   INSTANTLY_SERVICE_URL  — production URL (e.g. https://instantly.example.com)
 #   INSTANTLY_SERVICE_API_KEY — service API key for /internal/* routes
@@ -57,6 +71,11 @@ jobs:
           API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
         run: |
           set -euo pipefail
+          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
+            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
+            exit 1
+          fi
+
           # Evidence-based self-heal of stranded provisioned holds: actualize real
           # sends, cancel terminal sends, leave in-flight holds. Idempotent — safe
           # to run daily. Runs in the background (202); verify via Railway logs
