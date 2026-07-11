@@ -94,6 +94,11 @@ describe("selectHoldActions", () => {
     expect(text).toContain("inferred");
     expect(text).toContain("provisioned");
     expect(text).toContain("reply_received");
+    // Resolves the owning org for PLATFORM holds (caller-campaign join is NULL
+    // there) so the runs-service PATCH authorizes — else the actualize/cancel
+    // strands as transient. Must fall back to the lead's own campaign row.
+    expect(text).toContain("owner.org_id");
+    expect(text).toContain("LATERAL");
   });
 
   it("handles array-shaped db.execute result (no .rows wrapper)", async () => {

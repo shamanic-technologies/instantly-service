@@ -108,12 +108,26 @@ export async function selectHoldActions(limit?: number): Promise<HoldRow[]> {
         sc.id, sc.run_id, sc.cost_id, sc.lead_email, sc.step,
         sc.campaign_id,
         COALESCE(sc.instantly_campaign_id, ic.instantly_campaign_id) AS icid,
-        ic.org_id, ic.user_id
+        -- Resolve the OWNING org/user so the runs-service actualize/cancel PATCH
+        -- authorizes. For org sends the caller-campaign join carries it; for
+        -- PLATFORM sends (campaign_id NULL) that join is empty, so fall back to
+        -- the lead's own campaign row (same sender org). Sending 'system' here
+        -- gets the PATCH rejected → the hold would strand as transient.
+        COALESCE(ic.org_id, owner.org_id)   AS org_id,
+        COALESCE(ic.user_id, owner.user_id) AS user_id
       FROM sequence_costs sc
       LEFT JOIN instantly_campaigns ic
         ON sc.campaign_id IS NOT NULL
        AND ic.campaign_id = sc.campaign_id
        AND ic.lead_email  = sc.lead_email
+      LEFT JOIN LATERAL (
+        SELECT ic6.org_id, ic6.user_id
+        FROM instantly_campaigns ic6
+        WHERE ic6.lead_email = sc.lead_email
+          AND ic6.org_id IS NOT NULL
+        ORDER BY (ic6.campaign_id IS NULL) DESC, ic6.created_at DESC
+        LIMIT 1
+      ) owner ON true
       WHERE sc.status = 'provisioned'
     )
     SELECT
