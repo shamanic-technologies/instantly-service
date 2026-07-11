@@ -94,12 +94,20 @@ async function loadPendingLeads(): Promise<PendingLead[]> {
       cfg.step_delays AS "stepDelays"
     FROM pending p
     LEFT JOIN LATERAL (
-      SELECT ARRAY(
-        SELECT (elem->>'delay')::numeric
-        FROM jsonb_array_elements(r.payload->'sequences'->0->'steps')
-          WITH ORDINALITY AS t(elem, ord)
-        ORDER BY t.ord
-      ) AS step_delays
+      -- Emit the per-step delays as a JSONB array, NOT a Postgres numeric[]
+      -- (the ARRAY(...) form). node-postgres reliably parses jsonb into a JS
+      -- array, but returns a numeric array as its raw text (brace form) - a
+      -- string - which blew up rawDelays.map in the mapper below (prod 500).
+      -- Picks the LATEST config row (unchanged), then builds the array from its
+      -- steps; a null / non-array steps yields '[]' (never throws, never fabricates).
+      SELECT COALESCE((
+        SELECT jsonb_agg((elem->>'delay')::numeric ORDER BY t.ord)
+        FROM jsonb_array_elements(
+          CASE WHEN jsonb_typeof(r.payload->'sequences'->0->'steps') = 'array'
+               THEN r.payload->'sequences'->0->'steps'
+               ELSE '[]'::jsonb END
+        ) WITH ORDINALITY AS t(elem, ord)
+      ), '[]'::jsonb) AS step_delays
       FROM instantly_campaigns_config_raw r
       WHERE r.instantly_campaign_id = p.instantly_campaign_id
       ORDER BY r.fetched_at DESC
@@ -115,7 +123,12 @@ async function loadPendingLeads(): Promise<PendingLead[]> {
         ? null
         : Number(r.lastSentStep);
     const lastSentAt = r.lastSentAt ? new Date(r.lastSentAt as string) : null;
-    const rawDelays = (r.stepDelays as (number | string | null)[] | null) ?? [];
+    // stepDelays now arrives as a parsed JSONB array. Guard against any
+    // non-array shape (defensive — a mis-parse must never 500 the whole fleet
+    // forecast; an unusable value degrades that one lead to the per-gap
+    // STEP_GAP fallback, never crashes).
+    const raw = r.stepDelays;
+    const rawDelays = Array.isArray(raw) ? (raw as (number | string | null)[]) : [];
     const stepDelays = rawDelays.map((d) =>
       d === null || d === undefined ? null : Number(d),
     );
