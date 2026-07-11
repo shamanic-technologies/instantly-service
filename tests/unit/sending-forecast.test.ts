@@ -5,9 +5,16 @@ import {
   computeCapacitySummary,
   projectDailySchedule,
   scheduleLead,
+  delayForGap,
+  MS_PER_DAY,
+  dateKeyUTC,
   STEP_GAP_CALENDAR_DAYS,
   type PendingLead,
 } from "../../src/lib/sending-forecast";
+import {
+  classifyQueuedSequence,
+  type QueuedSequenceInput,
+} from "../../src/lib/queue-breakdown";
 
 function acct(overrides: Partial<Account>): Account {
   return {
@@ -138,6 +145,115 @@ describe("scheduleLead", () => {
 
   it("GAP constant is the documented 3 calendar days", () => {
     expect(STEP_GAP_CALENDAR_DAYS).toBe(3);
+  });
+
+  it("uses the REAL configured per-step delays, not the canonical gap", () => {
+    // Contacted lead, last sent step 1 on Wed 07-01; config delay for step 1→2 is 7.
+    const lead: PendingLead = {
+      provisionedSteps: [2],
+      lastSentStep: 1,
+      lastSentAt: new Date("2026-07-01T09:00:00.000Z"), // Wed
+      stepDelays: [7], // steps[0].delay — gap cost-step 1 → 2
+    };
+    // +7 cal days from Wed 07-01 = Wed 07-08 (weekday, no snap). NOT the canonical +3.
+    expect(scheduleLead(lead, wed).map(key)).toEqual(["2026-07-08"]);
+  });
+
+  it("accumulates real per-gap delays across a fresh multi-step sequence", () => {
+    // Fresh lead, steps 1,2,3; config delays 2 (1→2) then 3 (2→3), both weekday-safe.
+    const lead: PendingLead = {
+      provisionedSteps: [1, 2, 3],
+      lastSentStep: null,
+      lastSentAt: null,
+      stepDelays: [2, 3], // steps[0].delay=2, steps[1].delay=3
+    };
+    const dates = scheduleLead(lead, new Date("2026-07-06T12:00:00.000Z")).map(key); // Mon
+    expect(dates[0]).toBe("2026-07-06"); // step 1 today (Mon)
+    expect(dates[1]).toBe("2026-07-08"); // +2 → Wed 07-08
+    expect(dates[2]).toBe("2026-07-13"); // +2+3 = +5 → Sat 07-11 snaps to Mon 07-13
+  });
+
+  it("empty / missing stepDelays falls back to the canonical gap (config unavailable)", () => {
+    const withEmpty: PendingLead = {
+      provisionedSteps: [2],
+      lastSentStep: 1,
+      lastSentAt: new Date("2026-07-01T09:00:00.000Z"),
+      stepDelays: [],
+    };
+    const withMissing: PendingLead = {
+      provisionedSteps: [2],
+      lastSentStep: 1,
+      lastSentAt: new Date("2026-07-01T09:00:00.000Z"),
+      // stepDelays omitted entirely
+    };
+    // Both fall back to +3 → Sat 07-04 snaps to Mon 07-06.
+    expect(scheduleLead(withEmpty, wed).map(key)).toEqual(["2026-07-06"]);
+    expect(scheduleLead(withMissing, wed).map(key)).toEqual(["2026-07-06"]);
+  });
+
+  it("a null delay entry inside the array falls back per-gap without dropping the step", () => {
+    const lead: PendingLead = {
+      provisionedSteps: [2],
+      lastSentStep: 1,
+      lastSentAt: new Date("2026-07-01T09:00:00.000Z"),
+      stepDelays: [null], // step 1→2 delay missing → per-gap fallback 3
+    };
+    expect(scheduleLead(lead, wed).map(key)).toEqual(["2026-07-06"]); // +3 snap Mon
+  });
+});
+
+describe("delayForGap", () => {
+  it("indexes cost-step k → k+1 gap as stepDelays[k-1] (0-based config, 1-based cost)", () => {
+    const delays = [3, 7, 5];
+    expect(delayForGap(1, delays)).toBe(3); // 1→2 = steps[0]
+    expect(delayForGap(2, delays)).toBe(7); // 2→3 = steps[1]
+    expect(delayForGap(3, delays)).toBe(5); // 3→4 = steps[2]
+  });
+
+  it("falls back to STEP_GAP_CALENDAR_DAYS for missing / null / negative / non-finite delays", () => {
+    expect(delayForGap(1, [])).toBe(STEP_GAP_CALENDAR_DAYS); // out of range
+    expect(delayForGap(1, [null])).toBe(STEP_GAP_CALENDAR_DAYS);
+    expect(delayForGap(1, [-2])).toBe(STEP_GAP_CALENDAR_DAYS);
+    expect(delayForGap(1, [Number.NaN])).toBe(STEP_GAP_CALENDAR_DAYS);
+  });
+
+  it("honors a zero delay (same-day follow-up) — not treated as missing", () => {
+    expect(delayForGap(1, [0])).toBe(0);
+  });
+});
+
+describe("cadence coherence with the per-account queue breakdown", () => {
+  // Both ops views must derive the same NEXT-step nominal date from the same
+  // config delay, so a spot-checked sequence lands identically (on a weekday, the
+  // forecast's weekday-snap is a no-op, so the dates are byte-equal).
+  it("forecast next-step date == queue-breakdown projected next-send for the same sequence", () => {
+    const asOf = new Date("2026-07-06T12:00:00.000Z"); // Mon
+    const lastSentAt = new Date("2026-07-06T09:00:00.000Z"); // Mon
+    const configDelay = 2; // steps[0].delay — lands Wed 07-08 (weekday)
+
+    // Forecast side: contacted lead, next un-sent step 2.
+    const lead: PendingLead = {
+      provisionedSteps: [2],
+      lastSentStep: 1,
+      lastSentAt,
+      stepDelays: [configDelay],
+    };
+    const forecastNext = scheduleLead(lead, asOf)[0];
+
+    // Queue-breakdown side: same sequence, same config delay.
+    const seq: QueuedSequenceInput = {
+      account: "a@x.com",
+      lastSentStep: 1,
+      lastSentAt,
+      nextDelayDays: configDelay,
+    };
+    const breakdownProjected = new Date(lastSentAt.getTime() + configDelay * MS_PER_DAY);
+
+    // Same nominal UTC day from the same delay source.
+    expect(dateKeyUTC(forecastNext)).toBe(dateKeyUTC(breakdownProjected));
+    // And the breakdown classifies it as a future (nextLater) send, consistent
+    // with the forecast placing it two days out.
+    expect(classifyQueuedSequence(seq, asOf)).toBe("nextLater");
   });
 });
 
