@@ -90,32 +90,40 @@ export interface AccountHealth {
    * nothing is queued to it. Campaigns pushed but not yet sending have no
    * observed account, so their imminent step-1 holds are not attributed to any
    * account (documented gap — the account is unknown until the first send).
+   *
+   * This is the queued-STEPS total, and it PARTITIONS exactly into the four
+   * `queued*` date buckets below:
+   *   `queueSize === queuedFirstUnsent + queuedNextToday + queuedNextTomorrow +
+   *    queuedNextLater` (holds for every account, by construction — the buckets
+   *    are derived from the same provisioned-step set this counts).
    */
   queueSize: number;
   /**
-   * Queued-sequence BREAKDOWN (one Instantly campaign = one lead = one
-   * sequence), split by the projected timing of each sequence's NEXT un-sent
-   * step. These four PARTITION `queuedSequences`:
-   *   `queuedSequences === queuedFirstUnsent + queuedNextToday +
-   *    queuedNextTomorrow + queuedNextLater` (holds for every account).
+   * Queued-STEP BREAKDOWN — every remaining un-sent email across the account's
+   * queued sequences, split by the projected send date of EACH step. These four
+   * PARTITION `queueSize` (the queued-STEPS total, see above), NOT
+   * `queuedSequences`.
    *
-   * NOTE `queuedSequences` (a count of SEQUENCES) is a DIFFERENT granularity
-   * from `queueSize` (a count of pending STEPS) — both are intentional, kept
-   * side by side. The next-step date is a PROJECTION (last-sent + the step's
-   * configured delay), a nominal-cadence LOWER BOUND — Instantly's actual
-   * dispatch can slip later under throttling. So `queuedNextToday` reads as
-   * "next step DUE today-or-overdue", not "will certainly send today". See
-   * lib/queue-breakdown.ts. A queued sequence with no attributable account is
+   * NOTE `queuedSequences` (a count of SEQUENCES / leads) is a DIFFERENT
+   * granularity from these step buckets — both are intentional, kept side by
+   * side. Each step's date is a PROJECTION: last-sent + the CHAINED real
+   * per-step configured delays across every remaining step (not just the
+   * immediate next). It is a nominal-cadence LOWER BOUND — Instantly's actual
+   * dispatch slips later under throttling, and CHAINING COMPOUNDS that drift
+   * (a step two hops out sums two nominal gaps, so its lower bound is softer
+   * than the next step's). So `queuedNextToday` reads as "step DUE
+   * today-or-overdue", not "will certainly send today". See
+   * lib/queue-breakdown.ts. A queued step with no attributable account is
    * excluded here (same as `queueSize`), never fabricated.
    */
   queuedSequences: number;
-  /** Q0-first — queued sequences whose first email has not sent yet. */
+  /** Q0-first — steps of sequences whose first email has not sent yet. */
   queuedFirstUnsent: number;
-  /** Q0-next — sent ≥1, next step projected today (UTC) or overdue. */
+  /** Q0-next — step projected today (UTC) or overdue. */
   queuedNextToday: number;
-  /** Q1-next — sent ≥1, next step projected tomorrow (UTC). */
+  /** Q1-next — step projected tomorrow (UTC). */
   queuedNextTomorrow: number;
-  /** Q-next — sent ≥1, next step projected after tomorrow (UTC). */
+  /** Q-next — step projected after tomorrow (UTC). */
   queuedNextLater: number;
   /**
    * Descriptive account type from Instantly's `provider_code` — how the mailbox
@@ -196,7 +204,10 @@ export function buildAccountHealth(
       inboxPlacement: placementByEmail.get(a.email) ?? null,
       sentToday: sentTodayByEmail.get(a.email) ?? 0,
       sentYesterday: sentYesterdayByEmail.get(a.email) ?? 0,
-      queueSize: queueSizeByEmail.get(a.email) ?? 0,
+      // Prefer the breakdown's step total so queueSize === sum of the four date
+      // buckets by construction; fall back to the standalone queue map for
+      // callers that pass no breakdown (accounts with no breakdown queue 0).
+      queueSize: breakdown?.steps ?? queueSizeByEmail.get(a.email) ?? 0,
       queuedSequences: breakdown?.sequences ?? 0,
       queuedFirstUnsent: breakdown?.firstUnsent ?? 0,
       queuedNextToday: breakdown?.nextToday ?? 0,

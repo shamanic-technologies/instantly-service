@@ -1211,32 +1211,34 @@ const AccountHealthSchema = z
       .number()
       .int()
       .describe(
-        "Emails queued to Instantly for this account but not yet sent — still-provisioned sequence-cost holds on active campaigns attributed to this account (1 campaign = 1 account). 0 when nothing queued. Campaigns not yet sending have an unknown account and are unattributed.",
+        "Total queued STEPS for this account — every remaining un-sent email across all its queued sequences (still-provisioned sequence-cost holds on active campaigns attributed to this account, 1 campaign = 1 account). PARTITIONED by the four queued* date buckets: queueSize === queuedFirstUnsent + queuedNextToday + queuedNextTomorrow + queuedNextLater. 0 when nothing queued; unattributable steps excluded, never fabricated.",
       ),
     queuedSequences: z
       .number()
       .int()
       .describe(
-        "Qtotal — distinct queued SEQUENCES (1 Instantly campaign = 1 lead = 1 sequence) attributed to this account. PARTITIONED by the next four fields: queuedSequences === queuedFirstUnsent + queuedNextToday + queuedNextTomorrow + queuedNextLater. Different granularity from queueSize (which counts pending STEPS) — both intentional. 0 when nothing queued; unattributable sequences excluded, never fabricated.",
+        "Distinct queued SEQUENCES (1 Instantly campaign = 1 lead = 1 sequence) attributed to this account — a DIFFERENT granularity from queueSize (which counts pending STEPS) and from the four date buckets (which partition STEPS). Both kept, both intentional. 0 when nothing queued; unattributable sequences excluded, never fabricated.",
       ),
     queuedFirstUnsent: z
       .number()
       .int()
-      .describe("Q0-first — queued sequences whose first email has not been sent yet."),
+      .describe(
+        "Q0-first — queued STEPS belonging to sequences whose first email has not been sent yet (no lastSentAt anchor → not date-projected, counted as 'not started').",
+      ),
     queuedNextToday: z
       .number()
       .int()
       .describe(
-        "Q0-next — sequences with ≥1 email sent whose NEXT step is projected today (UTC) or overdue. Projection = lastSentAt + the step's configured delay (nominal-cadence LOWER BOUND; real Instantly dispatch can slip later under throttling), so this reads as 'next step DUE today-or-overdue', not a guaranteed send today.",
+        "Q0-next — queued STEPS projected today (UTC) or overdue. Each step's date = lastSentAt + the CHAINED configured delays across every hop up to it (nominal-cadence LOWER BOUND that COMPOUNDS across steps; real Instantly dispatch slips later under throttling), so this reads as 'step DUE today-or-overdue', not a guaranteed send today.",
       ),
     queuedNextTomorrow: z
       .number()
       .int()
-      .describe("Q1-next — sequences with ≥1 email sent whose next step is projected tomorrow (UTC)."),
+      .describe("Q1-next — queued STEPS projected tomorrow (UTC) via the chained-delay projection."),
     queuedNextLater: z
       .number()
       .int()
-      .describe("Q-next — sequences with ≥1 email sent whose next step is projected after tomorrow (UTC)."),
+      .describe("Q-next — queued STEPS projected after tomorrow (UTC) via the chained-delay projection."),
     accountType: z
       .string()
       .nullable()
