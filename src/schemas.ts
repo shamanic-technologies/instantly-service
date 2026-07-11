@@ -1112,7 +1112,7 @@ registry.registerPath({
   path: "/internal/audit/sending-forecast",
   summary: "Fleet sending forecast — daily capacity vs upcoming scheduled volume",
   description:
-    "Platform-scoped (no org). Returns the cold-email fleet's available daily sending CAPACITY (sum of the daily send limit over only healthy accounts) alongside a TRUE per-day projection of upcoming scheduled send VOLUME (active campaigns' remaining un-sent sequence steps projected across the business-hours weekday send schedule). The volume projection is capacity-INDEPENDENT and bounded by the sequence structure — not a backlog÷capacity approximation. Fails loud (500) on any missing source; no silent zero fallbacks.",
+    "Platform-scoped (no org). Returns the cold-email fleet's available daily sending CAPACITY (sum of the daily send limit over only healthy accounts) alongside a TRUE per-day projection of upcoming scheduled send VOLUME (active campaigns' remaining un-sent sequence steps bucketed on their raw nominal UTC send day — identical bucketing to the per-account queue breakdown, so the two ops surfaces agree for the same pending steps). The volume projection is capacity-INDEPENDENT and bounded by the sequence structure — not a backlog÷capacity approximation. Fails loud (500) on any missing source; no silent zero fallbacks.",
   responses: {
     200: {
       description: "Sending forecast",
