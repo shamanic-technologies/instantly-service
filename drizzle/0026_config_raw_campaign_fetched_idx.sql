@@ -1,0 +1,25 @@
+-- Composite index for the sending-forecast / queue-breakdown config LATERAL.
+--
+-- loadPendingLeads (audit.ts) and the per-account queue breakdown resolve each
+-- lead's LATEST bronze sequence config via
+--   WHERE instantly_campaign_id = $1 ORDER BY fetched_at DESC LIMIT 1
+-- With only the single-column instantly_campaigns_config_raw_campaign_id_idx the
+-- planner bitmap-heap-scanned ALL ~16 config rows per campaign and top-N-sorted
+-- their (large) jsonb payloads before the LIMIT — ~50k block reads/call, run
+-- 6,400× per forecast. This composite lets the planner do an ordered index scan +
+-- LIMIT 1, reading only the single winning row's payload (prod EXPLAIN: forecast
+-- LATERAL top-N heapsort eliminated, warm exec 678ms -> 349ms; the win is far
+-- larger on a cold compute where the dropped ~49k block reads were page-server
+-- fetches). Pairs with the stats-cache wrap on /sending-forecast as
+-- defense-in-depth: the cache collapses the retry storm, the index makes the one
+-- surviving run cheap.
+--
+-- ⚠️ BOOT-SAFETY: instantly_campaigns_config_raw is ~550k rows / ~1.38GB (bloated
+-- by the raw jsonb payload), so a NON-CONCURRENT build scans the whole heap and
+-- would block port-bind for seconds on the 0.25-1 CU compute (boot-window
+-- outage). The index was therefore pre-built CONCURRENTLY out-of-band on prod +
+-- staging/dev branches; this IF NOT EXISTS statement is a no-op there. Any NEW
+-- prod-scale environment must likewise pre-build it CONCURRENTLY before deploy,
+-- NOT rely on this migration (a fresh large table would block boot here).
+CREATE INDEX IF NOT EXISTS "instantly_campaigns_config_raw_campaign_fetched_idx"
+  ON "instantly_campaigns_config_raw" ("instantly_campaign_id", "fetched_at" DESC);
