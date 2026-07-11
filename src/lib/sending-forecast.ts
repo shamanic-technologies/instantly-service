@@ -88,7 +88,12 @@ export interface ForecastDay {
   scheduledCount: number;
 }
 
-const MS_PER_DAY = 86_400_000;
+export const MS_PER_DAY = 86_400_000;
+
+/** `YYYY-MM-DD` (UTC) key for a Date. Shared with the queue-breakdown projection. */
+export function dateKeyUTC(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
 
 function isWeekendUTC(d: Date): boolean {
   const day = d.getUTCDay();
@@ -105,10 +110,6 @@ function snapToWeekdayUTC(d: Date): Date {
 /** Add `n` calendar days, then snap forward off any weekend landing. */
 function addDaysSnapWeekday(d: Date, n: number): Date {
   return snapToWeekdayUTC(new Date(d.getTime() + n * MS_PER_DAY));
-}
-
-function dateKeyUTC(d: Date): string {
-  return d.toISOString().slice(0, 10);
 }
 
 /**

@@ -11,6 +11,7 @@ vi.mock("../../src/db", () => ({
 import {
   fetchQueueSizeByAccount,
   fetchSentYesterdayByAccount,
+  fetchQueueBreakdownByAccount,
   fetchAccountLoad,
   fetchAccountLoadCached,
 } from "../../src/lib/account-sending-stats";
@@ -66,6 +67,38 @@ describe("fetchSentYesterdayByAccount — previous full UTC day", () => {
     mockExecute.mockResolvedValueOnce([]);
     const map = await fetchSentYesterdayByAccount();
     expect(map.size).toBe(0);
+  });
+});
+
+describe("fetchQueueBreakdownByAccount — per-sequence partition", () => {
+  it("resolves the next-step delay from bronze config + attributes via COALESCE, then partitions per account", async () => {
+    const asOf = new Date("2026-07-11T12:00:00.000Z");
+    const DAY = 86_400_000;
+    mockExecute.mockResolvedValueOnce([
+      // never-sent → firstUnsent
+      { account_email: "a@x.com", last_sent_step: null, last_sent_at: null, next_delay_days: null },
+      // sent 3d ago, delay 3 → nextToday
+      { account_email: "a@x.com", last_sent_step: 1, last_sent_at: new Date(asOf.getTime() - 3 * DAY).toISOString(), next_delay_days: 3 },
+      // sent today, delay 1 → nextTomorrow
+      { account_email: "a@x.com", last_sent_step: 1, last_sent_at: new Date(asOf.getTime()).toISOString(), next_delay_days: 1 },
+      // sent today, delay 9 → nextLater
+      { account_email: "b@x.com", last_sent_step: 2, last_sent_at: new Date(asOf.getTime()).toISOString(), next_delay_days: 9 },
+    ]);
+
+    const map = await fetchQueueBreakdownByAccount(asOf);
+    // a@x.com has 3 rows: firstUnsent + nextToday + nextTomorrow.
+    expect(map.get("a@x.com")).toEqual({ sequences: 3, firstUnsent: 1, nextToday: 1, nextTomorrow: 1, nextLater: 0 });
+    expect(map.get("b@x.com")).toEqual({ sequences: 1, firstUnsent: 0, nextToday: 0, nextTomorrow: 0, nextLater: 1 });
+
+    const text = executedSqlText(0).toLowerCase();
+    // Same queued gate + COALESCE attribution as fetchQueueSizeByAccount.
+    expect(text).toContain("coalesce");
+    expect(text).toContain("delivery_status in ('contacted', 'sent')");
+    // Real per-step delay resolved from the latest bronze sequence config.
+    expect(text).toContain("instantly_campaigns_config_raw");
+    expect(text).toContain("'sequences'");
+    expect(text).toContain("greatest(s.last_sent_step - 1, 0)");
+    expect(text).toContain("order by r.fetched_at desc");
   });
 });
 

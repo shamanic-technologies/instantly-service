@@ -20,6 +20,7 @@ import {
   fetchSentTodayByAccount,
   fetchSentYesterdayByAccount,
   fetchQueueSizeByAccount,
+  fetchQueueBreakdownByAccount,
 } from "../lib/account-sending-stats";
 import {
   syncPlacement,
@@ -161,6 +162,7 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       sentTodayByEmail,
       sentYesterdayByEmail,
       queueSizeByEmail,
+      queueBreakdownByEmail,
       lifecycleByEmail,
     ] = await Promise.all([
       listAccounts(apiKey),
@@ -168,6 +170,7 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       fetchSentTodayByAccount(),
       fetchSentYesterdayByAccount(),
       fetchQueueSizeByAccount(),
+      fetchQueueBreakdownByAccount(asOf),
       fetchLifecycleByEmail(),
     ]);
 
@@ -180,6 +183,7 @@ router.get("/account-health", async (_req: Request, res: Response) => {
         queueSizeByEmail,
         lifecycleByEmail,
         sentYesterdayByEmail,
+        queueBreakdownByEmail,
       ),
     });
   } catch (error: unknown) {
