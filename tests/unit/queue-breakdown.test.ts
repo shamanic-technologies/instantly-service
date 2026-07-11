@@ -3,6 +3,7 @@ import {
   classifyQueuedStep,
   projectStepDate,
   aggregateQueueBreakdown,
+  aggregateQueueCapacity,
   type QueuedSequenceInput,
 } from "../../src/lib/queue-breakdown";
 import { STEP_GAP_CALENDAR_DAYS } from "../../src/lib/sending-forecast";
@@ -164,5 +165,39 @@ describe("aggregateQueueBreakdown — per-STEP partition", () => {
   it("skips rows with no account (unattributable — never fabricated)", () => {
     const rows: QueuedSequenceInput[] = [seq({ account: "", provisionedSteps: [1] })];
     expect(aggregateQueueBreakdown(rows, asOf).size).toBe(0);
+  });
+});
+
+describe("aggregateQueueCapacity — send-selection buckets", () => {
+  it("counts never-contacted SEQUENCES once (q0first), steps by day, totalQueue = all steps", () => {
+    const rows: QueuedSequenceInput[] = [
+      // never-contacted, 3 un-sent steps → q0first 1 (NOT 3), totalQueue +3.
+      seq({ account: "a", provisionedSteps: [1, 2, 3] }),
+      // contacted 3d ago at step 1; steps 2,3; delays [3,7]:
+      // step2 = +3 → today (q0next), step3 = +10 → later. totalQueue +2.
+      seq({
+        account: "a",
+        lastSentStep: 1,
+        lastSentAt: new Date(asOf.getTime() - 3 * 86_400_000),
+        provisionedSteps: [2, 3],
+        stepDelays: [3, 7],
+      }),
+      // contacted today at step 1; step 2 queued; delay [1] → tomorrow. totalQueue +1.
+      seq({
+        account: "b",
+        lastSentStep: 1,
+        lastSentAt: new Date(asOf.getTime()),
+        provisionedSteps: [2],
+        stepDelays: [1],
+      }),
+    ];
+    const map = aggregateQueueCapacity(rows, asOf);
+    expect(map.get("a")).toEqual({ q0first: 1, q0next: 1, q1next: 0, totalQueue: 5 });
+    expect(map.get("b")).toEqual({ q0first: 0, q0next: 0, q1next: 1, totalQueue: 1 });
+  });
+
+  it("skips rows with no account (unattributable — never fabricated)", () => {
+    const rows: QueuedSequenceInput[] = [seq({ account: "", provisionedSteps: [1] })];
+    expect(aggregateQueueCapacity(rows, asOf).size).toBe(0);
   });
 });
