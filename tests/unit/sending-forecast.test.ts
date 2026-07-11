@@ -98,7 +98,7 @@ describe("scheduleLead", () => {
   const wed = new Date("2026-07-01T12:00:00.000Z");
   const key = (d: Date) => d.toISOString().slice(0, 10);
 
-  it("never-contacted lead: first pending step fires ~today, next +GAP", () => {
+  it("never-contacted lead: first pending step fires ~today, next +GAP (raw nominal day)", () => {
     const lead: PendingLead = {
       provisionedSteps: [1, 2],
       lastSentStep: null,
@@ -106,18 +106,18 @@ describe("scheduleLead", () => {
     };
     const dates = scheduleLead(lead, wed).map(key);
     expect(dates[0]).toBe("2026-07-01"); // step 1 today (Wed)
-    // +3 calendar days from Wed = Sat 07-04 → snaps forward to Mon 07-06
-    expect(dates[1]).toBe("2026-07-06");
+    // +3 calendar days from Wed = Sat 07-04 — RAW nominal day, no weekend snap
+    expect(dates[1]).toBe("2026-07-04");
   });
 
-  it("contacted lead: next step is GAP business-days after the last sent step", () => {
+  it("contacted lead: next step is GAP calendar-days after the last sent step (raw nominal day)", () => {
     const lead: PendingLead = {
       provisionedSteps: [2],
       lastSentStep: 1,
       lastSentAt: new Date("2026-07-01T09:00:00.000Z"), // Wed
     };
-    // +3 cal days = Sat → snaps to Mon 07-06
-    expect(scheduleLead(lead, wed).map(key)).toEqual(["2026-07-06"]);
+    // +3 cal days = Sat 07-04 — bucketed on the raw nominal UTC day, no snap
+    expect(scheduleLead(lead, wed).map(key)).toEqual(["2026-07-04"]);
   });
 
   it("past-due follow-up schedules from today, never in the past", () => {
@@ -130,17 +130,34 @@ describe("scheduleLead", () => {
     expect(d >= "2026-07-01").toBe(true); // from today forward, not June
   });
 
-  it("weekend landings always snap forward to a weekday", () => {
+  it("weekend landings are kept on their raw nominal day (NO snap)", () => {
+    // Fresh sequence, steps 1..4, canonical +3 gap. From Wed 07-01:
+    //   step1 07-01 (Wed), step2 +3 07-04 (Sat), step3 +6 07-07 (Tue), step4 +9 07-10 (Fri).
     const lead: PendingLead = {
       provisionedSteps: [1, 2, 3, 4],
       lastSentStep: null,
       lastSentAt: null,
     };
-    for (const d of scheduleLead(lead, wed)) {
-      const dow = d.getUTCDay();
-      expect(dow).not.toBe(0); // never Sunday
-      expect(dow).not.toBe(6); // never Saturday
-    }
+    expect(scheduleLead(lead, wed).map(key)).toEqual([
+      "2026-07-01",
+      "2026-07-04", // Saturday — NOT snapped forward
+      "2026-07-07",
+      "2026-07-10",
+    ]);
+  });
+
+  it("a step due on the asOf weekend day surfaces on that same weekend day (AC)", () => {
+    // Reproduces the reported bug: asOf is a Saturday. A step whose last send was
+    // Wed 07-08 with a +3 gap is due Sat 07-11 — it must land on 07-11, not be
+    // pushed forward to Monday (which would zero out the weekend bar).
+    const sat = new Date("2026-07-11T12:00:00.000Z"); // Saturday
+    const lead: PendingLead = {
+      provisionedSteps: [2],
+      lastSentStep: 1,
+      lastSentAt: new Date("2026-07-08T09:00:00.000Z"), // Wed
+      stepDelays: [3],
+    };
+    expect(scheduleLead(lead, sat).map(key)).toEqual(["2026-07-11"]); // Sat, on the day
   });
 
   it("GAP constant is the documented 3 calendar days", () => {
@@ -170,7 +187,7 @@ describe("scheduleLead", () => {
     const dates = scheduleLead(lead, new Date("2026-07-06T12:00:00.000Z")).map(key); // Mon
     expect(dates[0]).toBe("2026-07-06"); // step 1 today (Mon)
     expect(dates[1]).toBe("2026-07-08"); // +2 → Wed 07-08
-    expect(dates[2]).toBe("2026-07-13"); // +2+3 = +5 → Sat 07-11 snaps to Mon 07-13
+    expect(dates[2]).toBe("2026-07-11"); // +2+3 = +5 → Sat 07-11, raw nominal day (no snap)
   });
 
   it("empty / missing stepDelays falls back to the canonical gap (config unavailable)", () => {
@@ -186,9 +203,9 @@ describe("scheduleLead", () => {
       lastSentAt: new Date("2026-07-01T09:00:00.000Z"),
       // stepDelays omitted entirely
     };
-    // Both fall back to +3 → Sat 07-04 snaps to Mon 07-06.
-    expect(scheduleLead(withEmpty, wed).map(key)).toEqual(["2026-07-06"]);
-    expect(scheduleLead(withMissing, wed).map(key)).toEqual(["2026-07-06"]);
+    // Both fall back to +3 → Sat 07-04, kept on the raw nominal day (no snap).
+    expect(scheduleLead(withEmpty, wed).map(key)).toEqual(["2026-07-04"]);
+    expect(scheduleLead(withMissing, wed).map(key)).toEqual(["2026-07-04"]);
   });
 
   it("a null delay entry inside the array falls back per-gap without dropping the step", () => {
@@ -198,7 +215,7 @@ describe("scheduleLead", () => {
       lastSentAt: new Date("2026-07-01T09:00:00.000Z"),
       stepDelays: [null], // step 1→2 delay missing → per-gap fallback 3
     };
-    expect(scheduleLead(lead, wed).map(key)).toEqual(["2026-07-06"]); // +3 snap Mon
+    expect(scheduleLead(lead, wed).map(key)).toEqual(["2026-07-04"]); // +3 Sat, raw nominal day
   });
 });
 
@@ -223,9 +240,9 @@ describe("delayForGap", () => {
 });
 
 describe("cadence coherence with the per-account queue breakdown", () => {
-  // Both ops views must derive the same NEXT-step nominal date from the same
-  // config delay, so a spot-checked sequence lands identically (on a weekday, the
-  // forecast's weekday-snap is a no-op, so the dates are byte-equal).
+  // Both ops views derive the same NEXT-step nominal date from the same config
+  // delay AND bucket it on the same raw nominal UTC day (no weekend snap on
+  // either side), so a spot-checked sequence lands byte-equal.
   it("forecast next-step date == queue-breakdown projected next-send for the same sequence", () => {
     const asOf = new Date("2026-07-06T12:00:00.000Z"); // Mon
     const lastSentAt = new Date("2026-07-06T09:00:00.000Z"); // Mon
@@ -273,11 +290,11 @@ describe("projectDailySchedule", () => {
         provisionedSteps: [2],
         lastSentStep: 1,
         lastSentAt: new Date("2026-07-01T09:00:00.000Z"),
-      }, // +3 → Mon 07-06
+      }, // +3 → Sat 07-04 (raw nominal day)
     ];
     const days = projectDailySchedule(leads, wed);
     expect(days[0]).toEqual({ date: "2026-07-01", scheduledCount: 2 });
-    expect(days).toContainEqual({ date: "2026-07-06", scheduledCount: 1 });
+    expect(days).toContainEqual({ date: "2026-07-04", scheduledCount: 1 });
     // chronological
     const keys = days.map((d) => d.date);
     expect([...keys].sort()).toEqual(keys);
@@ -297,7 +314,7 @@ describe("projectDailySchedule", () => {
 
   describe("contiguous zero-fill", () => {
     it("returns a gapless UTC-day series from asOf through the last scheduled day", () => {
-      // step 1 today (Wed 07-01), step 2 +3 → Sat 07-04 snaps to Mon 07-06.
+      // step 1 today (Wed 07-01), step 2 +3 → Sat 07-04 (raw nominal day, no snap).
       const leads: PendingLead[] = [
         { provisionedSteps: [1, 2], lastSentStep: null, lastSentAt: null },
       ];
@@ -307,8 +324,6 @@ describe("projectDailySchedule", () => {
         "2026-07-02",
         "2026-07-03",
         "2026-07-04",
-        "2026-07-05",
-        "2026-07-06",
       ]);
       // no missing calendar days between first and last
       const step = 86_400_000;
@@ -324,27 +339,31 @@ describe("projectDailySchedule", () => {
         { provisionedSteps: [1, 2], lastSentStep: null, lastSentAt: null },
       ];
       const days = projectDailySchedule(leads, wed);
-      // 07-01 and 07-06 carry sends; the days between are real zero bars.
+      // 07-01 and 07-04 carry sends; the days between are real zero bars.
       expect(days).toContainEqual({ date: "2026-07-01", scheduledCount: 1 });
       expect(days).toContainEqual({ date: "2026-07-02", scheduledCount: 0 });
       expect(days).toContainEqual({ date: "2026-07-03", scheduledCount: 0 });
-      expect(days).toContainEqual({ date: "2026-07-06", scheduledCount: 1 });
+      expect(days).toContainEqual({ date: "2026-07-04", scheduledCount: 1 });
     });
 
-    it("includes weekend days inside the range with count 0", () => {
+    it("a weekend day carries its REAL due-step count, not a forced 0", () => {
+      // A step due on Sat 07-04 (Wed 07-01 last-send + 3-day gap) must show a
+      // nonzero bar on Saturday — the whole point of dropping the weekend snap.
       const leads: PendingLead[] = [
-        { provisionedSteps: [1, 2], lastSentStep: null, lastSentAt: null },
+        {
+          provisionedSteps: [2],
+          lastSentStep: 1,
+          lastSentAt: new Date("2026-07-01T09:00:00.000Z"), // Wed
+          stepDelays: [3],
+        },
       ];
       const days = projectDailySchedule(leads, wed);
-      // Sat 07-04 + Sun 07-05 present as zero bars (projection snaps off them).
-      const sat = days.find((d) => d.date === "2026-07-04");
-      const sun = days.find((d) => d.date === "2026-07-05");
-      expect(sat).toEqual({ date: "2026-07-04", scheduledCount: 0 });
-      expect(sun).toEqual({ date: "2026-07-05", scheduledCount: 0 });
+      const sat = days.find((d) => d.date === "2026-07-04"); // Saturday
+      expect(sat).toEqual({ date: "2026-07-04", scheduledCount: 1 });
     });
 
     it("zero-fills a leading gap when the first scheduled day is after asOf", () => {
-      // Contacted lead, next step +3 → Mon 07-06; nothing lands on asOf (07-01).
+      // Contacted lead, next step +3 → Sat 07-04 (raw nominal); nothing on asOf (07-01).
       const leads: PendingLead[] = [
         {
           provisionedSteps: [2],
@@ -354,15 +373,13 @@ describe("projectDailySchedule", () => {
       ];
       const days = projectDailySchedule(leads, wed);
       expect(days[0]).toEqual({ date: "2026-07-01", scheduledCount: 0 });
-      expect(days[days.length - 1]).toEqual({ date: "2026-07-06", scheduledCount: 1 });
+      expect(days[days.length - 1]).toEqual({ date: "2026-07-04", scheduledCount: 1 });
       // every day from asOf through the send is present, all zero except the last
       expect(days.map((d) => d.date)).toEqual([
         "2026-07-01",
         "2026-07-02",
         "2026-07-03",
         "2026-07-04",
-        "2026-07-05",
-        "2026-07-06",
       ]);
     });
 

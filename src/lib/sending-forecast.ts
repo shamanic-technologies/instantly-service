@@ -9,9 +9,8 @@
  *      (the exact live-send gate: silver lifecycle_status == 'in_production').
  *      Reuses the lifecycle projection, not a copy.
  *   2. Future volume — a TRUE per-day projection of every active campaign's
- *      remaining (un-sent) sequence steps onto future business days, using the
- *      fleet's real send schedule (business-hours weekdays only). This is NOT a
- *      "backlog ÷ capacity" approximation: capacity is currently near-zero (the
+ *      remaining (un-sent) sequence steps onto future calendar days. This is NOT
+ *      a "backlog ÷ capacity" approximation: capacity is currently near-zero (the
  *      2026-06-29 Gmail-spam full halt), so a capacity-paced drain would never
  *      terminate. The projection is capacity-INDEPENDENT and bounded by the
  *      sequence structure — that decoupling is the whole point of the ops view.
@@ -30,11 +29,18 @@
  * Same honesty caveat as the queue breakdown: the projected date is a
  * NOMINAL-CADENCE LOWER BOUND (the earliest a step is eligible per its sequence
  * cadence), NOT Instantly's exact dispatch date — the real send slips LATER under
- * daily-limit saturation / throttling / pauses. Additionally, this forecast
- * (unlike the breakdown, which buckets on the raw nominal UTC day) snaps each
- * landing forward off weekends, modeling the fleet's business-hours-weekday send
- * schedule; that weekday snap is a deliberate presentation choice of THIS view,
- * orthogonal to the now-shared cadence source.
+ * daily-limit saturation / throttling / pauses.
+ *
+ * ── Day bucketing = the raw nominal UTC day, IDENTICAL to the queue breakdown ──
+ * Each projected send is bucketed on its raw nominal UTC calendar day, with NO
+ * weekend snap. This makes the two staff ops surfaces COHERENT BY CONSTRUCTION:
+ * a step the per-account queue breakdown counts as due today/tomorrow
+ * (`queuedNextToday`/`queuedNextTomorrow`) lands on that same UTC day in this
+ * forecast series — so the "Emails sent per day" chart and the "Sending accounts"
+ * queued-today/tomorrow table agree for the same pending steps. The former
+ * business-hours-weekday snap (which pushed a weekend-due step forward to Monday,
+ * dropping today/tomorrow to 0 on a weekend while the table still showed the
+ * step queued) was removed for exactly this reason — do NOT reintroduce it.
  */
 
 import type { Account } from "./instantly-client";
@@ -140,39 +146,32 @@ export function dateKeyUTC(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-function isWeekendUTC(d: Date): boolean {
-  const day = d.getUTCDay();
-  return day === 0 || day === 6; // 0=Sun, 6=Sat
-}
-
-/** Snap forward to the next weekday (no-op when already a weekday). */
-function snapToWeekdayUTC(d: Date): Date {
-  const out = new Date(d.getTime());
-  while (isWeekendUTC(out)) out.setUTCDate(out.getUTCDate() + 1);
-  return out;
-}
-
-/** Add `n` calendar days, then snap forward off any weekend landing. */
-function addDaysSnapWeekday(d: Date, n: number): Date {
-  return snapToWeekdayUTC(new Date(d.getTime() + n * MS_PER_DAY));
-}
-
 /**
  * Project one lead's remaining steps onto calendar dates, using the REAL
- * configured per-step delays (`lead.stepDelays`) as the inter-step cadence.
+ * configured per-step delays (`lead.stepDelays`) as the inter-step cadence. The
+ * projection is IDENTICAL to the per-account queue breakdown's `projectStepDate`
+ * (`queue-breakdown.ts`) — same anchor, same chained real per-gap delays, same
+ * raw nominal UTC day (NO weekend snap) — plus a past-due clamp to asOf that
+ * mirrors the breakdown's `projKey <= todayKey ⇒ due today` bucketing. This keeps
+ * the two ops surfaces coherent for the same pending steps by construction.
  *
- * - Never-contacted lead (`lastSentStep === null`): the first pending step fires
- *   ~now (asOf, snapped to a weekday); each later step lands after accumulating
- *   the real configured delays of the gaps between it and the first step.
- * - Contacted lead: each un-sent step lands after accumulating the real delays of
- *   the gaps from the last sent step (base = last-sent timestamp, or asOf if that
- *   slot already elapsed — a past-due follow-up schedules from today, never in
- *   the past).
+ * - Contacted lead: each un-sent step's NOMINAL date is
+ *   `lastSentAt + Σ delayForGap(j)` for `j` in `[lastSentStep, s-1]` — the exact
+ *   `projectStepDate` computation. A step whose nominal date already passed
+ *   (overdue) clamps to asOf (today), so it buckets on today just like the
+ *   breakdown counts it under `nextToday`. Never lands in the past.
+ * - Never-contacted lead (`lastSentStep === null`): no send anchor exists, so the
+ *   first pending step fires ~now (asOf) and each later step lands after
+ *   accumulating the real gaps from the first step. (In practice the forecast's
+ *   pending-lead gate is `delivery_status IN ('contacted','sent')`, so this
+ *   branch is effectively unused — the breakdown keeps never-contacted steps in
+ *   `firstUnsent` rather than date-projecting them.)
  *
- * The accumulated gap from cost-step `anchor` to cost-step `s` is
- * `Σ delayForGap(j)` for `j` in `[anchor, s-1]`, each resolved from config with a
- * per-gap `STEP_GAP_CALENDAR_DAYS` fallback. Each landing is snapped forward off
- * weekends (this view's business-hours-weekday model).
+ * Each gap is resolved from config via the shared `delayForGap` (per-gap
+ * `STEP_GAP_CALENDAR_DAYS` fallback), so cadence AND day bucketing match the
+ * breakdown. Do NOT reintroduce a weekend snap or a base-clamp (clamping the
+ * anchor to today then re-adding the full gap over-shoots the nominal date and
+ * breaks reconciliation with the breakdown).
  */
 export function scheduleLead(lead: PendingLead, asOf: Date): Date[] {
   const steps = [...lead.provisionedSteps].sort((a, b) => a - b);
@@ -180,16 +179,27 @@ export function scheduleLead(lead: PendingLead, asOf: Date): Date[] {
 
   const stepDelays = lead.stepDelays ?? [];
   const contacted = lead.lastSentStep !== null && lead.lastSentAt !== null;
-  const anchorStep = contacted ? (lead.lastSentStep as number) : steps[0];
-  const rawBase = contacted ? (lead.lastSentAt as Date) : asOf;
-  // A follow-up whose nominal slot already passed still schedules from today.
-  const baseDate = rawBase.getTime() < asOf.getTime() ? asOf : rawBase;
 
+  if (!contacted) {
+    // No send anchor — project the first pending step at asOf, later steps after
+    // accumulating the real gaps from that first step.
+    const anchorStep = steps[0];
+    return steps.map((s) => {
+      let days = 0;
+      for (let j = anchorStep; j < s; j++) days += delayForGap(j, stepDelays);
+      return new Date(asOf.getTime() + days * MS_PER_DAY);
+    });
+  }
+
+  const anchorStep = lead.lastSentStep as number;
+  const anchor = lead.lastSentAt as Date;
   return steps.map((s) => {
-    if (s <= anchorStep) return snapToWeekdayUTC(baseDate); // fresh first step / anchor
-    let cumulativeDays = 0;
-    for (let j = anchorStep; j < s; j++) cumulativeDays += delayForGap(j, stepDelays);
-    return addDaysSnapWeekday(baseDate, cumulativeDays);
+    let days = 0;
+    for (let j = anchorStep; j < s; j++) days += delayForGap(j, stepDelays);
+    const projected = new Date(anchor.getTime() + days * MS_PER_DAY);
+    // Overdue nominal slot → schedule today (mirrors the breakdown's overdue →
+    // nextToday); never in the past.
+    return projected.getTime() < asOf.getTime() ? asOf : projected;
   });
 }
 
@@ -200,12 +210,13 @@ export function scheduleLead(lead: PendingLead, asOf: Date): Date[] {
  * receives and must not fabricate missing days client-side).
  *
  * Range = asOf's UTC date (inclusive) through the LAST scheduled day
- * (inclusive). Every UTC calendar day in between — INCLUDING weekends, which the
- * projection snaps sends off of, so Sat/Sun surface as real `scheduledCount:0`
- * bars — is present. Returns chronological `ForecastDay[]`; `[]` when nothing is
- * scheduled at all (empty forecast → chart shows its "nothing scheduled" empty
- * state). Horizon is bounded by the sequence structure (finite steps × finite
- * gap) — there is no unbounded tail.
+ * (inclusive). Every UTC calendar day in between is present, INCLUDING weekends —
+ * and because there is no weekend snap, a weekend day carries its REAL due-step
+ * count (matching the queue breakdown's "due that day" semantics), not a forced
+ * 0. Returns chronological `ForecastDay[]`; `[]` when nothing is scheduled at all
+ * (empty forecast → chart shows its "nothing scheduled" empty state). Horizon is
+ * bounded by the sequence structure (finite steps × finite gap) — there is no
+ * unbounded tail.
  */
 export function projectDailySchedule(leads: PendingLead[], asOf: Date): ForecastDay[] {
   const buckets = new Map<string, number>();
