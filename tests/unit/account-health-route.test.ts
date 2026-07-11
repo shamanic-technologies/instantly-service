@@ -43,14 +43,15 @@ describe("GET /internal/audit/account-health", () => {
       { email: "b@distribute.you", status: 1, stat_warmup_score: 100, daily_limit: 40 },
       { email: "c@good.com", status: 0, stat_warmup_score: 100, daily_limit: 20 },
     ]);
-    // Route reads placement, sentToday, sentYesterday, queueSize, lifecycle via
-    // db.execute (in that Promise.all order). Seed the first four empty,
-    // lifecycle last.
+    // Route reads placement, sentToday, sentYesterday, queueSize,
+    // queueBreakdown, lifecycle via db.execute (in that Promise.all order). Seed
+    // the first five empty, lifecycle last.
     mockExecute
       .mockResolvedValueOnce({ rows: [] }) // placement
       .mockResolvedValueOnce({ rows: [] }) // sentToday
       .mockResolvedValueOnce({ rows: [] }) // sentYesterday
       .mockResolvedValueOnce({ rows: [] }) // queueSize
+      .mockResolvedValueOnce({ rows: [] }) // queueBreakdown
       .mockResolvedValueOnce({
         rows: [
           { email: "a@good.com", status: "in_production", reason: "passed", updatedAt: "2026-07-05T00:00:00.000Z" },
@@ -87,6 +88,14 @@ describe("GET /internal/audit/account-health", () => {
       expect(a.sentToday).toBe(0);
       expect(a.sentYesterday).toBe(0);
       expect(a.queueSize).toBe(0);
+      // Queue breakdown — present, typed, honest 0, and partition invariant.
+      for (const f of ["queuedSequences", "queuedFirstUnsent", "queuedNextToday", "queuedNextTomorrow", "queuedNextLater"]) {
+        expect(typeof a[f]).toBe("number");
+        expect(a[f]).toBe(0);
+      }
+      expect(
+        a.queuedFirstUnsent + a.queuedNextToday + a.queuedNextTomorrow + a.queuedNextLater,
+      ).toBe(a.queuedSequences);
     }
 
     const byEmail = Object.fromEntries(b.accounts.map((a: any) => [a.email, a]));

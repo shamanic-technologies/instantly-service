@@ -2259,6 +2259,26 @@
             "type": "integer",
             "description": "Emails queued to Instantly for this account but not yet sent — still-provisioned sequence-cost holds on active campaigns attributed to this account (1 campaign = 1 account). 0 when nothing queued. Campaigns not yet sending have an unknown account and are unattributed."
           },
+          "queuedSequences": {
+            "type": "integer",
+            "description": "Qtotal — distinct queued SEQUENCES (1 Instantly campaign = 1 lead = 1 sequence) attributed to this account. PARTITIONED by the next four fields: queuedSequences === queuedFirstUnsent + queuedNextToday + queuedNextTomorrow + queuedNextLater. Different granularity from queueSize (which counts pending STEPS) — both intentional. 0 when nothing queued; unattributable sequences excluded, never fabricated."
+          },
+          "queuedFirstUnsent": {
+            "type": "integer",
+            "description": "Q0-first — queued sequences whose first email has not been sent yet."
+          },
+          "queuedNextToday": {
+            "type": "integer",
+            "description": "Q0-next — sequences with ≥1 email sent whose NEXT step is projected today (UTC) or overdue. Projection = lastSentAt + the step's configured delay (nominal-cadence LOWER BOUND; real Instantly dispatch can slip later under throttling), so this reads as 'next step DUE today-or-overdue', not a guaranteed send today."
+          },
+          "queuedNextTomorrow": {
+            "type": "integer",
+            "description": "Q1-next — sequences with ≥1 email sent whose next step is projected tomorrow (UTC)."
+          },
+          "queuedNextLater": {
+            "type": "integer",
+            "description": "Q-next — sequences with ≥1 email sent whose next step is projected after tomorrow (UTC)."
+          },
           "accountType": {
             "type": "string",
             "nullable": true,
@@ -2281,6 +2301,11 @@
           "sentToday",
           "sentYesterday",
           "queueSize",
+          "queuedSequences",
+          "queuedFirstUnsent",
+          "queuedNextToday",
+          "queuedNextTomorrow",
+          "queuedNextLater",
           "accountType"
         ]
       },
