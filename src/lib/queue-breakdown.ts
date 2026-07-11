@@ -143,6 +143,78 @@ function emptyBreakdown(): QueueBreakdown {
 }
 
 /**
+ * Per-account CAPACITY buckets feeding the capacity-aware send-selection policy
+ * (see send-lead.ts `pickCapacityAwareAccount`). A projection of the same queued
+ * sequences, but shaped for a per-DAY daily-limit fill instead of the ops table's
+ * full four-way partition:
+ *
+ *   q0first     — count of never-contacted SEQUENCES (leads whose first email has
+ *                 not sent yet). ONE per sequence, NOT its step total: a brand-new
+ *                 lead dispatches exactly one email ~today (its step 1); its steps
+ *                 2+ are future days, so counting the whole `firstUnsent` step
+ *                 total would over-inflate today's projected volume.
+ *   q0next      — followup STEPS of a contacted sequence projected today/overdue
+ *                 (nextToday). Real un-sent emails due to fire today.
+ *   q1next      — followup STEPS projected tomorrow (nextTomorrow).
+ *   totalQueue  — ALL queued steps for the account (= queueSize). The step-7
+ *                 fallback tiebreak metric ("account with the minimal queue total").
+ *
+ * `q0next`/`q1next` use the SAME per-step chained-delay projection + UTC-day
+ * bucketing as the breakdown (`classifyQueuedStep`), so today/tomorrow mean the
+ * same thing on both surfaces. Never-contacted sequences contribute only to
+ * `q0first` (one each) + `totalQueue` (their step count) — never date-projected.
+ */
+export interface QueueCapacity {
+  /** Never-contacted sequences (1 first-email each ≈ today). */
+  q0first: number;
+  /** Followup steps projected today or overdue. */
+  q0next: number;
+  /** Followup steps projected tomorrow. */
+  q1next: number;
+  /** All queued steps for the account (= queueSize). */
+  totalQueue: number;
+}
+
+function emptyCapacity(): QueueCapacity {
+  return { q0first: 0, q0next: 0, q1next: 0, totalQueue: 0 };
+}
+
+/**
+ * Aggregate queued sequences into the per-account CAPACITY shape above. Pure —
+ * same inputs as `aggregateQueueBreakdown`, different projection: a never-
+ * contacted sequence adds 1 to `q0first` (not its step count); a contacted
+ * sequence's steps add to `q0next`/`q1next` by their projected UTC day. Every
+ * queued step (from either) adds to `totalQueue`, so `totalQueue` equals the
+ * account's `queueSize`.
+ */
+export function aggregateQueueCapacity(
+  rows: QueuedSequenceInput[],
+  asOf: Date,
+): Map<string, QueueCapacity> {
+  const out = new Map<string, QueueCapacity>();
+  for (const row of rows) {
+    if (!row.account) continue;
+    const c = out.get(row.account) ?? emptyCapacity();
+    const neverContacted = row.lastSentStep === null || row.lastSentAt === null;
+    if (neverContacted) {
+      // One first-email fires ~today per never-started sequence; its future
+      // steps are NOT projected onto today (see q0first doc above).
+      c.q0first += 1;
+    }
+    for (const step of row.provisionedSteps) {
+      c.totalQueue += 1;
+      if (neverContacted) continue; // counted once under q0first, not per-step
+      const bucket = classifyQueuedStep(row, step, asOf);
+      if (bucket === "nextToday") c.q0next += 1;
+      else if (bucket === "nextTomorrow") c.q1next += 1;
+      // nextLater is irrelevant to today/tomorrow capacity (still in totalQueue).
+    }
+    out.set(row.account, c);
+  }
+  return out;
+}
+
+/**
  * Aggregate queued sequences into a per-account STEP breakdown. Each sequence
  * increments its account's `sequences` count once; each of its un-sent steps
  * increments `steps` AND exactly one date bucket — so both the step-partition

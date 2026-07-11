@@ -19,7 +19,9 @@ import { db } from "../db";
 import { getOrSetCachedStats } from "./stats-cache";
 import {
   aggregateQueueBreakdown,
+  aggregateQueueCapacity,
   type QueueBreakdown,
+  type QueueCapacity,
   type QueuedSequenceInput,
 } from "./queue-breakdown";
 
@@ -167,6 +169,18 @@ interface BreakdownRow {
 export async function fetchQueueBreakdownByAccount(
   asOf: Date = new Date(),
 ): Promise<Map<string, QueueBreakdown>> {
+  return aggregateQueueBreakdown(await fetchQueuedSequenceInputs(), asOf);
+}
+
+/**
+ * Load the raw per-sequence projection inputs (account, last-sent anchor, un-sent
+ * provisioned steps, bronze per-step delays) for every queued sequence. The
+ * shared source for BOTH the ops queue breakdown (fetchQueueBreakdownByAccount)
+ * and the send-selection capacity snapshot (fetchAccountCapacity) — one SQL, two
+ * pure aggregations. Same queued gate + COALESCE(persisted, observed) attribution
+ * as fetchQueueSizeByAccount.
+ */
+async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
   const result = await db.execute(sql`
     WITH campaign_account AS (
       SELECT e.campaign_id AS instantly_campaign_id,
@@ -212,7 +226,7 @@ export async function fetchQueueBreakdownByAccount(
     WHERE COALESCE(s.persisted_account, ca.account_email) IS NOT NULL
   `);
   const rows = rowsAsBreakdown(result);
-  const inputs: QueuedSequenceInput[] = rows.map((r) => ({
+  return rows.map((r) => ({
     account: r.account_email,
     lastSentStep:
       r.last_sent_step === null || r.last_sent_step === undefined
@@ -227,7 +241,6 @@ export async function fetchQueueBreakdownByAccount(
         })
       : null,
   }));
-  return aggregateQueueBreakdown(inputs, asOf);
 }
 
 function rowsAsBreakdown(result: unknown): BreakdownRow[] {
@@ -237,39 +250,63 @@ function rowsAsBreakdown(result: unknown): BreakdownRow[] {
     : (((result as { rows?: BreakdownRow[] }).rows) ?? []);
 }
 
-/** Default TTL for the send-selection load snapshot (per replica). */
-export const ACCOUNT_LOAD_TTL_MS = 60_000;
-const ACCOUNT_LOAD_CACHE_KEY = "account-load|send-selection";
+/** Default TTL for the send-selection capacity snapshot (per replica). */
+export const ACCOUNT_CAPACITY_TTL_MS = 60_000;
+const ACCOUNT_CAPACITY_CACHE_KEY = "account-capacity|send-selection";
 
 /**
- * Combined per-account load = sentToday + queueSize, merged into one map. Used
- * as the input to least-loaded account selection on the send path. Absent from
- * both maps ⇒ load 0 (never sent, nothing queued) ⇒ maximally preferred.
+ * Per-account capacity snapshot feeding the capacity-aware send-selection policy
+ * (send-lead.ts `pickCapacityAwareAccount`). Combines today's observed sends
+ * (`sentToday`) with the per-day queued-work buckets (`q0first`/`q0next`/`q1next`)
+ * + `totalQueue`, keyed by sending account. Absent from every source ⇒ all zeros
+ * (never sent, nothing queued) ⇒ maximally preferred by the policy.
  */
-export async function fetchAccountLoad(): Promise<Map<string, number>> {
-  const [sent, queue] = await Promise.all([
-    fetchSentTodayByAccount(),
-    fetchQueueSizeByAccount(),
-  ]);
-  const merged = new Map<string, number>(sent);
-  for (const [email, n] of queue) {
-    merged.set(email, (merged.get(email) ?? 0) + n);
-  }
-  return merged;
+export interface AccountCapacity extends QueueCapacity {
+  /** Real (non-inferred) email_sent events observed today (UTC). */
+  sentToday: number;
 }
 
 /**
- * Short-TTL cached wrapper around fetchAccountLoad for the send hot-path. Two
+ * Build the per-account capacity map from the two fleet-wide reads (email_sent-
+ * today scan + the queued-sequence loader). Pure aggregation (aggregateQueue
+ * Capacity) does the projection; this only reads + merges sentToday. `asOf`
+ * drives the today/tomorrow projection (defaults to now).
+ */
+export async function fetchAccountCapacity(
+  asOf: Date = new Date(),
+): Promise<Map<string, AccountCapacity>> {
+  const [sent, rows] = await Promise.all([
+    fetchSentTodayByAccount(),
+    fetchQueuedSequenceInputs(),
+  ]);
+  const caps = aggregateQueueCapacity(rows, asOf);
+  const out = new Map<string, AccountCapacity>();
+  const emails = new Set<string>([...sent.keys(), ...caps.keys()]);
+  for (const email of emails) {
+    const c = caps.get(email);
+    out.set(email, {
+      sentToday: sent.get(email) ?? 0,
+      q0first: c?.q0first ?? 0,
+      q0next: c?.q0next ?? 0,
+      q1next: c?.q1next ?? 0,
+      totalQueue: c?.totalQueue ?? 0,
+    });
+  }
+  return out;
+}
+
+/**
+ * Short-TTL cached wrapper around fetchAccountCapacity for the send hot-path. Two
  * fleet-wide aggregations per uncached call (email_sent-today scan + a
  * sequence_costs join) would saturate the 0.25-1 CU Neon compute under a send
  * burst — the same flood the /stats cache guards against — so a 60s window
  * collapses a burst down to ~1 snapshot per replica. Reuses the /stats TTL cache
  * (getOrSetCachedStats) rather than a second cache module.
  */
-export function fetchAccountLoadCached(): Promise<Map<string, number>> {
+export function fetchAccountCapacityCached(): Promise<Map<string, AccountCapacity>> {
   return getOrSetCachedStats(
-    ACCOUNT_LOAD_CACHE_KEY,
-    fetchAccountLoad,
-    ACCOUNT_LOAD_TTL_MS,
+    ACCOUNT_CAPACITY_CACHE_KEY,
+    () => fetchAccountCapacity(),
+    ACCOUNT_CAPACITY_TTL_MS,
   );
 }

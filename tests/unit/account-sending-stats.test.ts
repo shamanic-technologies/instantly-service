@@ -12,8 +12,8 @@ import {
   fetchQueueSizeByAccount,
   fetchSentYesterdayByAccount,
   fetchQueueBreakdownByAccount,
-  fetchAccountLoad,
-  fetchAccountLoadCached,
+  fetchAccountCapacity,
+  fetchAccountCapacityCached,
 } from "../../src/lib/account-sending-stats";
 import { clearStatsCache } from "../../src/lib/stats-cache";
 
@@ -138,48 +138,96 @@ describe("fetchQueueBreakdownByAccount — per-STEP partition", () => {
   });
 });
 
-describe("fetchAccountLoad — merge sentToday + queueSize", () => {
-  it("sums per-account load across both maps", async () => {
-    // Array-literal order: fetchSentTodayByAccount() is invoked first, so its
-    // db.execute is queued first, then fetchQueueSizeByAccount().
+describe("fetchAccountCapacity — merge sentToday + per-day queued buckets", () => {
+  it("builds q0first (never-contacted seq count), q0next/q1next (steps), totalQueue, + sentToday", async () => {
+    const asOf = new Date("2026-07-11T12:00:00.000Z");
+    const DAY = 86_400_000;
+    // Array order: fetchSentTodayByAccount() first (db.execute #0), then the
+    // queued-sequence loader (db.execute #1).
     mockExecute
+      .mockResolvedValueOnce([{ account_email: "a@x.com", count: 5 }]) // sentToday
       .mockResolvedValueOnce([
-        { account_email: "a@x.com", count: 5 },
-        { account_email: "b@x.com", count: 1 },
-      ]) // sentToday
-      .mockResolvedValueOnce([
-        { account_email: "a@x.com", count: 3 },
-        { account_email: "c@x.com", count: 7 },
-      ]); // queueSize
+        // a@x.com never-contacted: 2 un-sent steps → q0first 1, totalQueue +2.
+        {
+          account_email: "a@x.com",
+          last_sent_step: null,
+          last_sent_at: null,
+          provisioned_steps: [1, 2],
+          step_config: null,
+        },
+        // a@x.com contacted 3d ago at step 1; steps 2,3 queued; delays [3,7]:
+        // step2 = +3 → today (q0next), step3 = +10 → later. totalQueue +2.
+        {
+          account_email: "a@x.com",
+          last_sent_step: 1,
+          last_sent_at: new Date(asOf.getTime() - 3 * DAY).toISOString(),
+          provisioned_steps: [2, 3],
+          step_config: [{ delay: 3 }, { delay: 7 }],
+        },
+        // b@x.com contacted today at step 2; step 3 queued; delay steps[1]=9 → later.
+        {
+          account_email: "b@x.com",
+          last_sent_step: 2,
+          last_sent_at: new Date(asOf.getTime()).toISOString(),
+          provisioned_steps: [3],
+          step_config: [{ delay: 1 }, { delay: 9 }],
+        },
+        // c@x.com contacted today at step 1; step 2 queued; delay steps[0]=1 → tomorrow.
+        {
+          account_email: "c@x.com",
+          last_sent_step: 1,
+          last_sent_at: new Date(asOf.getTime()).toISOString(),
+          provisioned_steps: [2],
+          step_config: [{ delay: 1 }],
+        },
+      ]);
 
-    const load = await fetchAccountLoad();
-    expect(load.get("a@x.com")).toBe(8); // 5 sent + 3 queued
-    expect(load.get("b@x.com")).toBe(1); // sent only
-    expect(load.get("c@x.com")).toBe(7); // queued only
+    const cap = await fetchAccountCapacity(asOf);
+    expect(cap.get("a@x.com")).toEqual({
+      sentToday: 5,
+      q0first: 1, // one never-contacted sequence (NOT its 2-step count)
+      q0next: 1, // step 2 of the contacted sequence, due today
+      q1next: 0,
+      totalQueue: 4, // 2 + 2 across both sequences
+    });
+    expect(cap.get("b@x.com")).toEqual({
+      sentToday: 0, // absent from sentToday ⇒ honest 0
+      q0first: 0,
+      q0next: 0,
+      q1next: 0,
+      totalQueue: 1,
+    });
+    expect(cap.get("c@x.com")).toEqual({
+      sentToday: 0,
+      q0first: 0,
+      q0next: 0,
+      q1next: 1, // step 2 projected tomorrow
+      totalQueue: 1,
+    });
   });
 });
 
-describe("fetchAccountLoadCached — 60s TTL cache", () => {
-  it("collapses a burst to a single load snapshot within the window", async () => {
+describe("fetchAccountCapacityCached — 60s TTL cache", () => {
+  it("collapses a burst to a single capacity snapshot within the window", async () => {
     mockExecute
       .mockResolvedValueOnce([{ account_email: "a@x.com", count: 4 }]) // sent
-      .mockResolvedValueOnce([{ account_email: "a@x.com", count: 2 }]); // queue
+      .mockResolvedValueOnce([]); // queued rows
 
-    const first = await fetchAccountLoadCached();
-    const second = await fetchAccountLoadCached();
+    const first = await fetchAccountCapacityCached();
+    const second = await fetchAccountCapacityCached();
 
-    expect(first.get("a@x.com")).toBe(6);
-    expect(second.get("a@x.com")).toBe(6);
-    // Two db.execute calls total (sent + queue), NOT four — the second cached
+    expect(first.get("a@x.com")?.sentToday).toBe(4);
+    expect(second.get("a@x.com")?.sentToday).toBe(4);
+    // Two db.execute calls total (sent + queued), NOT four — the second cached
     // read hits the in-memory snapshot, not the DB.
     expect(mockExecute.mock.calls.length).toBe(2);
   });
 
   it("re-fetches after the cache is cleared", async () => {
     mockExecute.mockResolvedValue([]);
-    await fetchAccountLoadCached();
+    await fetchAccountCapacityCached();
     clearStatsCache();
-    await fetchAccountLoadCached();
+    await fetchAccountCapacityCached();
     expect(mockExecute.mock.calls.length).toBe(4); // 2 per uncached snapshot
   });
 });
