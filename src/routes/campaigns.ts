@@ -10,6 +10,7 @@ import { traceEvent } from "../lib/trace-event";
 import { reconcileAll } from "../lib/reconcile";
 import { refundStrandedHolds } from "../lib/refund-stranded-holds";
 import { actualizeOrphanedSends } from "../lib/actualize-orphaned-sends";
+import { reconcileProvisionedHolds } from "../lib/reconcile-provisioned-holds";
 
 const router = Router();
 
@@ -190,6 +191,52 @@ router.post("/actualize-orphaned-sends", (req: Request, res: Response) => {
   actualizeOrphanedSends({ limit }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[instantly-service] actualize-orphaned-sends run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /campaigns/reconcile-provisioned-holds
+ * Unified, evidence-based reconcile for stranded `provisioned` sequence_costs.
+ * Classifies each hold from real send/delivery evidence and actualizes real
+ * sends / cancels terminal sends / leaves in-flight holds — covering both org
+ * AND platform sends (supersedes actualize-orphaned-sends + refund-stranded-
+ * holds). Idempotent + resumable. MUST run in-cluster (PATCHes runs-service
+ * over `*.railway.internal`).
+ *
+ * Body: `{ dryRun?: boolean (default true), limit?: number }`.
+ *   - dryRun (default) → runs the read-only classification and returns the plan
+ *     counts SYNCHRONOUSLY (`{ dryRun:true, holdsClassified, planActualize, ... }`).
+ *   - dryRun:false → 202 + background mutation. Watch Railway logs for
+ *     `reconcile-provisioned-holds: done`.
+ * Wired into the daily reconcile cron (commit) for ongoing self-healing.
+ */
+router.post("/reconcile-provisioned-holds", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { dryRun?: unknown; limit?: unknown };
+  const dryRun = body.dryRun !== false; // default true — mutate only on explicit false
+  const limit =
+    typeof body.limit === "number" && body.limit > 0 ? Math.floor(body.limit) : undefined;
+
+  if (dryRun) {
+    try {
+      const plan = await reconcileProvisionedHolds({ dryRun: true, limit });
+      res.status(200).json(plan);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[instantly-service] reconcile-provisioned-holds dry-run failed: ${message}`);
+      res.status(500).json({ error: message });
+    }
+    return;
+  }
+
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+  console.log(
+    `[instantly-service] reconcile-provisioned-holds: dispatched run=${runId} limit=${limit ?? "all"}`,
+  );
+  res.status(202).json({ runId, startedAt, dryRun: false, limit: limit ?? null });
+  reconcileProvisionedHolds({ dryRun: false, limit }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] reconcile-provisioned-holds run=${runId} failed: ${message}`);
   });
 });
 
