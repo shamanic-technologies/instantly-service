@@ -1156,7 +1156,14 @@ const AccountHealthSchema = z
       .number()
       .int()
       .nullable()
-      .describe("Per-account daily send limit; null if unknown"),
+      .describe("Per-account daily MAX-SEND limit (cold-send cap); null if unknown"),
+    warmupLimit: z
+      .number()
+      .int()
+      .nullable()
+      .describe(
+        "Per-account daily WARMUP send volume — Instantly warmup.limit, the warm-up emails/day target. DISTINCT from dailyLimit (the max-send cap): a live account often runs warmup 10/day while its send cap is 50/day. Null when Instantly reports no warmup config.",
+      ),
     blocked: z
       .boolean()
       .describe(
@@ -1193,6 +1200,12 @@ const AccountHealthSchema = z
       .int()
       .describe(
         "Real (non-inferred) email_sent events observed today (UTC) from this account, from our silver log — the N in an N/dailyLimit read. 0 when none today, never fabricated.",
+      ),
+    sentYesterday: z
+      .number()
+      .int()
+      .describe(
+        "Real (non-inferred) email_sent events observed YESTERDAY — the full previous UTC calendar day — from this account, from our silver log. Same provenance as sentToday. 0 when none, never fabricated.",
       ),
     queueSize: z
       .number()

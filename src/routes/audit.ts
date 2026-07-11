@@ -18,6 +18,7 @@ import { fetchCapacityHistory } from "../lib/capacity-history";
 import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
 import {
   fetchSentTodayByAccount,
+  fetchSentYesterdayByAccount,
   fetchQueueSizeByAccount,
 } from "../lib/account-sending-stats";
 import {
@@ -158,12 +159,14 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       accounts,
       placementByEmail,
       sentTodayByEmail,
+      sentYesterdayByEmail,
       queueSizeByEmail,
       lifecycleByEmail,
     ] = await Promise.all([
       listAccounts(apiKey),
       fetchLatestPlacementByAccount(),
       fetchSentTodayByAccount(),
+      fetchSentYesterdayByAccount(),
       fetchQueueSizeByAccount(),
       fetchLifecycleByEmail(),
     ]);
@@ -176,6 +179,7 @@ router.get("/account-health", async (_req: Request, res: Response) => {
         sentTodayByEmail,
         queueSizeByEmail,
         lifecycleByEmail,
+        sentYesterdayByEmail,
       ),
     });
   } catch (error: unknown) {

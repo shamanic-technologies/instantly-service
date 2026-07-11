@@ -58,6 +58,26 @@ export async function fetchSentTodayByAccount(): Promise<Map<string, number>> {
 }
 
 /**
+ * Real `email_sent` events observed YESTERDAY (the full previous UTC calendar
+ * day) per sending account. Same provenance/filters as fetchSentTodayByAccount
+ * (real, non-inferred dispatches) — only the time window differs, bounded to
+ * [prev-midnight, today-midnight) so it excludes both today and older days.
+ */
+export async function fetchSentYesterdayByAccount(): Promise<Map<string, number>> {
+  const result = await db.execute(sql`
+    SELECT e.account_email, COUNT(*) AS count
+    FROM instantly_events e
+    WHERE e.event_type = 'email_sent'
+      AND e.inferred = false
+      AND e.account_email IS NOT NULL
+      AND e.timestamp >= date_trunc('day', (now() AT TIME ZONE 'UTC')) - interval '1 day'
+      AND e.timestamp <  date_trunc('day', (now() AT TIME ZONE 'UTC'))
+    GROUP BY e.account_email
+  `);
+  return toMap(rowsOf(result));
+}
+
+/**
  * Queued-but-not-sent step count per sending account. Reuses the EXACT pending
  * gate from loadPendingLeads (active campaign + delivery_status in
  * contacted/sent + status='provisioned'), collapses each lead's provisioned
