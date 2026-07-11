@@ -232,11 +232,12 @@ describe("buildAccountHealth", () => {
     expect(byEmail["b@good.com"].sentYesterday).toBe(0);
   });
 
-  it("injects the queue breakdown (7th-arg map); partition invariant holds; honest 0 when absent", () => {
+  it("injects the queue breakdown (7th-arg map); STEP-partition invariant holds; queueSize === bucket sum; honest 0 when absent", () => {
+    // 8 queued STEPS across 5 sequences: buckets sum to steps, NOT to sequences.
     const breakdown = new Map([
       [
         "a@good.com",
-        { sequences: 10, firstUnsent: 3, nextToday: 4, nextTomorrow: 1, nextLater: 2 },
+        { sequences: 5, steps: 8, firstUnsent: 3, nextToday: 3, nextTomorrow: 0, nextLater: 2 },
       ],
     ]);
     const rows = buildAccountHealth(
@@ -250,18 +251,21 @@ describe("buildAccountHealth", () => {
     );
     const byEmail = Object.fromEntries(rows.map((r) => [r.email, r]));
     const a = byEmail["a@good.com"];
-    expect(a.queuedSequences).toBe(10);
+    expect(a.queuedSequences).toBe(5);
     expect(a.queuedFirstUnsent).toBe(3);
-    expect(a.queuedNextToday).toBe(4);
-    expect(a.queuedNextTomorrow).toBe(1);
+    expect(a.queuedNextToday).toBe(3);
+    expect(a.queuedNextTomorrow).toBe(0);
     expect(a.queuedNextLater).toBe(2);
-    // Qtotal = Q0-first + Q0-next + Q1-next + Q-next.
+    // queueSize is sourced from the breakdown's step total → equals the bucket sum.
+    expect(a.queueSize).toBe(8);
+    // The four buckets PARTITION the queued STEPS (== queueSize), not sequences.
     expect(
       a.queuedFirstUnsent + a.queuedNextToday + a.queuedNextTomorrow + a.queuedNextLater,
-    ).toBe(a.queuedSequences);
-    // Absent from the map → all honest 0.
+    ).toBe(a.queueSize);
+    expect(a.queueSize).not.toBe(a.queuedSequences);
+    // Absent from the map → all honest 0 (including queueSize).
     const b = byEmail["b@good.com"];
-    expect([b.queuedSequences, b.queuedFirstUnsent, b.queuedNextToday, b.queuedNextTomorrow, b.queuedNextLater]).toEqual([0, 0, 0, 0, 0]);
+    expect([b.queueSize, b.queuedSequences, b.queuedFirstUnsent, b.queuedNextToday, b.queuedNextTomorrow, b.queuedNextLater]).toEqual([0, 0, 0, 0, 0, 0]);
   });
 
   it("lifecycle status drives blocked per account, mixed fleet", () => {

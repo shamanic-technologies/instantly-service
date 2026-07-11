@@ -6,13 +6,13 @@ import {
   projectDailySchedule,
   scheduleLead,
   delayForGap,
-  MS_PER_DAY,
   dateKeyUTC,
   STEP_GAP_CALENDAR_DAYS,
   type PendingLead,
 } from "../../src/lib/sending-forecast";
 import {
-  classifyQueuedSequence,
+  classifyQueuedStep,
+  projectStepDate,
   type QueuedSequenceInput,
 } from "../../src/lib/queue-breakdown";
 
@@ -240,20 +240,21 @@ describe("cadence coherence with the per-account queue breakdown", () => {
     };
     const forecastNext = scheduleLead(lead, asOf)[0];
 
-    // Queue-breakdown side: same sequence, same config delay.
+    // Queue-breakdown side: same sequence, same config delay, next un-sent step 2.
     const seq: QueuedSequenceInput = {
       account: "a@x.com",
       lastSentStep: 1,
       lastSentAt,
-      nextDelayDays: configDelay,
+      provisionedSteps: [2],
+      stepDelays: [configDelay],
     };
-    const breakdownProjected = new Date(lastSentAt.getTime() + configDelay * MS_PER_DAY);
+    const breakdownProjected = projectStepDate(seq, 2);
 
-    // Same nominal UTC day from the same delay source.
+    // Same nominal UTC day from the same shared delayForGap resolver.
     expect(dateKeyUTC(forecastNext)).toBe(dateKeyUTC(breakdownProjected));
-    // And the breakdown classifies it as a future (nextLater) send, consistent
+    // And the breakdown classifies step 2 as a future (nextLater) send, consistent
     // with the forecast placing it two days out.
-    expect(classifyQueuedSequence(seq, asOf)).toBe("nextLater");
+    expect(classifyQueuedStep(seq, 2, asOf)).toBe("nextLater");
   });
 });
 
