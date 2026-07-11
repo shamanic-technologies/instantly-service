@@ -286,6 +286,7 @@ async function provisionFreshCosts(
   parentIdentity: IdentityContext,
   keySource: "platform" | "org",
   stepCount: number,
+  instantlyCampaignId: string,
 ): Promise<void> {
   if (!row.campaignId || !row.leadEmail) return;
 
@@ -342,6 +343,9 @@ async function provisionFreshCosts(
       if (cost.costName === "instantly-contact-uploaded") continue;
       await db.insert(sequenceCosts).values({
         campaignId: row.campaignId,
+        // The fresh Instantly campaign id from the redispatch — lets the
+        // webhook/reconcile resolvers actualize/cancel this hold. See mig 0027.
+        instantlyCampaignId,
         leadEmail: row.leadEmail,
         step,
         runId: stepRun.id,
@@ -610,6 +614,7 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
       parentIdentity,
       keySource,
       seq.sortedSequence.length,
+      result.value.instantlyCampaignId,
     );
 
     // 5. Mirror the lead onto the new Instantly campaign so subsequent

@@ -14,7 +14,7 @@
  */
 import { db } from "../db";
 import { instantlyCampaigns, instantlyEvents, sequenceCosts } from "../db/schema";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or, type SQL } from "drizzle-orm";
 import { updateCostStatus, isRunGoneError, type IdentityContext } from "./runs-client";
 import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
@@ -213,20 +213,44 @@ export interface EmailSentOutcome {
  * `pendingSends` metric. A transient error (cold-start / 5xx / timeout / 403)
  * leaves the hold `provisioned` so it retries later — unchanged behavior.
  */
+/**
+ * Match a provisioned hold to `campaign`. Prefers the persisted per-lead Instantly
+ * campaign id (`sequence_costs.instantly_campaign_id`) — the ONLY key that works
+ * for platform sends (caller `campaign_id` is NULL there). Falls back to the caller
+ * `campaign_id` for historical ORG rows persisted before migration 0027 (their
+ * instantly_campaign_id is NULL). Historical PLATFORM rows (both ids NULL) do not
+ * match here — they are drained by the reconcile-provisioned-holds sweep, which
+ * acts on each hold's own run_id + cost_id + real send evidence.
+ */
+function matchesHoldCampaign(campaign: CampaignRow): SQL | undefined {
+  const byInstantly = eq(
+    sequenceCosts.instantlyCampaignId,
+    campaign.instantlyCampaignId,
+  );
+  if (!campaign.campaignId) return byInstantly;
+  return or(
+    byInstantly,
+    and(
+      isNull(sequenceCosts.instantlyCampaignId),
+      eq(sequenceCosts.campaignId, campaign.campaignId),
+    ),
+  );
+}
+
 export async function handleEmailSent(
   campaign: CampaignRow,
   leadEmail: string,
   step: number,
 ): Promise<EmailSentOutcome> {
   const outcome: EmailSentOutcome = { actualized: 0, cancelled: 0, transient: 0 };
-  if (!campaign.campaignId) return outcome;
+  if (!campaign.instantlyCampaignId) return outcome;
 
   const costs = await db
     .select()
     .from(sequenceCosts)
     .where(
       and(
-        eq(sequenceCosts.campaignId, campaign.campaignId),
+        matchesHoldCampaign(campaign),
         eq(sequenceCosts.leadEmail, leadEmail),
         eq(sequenceCosts.step, step),
         eq(sequenceCosts.status, "provisioned"),
@@ -289,14 +313,14 @@ export async function cancelRemainingProvisions(
   campaign: CampaignRow,
   leadEmail: string,
 ): Promise<void> {
-  if (!campaign.campaignId) return;
+  if (!campaign.instantlyCampaignId) return;
 
   const remaining = await db
     .select()
     .from(sequenceCosts)
     .where(
       and(
-        eq(sequenceCosts.campaignId, campaign.campaignId),
+        matchesHoldCampaign(campaign),
         eq(sequenceCosts.leadEmail, leadEmail),
         eq(sequenceCosts.status, "provisioned"),
       ),

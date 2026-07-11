@@ -355,6 +355,42 @@ describe("promoteFromWebhookPayload", () => {
     );
   });
 
+  it("actualizes a PLATFORM send hold (campaignId NULL) — matched by instantly_campaign_id, mig 0027", async () => {
+    // Platform sends store campaign_id NULL. Pre-0027 handleEmailSent early-
+    // returned on the null caller id and its `campaign_id = NULL` predicate never
+    // matched → the hold stranded forever. Now it guards on instantlyCampaignId
+    // and matches the persisted instantly_campaign_id.
+    mockCampaign({ campaignId: null });
+    mockNewSilverRow();
+    mockProvisions({
+      id: "sc-plat",
+      campaignId: null,
+      instantlyCampaignId: "inst-camp-1",
+      leadEmail: "lead@test.com",
+      step: 1,
+      runId: "step-run-plat",
+      costId: "cost-plat",
+      status: "provisioned",
+    });
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-plat",
+      payload: {
+        event_type: "email_sent",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 1,
+      },
+    });
+
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith(
+      "step-run-plat",
+      "cost-plat",
+      "actual",
+      expect.objectContaining({ runId: "step-run-plat" }),
+    );
+  });
+
   it("converts step-1 provisioned cost to actual on email_sent", async () => {
     mockCampaign();
     mockNewSilverRow();
