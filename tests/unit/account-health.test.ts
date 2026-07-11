@@ -38,6 +38,7 @@ describe("buildAccountHealth", () => {
       status: "active",
       warmupScore: 100,
       dailyLimit: 40,
+      warmupLimit: null,
       blocked: false,
       blockReason: null,
       lifecycleStatus: "in_production",
@@ -45,6 +46,7 @@ describe("buildAccountHealth", () => {
       lifecycleUpdatedAt: "2026-07-05T00:00:00.000Z",
       inboxPlacement: null,
       sentToday: 0,
+      sentYesterday: 0,
       queueSize: 0,
       accountType: null,
     });
@@ -184,6 +186,45 @@ describe("buildAccountHealth", () => {
     // Absent from both maps → honest 0, not fabricated.
     expect(byEmail["b@good.com"].sentToday).toBe(0);
     expect(byEmail["b@good.com"].queueSize).toBe(0);
+  });
+
+  it("derives warmupLimit from warmup.limit, DISTINCT from dailyLimit", () => {
+    const [row] = buildAccountHealth([
+      acc({
+        email: "amy@dfy.com",
+        daily_limit: 50,
+        warmup: { limit: 10 },
+      }),
+    ]);
+    // The two send-config numbers are independent and provably distinct.
+    expect(row.dailyLimit).toBe(50);
+    expect(row.warmupLimit).toBe(10);
+    expect(row.warmupLimit).not.toBe(row.dailyLimit);
+  });
+
+  it("warmupLimit is null when Instantly reports no warmup config", () => {
+    const [row] = buildAccountHealth([
+      { email: "z@good.com", warmup_status: 1, status: 1, daily_limit: 30 } as Account,
+    ]);
+    expect(row.warmupLimit).toBeNull();
+    // dailyLimit still populated — the two are independent.
+    expect(row.dailyLimit).toBe(30);
+  });
+
+  it("injects sentYesterday from the 6th-arg map, honest 0 when absent", () => {
+    const sentYesterday = new Map([["a@good.com", 7]]);
+    const rows = buildAccountHealth(
+      [acc({ email: "a@good.com" }), acc({ email: "b@good.com" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      sentYesterday,
+    );
+    const byEmail = Object.fromEntries(rows.map((r) => [r.email, r]));
+    expect(byEmail["a@good.com"].sentYesterday).toBe(7);
+    // Absent from the map → honest 0, not fabricated.
+    expect(byEmail["b@good.com"].sentYesterday).toBe(0);
   });
 
   it("lifecycle status drives blocked per account, mixed fleet", () => {

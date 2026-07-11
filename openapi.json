@@ -2206,7 +2206,12 @@
           "dailyLimit": {
             "type": "integer",
             "nullable": true,
-            "description": "Per-account daily send limit; null if unknown"
+            "description": "Per-account daily MAX-SEND limit (cold-send cap); null if unknown"
+          },
+          "warmupLimit": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Per-account daily WARMUP send volume — Instantly warmup.limit, the warm-up emails/day target. DISTINCT from dailyLimit (the max-send cap): a live account often runs warmup 10/day while its send cap is 50/day. Null when Instantly reports no warmup config."
           },
           "blocked": {
             "type": "boolean",
@@ -2246,6 +2251,10 @@
             "type": "integer",
             "description": "Real (non-inferred) email_sent events observed today (UTC) from this account, from our silver log — the N in an N/dailyLimit read. 0 when none today, never fabricated."
           },
+          "sentYesterday": {
+            "type": "integer",
+            "description": "Real (non-inferred) email_sent events observed YESTERDAY — the full previous UTC calendar day — from this account, from our silver log. Same provenance as sentToday. 0 when none, never fabricated."
+          },
           "queueSize": {
             "type": "integer",
             "description": "Emails queued to Instantly for this account but not yet sent — still-provisioned sequence-cost holds on active campaigns attributed to this account (1 campaign = 1 account). 0 when nothing queued. Campaigns not yet sending have an unknown account and are unattributed."
@@ -2262,6 +2271,7 @@
           "status",
           "warmupScore",
           "dailyLimit",
+          "warmupLimit",
           "blocked",
           "blockReason",
           "lifecycleStatus",
@@ -2269,6 +2279,7 @@
           "lifecycleUpdatedAt",
           "inboxPlacement",
           "sentToday",
+          "sentYesterday",
           "queueSize",
           "accountType"
         ]

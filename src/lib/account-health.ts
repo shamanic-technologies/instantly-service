@@ -44,8 +44,15 @@ export interface AccountHealth {
   status: string;
   /** Instantly Health Score `stat_warmup_score` (0-100), null if unknown. */
   warmupScore: number | null;
-  /** Per-account daily send limit, null if unknown. */
+  /** Per-account daily MAX-SEND limit (cold-send cap), null if unknown. */
   dailyLimit: number | null;
+  /**
+   * Per-account daily WARMUP send volume — Instantly `warmup.limit`, the number
+   * of warm-up emails/day the account targets. A DISTINCT number from
+   * `dailyLimit` (the max-send cap): a live account commonly runs warmup 10/day
+   * while its send cap is 50/day. Null when Instantly reports no warmup config.
+   */
+  warmupLimit: number | null;
   /** True when the account is NOT send-eligible (lifecycle != in_production). */
   blocked: boolean;
   /**
@@ -68,6 +75,13 @@ export interface AccountHealth {
    * read. 0 when the account has not sent today (honest 0, never fabricated).
    */
   sentToday: number;
+  /**
+   * Count of REAL (non-inferred) `email_sent` events observed YESTERDAY — the
+   * full previous UTC calendar day [prev-midnight, today-midnight) — from this
+   * account, from our silver log. Same provenance as `sentToday`. 0 when the
+   * account sent nothing yesterday (honest 0, never fabricated).
+   */
+  sentYesterday: number;
   /**
    * Emails queued to Instantly for this account but not yet sent — the count of
    * still-`provisioned` sequence-cost holds on active campaigns whose observed
@@ -132,6 +146,7 @@ export function buildAccountHealth(
   sentTodayByEmail: Map<string, number> = new Map(),
   queueSizeByEmail: Map<string, number> = new Map(),
   lifecycleByEmail: Map<string, LifecycleView> = new Map(),
+  sentYesterdayByEmail: Map<string, number> = new Map(),
 ): AccountHealth[] {
   return accounts.map((a) => {
     const lifecycle = lifecycleByEmail.get(a.email) ?? null;
@@ -144,6 +159,7 @@ export function buildAccountHealth(
       status: statusLabel(a.status),
       warmupScore: a.stat_warmup_score ?? null,
       dailyLimit: a.daily_limit ?? null,
+      warmupLimit: a.warmup?.limit ?? null,
       blocked,
       blockReason,
       lifecycleStatus,
@@ -151,6 +167,7 @@ export function buildAccountHealth(
       lifecycleUpdatedAt: lifecycle?.updatedAt ?? null,
       inboxPlacement: placementByEmail.get(a.email) ?? null,
       sentToday: sentTodayByEmail.get(a.email) ?? 0,
+      sentYesterday: sentYesterdayByEmail.get(a.email) ?? 0,
       queueSize: queueSizeByEmail.get(a.email) ?? 0,
       accountType: mapProviderCode(a.provider_code),
     };

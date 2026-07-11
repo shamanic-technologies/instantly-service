@@ -43,11 +43,13 @@ describe("GET /internal/audit/account-health", () => {
       { email: "b@distribute.you", status: 1, stat_warmup_score: 100, daily_limit: 40 },
       { email: "c@good.com", status: 0, stat_warmup_score: 100, daily_limit: 20 },
     ]);
-    // Route reads placement, sentToday, queueSize, lifecycle via db.execute (in
-    // that order under Promise.all). Seed the first three empty, lifecycle last.
+    // Route reads placement, sentToday, sentYesterday, queueSize, lifecycle via
+    // db.execute (in that Promise.all order). Seed the first four empty,
+    // lifecycle last.
     mockExecute
       .mockResolvedValueOnce({ rows: [] }) // placement
       .mockResolvedValueOnce({ rows: [] }) // sentToday
+      .mockResolvedValueOnce({ rows: [] }) // sentYesterday
       .mockResolvedValueOnce({ rows: [] }) // queueSize
       .mockResolvedValueOnce({
         rows: [
@@ -73,14 +75,17 @@ describe("GET /internal/audit/account-health", () => {
       expect(typeof a.status).toBe("string");
       expect(a.warmupScore === null || typeof a.warmupScore === "number").toBe(true);
       expect(a.dailyLimit === null || typeof a.dailyLimit === "number").toBe(true);
+      expect(a.warmupLimit === null || typeof a.warmupLimit === "number").toBe(true);
       expect(typeof a.blocked).toBe("boolean");
       expect(a.blockReason === null || typeof a.blockReason === "string").toBe(true);
       expect(a.inboxPlacement).toBeNull();
       // New per-account throughput fields — present + typed, honest defaults.
       expect(typeof a.sentToday).toBe("number");
+      expect(typeof a.sentYesterday).toBe("number");
       expect(typeof a.queueSize).toBe("number");
       expect(a.accountType === null || typeof a.accountType === "string").toBe(true);
       expect(a.sentToday).toBe(0);
+      expect(a.sentYesterday).toBe(0);
       expect(a.queueSize).toBe(0);
     }
 
