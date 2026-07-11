@@ -30,6 +30,8 @@ vi.mock("../../src/lib/key-client", () => ({
   KeyServiceError,
 }));
 
+import { clearStatsCache } from "../../src/lib/stats-cache";
+
 async function makeApp() {
   const router = (await import("../../src/routes/audit")).default;
   const app = express();
@@ -41,6 +43,10 @@ async function makeApp() {
 describe("GET /internal/audit/sending-forecast", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The route wraps its work in the 60s stats cache under a fixed platform
+    // key; without clearing, the first test's payload would be served to every
+    // later test (cross-test cache hit skips the mocked DB → wrong assertions).
+    clearStatsCache();
     mockResolvePlatformKey.mockResolvedValue("test-key");
     mockExecute.mockResolvedValue({ rows: [] });
   });
@@ -124,5 +130,48 @@ describe("GET /internal/audit/sending-forecast", () => {
 
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/instantly boom/);
+  });
+
+  it("dedups concurrent requests to ONE loader run (collapses the retry storm)", async () => {
+    // email-gateway retries the SAME request on its ~10s AbortSignal timeout and
+    // the abort does not cancel the server query, so N identical heavy
+    // aggregations used to pile on the pool. The in-flight cache must collapse a
+    // burst to a single loader run (one listAccounts + one DB round).
+    mockListAccounts.mockResolvedValue([
+      { email: "a@good.com", status: 1, stat_warmup_score: 100, daily_limit: 30 },
+    ]);
+    mockExecute.mockResolvedValue({
+      rows: [{ email: "a@good.com", status: "in_production", reason: "passed", updatedAt: null }],
+    });
+
+    const app = await makeApp();
+    const [r1, r2, r3] = await Promise.all([
+      request(app).get("/internal/audit/sending-forecast"),
+      request(app).get("/internal/audit/sending-forecast"),
+      request(app).get("/internal/audit/sending-forecast"),
+    ]);
+
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    expect(r3.status).toBe(200);
+    // All three served by ONE loader execution, not three.
+    expect(mockListAccounts).toHaveBeenCalledTimes(1);
+    // Same cached payload for every caller.
+    expect(r2.body).toEqual(r1.body);
+    expect(r3.body).toEqual(r1.body);
+  });
+
+  it("does NOT cache a failed loader (a later request re-runs — no poisoned cache)", async () => {
+    mockListAccounts.mockRejectedValueOnce(new Error("transient")).mockResolvedValueOnce([]);
+    mockExecute.mockResolvedValue({ rows: [] });
+
+    const app = await makeApp();
+    const first = await request(app).get("/internal/audit/sending-forecast");
+    expect(first.status).toBe(500);
+
+    // The rejection cached nothing → the retry runs the loader again and succeeds.
+    const second = await request(app).get("/internal/audit/sending-forecast");
+    expect(second.status).toBe(200);
+    expect(mockListAccounts).toHaveBeenCalledTimes(2);
   });
 });

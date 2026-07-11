@@ -40,6 +40,7 @@ import {
   refreshInstantlySnapshot,
   maybeTriggerRefresh,
 } from "../lib/reconcile-snapshot";
+import { getOrSetCachedStats, statsCacheKey } from "../lib/stats-cache";
 
 const router = Router();
 
@@ -150,29 +151,48 @@ async function loadPendingLeads(): Promise<PendingLead[]> {
  */
 router.get("/sending-forecast", async (_req: Request, res: Response) => {
   try {
-    const asOf = new Date();
+    // Wrap the whole computation in the 60s stats cache. This route
+    // live-aggregates over the cost ledger (loadPendingLeads: a fleet-wide
+    // scan + a per-lead config LATERAL) AND makes a live paginated listAccounts
+    // call to Instantly — all uncached. email-gateway retries the SAME request
+    // on its ~10s AbortSignal timeout, and the abort does NOT cancel the
+    // server-side query, so each retry piled another identical heavy
+    // aggregation onto the pool (max 20) → saturation → the timeout flood that
+    // 500'd the staff forecast page (same failure class as /orgs/status,
+    // v0.57.2). The in-flight dedup collapses the retry storm to ONE loader run;
+    // the short TTL serves subsequent polls instantly. Platform-scoped, no
+    // params → a single fixed key. Fail-loud preserved: a loader throw rejects
+    // (nothing cached) and still 500s below.
+    const payload = await getOrSetCachedStats(
+      statsCacheKey("sending-forecast", {}),
+      async () => {
+        const asOf = new Date();
 
-    const apiKey = await resolvePlatformInstantlyApiKey({
-      method: "GET",
-      path: "/internal/audit/sending-forecast",
-    });
-    const [accounts, lifecycleByEmail] = await Promise.all([
-      listAccounts(apiKey),
-      fetchLifecycleByEmail(),
-    ]);
-    const capacity = computeCapacitySummary(accounts, lifecycleByEmail);
+        const apiKey = await resolvePlatformInstantlyApiKey({
+          method: "GET",
+          path: "/internal/audit/sending-forecast",
+        });
+        const [accounts, lifecycleByEmail] = await Promise.all([
+          listAccounts(apiKey),
+          fetchLifecycleByEmail(),
+        ]);
+        const capacity = computeCapacitySummary(accounts, lifecycleByEmail);
 
-    const pendingLeads = await loadPendingLeads();
-    const days = projectDailySchedule(pendingLeads, asOf);
+        const pendingLeads = await loadPendingLeads();
+        const days = projectDailySchedule(pendingLeads, asOf);
 
-    res.json({
-      asOf: asOf.toISOString(),
-      dailyCapacity: capacity.dailyCapacity,
-      healthyAccountCount: capacity.healthyAccountCount,
-      totalAccountCount: capacity.totalAccountCount,
-      blockedDomainCount: capacity.blockedDomainCount,
-      days,
-    });
+        return {
+          asOf: asOf.toISOString(),
+          dailyCapacity: capacity.dailyCapacity,
+          healthyAccountCount: capacity.healthyAccountCount,
+          totalAccountCount: capacity.totalAccountCount,
+          blockedDomainCount: capacity.blockedDomainCount,
+          days,
+        };
+      },
+    );
+
+    res.json(payload);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] sending-forecast failed: ${message}`);
