@@ -48,6 +48,11 @@ describe("buildAccountHealth", () => {
       sentToday: 0,
       sentYesterday: 0,
       queueSize: 0,
+      queuedSequences: 0,
+      queuedFirstUnsent: 0,
+      queuedNextToday: 0,
+      queuedNextTomorrow: 0,
+      queuedNextLater: 0,
       accountType: null,
     });
   });
@@ -225,6 +230,38 @@ describe("buildAccountHealth", () => {
     expect(byEmail["a@good.com"].sentYesterday).toBe(7);
     // Absent from the map → honest 0, not fabricated.
     expect(byEmail["b@good.com"].sentYesterday).toBe(0);
+  });
+
+  it("injects the queue breakdown (7th-arg map); partition invariant holds; honest 0 when absent", () => {
+    const breakdown = new Map([
+      [
+        "a@good.com",
+        { sequences: 10, firstUnsent: 3, nextToday: 4, nextTomorrow: 1, nextLater: 2 },
+      ],
+    ]);
+    const rows = buildAccountHealth(
+      [acc({ email: "a@good.com" }), acc({ email: "b@good.com" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      breakdown,
+    );
+    const byEmail = Object.fromEntries(rows.map((r) => [r.email, r]));
+    const a = byEmail["a@good.com"];
+    expect(a.queuedSequences).toBe(10);
+    expect(a.queuedFirstUnsent).toBe(3);
+    expect(a.queuedNextToday).toBe(4);
+    expect(a.queuedNextTomorrow).toBe(1);
+    expect(a.queuedNextLater).toBe(2);
+    // Qtotal = Q0-first + Q0-next + Q1-next + Q-next.
+    expect(
+      a.queuedFirstUnsent + a.queuedNextToday + a.queuedNextTomorrow + a.queuedNextLater,
+    ).toBe(a.queuedSequences);
+    // Absent from the map → all honest 0.
+    const b = byEmail["b@good.com"];
+    expect([b.queuedSequences, b.queuedFirstUnsent, b.queuedNextToday, b.queuedNextTomorrow, b.queuedNextLater]).toEqual([0, 0, 0, 0, 0]);
   });
 
   it("lifecycle status drives blocked per account, mixed fleet", () => {

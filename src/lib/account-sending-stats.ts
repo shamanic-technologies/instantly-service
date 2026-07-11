@@ -17,6 +17,11 @@
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { getOrSetCachedStats } from "./stats-cache";
+import {
+  aggregateQueueBreakdown,
+  type QueueBreakdown,
+  type QueuedSequenceInput,
+} from "./queue-breakdown";
 
 interface CountRow {
   account_email: string;
@@ -130,6 +135,100 @@ export async function fetchQueueSizeByAccount(): Promise<Map<string, number>> {
     GROUP BY COALESCE(p.persisted_account, ca.account_email)
   `);
   return toMap(rowsOf(result));
+}
+
+interface BreakdownRow {
+  account_email: string;
+  last_sent_step: number | string | null;
+  last_sent_at: string | Date | null;
+  next_delay_days: number | string | null;
+}
+
+/**
+ * Per-account queue BREAKDOWN — splits the queued sequences (one campaign = one
+ * lead = one sequence) into firstUnsent / nextToday / nextTomorrow / nextLater
+ * by the projected timing of each sequence's next un-sent step. Partitions the
+ * account's queued-sequence total (see queue-breakdown.ts for the invariant +
+ * the nominal-cadence-lower-bound caveat).
+ *
+ * Same queued gate + account attribution as fetchQueueSizeByAccount (active +
+ * delivery_status in contacted/sent, COALESCE persisted/observed account) but
+ * grouped per SEQUENCE (campaign) rather than summed to steps. Per sequence it
+ * also resolves, from the campaign's LATEST bronze sequence config, the real
+ * `delay` (days) of the step AFTER the last-sent one — `steps[lastSentStep-1]`
+ * (cost steps are 1-based, the config `steps` array is 0-based). Projection +
+ * classification are pure (aggregateQueueBreakdown); this only does the read.
+ */
+export async function fetchQueueBreakdownByAccount(
+  asOf: Date = new Date(),
+): Promise<Map<string, QueueBreakdown>> {
+  const result = await db.execute(sql`
+    WITH campaign_account AS (
+      SELECT e.campaign_id AS instantly_campaign_id,
+             MIN(e.account_email) AS account_email
+      FROM instantly_events e
+      WHERE e.event_type = 'email_sent'
+        AND e.inferred = false
+        AND e.account_email IS NOT NULL
+        AND e.campaign_id IS NOT NULL
+      GROUP BY e.campaign_id
+    ),
+    seq AS (
+      SELECT c.instantly_campaign_id,
+             MIN(c.account_email) AS persisted_account,
+             MAX(sc.step) FILTER (WHERE sc.status = 'actual') AS last_sent_step,
+             MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at
+      FROM sequence_costs sc
+      JOIN instantly_campaigns c
+        ON c.lead_email = sc.lead_email
+       AND c.campaign_id IS NOT DISTINCT FROM sc.campaign_id
+       AND c.status = 'active'
+       AND c.delivery_status IN ('contacted', 'sent')
+      WHERE EXISTS (
+        SELECT 1 FROM sequence_costs p
+        WHERE p.lead_email = sc.lead_email
+          AND p.campaign_id IS NOT DISTINCT FROM sc.campaign_id
+          AND p.status = 'provisioned'
+      )
+      GROUP BY c.instantly_campaign_id
+    )
+    SELECT COALESCE(s.persisted_account, ca.account_email) AS account_email,
+           s.last_sent_step,
+           s.last_sent_at,
+           (cfg.payload->'sequences'->0->'steps'->GREATEST(s.last_sent_step - 1, 0)->>'delay')::numeric
+             AS next_delay_days
+    FROM seq s
+    LEFT JOIN campaign_account ca
+      ON ca.instantly_campaign_id = s.instantly_campaign_id
+    LEFT JOIN LATERAL (
+      SELECT payload FROM instantly_campaigns_config_raw r
+      WHERE r.instantly_campaign_id = s.instantly_campaign_id
+      ORDER BY r.fetched_at DESC
+      LIMIT 1
+    ) cfg ON true
+    WHERE COALESCE(s.persisted_account, ca.account_email) IS NOT NULL
+  `);
+  const rows = rowsAsBreakdown(result);
+  const inputs: QueuedSequenceInput[] = rows.map((r) => ({
+    account: r.account_email,
+    lastSentStep:
+      r.last_sent_step === null || r.last_sent_step === undefined
+        ? null
+        : Number(r.last_sent_step),
+    lastSentAt: r.last_sent_at ? new Date(r.last_sent_at) : null,
+    nextDelayDays:
+      r.next_delay_days === null || r.next_delay_days === undefined
+        ? null
+        : Number(r.next_delay_days),
+  }));
+  return aggregateQueueBreakdown(inputs, asOf);
+}
+
+function rowsAsBreakdown(result: unknown): BreakdownRow[] {
+  if (!result) return [];
+  return Array.isArray(result)
+    ? (result as BreakdownRow[])
+    : (((result as { rows?: BreakdownRow[] }).rows) ?? []);
 }
 
 /** Default TTL for the send-selection load snapshot (per replica). */

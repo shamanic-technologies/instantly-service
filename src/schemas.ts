@@ -1213,6 +1213,30 @@ const AccountHealthSchema = z
       .describe(
         "Emails queued to Instantly for this account but not yet sent — still-provisioned sequence-cost holds on active campaigns attributed to this account (1 campaign = 1 account). 0 when nothing queued. Campaigns not yet sending have an unknown account and are unattributed.",
       ),
+    queuedSequences: z
+      .number()
+      .int()
+      .describe(
+        "Qtotal — distinct queued SEQUENCES (1 Instantly campaign = 1 lead = 1 sequence) attributed to this account. PARTITIONED by the next four fields: queuedSequences === queuedFirstUnsent + queuedNextToday + queuedNextTomorrow + queuedNextLater. Different granularity from queueSize (which counts pending STEPS) — both intentional. 0 when nothing queued; unattributable sequences excluded, never fabricated.",
+      ),
+    queuedFirstUnsent: z
+      .number()
+      .int()
+      .describe("Q0-first — queued sequences whose first email has not been sent yet."),
+    queuedNextToday: z
+      .number()
+      .int()
+      .describe(
+        "Q0-next — sequences with ≥1 email sent whose NEXT step is projected today (UTC) or overdue. Projection = lastSentAt + the step's configured delay (nominal-cadence LOWER BOUND; real Instantly dispatch can slip later under throttling), so this reads as 'next step DUE today-or-overdue', not a guaranteed send today.",
+      ),
+    queuedNextTomorrow: z
+      .number()
+      .int()
+      .describe("Q1-next — sequences with ≥1 email sent whose next step is projected tomorrow (UTC)."),
+    queuedNextLater: z
+      .number()
+      .int()
+      .describe("Q-next — sequences with ≥1 email sent whose next step is projected after tomorrow (UTC)."),
     accountType: z
       .string()
       .nullable()

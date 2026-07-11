@@ -25,6 +25,7 @@
 import type { Account } from "./instantly-client";
 import type { LifecycleStatus } from "./account-lifecycle";
 import type { LifecycleView } from "./account-lifecycle-sync";
+import type { QueueBreakdown } from "./queue-breakdown";
 
 /** Inbox-placement breakdown for one account. Null until the API exposes it. */
 export interface InboxPlacement {
@@ -92,6 +93,31 @@ export interface AccountHealth {
    */
   queueSize: number;
   /**
+   * Queued-sequence BREAKDOWN (one Instantly campaign = one lead = one
+   * sequence), split by the projected timing of each sequence's NEXT un-sent
+   * step. These four PARTITION `queuedSequences`:
+   *   `queuedSequences === queuedFirstUnsent + queuedNextToday +
+   *    queuedNextTomorrow + queuedNextLater` (holds for every account).
+   *
+   * NOTE `queuedSequences` (a count of SEQUENCES) is a DIFFERENT granularity
+   * from `queueSize` (a count of pending STEPS) — both are intentional, kept
+   * side by side. The next-step date is a PROJECTION (last-sent + the step's
+   * configured delay), a nominal-cadence LOWER BOUND — Instantly's actual
+   * dispatch can slip later under throttling. So `queuedNextToday` reads as
+   * "next step DUE today-or-overdue", not "will certainly send today". See
+   * lib/queue-breakdown.ts. A queued sequence with no attributable account is
+   * excluded here (same as `queueSize`), never fabricated.
+   */
+  queuedSequences: number;
+  /** Q0-first — queued sequences whose first email has not sent yet. */
+  queuedFirstUnsent: number;
+  /** Q0-next — sent ≥1, next step projected today (UTC) or overdue. */
+  queuedNextToday: number;
+  /** Q1-next — sent ≥1, next step projected tomorrow (UTC). */
+  queuedNextTomorrow: number;
+  /** Q-next — sent ≥1, next step projected after tomorrow (UTC). */
+  queuedNextLater: number;
+  /**
    * Descriptive account type from Instantly's `provider_code` — how the mailbox
    * sends: "google" / "microsoft" / "imap". Null when Instantly reports no code.
    * NOTE: this is the connection provider, NOT the provisioning class
@@ -147,12 +173,14 @@ export function buildAccountHealth(
   queueSizeByEmail: Map<string, number> = new Map(),
   lifecycleByEmail: Map<string, LifecycleView> = new Map(),
   sentYesterdayByEmail: Map<string, number> = new Map(),
+  queueBreakdownByEmail: Map<string, QueueBreakdown> = new Map(),
 ): AccountHealth[] {
   return accounts.map((a) => {
     const lifecycle = lifecycleByEmail.get(a.email) ?? null;
     const lifecycleStatus = lifecycle?.status ?? null;
     const blocked = lifecycleStatus !== "in_production";
     const blockReason = blocked ? (lifecycleStatus ?? "unclassified") : null;
+    const breakdown = queueBreakdownByEmail.get(a.email) ?? null;
     return {
       email: a.email,
       domain: domainOf(a.email),
@@ -169,6 +197,11 @@ export function buildAccountHealth(
       sentToday: sentTodayByEmail.get(a.email) ?? 0,
       sentYesterday: sentYesterdayByEmail.get(a.email) ?? 0,
       queueSize: queueSizeByEmail.get(a.email) ?? 0,
+      queuedSequences: breakdown?.sequences ?? 0,
+      queuedFirstUnsent: breakdown?.firstUnsent ?? 0,
+      queuedNextToday: breakdown?.nextToday ?? 0,
+      queuedNextTomorrow: breakdown?.nextTomorrow ?? 0,
+      queuedNextLater: breakdown?.nextLater ?? 0,
       accountType: mapProviderCode(a.provider_code),
     };
   });
