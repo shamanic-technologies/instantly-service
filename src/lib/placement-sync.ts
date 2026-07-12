@@ -28,7 +28,6 @@ import { fetchTestablePoolEmails } from "./account-lifecycle-sync";
 import {
   aggregatePlacementRows,
   blendEspRows,
-  selectDailyTestBatch,
   type LatestEspRow,
 } from "./placement-promote";
 import type { InboxPlacement } from "./account-health";
@@ -191,27 +190,6 @@ export async function fetchLatestPlacementByAccount(): Promise<Map<string, Inbox
   return out;
 }
 
-/**
- * Silver-derived: the last placement-test date per account (`MAX(tested_at)`),
- * keyed by account email. Drives the daily-batch rotation (`selectDailyTestBatch`)
- * — an account absent from this map has never been tested. No cursor/bucket state.
- */
-export async function fetchLastPlacementTestByAccount(): Promise<Map<string, Date>> {
-  const result = await db.execute(sql`
-    SELECT account_email, MAX(tested_at) AS last_tested
-    FROM instantly_placement_results
-    GROUP BY account_email
-  `);
-  const out = new Map<string, Date>();
-  for (const row of rowsOf(result)) {
-    const r = row as unknown as { account_email: string; last_tested: string | null };
-    if (r.account_email && r.last_tested) {
-      out.set(r.account_email, new Date(r.last_tested));
-    }
-  }
-  return out;
-}
-
 export interface PlacementHistoryEntry extends InboxPlacement {
   testId: string;
 }
@@ -351,15 +329,15 @@ export async function runOneTimeFleetPlacementTest(
   // only would deadlock — a recovering account would never get tested). Empty
   // pool → nothing to test (created 0, no Instantly call, no fabricated result).
   //
-  // ROTATION: a placement test sends ~30-50 seeds/account, and a mailbox's safe
-  // daily volume is ~50 (already used by 40 send + 10 warmup), so we can NOT test
-  // every account every day. The DAILY cron tests only the least-recently-tested
-  // ~1/7 of the pool (selectDailyTestBatch) → each account is tested ~weekly, one
-  // seed-spike day per week. The rotation is derived from each account's last test
-  // date (silver) — no cursor/bucket state.
-  const pool = await fetchTestablePoolEmails();
-  const lastTested = await fetchLastPlacementTestByAccount();
-  const senders = selectDailyTestBatch(pool, lastTested);
+  // CADENCE: a placement test sends ~30-50 seeds/account, and a mailbox's safe
+  // daily volume is ~50 (40 send + 10 warmup), so a test can NOT run on top of a
+  // normal sending day. We therefore test the WHOLE testable pool ONCE PER WEEK,
+  // on SUNDAY (the cron fires `0 6 * * 0`) — the fleet's send-free day: the
+  // campaign send window is Mon-Sat (instantly-client.ts, Sunday off) and warmup
+  // is weekday-only, so on Sunday the mailbox is otherwise empty and absorbs the
+  // seed spike safely. No per-account rotation / cursor state — every testable
+  // account is seeded the same Sunday.
+  const senders = await fetchTestablePoolEmails();
   if (senders.length === 0) {
     return { created: 0, testCode: null, recipientEsps: [], senderCount: 0 };
   }

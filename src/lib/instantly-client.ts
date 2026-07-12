@@ -343,14 +343,17 @@ export async function createCampaign(apiKey: string, params: CreateCampaignParam
       schedules: [
         {
           name: "Default",
-          // Business hours, weekdays only — sending 24/7 (incl. 3am / weekends)
-          // is an unnatural pattern that filters read as bulk/spam. Days are
-          // Instantly's 0=Sunday..6=Saturday, so Mon-Fri = "1".."5".
+          // Business hours, Mon-Sat — sending 24/7 (incl. 3am / Sunday) is an
+          // unnatural pattern that filters read as bulk/spam. Days are
+          // Instantly's 0=Sunday..6=Saturday, so Mon-Sat = "1".."6". Sunday
+          // ("0") stays OFF: it is the fleet's send-free day, kept clear so the
+          // weekly full-pool inbox-placement test (placement-sync.ts) can run
+          // its seed spike on an otherwise-empty mailbox day.
           // Per-recipient timezone when the caller supplies it (1 campaign = 1
           // lead, so params.timezone is the lead's tz threaded from upstream);
           // America/Chicago (US Central) fallback when absent/unknown.
           timing: { from: "08:00", to: "17:00" },
-          days: { "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false },
+          days: { "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": true },
           timezone: params.timezone ?? "America/Chicago",
         },
       ],
