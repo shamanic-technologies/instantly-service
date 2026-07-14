@@ -19,6 +19,7 @@ import { updateCostStatus, isRunGoneError, type IdentityContext } from "./runs-c
 import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
 import { maybeStopOnClickForSignup } from "./stop-on-click";
+import { maybeForwardPositiveReply } from "./forward-positive-reply";
 
 const SEQUENCE_STOP_EVENTS = new Set([
   "reply_received",
@@ -73,7 +74,7 @@ function normalizeWebhookEventType(raw: string): string {
   return WEBHOOK_EVENT_TYPE_ALIASES[raw] ?? raw;
 }
 
-const REPLY_CLASSIFICATION_MAP: Record<string, "positive" | "negative" | "neutral"> = {
+export const REPLY_CLASSIFICATION_MAP: Record<string, "positive" | "negative" | "neutral"> = {
   lead_interested: "positive",
   lead_meeting_booked: "positive",
   lead_closed: "positive",
@@ -613,6 +614,11 @@ export async function promoteEvent(input: PromoteEventInput): Promise<PromoteEve
       if (input.eventType === "email_link_clicked") {
         await maybeStopOnClickForSignup(campaign, input.leadEmail);
       }
+
+      // Forward positive replies: when Instantly qualifies the reply
+      // positive/interested, email the full thread to the agency inbox
+      // (exactly-once, fail-soft — never throws here). No-op on any other event.
+      await maybeForwardPositiveReply(campaign, input.leadEmail, input.eventType);
     }
   }
 

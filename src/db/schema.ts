@@ -67,6 +67,13 @@ export const instantlyCampaigns = pgTable(
     // event; 'manual' = set via human qualification (POST /orgs/manual-qualifications).
     // Manual wins: silver-promote skips webhook-driven updates when this is 'manual'.
     replyClassificationSource: text("reply_classification_source").notNull().default("auto"),
+    // Exactly-once claim for the "forward positive reply to the agency inbox"
+    // side effect (lib/forward-positive-reply.ts). Set atomically BEFORE the
+    // forward send when Instantly qualifies a reply positive; a webhook retry /
+    // reconcile re-poll / re-qualification finds it non-null and skips. Released
+    // back to NULL only if the send itself fails, so a later retry re-attempts.
+    // NULL = the positive reply for this lead has never been forwarded.
+    positiveReplyForwardedAt: timestamp("positive_reply_forwarded_at"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
