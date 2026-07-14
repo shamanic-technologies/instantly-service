@@ -1,0 +1,14 @@
+-- Idempotency marker for the "forward positive reply to the agency inbox" loop.
+--
+-- When Instantly ITSELF qualifies an inbound reply as positive/interested
+-- (event_type lead_interested / lead_meeting_booked / lead_closed — the same
+-- events that flip reply_classification='positive'), silver promotion forwards
+-- the full email thread to the agency inbox (kevin@distribute.you) via the
+-- production transactional-email path. This column is the exactly-once claim:
+-- the forward side effect atomically sets it (UPDATE ... WHERE
+-- positive_reply_forwarded_at IS NULL RETURNING) BEFORE sending, so a webhook
+-- retry, a reconcile re-poll, or a re-qualification (interested → meeting_booked
+-- → closed) each find it non-null and skip. On a send failure the claim is
+-- released back to NULL so a later retry re-attempts (at-most-once send,
+-- fail-soft). NULL = never forwarded.
+ALTER TABLE "instantly_campaigns" ADD COLUMN IF NOT EXISTS "positive_reply_forwarded_at" timestamp;

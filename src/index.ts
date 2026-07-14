@@ -81,6 +81,24 @@ async function deployEmailTemplates(): Promise<void> {
               "<pre>{{errorReason}}</pre>",
             ].join("\n"),
           },
+          {
+            // Positive-reply forward: Instantly qualified an inbound reply as
+            // positive/interested → we email the full conversation thread here so
+            // the agency never depends on the paid Instantly Unibox/CRM. The
+            // thread is rendered as plain text into <pre> (robust to the engine's
+            // escaping behavior); message bodies are already tag-stripped.
+            name: "positive-reply-forward",
+            subject: "[Instantly] Positive reply from {{leadEmail}}",
+            htmlBody: [
+              "<h2>Positive reply — {{qualification}}</h2>",
+              "<p><strong>Lead:</strong> {{leadEmail}}</p>",
+              "<p><strong>Campaign:</strong> {{campaignId}}</p>",
+              "<p><strong>Instantly Campaign ID:</strong> {{instantlyCampaignId}}</p>",
+              "<p><strong>Messages in thread:</strong> {{messageCount}}</p>",
+              "<hr>",
+              "<pre>{{thread}}</pre>",
+            ].join("\n"),
+          },
         ],
       },
       { orgId: "system", userId: "system", runId: "system" },
