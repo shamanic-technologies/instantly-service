@@ -16,6 +16,7 @@ import {
 } from "../lib/account-lifecycle-sync";
 import { fetchCapacityHistory } from "../lib/capacity-history";
 import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
+import { syncSlowRampOff } from "../lib/sync-slow-ramp";
 import {
   fetchSentTodayByAccount,
   fetchSentYesterdayByAccount,
@@ -372,6 +373,40 @@ router.post("/daily-limit-sync", async (req: Request, res: Response) => {
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] daily-limit-sync run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/audit/slow-ramp-sync
+ *
+ * Platform-scoped. One-time (idempotent, resumable) sweep that PATCHes EVERY
+ * account's Instantly "Campaign slow ramp" toggle (`enable_slow_ramp`) to false,
+ * regardless of lifecycle status (in_production / in_recovery / deactivated_by_
+ * user / deactivated_by_instantly — ALL). Reads the full LIVE account list, only
+ * PATCHes accounts not already off (skips the aligned ones), fail-loud per
+ * account. Enforces the fleet invariant `enable_slow_ramp == false`. Optional
+ * `{limit}` bounds the batch. 202 + background; watch logs for
+ * `slow-ramp-sync: done`.
+ */
+router.post("/slow-ramp-sync", async (req: Request, res: Response) => {
+  const runId = crypto.randomUUID();
+  const rawLimit = (req.body as { limit?: unknown } | undefined)?.limit;
+  const limit = typeof rawLimit === "number" && rawLimit > 0 ? rawLimit : undefined;
+  res.status(202).json({ accepted: true, runId });
+  console.log(`[audit] slow-ramp-sync: dispatched run=${runId} limit=${limit ?? "all"}`);
+
+  (async () => {
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/slow-ramp-sync",
+    });
+    const summary = await syncSlowRampOff(apiKey, limit);
+    console.log(
+      `[audit] slow-ramp-sync: done run=${runId} ${JSON.stringify(summary)}`,
+    );
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] slow-ramp-sync run=${runId} failed: ${message}`);
   });
 });
 
