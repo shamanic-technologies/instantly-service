@@ -493,6 +493,21 @@ export async function getAccount(apiKey: string, email: string): Promise<Account
 }
 
 /**
+ * GET /accounts/{email} — the FULL RAW single-account object, every field
+ * Instantly returns (warmup:{limit,increment,advanced}, enable_slow_ramp,
+ * daily_limit, provider_code, tracking-domain, timestamps, flags — everything).
+ * Unlike `getAccount` (typed to the subset we consume), this returns the
+ * untouched JSON for the admin audit detail panel. Fails loud on any non-2xx.
+ */
+export async function getAccountRaw(
+  apiKey: string,
+  email: string,
+): Promise<Record<string, unknown>> {
+  const encoded = encodeURIComponent(email);
+  return instantlyRequest<Record<string, unknown>>(apiKey, `/accounts/${encoded}`);
+}
+
+/**
  * Set the account's WARMUP daily send volume (`warmup.limit`) WITHOUT touching
  * its top-level `daily_limit` (the real max-send cap — must stay intact so the
  * account's already-queued emails keep draining).
