@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
-import { listAccounts } from "../lib/instantly-client";
+import { listAccounts, getAccountRaw } from "../lib/instantly-client";
 import { resolvePlatformInstantlyApiKey } from "../lib/key-client";
 import {
   computeCapacitySummary,
@@ -374,6 +374,39 @@ router.post("/daily-limit-sync", async (req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] daily-limit-sync run=${runId} failed: ${message}`);
   });
+});
+
+/**
+ * GET /internal/audit/account-detail?email=<email>
+ *
+ * Platform-scoped. Returns the FULL RAW Instantly single-account object (every
+ * field — warmup:{limit,increment,advanced}, enable_slow_ramp, daily_limit,
+ * provider_code, tracking-domain, timestamps, all flags) for the admin audit
+ * detail panel. The `account-health` LIST row is a curated subset with an
+ * ABBREVIATED warmup ({limit} only), so a live single-account GET is required
+ * for a true "all values" audit. Live read (admin click-detail, low frequency —
+ * NOT on the email-gateway flood path, so no cache). Fail-loud: a key-resolution
+ * or Instantly error → 500 (no fabricated object).
+ */
+router.get("/account-detail", async (req: Request, res: Response) => {
+  const email = typeof req.query.email === "string" ? req.query.email.trim() : "";
+  if (!email) {
+    res.status(400).json({ error: "email query parameter is required" });
+    return;
+  }
+
+  try {
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "GET",
+      path: "/internal/audit/account-detail",
+    });
+    const account = await getAccountRaw(apiKey, email);
+    res.json({ account });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] account-detail failed email=${email}: ${message}`);
+    res.status(500).json({ error: message });
+  }
 });
 
 /**
