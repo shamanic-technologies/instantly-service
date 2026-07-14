@@ -142,43 +142,103 @@ export function selectThreadMessages(records: EmailRecord[]): ThreadMessage[] {
     }));
 }
 
-/**
- * Render the ordered thread into a single plain-text block. Plain text is
- * deliberate: it drops into the template's <pre>{{thread}}</pre> and reads
- * correctly whether or not the templating engine HTML-escapes the variable
- * (robust to either behavior; the message bodies are already tag-stripped).
- */
-export function renderThreadText(
-  messages: ThreadMessage[],
-  meta: { leadEmail: string; campaignId: string; qualification: string },
-): string {
-  const header = [
-    `Positive reply — forwarded by instantly-service`,
-    `Lead: ${meta.leadEmail}`,
-    `Campaign: ${meta.campaignId}`,
-    `Instantly qualification: ${meta.qualification}`,
-  ].join("\n");
+/** Format an ISO timestamp as a readable email date, e.g. "Jul 13, 2026, 5:57 PM UTC". */
+export function formatThreadDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return (
+    d.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "UTC",
+    }) + " UTC"
+  );
+}
 
-  if (messages.length === 0) {
-    return `${header}\n\n(The conversation thread was not yet available from Instantly at forward time.)`;
+/** The conversation subject = the newest message's subject (what a reply carries). */
+export function threadSubject(messages: ThreadMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].subject && messages[i].subject !== "(no subject)") {
+      return messages[i].subject;
+    }
   }
+  return messages.length > 0 ? messages[messages.length - 1].subject : "(no subject)";
+}
 
-  const body = messages
-    .map((m, i) => {
-      const label = m.direction === "inbound" ? "REPLY (from lead)" : "SENT (from us)";
-      return [
-        `── Message ${i + 1} of ${messages.length} · ${label} ──`,
-        `From:    ${m.from}`,
-        `To:      ${m.to}`,
-        `Date:    ${m.date}`,
+/**
+ * Render the ordered thread as a CLEAN, client-forwardable email conversation —
+ * no instantly-service branding, no notes, no labels, no metadata. Each message
+ * is a standard From/To/Date/Subject header block + its full body, oldest →
+ * newest, so the recipient can forward it as-is to the client. Plain text drops
+ * into the template's `<pre>` (rendered with an inherited font + wrapping, so it
+ * reads like a normal email, not monospace).
+ */
+export function renderThreadText(messages: ThreadMessage[]): string {
+  if (messages.length === 0) return "(conversation unavailable)";
+  return messages
+    .map((m) =>
+      [
+        `From: ${m.from}`,
+        `To: ${m.to}`,
+        `Date: ${formatThreadDate(m.date)}`,
         `Subject: ${m.subject}`,
         ``,
         m.bodyText,
-      ].join("\n");
-    })
-    .join("\n\n────────────────────────────────────────\n\n");
+      ].join("\n"),
+    )
+    .join("\n\n─────────────────────────────────────────\n\n");
+}
 
-  return `${header}\n\n${body}`;
+/**
+ * Fetch a campaign's full Instantly thread and forward it — as a CLEAN,
+ * client-forwardable email (subject = the conversation's real subject; body =
+ * the plain conversation, no branding) — to the agency inbox. Shared by the
+ * positive-reply webhook side effect AND the manual re-forward endpoint. Returns
+ * the message count. Throws on any failure (the caller decides whether to
+ * swallow it).
+ */
+export async function sendThreadForward(
+  campaign: ForwardPositiveReplyCampaign,
+  leadEmail: string,
+): Promise<number> {
+  if (!campaign.orgId) {
+    throw new Error("forward-thread requires an org-scoped campaign (orgId is null)");
+  }
+  const { key } = await resolveInstantlyApiKey(campaign.orgId, "system", {
+    method: "POST",
+    path: "/internal/forward-positive-reply",
+  });
+  const records = await listEmails(key, { campaignId: campaign.instantlyCampaignId });
+  const messages = selectThreadMessages(records);
+
+  await sendEmail(
+    {
+      appId: "instantly-service",
+      eventType: "positive-reply-forward",
+      recipientEmail: AGENCY_INBOX,
+      metadata: {
+        subject: threadSubject(messages),
+        thread: renderThreadText(messages),
+      },
+    },
+    {
+      orgId: campaign.orgId,
+      userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
+      runId: campaign.runId || undefined,
+      tracking: {
+        campaignId: campaign.campaignId ?? undefined,
+        brandId: campaign.brandIds?.[0],
+      },
+    },
+  );
+  console.log(
+    `[instantly-service] forward-positive-reply: sent thread (${messages.length} msg) for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${AGENCY_INBOX}`,
+  );
+  return messages.length;
 }
 
 /**
@@ -240,49 +300,7 @@ export async function maybeForwardPositiveReply(
   if (!claimed) return;
 
   try {
-    const { key } = await resolveInstantlyApiKey(campaign.orgId, "system", {
-      method: "POST",
-      path: "/internal/forward-positive-reply",
-    });
-
-    const records = await listEmails(key, {
-      campaignId: campaign.instantlyCampaignId,
-    });
-    const messages = selectThreadMessages(records);
-    const thread = renderThreadText(messages, {
-      leadEmail,
-      campaignId: campaign.campaignId ?? campaign.instantlyCampaignId,
-      qualification: eventType,
-    });
-
-    await sendEmail(
-      {
-        appId: "instantly-service",
-        eventType: "positive-reply-forward",
-        recipientEmail: AGENCY_INBOX,
-        metadata: {
-          leadEmail,
-          campaignId: campaign.campaignId ?? campaign.instantlyCampaignId,
-          instantlyCampaignId: campaign.instantlyCampaignId,
-          qualification: eventType,
-          messageCount: String(messages.length),
-          thread,
-        },
-      },
-      {
-        orgId: campaign.orgId,
-        userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
-        runId: campaign.runId || undefined,
-        tracking: {
-          campaignId: campaign.campaignId ?? undefined,
-          brandId: campaign.brandIds?.[0],
-        },
-      },
-    );
-
-    console.log(
-      `[instantly-service] forward-positive-reply: sent thread (${messages.length} msg) for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} qualification=${eventType} → ${AGENCY_INBOX}`,
-    );
+    await sendThreadForward(campaign, leadEmail);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     // Release the claim so a later webhook retry / reconcile re-poll re-attempts.

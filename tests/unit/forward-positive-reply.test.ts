@@ -43,6 +43,8 @@ import {
   htmlToText,
   selectThreadMessages,
   renderThreadText,
+  threadSubject,
+  formatThreadDate,
   maybeForwardPositiveReply,
   type ForwardPositiveReplyCampaign,
 } from "../../src/lib/forward-positive-reply";
@@ -136,44 +138,58 @@ describe("selectThreadMessages", () => {
   });
 });
 
-describe("renderThreadText", () => {
-  it("includes lead, campaign, qualification, and every message from/to/body", () => {
-    const msgs = selectThreadMessages([
-      record({
-        ue_type: 1,
-        from_address_email: "amy@distribute.com",
-        to_address_email_list: "lead@x.com",
-        body: { text: "Hello" },
-      }),
-      record({
-        ue_type: 2,
-        timestamp_email: "2026-07-14T12:00:00.000Z",
-        from_address_email: "lead@x.com",
-        to_address_email_list: "amy@distribute.com",
-        body: { text: "Interested!" },
-      }),
-    ]);
-    const text = renderThreadText(msgs, {
-      leadEmail: "lead@x.com",
-      campaignId: "camp-1",
-      qualification: "lead_interested",
-    });
-    expect(text).toContain("Lead: lead@x.com");
-    expect(text).toContain("Campaign: camp-1");
-    expect(text).toContain("lead_interested");
+describe("renderThreadText — clean, client-forwardable (no branding)", () => {
+  const msgs = selectThreadMessages([
+    record({
+      ue_type: 1,
+      from_address_email: "amy@distribute.com",
+      to_address_email_list: "lead@x.com",
+      subject: "Functional medicine",
+      body: { text: "Hello" },
+    }),
+    record({
+      ue_type: 2,
+      timestamp_email: "2026-07-14T12:00:00.000Z",
+      from_address_email: "lead@x.com",
+      to_address_email_list: "amy@distribute.com",
+      subject: "Re: Functional medicine",
+      body: { text: "Interested!" },
+    }),
+  ]);
+
+  it("renders every message's From/To/Date/Subject + body, oldest→newest", () => {
+    const text = renderThreadText(msgs);
+    expect(text).toContain("From: amy@distribute.com");
+    expect(text).toContain("From: lead@x.com");
+    expect(text).toContain("Subject: Re: Functional medicine");
     expect(text).toContain("Hello");
     expect(text).toContain("Interested!");
-    expect(text).toContain("amy@distribute.com");
+    // oldest first: our "Hello" appears before the "Interested!" reply
+    expect(text.indexOf("Hello")).toBeLessThan(text.indexOf("Interested!"));
   });
 
-  it("degrades gracefully when the thread is empty", () => {
-    const text = renderThreadText([], {
-      leadEmail: "lead@x.com",
-      campaignId: "camp-1",
-      qualification: "lead_interested",
-    });
-    expect(text).toContain("Lead: lead@x.com");
-    expect(text).toContain("not yet available");
+  it("carries NO instantly-service branding / notes / labels", () => {
+    const text = renderThreadText(msgs);
+    expect(text).not.toMatch(/instantly-service/i);
+    expect(text).not.toMatch(/Lead:/);
+    expect(text).not.toMatch(/Campaign:/);
+    expect(text).not.toMatch(/qualification/i);
+    expect(text).not.toMatch(/Message \d+/);
+    expect(text).not.toMatch(/REPLY \(from lead\)|SENT \(from us\)/);
+  });
+
+  it("threadSubject = the newest real subject", () => {
+    expect(threadSubject(msgs)).toBe("Re: Functional medicine");
+    expect(threadSubject([])).toBe("(no subject)");
+  });
+
+  it("formatThreadDate is readable UTC", () => {
+    expect(formatThreadDate("2026-07-13T17:57:13.748Z")).toContain("Jul 13, 2026");
+    expect(formatThreadDate("2026-07-13T17:57:13.748Z")).toContain("UTC");
+  });
+
+  it("empty thread → placeholder, no crash", () => {
+    expect(renderThreadText([])).toBe("(conversation unavailable)");
   });
 });
 
@@ -191,6 +207,7 @@ describe("maybeForwardPositiveReply", () => {
         ue_type: 2,
         from_address_email: "lead@x.com",
         to_address_email_list: "amy@distribute.com",
+        subject: "Re: Functional medicine",
         body: { text: "Yes, interested!" },
       }),
     ]);
@@ -208,8 +225,12 @@ describe("maybeForwardPositiveReply", () => {
     const [params, identity] = mockSendEmail.mock.calls[0];
     expect(params.eventType).toBe("positive-reply-forward");
     expect(params.recipientEmail).toBe("kevin@distribute.you");
+    // clean, client-forwardable: subject = the conversation subject, body = the
+    // thread with the real reply and no instantly-service branding
+    expect(params.metadata.subject).toBe("Re: Functional medicine");
     expect(params.metadata.thread).toContain("Yes, interested!");
-    expect(params.metadata.leadEmail).toBe("lead@x.com");
+    expect(params.metadata.thread).not.toMatch(/instantly-service|Lead:|qualification/i);
+    expect(params.metadata.leadEmail).toBeUndefined();
     expect(identity.orgId).toBe("org-1");
   });
 

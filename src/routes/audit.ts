@@ -1,6 +1,8 @@
 import { Router, Request, Response } from "express";
-import { sql } from "drizzle-orm";
+import { sql, eq } from "drizzle-orm";
 import { db } from "../db";
+import { instantlyCampaigns } from "../db/schema";
+import { sendThreadForward } from "../lib/forward-positive-reply";
 import { listAccounts, getAccountRaw } from "../lib/instantly-client";
 import { resolvePlatformInstantlyApiKey } from "../lib/key-client";
 import {
@@ -669,6 +671,55 @@ router.post("/reconcile/refresh", async (_req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] reconcile-snapshot: run=${runId} failed: ${message}`);
   });
+});
+
+/**
+ * POST /internal/audit/forward-thread
+ * Manually (re-)forward a positive reply's full Instantly thread to the agency
+ * inbox as a CLEAN, client-forwardable email. Uses the SAME render + send path
+ * as the automatic positive-reply webhook side effect, but does NOT touch the
+ * exactly-once claim (this is an on-demand re-send / ops tool). Runs the fetch
+ * synchronously so the caller sees the message count (and any error). Body:
+ * `{ campaignId }` = the per-lead Instantly campaign id.
+ */
+router.post("/forward-thread", async (req: Request, res: Response) => {
+  const campaignId = (req.body as { campaignId?: unknown })?.campaignId;
+  if (typeof campaignId !== "string" || !campaignId) {
+    return res
+      .status(400)
+      .json({ error: "campaignId (instantly_campaign_id) is required" });
+  }
+
+  const [row] = await db
+    .select()
+    .from(instantlyCampaigns)
+    .where(eq(instantlyCampaigns.instantlyCampaignId, campaignId))
+    .limit(1);
+  if (!row) {
+    return res.status(404).json({ error: `campaign not found: ${campaignId}` });
+  }
+
+  try {
+    const messageCount = await sendThreadForward(
+      {
+        instantlyCampaignId: row.instantlyCampaignId,
+        campaignId: row.campaignId,
+        orgId: row.orgId,
+        userId: row.userId,
+        runId: row.runId,
+        brandIds: row.brandIds,
+      },
+      row.leadEmail ?? "",
+    );
+    console.log(
+      `[audit] forward-thread: sent (${messageCount} msg) for campaign=${campaignId}`,
+    );
+    res.json({ sent: true, campaignId, messageCount });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] forward-thread: failed for campaign=${campaignId}: ${message}`);
+    res.status(500).json({ error: message });
+  }
 });
 
 export default router;
