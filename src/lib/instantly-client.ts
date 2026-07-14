@@ -143,6 +143,12 @@ export interface EmailRecord {
   subject?: string;
   timestamp_email: string;
   timestamp_created?: string;
+  // Present on both GET /emails (list) and GET /emails/{id}. The message body
+  // in both HTML and text form, plus the resolved from/to addresses — used to
+  // render the full conversation thread when forwarding a positive reply.
+  body?: { text?: string | null; html?: string | null } | null;
+  from_address_email?: string | null;
+  to_address_email_list?: string | null;
   [key: string]: unknown;
 }
 
