@@ -58,6 +58,13 @@ export interface Account {
   // send volume) is readable off a list row with no extra IO; increment/advanced
   // are NOT — fetch the single account for those (see setWarmupDailyLimit).
   warmup?: WarmupConfig;
+  // Instantly's "Campaign slow ramp" toggle — gradually increases the account's
+  // daily send volume over time. INVARIANT: this MUST be false on every account
+  // regardless of lifecycle_status (our fleet is pre-warmed/DFY-aged, so ramping
+  // only throttles live sends). Turned off at DFY-order setup and kept off fleet-
+  // wide by the slow-ramp-sync sweep (see setSlowRamp / sync-slow-ramp.ts). May
+  // be absent on older account payloads → treated as needing the off-PATCH.
+  enable_slow_ramp?: boolean;
 }
 
 interface PaginatedResponse<T> {
@@ -528,6 +535,24 @@ export async function setDailyLimit(
   return instantlyRequest<Account>(apiKey, `/accounts/${encoded}`, {
     method: "PATCH",
     body: { daily_limit: limit },
+  });
+}
+
+/**
+ * Set the account's "Campaign slow ramp" toggle (`enable_slow_ramp`) via
+ * `PATCH /accounts/{email}`. INVARIANT: our fleet keeps this FALSE on every
+ * account (pre-warmed / DFY-aged mailboxes don't need a ramp, and a ramp only
+ * throttles live sends). Fails loud on any non-2xx (instantlyRequest throws).
+ */
+export async function setSlowRamp(
+  apiKey: string,
+  email: string,
+  enabled: boolean,
+): Promise<Account> {
+  const encoded = encodeURIComponent(email);
+  return instantlyRequest<Account>(apiKey, `/accounts/${encoded}`, {
+    method: "PATCH",
+    body: { enable_slow_ramp: enabled },
   });
 }
 
