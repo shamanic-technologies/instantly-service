@@ -408,6 +408,23 @@ describe("autolinkifyHtml", () => {
     expect(out).toContain('href="https://pressbeat.io"');
     expect(out).toContain(">pressbeat.io</a>)");
   });
+
+  it("strips the query string from the display text but keeps it in href (UTM)", () => {
+    const url =
+      "https://opsfolio.com/lp/cmmc/level-1-free-assessment/?utm_source=landing_page&utm_medium=email&utm_id=distribute";
+    const out = autolinkifyHtml(`<p>see ${url} now</p>`);
+    // href keeps the full URL (tracking + destination intact)
+    expect(out).toContain(`href="${url}"`);
+    // display text is the path only — no utm_* noise shown to the recipient
+    expect(out).toContain(">https://opsfolio.com/lp/cmmc/level-1-free-assessment/</a>");
+    expect(out).not.toContain(">https://opsfolio.com/lp/cmmc/level-1-free-assessment/?utm");
+  });
+
+  it("leaves a query-less URL display unchanged", () => {
+    const out = autolinkifyHtml("<p>visit https://pressbeat.io/pricing now</p>");
+    expect(out).toContain('href="https://pressbeat.io/pricing"');
+    expect(out).toContain(">https://pressbeat.io/pricing</a>");
+  });
 });
 
 describe("buildEmailBodyWithSignature", () => {
