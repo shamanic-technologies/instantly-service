@@ -122,6 +122,12 @@ export function pickCapacityAwareAccount(
  *
  * Mustache placeholders (`{{firstName}}`, `{{user.email}}`) are masked before
  * linkify to avoid wrapping things like `user.email` that look domain-like.
+ *
+ * The DISPLAY text of every linkified URL is stripped of its query string
+ * (`?...`) so a destination link carrying UTM params renders clean
+ * (`https://site.com/lp/offer/`, not the giant `?utm_source=...&utm_id=...`).
+ * The `href` keeps the FULL URL — Instantly rewrites it into a tracking
+ * redirect, and the click still carries every UTM param to the destination.
  */
 export function autolinkifyHtml(html: string): string {
   const placeholders: string[] = [];
@@ -129,7 +135,10 @@ export function autolinkifyHtml(html: string): string {
     placeholders.push(m);
     return `XXLINKMUSTACHE${placeholders.length - 1}XX`;
   });
-  const linkified = linkifyHtml(masked, { defaultProtocol: "https" });
+  const linkified = linkifyHtml(masked, {
+    defaultProtocol: "https",
+    format: (value, type) => (type === "url" ? value.split("?")[0] : value),
+  });
   return linkified.replace(/XXLINKMUSTACHE(\d+)XX/g, (_, i) => placeholders[Number(i)]);
 }
 
