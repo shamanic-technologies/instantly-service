@@ -42,6 +42,7 @@ import {
   POSITIVE_QUALIFICATION_EVENT_TYPES,
   htmlToText,
   selectThreadMessages,
+  messagesFromFirstReply,
   renderThreadText,
   threadSubject,
   formatThreadDate,
@@ -135,6 +136,49 @@ describe("selectThreadMessages", () => {
     expect(msgs[1].direction).toBe("inbound");
     expect(msgs[1].from).toBe("lead@x.com");
     expect(msgs[1].bodyText).toBe("Sounds great!");
+  });
+});
+
+describe("messagesFromFirstReply — start at the recipient's reply", () => {
+  const build = () =>
+    selectThreadMessages([
+      record({ ue_type: 1, timestamp_email: "2026-07-08T13:00:00.000Z", body: { text: "cold 1" } }),
+      record({ ue_type: 1, timestamp_email: "2026-07-13T13:00:00.000Z", body: { text: "cold 2" } }),
+      record({
+        ue_type: 2,
+        timestamp_email: "2026-07-13T17:00:00.000Z",
+        from_address_email: "lead@x.com",
+        body: { text: "reply!" },
+      }),
+    ]);
+
+  it("drops the outbound sends before the first inbound reply", () => {
+    const out = messagesFromFirstReply(build());
+    expect(out).toHaveLength(1);
+    expect(out[0].direction).toBe("inbound");
+    expect(out[0].bodyText).toBe("reply!");
+  });
+
+  it("keeps everything from the first reply onward (incl. later outbound)", () => {
+    const msgs = build();
+    msgs.push({
+      direction: "outbound",
+      from: "us@x.com",
+      to: "lead@x.com",
+      date: "2026-07-13T18:00:00.000Z",
+      subject: "Re",
+      bodyText: "our follow-up",
+    });
+    const out = messagesFromFirstReply(msgs);
+    expect(out.map((m) => m.bodyText)).toEqual(["reply!", "our follow-up"]);
+  });
+
+  it("no inbound yet → falls back to the full set (never empty)", () => {
+    const outboundOnly = selectThreadMessages([
+      record({ ue_type: 1, body: { text: "cold" } }),
+    ]);
+    expect(messagesFromFirstReply(outboundOnly)).toHaveLength(1);
+    expect(messagesFromFirstReply([])).toEqual([]);
   });
 });
 
