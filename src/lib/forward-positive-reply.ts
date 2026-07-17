@@ -194,12 +194,26 @@ export function renderThreadText(messages: ThreadMessage[]): string {
 }
 
 /**
- * Fetch a campaign's full Instantly thread and forward it — as a CLEAN,
+ * Drop everything BEFORE the recipient's first reply. A forwarded positive reply
+ * must START at the prospect's reply: the reply's OWN body already quotes the
+ * outbound history beneath it, so re-listing our sent emails above it is
+ * redundant and noisy for a client forward. If the lead has no inbound message
+ * yet (edge — reply not synced to /emails), fall back to the full set so we
+ * never forward an empty thread.
+ */
+export function messagesFromFirstReply(messages: ThreadMessage[]): ThreadMessage[] {
+  const i = messages.findIndex((m) => m.direction === "inbound");
+  return i === -1 ? messages : messages.slice(i);
+}
+
+/**
+ * Fetch a campaign's Instantly thread and forward it — as a CLEAN,
  * client-forwardable email (subject = the conversation's real subject; body =
- * the plain conversation, no branding) — to the agency inbox. Shared by the
- * positive-reply webhook side effect AND the manual re-forward endpoint. Returns
- * the message count. Throws on any failure (the caller decides whether to
- * swallow it).
+ * the recipient's reply and everything after it, no branding) — to the agency
+ * inbox. Starts at the prospect's reply (see messagesFromFirstReply). Shared by
+ * the positive-reply webhook side effect AND the manual re-forward endpoint.
+ * Returns the message count. Throws on any failure (the caller decides whether
+ * to swallow it).
  */
 export async function sendThreadForward(
   campaign: ForwardPositiveReplyCampaign,
@@ -213,7 +227,7 @@ export async function sendThreadForward(
     path: "/internal/forward-positive-reply",
   });
   const records = await listEmails(key, { campaignId: campaign.instantlyCampaignId });
-  const messages = selectThreadMessages(records);
+  const messages = messagesFromFirstReply(selectThreadMessages(records));
 
   await sendEmail(
     {
