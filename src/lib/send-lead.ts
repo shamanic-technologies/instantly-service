@@ -186,6 +186,32 @@ export function buildDefaultSignature(account: Account): string {
 const SIG_SEPARATOR_HTML = "<p>--</p>";
 
 /**
+ * Unsubscribe footer appended BELOW the signature on every sent email.
+ *
+ * `{unsubscribe_link}` is Instantly's server-side merge variable (SINGLE braces
+ * — the `{{...}}` mustache form does NOT resolve): it renders per-lead at send
+ * into a functional opt-out URL. This is a SECOND, VISIBLE opt-out path that
+ * complements the RFC-8058 `List-Unsubscribe` header set on the campaign
+ * (`insert_unsubscribe_header: true`), which powers the mailbox-native
+ * (Gmail/Apple/Outlook) one-click unsubscribe button.
+ *
+ * A `<p>&nbsp;</p>` spacer paragraph separates it from the signature with a
+ * blank-line gap. Rendered small / grey / italic via inline CSS; Instantly's
+ * HTML sanitizer MAY strip the `style` attribute on PATCH round-trip (validate
+ * the rendered result on a live send), but the anchor + text survive regardless
+ * because they are tag-wrapped.
+ *
+ * Appended as part of the signature block (after the `<p>--</p>` marker) so
+ * `stripAccountSignature` removes it together with the signature on re-send —
+ * idempotency (`f(f(x)) === f(x)`) is preserved.
+ */
+export const UNSUBSCRIBE_FOOTER_HTML =
+  "<p>&nbsp;</p>" +
+  '<p style="font-size:12px;color:#999999;font-style:italic">' +
+  "Don't want to hear from me again? " +
+  '<a href="{unsubscribe_link}" style="color:#999999">unsubscribe</a></p>';
+
+/**
  * Inject the selected account's signature into the email body.
  *
  * `{{accountSignature}}` only resolves in the Instantly UI — campaigns created
@@ -205,6 +231,10 @@ const SIG_SEPARATOR_HTML = "<p>--</p>";
  * Autolinkify is applied to the PROSPECT BODY ONLY. The signature block is our
  * own controlled HTML and is appended verbatim — its brand domain must render
  * as plain text, NOT a clickable `<a>` link.
+ *
+ * The `UNSUBSCRIBE_FOOTER_HTML` block (visible opt-out via `{unsubscribe_link}`)
+ * is appended below the signature, INSIDE the strip-and-reappend region, so
+ * idempotency holds — a re-sent body never stacks the footer.
  */
 export function buildEmailBodyWithSignature(body: string, account: Account): string {
   const accountSig = account.signature?.trim() || "";
@@ -212,7 +242,7 @@ export function buildEmailBodyWithSignature(body: string, account: Account): str
   const stripped = stripAccountSignature(body);
 
   const linkedBody = autolinkifyHtml(stripped);
-  const sigBlock = `${SIG_SEPARATOR_HTML}${signature}`;
+  const sigBlock = `${SIG_SEPARATOR_HTML}${signature}${UNSUBSCRIBE_FOOTER_HTML}`;
 
   return linkedBody.includes("{{accountSignature}}")
     ? linkedBody.replace("{{accountSignature}}", sigBlock)
