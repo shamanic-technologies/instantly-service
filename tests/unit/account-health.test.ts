@@ -294,18 +294,18 @@ describe("buildAccountHealth", () => {
 
   it("maps provider_code to accountType (google/microsoft/imap), null otherwise", () => {
     const rows = buildAccountHealth([
-      acc({ email: "g@good.com", provider_code: 1 }),
-      acc({ email: "m@good.com", provider_code: 2 }),
-      acc({ email: "i@good.com", provider_code: 3 }),
-      acc({ email: "j@good.com", provider_code: 4 }),
+      acc({ email: "i@good.com", provider_code: 1 }),
+      acc({ email: "g@good.com", provider_code: 2 }),
+      acc({ email: "m3@good.com", provider_code: 3 }),
+      acc({ email: "m4@good.com", provider_code: 4 }),
       acc({ email: "n@good.com" }),
       acc({ email: "u@good.com", provider_code: 99 }),
     ]);
     const byEmail = Object.fromEntries(rows.map((r) => [r.email, r.accountType]));
-    expect(byEmail["g@good.com"]).toBe("google");
-    expect(byEmail["m@good.com"]).toBe("microsoft");
     expect(byEmail["i@good.com"]).toBe("imap");
-    expect(byEmail["j@good.com"]).toBe("imap");
+    expect(byEmail["g@good.com"]).toBe("google");
+    expect(byEmail["m3@good.com"]).toBe("microsoft");
+    expect(byEmail["m4@good.com"]).toBe("microsoft");
     expect(byEmail["n@good.com"]).toBeNull();
     expect(byEmail["u@good.com"]).toBeNull();
   });
@@ -313,10 +313,11 @@ describe("buildAccountHealth", () => {
 
 describe("mapProviderCode", () => {
   it("maps known codes and returns null for unknown/absent", () => {
-    expect(mapProviderCode(1)).toBe("google");
-    expect(mapProviderCode(2)).toBe("microsoft");
-    expect(mapProviderCode(3)).toBe("imap");
-    expect(mapProviderCode(4)).toBe("imap");
+    expect(mapProviderCode(1)).toBe("imap");
+    expect(mapProviderCode(2)).toBe("google");
+    expect(mapProviderCode(3)).toBe("microsoft");
+    expect(mapProviderCode(4)).toBe("microsoft");
+    expect(mapProviderCode(8)).toBeNull();
     expect(mapProviderCode(0)).toBeNull();
     expect(mapProviderCode(undefined)).toBeNull();
   });

@@ -136,18 +136,26 @@ export interface AccountHealth {
 }
 
 /**
- * Map Instantly's `provider_code` to a human account type. 1=Google, 2=Microsoft,
- * 3/4=IMAP/SMTP. Any other / absent code → null (never fabricated).
+ * Map Instantly's `provider_code` to a human account type. 1=Custom IMAP/SMTP,
+ * 2=Google, 3/4=Microsoft. Any other / absent code (incl. 8) → null (never fabricated).
+ *
+ * Verified against developer.instantly.ai's account schema (provider_code enum
+ * 1,2,3,4,8; its example account is provider_code 2 with a Gmail 550 status_message)
+ * and observed prod: the pc2 fleet is the Google pre-warmed inboxes that throw the
+ * Gmail "Daily user sending limit exceeded" error, while pc1 is the IMAP-imported
+ * Mailforge fleet (the instantly-mail importer hard-codes provider_code 1 = Custom
+ * IMAP/SMTP). The previous mapping (1→google, 2→microsoft, 3/4→imap) was inverted and
+ * mislabeled every account (Google fleet shown as "microsoft", IMAP fleet as "google").
  */
 export function mapProviderCode(code: number | undefined): string | null {
   switch (code) {
     case 1:
-      return "google";
+      return "imap";
     case 2:
-      return "microsoft";
+      return "google";
     case 3:
     case 4:
-      return "imap";
+      return "microsoft";
     default:
       return null;
   }
