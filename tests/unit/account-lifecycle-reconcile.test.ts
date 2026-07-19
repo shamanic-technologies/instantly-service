@@ -51,7 +51,7 @@ beforeEach(() => {
 });
 
 describe("reconcileLifecycle", () => {
-  it("promotes to in_production on a real change: PATCHes warmup 10, writes event + silver", async () => {
+  it("promotes to in_production on a real change: PATCHes warmup 5, writes event + silver", async () => {
     seedReads({
       accounts: [
         {
@@ -68,9 +68,9 @@ describe("reconcileLifecycle", () => {
     const summary = await reconcileLifecycle("api-key");
 
     expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 1, dailyLimitPatched: 1, failed: 0 });
-    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "prod@dfy.com", 10);
-    // in_production also opens the campaign daily max-send to 50.
-    expect(mockSetDaily).toHaveBeenCalledWith("api-key", "prod@dfy.com", 50);
+    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "prod@dfy.com", 5);
+    // in_production also opens the campaign daily max-send to 45.
+    expect(mockSetDaily).toHaveBeenCalledWith("api-key", "prod@dfy.com", 45);
     expect(mockInsertValues).toHaveBeenCalledTimes(1);
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(event.fromStatus).toBe("in_recovery");
@@ -101,7 +101,7 @@ describe("reconcileLifecycle", () => {
     expect(mockUpdateSet).not.toHaveBeenCalled();
   });
 
-  it("untested account (no delivery) → in_recovery, warmup 50", async () => {
+  it("untested account (no delivery) → in_recovery, warmup 30 + daily 20", async () => {
     seedReads({
       accounts: [
         {
@@ -118,13 +118,15 @@ describe("reconcileLifecycle", () => {
     const summary = await reconcileLifecycle("api-key");
 
     expect(summary.changed).toBe(1);
-    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "new@dfy.com", 50);
+    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "new@dfy.com", 30);
+    // in_recovery now also caps the campaign daily max-send to 20.
+    expect(mockSetDaily).toHaveBeenCalledWith("api-key", "new@dfy.com", 20);
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(event.fromStatus).toBeNull();
     expect(event.toStatus).toBe("in_recovery");
   });
 
-  it("brand domain → deactivated_by_user, warmup 50", async () => {
+  it("brand domain → deactivated_by_user, warmup 30", async () => {
     seedReads({
       accounts: [
         {
@@ -142,7 +144,9 @@ describe("reconcileLifecycle", () => {
     const summary = await reconcileLifecycle("api-key");
 
     expect(summary.changed).toBe(1);
-    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "cold@distribute.you", 50);
+    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "cold@distribute.you", 30);
+    // deactivated_by_user leaves the campaign daily_limit untouched (queue drains).
+    expect(mockSetDaily).not.toHaveBeenCalled();
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(event.toStatus).toBe("deactivated_by_user");
     expect(event.reason).toBe("brand_domain");
@@ -190,7 +194,7 @@ describe("reconcileLifecycle", () => {
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(event.toStatus).toBe("in_production");
     expect(event.reason).toBe("reactivated");
-    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "back@dfy.com", 10);
+    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "back@dfy.com", 5);
   });
 
   it("warmup PATCH failure → counted failed, no event/silver persisted (no half-applied state)", async () => {

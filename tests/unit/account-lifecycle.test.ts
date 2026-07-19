@@ -8,6 +8,7 @@ import {
   IN_PRODUCTION_WARMUP_DAILY,
   RECOVERY_WARMUP_DAILY,
   IN_PRODUCTION_DAILY_LIMIT,
+  RECOVERY_DAILY_LIMIT,
   type DeriveLifecycleInput,
 } from "../../src/lib/account-lifecycle";
 
@@ -108,14 +109,14 @@ describe("isDeliveryFull — exact 100% across ALL ESPs", () => {
 });
 
 describe("warmupDailyForStatus", () => {
-  it("in_production → 10/day", () => {
+  it("in_production → 5/day", () => {
     expect(warmupDailyForStatus("in_production")).toBe(IN_PRODUCTION_WARMUP_DAILY);
-    expect(IN_PRODUCTION_WARMUP_DAILY).toBe(10);
+    expect(IN_PRODUCTION_WARMUP_DAILY).toBe(5);
   });
-  it("in_recovery and deactivated_by_user → 50/day", () => {
+  it("in_recovery and deactivated_by_user → 30/day", () => {
     expect(warmupDailyForStatus("in_recovery")).toBe(RECOVERY_WARMUP_DAILY);
     expect(warmupDailyForStatus("deactivated_by_user")).toBe(RECOVERY_WARMUP_DAILY);
-    expect(RECOVERY_WARMUP_DAILY).toBe(50);
+    expect(RECOVERY_WARMUP_DAILY).toBe(30);
   });
   it("deactivated_by_instantly → null (do NOT touch warmup)", () => {
     expect(warmupDailyForStatus("deactivated_by_instantly")).toBeNull();
@@ -123,12 +124,15 @@ describe("warmupDailyForStatus", () => {
 });
 
 describe("dailyLimitForStatus", () => {
-  it("in_production → 50 (opens the campaign daily max-send)", () => {
+  it("in_production → 45 (opens the campaign daily max-send)", () => {
     expect(dailyLimitForStatus("in_production")).toBe(IN_PRODUCTION_DAILY_LIMIT);
-    expect(IN_PRODUCTION_DAILY_LIMIT).toBe(50);
+    expect(IN_PRODUCTION_DAILY_LIMIT).toBe(45);
   });
-  it("every other state → null (leave daily_limit untouched, queue drains)", () => {
-    expect(dailyLimitForStatus("in_recovery")).toBeNull();
+  it("in_recovery → 20 (caps campaign send, paired with more warmup)", () => {
+    expect(dailyLimitForStatus("in_recovery")).toBe(RECOVERY_DAILY_LIMIT);
+    expect(RECOVERY_DAILY_LIMIT).toBe(20);
+  });
+  it("deactivated_* → null (leave daily_limit untouched, queue drains)", () => {
     expect(dailyLimitForStatus("deactivated_by_user")).toBeNull();
     expect(dailyLimitForStatus("deactivated_by_instantly")).toBeNull();
   });
