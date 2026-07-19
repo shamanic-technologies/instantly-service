@@ -61,17 +61,24 @@ export interface Lifecycle {
 /** Fully-warmed health score AND full inbox placement — the production bar. */
 export const FULL_SCORE = 100;
 
-/** Warmup daily send volume pushed to Instantly per target lifecycle state. */
-export const IN_PRODUCTION_WARMUP_DAILY = 10; // fully warmed → maintenance volume
-export const RECOVERY_WARMUP_DAILY = 50; // recover reputation → warm harder
+/**
+ * Warmup daily send volume pushed to Instantly per target lifecycle state.
+ * Paired with the campaign daily_limit below so EVERY state's total daily send
+ * (campaign + warmup) stays at 50 — under Gmail's per-user daily sending limit,
+ * which throttled the fleet with a `550-5.4.5 Daily user sending limit exceeded`
+ * when it ran at 60/day (2026-07-19 incident).
+ */
+export const IN_PRODUCTION_WARMUP_DAILY = 5; // fully warmed → mostly campaign send (45 + 5 = 50)
+export const RECOVERY_WARMUP_DAILY = 30; // recover reputation → warm harder, send less (20 + 30 = 50)
 
 /**
- * Campaign daily max-send pushed to Instantly ONLY when an account flips INTO
- * in_production (fully warmed → open the tap to 50). Other states leave the
- * campaign `daily_limit` untouched so an in_recovery/deactivated account keeps
- * draining its already-loaded queue at whatever limit it had.
+ * Campaign daily max-send pushed to Instantly on a flip INTO in_production (45)
+ * or in_recovery (20). Paired with the warmup volume above so the total stays 50.
+ * deactivated_* states leave the campaign `daily_limit` untouched (null) so an
+ * off account keeps draining its already-loaded queue at whatever limit it had.
  */
-export const IN_PRODUCTION_DAILY_LIMIT = 50;
+export const IN_PRODUCTION_DAILY_LIMIT = 45;
+export const RECOVERY_DAILY_LIMIT = 20;
 
 /**
  * Pure lifecycle derivation. First match wins (order is load-bearing — a domain
@@ -118,13 +125,21 @@ export function warmupDailyForStatus(status: LifecycleStatus): number | null {
 }
 
 /**
- * Campaign daily max-send to PATCH into Instantly on a flip. Only in_production
- * opens the tap (→ 50); every other state returns `null` = do NOT touch the
- * campaign daily_limit, so an in_recovery/deactivated account keeps draining its
- * already-loaded queue at its current limit.
+ * Campaign daily max-send to PATCH into Instantly on a flip. in_production opens
+ * the tap to 45, in_recovery caps it to 20 (paired with more warmup so the total
+ * stays 50); deactivated_* states return `null` = do NOT touch the campaign
+ * daily_limit, so an off account keeps draining its already-loaded queue.
  */
 export function dailyLimitForStatus(status: LifecycleStatus): number | null {
-  return status === "in_production" ? IN_PRODUCTION_DAILY_LIMIT : null;
+  switch (status) {
+    case "in_production":
+      return IN_PRODUCTION_DAILY_LIMIT;
+    case "in_recovery":
+      return RECOVERY_DAILY_LIMIT;
+    case "deactivated_by_user":
+    case "deactivated_by_instantly":
+      return null;
+  }
 }
 
 /** Domain part of an email (lowercased), or "" when there is no `@domain`. */
