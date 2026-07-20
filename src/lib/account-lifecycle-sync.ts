@@ -280,14 +280,17 @@ interface SilverAccountRow {
 /**
  * Recompute every account's lifecycle from (silver health snapshot + latest
  * placement delivery + domain_policy). On a CHANGE:
- *   1. PATCH the Instantly warmup FIRST (10/day in_production, 50/day recovery /
+ *   1. PATCH the Instantly warmup FIRST (5/day in_production, 30/day recovery /
  *      deactivated_by_user, untouched for deactivated_by_instantly) — fail loud
  *      per account; on a PATCH error we count `failed` and SKIP the persist (no
  *      half-applied state — next run retries).
- *   2. Insert a lifecycle event (the audit trail + capacity-history raw material).
- *   3. Update the silver lifecycle projection.
+ *   2. PATCH the campaign daily_limit (45 in_production, 20 in_recovery; untouched
+ *      for deactivated_* so the queue drains). Paired with warmup so total = 50/day
+ *      (under Gmail's per-user daily sending limit).
+ *   3. Insert a lifecycle event (the audit trail + capacity-history raw material).
+ *   4. Update the silver lifecycle projection.
  * Idempotent: an account whose derived status equals its current status is a
- * no-op (no event, no PATCH). Never touches the campaign daily_limit.
+ * no-op (no event, no PATCH).
  */
 export async function reconcileLifecycle(
   apiKey: string,

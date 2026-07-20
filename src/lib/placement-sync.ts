@@ -332,11 +332,12 @@ export async function runOneTimeFleetPlacementTest(
   // CADENCE: a placement test sends ~30-50 seeds/account, and a mailbox's safe
   // daily volume is ~50 (40 send + 10 warmup), so a test can NOT run on top of a
   // normal sending day. We therefore test the WHOLE testable pool ONCE PER WEEK,
-  // on SUNDAY (the cron fires `0 6 * * 0`) — the fleet's send-free day: the
-  // campaign send window is Mon-Sat (instantly-client.ts, Sunday off) and warmup
-  // is weekday-only, so on Sunday the mailbox is otherwise empty and absorbs the
-  // seed spike safely. No per-account rotation / cursor state — every testable
-  // account is seeded the same Sunday.
+  // on SATURDAY (the cron fires `0 6 * * 6`) — a send-free day: the campaign send
+  // window is Mon-Fri (instantly-client.ts, Sat+Sun off) and warmup is
+  // weekday-only, so on Saturday the mailbox is otherwise empty and absorbs the
+  // seed spike safely; if the spike overflows the per-account daily cap, it
+  // finishes on Sunday, also send-free. No per-account rotation / cursor state —
+  // every testable account is seeded the same Saturday.
   const senders = await fetchTestablePoolEmails();
   if (senders.length === 0) {
     return { created: 0, testCode: null, recipientEsps: [], senderCount: 0 };

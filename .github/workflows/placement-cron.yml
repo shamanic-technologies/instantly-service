@@ -12,10 +12,12 @@ name: Inbox-placement tests (maintain + sync)
 #      into our Bronze/Silver/Gold tables so account-health reflects the latest
 #      results. Read-only against Instantly (spends no quota).
 #
-# Runs once a week, on SUNDAY → one one-time test covering the WHOLE testable
-# pool; `sync` pulls results. Sunday is the fleet's send-free day (campaign send
-# window is Mon-Sat, warmup is weekday-only), so the ~30-50 seeds/account spike
-# lands on an otherwise-empty mailbox day — no rotation needed.
+# Runs once a week, on SATURDAY → one one-time test covering the WHOLE testable
+# pool; `sync` pulls results. Saturday AND Sunday are both send-free days
+# (campaign send window is Mon-Fri, warmup is weekday-only), so the ~30-50
+# seeds/account spike lands on an otherwise-empty mailbox day — and if it
+# overflows the per-account daily send cap on Saturday, the overflow finishes on
+# Sunday, still an empty day — no rotation needed.
 # Scheduled runs fire from the DEFAULT branch (main).
 #
 # Required secrets (already used by reconcile-cron.yml):
@@ -26,7 +28,7 @@ name: Inbox-placement tests (maintain + sync)
 
 on:
   schedule:
-    - cron: "0 6 * * 0" # Sundays 06:00 UTC — whole testable pool, one weekly test
+    - cron: "0 6 * * 6" # Saturdays 06:00 UTC — whole testable pool, one weekly test
   workflow_dispatch:
 
 jobs:
