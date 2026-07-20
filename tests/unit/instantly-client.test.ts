@@ -101,7 +101,7 @@ describe("instantly-client", () => {
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     const sched = body.campaign_schedule.schedules[0];
     expect(sched.timing).toEqual({ from: "08:00", to: "17:00" });
-    expect(sched.days).toEqual({ "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": true });
+    expect(sched.days).toEqual({ "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false });
     expect(sched.timezone).toBe("America/Chicago");
   });
 
