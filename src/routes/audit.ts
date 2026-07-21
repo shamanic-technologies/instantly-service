@@ -19,6 +19,11 @@ import {
 import { fetchCapacityHistory } from "../lib/capacity-history";
 import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
 import { syncSlowRampOff } from "../lib/sync-slow-ramp";
+import { syncLifecycleLimits } from "../lib/sync-lifecycle-limits";
+import {
+  reactivateEligibleAccounts,
+  isReactivateAccountsEnabled,
+} from "../lib/reactivate-accounts";
 import {
   fetchSentTodayByAccount,
   fetchSentYesterdayByAccount,
@@ -442,6 +447,79 @@ router.post("/slow-ramp-sync", async (req: Request, res: Response) => {
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] slow-ramp-sync run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/audit/lifecycle-limits-sync
+ *
+ * Platform-scoped. IDEMPOTENT ENFORCEMENT of every account's warmup + campaign
+ * daily_limit to the target for its CURRENT lifecycle state (in_production 45/5,
+ * in_recovery 20/30) — on EVERY run, not only on a flip. Closes the gap where
+ * reconcile PATCHes limits ONLY on a state change: an account that has sat in a
+ * state since before the target changed (or whose values Instantly reset on its
+ * own reactivation) never got re-imposed. SUPERSEDES daily-limit-sync (which
+ * covered only daily_limit for in_production). Only PATCHes drifting fields
+ * (skips aligned), fail-loud per account. Optional `{limit}`. 202 + background;
+ * watch logs for `lifecycle-limits-sync: done`.
+ */
+router.post("/lifecycle-limits-sync", async (req: Request, res: Response) => {
+  const runId = crypto.randomUUID();
+  const rawLimit = (req.body as { limit?: unknown } | undefined)?.limit;
+  const limit = typeof rawLimit === "number" && rawLimit > 0 ? rawLimit : undefined;
+  res.status(202).json({ accepted: true, runId });
+  console.log(`[audit] lifecycle-limits-sync: dispatched run=${runId} limit=${limit ?? "all"}`);
+
+  (async () => {
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/lifecycle-limits-sync",
+    });
+    const summary = await syncLifecycleLimits(apiKey, limit);
+    console.log(
+      `[audit] lifecycle-limits-sync: done run=${runId} ${JSON.stringify(summary)}`,
+    );
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] lifecycle-limits-sync run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/audit/reactivate-accounts
+ *
+ * Platform-scoped. Resumes `deactivated_by_instantly` accounts that are healthy
+ * again (Health 100 + 100% inbox + deactivated ≥ 24h) via Instantly `resume`, so
+ * they return to the send pool. Guards against the 550-throttle-nudge trap with
+ * the 24h age gate + natural backoff (see reactivate-accounts.ts). Gated behind
+ * `REACTIVATE_ACCOUNTS_ENABLED=true`; returns 409 when disabled. Only PATCHes
+ * eligible accounts, fail-loud per account. Optional `{limit}`. 202 + background;
+ * watch logs for `reactivate-accounts: done`.
+ */
+router.post("/reactivate-accounts", async (req: Request, res: Response) => {
+  if (!isReactivateAccountsEnabled()) {
+    return res.status(409).json({
+      error: "reactivation disabled — set REACTIVATE_ACCOUNTS_ENABLED=true to arm",
+    });
+  }
+  const runId = crypto.randomUUID();
+  const rawLimit = (req.body as { limit?: unknown } | undefined)?.limit;
+  const limit = typeof rawLimit === "number" && rawLimit > 0 ? rawLimit : undefined;
+  res.status(202).json({ accepted: true, runId });
+  console.log(`[audit] reactivate-accounts: dispatched run=${runId} limit=${limit ?? "all"}`);
+
+  (async () => {
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/reactivate-accounts",
+    });
+    const summary = await reactivateEligibleAccounts(apiKey, Date.now(), limit);
+    console.log(
+      `[audit] reactivate-accounts: done run=${runId} ${JSON.stringify(summary)}`,
+    );
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] reactivate-accounts run=${runId} failed: ${message}`);
   });
 });
 
