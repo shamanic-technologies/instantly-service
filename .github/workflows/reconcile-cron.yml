@@ -20,16 +20,9 @@ name: Reconcile webhook catch-up (daily)
 #   3. /internal/audit/slow-ramp-sync — enforce the fleet invariant
 #      `enable_slow_ramp == false` on EVERY account (all lifecycle statuses).
 #      Idempotent — only PATCHes accounts whose slow ramp is still on.
-#   4. /internal/audit/lifecycle-limits-sync — idempotently enforce each account's
-#      warmup + campaign daily_limit to the target for its CURRENT lifecycle state
-#      (in_production 45/5, in_recovery 20/30). reconcile only PATCHes limits on a
-#      state FLIP, so an account that sat in a state since before the target
-#      changed (or whose values Instantly reset on its own reactivation) drifts —
-#      this re-imposes the target every run. Supersedes daily-limit-sync.
-#   5. /internal/audit/reactivate-accounts — resume `deactivated_by_instantly`
-#      accounts healthy again (Health 100 + 100% inbox + deactivated ≥24h) so they
-#      return to the pool. Gated behind REACTIVATE_ACCOUNTS_ENABLED (409 tolerated
-#      when disarmed).
+#
+# Account-lifecycle freshness (accounts-sync + lifecycle-limits-sync +
+# reactivate-accounts) runs HOURLY in lifecycle-cron.yml, NOT here.
 #
 # Required secrets:
 #   INSTANTLY_SERVICE_URL  — production URL (e.g. https://instantly.example.com)
@@ -140,70 +133,5 @@ jobs:
 
           if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
             echo "slow-ramp-sync dispatch failed with HTTP ${status}"
-            exit 1
-          fi
-
-      - name: POST /internal/audit/lifecycle-limits-sync
-        env:
-          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
-          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
-            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
-            exit 1
-          fi
-
-          # Idempotently enforce warmup + campaign daily_limit to each account's
-          # lifecycle target (in_production 45/5, in_recovery 20/30). Only PATCHes
-          # drifting fields. Runs in the background (202); verify via Railway logs
-          # (`lifecycle-limits-sync: done`).
-          response_file=$(mktemp)
-          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
-            -X POST \
-            -H "X-API-Key: ${API_KEY}" \
-            -H "Content-Type: application/json" \
-            --max-time 60 \
-            "${SERVICE_URL}/internal/audit/lifecycle-limits-sync")
-
-          echo "HTTP ${status}"
-          cat "${response_file}"
-          echo
-
-          if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
-            echo "lifecycle-limits-sync dispatch failed with HTTP ${status}"
-            exit 1
-          fi
-
-      - name: POST /internal/audit/reactivate-accounts
-        env:
-          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
-          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
-            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
-            exit 1
-          fi
-
-          # Resume deactivated_by_instantly accounts healthy again (Health 100 +
-          # 100% inbox + deactivated ≥24h). Gated behind REACTIVATE_ACCOUNTS_ENABLED
-          # — a 409 (disarmed) is TOLERATED, like placement-test/run. Runs in the
-          # background (202); verify via Railway logs (`reactivate-accounts: done`).
-          response_file=$(mktemp)
-          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
-            -X POST \
-            -H "X-API-Key: ${API_KEY}" \
-            -H "Content-Type: application/json" \
-            --max-time 60 \
-            "${SERVICE_URL}/internal/audit/reactivate-accounts")
-
-          echo "HTTP ${status}"
-          cat "${response_file}"
-          echo
-
-          # 409 = REACTIVATE_ACCOUNTS_ENABLED off (dormant until armed) — tolerated.
-          if [ "${status}" != "202" ] && [ "${status}" != "200" ] && [ "${status}" != "409" ]; then
-            echo "reactivate-accounts dispatch failed with HTTP ${status}"
             exit 1
           fi
