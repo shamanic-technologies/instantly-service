@@ -592,6 +592,25 @@ export async function getWarmupAnalytics(apiKey: string): Promise<unknown> {
   return instantlyRequest<unknown>(apiKey, "/accounts/warmup/analytics");
 }
 
+/**
+ * Resume a paused / Instantly-deactivated account via `POST /accounts/{email}/resume`
+ * (V2 account endpoint, verified against developer.instantly.ai). Body-less POST.
+ * Used by the reactivation sweep to bring a `deactivated_by_instantly` account
+ * that is healthy again (Health 100 + 100% inbox) back into the send pool.
+ *
+ * ⚠️ CAUTION: for an account still under a live Gmail `550-5.4.5 Daily user
+ * sending limit exceeded` throttle, repeated resume nudges make the throttle
+ * WORSE (CLAUDE.md 2026-07-14). The reactivation sweep guards against this with a
+ * "deactivated for > 24h" gate + natural backoff — do NOT call this in a tight
+ * loop. Fails loud on any non-2xx (instantlyRequest throws).
+ */
+export async function resumeAccount(apiKey: string, email: string): Promise<Account> {
+  const encoded = encodeURIComponent(email);
+  return instantlyRequest<Account>(apiKey, `/accounts/${encoded}/resume`, {
+    method: "POST",
+  });
+}
+
 // ─── Analytics ───────────────────────────────────────────────────────────────
 
 export async function getCampaignAnalytics(apiKey: string, campaignId: string): Promise<CampaignAnalytics | null> {
