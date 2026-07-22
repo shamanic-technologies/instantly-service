@@ -33,7 +33,7 @@ import {
   fetchAccountCapacityCached,
   type AccountCapacity,
 } from "./account-sending-stats";
-import { IN_PRODUCTION_DAILY_LIMIT } from "./account-lifecycle";
+import { IN_PRODUCTION_DAILY_LIMIT, isAccountFresh } from "./account-lifecycle";
 
 /** All-zero capacity for an account absent from the snapshot (idle ⇒ preferred). */
 const EMPTY_CAPACITY: AccountCapacity = {
@@ -91,6 +91,7 @@ function argMinRandom(
 export function pickCapacityAwareAccount(
   accounts: Account[],
   byEmail: Map<string, AccountCapacity>,
+  asOf: Date = new Date(),
 ): Account {
   if (accounts.length === 0) {
     throw new Error("No accounts available");
@@ -106,11 +107,26 @@ export function pickCapacityAwareAccount(
   const tomorrowOcc = (a: Account): number =>
     Math.max(todayOcc(a) - mdlOf(a), 0) + capOf(a).q1next;
 
-  const roomToday = accounts.filter((a) => todayOcc(a) < mdlOf(a));
-  if (roomToday.length > 0) return argMinRandom(roomToday, todayOcc);
+  // AGE gate: FRESH accounts (< MATURE_AGE_DAYS) are de-prioritized so their
+  // Gmail per-user send quota builds gradually — a fresh mailbox at full 45/day
+  // trips 550-5.4.5. They stay in the pool (still in_production) but take volume
+  // only as OVERFLOW: a fresh account is chosen for today ONLY when NO mature
+  // account has room today (and likewise for tomorrow). Undatable accounts count
+  // as mature (isAccountFresh → false), preserving prior behavior fleet-wide.
+  const mature = accounts.filter((a) => !isAccountFresh(a.timestamp_created, asOf));
+  const young = accounts.filter((a) => isAccountFresh(a.timestamp_created, asOf));
 
-  const roomTomorrow = accounts.filter((a) => tomorrowOcc(a) < mdlOf(a));
-  if (roomTomorrow.length > 0) return argMinRandom(roomTomorrow, tomorrowOcc);
+  // Priority (first non-empty group wins): mature-today > fresh-today >
+  // mature-tomorrow > fresh-tomorrow > globally-least-loaded. With no fresh
+  // accounts, `young` is empty and this is exactly the prior 3-tier policy.
+  for (const pool of [mature, young]) {
+    const room = pool.filter((a) => todayOcc(a) < mdlOf(a));
+    if (room.length > 0) return argMinRandom(room, todayOcc);
+  }
+  for (const pool of [mature, young]) {
+    const room = pool.filter((a) => tomorrowOcc(a) < mdlOf(a));
+    if (room.length > 0) return argMinRandom(room, tomorrowOcc);
+  }
 
   return argMinRandom(accounts, (a) => capOf(a).totalQueue);
 }
