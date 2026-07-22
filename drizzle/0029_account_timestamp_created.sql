@@ -1,0 +1,13 @@
+-- Instantly account creation timestamp on the silver account row. Distinct from
+-- created_at (= local row-insert time). Drives:
+--   (a) age-based send de-prioritization — a FRESH account (< MATURE_AGE_DAYS)
+--       is picked LAST in pickCapacityAwareAccount, taking overflow volume only
+--       once every mature account is filled for the day, so its Gmail per-user
+--       send quota builds before it takes full campaign volume (fresh Google
+--       mailboxes at 45/day day-one trip 550-5.4.5); and
+--   (b) age-driven slow ramp — fresh → enable_slow_ramp on, mature → off, enforced
+--       hourly by lifecycle-limits-sync.
+-- Backfilled by the next accounts-sync snapshot; NULL until then → treated as
+-- MATURE (no de-prioritization, slow ramp untouched) so there is no regression.
+-- Small table (~hundreds of rows) → ADD COLUMN is instant, safe at boot.
+ALTER TABLE "instantly_accounts" ADD COLUMN IF NOT EXISTS "timestamp_created" timestamp with time zone;

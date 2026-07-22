@@ -303,6 +303,51 @@ describe("pickCapacityAwareAccount", () => {
     ]);
     expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("B@x.com");
   });
+
+  // ── AGE gate: fresh accounts (< MATURE_AGE_DAYS) are de-prioritized ──────────
+  const asOf = new Date("2026-07-22T00:00:00Z");
+  const created = (daysOld: number) =>
+    new Date(asOf.getTime() - daysOld * 24 * 60 * 60 * 1000).toISOString();
+
+  it("prefers a MATURE account over a fresh one when both have room today", () => {
+    // mature has MORE load today (30) than fresh (0) — the fresh one would win on
+    // argMIN todayOcc, but age de-prioritization picks the mature account.
+    const accounts = [
+      acct({ email: "mature@x.com", daily_limit: 50, timestamp_created: created(90) }),
+      acct({ email: "fresh@x.com", daily_limit: 50, timestamp_created: created(3) }),
+    ];
+    const byEmail = caps([
+      ["mature@x.com", { sentToday: 30 }],
+      ["fresh@x.com", { sentToday: 0 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("mature@x.com");
+  });
+
+  it("uses a FRESH account for today only when every mature account is full today", () => {
+    // mature saturated today (todayOcc 50 ≥ MDL 50) → no mature room today →
+    // fresh (room today) takes the overflow.
+    const accounts = [
+      acct({ email: "mature@x.com", daily_limit: 50, timestamp_created: created(90) }),
+      acct({ email: "fresh@x.com", daily_limit: 50, timestamp_created: created(3) }),
+    ];
+    const byEmail = caps([
+      ["mature@x.com", { sentToday: 50, q1next: 2 }], // full today, room tomorrow
+      ["fresh@x.com", { sentToday: 0 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("fresh@x.com");
+  });
+
+  it("an undatable account counts as MATURE (no timestamp_created)", () => {
+    const accounts = [
+      acct({ email: "undated@x.com", daily_limit: 50 }), // no timestamp_created
+      acct({ email: "fresh@x.com", daily_limit: 50, timestamp_created: created(3) }),
+    ];
+    const byEmail = caps([
+      ["undated@x.com", { sentToday: 30 }],
+      ["fresh@x.com", { sentToday: 0 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("undated@x.com");
+  });
 });
 
 describe("send gate — only in_production accounts (lifecycle)", () => {

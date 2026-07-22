@@ -1,6 +1,13 @@
 /**
- * IDEMPOTENT ENFORCEMENT of each account's warmup + campaign daily_limit to the
- * target for its CURRENT lifecycle state — on EVERY run, not only on a flip.
+ * IDEMPOTENT ENFORCEMENT, on EVERY run (not only on a flip), of each account's:
+ *   - warmup.limit + campaign daily_limit → the target for its CURRENT lifecycle
+ *     state (in_production / in_recovery); and
+ *   - enable_slow_ramp → its AGE target (fresh < MATURE_AGE_DAYS → on, mature →
+ *     off), INDEPENDENT of lifecycle state. This is the enforcement home for the
+ *     age→slow-ramp rule: an account crossing the ~4-week line does NOT flip
+ *     lifecycle state, so reconcile (flip-only) never turns its ramp off — this
+ *     hourly sweep does. A fresh Google mailbox at full volume trips 550-5.4.5;
+ *     slow ramp grows its volume gently until its Gmail send quota builds.
  *
  * Why this exists (the bug it fixes):
  *   `reconcileLifecycle` PATCHes warmup + daily_limit ONLY on a state FLIP
@@ -44,12 +51,14 @@ import {
   listAccounts,
   setWarmupDailyLimit,
   setDailyLimit,
+  setSlowRamp,
   type Account,
 } from "./instantly-client";
 import { fetchLifecycleByEmail, type LifecycleView } from "./account-lifecycle-sync";
 import {
   warmupDailyForStatus,
   dailyLimitForStatus,
+  slowRampForAge,
   type LifecycleStatus,
 } from "./account-lifecycle";
 
@@ -60,6 +69,8 @@ export interface LifecycleLimitPatch {
   warmup: number | null;
   /** Target campaign daily_limit to PATCH, or null if already aligned. */
   daily: number | null;
+  /** Target `enable_slow_ramp` (age-driven), or null if aligned / age unknown. */
+  slowRamp: boolean | null;
 }
 
 export interface LifecycleLimitsSyncSummary {
@@ -71,20 +82,31 @@ export interface LifecycleLimitsSyncSummary {
   warmupPatched: number;
   /** daily_limit PATCHes issued. */
   dailyPatched: number;
+  /** enable_slow_ramp PATCHes issued (age-driven). */
+  slowRampPatched: number;
   /** Accounts whose PATCH threw — left for the next run. */
   failed: number;
 }
 
 /**
- * Pure: for each account whose silver lifecycle is `in_production` or
- * `in_recovery`, compute which of {warmup.limit, daily_limit} drift from that
- * state's target. Returns only accounts with at least one drifting field, in
- * input order; empty emails filtered out. Accounts in any other state (or with
- * an unknown/absent lifecycle) are skipped — their targets are null.
+ * Pure: compute the per-account drift patch.
+ *   - warmup.limit + daily_limit are enforced ONLY when the silver lifecycle is
+ *     `in_production` or `in_recovery` (their targets are non-null); any other
+ *     state (or unknown lifecycle) leaves both untouched.
+ *   - enable_slow_ramp is AGE-driven and INDEPENDENT of lifecycle state: a fresh
+ *     account (< MATURE_AGE_DAYS) targets `true` (ramp gently — a fresh Google
+ *     mailbox at full volume trips 550-5.4.5), a mature one targets `false`, and
+ *     an undatable account (no `timestamp_created`) is skipped (`null`). This is
+ *     the enforcement home for the age→slow-ramp rule: reconcile only flips on a
+ *     STATE change, but an account crossing the 4-week line does NOT flip state,
+ *     so the hourly sweep is what turns its ramp off.
+ * Returns only accounts with at least one drifting field, in input order; empty
+ * emails filtered out.
  */
 export function selectLifecycleLimitPatches(
   accounts: Account[],
   lifecycleByEmail: Map<string, LifecycleView>,
+  asOf: Date = new Date(),
 ): LifecycleLimitPatch[] {
   const patches: LifecycleLimitPatch[] = [];
   for (const account of accounts) {
@@ -93,19 +115,27 @@ export function selectLifecycleLimitPatches(
       | LifecycleStatus
       | null
       | undefined;
-    if (status !== "in_production" && status !== "in_recovery") continue;
 
-    const targetWarmup = warmupDailyForStatus(status); // 5 | 30 (never null here)
-    const targetDaily = dailyLimitForStatus(status); // 45 | 20 (never null here)
+    let warmup: number | null = null;
+    let daily: number | null = null;
+    if (status === "in_production" || status === "in_recovery") {
+      const targetWarmup = warmupDailyForStatus(status); // 5 | 30 (never null here)
+      const targetDaily = dailyLimitForStatus(status); // 45 | 20 (never null here)
+      const currentWarmup = account.warmup?.limit;
+      const currentDaily = account.daily_limit;
+      warmup = targetWarmup !== null && currentWarmup !== targetWarmup ? targetWarmup : null;
+      daily = targetDaily !== null && currentDaily !== targetDaily ? targetDaily : null;
+    }
 
-    const currentWarmup = account.warmup?.limit;
-    const currentDaily = account.daily_limit;
+    // Age-driven slow ramp — every account, every state.
+    const targetSlowRamp = slowRampForAge(account.timestamp_created, asOf);
+    const slowRamp =
+      targetSlowRamp !== null && account.enable_slow_ramp !== targetSlowRamp
+        ? targetSlowRamp
+        : null;
 
-    const warmup = targetWarmup !== null && currentWarmup !== targetWarmup ? targetWarmup : null;
-    const daily = targetDaily !== null && currentDaily !== targetDaily ? targetDaily : null;
-
-    if (warmup !== null || daily !== null) {
-      patches.push({ email: account.email, warmup, daily });
+    if (warmup !== null || daily !== null || slowRamp !== null) {
+      patches.push({ email: account.email, warmup, daily, slowRamp });
     }
   }
   return patches;
@@ -130,12 +160,13 @@ export async function syncLifecycleLimits(
   let accountsPatched = 0;
   let warmupPatched = 0;
   let dailyPatched = 0;
+  let slowRampPatched = 0;
   let failed = 0;
 
   for (const patch of batch) {
     try {
       // Warmup FIRST (mirrors reconcile). A warmup throw aborts this account's
-      // daily PATCH for this run — next run heals the remaining field.
+      // remaining PATCHes for this run — next run heals the rest.
       if (patch.warmup !== null) {
         await setWarmupDailyLimit(apiKey, patch.email, patch.warmup);
         warmupPatched += 1;
@@ -143,6 +174,10 @@ export async function syncLifecycleLimits(
       if (patch.daily !== null) {
         await setDailyLimit(apiKey, patch.email, patch.daily);
         dailyPatched += 1;
+      }
+      if (patch.slowRamp !== null) {
+        await setSlowRamp(apiKey, patch.email, patch.slowRamp);
+        slowRampPatched += 1;
       }
       accountsPatched += 1;
     } catch (error: unknown) {
@@ -157,6 +192,7 @@ export async function syncLifecycleLimits(
     accountsPatched,
     warmupPatched,
     dailyPatched,
+    slowRampPatched,
     failed,
   };
 }

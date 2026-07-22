@@ -148,6 +148,61 @@ export function emailDomain(email: string): string {
 }
 
 /**
+ * Account AGE gate. An account is "mature" once it is at least this old; a
+ * FRESHER account (a new Google/Workspace mailbox) has a much lower REAL Gmail
+ * per-user send quota during its first weeks — INDEPENDENT of inbox placement —
+ * so pushing full campaign volume onto it day-one trips `550-5.4.5 Daily user
+ * sending limit exceeded`. Age is NOT a lifecycle state (a fresh account stays
+ * `in_production` if it passes health+delivery); it only (a) de-prioritizes the
+ * account in send selection — picked last, taking overflow only once every mature
+ * account is filled for the day — and (b) keeps Instantly's slow ramp ON so its
+ * volume grows gently. 28 days = the ~4-week ramp window Gmail needs to build
+ * per-user send trust.
+ */
+export const MATURE_AGE_DAYS = 28;
+const MATURE_AGE_MS = MATURE_AGE_DAYS * 24 * 60 * 60 * 1000;
+
+/** Account age in ms at `asOf`, or null when the created timestamp is unknown /
+ * unparseable (→ callers treat unknown as mature, never trapping an undatable account). */
+function accountAgeMs(
+  timestampCreated: string | Date | null | undefined,
+  asOf: Date,
+): number | null {
+  if (!timestampCreated) return null;
+  const created =
+    timestampCreated instanceof Date ? timestampCreated.getTime() : Date.parse(timestampCreated);
+  if (Number.isNaN(created)) return null;
+  return asOf.getTime() - created;
+}
+
+/**
+ * True ⇔ the account is younger than {@link MATURE_AGE_DAYS}. Unknown/unparseable
+ * created date → false (treated as MATURE — never de-prioritize or trap an account
+ * we cannot date; once the timestamp backfills, a genuinely fresh one gates).
+ */
+export function isAccountFresh(
+  timestampCreated: string | Date | null | undefined,
+  asOf: Date,
+): boolean {
+  const age = accountAgeMs(timestampCreated, asOf);
+  return age !== null && age < MATURE_AGE_MS;
+}
+
+/**
+ * Target `enable_slow_ramp` by age: fresh → `true` (ramp volume gently), mature →
+ * `false` (full volume, no throttle needed). Unknown created date → `null` = do
+ * NOT touch (avoid flipping an account we cannot date until the timestamp backfills).
+ */
+export function slowRampForAge(
+  timestampCreated: string | Date | null | undefined,
+  asOf: Date,
+): boolean | null {
+  const age = accountAgeMs(timestampCreated, asOf);
+  if (age === null) return null;
+  return age < MATURE_AGE_MS;
+}
+
+/**
  * The exact "delivery == 100%" rule: LITERALLY 100% inbox across ALL ESP
  * recipients of the account's latest placement test. `espRows` is one row per
  * (account, ESP) of that test. True ⇔ every ESP row is inbox == seed (spam 0,

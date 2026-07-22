@@ -158,6 +158,10 @@ export const instantlyAccounts = pgTable("instantly_accounts", {
   providerCode: integer("provider_code"),
   firstName: text("first_name"),
   lastName: text("last_name"),
+  // Instantly account creation time (from the account snapshot). Drives age-based
+  // send de-prioritization (fresh accounts picked last, overflow-only) + age-driven
+  // slow ramp. DISTINCT from created_at below (= local row-insert time).
+  timestampCreated: timestamp("timestamp_created", { withTimezone: true }),
   // ── Lifecycle (auto-derived; projection of the latest lifecycle event) ────────
   // One of: in_production | in_recovery | deactivated_by_instantly |
   // deactivated_by_user. Null until the first reconcileLifecycle classifies it.

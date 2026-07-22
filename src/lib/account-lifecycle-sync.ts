@@ -76,6 +76,7 @@ export async function snapshotAccounts(apiKey: string): Promise<SnapshotSummary>
     // reconcileLifecycle — never touched here.
     const warmupEnabled = a.warmup_status === 1;
     const statusText = a.status > 0 ? "active" : "inactive";
+    const timestampCreated = a.timestamp_created ? new Date(a.timestamp_created) : null;
     await db
       .insert(instantlyAccounts)
       .values({
@@ -89,6 +90,7 @@ export async function snapshotAccounts(apiKey: string): Promise<SnapshotSummary>
         providerCode: a.provider_code ?? null,
         firstName: a.first_name ?? null,
         lastName: a.last_name ?? null,
+        timestampCreated,
       })
       .onConflictDoUpdate({
         target: instantlyAccounts.email,
@@ -102,6 +104,7 @@ export async function snapshotAccounts(apiKey: string): Promise<SnapshotSummary>
           providerCode: a.provider_code ?? null,
           firstName: a.first_name ?? null,
           lastName: a.last_name ?? null,
+          timestampCreated,
           updatedAt: now,
         },
       });
@@ -216,7 +219,8 @@ export async function fetchInProductionAccounts(): Promise<Account[]> {
            instantly_status AS "instantlyStatus",
            warmup_score AS "warmupScore",
            daily_limit AS "dailyLimit",
-           provider_code AS "providerCode"
+           provider_code AS "providerCode",
+           timestamp_created AS "timestampCreated"
     FROM instantly_accounts
     WHERE lifecycle_status = 'in_production'
   `);
@@ -228,6 +232,7 @@ export async function fetchInProductionAccounts(): Promise<Account[]> {
     warmupScore: number | null;
     dailyLimit: number | null;
     providerCode: number | null;
+    timestampCreated: string | Date | null;
   }>(result).map((r) => ({
     email: r.email,
     warmup_status: 0,
@@ -238,6 +243,9 @@ export async function fetchInProductionAccounts(): Promise<Account[]> {
     stat_warmup_score: r.warmupScore ?? undefined,
     daily_limit: r.dailyLimit ?? undefined,
     provider_code: r.providerCode ?? undefined,
+    timestamp_created: r.timestampCreated
+      ? new Date(r.timestampCreated).toISOString()
+      : undefined,
   }));
 }
 

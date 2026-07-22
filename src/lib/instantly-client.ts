@@ -65,6 +65,10 @@ export interface Account {
   // (DFY-order setup sets it true). `sync-slow-ramp.ts` is now a manual-only tool
   // to force it OFF on a chosen batch, NOT a cron-enforced invariant.
   enable_slow_ramp?: boolean;
+  // ISO creation time of the Instantly account (present on the LIST + single GET).
+  // Drives the account AGE gate: fresh mailboxes are de-prioritized in send
+  // selection + kept on slow ramp until ~4 weeks old (see account-lifecycle.ts).
+  timestamp_created?: string;
 }
 
 interface PaginatedResponse<T> {

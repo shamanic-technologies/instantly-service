@@ -9,6 +9,9 @@ import {
   RECOVERY_WARMUP_DAILY,
   IN_PRODUCTION_DAILY_LIMIT,
   RECOVERY_DAILY_LIMIT,
+  isAccountFresh,
+  slowRampForAge,
+  MATURE_AGE_DAYS,
   type DeriveLifecycleInput,
 } from "../../src/lib/account-lifecycle";
 
@@ -144,5 +147,35 @@ describe("emailDomain", () => {
   });
   it("returns empty string when there is no domain", () => {
     expect(emailDomain("no-at-sign")).toBe("");
+  });
+});
+
+describe("account age gate — isAccountFresh / slowRampForAge", () => {
+  const asOf = new Date("2026-07-22T00:00:00Z");
+  const daysAgo = (n: number) =>
+    new Date(asOf.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
+
+  it(`isAccountFresh: younger than ${MATURE_AGE_DAYS}d is fresh`, () => {
+    expect(isAccountFresh(daysAgo(1), asOf)).toBe(true);
+    expect(isAccountFresh(daysAgo(MATURE_AGE_DAYS - 1), asOf)).toBe(true);
+  });
+  it(`isAccountFresh: exactly/older than ${MATURE_AGE_DAYS}d is mature`, () => {
+    expect(isAccountFresh(daysAgo(MATURE_AGE_DAYS), asOf)).toBe(false);
+    expect(isAccountFresh(daysAgo(MATURE_AGE_DAYS + 30), asOf)).toBe(false);
+  });
+  it("isAccountFresh: unknown/unparseable created date → mature (never trap)", () => {
+    expect(isAccountFresh(null, asOf)).toBe(false);
+    expect(isAccountFresh(undefined, asOf)).toBe(false);
+    expect(isAccountFresh("not-a-date", asOf)).toBe(false);
+  });
+  it("isAccountFresh: accepts a Date instance", () => {
+    expect(isAccountFresh(new Date(daysAgo(2)), asOf)).toBe(true);
+  });
+
+  it("slowRampForAge: fresh → true, mature → false, unknown → null", () => {
+    expect(slowRampForAge(daysAgo(3), asOf)).toBe(true);
+    expect(slowRampForAge(daysAgo(MATURE_AGE_DAYS + 1), asOf)).toBe(false);
+    expect(slowRampForAge(null, asOf)).toBeNull();
+    expect(slowRampForAge("bad", asOf)).toBeNull();
   });
 });

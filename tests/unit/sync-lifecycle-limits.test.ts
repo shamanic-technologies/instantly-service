@@ -7,6 +7,7 @@ vi.mock("../../src/lib/instantly-client", async (importOriginal) => ({
   listAccounts: vi.fn(),
   setWarmupDailyLimit: vi.fn(),
   setDailyLimit: vi.fn(),
+  setSlowRamp: vi.fn(),
 }));
 vi.mock("../../src/lib/account-lifecycle-sync", () => ({
   fetchLifecycleByEmail: vi.fn(),
@@ -16,6 +17,7 @@ import {
   listAccounts,
   setWarmupDailyLimit,
   setDailyLimit,
+  setSlowRamp,
 } from "../../src/lib/instantly-client";
 import { fetchLifecycleByEmail } from "../../src/lib/account-lifecycle-sync";
 import {
@@ -26,12 +28,19 @@ import {
 const mockListAccounts = vi.mocked(listAccounts);
 const mockSetWarmup = vi.mocked(setWarmupDailyLimit);
 const mockSetDaily = vi.mocked(setDailyLimit);
+const mockSetSlowRamp = vi.mocked(setSlowRamp);
 const mockFetchLifecycle = vi.mocked(fetchLifecycleByEmail);
+
+// A fixed clock so age-based (slow-ramp) assertions are deterministic.
+const asOf = new Date("2026-07-22T00:00:00Z");
+const created = (daysOld: number) =>
+  new Date(asOf.getTime() - daysOld * 24 * 60 * 60 * 1000).toISOString();
 
 function acct(
   email: string,
   daily_limit: number | undefined,
   warmupLimit: number | undefined,
+  opts: { enableSlowRamp?: boolean; timestampCreated?: string } = {},
 ): Account {
   return {
     email,
@@ -39,6 +48,8 @@ function acct(
     status: 1,
     daily_limit,
     warmup: warmupLimit === undefined ? undefined : { limit: warmupLimit },
+    enable_slow_ramp: opts.enableSlowRamp,
+    timestamp_created: opts.timestampCreated,
   } as Account;
 }
 
@@ -47,7 +58,7 @@ function lifecycle(status: string): LifecycleView {
 }
 
 describe("selectLifecycleLimitPatches", () => {
-  it("in_production: patches only fields that drift from 45/5", () => {
+  it("in_production: patches only fields that drift from 45/5 (slowRamp null when undatable)", () => {
     const accounts = [
       acct("aligned@x.com", 45, 5), // aligned → no patch
       acct("drift-both@x.com", 50, 10), // magnolia case → both drift
@@ -60,10 +71,10 @@ describe("selectLifecycleLimitPatches", () => {
       ["drift-daily@x.com", lifecycle("in_production")],
       ["drift-warmup@x.com", lifecycle("in_production")],
     ]);
-    expect(selectLifecycleLimitPatches(accounts, lc)).toEqual([
-      { email: "drift-both@x.com", warmup: 5, daily: 45 },
-      { email: "drift-daily@x.com", warmup: null, daily: 45 },
-      { email: "drift-warmup@x.com", warmup: 5, daily: null },
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+      { email: "drift-both@x.com", warmup: 5, daily: 45, slowRamp: null },
+      { email: "drift-daily@x.com", warmup: null, daily: 45, slowRamp: null },
+      { email: "drift-warmup@x.com", warmup: 5, daily: null, slowRamp: null },
     ]);
   });
 
@@ -78,24 +89,46 @@ describe("selectLifecycleLimitPatches", () => {
       ["stuck-b@x.com", lifecycle("in_recovery")],
       ["ok@x.com", lifecycle("in_recovery")],
     ]);
-    expect(selectLifecycleLimitPatches(accounts, lc)).toEqual([
-      { email: "stuck-a@x.com", warmup: 30, daily: 20 },
-      { email: "stuck-b@x.com", warmup: 30, daily: 20 },
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+      { email: "stuck-a@x.com", warmup: 30, daily: 20, slowRamp: null },
+      { email: "stuck-b@x.com", warmup: 30, daily: 20, slowRamp: null },
     ]);
   });
 
-  it("skips deactivated_* and unknown/absent lifecycle (targets are null)", () => {
+  it("skips deactivated_* / unknown lifecycle for warmup+daily, but STILL enforces age-driven slow ramp", () => {
+    // A deactivated account is skipped for warmup/daily (targets null) — but a
+    // FRESH one whose slow ramp is off still gets the slow-ramp patch (age-driven,
+    // state-independent). An aligned/undatable one drops out entirely.
     const accounts = [
-      acct("byinst@x.com", 50, 10),
-      acct("byuser@x.com", 50, 10),
-      acct("unclassified@x.com", 50, 10),
+      acct("byinst@x.com", 50, 10, { enableSlowRamp: false, timestampCreated: created(3) }),
+      acct("byuser@x.com", 50, 10, { enableSlowRamp: false }), // undatable → slowRamp null → no patch
     ];
     const lc = new Map<string, LifecycleView>([
       ["byinst@x.com", lifecycle("deactivated_by_instantly")],
       ["byuser@x.com", lifecycle("deactivated_by_user")],
-      // unclassified@x.com absent from the map
     ]);
-    expect(selectLifecycleLimitPatches(accounts, lc)).toEqual([]);
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+      { email: "byinst@x.com", warmup: null, daily: null, slowRamp: true },
+    ]);
+  });
+
+  it("slow ramp is age-driven: fresh→true when off, mature→false when on, aligned→skip", () => {
+    const accounts = [
+      acct("fresh-off@x.com", 45, 5, { enableSlowRamp: false, timestampCreated: created(3) }),
+      acct("fresh-on@x.com", 45, 5, { enableSlowRamp: true, timestampCreated: created(3) }), // aligned
+      acct("mature-on@x.com", 45, 5, { enableSlowRamp: true, timestampCreated: created(90) }),
+      acct("mature-off@x.com", 45, 5, { enableSlowRamp: false, timestampCreated: created(90) }), // aligned
+    ];
+    const lc = new Map<string, LifecycleView>([
+      ["fresh-off@x.com", lifecycle("in_production")],
+      ["fresh-on@x.com", lifecycle("in_production")],
+      ["mature-on@x.com", lifecycle("in_production")],
+      ["mature-off@x.com", lifecycle("in_production")],
+    ]);
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+      { email: "fresh-off@x.com", warmup: null, daily: null, slowRamp: true },
+      { email: "mature-on@x.com", warmup: null, daily: null, slowRamp: false },
+    ]);
   });
 
   it("treats an absent warmup object as drifting (needs the warmup patch)", () => {
@@ -103,8 +136,8 @@ describe("selectLifecycleLimitPatches", () => {
     const lc = new Map<string, LifecycleView>([
       ["nowarmup@x.com", lifecycle("in_production")],
     ]);
-    expect(selectLifecycleLimitPatches(accounts, lc)).toEqual([
-      { email: "nowarmup@x.com", warmup: 5, daily: null },
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+      { email: "nowarmup@x.com", warmup: 5, daily: null, slowRamp: null },
     ]);
   });
 });
@@ -114,34 +147,38 @@ describe("syncLifecycleLimits", () => {
     vi.resetAllMocks();
     mockSetWarmup.mockResolvedValue({} as Account);
     mockSetDaily.mockResolvedValue({} as Account);
+    mockSetSlowRamp.mockResolvedValue({} as Account);
   });
 
-  it("PATCHes drifting fields, counts field-level + account-level totals", async () => {
+  it("PATCHes drifting fields (warmup/daily/slowRamp), counts field- + account-level totals", async () => {
     mockListAccounts.mockResolvedValue([
       acct("both@x.com", 50, 10), // → warmup 5 + daily 45
       acct("aligned@x.com", 45, 5), // skip
       acct("daily@x.com", 40, 5), // → daily only
+      acct("ramp@x.com", 45, 5, { enableSlowRamp: false, timestampCreated: created(3) }), // → slowRamp true
     ]);
     mockFetchLifecycle.mockResolvedValue(
       new Map<string, LifecycleView>([
         ["both@x.com", lifecycle("in_production")],
         ["aligned@x.com", lifecycle("in_production")],
         ["daily@x.com", lifecycle("in_production")],
+        ["ramp@x.com", lifecycle("in_production")],
       ]),
     );
 
     const summary = await syncLifecycleLimits("key");
 
-    expect(mockSetWarmup).toHaveBeenCalledTimes(1);
     expect(mockSetWarmup).toHaveBeenCalledWith("key", "both@x.com", 5);
-    expect(mockSetDaily).toHaveBeenCalledTimes(2);
     expect(mockSetDaily).toHaveBeenCalledWith("key", "both@x.com", 45);
     expect(mockSetDaily).toHaveBeenCalledWith("key", "daily@x.com", 45);
+    expect(mockSetSlowRamp).toHaveBeenCalledTimes(1);
+    expect(mockSetSlowRamp).toHaveBeenCalledWith("key", "ramp@x.com", true);
     expect(summary).toEqual({
-      accountsRead: 3,
-      accountsPatched: 2,
+      accountsRead: 4,
+      accountsPatched: 3,
       warmupPatched: 1,
       dailyPatched: 2,
+      slowRampPatched: 1,
       failed: 0,
     });
   });
@@ -191,6 +228,7 @@ describe("syncLifecycleLimits", () => {
       accountsPatched: 1,
       warmupPatched: 1,
       dailyPatched: 1,
+      slowRampPatched: 0,
       failed: 1,
     });
   });
