@@ -1,13 +1,18 @@
 /**
- * One-time (idempotent, resumable) sweep to turn OFF Instantly's "Campaign slow
- * ramp" (`enable_slow_ramp`) on EVERY account, regardless of lifecycle status.
+ * MANUAL-ONLY (idempotent, resumable) sweep to turn OFF Instantly's "Campaign
+ * slow ramp" (`enable_slow_ramp`) on a chosen batch of accounts.
  *
- * Why this exists: our fleet is pre-warmed / DFY-aged, so a slow ramp only
- * throttles live sends — the invariant is `enable_slow_ramp == false` on EVERY
- * account (in_production, in_recovery, deactivated_by_user, deactivated_by_
- * instantly — ALL of them). DFY-order setup PATCHes it false on new orders, but
- * nothing enforced it fleet-wide or kept legacy / Primeforge / re-enabled
- * accounts off. This sweep closes that gap across the WHOLE live account list.
+ * ⚠️ NO LONGER A FLEET INVARIANT / NOT WIRED TO ANY CRON (changed 2026-07-22).
+ * The old rule "`enable_slow_ramp == false` on EVERY account" was REMOVED: forcing
+ * slow ramp off pushed full daily volume (45/day) onto NEW / low-trust Google
+ * mailboxes on day one, tripping Gmail `550-5.4.5 Daily user sending limit
+ * exceeded` (a fresh Workspace account's real send quota is well below the fleet
+ * cap for its first ~2-4 weeks). Slow ramp is now LEFT ON for fresh accounts so
+ * Instantly ramps their volume gently; DFY-order setup sets `enable_slow_ramp:true`.
+ * This sweep + the `/internal/audit/slow-ramp-sync` endpoint stay ONLY as a manual
+ * tool to force slow ramp OFF on a specific batch (e.g. an aged account that got it
+ * re-enabled and is being throttled). Do NOT re-wire it into a cron. See CLAUDE.md
+ * "Account lifecycle" slow-ramp note.
  *
  * Reads the LIVE, FULL account list (`listAccounts`, paginated) — NOT silver —
  * because (a) the invariant spans every lifecycle status (silver's in_production

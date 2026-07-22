@@ -59,11 +59,11 @@ export interface Account {
   // are NOT — fetch the single account for those (see setWarmupDailyLimit).
   warmup?: WarmupConfig;
   // Instantly's "Campaign slow ramp" toggle — gradually increases the account's
-  // daily send volume over time. INVARIANT: this MUST be false on every account
-  // regardless of lifecycle_status (our fleet is pre-warmed/DFY-aged, so ramping
-  // only throttles live sends). Turned off at DFY-order setup and kept off fleet-
-  // wide by the slow-ramp-sync sweep (see setSlowRamp / sync-slow-ramp.ts). May
-  // be absent on older account payloads → treated as needing the off-PATCH.
+  // daily send volume over time. No longer a fleet invariant (changed 2026-07-22):
+  // forcing it false pushed full volume onto fresh Google mailboxes day-one and
+  // tripped Gmail 550-5.4.5, so fresh accounts now KEEP it on to ramp gently
+  // (DFY-order setup sets it true). `sync-slow-ramp.ts` is now a manual-only tool
+  // to force it OFF on a chosen batch, NOT a cron-enforced invariant.
   enable_slow_ramp?: boolean;
 }
 
