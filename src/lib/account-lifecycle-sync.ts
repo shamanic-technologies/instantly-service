@@ -207,22 +207,44 @@ export async function fetchLifecycleByEmail(): Promise<Map<string, LifecycleView
 
 /**
  * The live-send pool: Instantly Account-shaped objects for every silver account
- * currently `in_production`. Read PURELY from silver — no live listAccounts on
- * the send hot-path. `signature` is left undefined so the send path derives the
- * per-account default signature from first/last name.
+ * currently `in_production`, FILTERED to the pool reserved for `featureSlug`.
+ * Read PURELY from silver — no live listAccounts on the send hot-path.
+ * `signature` is left undefined so the send path derives the per-account default
+ * signature from first/last name.
+ *
+ * Feature carve-out (instantly_account_feature_policy):
+ *   - featureSlug is a RESERVED slug (present in the policy table) → pool = the
+ *     accounts reserved to exactly that slug (e.g. sales-crm-email-outreach → the
+ *     3 CRM accounts).
+ *   - featureSlug is non-reserved OR null → pool = the UNRESERVED accounts (the
+ *     whole in_production fleet minus every reserved account). This is the shared
+ *     default pool serving the 5 cold-email features + any untagged send.
+ * "Reserved slugs" is derived from the table itself (no hardcoded constant), so
+ * reserving another feature is a data change, never a deploy.
  */
-export async function fetchInProductionAccounts(): Promise<Account[]> {
+export async function fetchInProductionAccounts(
+  featureSlug?: string | null,
+): Promise<Account[]> {
+  const slug = featureSlug ?? null;
   const result = await db.execute(sql`
-    SELECT email AS "email",
-           first_name AS "firstName",
-           last_name AS "lastName",
-           instantly_status AS "instantlyStatus",
-           warmup_score AS "warmupScore",
-           daily_limit AS "dailyLimit",
-           provider_code AS "providerCode",
-           timestamp_created AS "timestampCreated"
-    FROM instantly_accounts
-    WHERE lifecycle_status = 'in_production'
+    SELECT a.email AS "email",
+           a.first_name AS "firstName",
+           a.last_name AS "lastName",
+           a.instantly_status AS "instantlyStatus",
+           a.warmup_score AS "warmupScore",
+           a.daily_limit AS "dailyLimit",
+           a.provider_code AS "providerCode",
+           a.timestamp_created AS "timestampCreated"
+    FROM instantly_accounts a
+    LEFT JOIN instantly_account_feature_policy p ON p.account_email = a.email
+    WHERE a.lifecycle_status = 'in_production'
+      AND CASE
+            WHEN ${slug}::text IN (
+              SELECT feature_slug FROM instantly_account_feature_policy
+            )
+              THEN p.feature_slug = ${slug}::text
+            ELSE p.account_email IS NULL
+          END
   `);
   return rowsOf<{
     email: string;

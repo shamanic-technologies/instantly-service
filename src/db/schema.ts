@@ -228,6 +228,26 @@ export const instantlyDomainPolicy = pgTable("instantly_domain_policy", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Silver/config: per-feature account RESERVATION (carve-out list). An account
+// listed here is reserved EXCLUSIVELY to its `feature_slug` — the live-send pool
+// (`fetchInProductionAccounts`) serves it ONLY to sends carrying that feature and
+// EXCLUDES it from every other feature's pool. An account NOT listed is
+// unreserved = the default/shared pool (every non-reserved feature + null slug).
+// This is a pure carve-out, NOT a symmetric partition: seeded with the 3
+// `sales-crm-email-outreach` accounts so unproven CRM sends never touch the
+// Apollo-verified cold fleet; the 5 cold-email features (sales/pr/hiring/vc/
+// accelerators) keep the whole unreserved fleet. Lives in the DB (NOT a code
+// constant) so ops can reserve/unreserve an account without a deploy.
+export const instantlyAccountFeaturePolicy = pgTable(
+  "instantly_account_feature_policy",
+  {
+    accountEmail: text("account_email").primaryKey(),
+    featureSlug: text("feature_slug").notNull(),
+    note: text("note"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+);
+
 // Silver: canonical event log derived from bronze sources (webhooks + reconcile polls)
 // and deterministic inference. `raw_payload` is nullable for backwards compat; new
 // rows store source attribution pointing to bronze instead.
