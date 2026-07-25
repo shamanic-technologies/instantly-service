@@ -421,6 +421,13 @@ export interface SendOptions {
    * local time. Falls back to America/Chicago when absent.
    */
   timezone?: string;
+  /**
+   * The feature this send belongs to (x-feature-slug). Selects the sending-account
+   * pool: a slug reserved in instantly_account_feature_policy draws from its
+   * dedicated accounts (e.g. sales-crm-email-outreach → the CRM accounts); any
+   * non-reserved slug or null draws from the shared unreserved fleet.
+   */
+  featureSlug?: string | null;
 }
 
 export interface SendSuccess {
@@ -453,11 +460,12 @@ export type SendResult =
  *     currently in_production — caller surfaces this upstream (no row created).
  */
 export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult> {
-  const accounts = await fetchInProductionAccounts();
+  const accounts = await fetchInProductionAccounts(opts.featureSlug ?? null);
 
   if (accounts.length === 0) {
     console.warn(
-      `[send-lead] No in_production accounts available for "${opts.campaignName}"`,
+      `[send-lead] No in_production accounts available for "${opts.campaignName}"` +
+        (opts.featureSlug ? ` (feature "${opts.featureSlug}")` : ""),
     );
     return { ok: false, reason: "no_healthy_accounts_available" };
   }
