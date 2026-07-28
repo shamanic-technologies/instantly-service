@@ -134,13 +134,17 @@ export interface LatestEspRow {
  * at once. Reading the gate's own leg makes the displayed number and the lifecycle
  * reason agree by construction; `perEsp` shows where the drop is.
  *
- * When no leg is gradable (every leg under the seed floor) the headline falls back
- * to the worst leg overall — still a real measured leg, never a fabricated pooled
- * number. Returns null when there is no data or every leg has 0 seeds.
+ * Returns null when there is no data, when every leg has 0 seeds, OR when NO leg
+ * is gradable (every leg under the seed floor). That last case is deliberate: a
+ * test that seeded an account 2-3 times says nothing about its deliverability, so
+ * the lifecycle treats it exactly like never-tested (delivery unknown → recovery).
+ * Reporting its raw "100% of 2 seeds" would print a passing-looking number next to
+ * `delivery_below_bar` — the same incoherence this function exists to remove.
  */
 export function summarizeEspRows(rows: LatestEspRow[]): InboxPlacement | null {
   const seeded = rows.filter((r) => r.seedTotal > 0);
   if (seeded.length === 0) return null;
+  if (!seeded.some(isGatedEspRow)) return null;
 
   const perEsp: EspPlacement[] = seeded
     .map((r) => ({
@@ -155,9 +159,8 @@ export function summarizeEspRows(rows: LatestEspRow[]): InboxPlacement | null {
 
   // The gate ignores under-seeded legs, so the headline must too — else the row
   // would again show a number the lifecycle reason contradicts.
-  const candidates = perEsp.filter((e) => e.gated);
-  const pool = candidates.length > 0 ? candidates : perEsp;
-  const worst = pool.reduce((min, e) => (e.inboxPct < min.inboxPct ? e : min), pool[0]);
+  const gated = perEsp.filter((e) => e.gated);
+  const worst = gated.reduce((min, e) => (e.inboxPct < min.inboxPct ? e : min), gated[0]);
 
   const testedAt = seeded.reduce(
     (max, r) => (r.testedAt > max ? r.testedAt : max),
