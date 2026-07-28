@@ -12,8 +12,26 @@ name: Inbox-placement tests (maintain + sync)
 #      into our Bronze/Silver/Gold tables so account-health reflects the latest
 #      results. Read-only against Instantly (spends no quota).
 #
-# Runs once a week, on SATURDAY → one one-time test covering the WHOLE testable
-# pool; `sync` pulls results. Saturday AND Sunday are both send-free days
+# ⚠️ SYNC CADENCE (load-bearing) — `sync` runs DAILY, DECOUPLED from `run`.
+# An Instantly placement test takes HOURS to finish. When `sync` was chained
+# directly after `run` in the same weekly job, it polled the test it had created
+# ~4 minutes earlier (still `status:1`, zero analytics) and therefore NEVER
+# ingested it — the results only reached silver at the NEXT week's sync. Effect:
+# every account's `delivery` was up to 7 days stale, and a mailbox created
+# mid-week waited ~2 weeks (test on Saturday, results the following Saturday)
+# before it could ever leave `in_recovery`. Proven in prod 2026-07-25: test
+# 019f9856 (230 senders) sat in bronze at `status:1` with 0 silver rows while
+# the 07-19 test only landed at that same 07-25 sync.
+# So: the weekly Saturday schedule keeps `accounts-sync` + `run`; a DAILY 07:00
+# schedule runs `sync` ALONE (read-only against Instantly, spends no quota), which
+# bounds result latency to <= 24h. Do NOT re-chain sync immediately after run.
+#
+# The weekly-only steps are gated with `if: github.event.schedule != '0 7 * * *'`
+# — that form is TRUE for the weekly cron AND for workflow_dispatch, so a manual
+# run still does the full accounts-sync + run + sync sequence.
+#
+# The `run` step fires once a week, on SATURDAY → one one-time test covering the
+# WHOLE testable pool. Saturday AND Sunday are both send-free days
 # (campaign send window is Mon-Fri, warmup is weekday-only), so the ~30-50
 # seeds/account spike lands on an otherwise-empty mailbox day — and if it
 # overflows the per-account daily send cap on Saturday, the overflow finishes on
@@ -28,7 +46,8 @@ name: Inbox-placement tests (maintain + sync)
 
 on:
   schedule:
-    - cron: "0 6 * * 6" # Saturdays 06:00 UTC — whole testable pool, one weekly test
+    - cron: "0 6 * * 6" # Saturdays 06:00 UTC — accounts-sync + one weekly full-pool test
+    - cron: "0 7 * * *" # DAILY 07:00 UTC — sync ONLY (see the sync-cadence note above)
   workflow_dispatch:
 
 jobs:
@@ -37,6 +56,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: POST /internal/audit/accounts-sync
+        if: github.event.schedule != '0 7 * * *'
         env:
           SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
           API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
@@ -71,6 +91,7 @@ jobs:
           fi
 
       - name: POST /internal/audit/placement-test/run
+        if: github.event.schedule != '0 7 * * *'
         env:
           SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
           API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}

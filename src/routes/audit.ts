@@ -34,6 +34,7 @@ import {
   syncPlacement,
   ensurePlacementSchedule,
   runOneTimeFleetPlacementTest,
+  runUntestedPlacementTest,
   fetchLatestPlacementByAccount,
   fetchPlacementHistory,
   isPlacementSchedulingEnabled,
@@ -580,6 +581,40 @@ router.post("/placement-test/run", async (_req: Request, res: Response) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] placement-test/run failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * POST /internal/audit/placement-test/run-untested
+ *
+ * Platform-scoped. Creates ONE immediate one-time (type 1) placement test seeded
+ * with ONLY the testable accounts that have NEVER been placement-tested. Wired to
+ * the HOURLY lifecycle cron so a brand-new mailbox gets its deliverability test
+ * within the hour instead of waiting for the weekly Saturday full-pool test (and
+ * then a further week for the next `sync`).
+ *
+ * No never-tested account → `created: 0`, NO Instantly call, no quota spent.
+ * SPENDS Growth-sub quota when it does fire → gated behind
+ * `PLACEMENT_TESTS_ENABLED=true`; returns 409 when disabled. Fails loud on a
+ * create rejection (402 quota / 400).
+ */
+router.post("/placement-test/run-untested", async (_req: Request, res: Response) => {
+  try {
+    if (!isPlacementSchedulingEnabled()) {
+      return res.status(409).json({
+        error: "placement testing disabled — set PLACEMENT_TESTS_ENABLED=true to arm",
+      });
+    }
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/placement-test/run-untested",
+    });
+    const summary = await runUntestedPlacementTest(apiKey);
+    res.json({ ...summary });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] placement-test/run-untested failed: ${message}`);
     res.status(500).json({ error: message });
   }
 });

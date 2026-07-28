@@ -61,6 +61,12 @@ const mockCreateCampaign = vi.fn();
 const mockUpdateCampaign = vi.fn();
 const mockGetCampaign = vi.fn();
 const mockListAccounts = vi.fn();
+// Spy over the silver in_production pool read so tests can assert which feature
+// pool a send drew from (the feature carve-out). Delegates to mockListAccounts
+// so every existing POST /send test keeps its seeded pool.
+const mockFetchInProductionAccounts = vi.fn(
+  (_featureSlug?: string | null) => mockListAccounts(),
+);
 
 vi.mock("../../src/lib/instantly-client", () => ({
   addLeads: (...args: unknown[]) => mockAddLeads(...args),
@@ -98,7 +104,8 @@ vi.mock("../../src/lib/status-gold", () => ({
 // existing POST /send tests that seed accounts via mockListAccounts keep working
 // (both return Account[]); a test can still override it per-case.
 vi.mock("../../src/lib/account-lifecycle-sync", () => ({
-  fetchInProductionAccounts: () => mockListAccounts(),
+  fetchInProductionAccounts: (...args: unknown[]) =>
+    mockFetchInProductionAccounts(...args),
 }));
 
 // Per-account capacity snapshot feeding capacity-aware selection. Defaults to an
@@ -303,6 +310,51 @@ describe("pickCapacityAwareAccount", () => {
     ]);
     expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("B@x.com");
   });
+
+  // ── AGE gate: fresh accounts (< MATURE_AGE_DAYS) are de-prioritized ──────────
+  const asOf = new Date("2026-07-22T00:00:00Z");
+  const created = (daysOld: number) =>
+    new Date(asOf.getTime() - daysOld * 24 * 60 * 60 * 1000).toISOString();
+
+  it("prefers a MATURE account over a fresh one when both have room today", () => {
+    // mature has MORE load today (30) than fresh (0) — the fresh one would win on
+    // argMIN todayOcc, but age de-prioritization picks the mature account.
+    const accounts = [
+      acct({ email: "mature@x.com", daily_limit: 50, timestamp_created: created(90) }),
+      acct({ email: "fresh@x.com", daily_limit: 50, timestamp_created: created(3) }),
+    ];
+    const byEmail = caps([
+      ["mature@x.com", { sentToday: 30 }],
+      ["fresh@x.com", { sentToday: 0 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("mature@x.com");
+  });
+
+  it("uses a FRESH account for today only when every mature account is full today", () => {
+    // mature saturated today (todayOcc 50 ≥ MDL 50) → no mature room today →
+    // fresh (room today) takes the overflow.
+    const accounts = [
+      acct({ email: "mature@x.com", daily_limit: 50, timestamp_created: created(90) }),
+      acct({ email: "fresh@x.com", daily_limit: 50, timestamp_created: created(3) }),
+    ];
+    const byEmail = caps([
+      ["mature@x.com", { sentToday: 50, q1next: 2 }], // full today, room tomorrow
+      ["fresh@x.com", { sentToday: 0 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("fresh@x.com");
+  });
+
+  it("an undatable account counts as MATURE (no timestamp_created)", () => {
+    const accounts = [
+      acct({ email: "undated@x.com", daily_limit: 50 }), // no timestamp_created
+      acct({ email: "fresh@x.com", daily_limit: 50, timestamp_created: created(3) }),
+    ];
+    const byEmail = caps([
+      ["undated@x.com", { sentToday: 30 }],
+      ["fresh@x.com", { sentToday: 0 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("undated@x.com");
+  });
 });
 
 describe("send gate — only in_production accounts (lifecycle)", () => {
@@ -370,6 +422,33 @@ describe("send gate — only in_production accounts (lifecycle)", () => {
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.value.account.email).toBe("idle@good.com");
     expect(mockFetchAccountCapacity).toHaveBeenCalled();
+  });
+
+  it("passes featureSlug to fetchInProductionAccounts (pool carve-out)", async () => {
+    mockListAccounts.mockResolvedValueOnce([]);
+    await sendLeadToInstantly({
+      apiKey: "k",
+      campaignName: "c",
+      subject: "s",
+      sortedSequence: seq,
+      lead,
+      featureSlug: "sales-crm-email-outreach",
+    });
+    expect(mockFetchInProductionAccounts).toHaveBeenCalledWith(
+      "sales-crm-email-outreach",
+    );
+  });
+
+  it("defaults featureSlug to null when absent", async () => {
+    mockListAccounts.mockResolvedValueOnce([]);
+    await sendLeadToInstantly({
+      apiKey: "k",
+      campaignName: "c",
+      subject: "s",
+      sortedSequence: seq,
+      lead,
+    });
+    expect(mockFetchInProductionAccounts).toHaveBeenCalledWith(null);
   });
 });
 
@@ -737,6 +816,32 @@ describe("POST /send", () => {
       "inst-camp-new",
       expect.objectContaining({ email_list: ["prod@example.com"] }),
     );
+  });
+
+  it("draws the account pool from the x-feature-slug (feature carve-out)", async () => {
+    // A send carrying x-feature-slug picks the pool reserved for that feature:
+    // send.ts → sendLeadToInstantly → fetchInProductionAccounts(featureSlug).
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app)
+      .post("/send")
+      .set({ ...identityHeadersObj, "x-feature-slug": "sales-crm-email-outreach" })
+      .send(validBody);
+
+    expect(mockFetchInProductionAccounts).toHaveBeenCalledWith(
+      "sales-crm-email-outreach",
+    );
+  });
+
+  it("draws from the default pool (null slug) when x-feature-slug absent", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    // identityHeadersObj carries no x-feature-slug.
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(mockFetchInProductionAccounts).toHaveBeenCalledWith(null);
   });
 
   it("sets bcc_list on the campaign PATCH when bcc is provided", async () => {

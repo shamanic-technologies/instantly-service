@@ -141,11 +141,9 @@ type SilverReadRow = {
   missing_count: number;
 };
 
-function rowsOf(result: unknown): SilverReadRow[] {
+function rowsOf<T = SilverReadRow>(result: unknown): T[] {
   if (!result) return [];
-  return Array.isArray(result)
-    ? (result as SilverReadRow[])
-    : (((result as { rows?: SilverReadRow[] }).rows) ?? []);
+  return Array.isArray(result) ? (result as T[]) : (((result as { rows?: T[] }).rows) ?? []);
 }
 
 function toLatestEspRow(r: SilverReadRow): LatestEspRow {
@@ -367,6 +365,122 @@ export async function runOneTimeFleetPlacementTest(
   return {
     created: 1,
     testCode,
+    recipientEsps: recipientsLabels.map((o) => o.esp),
+    senderCount: senders.length,
+  };
+}
+
+/** test_code marker on the immediate "this account has never been tested" tests. */
+export const UNTESTED_PLACEMENT_TEST_CODE = `${PLACEMENT_TEST_CODE_PREFIX}_untested`;
+
+/**
+ * How long a just-created test suppresses a re-test of the accounts it seeded.
+ * A test takes hours to finish and its results only reach silver on the next
+ * `sync`, so without this window the hourly cron would re-create a test for the
+ * same never-tested account every hour until the results land.
+ */
+export const UNTESTED_RETEST_SUPPRESSION_HOURS = 48;
+
+/**
+ * Testable accounts (lifecycle in_recovery | in_production) that have NEVER been
+ * placement-tested — i.e. zero silver rows — and were not already seeded into a
+ * test we created in the last {@link UNTESTED_RETEST_SUPPRESSION_HOURS} hours.
+ *
+ * The suppression reads BRONZE (`instantly_placement_tests_raw`), which
+ * `runUntestedPlacementTest` writes at CREATE time (not only at sync time) — that
+ * write is what makes this predicate derivable with no extra state table.
+ */
+export async function fetchUntestedTestableEmails(): Promise<string[]> {
+  const result = await db.execute(sql`
+    SELECT a.email AS "email"
+    FROM instantly_accounts a
+    WHERE a.lifecycle_status IN ('in_recovery', 'in_production')
+      AND NOT EXISTS (
+        SELECT 1 FROM instantly_placement_results r
+        WHERE r.account_email = a.email
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM instantly_placement_tests_raw t
+        WHERE COALESCE(
+                (t.payload->>'timestamp_created')::timestamptz,
+                t.fetched_at
+              ) > now() - make_interval(hours => ${UNTESTED_RETEST_SUPPRESSION_HOURS})
+          AND jsonb_exists(t.payload->'emails', a.email)
+      )
+    ORDER BY a.email
+  `);
+  return rowsOf<{ email: string }>(result)
+    .map((r) => r.email)
+    .filter(Boolean);
+}
+
+/**
+ * Create ONE immediate one-time (type 1) placement test seeded with ONLY the
+ * never-placement-tested accounts.
+ *
+ * Why this exists on top of the weekly Saturday full-pool test: a testable account
+ * that appears mid-week (a fresh DFY/Primeforge mailbox lands in_recovery because
+ * delivery is UNKNOWN) would otherwise wait for the next Saturday — and then wait
+ * again for the following `sync` before its result reaches silver. That is up to
+ * two weeks stuck in_recovery, sending nothing. An account with no placement data
+ * at all can only escape in_recovery by being tested, so it gets its own test the
+ * hour it shows up.
+ *
+ * Empty set → NO Instantly call, no quota spent, `created: 0` (never a fabricated
+ * result). Spends Growth-sub quota when non-empty — caller MUST gate on
+ * `isPlacementSchedulingEnabled()`. Fail loud on a create rejection (402/400).
+ */
+export async function runUntestedPlacementTest(
+  apiKey: string,
+): Promise<RunPlacementTestSummary> {
+  const senders = await fetchUntestedTestableEmails();
+  if (senders.length === 0) {
+    return { created: 0, testCode: null, recipientEsps: [], senderCount: 0 };
+  }
+
+  const espOptions = await getEmailServiceProviderOptions(apiKey);
+  const recipientsLabels = espOptions.filter(
+    (o) => o.esp === "Google" || o.esp === "Outlook",
+  );
+
+  const test = await createInboxPlacementTest(apiKey, {
+    name: "Inbox placement (never-tested accounts)",
+    type: 1,
+    sending_method: 1,
+    delivery_mode: 1,
+    email_subject: "Quick question",
+    email_body: "Hi, just checking in on the note I sent over. Any thoughts?",
+    emails: senders,
+    recipients_labels: recipientsLabels,
+    text_only: true,
+    test_code: UNTESTED_PLACEMENT_TEST_CODE,
+    run_immediately: true,
+  });
+
+  // Bronze at CREATE time — this is what suppresses a re-test of the same
+  // accounts on the next hourly run (results take hours and only reach silver on
+  // the next `sync`). `emails` is forced onto the payload because the create
+  // RESPONSE does not always echo the senders back; a later `sync` overwrites
+  // this row with Instantly's own listed payload (onConflictDoUpdate), so bronze
+  // self-corrects to the true mirror.
+  await db
+    .insert(instantlyPlacementTestsRaw)
+    .values({
+      testId: test.id,
+      testCode: test.test_code ?? UNTESTED_PLACEMENT_TEST_CODE,
+      payload: { ...(test as unknown as Record<string, unknown>), emails: senders },
+    })
+    .onConflictDoUpdate({
+      target: instantlyPlacementTestsRaw.testId,
+      set: {
+        payload: { ...(test as unknown as Record<string, unknown>), emails: senders },
+        fetchedAt: new Date(),
+      },
+    });
+
+  return {
+    created: 1,
+    testCode: UNTESTED_PLACEMENT_TEST_CODE,
     recipientEsps: recipientsLabels.map((o) => o.esp),
     senderCount: senders.length,
   };
