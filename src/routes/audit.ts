@@ -489,13 +489,17 @@ router.post("/lifecycle-limits-sync", async (req: Request, res: Response) => {
 /**
  * POST /internal/audit/reactivate-accounts
  *
- * Platform-scoped. Resumes `deactivated_by_instantly` accounts that are healthy
- * again (Health 100 + 100% inbox + deactivated ≥ 24h) via Instantly `resume`, so
- * they return to the send pool. Guards against the 550-throttle-nudge trap with
- * the 24h age gate + natural backoff (see reactivate-accounts.ts). Gated behind
- * `REACTIVATE_ACCOUNTS_ENABLED=true`; returns 409 when disabled. Only PATCHes
- * eligible accounts, fail-loud per account. Optional `{limit}`. 202 + background;
- * watch logs for `reactivate-accounts: done`.
+ * Platform-scoped. Resumes `deactivated_by_instantly` accounts whose recorded
+ * SMTP failure was TRANSIENT (a 4xx reply) and that have been off ≥ 24h, via
+ * Instantly `resume`. A PERMANENT 5xx rejection — which is what a real Gmail
+ * `550-5.4.5 Daily user sending limit exceeded` throttle looks like — is never
+ * resumed, so the throttle-nudge trap stays guarded; the 24h age gate gives
+ * natural backoff. No health/delivery gate: resume only sets Instantly status 1
+ * and `deriveLifecycle` decides what the account becomes (below-bar ⇒
+ * `in_recovery`, zero new sends). See reactivate-accounts.ts. Gated behind
+ * `REACTIVATE_ACCOUNTS_ENABLED=true`; returns 409 when disabled. Fail-loud per
+ * account. Optional `{limit}`. 202 + background; watch logs for
+ * `reactivate-accounts: done`.
  */
 router.post("/reactivate-accounts", async (req: Request, res: Response) => {
   if (!isReactivateAccountsEnabled()) {

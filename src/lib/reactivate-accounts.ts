@@ -1,34 +1,46 @@
 /**
- * Reactivate accounts Instantly DEACTIVATED that are healthy again — REASON-AWARE.
+ * Reactivate accounts Instantly DEACTIVATED whose failure was TRANSIENT.
  *
  * The lifecycle model deliberately does NOT fight Instantly: an account with
  * `instantlyStatus <= 0` derives to `deactivated_by_instantly` and we leave it
- * off. Kevin wants healthy-again accounts (Health 100 + 100% inbox) brought back
- * automatically. But prod validation (2026-07-21) showed EVERY such account is
- * one of exactly two Instantly-deactivation reasons, and a blind `POST
- * /accounts/{email}/resume` is WRONG for both:
- *   - `status -3` = Gmail `550-5.4.5 Daily user sending limit exceeded` throttle.
- *     It clears BY ITSELF after ~24h of reduced sending and Instantly
- *     auto-reactivates. Nudging it with resume makes the throttle WORSE
- *     (CLAUDE.md 2026-07-14). DO NOT resume.
- *   - `status -1` = broken Google↔Instantly OAuth ("needs review"). A resume
- *     flips it to 1 only momentarily then it reverts; the durable fix is a
- *     manual Primeforge → Instantly re-export (UI, login creds — no API). Resume
- *     is useless. DO NOT resume.
- * Both carry `autofix_failed: true` — Instantly's own auto-recovery already gave
- * up, so our resume won't help either.
+ * off. This sweep brings back the ones Instantly turned off for a reason that
+ * has since passed.
  *
- * So this sweep is REASON-AWARE: it resumes ONLY a genuinely-resumable pause —
- * NOT a `550` throttle, NOT an OAuth `-1`, NOT an `autofix_failed` account. In
- * prod today that resumes ZERO (every deactivation is `-3`/`-1`), which is the
- * correct safe outcome; it future-proofs the case where a genuinely-paused,
- * healthy account appears.
+ * THE GATE IS THE SMTP RESPONSE CLASS, NOT THE INSTANTLY `status` CODE.
+ * An earlier version excluded `status -1` (broken OAuth) and `status -3`
+ * (assumed = Gmail `550-5.4.5 Daily user sending limit exceeded`) outright, plus
+ * anything with `autofix_failed: true`. Prod audit 2026-07-28 disproved every
+ * premise of that gate:
+ *   - ZERO of the 12 live `-3` accounts was a Gmail 550. All 12 were
+ *     `provider_code 1` (the legacy Gandi/Mailforge IMAP relay fleet) — not
+ *     Google mailboxes at all, so a Gmail per-user throttle is impossible for
+ *     them by construction.
+ *   - 9/12 were `450 4.1.2 <recipient>: Recipient address rejected: Domain not
+ *     found` — the PROSPECT's domain is dead. Instantly deactivated OUR sender
+ *     over a bad lead in our list. 2/12 were `450 4.7.1 … Too many mail per day
+ *     for sasl <user>` — the Gandi relay's own cap. Every one a 4xx TRANSIENT
+ *     reply, not a single 5xx.
+ *   - "`-3` clears itself in ~24h" was false too: two had been down 3-6 days.
+ *   - `autofix_failed` is a STALE field, not a verdict — it stayed `true` on
+ *     three accounts throughout a resume that WORKED, then cleared to null after.
+ * So `status`-code and `autofix_failed` exclusions blocked 12 healthy-enough
+ * mailboxes indefinitely while blocking nothing real.
  *
- * The reason lives in the account's `status_message` ({responseCode, response})
- * which is present ONLY on the single-account GET (`getAccountRaw`), NOT the LIST
- * — so the cheap base gates run on the LIST first (incl. `status` not in
- * {-1,-3}, which needs no extra IO), and only the few survivors pay a
- * single-account GET to read the precise reason.
+ * `isResumableAccountDetail` now classifies by the SMTP reply itself: a
+ * PERMANENT 5xx rejection (which is what a real Gmail `550-5.4.5` throttle looks
+ * like) is never resumed; a TRANSIENT 4xx is. A `-1` OAuth account has no
+ * recorded failure at all (`status_message: null`) so it IS retried — harmless,
+ * because a still-broken OAuth simply reverts to `-1`, and the 24h gate below
+ * gives it natural backoff (a re-deactivation resets `lifecycle_updated_at`).
+ *
+ * NO health / delivery gate. Resume only sets Instantly `status: 1`;
+ * `deriveLifecycle` then decides what the account BECOMES, and an account below
+ * the 95/95 bar lands `in_recovery` — which takes ZERO new sends. Gating this
+ * sweep on health+delivery gated the same thing twice AND created a deadlock: a
+ * `deactivated_by_instantly` account is outside `fetchTestablePoolEmails`
+ * (`in_recovery` + `in_production` only), so it could never be placement-tested,
+ * never earn delivery-at-bar, and never be reactivated. Dropping the gate breaks
+ * the loop — the resumed account lands `in_recovery`, which IS testable.
  *
  * Fail-loud per account; in-cluster only (platform key via key-service).
  */
@@ -40,18 +52,19 @@ import {
 } from "./instantly-client";
 import {
   fetchLifecycleByEmail,
-  fetchLatestDeliveryByAccount,
   type LifecycleView,
-  type AccountDelivery,
 } from "./account-lifecycle-sync";
-import { PRODUCTION_HEALTH_BAR } from "./account-lifecycle";
 
 /** Minimum time an account must have been deactivated before a resume nudge. */
 export const REACTIVATE_MIN_DEACTIVATED_MS = 24 * 60 * 60 * 1000; // 24h
 
-/** Instantly account status codes that are NEVER resumable via the API. */
-export const OAUTH_NEEDS_REVIEW_STATUS = -1; // broken OAuth — needs Primeforge re-export
-export const THROTTLE_550_STATUS = -3; // Gmail 550 daily-limit — self-heals, do NOT nudge
+/**
+ * A PERMANENT (5xx) SMTP rejection in the raw response text — either the reply
+ * code at the start of the line (`550 …` / `550-…`) or an RFC 3463 enhanced
+ * status code whose class is 5 (`5.4.5`, `5.7.1`). Class 4 (`450`, `4.1.2`,
+ * `4.7.1`) is TRANSIENT and stays resumable.
+ */
+const PERMANENT_SMTP_RESPONSE = /(?:^|\s)5\d{2}[\s-]|\b5\.\d{1,3}\.\d{1,3}\b/;
 
 /**
  * Kill-switch, default OFF (mirrors PLACEMENT_TESTS_ENABLED / DELETE_FINISHED_
@@ -62,22 +75,22 @@ export function isReactivateAccountsEnabled(): boolean {
 }
 
 /**
- * Pure: BASE candidates for a resume nudge, from the LIST + silver + delivery.
- * Gates (all required):
+ * Pure: BASE candidates for a resume nudge, from the LIST + silver lifecycle.
+ * Gates (both required):
  *   1. lifecycle `deactivated_by_instantly` (silver),
- *   2. Health `stat_warmup_score >= PRODUCTION_HEALTH_BAR`,
- *   3. delivery AT BAR (>= 95% inbox on EVERY ESP of the latest placement test),
- *   4. deactivated for >= `minDeactivatedMs` (throttle likely cleared + natural
- *      backoff — a re-deactivation resets `lifecycle_updated_at`),
- *   5. `status` NOT in {-1 OAuth, -3 550-throttle} — the two never-resumable
- *      reasons, cheaply excluded from the LIST (no extra IO).
- * The precise reason (status_message) is re-checked per survivor in
- * `isResumableAccountDetail` after a single-account GET.
+ *   2. deactivated for >= `minDeactivatedMs` (lets a transient block clear, and
+ *      gives natural backoff — a re-deactivation resets `lifecycle_updated_at`,
+ *      so an account that keeps failing is retried at most daily).
+ * The account must still exist in the live Instantly LIST. There is deliberately
+ * NO health / delivery / `status`-code gate here — see the file header: the
+ * lifecycle derivation is the real safety gate (a below-bar account resumes into
+ * `in_recovery`, which sends nothing), and gating on delivery deadlocked the
+ * account out of ever being placement-tested. The genuine block (a PERMANENT
+ * SMTP rejection) is checked per survivor in `isResumableAccountDetail`.
  */
 export function selectReactivationCandidates(
   accounts: Account[],
   lifecycleByEmail: Map<string, LifecycleView>,
-  deliveryByEmail: Map<string, AccountDelivery>,
   nowMs: number,
   minDeactivatedMs: number = REACTIVATE_MIN_DEACTIVATED_MS,
 ): string[] {
@@ -86,41 +99,44 @@ export function selectReactivationCandidates(
     if (!account.email) continue;
     const lifecycle = lifecycleByEmail.get(account.email);
     if (lifecycle?.status !== "deactivated_by_instantly") continue;
-    if ((account.stat_warmup_score ?? 0) < PRODUCTION_HEALTH_BAR) continue;
-    if (!deliveryByEmail.get(account.email)?.atBar) continue;
 
     const updatedAt = lifecycle.updatedAt ? new Date(lifecycle.updatedAt).getTime() : NaN;
     if (!Number.isFinite(updatedAt) || nowMs - updatedAt < minDeactivatedMs) continue;
 
-    // Exclude the two never-resumable reasons cheaply from the LIST status.
-    if (account.status === OAUTH_NEEDS_REVIEW_STATUS || account.status === THROTTLE_550_STATUS) {
-      continue;
-    }
     candidates.push(account.email);
   }
   return candidates;
 }
 
 /**
- * Pure: is a candidate's FULL single-account detail genuinely resumable? False
- * when the reason is a Gmail 550 throttle, an OAuth `-1`, or Instantly's own
- * auto-fix already failed. A missing `status_message` with a clean status is
- * treated as resumable (a plain pause). `raw` is the untouched Instantly account
- * object (`getAccountRaw`).
+ * Pure: is a candidate's FULL single-account detail genuinely resumable?
+ *
+ * The verdict comes from the SMTP reply Instantly recorded in `status_message`
+ * ({responseCode, response, e_message}), which is present ONLY on the
+ * single-account GET (`getAccountRaw`), not the LIST:
+ *   - PERMANENT 5xx (a real Gmail `550-5.4.5 Daily user sending limit exceeded`,
+ *     a `5.7.1` block) → NOT resumable. Resuming would nudge a live throttle.
+ *   - TRANSIENT 4xx (`450 4.1.2 Domain not found` — a dead PROSPECT domain;
+ *     `450 4.7.1 Too many mail per day for sasl` — the relay's own cap) →
+ *     resumable. The condition has passed or was never ours.
+ *   - No `status_message` at all (e.g. an OAuth `-1` "needs review", or a plain
+ *     pause) → resumable. A still-broken OAuth just reverts to `-1`, and the 24h
+ *     age gate keeps that from churning.
+ *
+ * Deliberately does NOT read `status` or `autofix_failed` — both proved to be
+ * false blockers in prod (see the file header). `raw` is the untouched Instantly
+ * account object.
  */
 export function isResumableAccountDetail(raw: Record<string, unknown>): boolean {
-  const status = typeof raw.status === "number" ? raw.status : undefined;
-  if (status === OAUTH_NEEDS_REVIEW_STATUS || status === THROTTLE_550_STATUS) return false;
-  if (raw.autofix_failed === true) return false;
-
   const sm = raw.status_message;
-  if (sm && typeof sm === "object") {
-    const responseCode = (sm as { responseCode?: unknown }).responseCode;
-    if (responseCode === 550) return false;
-    const response = (sm as { response?: unknown }).response;
-    if (typeof response === "string" && /5\.4\.5|daily user sending limit|550[-\s]?5\.4\.5/i.test(response)) {
-      return false;
-    }
+  if (!sm || typeof sm !== "object") return true;
+
+  const responseCode = (sm as { responseCode?: unknown }).responseCode;
+  if (typeof responseCode === "number" && responseCode >= 500 && responseCode < 600) return false;
+
+  for (const key of ["response", "e_message"] as const) {
+    const text = (sm as Record<string, unknown>)[key];
+    if (typeof text === "string" && PERMANENT_SMTP_RESPONSE.test(text)) return false;
   }
   return true;
 }
@@ -132,34 +148,28 @@ export interface ReactivateSummary {
   candidates: number;
   /** Accounts resumed this run. */
   reactivated: number;
-  /** Candidates skipped by the reason check (550 throttle / OAuth / autofix_failed). */
+  /** Candidates skipped by the reason check (a PERMANENT 5xx SMTP rejection). */
   skippedNotResumable: number;
   /** Resume / detail-fetch that threw — left for the next run. */
   failed: number;
 }
 
 /**
- * IO glue: read the live account list + silver lifecycle + latest delivery, pick
- * base candidates, then for each fetch the single-account detail to confirm the
- * reason is genuinely resumable before `resume`. `nowMs` is the reference time;
- * `limit` bounds the candidate batch. Fail-loud per account.
+ * IO glue: read the live account list + silver lifecycle, pick base candidates,
+ * then for each fetch the single-account detail to confirm the recorded SMTP
+ * failure is transient before `resume`. `nowMs` is the reference time; `limit`
+ * bounds the candidate batch. Fail-loud per account.
  */
 export async function reactivateEligibleAccounts(
   apiKey: string,
   nowMs: number,
   limit?: number,
 ): Promise<ReactivateSummary> {
-  const [accounts, lifecycleByEmail, deliveryByEmail] = await Promise.all([
+  const [accounts, lifecycleByEmail] = await Promise.all([
     listAccounts(apiKey),
     fetchLifecycleByEmail(),
-    fetchLatestDeliveryByAccount(),
   ]);
-  const candidates = selectReactivationCandidates(
-    accounts,
-    lifecycleByEmail,
-    deliveryByEmail,
-    nowMs,
-  );
+  const candidates = selectReactivationCandidates(accounts, lifecycleByEmail, nowMs);
   const batch = limit && limit > 0 ? candidates.slice(0, limit) : candidates;
 
   let reactivated = 0;
