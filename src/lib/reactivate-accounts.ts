@@ -66,7 +66,7 @@ export function isReactivateAccountsEnabled(): boolean {
  * Gates (all required):
  *   1. lifecycle `deactivated_by_instantly` (silver),
  *   2. Health `stat_warmup_score >= PRODUCTION_HEALTH_BAR`,
- *   3. delivery AT BAR (>= 95% inbox on EVERY ESP of the latest placement test),
+ *   3. delivery AT BAR (>= 90% inbox on EVERY gated ESP of the latest placement test),
  *   4. deactivated for >= `minDeactivatedMs` (throttle likely cleared + natural
  *      backoff — a re-deactivation resets `lifecycle_updated_at`),
  *   5. `status` NOT in {-1 OAuth, -3 550-throttle} — the two never-resumable

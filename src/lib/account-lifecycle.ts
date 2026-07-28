@@ -12,16 +12,11 @@
  *   healthScore < BAR OR delivery below BAR    → in_recovery
  *   healthScore >= BAR AND delivery at BAR     → in_production
  *
- * - `healthScore` = Instantly `stat_warmup_score` (0-100).
- * - The production bar is 95, NOT 100 (lowered 2026-07-28). At 100/100 the fleet
- *   sat at 20 in_production out of 232 testable while ~179 accounts were already
- *   health >= 95 — a single spam seed out of 40 (97.5% inbox) held an otherwise
- *   healthy mailbox out of production forever. 95 is still a Gmail-inbox bar; it
- *   just stops treating seed-level noise as a deliverability failure.
+ * - `healthScore` = Instantly `stat_warmup_score` (0-100), gated at 95.
  * - `deliveryAtBar` is computed PER ESP (see {@link isDeliveryAtBar}): every
  *   (account, ESP) silver row of the account's latest placement test must inbox
- *   at >= 95%. Deliberately NOT a blended average — Gmail-spam vs Outlook-fine is
- *   the whole deliverability finding, so a 90% Gmail hidden behind a 100% Outlook
+ *   at >= 90%. Deliberately NOT a blended average — Gmail-spam vs Outlook-fine is
+ *   the whole deliverability finding, so a 60% Gmail hidden behind a 100% Outlook
  *   must NOT promote. Delivery UNKNOWN (never tested) is passed as `null` and
  *   treated as below bar, so an untested account defaults to in_recovery.
  */
@@ -69,14 +64,33 @@ export interface Lifecycle {
 }
 
 /**
- * The production bar, applied to BOTH signals (lowered from 100 on 2026-07-28):
+ * The production bars (lowered from 100/100 on 2026-07-28, then delivery 95 → 90
+ * on the same day once prod data showed what the ESP grain does to the denominator):
  *   - health: Instantly `stat_warmup_score` >= 95
- *   - delivery: >= 95% inbox on EVERY ESP of the latest placement test
- * A perfect 100/100 bar left ~90% of a healthy fleet stuck in_recovery because a
- * single spam seed out of 40 reads as 97.5%.
+ *   - delivery: >= 90% inbox on EVERY ESP of the latest placement test
+ *
+ * Why the two bars differ. Health is one score over the whole warmup pool, so 95
+ * there is a large-sample bar. Delivery is applied PER ESP, and an ESP leg of a
+ * placement test only seeds ~25-30 mailboxes — so 2 spam seeds (unavoidable
+ * seed-level noise) already reads as 92%. At a 95 per-ESP bar, prod had 174
+ * accounts at health >= 95 held out of production, 9 of which were Gmail 91-94% /
+ * Outlook 100% — genuinely fine mailboxes blocked by 2 seeds. 90 clears exactly
+ * those 9 and NOTHING else: the legacy shared-IP fleet this gate exists to catch
+ * sits at <10% inbox on Gmail (136 accounts), so the separation is untouched.
+ * Do NOT raise it back without re-measuring the in_production count against prod.
  */
 export const PRODUCTION_HEALTH_BAR = 95;
-export const PRODUCTION_DELIVERY_PCT_BAR = 95;
+export const PRODUCTION_DELIVERY_PCT_BAR = 90;
+
+/**
+ * Minimum seeds an (account, ESP) leg must carry to be gated on. Instantly emits
+ * an "other" ESP bucket (`recipient_esp: 999`) with 1-3 seeds; at that size a
+ * single spam seed reads as 0-50% and would veto an account whose real Gmail and
+ * Outlook legs both pass. Legs below this are excluded from the gate (they stay
+ * visible in the placement breakdown). An account whose every leg is below it has
+ * no gradable delivery signal → below bar, same as never-tested.
+ */
+export const MIN_GATED_ESP_SEEDS = 5;
 
 /**
  * Warmup daily send volume pushed to Instantly per target lifecycle state.
@@ -218,26 +232,30 @@ export function slowRampForAge(
   return age < MATURE_AGE_MS;
 }
 
+/** True ⇔ this (account, ESP) leg carries enough seeds to be gated on. */
+export function isGatedEspRow(row: { seedTotal: number }): boolean {
+  return row.seedTotal >= MIN_GATED_ESP_SEEDS;
+}
+
 /**
- * The delivery bar: >= {@link PRODUCTION_DELIVERY_PCT_BAR}% inbox on EVERY ESP of
- * the account's latest placement test. `espRows` is one row per (account, ESP) of
- * that test. True ⇔ every ESP row seeded at least once AND inboxed at >= the bar.
+ * The delivery bar: >= {@link PRODUCTION_DELIVERY_PCT_BAR}% inbox on EVERY gated
+ * ESP leg of the account's latest placement test. `espRows` is one row per
+ * (account, ESP) of that test; legs under {@link MIN_GATED_ESP_SEEDS} seeds are
+ * excluded (see that constant).
  *
  * PER-ESP, NOT blended — deliberately. Gmail-spam vs Outlook-fine is the entire
- * deliverability finding, and a blended average hides it: Gmail 90% + Outlook 100%
- * blends to 95% and would wrongly promote an account Gmail distrusts. Under the
- * old 100% bar the blended sum happened to be equivalent (inbox_i <= seed_i, so
- * Σinbox == Σseed forces per-ESP equality) — that equivalence does NOT hold at 95,
- * so the per-ESP form is now load-bearing. Do NOT collapse it back to sums.
+ * deliverability finding, and a blended average hides it: Gmail 60% + Outlook 100%
+ * on a 2:1 seed split blends to ~73% and, on any bar a blend could pass, would
+ * promote an account Gmail distrusts. Do NOT collapse it back to sums.
  *
- * No rows (never tested) → false (delivery unknown → recovery).
+ * No gradable leg (never tested, or every leg under the seed floor) → false
+ * (delivery unknown → recovery). Never fabricates a pass.
  */
 export function isDeliveryAtBar(
   espRows: ReadonlyArray<{ inboxCount: number; seedTotal: number }>,
 ): boolean {
-  if (espRows.length === 0) return false;
+  const gated = espRows.filter(isGatedEspRow);
+  if (gated.length === 0) return false;
   // Integer comparison (inbox * 100 >= seed * bar) — no float rounding.
-  return espRows.every(
-    (r) => r.seedTotal > 0 && r.inboxCount * 100 >= r.seedTotal * PRODUCTION_DELIVERY_PCT_BAR,
-  );
+  return gated.every((r) => r.inboxCount * 100 >= r.seedTotal * PRODUCTION_DELIVERY_PCT_BAR);
 }
