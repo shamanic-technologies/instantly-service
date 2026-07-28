@@ -218,6 +218,13 @@
       "when": 1784332800000,
       "tag": "0030_account_feature_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1784419200000,
+      "tag": "0031_release_crm_feature_reservation",
+      "breakpoints": true
     }
   ]
 }
