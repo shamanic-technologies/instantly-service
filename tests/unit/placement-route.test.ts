@@ -50,12 +50,13 @@ describe("placement audit routes", () => {
       expect(res.body.error).toMatch(/email/);
     });
 
-    it("returns blended per-test history (newest first) for the account", async () => {
+    it("returns per-test history (newest first) for the account", async () => {
       // Two tests for a@x.com: t2 newer (Gmail spam), t1 older (Gmail inbox).
+      // Seeds must clear MIN_GATED_ESP_SEEDS or the test is ungradable → no entry.
       mockExecute.mockResolvedValue({
         rows: [
-          { test_id: "t2", recipient_esp: 1, tested_at: "2026-07-01T00:00:00.000Z", seed_total: 4, inbox_count: 0, spam_count: 4, missing_count: 0 },
-          { test_id: "t1", recipient_esp: 1, tested_at: "2026-06-25T00:00:00.000Z", seed_total: 4, inbox_count: 4, spam_count: 0, missing_count: 0 },
+          { test_id: "t2", recipient_esp: 1, tested_at: "2026-07-01T00:00:00.000Z", seed_total: 20, inbox_count: 0, spam_count: 20, missing_count: 0 },
+          { test_id: "t1", recipient_esp: 1, tested_at: "2026-06-25T00:00:00.000Z", seed_total: 20, inbox_count: 20, spam_count: 0, missing_count: 0 },
         ],
       });
       const app = await makeApp();

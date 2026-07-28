@@ -42,7 +42,11 @@ export interface EspPlacement {
   gated: boolean;
 }
 
-/** Inbox-placement breakdown for one account. Null until the account is tested. */
+/**
+ * Inbox-placement breakdown for one account. Null until the account has a test
+ * with at least one gradable ESP leg — a test that seeded it 2-3 times carries no
+ * deliverability signal and the lifecycle treats it exactly like never-tested.
+ */
 export interface InboxPlacement {
   /**
    * The headline percentages are the account's WORST gated ESP leg, NOT a blend

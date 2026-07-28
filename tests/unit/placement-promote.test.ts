@@ -169,20 +169,23 @@ describe("summarizeEspRows — headline is the WORST gated ESP, not a blend", ()
     });
   });
 
-  it("falls back to the worst leg overall when NO leg is gradable", () => {
-    const summary = summarizeEspRows([
-      row({ recipientEsp: 1, inboxCount: 1, spamCount: 1, seedTotal: 2 }),
-      row({ recipientEsp: 2, inboxCount: 3, seedTotal: 3 }),
-    ]);
-    expect(summary?.inboxPct).toBe(50);
-    expect(summary?.perEsp.every((e) => e.gated)).toBe(false);
+  it("returns null when NO leg is gradable — even at a perfect 100% of 5 seeds", () => {
+    // A test that seeded the account 2-3 times says nothing about deliverability, so
+    // the lifecycle calls it unknown → in_recovery. Printing "100% inbox" here would
+    // put a passing number next to `delivery_below_bar`: the exact incoherence fixed.
+    expect(
+      summarizeEspRows([
+        row({ recipientEsp: 1, inboxCount: 2, seedTotal: 2 }),
+        row({ recipientEsp: 2, inboxCount: 3, seedTotal: 3 }),
+      ]),
+    ).toBeNull();
   });
 
   it("takes the newest testedAt across rows", () => {
     const newer = new Date("2026-07-01T00:00:00.000Z");
     const summary = summarizeEspRows([
-      row({ recipientEsp: 1, inboxCount: 1, seedTotal: 1, testedAt: TESTED }),
-      row({ recipientEsp: 2, inboxCount: 1, seedTotal: 1, testedAt: newer }),
+      row({ recipientEsp: 1, inboxCount: 10, seedTotal: 10, testedAt: TESTED }),
+      row({ recipientEsp: 2, inboxCount: 10, seedTotal: 10, testedAt: newer }),
     ]);
     expect(summary?.testedAt).toBe(newer.toISOString());
   });
