@@ -2,7 +2,7 @@
  * Inbox-placement ingestion + gold reads (IO glue around placement-promote).
  *
  *   syncPlacement()               — poll Instantly tests + analytics → bronze → silver.
- *   fetchLatestPlacementByAccount — gold: latest test per account, blended across ESP.
+ *   fetchLatestPlacementByAccount — gold: latest test per account, worst-ESP headline.
  *   fetchPlacementHistory         — gold: per-account test-over-time series.
  *   ensurePlacementSchedule       — create/maintain the recurring automated tests
  *                                   (kill-switched — spends the Growth quota).
@@ -27,7 +27,7 @@ import {
 import { fetchTestablePoolEmails } from "./account-lifecycle-sync";
 import {
   aggregatePlacementRows,
-  blendEspRows,
+  summarizeEspRows,
   type LatestEspRow,
 } from "./placement-promote";
 import type { InboxPlacement } from "./account-health";
@@ -148,6 +148,7 @@ function rowsOf<T = SilverReadRow>(result: unknown): T[] {
 
 function toLatestEspRow(r: SilverReadRow): LatestEspRow {
   return {
+    recipientEsp: Number(r.recipient_esp),
     inboxCount: Number(r.inbox_count),
     spamCount: Number(r.spam_count),
     missingCount: Number(r.missing_count),
@@ -157,7 +158,7 @@ function toLatestEspRow(r: SilverReadRow): LatestEspRow {
 }
 
 /**
- * Gold: latest placement per account, blended across ESP. Reads only the newest
+ * Gold: latest placement per account, headlined by its worst gated ESP leg. Reads only the newest
  * test per account (`tested_at = MAX per account`). Returns a Map keyed by
  * account email; an account with no placement data is simply absent (→ null in
  * the account-health mapper).
@@ -182,8 +183,8 @@ export async function fetchLatestPlacementByAccount(): Promise<Map<string, Inbox
 
   const out = new Map<string, InboxPlacement>();
   for (const [email, rows] of byAccount) {
-    const blended = blendEspRows(rows);
-    if (blended) out.set(email, blended);
+    const summary = summarizeEspRows(rows);
+    if (summary) out.set(email, summary);
   }
   return out;
 }
@@ -193,7 +194,7 @@ export interface PlacementHistoryEntry extends InboxPlacement {
 }
 
 /**
- * Gold: per-account placement history — one blended entry per test, newest first.
+ * Gold: per-account placement history — one entry per test, newest first.
  */
 export async function fetchPlacementHistory(
   accountEmail: string,
@@ -221,8 +222,8 @@ export async function fetchPlacementHistory(
   const out: PlacementHistoryEntry[] = [];
   for (const testId of order) {
     const g = byTest.get(testId)!;
-    const blended = blendEspRows(g.rows);
-    if (blended) out.push({ testId, ...blended });
+    const summary = summarizeEspRows(g.rows);
+    if (summary) out.push({ testId, ...summary });
   }
   return out;
 }
