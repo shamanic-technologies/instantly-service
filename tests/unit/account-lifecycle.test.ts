@@ -60,9 +60,9 @@ describe("deriveLifecycle — four branches, first match wins", () => {
     });
   });
 
-  it("the production bar is 95, not 100 (both signals)", () => {
+  it("health bar is 95; the PER-ESP delivery bar is 90 (smaller denominator)", () => {
     expect(PRODUCTION_HEALTH_BAR).toBe(95);
-    expect(PRODUCTION_DELIVERY_PCT_BAR).toBe(95);
+    expect(PRODUCTION_DELIVERY_PCT_BAR).toBe(90);
   });
 
   it("healthScore exactly at the bar (95) + delivery at bar → in_production", () => {
@@ -116,7 +116,7 @@ describe("deriveLifecycle — four branches, first match wins", () => {
   });
 });
 
-describe("isDeliveryAtBar — >= 95% inbox on EVERY ESP (never blended)", () => {
+describe("isDeliveryAtBar — >= 90% inbox on EVERY gated ESP (never blended)", () => {
   it("true when every ESP row is at or above the bar", () => {
     expect(
       isDeliveryAtBar([
@@ -126,33 +126,49 @@ describe("isDeliveryAtBar — >= 95% inbox on EVERY ESP (never blended)", () => 
     ).toBe(true);
   });
 
-  it("true at EXACTLY 95% on each ESP", () => {
+  it("true at EXACTLY 90% on each ESP", () => {
     expect(
       isDeliveryAtBar([
-        { inboxCount: 19, seedTotal: 20 },
-        { inboxCount: 38, seedTotal: 40 },
+        { inboxCount: 18, seedTotal: 20 },
+        { inboxCount: 36, seedTotal: 40 },
       ]),
     ).toBe(true);
   });
 
-  it("true at 97.5% (39/40) — the single-spam-seed case the 100 bar rejected", () => {
-    expect(isDeliveryAtBar([{ inboxCount: 39, seedTotal: 40 }])).toBe(true);
-  });
-
-  it("PER-ESP, NOT blended: Gmail 90% + Outlook 100% blends to 95% but is FALSE", () => {
-    // Blended: (18 + 20) / (20 + 20) = 95% — would wrongly pass a blended check.
+  it("true at 92% — 2 spam seeds out of 25 Gmail, the real prod case the 95 bar blocked", () => {
+    // Prod 2026-07-28: nine health-100 accounts sat in_recovery on exactly this shape
+    // (Gmail 20-30 seeds with 2 spam, Outlook clean). Seed noise, not a delivery failure.
     expect(
       isDeliveryAtBar([
-        { inboxCount: 18, seedTotal: 20 }, // Gmail 90%
+        { inboxCount: 23, seedTotal: 25 }, // Gmail 92%
+        { inboxCount: 13, seedTotal: 13 }, // Outlook 100%
+      ]),
+    ).toBe(true);
+  });
+
+  it("PER-ESP, NOT blended: Gmail 85% + Outlook 100% blends to 92.5% but is FALSE", () => {
+    // Blended: (17 + 20) / (20 + 20) = 92.5% — would wrongly pass a blended check at 90.
+    expect(
+      isDeliveryAtBar([
+        { inboxCount: 17, seedTotal: 20 }, // Gmail 85%
         { inboxCount: 20, seedTotal: 20 }, // Outlook 100%
       ]),
     ).toBe(false);
   });
 
-  it("false when ANY ESP is below the bar", () => {
+  it("Gmail-dead legacy fleet (2% inbox) stays FALSE — the separation the gate exists for", () => {
     expect(
       isDeliveryAtBar([
-        { inboxCount: 37, seedTotal: 40 }, // 92.5%
+        { inboxCount: 1, seedTotal: 50 }, // Gmail 2% (shared-IP legacy)
+        { inboxCount: 20, seedTotal: 20 }, // Outlook 100%
+      ]),
+    ).toBe(false);
+  });
+
+  it("false when ANY gated ESP is below the bar", () => {
+    expect(
+      isDeliveryAtBar([
+        { inboxCount: 35, seedTotal: 40 }, // 87.5%
         { inboxCount: 10, seedTotal: 10 },
       ]),
     ).toBe(false);
@@ -163,6 +179,27 @@ describe("isDeliveryAtBar — >= 95% inbox on EVERY ESP (never blended)", () => 
       isDeliveryAtBar([
         { inboxCount: 88, seedTotal: 88 },
         { inboxCount: 0, seedTotal: 10 },
+      ]),
+    ).toBe(false);
+  });
+
+  it("IGNORES an under-seeded leg: a failing 1-of-2 'other' ESP does not veto", () => {
+    // Instantly's recipient_esp 999 bucket seeds 1-3 mailboxes; one spam there reads
+    // as 50% and would sink an account whose Gmail and Outlook legs both pass.
+    expect(
+      isDeliveryAtBar([
+        { inboxCount: 28, seedTotal: 30 }, // Gmail 93%
+        { inboxCount: 12, seedTotal: 12 }, // Outlook 100%
+        { inboxCount: 1, seedTotal: 2 }, // other 50%, under the seed floor
+      ]),
+    ).toBe(true);
+  });
+
+  it("false when EVERY leg is under the seed floor (no gradable signal)", () => {
+    expect(
+      isDeliveryAtBar([
+        { inboxCount: 2, seedTotal: 2 },
+        { inboxCount: 3, seedTotal: 3 },
       ]),
     ).toBe(false);
   });

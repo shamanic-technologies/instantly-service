@@ -27,13 +27,38 @@ import type { LifecycleStatus } from "./account-lifecycle";
 import type { LifecycleView } from "./account-lifecycle-sync";
 import type { QueueBreakdown } from "./queue-breakdown";
 
-/** Inbox-placement breakdown for one account. Null until the API exposes it. */
-export interface InboxPlacement {
+/** One (account, ESP) leg of a placement test — the grain the delivery gate reads. */
+export interface EspPlacement {
+  /** Instantly `recipient_esp` (1 = Google, 2 = Outlook, 999 = other). */
+  recipientEsp: number;
+  seedTotal: number;
   inboxPct: number;
   spamPct: number;
   missingPct: number;
-  /** ISO8601 timestamp of the placement test. */
+  /**
+   * False when the leg carries fewer than `MIN_GATED_ESP_SEEDS` seeds — too few to
+   * grade, so the lifecycle delivery gate skips it (see `isGatedEspRow`).
+   */
+  gated: boolean;
+}
+
+/** Inbox-placement breakdown for one account. Null until the account is tested. */
+export interface InboxPlacement {
+  /**
+   * The headline percentages are the account's WORST gated ESP leg, NOT a blend
+   * across ESPs — because that worst leg is exactly what the lifecycle delivery
+   * gate reads (`isDeliveryAtBar`). A blend made the ops row self-contradictory:
+   * an account at Gmail 91% / Outlook 100% displayed "95% inbox" right next to
+   * `lifecycle_reason: delivery_below_bar` on a 95% bar. Now both surfaces read
+   * the same number by construction. `perEsp` carries the full breakdown.
+   */
+  inboxPct: number;
+  spamPct: number;
+  missingPct: number;
+  /** ISO8601 timestamp of the placement test (newest across the legs). */
   testedAt: string;
+  /** Per-ESP breakdown of the same test, so the blocking leg is legible. */
+  perEsp: EspPlacement[];
 }
 
 /** One sending account's deliverability health (the locked contract row). */
