@@ -67,7 +67,7 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 1, dailyLimitPatched: 1, failed: 0 });
+    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 1, dailyLimitPatched: 1, reasonsRefreshed: 0, failed: 0 });
     expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "prod@dfy.com", 5);
     // in_production also opens the campaign daily max-send to 45.
     expect(mockSetDaily).toHaveBeenCalledWith("api-key", "prod@dfy.com", 45);
@@ -88,6 +88,7 @@ describe("reconcileLifecycle", () => {
           warmupScore: 100,
           dailyLimit: 30,
           lifecycleStatus: "in_production", // already correct
+          lifecycleReason: "passed", // and its reason already matches the derived one
         },
       ],
       delivery: [{ accountEmail: "prod@dfy.com", inboxCount: 98, seedTotal: 98 }],
@@ -95,10 +96,52 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, dailyLimitPatched: 0, failed: 0 });
+    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, dailyLimitPatched: 0, reasonsRefreshed: 0, failed: 0 });
     expect(mockSetWarmup).not.toHaveBeenCalled();
     expect(mockInsertValues).not.toHaveBeenCalled();
     expect(mockUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it("status unchanged but reason STALE → refreshes lifecycle_reason only (no event, no PATCH, no lifecycleUpdatedAt)", async () => {
+    // The account entered in_recovery on `health_below_bar` and has since
+    // recovered its health to 100 — it is still held back by delivery, so the
+    // STATUS does not flip and the pre-fix code left the reason frozen at
+    // `health_below_bar` next to a health of 100 (a self-contradictory ops row).
+    seedReads({
+      accounts: [
+        {
+          email: "stale@dfy.com",
+          instantlyStatus: 1,
+          warmupScore: 100,
+          dailyLimit: 20,
+          lifecycleStatus: "in_recovery",
+          lifecycleReason: "health_below_bar",
+        },
+      ],
+      delivery: [{ accountEmail: "stale@dfy.com", inboxCount: 30, seedTotal: 40 }], // 75% → below bar
+    });
+
+    const summary = await reconcileLifecycle("api-key");
+
+    expect(summary).toEqual({
+      scanned: 1,
+      changed: 0,
+      warmupPatched: 0,
+      dailyLimitPatched: 0,
+      reasonsRefreshed: 1,
+      failed: 0,
+    });
+    // No transition → no Instantly PATCH and no lifecycle event.
+    expect(mockSetWarmup).not.toHaveBeenCalled();
+    expect(mockSetDaily).not.toHaveBeenCalled();
+    expect(mockInsertValues).not.toHaveBeenCalled();
+    // Silver reason refreshed; lifecycleStatus / lifecycleUpdatedAt untouched
+    // (reactivate-accounts reads lifecycleUpdatedAt as the deactivation-age proxy).
+    expect(mockUpdateSet).toHaveBeenCalledTimes(1);
+    const patch = mockUpdateSet.mock.calls[0][0] as Record<string, unknown>;
+    expect(patch.lifecycleReason).toBe("delivery_below_bar");
+    expect(patch).not.toHaveProperty("lifecycleStatus");
+    expect(patch).not.toHaveProperty("lifecycleUpdatedAt");
   });
 
   it("untested account (no delivery) → in_recovery, warmup 30 + daily 20", async () => {
@@ -168,7 +211,7 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 0, dailyLimitPatched: 0, failed: 0 });
+    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 0, dailyLimitPatched: 0, reasonsRefreshed: 0, failed: 0 });
     expect(mockSetDaily).not.toHaveBeenCalled();
     expect(mockSetWarmup).not.toHaveBeenCalled();
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
@@ -214,7 +257,7 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, dailyLimitPatched: 0, failed: 1 });
+    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, dailyLimitPatched: 0, reasonsRefreshed: 0, failed: 1 });
     expect(mockInsertValues).not.toHaveBeenCalled();
     expect(mockUpdateSet).not.toHaveBeenCalled();
   });

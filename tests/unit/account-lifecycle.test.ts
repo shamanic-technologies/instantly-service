@@ -4,7 +4,9 @@ import {
   warmupDailyForStatus,
   dailyLimitForStatus,
   emailDomain,
-  isDeliveryFull,
+  isDeliveryAtBar,
+  PRODUCTION_HEALTH_BAR,
+  PRODUCTION_DELIVERY_PCT_BAR,
   IN_PRODUCTION_WARMUP_DAILY,
   RECOVERY_WARMUP_DAILY,
   IN_PRODUCTION_DAILY_LIMIT,
@@ -22,7 +24,7 @@ function input(overrides: Partial<DeriveLifecycleInput> = {}): DeriveLifecycleIn
     instantlyStatus: 1,
     domain: "dfy-prewarmed.com",
     healthScore: 100,
-    delivery: 100,
+    deliveryAtBar: true,
     domainPolicy: POLICY,
     ...overrides,
   };
@@ -33,7 +35,12 @@ describe("deriveLifecycle — four branches, first match wins", () => {
     // Even Instantly-disabled + under-warmed + no delivery, a brand domain is user-deactivated.
     expect(
       deriveLifecycle(
-        input({ domain: "distribute.you", instantlyStatus: 0, healthScore: 10, delivery: null }),
+        input({
+          domain: "distribute.you",
+          instantlyStatus: 0,
+          healthScore: 10,
+          deliveryAtBar: null,
+        }),
       ),
     ).toEqual({ status: "deactivated_by_user", reason: "brand_domain" });
     expect(deriveLifecycle(input({ domain: "growthagency.dev" }))).toEqual({
@@ -53,61 +60,119 @@ describe("deriveLifecycle — four branches, first match wins", () => {
     });
   });
 
-  it("healthScore < 100 → in_recovery (reason health_below_100)", () => {
-    expect(deriveLifecycle(input({ healthScore: 99, delivery: 100 }))).toEqual({
-      status: "in_recovery",
-      reason: "health_below_100",
-    });
+  it("the production bar is 95, not 100 (both signals)", () => {
+    expect(PRODUCTION_HEALTH_BAR).toBe(95);
+    expect(PRODUCTION_DELIVERY_PCT_BAR).toBe(95);
   });
 
-  it("delivery < 100 (health fine) → in_recovery (reason delivery_below_100)", () => {
-    expect(deriveLifecycle(input({ healthScore: 100, delivery: 40 }))).toEqual({
-      status: "in_recovery",
-      reason: "delivery_below_100",
-    });
-  });
-
-  it("delivery UNKNOWN (never tested, null) → in_recovery (delivery_below_100)", () => {
-    expect(deriveLifecycle(input({ healthScore: 100, delivery: null }))).toEqual({
-      status: "in_recovery",
-      reason: "delivery_below_100",
-    });
-  });
-
-  it("health < 100 label wins over delivery when both fail", () => {
-    expect(deriveLifecycle(input({ healthScore: 50, delivery: null }))).toEqual({
-      status: "in_recovery",
-      reason: "health_below_100",
-    });
-  });
-
-  it("healthScore == 100 AND delivery == 100 → in_production (passed)", () => {
-    expect(deriveLifecycle(input({ healthScore: 100, delivery: 100 }))).toEqual({
+  it("healthScore exactly at the bar (95) + delivery at bar → in_production", () => {
+    expect(deriveLifecycle(input({ healthScore: 95, deliveryAtBar: true }))).toEqual({
       status: "in_production",
       reason: "passed",
     });
   });
 
-  it("delivery just below (99) is NOT production", () => {
-    expect(deriveLifecycle(input({ delivery: 99 })).status).toBe("in_recovery");
+  it("healthScore below the bar (94) → in_recovery (reason health_below_bar)", () => {
+    expect(deriveLifecycle(input({ healthScore: 94, deliveryAtBar: true }))).toEqual({
+      status: "in_recovery",
+      reason: "health_below_bar",
+    });
+  });
+
+  it("health 97/98/99 now PASSES (was in_recovery under the 100 bar)", () => {
+    for (const healthScore of [97, 98, 99]) {
+      expect(deriveLifecycle(input({ healthScore, deliveryAtBar: true })).status).toBe(
+        "in_production",
+      );
+    }
+  });
+
+  it("delivery below bar (health fine) → in_recovery (reason delivery_below_bar)", () => {
+    expect(deriveLifecycle(input({ healthScore: 100, deliveryAtBar: false }))).toEqual({
+      status: "in_recovery",
+      reason: "delivery_below_bar",
+    });
+  });
+
+  it("delivery UNKNOWN (never tested, null) → in_recovery (delivery_below_bar)", () => {
+    expect(deriveLifecycle(input({ healthScore: 100, deliveryAtBar: null }))).toEqual({
+      status: "in_recovery",
+      reason: "delivery_below_bar",
+    });
+  });
+
+  it("health below bar label wins over delivery when both fail", () => {
+    expect(deriveLifecycle(input({ healthScore: 50, deliveryAtBar: null }))).toEqual({
+      status: "in_recovery",
+      reason: "health_below_bar",
+    });
+  });
+
+  it("healthScore == 100 AND delivery at bar → in_production (passed)", () => {
+    expect(deriveLifecycle(input({ healthScore: 100, deliveryAtBar: true }))).toEqual({
+      status: "in_production",
+      reason: "passed",
+    });
   });
 });
 
-describe("isDeliveryFull — exact 100% across ALL ESPs", () => {
-  it("true only when every ESP row is inbox == seed and seed > 0", () => {
-    expect(isDeliveryFull([{ inboxCount: 88, seedTotal: 88 }, { inboxCount: 10, seedTotal: 10 }])).toBe(true);
+describe("isDeliveryAtBar — >= 95% inbox on EVERY ESP (never blended)", () => {
+  it("true when every ESP row is at or above the bar", () => {
+    expect(
+      isDeliveryAtBar([
+        { inboxCount: 88, seedTotal: 88 },
+        { inboxCount: 10, seedTotal: 10 },
+      ]),
+    ).toBe(true);
   });
-  it("false when ANY ESP is short of 100%", () => {
-    expect(isDeliveryFull([{ inboxCount: 87, seedTotal: 88 }, { inboxCount: 10, seedTotal: 10 }])).toBe(false);
+
+  it("true at EXACTLY 95% on each ESP", () => {
+    expect(
+      isDeliveryAtBar([
+        { inboxCount: 19, seedTotal: 20 },
+        { inboxCount: 38, seedTotal: 40 },
+      ]),
+    ).toBe(true);
   });
+
+  it("true at 97.5% (39/40) — the single-spam-seed case the 100 bar rejected", () => {
+    expect(isDeliveryAtBar([{ inboxCount: 39, seedTotal: 40 }])).toBe(true);
+  });
+
+  it("PER-ESP, NOT blended: Gmail 90% + Outlook 100% blends to 95% but is FALSE", () => {
+    // Blended: (18 + 20) / (20 + 20) = 95% — would wrongly pass a blended check.
+    expect(
+      isDeliveryAtBar([
+        { inboxCount: 18, seedTotal: 20 }, // Gmail 90%
+        { inboxCount: 20, seedTotal: 20 }, // Outlook 100%
+      ]),
+    ).toBe(false);
+  });
+
+  it("false when ANY ESP is below the bar", () => {
+    expect(
+      isDeliveryAtBar([
+        { inboxCount: 37, seedTotal: 40 }, // 92.5%
+        { inboxCount: 10, seedTotal: 10 },
+      ]),
+    ).toBe(false);
+  });
+
   it("false when one ESP is fully missing (0 inbox)", () => {
-    expect(isDeliveryFull([{ inboxCount: 88, seedTotal: 88 }, { inboxCount: 0, seedTotal: 10 }])).toBe(false);
+    expect(
+      isDeliveryAtBar([
+        { inboxCount: 88, seedTotal: 88 },
+        { inboxCount: 0, seedTotal: 10 },
+      ]),
+    ).toBe(false);
   });
+
   it("false when never tested (no rows)", () => {
-    expect(isDeliveryFull([])).toBe(false);
+    expect(isDeliveryAtBar([])).toBe(false);
   });
-  it("false when seed total is zero", () => {
-    expect(isDeliveryFull([{ inboxCount: 0, seedTotal: 0 }])).toBe(false);
+
+  it("false when an ESP row seeded zero times", () => {
+    expect(isDeliveryAtBar([{ inboxCount: 0, seedTotal: 0 }])).toBe(false);
   });
 });
 

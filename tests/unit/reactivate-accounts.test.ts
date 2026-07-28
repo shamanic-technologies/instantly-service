@@ -53,7 +53,7 @@ function lc(status: string, updatedAtMs: number | null): LifecycleView {
   };
 }
 function full(isFull: boolean): AccountDelivery {
-  return { inboxCount: isFull ? 10 : 4, seedTotal: 10, deliveryPct: isFull ? 100 : 40, full: isFull };
+  return { inboxCount: isFull ? 10 : 4, seedTotal: 10, deliveryPct: isFull ? 100 : 40, atBar: isFull };
 }
 
 describe("selectReactivationCandidates", () => {
@@ -77,7 +77,7 @@ describe("selectReactivationCandidates", () => {
   it("excludes wrong lifecycle, low health, low inbox, too-recent, and no-age", () => {
     const accounts = [
       acct("inprod@x.com", 100, -2),
-      acct("lowhealth@x.com", 99, -2),
+      acct("lowhealth@x.com", 80, -2),
       acct("lowinbox@x.com", 100, -2),
       acct("recent@x.com", 100, -2),
       acct("noage@x.com", 100, -2),

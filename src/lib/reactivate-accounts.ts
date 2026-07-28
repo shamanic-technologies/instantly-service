@@ -44,7 +44,7 @@ import {
   type LifecycleView,
   type AccountDelivery,
 } from "./account-lifecycle-sync";
-import { FULL_SCORE } from "./account-lifecycle";
+import { PRODUCTION_HEALTH_BAR } from "./account-lifecycle";
 
 /** Minimum time an account must have been deactivated before a resume nudge. */
 export const REACTIVATE_MIN_DEACTIVATED_MS = 24 * 60 * 60 * 1000; // 24h
@@ -65,8 +65,8 @@ export function isReactivateAccountsEnabled(): boolean {
  * Pure: BASE candidates for a resume nudge, from the LIST + silver + delivery.
  * Gates (all required):
  *   1. lifecycle `deactivated_by_instantly` (silver),
- *   2. Health `stat_warmup_score == 100`,
- *   3. delivery FULL (100% inbox every ESP of the latest placement test),
+ *   2. Health `stat_warmup_score >= PRODUCTION_HEALTH_BAR`,
+ *   3. delivery AT BAR (>= 95% inbox on EVERY ESP of the latest placement test),
  *   4. deactivated for >= `minDeactivatedMs` (throttle likely cleared + natural
  *      backoff — a re-deactivation resets `lifecycle_updated_at`),
  *   5. `status` NOT in {-1 OAuth, -3 550-throttle} — the two never-resumable
@@ -86,8 +86,8 @@ export function selectReactivationCandidates(
     if (!account.email) continue;
     const lifecycle = lifecycleByEmail.get(account.email);
     if (lifecycle?.status !== "deactivated_by_instantly") continue;
-    if ((account.stat_warmup_score ?? 0) !== FULL_SCORE) continue;
-    if (!deliveryByEmail.get(account.email)?.full) continue;
+    if ((account.stat_warmup_score ?? 0) < PRODUCTION_HEALTH_BAR) continue;
+    if (!deliveryByEmail.get(account.email)?.atBar) continue;
 
     const updatedAt = lifecycle.updatedAt ? new Date(lifecycle.updatedAt).getTime() : NaN;
     if (!Number.isFinite(updatedAt) || nowMs - updatedAt < minDeactivatedMs) continue;
