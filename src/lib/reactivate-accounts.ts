@@ -35,7 +35,8 @@
  *
  * NO health / delivery gate. Resume only sets Instantly `status: 1`;
  * `deriveLifecycle` then decides what the account BECOMES, and an account below
- * the 95/95 bar lands `in_recovery` — which takes ZERO new sends. Gating this
+ * the bar (health >= 95, delivery >= 90% inbox on every gated ESP) lands
+ * `in_recovery` — which takes ZERO new sends. Gating this
  * sweep on health+delivery gated the same thing twice AND created a deadlock: a
  * `deactivated_by_instantly` account is outside `fetchTestablePoolEmails`
  * (`in_recovery` + `in_production` only), so it could never be placement-tested,

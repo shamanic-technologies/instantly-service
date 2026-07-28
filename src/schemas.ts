@@ -1128,12 +1128,34 @@ registry.registerPath({
   },
 });
 
+const EspPlacementSchema = z
+  .object({
+    recipientEsp: z.number().describe("Instantly recipient_esp (1 = Google, 2 = Outlook, 999 = other)"),
+    seedTotal: z.number().describe("Seed mailboxes targeted for this ESP in the test"),
+    inboxPct: z.number().describe("Percentage landing in inbox for this ESP"),
+    spamPct: z.number().describe("Percentage landing in spam for this ESP"),
+    missingPct: z.number().describe("Percentage not delivered / missing for this ESP"),
+    gated: z
+      .boolean()
+      .describe(
+        "False when this ESP leg carries too few seeds to grade (< 5), so the lifecycle delivery gate skips it",
+      ),
+  })
+  .openapi("EspPlacement");
+
 const InboxPlacementSchema = z
   .object({
-    inboxPct: z.number().describe("Percentage of test emails landing in inbox"),
-    spamPct: z.number().describe("Percentage landing in spam"),
-    missingPct: z.number().describe("Percentage not delivered / missing"),
+    inboxPct: z
+      .number()
+      .describe(
+        "Percentage of test emails landing in inbox on the account's WORST gated ESP — the same leg the lifecycle delivery gate reads, NOT a blend across ESPs (a blend showed 95% next to delivery_below_bar)",
+      ),
+    spamPct: z.number().describe("Percentage landing in spam on that same worst ESP"),
+    missingPct: z.number().describe("Percentage not delivered / missing on that same worst ESP"),
     testedAt: z.string().describe("ISO8601 timestamp of the placement test"),
+    perEsp: z
+      .array(EspPlacementSchema)
+      .describe("Per-ESP breakdown of the same test, so the blocking leg is legible"),
   })
   .openapi("InboxPlacement");
 
@@ -1193,7 +1215,7 @@ const AccountHealthSchema = z
       .nullable()
       .describe("ISO8601 timestamp of the latest lifecycle transition; null until classified"),
     inboxPlacement: InboxPlacementSchema.nullable().describe(
-      "Inbox-placement breakdown — ALWAYS null in v1: the Instantly V2 API exposes no per-account placement property (only test-scoped, subscription-gated inbox-placement-test results). Never fabricated.",
+      "Inbox-placement breakdown from the account's latest placement test, promoted through our own Bronze/Silver/Gold pipeline. Headline percentages are the WORST gated ESP leg (the leg the lifecycle delivery gate reads), with the full per-ESP breakdown in `perEsp`. Null when the account has never been in a test — the Instantly V2 API exposes no standing per-account placement property, so this is derived from real test results and never fabricated.",
     ),
     sentToday: z
       .number()
