@@ -300,6 +300,7 @@ router.post("/", async (req: Request, res: Response) => {
         lead,
         bcc: body.bcc,
         timezone: body.timezone,
+        featureSlug: tracking.featureSlug ?? null,
       });
 
       if (!sendResult.ok) {

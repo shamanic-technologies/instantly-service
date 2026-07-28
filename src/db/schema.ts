@@ -158,6 +158,10 @@ export const instantlyAccounts = pgTable("instantly_accounts", {
   providerCode: integer("provider_code"),
   firstName: text("first_name"),
   lastName: text("last_name"),
+  // Instantly account creation time (from the account snapshot). Drives age-based
+  // send de-prioritization (fresh accounts picked last, overflow-only) + age-driven
+  // slow ramp. DISTINCT from created_at below (= local row-insert time).
+  timestampCreated: timestamp("timestamp_created", { withTimezone: true }),
   // ── Lifecycle (auto-derived; projection of the latest lifecycle event) ────────
   // One of: in_production | in_recovery | deactivated_by_instantly |
   // deactivated_by_user. Null until the first reconcileLifecycle classifies it.
@@ -223,6 +227,26 @@ export const instantlyDomainPolicy = pgTable("instantly_domain_policy", {
   note: text("note"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+// Silver/config: per-feature account RESERVATION (carve-out list). An account
+// listed here is reserved EXCLUSIVELY to its `feature_slug` — the live-send pool
+// (`fetchInProductionAccounts`) serves it ONLY to sends carrying that feature and
+// EXCLUDES it from every other feature's pool. An account NOT listed is
+// unreserved = the default/shared pool (every non-reserved feature + null slug).
+// This is a pure carve-out, NOT a symmetric partition: seeded with the 3
+// `sales-crm-email-outreach` accounts so unproven CRM sends never touch the
+// Apollo-verified cold fleet; the 5 cold-email features (sales/pr/hiring/vc/
+// accelerators) keep the whole unreserved fleet. Lives in the DB (NOT a code
+// constant) so ops can reserve/unreserve an account without a deploy.
+export const instantlyAccountFeaturePolicy = pgTable(
+  "instantly_account_feature_policy",
+  {
+    accountEmail: text("account_email").primaryKey(),
+    featureSlug: text("feature_slug").notNull(),
+    note: text("note"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+);
 
 // Silver: canonical event log derived from bronze sources (webhooks + reconcile polls)
 // and deterministic inference. `raw_payload` is nullable for backwards compat; new
