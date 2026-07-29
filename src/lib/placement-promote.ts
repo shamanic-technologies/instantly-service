@@ -16,8 +16,7 @@
  */
 
 import type { InboxPlacementAnalyticsRow } from "./instantly-client";
-import type { EspPlacement, InboxPlacement } from "./account-health";
-import { isGatedEspRow } from "./account-lifecycle";
+import type { InboxPlacement } from "./account-health";
 
 /** One silver placement result (matches the `instantly_placement_results` columns). */
 export interface SilverPlacementRow {
@@ -125,42 +124,31 @@ export interface LatestEspRow {
 
 /**
  * Summarize one test's ESP rows for an account into the `inboxPlacement` gold
- * figure. The headline percentages are the WORST gated ESP leg — the same leg the
- * lifecycle delivery gate reads (`isDeliveryAtBar`) — NOT a blend across ESPs.
+ * figure: ONE pooled score across every ESP — `Σinbox / Σseeds`.
  *
- * This used to blend (pooled inbox / pooled seeds), which produced an incoherent
- * ops row: an account inboxing 91% on Gmail and 100% on Outlook displayed "95%
- * inbox" next to `delivery_below_bar` on a 95% bar. Both numbers could not be true
- * at once. Reading the gate's own leg makes the displayed number and the lifecycle
- * reason agree by construction; `perEsp` shows where the drop is.
+ * This is the SAME number `isDeliveryAtBar` gates on, so the displayed percentage
+ * and `lifecycle_reason` agree by construction. There is deliberately no per-ESP
+ * headline, no worst-leg selection, and no seed floor — one test, one score.
  *
- * Returns null when there is no data, when every leg has 0 seeds, OR when NO leg
- * is gradable (every leg under the seed floor). That last case is deliberate: a
- * test that seeded an account 2-3 times says nothing about its deliverability, so
- * the lifecycle treats it exactly like never-tested (delivery unknown → recovery).
- * Reporting its raw "100% of 2 seeds" would print a passing-looking number next to
- * `delivery_below_bar` — the same incoherence this function exists to remove.
+ * Safety of pooling rests on the 95% bar, measured against the live fleet
+ * 2026-07-28: the 198 Gmail-spam accounts this gate exists to catch top out at a
+ * pooled 83.3%, so a 95% pooled bar still excludes every one of them, and the
+ * worst Gmail leg that can hide behind a passing pooled score is 90.9%. Pooling
+ * at a LOWER bar would not be safe (at 90 the worst hideable Gmail leg is ~80%),
+ * so do not lower `PRODUCTION_DELIVERY_PCT_BAR` without re-measuring.
+ *
+ * Returns null only when there is no data at all (no rows, or every row 0 seeds)
+ * — never a fabricated 0%. A small test still yields a real score: sample size is
+ * deliberately not a gate.
  */
 export function summarizeEspRows(rows: LatestEspRow[]): InboxPlacement | null {
   const seeded = rows.filter((r) => r.seedTotal > 0);
   if (seeded.length === 0) return null;
-  if (!seeded.some(isGatedEspRow)) return null;
 
-  const perEsp: EspPlacement[] = seeded
-    .map((r) => ({
-      recipientEsp: r.recipientEsp,
-      seedTotal: r.seedTotal,
-      inboxPct: pct(r.inboxCount, r.seedTotal),
-      spamPct: pct(r.spamCount, r.seedTotal),
-      missingPct: pct(r.missingCount, r.seedTotal),
-      gated: isGatedEspRow(r),
-    }))
-    .sort((a, b) => a.recipientEsp - b.recipientEsp);
-
-  // The gate ignores under-seeded legs, so the headline must too — else the row
-  // would again show a number the lifecycle reason contradicts.
-  const gated = perEsp.filter((e) => e.gated);
-  const worst = gated.reduce((min, e) => (e.inboxPct < min.inboxPct ? e : min), gated[0]);
+  const seedTotal = seeded.reduce((sum, r) => sum + r.seedTotal, 0);
+  const inboxCount = seeded.reduce((sum, r) => sum + r.inboxCount, 0);
+  const spamCount = seeded.reduce((sum, r) => sum + r.spamCount, 0);
+  const missingCount = seeded.reduce((sum, r) => sum + r.missingCount, 0);
 
   const testedAt = seeded.reduce(
     (max, r) => (r.testedAt > max ? r.testedAt : max),
@@ -168,10 +156,9 @@ export function summarizeEspRows(rows: LatestEspRow[]): InboxPlacement | null {
   );
 
   return {
-    inboxPct: worst.inboxPct,
-    spamPct: worst.spamPct,
-    missingPct: worst.missingPct,
+    inboxPct: pct(inboxCount, seedTotal),
+    spamPct: pct(spamCount, seedTotal),
+    missingPct: pct(missingCount, seedTotal),
     testedAt: testedAt.toISOString(),
-    perEsp,
   };
 }

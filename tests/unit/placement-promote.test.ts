@@ -122,7 +122,7 @@ describe("aggregatePlacementRows", () => {
   });
 });
 
-describe("summarizeEspRows — headline is the WORST gated ESP, not a blend", () => {
+describe("summarizeEspRows — ONE pooled score across every ESP", () => {
   const row = (o: Partial<LatestEspRow>): LatestEspRow => ({
     recipientEsp: 1,
     inboxCount: 0,
@@ -133,52 +133,45 @@ describe("summarizeEspRows — headline is the WORST gated ESP, not a blend", ()
     ...o,
   });
 
-  it("headlines the worst ESP and never a pooled average", () => {
-    // Gmail 23/25 = 92%, Outlook 13/13 = 100%. A blend would read 95% — the exact
-    // number that used to sit next to `delivery_below_bar` on a 95 bar.
+  it("pools inbox/seeds across ESPs into a single percentage", () => {
+    // Gmail 23/25, Outlook 13/13 → 36/38 = 94.7% → 95.
     const summary = summarizeEspRows([
       row({ recipientEsp: 1, inboxCount: 23, spamCount: 2, seedTotal: 25 }),
       row({ recipientEsp: 2, inboxCount: 13, seedTotal: 13 }),
     ]);
-    expect(summary?.inboxPct).toBe(92);
-    expect(summary?.spamPct).toBe(8);
+    expect(summary?.inboxPct).toBe(95);
+    expect(summary?.spamPct).toBe(5);
     expect(summary?.missingPct).toBe(0);
   });
 
-  it("exposes the full per-ESP breakdown, sorted by ESP", () => {
+  it("pools a Gmail-dead account down, so the score reflects the bad leg", () => {
+    // Gmail 0/20 + Outlook 10/10 → 10/30 = 33%. Nowhere near the 95 bar.
     const summary = summarizeEspRows([
       row({ recipientEsp: 2, inboxCount: 10, seedTotal: 10 }),
       row({ recipientEsp: 1, inboxCount: 0, spamCount: 20, seedTotal: 20 }),
     ]);
-    expect(summary?.perEsp).toEqual([
-      { recipientEsp: 1, seedTotal: 20, inboxPct: 0, spamPct: 100, missingPct: 0, gated: true },
-      { recipientEsp: 2, seedTotal: 10, inboxPct: 100, spamPct: 0, missingPct: 0, gated: true },
-    ]);
-    expect(summary?.inboxPct).toBe(0); // the Gmail-dead leg is the headline
+    expect(summary?.inboxPct).toBe(33);
+    expect(summary?.spamPct).toBe(67);
   });
 
-  it("skips an under-seeded leg for the headline, but still lists it as ungated", () => {
+  it("counts an under-seeded leg like any other — no seed floor", () => {
+    // Gmail 28/30 + a 1-of-2 'other' bucket → 29/32 = 90.6% → 91.
     const summary = summarizeEspRows([
       row({ recipientEsp: 1, inboxCount: 28, spamCount: 2, seedTotal: 30 }),
       row({ recipientEsp: 999, inboxCount: 1, spamCount: 1, seedTotal: 2 }),
     ]);
-    expect(summary?.inboxPct).toBe(93); // Gmail, not the 50% two-seed bucket
-    expect(summary?.perEsp.find((e) => e.recipientEsp === 999)).toMatchObject({
-      inboxPct: 50,
-      gated: false,
-    });
+    expect(summary?.inboxPct).toBe(91);
   });
 
-  it("returns null when NO leg is gradable — even at a perfect 100% of 5 seeds", () => {
-    // A test that seeded the account 2-3 times says nothing about deliverability, so
-    // the lifecycle calls it unknown → in_recovery. Printing "100% inbox" here would
-    // put a passing number next to `delivery_below_bar`: the exact incoherence fixed.
-    expect(
-      summarizeEspRows([
-        row({ recipientEsp: 1, inboxCount: 2, seedTotal: 2 }),
-        row({ recipientEsp: 2, inboxCount: 3, seedTotal: 3 }),
-      ]),
-    ).toBeNull();
+  it("grades a tiny test rather than returning null (sample size is not a gate)", () => {
+    // The prod case: emily@fuseconnectio.com, 2 Gmail + 3 Outlook seeds, all inbox.
+    // The old seed floor returned null here, which read as delivery-unknown and
+    // trapped the account in in_recovery forever.
+    const summary = summarizeEspRows([
+      row({ recipientEsp: 1, inboxCount: 2, seedTotal: 2 }),
+      row({ recipientEsp: 2, inboxCount: 3, seedTotal: 3 }),
+    ]);
+    expect(summary?.inboxPct).toBe(100);
   });
 
   it("takes the newest testedAt across rows", () => {

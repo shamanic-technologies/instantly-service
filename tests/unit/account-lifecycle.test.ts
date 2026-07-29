@@ -60,9 +60,9 @@ describe("deriveLifecycle — four branches, first match wins", () => {
     });
   });
 
-  it("health bar is 95; the PER-ESP delivery bar is 90 (smaller denominator)", () => {
+  it("both bars are 95 — health, and delivery pooled across every ESP", () => {
     expect(PRODUCTION_HEALTH_BAR).toBe(95);
-    expect(PRODUCTION_DELIVERY_PCT_BAR).toBe(90);
+    expect(PRODUCTION_DELIVERY_PCT_BAR).toBe(95);
   });
 
   it("healthScore exactly at the bar (95) + delivery at bar → in_production", () => {
@@ -116,8 +116,8 @@ describe("deriveLifecycle — four branches, first match wins", () => {
   });
 });
 
-describe("isDeliveryAtBar — >= 90% inbox on EVERY gated ESP (never blended)", () => {
-  it("true when every ESP row is at or above the bar", () => {
+describe("isDeliveryAtBar — >= 95% inbox POOLED across every ESP", () => {
+  it("true when the pooled score clears the bar", () => {
     expect(
       isDeliveryAtBar([
         { inboxCount: 88, seedTotal: 88 },
@@ -126,50 +126,44 @@ describe("isDeliveryAtBar — >= 90% inbox on EVERY gated ESP (never blended)", 
     ).toBe(true);
   });
 
-  it("true at EXACTLY 90% on each ESP", () => {
+  it("true at EXACTLY 95% pooled", () => {
+    // 57/60 = 95%.
     expect(
       isDeliveryAtBar([
-        { inboxCount: 18, seedTotal: 20 },
-        { inboxCount: 36, seedTotal: 40 },
+        { inboxCount: 37, seedTotal: 40 },
+        { inboxCount: 20, seedTotal: 20 },
       ]),
     ).toBe(true);
   });
 
-  it("true at 92% — 2 spam seeds out of 25 Gmail, the real prod case the 95 bar blocked", () => {
-    // Prod 2026-07-28: nine health-100 accounts sat in_recovery on exactly this shape
-    // (Gmail 20-30 seeds with 2 spam, Outlook clean). Seed noise, not a delivery failure.
+  it("false just under: 2 spam seeds out of 25 Gmail with a clean Outlook leg", () => {
+    // 36/38 = 94.7%. Pooling does not round up to the bar.
     expect(
       isDeliveryAtBar([
-        { inboxCount: 23, seedTotal: 25 }, // Gmail 92%
-        { inboxCount: 13, seedTotal: 13 }, // Outlook 100%
+        { inboxCount: 23, seedTotal: 25 },
+        { inboxCount: 13, seedTotal: 13 },
       ]),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("PER-ESP, NOT blended: Gmail 85% + Outlook 100% blends to 92.5% but is FALSE", () => {
-    // Blended: (17 + 20) / (20 + 20) = 92.5% — would wrongly pass a blended check at 90.
+  // The pooled form is only safe BECAUSE the bar is 95: the worst Gmail leg that
+  // can hide behind a passing pooled score is ~91%, and every Gmail-spam account
+  // in prod tops out at a pooled 83.3%. These two cases pin that.
+  it("Gmail 85% + Outlook 100% pools to 92.5% → FALSE", () => {
     expect(
       isDeliveryAtBar([
-        { inboxCount: 17, seedTotal: 20 }, // Gmail 85%
-        { inboxCount: 20, seedTotal: 20 }, // Outlook 100%
+        { inboxCount: 17, seedTotal: 20 },
+        { inboxCount: 20, seedTotal: 20 },
       ]),
     ).toBe(false);
   });
 
   it("Gmail-dead legacy fleet (2% inbox) stays FALSE — the separation the gate exists for", () => {
+    // 21/70 = 30%, nowhere near 95 even with a perfect Outlook leg.
     expect(
       isDeliveryAtBar([
-        { inboxCount: 1, seedTotal: 50 }, // Gmail 2% (shared-IP legacy)
-        { inboxCount: 20, seedTotal: 20 }, // Outlook 100%
-      ]),
-    ).toBe(false);
-  });
-
-  it("false when ANY gated ESP is below the bar", () => {
-    expect(
-      isDeliveryAtBar([
-        { inboxCount: 35, seedTotal: 40 }, // 87.5%
-        { inboxCount: 10, seedTotal: 10 },
+        { inboxCount: 1, seedTotal: 50 },
+        { inboxCount: 20, seedTotal: 20 },
       ]),
     ).toBe(false);
   });
@@ -183,25 +177,26 @@ describe("isDeliveryAtBar — >= 90% inbox on EVERY gated ESP (never blended)", 
     ).toBe(false);
   });
 
-  it("IGNORES an under-seeded leg: a failing 1-of-2 'other' ESP does not veto", () => {
-    // Instantly's recipient_esp 999 bucket seeds 1-3 mailboxes; one spam there reads
-    // as 50% and would sink an account whose Gmail and Outlook legs both pass.
+  it("a tiny 'other' leg counts like any other — no seed floor", () => {
+    // Gmail 28/30 + Outlook 12/12 + a 1-of-2 bucket → 41/44 = 93.2% → false.
     expect(
       isDeliveryAtBar([
-        { inboxCount: 28, seedTotal: 30 }, // Gmail 93%
-        { inboxCount: 12, seedTotal: 12 }, // Outlook 100%
-        { inboxCount: 1, seedTotal: 2 }, // other 50%, under the seed floor
+        { inboxCount: 28, seedTotal: 30 },
+        { inboxCount: 12, seedTotal: 12 },
+        { inboxCount: 1, seedTotal: 2 },
       ]),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("false when EVERY leg is under the seed floor (no gradable signal)", () => {
+  it("grades a tiny all-inbox test as passing (sample size is not a gate)", () => {
+    // Prod: emily@fuseconnectio.com, 2 Gmail + 3 Outlook seeds, all inbox. The old
+    // seed floor called this ungradable and trapped the account in in_recovery.
     expect(
       isDeliveryAtBar([
         { inboxCount: 2, seedTotal: 2 },
         { inboxCount: 3, seedTotal: 3 },
       ]),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("false when never tested (no rows)", () => {
