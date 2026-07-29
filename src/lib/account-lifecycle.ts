@@ -64,33 +64,26 @@ export interface Lifecycle {
 }
 
 /**
- * The production bars (lowered from 100/100 on 2026-07-28, then delivery 95 → 90
- * on the same day once prod data showed what the ESP grain does to the denominator):
+ * The production bars — BOTH 95, both a single score over a single sample:
  *   - health: Instantly `stat_warmup_score` >= 95
- *   - delivery: >= 90% inbox on EVERY ESP of the latest placement test
+ *   - delivery: >= 95% inbox POOLED across every ESP of the latest placement test
+ *     (`Σinbox / Σseeds`), the same number the ops dashboard displays.
  *
- * Why the two bars differ. Health is one score over the whole warmup pool, so 95
- * there is a large-sample bar. Delivery is applied PER ESP, and an ESP leg of a
- * placement test only seeds ~25-30 mailboxes — so 2 spam seeds (unavoidable
- * seed-level noise) already reads as 92%. At a 95 per-ESP bar, prod had 174
- * accounts at health >= 95 held out of production, 9 of which were Gmail 91-94% /
- * Outlook 100% — genuinely fine mailboxes blocked by 2 seeds. 90 clears exactly
- * those 9 and NOTHING else: the legacy shared-IP fleet this gate exists to catch
- * sits at <10% inbox on Gmail (136 accounts), so the separation is untouched.
- * Do NOT raise it back without re-measuring the in_production count against prod.
+ * Delivery was briefly gated PER ESP (every leg had to clear the bar) with a
+ * 5-seed floor to stop Instantly's 1-3 seed "other" bucket from vetoing a good
+ * account. That whole apparatus is gone: one test, one score, one bar. Measured
+ * against the live fleet 2026-07-28, pooling costs nothing the per-ESP form
+ * bought — the 198 Gmail-spam accounts this gate exists to catch top out at a
+ * pooled 83.3%, so a 95% pooled bar still excludes every one, and the worst Gmail
+ * leg that can hide behind a passing pooled score is 90.9%.
+ *
+ * ⚠️ The 95 is what makes pooling safe, so the two are a pair. At a pooled 90 bar
+ * the worst hideable Gmail leg drops to ~80% — genuine Gmail distrust passing as
+ * a good account. Do NOT lower `PRODUCTION_DELIVERY_PCT_BAR` without re-measuring
+ * the Gmail-leg distribution of the accounts it would newly admit.
  */
 export const PRODUCTION_HEALTH_BAR = 95;
-export const PRODUCTION_DELIVERY_PCT_BAR = 90;
-
-/**
- * Minimum seeds an (account, ESP) leg must carry to be gated on. Instantly emits
- * an "other" ESP bucket (`recipient_esp: 999`) with 1-3 seeds; at that size a
- * single spam seed reads as 0-50% and would veto an account whose real Gmail and
- * Outlook legs both pass. Legs below this are excluded from the gate (they stay
- * visible in the placement breakdown). An account whose every leg is below it has
- * no gradable delivery signal → below bar, same as never-tested.
- */
-export const MIN_GATED_ESP_SEEDS = 5;
+export const PRODUCTION_DELIVERY_PCT_BAR = 95;
 
 /**
  * Warmup daily send volume pushed to Instantly per target lifecycle state.
@@ -232,30 +225,26 @@ export function slowRampForAge(
   return age < MATURE_AGE_MS;
 }
 
-/** True ⇔ this (account, ESP) leg carries enough seeds to be gated on. */
-export function isGatedEspRow(row: { seedTotal: number }): boolean {
-  return row.seedTotal >= MIN_GATED_ESP_SEEDS;
-}
-
 /**
- * The delivery bar: >= {@link PRODUCTION_DELIVERY_PCT_BAR}% inbox on EVERY gated
- * ESP leg of the account's latest placement test. `espRows` is one row per
- * (account, ESP) of that test; legs under {@link MIN_GATED_ESP_SEEDS} seeds are
- * excluded (see that constant).
+ * The delivery bar: the account's latest placement test must inbox at
+ * >= {@link PRODUCTION_DELIVERY_PCT_BAR}% POOLED across every ESP —
+ * `Σinbox / Σseeds`. `espRows` is one row per (account, ESP) of that test.
  *
- * PER-ESP, NOT blended — deliberately. Gmail-spam vs Outlook-fine is the entire
- * deliverability finding, and a blended average hides it: Gmail 60% + Outlook 100%
- * on a 2:1 seed split blends to ~73% and, on any bar a blend could pass, would
- * promote an account Gmail distrusts. Do NOT collapse it back to sums.
+ * ONE score, no per-leg gating and no seed floor: sample size is deliberately not
+ * a gate, so a small test still grades (see {@link PRODUCTION_DELIVERY_PCT_BAR}
+ * for the fleet measurement that makes pooling at 95 safe). This is the same
+ * number `summarizeEspRows` displays, so the ops row and the lifecycle reason
+ * cannot contradict each other.
  *
- * No gradable leg (never tested, or every leg under the seed floor) → false
- * (delivery unknown → recovery). Never fabricates a pass.
+ * No test at all, or every row 0 seeds → false (delivery unknown → recovery).
+ * Never fabricates a pass.
  */
 export function isDeliveryAtBar(
   espRows: ReadonlyArray<{ inboxCount: number; seedTotal: number }>,
 ): boolean {
-  const gated = espRows.filter(isGatedEspRow);
-  if (gated.length === 0) return false;
+  const seedTotal = espRows.reduce((sum, r) => sum + r.seedTotal, 0);
+  if (seedTotal === 0) return false;
+  const inboxCount = espRows.reduce((sum, r) => sum + r.inboxCount, 0);
   // Integer comparison (inbox * 100 >= seed * bar) — no float rounding.
-  return gated.every((r) => r.inboxCount * 100 >= r.seedTotal * PRODUCTION_DELIVERY_PCT_BAR);
+  return inboxCount * 100 >= seedTotal * PRODUCTION_DELIVERY_PCT_BAR;
 }
