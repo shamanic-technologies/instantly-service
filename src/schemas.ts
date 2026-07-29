@@ -1128,34 +1128,16 @@ registry.registerPath({
   },
 });
 
-const EspPlacementSchema = z
-  .object({
-    recipientEsp: z.number().describe("Instantly recipient_esp (1 = Google, 2 = Outlook, 999 = other)"),
-    seedTotal: z.number().describe("Seed mailboxes targeted for this ESP in the test"),
-    inboxPct: z.number().describe("Percentage landing in inbox for this ESP"),
-    spamPct: z.number().describe("Percentage landing in spam for this ESP"),
-    missingPct: z.number().describe("Percentage not delivered / missing for this ESP"),
-    gated: z
-      .boolean()
-      .describe(
-        "False when this ESP leg carries too few seeds to grade (< 5), so the lifecycle delivery gate skips it",
-      ),
-  })
-  .openapi("EspPlacement");
-
 const InboxPlacementSchema = z
   .object({
     inboxPct: z
       .number()
       .describe(
-        "Percentage of test emails landing in inbox on the account's WORST gated ESP — the same leg the lifecycle delivery gate reads, NOT a blend across ESPs (a blend showed 95% next to delivery_below_bar)",
+        "Percentage of test emails landing in inbox, pooled across every ESP of the latest test (sum inbox / sum seeds) — the same number the lifecycle delivery gate reads",
       ),
-    spamPct: z.number().describe("Percentage landing in spam on that same worst ESP"),
-    missingPct: z.number().describe("Percentage not delivered / missing on that same worst ESP"),
+    spamPct: z.number().describe("Percentage landing in spam, pooled across every ESP"),
+    missingPct: z.number().describe("Percentage not delivered / missing, pooled across every ESP"),
     testedAt: z.string().describe("ISO8601 timestamp of the placement test"),
-    perEsp: z
-      .array(EspPlacementSchema)
-      .describe("Per-ESP breakdown of the same test, so the blocking leg is legible"),
   })
   .openapi("InboxPlacement");
 
