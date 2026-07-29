@@ -765,6 +765,101 @@ describe("GET /stats", () => {
     }
   });
 
+  it("should surface an audience with contacted leads but zero email events", async () => {
+    // Events query: the freshly pushed leads have no rows at all yet — Instantly
+    // has not sent for them, so the whole events result set is empty.
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+    // Campaign aggregates: both audiences have leads pushed (delivery_status
+    // 'contacted'), tagged via campaign metadata.
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { groupKey: "audience-a", emailsContacted: 8, notSending: 0, cancelled: 0 },
+        { groupKey: "audience-b", emailsContacted: 9, notSending: 1, cancelled: 2 },
+      ],
+    });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .query({ groupBy: "audienceId" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    const groups = response.body.groups;
+    // Neither audience is dropped just because the events table is empty.
+    expect(groups.map((g: any) => g.key)).toEqual(["audience-a", "audience-b"]);
+
+    expect(groups[0].recipientStats.contacted).toBe(8);
+    expect(groups[1].recipientStats.contacted).toBe(9);
+    expect(groups[1].recipientStats.notSending).toBe(1);
+    expect(groups[1].recipientStats.cancelled).toBe(2);
+
+    // Every event-derived metric stays zero — the counts come from the campaign
+    // table alone, nothing is fabricated.
+    for (const group of groups) {
+      expect(group.recipientStats.sent).toBe(0);
+      expect(group.recipientStats.delivered).toBe(0);
+      expect(group.recipientStats.opened).toBe(0);
+      expect(group.recipientStats.clicked).toBe(0);
+      expect(group.recipientStats.bounced).toBe(0);
+      expect(group.recipientStats.repliesPositive).toBe(0);
+      expect(group.emailStats).toEqual({
+        sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, unsubscribed: 0,
+      });
+    }
+  });
+
+  it("should surface a featureSlug with contacted leads but zero email events", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ groupKey: "pr-cold-email-outreach", ...makeStatsRow({ esSent: 4, rsSent: 3 }) }],
+    });
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { groupKey: "pr-cold-email-outreach", emailsContacted: 6, notSending: 0, cancelled: 0 },
+        { groupKey: "sales-cold-email-outreach", emailsContacted: 17, notSending: 0, cancelled: 0 },
+      ],
+    });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .query({ groupBy: "featureSlug" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    const groups = response.body.groups;
+    expect(groups.map((g: any) => g.key)).toEqual([
+      "pr-cold-email-outreach",
+      "sales-cold-email-outreach",
+    ]);
+    const noEvents = groups.find((g: any) => g.key === "sales-cold-email-outreach");
+    expect(noEvents.recipientStats.contacted).toBe(17);
+    expect(noEvents.recipientStats.sent).toBe(0);
+  });
+
+  it("should resolve leadEmail grouping against the campaigns table in the aggregates query", async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+
+    const app = await createStatsApp();
+
+    const response = await request(app)
+      .get("/stats")
+      .query({ groupBy: "leadEmail" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(200);
+    // The aggregates query reads instantly_campaigns and has no `e` alias — it
+    // must group on c.lead_email, never the events column.
+    const aggregateSqlText = extractSqlText(mockExecute.mock.calls[1][0]);
+    expect(aggregateSqlText).toContain("FROM instantly_campaigns c");
+    expect(aggregateSqlText).toContain("c.lead_email AS \"groupKey\"");
+    expect(aggregateSqlText).not.toContain("e.lead_email");
+  });
+
   // ─── groupBy: day ──────────────────────────────────────────────────────────
 
   it("should support groupBy day with stats grouped by local YYYY-MM-DD key", async () => {

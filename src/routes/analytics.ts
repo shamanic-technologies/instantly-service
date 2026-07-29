@@ -412,6 +412,17 @@ function eventGroupColumn(groupBy: string, timezone: string): SQL | null {
 }
 
 /**
+ * Group columns for the campaign-table aggregates. Identical to
+ * GROUP_BY_COLUMNS except `leadEmail`, which must resolve against the campaigns
+ * table (`c.lead_email`) — the aggregates query has no `e` alias, so borrowing
+ * the events column would blow up with `missing FROM-clause entry for table e`.
+ */
+const CAMPAIGN_GROUP_BY_COLUMNS: Record<string, string> = {
+  ...GROUP_BY_COLUMNS,
+  leadEmail: "c.lead_email",
+};
+
+/**
  * Group column for the campaign-table aggregates (contacted / notSending /
  * cancelled). For `day` we bucket each campaign row by its `created_at` local
  * day — `created_at` IS the contacted timestamp (one campaign row = one lead
@@ -421,7 +432,7 @@ function eventGroupColumn(groupBy: string, timezone: string): SQL | null {
  */
 function campaignGroupColumn(groupBy: string, timezone: string): SQL | null {
   if (groupBy === "day") return localDayKey(sql`c.created_at`, timezone);
-  const col = GROUP_BY_COLUMNS[groupBy];
+  const col = CAMPAIGN_GROUP_BY_COLUMNS[groupBy];
   return col ? sql.raw(col) : null;
 }
 
@@ -783,12 +794,18 @@ export async function queryGroupedStats(
   };
 
   const eventGroups = rows.map((row: any) => buildGroup(row.groupKey as string, row));
-  if (groupBy !== "day") return eventGroups;
 
-  // Day mode only: `contacted` is a campaign-table fact (lead pushed), not an
-  // event. A day with contacted leads but zero email events would be dropped if
-  // we built groups from the events query alone — so UNION the aggregate-only
-  // day keys (contacted/notSending/cancelled present, every event metric 0).
+  // `contacted` is a campaign-table fact (lead pushed), not an event. A key with
+  // contacted leads but zero email events would be dropped if we built groups
+  // from the events query alone — so UNION the aggregate-only keys
+  // (contacted/notSending/cancelled present, every event metric 0). This applies
+  // to EVERY grouping dimension, not just `day`: leads are pushed to Instantly
+  // minutes-to-hours before Instantly emits their first send event, so an
+  // audience/campaign/feature whose leads were just pushed has campaign rows and
+  // no events at all. Returning nothing for that key reads downstream as
+  // "contacted = 0" while the serve-time suppression list has already dropped
+  // those leads from "Remaining" — two surfaces contradicting each other for the
+  // same audience.
   const eventKeys = new Set(rows.map((r: any) => String(r.groupKey)));
   const extraGroups = [...aggregatesMap.keys()]
     .filter((key) => !eventKeys.has(String(key)))
