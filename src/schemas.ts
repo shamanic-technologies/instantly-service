@@ -1374,29 +1374,6 @@ const PlacementRunResponseSchema = z
 
 registry.registerPath({
   method: "post",
-  path: "/internal/audit/placement-test/run-untested",
-  summary: "Run an immediate inbox-placement test for never-tested accounts",
-  description:
-    "Platform-scoped (no org). Creates ONE immediate one-time (type 1) placement test seeded with ONLY the testable accounts (lifecycle in_recovery | in_production) that have NEVER been placement-tested. Wired to the HOURLY lifecycle cron so a brand-new mailbox is tested within the hour instead of waiting for the weekly Saturday full-pool test. An account already seeded into a test created in the last 48h is suppressed (results take hours to land). No never-tested account → created 0, NO Instantly call, no quota spent. SPENDS Growth-sub test quota when it fires → gated behind PLACEMENT_TESTS_ENABLED=true (returns 409 when disabled). Fails loud (500) on a create rejection (402 quota / 400).",
-  responses: {
-    200: {
-      description: "Test created for the never-tested accounts, or created 0 when none",
-      content: { "application/json": { schema: PlacementRunResponseSchema } },
-    },
-    401: { description: "Unauthorized" },
-    409: {
-      description: "Placement testing disabled (PLACEMENT_TESTS_ENABLED != true)",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Server error (e.g. Instantly 402 quota / 400)",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-registry.registerPath({
-  method: "post",
   path: "/internal/audit/placement-test/run",
   summary: "Run one one-time inbox-placement test now (plan-compatible)",
   description:
