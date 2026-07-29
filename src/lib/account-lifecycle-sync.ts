@@ -283,17 +283,36 @@ export async function fetchInProductionAccounts(
 }
 
 /**
- * Emails eligible to be placement-tested: everything active + not brand-blocked,
- * i.e. lifecycle_status IN ('in_recovery', 'in_production'). This BREAKS the
- * bootstrap deadlock — a fresh account starts in_recovery (delivery unknown), so
- * it MUST be testable to ever earn the delivery == 100 that promotes it to
- * in_production. Seeding placement tests from in_production only would never test
- * (and never promote) a recovering account.
+ * How old an account must be before the weekly placement test seeds it. A test
+ * sends ~30-50 seed emails from the mailbox; running that on a days-old account
+ * measures its warmup, not its deliverability, and spends Growth-sub quota.
+ */
+export const TESTABLE_MIN_AGE_DAYS = 7;
+
+/**
+ * Emails eligible to be placement-tested by the weekly test: active + not
+ * brand-blocked (lifecycle_status IN ('in_recovery', 'in_production')) AND at
+ * least {@link TESTABLE_MIN_AGE_DAYS} days old.
+ *
+ * Including `in_recovery` BREAKS the bootstrap deadlock — a new account starts
+ * in_recovery (delivery unknown), so it MUST be testable to ever earn the
+ * delivery score that promotes it. Seeding from in_production only would never
+ * test (and never promote) a recovering account.
+ *
+ * The age floor keeps seed quota off mailboxes too new to have a meaningful
+ * result: a brand-new mailbox has barely warmed, so testing it in week one
+ * measures nothing and burns the Growth-sub quota. An account with no
+ * `timestamp_created` (not yet backfilled) is treated as old enough — the
+ * pre-backfill behaviour.
  */
 export async function fetchTestablePoolEmails(): Promise<string[]> {
   const result = await db.execute(sql`
     SELECT email FROM instantly_accounts
     WHERE lifecycle_status IN ('in_recovery', 'in_production')
+      AND (
+        timestamp_created IS NULL
+        OR timestamp_created <= now() - make_interval(days => ${TESTABLE_MIN_AGE_DAYS})
+      )
   `);
   return rowsOf<{ email: string }>(result)
     .map((r) => r.email)

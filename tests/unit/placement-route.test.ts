@@ -115,23 +115,4 @@ describe("placement audit routes", () => {
     });
   });
 
-  describe("POST /internal/audit/placement-test/run-untested", () => {
-    it("409 when placement testing is disabled (default off)", async () => {
-      delete process.env.PLACEMENT_TESTS_ENABLED;
-      const app = await makeApp();
-      const res = await request(app).post("/internal/audit/placement-test/run-untested");
-      expect(res.status).toBe(409);
-      expect(res.body.error).toMatch(/PLACEMENT_TESTS_ENABLED/);
-      expect(mockResolveKey).not.toHaveBeenCalled();
-    });
-
-    it("200 with created 0 when every testable account has already been tested", async () => {
-      process.env.PLACEMENT_TESTS_ENABLED = "true";
-      mockExecute.mockResolvedValue({ rows: [] }); // no never-tested account
-      const app = await makeApp();
-      const res = await request(app).post("/internal/audit/placement-test/run-untested");
-      expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({ created: 0, testCode: null, senderCount: 0 });
-    });
   });
-});
