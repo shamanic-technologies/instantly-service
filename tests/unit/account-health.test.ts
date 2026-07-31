@@ -50,6 +50,7 @@ describe("buildAccountHealth", () => {
       queueSize: 0,
       queuedSequences: 0,
       queuedFirstUnsent: 0,
+      queuedFirstUnsentSequences: 0,
       queuedNextToday: 0,
       queuedNextTomorrow: 0,
       queuedNextLater: 0,

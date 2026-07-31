@@ -353,6 +353,38 @@ describe("pickCapacityAwareAccount", () => {
     expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("mature@x.com");
   });
 
+  it("does NOT double-scale once Instantly's own daily_limit is already ramped", () => {
+    // lifecycle-limits-sync writes the ramped value onto Instantly, so a 14d
+    // account arrives here with daily_limit 23 — already its age cap. Scaling
+    // THAT by age again would give 12, silently halving the account's share.
+    //   ramped:   11/23 = 0.478   (cap must stay 23, not 23*14/28 = 12)
+    //   mature:   22/45 = 0.489
+    const accounts = [
+      acct({ email: "ramped@x.com", daily_limit: 23, timestamp_created: created(14) }),
+      acct({ email: "mature@x.com", daily_limit: 45, timestamp_created: created(90) }),
+    ];
+    const byEmail = caps([
+      ["ramped@x.com", { sentToday: 11 }],
+      ["mature@x.com", { sentToday: 22 }],
+    ]);
+    // At a double-scaled cap of 12 the ratio would be 0.917 and mature would win.
+    expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("ramped@x.com");
+  });
+
+  it("still honours an operator-set daily_limit BELOW the age cap", () => {
+    // ramp(14d) = 23, but the operator pinned 10 → the lower one binds.
+    //   pinned: 9/10 = 0.9   mature: 40/45 = 0.889 → mature wins
+    const accounts = [
+      acct({ email: "pinned@x.com", daily_limit: 10, timestamp_created: created(14) }),
+      acct({ email: "mature@x.com", daily_limit: 45, timestamp_created: created(90) }),
+    ];
+    const byEmail = caps([
+      ["pinned@x.com", { sentToday: 9 }],
+      ["mature@x.com", { sentToday: 40 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("mature@x.com");
+  });
+
   it("an undatable account keeps its FULL daily_limit as cap", () => {
     // undated: 30/45 = 0.67; fresh 1d: 4/5 = 0.8 → the undated account wins,
     // i.e. a missing timestamp never traps an account at the ramp floor.

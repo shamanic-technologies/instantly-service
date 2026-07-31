@@ -2267,6 +2267,10 @@
             "type": "integer",
             "description": "Q0-first — queued STEPS belonging to sequences whose first email has not been sent yet (no lastSentAt anchor → not date-projected, counted as 'not started')."
           },
+          "queuedFirstUnsentSequences": {
+            "type": "integer",
+            "description": "Q0-first as SEQUENCES — never-contacted leads on this account, i.e. how many FIRST emails are actually due. This is the quantity SEND SELECTION counts toward today's load; queuedFirstUnsent counts every remaining step of those same sequences and therefore over-states 'today' by the whole future sequence. An ops 'queued today' figure should be queuedFirstUnsentSequences + queuedNextToday, compared against dailyLimit — that is the number the selector decides on."
+          },
           "queuedNextToday": {
             "type": "integer",
             "description": "Q0-next — queued STEPS projected today (UTC) or overdue. Each step's date = lastSentAt + the CHAINED configured delays across every hop up to it (nominal-cadence LOWER BOUND that COMPOUNDS across steps; real Instantly dispatch slips later under throttling), so this reads as 'step DUE today-or-overdue', not a guaranteed send today."
@@ -2303,6 +2307,7 @@
           "queueSize",
           "queuedSequences",
           "queuedFirstUnsent",
+          "queuedFirstUnsentSequences",
           "queuedNextToday",
           "queuedNextTomorrow",
           "queuedNextLater",
