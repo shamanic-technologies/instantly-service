@@ -214,11 +214,11 @@ describe("pickCapacityAwareAccount", () => {
     ).toBe(a);
   });
 
-  it("picks argMIN todayOcc among accounts with room today (< MDL)", () => {
+  it("picks argMIN load÷cap among accounts with the same cap", () => {
     const accounts = [
-      acct({ email: "busy@x.com", daily_limit: 50 }), // todayOcc 40
-      acct({ email: "idle@x.com", daily_limit: 50 }), // todayOcc 3
-      acct({ email: "mid@x.com", daily_limit: 50 }), // todayOcc 12
+      acct({ email: "busy@x.com", daily_limit: 50 }), // load 40
+      acct({ email: "idle@x.com", daily_limit: 50 }), // load 3
+      acct({ email: "mid@x.com", daily_limit: 50 }), // load 12
     ];
     const byEmail = caps([
       ["busy@x.com", { sentToday: 40 }],
@@ -228,20 +228,20 @@ describe("pickCapacityAwareAccount", () => {
     expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("idle@x.com");
   });
 
-  it("treats an account absent from the map as all-zeros (preferred today)", () => {
+  it("treats an account absent from the map as all-zeros (ratio 0 ⇒ preferred)", () => {
     const accounts = [
       acct({ email: "known@x.com", daily_limit: 50 }),
-      acct({ email: "fresh@x.com", daily_limit: 50 }), // absent ⇒ todayOcc 0
+      acct({ email: "fresh@x.com", daily_limit: 50 }), // absent ⇒ load 0
     ];
     const byEmail = caps([["known@x.com", { sentToday: 5 }]]);
     expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("fresh@x.com");
   });
 
-  it("breaks a today tie with a uniform random over ONLY the tied-min set", () => {
+  it("breaks a ratio tie with a uniform random over ONLY the tied-min set", () => {
     const accounts = [
-      acct({ email: "a@x.com", daily_limit: 50 }), // todayOcc 2
-      acct({ email: "heavy@x.com", daily_limit: 50 }), // todayOcc 9
-      acct({ email: "b@x.com", daily_limit: 50 }), // todayOcc 2
+      acct({ email: "a@x.com", daily_limit: 50 }), // load 2
+      acct({ email: "heavy@x.com", daily_limit: 50 }), // load 9
+      acct({ email: "b@x.com", daily_limit: 50 }), // load 2
     ];
     const byEmail = caps([
       ["a@x.com", { sentToday: 2 }],
@@ -255,10 +255,10 @@ describe("pickCapacityAwareAccount", () => {
     expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("b@x.com");
   });
 
-  it("Q0-first (never-contacted sequences) counts toward today occupancy", () => {
+  it("Q0-first (never-contacted sequences) counts toward the load", () => {
     const accounts = [
-      acct({ email: "free@x.com", daily_limit: 50 }), // todayOcc 5
-      acct({ email: "newbie@x.com", daily_limit: 50 }), // todayOcc 60 (all q0first) → no room today
+      acct({ email: "free@x.com", daily_limit: 50 }), // 5/50 = 0.1
+      acct({ email: "newbie@x.com", daily_limit: 50 }), // 60/50 = 1.2 (all q0first)
     ];
     const byEmail = caps([
       ["free@x.com", { sentToday: 5 }],
@@ -267,91 +267,102 @@ describe("pickCapacityAwareAccount", () => {
     expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("free@x.com");
   });
 
-  it("respects a per-account MDL from daily_limit (low-limit acct excluded)", () => {
+  it("ranks on the RATIO, not the absolute load (per-account daily_limit)", () => {
     const accounts = [
-      acct({ email: "small@x.com", daily_limit: 10 }), // todayOcc 12 ≥ 10 → no room
-      acct({ email: "big@x.com", daily_limit: 50 }), // todayOcc 12 < 50 → room
+      acct({ email: "small@x.com", daily_limit: 10 }), // 6/10  = 0.60
+      acct({ email: "big@x.com", daily_limit: 50 }), //  12/50 = 0.24
     ];
     const byEmail = caps([
-      ["small@x.com", { sentToday: 12 }],
+      ["small@x.com", { sentToday: 6 }],
       ["big@x.com", { sentToday: 12 }],
     ]);
-    // If MDL were a fixed 50, small would also have room and tie; the per-account
-    // limit excludes it → big is the only candidate today.
+    // `big` carries TWICE the absolute load but is far emptier relative to what it
+    // can take — a raw least-loaded rule would wrongly pick `small`.
     expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("big@x.com");
   });
 
-  it("falls to tomorrow when no account has room today: argMIN tomorrowOcc", () => {
-    // MDL 50 both. Neither has room today (todayOcc ≥ 50).
-    //   A: todayOcc 55 → O1 5, q1next 2 → tomorrowOcc 7
-    //   B: todayOcc 60 → O1 10, q1next 30 → tomorrowOcc 40
+  it("when every account is OVER its cap, picks the least-overloaded ratio", () => {
     const accounts = [
-      acct({ email: "A@x.com", daily_limit: 50 }),
-      acct({ email: "B@x.com", daily_limit: 50 }),
+      acct({ email: "A@x.com", daily_limit: 50 }), // 60/50 = 1.2
+      acct({ email: "B@x.com", daily_limit: 50 }), // 55/50 = 1.1
     ];
     const byEmail = caps([
-      ["A@x.com", { sentToday: 50, q0next: 5, q1next: 2 }],
-      ["B@x.com", { sentToday: 55, q0next: 5, q1next: 30 }],
-    ]);
-    expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("A@x.com");
-  });
-
-  it("falls to argMIN totalQueue when no account has room today or tomorrow", () => {
-    // MDL 50 both. Saturated today AND tomorrow → step-7 fallback on totalQueue.
-    //   A: todayOcc 60 → O1 10, q1next 45 → tomorrowOcc 55 (≥50); totalQueue 100
-    //   B: todayOcc 70 → O1 20, q1next 40 → tomorrowOcc 60 (≥50); totalQueue 80
-    const accounts = [
-      acct({ email: "A@x.com", daily_limit: 50 }),
-      acct({ email: "B@x.com", daily_limit: 50 }),
-    ];
-    const byEmail = caps([
-      ["A@x.com", { sentToday: 60, q1next: 45, totalQueue: 100 }],
-      ["B@x.com", { sentToday: 70, q1next: 40, totalQueue: 80 }],
+      ["A@x.com", { sentToday: 60, totalQueue: 80 }],
+      ["B@x.com", { sentToday: 55, totalQueue: 100 }],
     ]);
     expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("B@x.com");
   });
 
-  // ── AGE gate: fresh accounts (< MATURE_AGE_DAYS) are de-prioritized ──────────
+  it("an account with daily_limit 0 can never absorb a lead (ranked last)", () => {
+    const accounts = [
+      acct({ email: "zero@x.com", daily_limit: 0 }),
+      acct({ email: "loaded@x.com", daily_limit: 10 }), // 9/10 = 0.9
+    ];
+    const byEmail = caps([
+      ["zero@x.com", { sentToday: 0 }],
+      ["loaded@x.com", { sentToday: 9 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail).email).toBe("loaded@x.com");
+  });
+
+  // ── AGE: a fresh account's CAP is scaled down; it is never de-prioritized ─────
   const asOf = new Date("2026-07-22T00:00:00Z");
   const created = (daysOld: number) =>
     new Date(asOf.getTime() - daysOld * 24 * 60 * 60 * 1000).toISOString();
 
-  it("prefers a MATURE account over a fresh one when both have room today", () => {
-    // mature has MORE load today (30) than fresh (0) — the fresh one would win on
-    // argMIN todayOcc, but age de-prioritization picks the mature account.
+  it("gives an IDLE fresh account volume ahead of a partly-loaded mature one", () => {
+    // The idle-account bug: under the old mature-before-fresh tier ordering the
+    // mature account won here (it had room today), so a fresh account received
+    // NOTHING for as long as any mature account had headroom — i.e. forever.
+    //   mature: 30/45 = 0.67   fresh (14d): 0/23 = 0
     const accounts = [
-      acct({ email: "mature@x.com", daily_limit: 50, timestamp_created: created(90) }),
-      acct({ email: "fresh@x.com", daily_limit: 50, timestamp_created: created(3) }),
+      acct({ email: "mature@x.com", daily_limit: 45, timestamp_created: created(90) }),
+      acct({ email: "fresh@x.com", daily_limit: 45, timestamp_created: created(14) }),
     ];
     const byEmail = caps([
       ["mature@x.com", { sentToday: 30 }],
       ["fresh@x.com", { sentToday: 0 }],
     ]);
-    expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("mature@x.com");
-  });
-
-  it("uses a FRESH account for today only when every mature account is full today", () => {
-    // mature saturated today (todayOcc 50 ≥ MDL 50) → no mature room today →
-    // fresh (room today) takes the overflow.
-    const accounts = [
-      acct({ email: "mature@x.com", daily_limit: 50, timestamp_created: created(90) }),
-      acct({ email: "fresh@x.com", daily_limit: 50, timestamp_created: created(3) }),
-    ];
-    const byEmail = caps([
-      ["mature@x.com", { sentToday: 50, q1next: 2 }], // full today, room tomorrow
-      ["fresh@x.com", { sentToday: 0 }],
-    ]);
     expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("fresh@x.com");
   });
 
-  it("an undatable account counts as MATURE (no timestamp_created)", () => {
+  it("stops loading a fresh account once it reaches its age-scaled cap", () => {
+    // fresh (14d, cap 23) sits at 23/23 = 1.0; mature at 30/45 = 0.67 → mature.
     const accounts = [
-      acct({ email: "undated@x.com", daily_limit: 50 }), // no timestamp_created
-      acct({ email: "fresh@x.com", daily_limit: 50, timestamp_created: created(3) }),
+      acct({ email: "mature@x.com", daily_limit: 45, timestamp_created: created(90) }),
+      acct({ email: "fresh@x.com", daily_limit: 45, timestamp_created: created(14) }),
+    ];
+    const byEmail = caps([
+      ["mature@x.com", { sentToday: 30 }],
+      ["fresh@x.com", { sentToday: 23 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("mature@x.com");
+  });
+
+  it("a day-old account is capped at the ramp floor, not at its daily_limit", () => {
+    // fresh (1d) cap = RAMP_FLOOR_PER_DAY (5): at 5 sends it is FULL (1.0) even
+    // though its Instantly daily_limit is 45 — mature at 40/45 = 0.89 wins.
+    const accounts = [
+      acct({ email: "mature@x.com", daily_limit: 45, timestamp_created: created(90) }),
+      acct({ email: "dayold@x.com", daily_limit: 45, timestamp_created: created(1) }),
+    ];
+    const byEmail = caps([
+      ["mature@x.com", { sentToday: 40 }],
+      ["dayold@x.com", { sentToday: 5 }],
+    ]);
+    expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("mature@x.com");
+  });
+
+  it("an undatable account keeps its FULL daily_limit as cap", () => {
+    // undated: 30/45 = 0.67; fresh 1d: 4/5 = 0.8 → the undated account wins,
+    // i.e. a missing timestamp never traps an account at the ramp floor.
+    const accounts = [
+      acct({ email: "undated@x.com", daily_limit: 45 }), // no timestamp_created
+      acct({ email: "dayold@x.com", daily_limit: 45, timestamp_created: created(1) }),
     ];
     const byEmail = caps([
       ["undated@x.com", { sentToday: 30 }],
-      ["fresh@x.com", { sentToday: 0 }],
+      ["dayold@x.com", { sentToday: 4 }],
     ]);
     expect(pickCapacityAwareAccount(accounts, byEmail, asOf).email).toBe("undated@x.com");
   });
@@ -400,7 +411,7 @@ describe("send gate — only in_production accounts (lifecycle)", () => {
       acct({ email: "busy@good.com", stat_warmup_score: 100, daily_limit: 50 }),
       acct({ email: "idle@good.com", stat_warmup_score: 100, daily_limit: 50 }),
     ]);
-    // busy has higher today occupancy (both under MDL) → idle wins (argMIN today).
+    // Same cap (50) both → busy's fill ratio is higher → idle wins (argMIN ratio).
     mockFetchAccountCapacity.mockResolvedValueOnce(
       new Map<string, AccountCapacity>([
         ["busy@good.com", { sentToday: 37, q0first: 0, q0next: 0, q1next: 0, totalQueue: 37 }],
