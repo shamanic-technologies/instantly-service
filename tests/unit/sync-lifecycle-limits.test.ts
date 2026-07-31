@@ -95,6 +95,44 @@ describe("selectLifecycleLimitPatches", () => {
     ]);
   });
 
+  it("caps a FRESH account's daily_limit at its age ramp, not the state's full 45", () => {
+    // 14d old → rampCapForAge(14d, 45) = 23. Gmail's real per-user quota is far
+    // below 45 for a young mailbox, so the age ceiling binds before the state one.
+    // slow ramp pre-aligned on both so the assertion isolates the daily field.
+    const accounts = [
+      acct("fresh@x.com", 45, 5, { timestampCreated: created(14), enableSlowRamp: true }),
+      acct("mature@x.com", 45, 5, { timestampCreated: created(90), enableSlowRamp: false }),
+    ];
+    const lc = new Map<string, LifecycleView>([
+      ["fresh@x.com", lifecycle("in_production")],
+      ["mature@x.com", lifecycle("in_production")],
+    ]);
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+      { email: "fresh@x.com", warmup: null, daily: 23, slowRamp: null },
+    ]);
+  });
+
+  it("does NOT re-scale its own output: an already-ramped fresh account is aligned", () => {
+    // The ramp is computed off IN_PRODUCTION_DAILY_LIMIT, never off the account's
+    // current daily_limit — otherwise each sweep would shrink it again (45→23→12…).
+    const accounts = [
+      acct("fresh@x.com", 23, 5, { timestampCreated: created(14), enableSlowRamp: true }),
+    ];
+    const lc = new Map<string, LifecycleView>([["fresh@x.com", lifecycle("in_production")]]);
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([]);
+  });
+
+  it("in_recovery: the age ramp binds when it is BELOW the recovery limit", () => {
+    // 1d old → ramp floor 5, under the in_recovery 20 → 5 wins.
+    const accounts = [
+      acct("newborn@x.com", 20, 30, { timestampCreated: created(1), enableSlowRamp: true }),
+    ];
+    const lc = new Map<string, LifecycleView>([["newborn@x.com", lifecycle("in_recovery")]]);
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+      { email: "newborn@x.com", warmup: null, daily: 5, slowRamp: null },
+    ]);
+  });
+
   it("skips deactivated_* / unknown lifecycle for warmup+daily, but STILL enforces age-driven slow ramp", () => {
     // A deactivated account is skipped for warmup/daily (targets null) — but a
     // FRESH one whose slow ramp is off still gets the slow-ramp patch (age-driven,
@@ -125,8 +163,11 @@ describe("selectLifecycleLimitPatches", () => {
       ["mature-on@x.com", lifecycle("in_production")],
       ["mature-off@x.com", lifecycle("in_production")],
     ]);
+    // The two 3-day-old accounts also drift on daily: their age ramp floors them
+    // at 5/day, well under the in_production 45 they currently carry.
     expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
-      { email: "fresh-off@x.com", warmup: null, daily: null, slowRamp: true },
+      { email: "fresh-off@x.com", warmup: null, daily: 5, slowRamp: true },
+      { email: "fresh-on@x.com", warmup: null, daily: 5, slowRamp: null },
       { email: "mature-on@x.com", warmup: null, daily: null, slowRamp: false },
     ]);
   });
@@ -155,7 +196,8 @@ describe("syncLifecycleLimits", () => {
       acct("both@x.com", 50, 10), // → warmup 5 + daily 45
       acct("aligned@x.com", 45, 5), // skip
       acct("daily@x.com", 40, 5), // → daily only
-      acct("ramp@x.com", 45, 5, { enableSlowRamp: false, timestampCreated: created(3) }), // → slowRamp true
+      // 3 days old → slowRamp true AND daily floored to the 5/day ramp cap.
+      acct("ramp@x.com", 45, 5, { enableSlowRamp: false, timestampCreated: created(3) }),
     ]);
     mockFetchLifecycle.mockResolvedValue(
       new Map<string, LifecycleView>([
@@ -166,18 +208,21 @@ describe("syncLifecycleLimits", () => {
       ]),
     );
 
-    const summary = await syncLifecycleLimits("key");
+    // Pass the fixed clock — the daily target is age-driven, so a wall-clock
+    // default would make `created(3)` drift further from 3 days every day.
+    const summary = await syncLifecycleLimits("key", undefined, asOf);
 
     expect(mockSetWarmup).toHaveBeenCalledWith("key", "both@x.com", 5);
     expect(mockSetDaily).toHaveBeenCalledWith("key", "both@x.com", 45);
     expect(mockSetDaily).toHaveBeenCalledWith("key", "daily@x.com", 45);
+    expect(mockSetDaily).toHaveBeenCalledWith("key", "ramp@x.com", 5);
     expect(mockSetSlowRamp).toHaveBeenCalledTimes(1);
     expect(mockSetSlowRamp).toHaveBeenCalledWith("key", "ramp@x.com", true);
     expect(summary).toEqual({
       accountsRead: 4,
       accountsPatched: 3,
       warmupPatched: 1,
-      dailyPatched: 2,
+      dailyPatched: 3,
       slowRampPatched: 1,
       failed: 0,
     });
