@@ -93,6 +93,19 @@ export interface QueueBreakdown {
   steps: number;
   /** Q0-first — steps of sequences whose first email has not sent yet. */
   firstUnsent: number;
+  /**
+   * Q0-first as SEQUENCES — how many never-contacted leads sit on this account,
+   * i.e. how many FIRST emails are actually due. `firstUnsent` counts every
+   * remaining step of those sequences (a 3-step sequence contributes 3), which
+   * over-states today by the whole future sequence; this is the number send
+   * SELECTION uses for today's load (`q0first` in `aggregateQueueCapacity`).
+   *
+   * Exposed so an ops surface can render the same "due today" quantity the
+   * selector decides on, instead of a step total that reads as saturation
+   * (an account showing 102 queued-today steps against a 45 cap is seen by the
+   * selector as ~32 and legitimately keeps taking leads).
+   */
+  firstUnsentSequences: number;
   /** Q0-next — step projected today (UTC) or overdue. */
   nextToday: number;
   /** Q1-next — step projected tomorrow (UTC). */
@@ -139,7 +152,15 @@ export function classifyQueuedStep(
 }
 
 function emptyBreakdown(): QueueBreakdown {
-  return { sequences: 0, steps: 0, firstUnsent: 0, nextToday: 0, nextTomorrow: 0, nextLater: 0 };
+  return {
+    sequences: 0,
+    steps: 0,
+    firstUnsent: 0,
+    firstUnsentSequences: 0,
+    nextToday: 0,
+    nextTomorrow: 0,
+    nextLater: 0,
+  };
 }
 
 /**
@@ -230,6 +251,9 @@ export function aggregateQueueBreakdown(
     if (!row.account) continue;
     const b = out.get(row.account) ?? emptyBreakdown();
     b.sequences += 1;
+    // A never-contacted sequence owes exactly ONE first email — count it once,
+    // independently of how many un-sent steps it still carries.
+    if (row.lastSentStep === null || row.lastSentAt === null) b.firstUnsentSequences += 1;
     for (const step of row.provisionedSteps) {
       b.steps += 1;
       b[classifyQueuedStep(row, step, asOf)] += 1;

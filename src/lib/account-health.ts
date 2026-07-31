@@ -128,6 +128,19 @@ export interface AccountHealth {
   queuedSequences: number;
   /** Q0-first — steps of sequences whose first email has not sent yet. */
   queuedFirstUnsent: number;
+  /**
+   * Q0-first as SEQUENCES — never-contacted leads on this account, i.e. how many
+   * FIRST emails are actually due. This is the quantity SEND SELECTION counts for
+   * today's load; `queuedFirstUnsent` counts all remaining steps of those same
+   * sequences, so it over-states "today" by the whole future sequence.
+   *
+   * An ops surface rendering "queued today" should use
+   * `queuedFirstUnsentSequences + queuedNextToday` against `dailyLimit` — that is
+   * the number the selector decides on. Using the step total instead makes a
+   * healthy account look saturated (102 vs a 45 cap) while the selector, seeing
+   * ~32, correctly keeps assigning it leads.
+   */
+  queuedFirstUnsentSequences: number;
   /** Q0-next — step projected today (UTC) or overdue. */
   queuedNextToday: number;
   /** Q1-next — step projected tomorrow (UTC). */
@@ -227,6 +240,7 @@ export function buildAccountHealth(
       queueSize: breakdown?.steps ?? queueSizeByEmail.get(a.email) ?? 0,
       queuedSequences: breakdown?.sequences ?? 0,
       queuedFirstUnsent: breakdown?.firstUnsent ?? 0,
+      queuedFirstUnsentSequences: breakdown?.firstUnsentSequences ?? 0,
       queuedNextToday: breakdown?.nextToday ?? 0,
       queuedNextTomorrow: breakdown?.nextTomorrow ?? 0,
       queuedNextLater: breakdown?.nextLater ?? 0,

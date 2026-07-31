@@ -1229,6 +1229,12 @@ const AccountHealthSchema = z
       .describe(
         "Q0-first — queued STEPS belonging to sequences whose first email has not been sent yet (no lastSentAt anchor → not date-projected, counted as 'not started').",
       ),
+    queuedFirstUnsentSequences: z
+      .number()
+      .int()
+      .describe(
+        "Q0-first as SEQUENCES — never-contacted leads on this account, i.e. how many FIRST emails are actually due. This is the quantity SEND SELECTION counts toward today's load; queuedFirstUnsent counts every remaining step of those same sequences and therefore over-states 'today' by the whole future sequence. An ops 'queued today' figure should be queuedFirstUnsentSequences + queuedNextToday, compared against dailyLimit — that is the number the selector decides on.",
+      ),
     queuedNextToday: z
       .number()
       .int()
