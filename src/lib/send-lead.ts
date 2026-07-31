@@ -8,8 +8,8 @@
  *     `delivery_status='contacted'` past STUCK_AGE_HOURS without any silver
  *     proof Instantly actually sent — see lib/retry-stuck.ts)
  *
- * One-shot: picks a healthy account via the capacity-aware policy (fill the
- * account that can absorb one more email soonest under its daily limit — see
+ * One-shot: picks a healthy account via the capacity-aware policy (the account
+ * that is emptiest relative to its own daily cap — see
  * pickCapacityAwareAccount), creates a fresh Instantly campaign, adds the lead,
  * activates. Returns
  * success regardless of post-activate `not_sending_status` (NSS is pacing
@@ -33,7 +33,7 @@ import {
   fetchAccountCapacityCached,
   type AccountCapacity,
 } from "./account-sending-stats";
-import { IN_PRODUCTION_DAILY_LIMIT, isAccountFresh } from "./account-lifecycle";
+import { IN_PRODUCTION_DAILY_LIMIT, rampCapForAge } from "./account-lifecycle";
 
 /** All-zero capacity for an account absent from the snapshot (idle ⇒ preferred). */
 const EMPTY_CAPACITY: AccountCapacity = {
@@ -64,29 +64,34 @@ function argMinRandom(
 }
 
 /**
- * Capacity-aware account selection — fill the account that can absorb one more
- * email SOONEST under its own daily limit (MDL), not merely the globally
- * least-loaded one.
+ * Capacity-aware account selection — ONE number per account, pick the emptiest.
  *
- * Per account, from the send-selection snapshot (see fetchAccountCapacity):
- *   MDL         = account.daily_limit (fallback IN_PRODUCTION_DAILY_LIMIT=50)
- *   S0          = sentToday (real dispatches today)
- *   Q0-first    = never-contacted sequences (1 first-email each ≈ today)
- *   Q0-next     = followup steps projected today/overdue
- *   Q1-next     = followup steps projected tomorrow
- *   todayOcc    = S0 + Q0-first + Q0-next          (projected volume today)
- *   tomorrowOcc = max(todayOcc − MDL, 0) + Q1-next (today's overflow O1 + tomorrow's due)
+ * Per account:
+ *   cap   = rampCapForAge(timestamp_created, daily_limit, asOf)
+ *           mature/undatable → its own daily_limit; fresh → that limit scaled
+ *           linearly by age (floored at RAMP_FLOOR_PER_DAY).
+ *   load  = sentToday + Q0-first + Q0-next
+ *           real dispatches today + never-contacted sequences (1 first email each)
+ *           + followup steps projected today/overdue.
+ *   pick  = argMIN(load / cap), ties broken by uniform random over the tied set.
  *
- * Policy (first tier with a candidate wins; argMIN + random tie-break within):
- *   1. Accounts with todayOcc < MDL       → pick argMIN todayOcc (fill emptiest today).
- *   2. Else accounts with tomorrowOcc < MDL → pick argMIN tomorrowOcc (soonest room tomorrow).
- *   3. Else                                → pick argMIN totalQueue (globally emptiest queue).
+ * Why a RATIO and not the raw load: accounts have different caps (a 3-day-old
+ * mailbox can absorb 5/day, a mature one 45/day). Ranking on the ratio fills every
+ * account at the same PACE relative to what it can take, so no account starves and
+ * none is overloaded. When every account is already over its cap (a backlogged
+ * fleet), argMIN ratio still picks the least-overloaded one — which is also the one
+ * with room soonest, so no separate "tomorrow" tier is needed.
  *
- * An account absent from `byEmail` is all-zeros ⇒ maximally preferred. Correctness
- * of the today/tomorrow buckets depends on the sending account being persisted on
- * the campaign row at send time (see account-sending-stats.ts) so a just-contacted
- * lead counts against its account immediately, not after the lagging first
- * email_sent webhook.
+ * This REPLACED a 5-tier policy (mature-today > fresh-today > mature-tomorrow >
+ * fresh-tomorrow > least-total-queue). That shape is what produced the idle-account
+ * bug: mature accounts always satisfied tier 1, so tiers 2-5 never ran and fresh
+ * accounts received nothing for weeks. See `rampCapForAge`.
+ *
+ * An account absent from `byEmail` is all-zeros ⇒ ratio 0 ⇒ maximally preferred.
+ * Correctness of `load` depends on the sending account being persisted on the
+ * campaign row at send time (see account-sending-stats.ts) so a just-contacted lead
+ * counts against its account immediately, not after the lagging first email_sent
+ * webhook.
  */
 export function pickCapacityAwareAccount(
   accounts: Account[],
@@ -97,38 +102,20 @@ export function pickCapacityAwareAccount(
     throw new Error("No accounts available");
   }
 
-  const capOf = (a: Account): AccountCapacity =>
-    byEmail.get(a.email) ?? EMPTY_CAPACITY;
-  const mdlOf = (a: Account): number => a.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT;
-  const todayOcc = (a: Account): number => {
-    const c = capOf(a);
-    return c.sentToday + c.q0first + c.q0next;
+  const fillRatio = (a: Account): number => {
+    const c = byEmail.get(a.email) ?? EMPTY_CAPACITY;
+    const load = c.sentToday + c.q0first + c.q0next;
+    const cap = rampCapForAge(
+      a.timestamp_created,
+      a.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT,
+      asOf,
+    );
+    // A zero/negative cap (an account deliberately set to daily_limit 0) can never
+    // absorb a lead — rank it last rather than dividing by zero.
+    return cap > 0 ? load / cap : Number.POSITIVE_INFINITY;
   };
-  const tomorrowOcc = (a: Account): number =>
-    Math.max(todayOcc(a) - mdlOf(a), 0) + capOf(a).q1next;
 
-  // AGE gate: FRESH accounts (< MATURE_AGE_DAYS) are de-prioritized so their
-  // Gmail per-user send quota builds gradually — a fresh mailbox at full 45/day
-  // trips 550-5.4.5. They stay in the pool (still in_production) but take volume
-  // only as OVERFLOW: a fresh account is chosen for today ONLY when NO mature
-  // account has room today (and likewise for tomorrow). Undatable accounts count
-  // as mature (isAccountFresh → false), preserving prior behavior fleet-wide.
-  const mature = accounts.filter((a) => !isAccountFresh(a.timestamp_created, asOf));
-  const young = accounts.filter((a) => isAccountFresh(a.timestamp_created, asOf));
-
-  // Priority (first non-empty group wins): mature-today > fresh-today >
-  // mature-tomorrow > fresh-tomorrow > globally-least-loaded. With no fresh
-  // accounts, `young` is empty and this is exactly the prior 3-tier policy.
-  for (const pool of [mature, young]) {
-    const room = pool.filter((a) => todayOcc(a) < mdlOf(a));
-    if (room.length > 0) return argMinRandom(room, todayOcc);
-  }
-  for (const pool of [mature, young]) {
-    const room = pool.filter((a) => tomorrowOcc(a) < mdlOf(a));
-    if (room.length > 0) return argMinRandom(room, tomorrowOcc);
-  }
-
-  return argMinRandom(accounts, (a) => capOf(a).totalQueue);
+  return argMinRandom(accounts, fillRatio);
 }
 
 /**

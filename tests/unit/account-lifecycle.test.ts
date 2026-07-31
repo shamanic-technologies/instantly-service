@@ -11,7 +11,8 @@ import {
   RECOVERY_WARMUP_DAILY,
   IN_PRODUCTION_DAILY_LIMIT,
   RECOVERY_DAILY_LIMIT,
-  isAccountFresh,
+  rampCapForAge,
+  RAMP_FLOOR_PER_DAY,
   slowRampForAge,
   MATURE_AGE_DAYS,
   type DeriveLifecycleInput,
@@ -247,26 +248,40 @@ describe("emailDomain", () => {
   });
 });
 
-describe("account age gate — isAccountFresh / slowRampForAge", () => {
+describe("account age gate — rampCapForAge / slowRampForAge", () => {
   const asOf = new Date("2026-07-22T00:00:00Z");
   const daysAgo = (n: number) =>
     new Date(asOf.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
 
-  it(`isAccountFresh: younger than ${MATURE_AGE_DAYS}d is fresh`, () => {
-    expect(isAccountFresh(daysAgo(1), asOf)).toBe(true);
-    expect(isAccountFresh(daysAgo(MATURE_AGE_DAYS - 1), asOf)).toBe(true);
+  it(`rampCapForAge: at/after ${MATURE_AGE_DAYS}d the cap is the full daily_limit`, () => {
+    expect(rampCapForAge(daysAgo(MATURE_AGE_DAYS), 45, asOf)).toBe(45);
+    expect(rampCapForAge(daysAgo(MATURE_AGE_DAYS + 60), 45, asOf)).toBe(45);
   });
-  it(`isAccountFresh: exactly/older than ${MATURE_AGE_DAYS}d is mature`, () => {
-    expect(isAccountFresh(daysAgo(MATURE_AGE_DAYS), asOf)).toBe(false);
-    expect(isAccountFresh(daysAgo(MATURE_AGE_DAYS + 30), asOf)).toBe(false);
+
+  it("rampCapForAge: a fresh account ramps LINEARLY with age", () => {
+    expect(rampCapForAge(daysAgo(14), 45, asOf)).toBe(23); // 45 * 14/28
+    expect(rampCapForAge(daysAgo(21), 45, asOf)).toBe(34); // 45 * 21/28
+    expect(rampCapForAge(daysAgo(24), 45, asOf)).toBe(39); // 45 * 24/28
   });
-  it("isAccountFresh: unknown/unparseable created date → mature (never trap)", () => {
-    expect(isAccountFresh(null, asOf)).toBe(false);
-    expect(isAccountFresh(undefined, asOf)).toBe(false);
-    expect(isAccountFresh("not-a-date", asOf)).toBe(false);
+
+  it(`rampCapForAge: never below the ${RAMP_FLOOR_PER_DAY}/day floor (idle ≠ ramp)`, () => {
+    expect(rampCapForAge(daysAgo(1), 45, asOf)).toBe(RAMP_FLOOR_PER_DAY);
+    expect(rampCapForAge(daysAgo(3), 45, asOf)).toBe(RAMP_FLOOR_PER_DAY); // round(4.8)=5
   });
-  it("isAccountFresh: accepts a Date instance", () => {
-    expect(isAccountFresh(new Date(daysAgo(2)), asOf)).toBe(true);
+
+  it("rampCapForAge: the floor never EXCEEDS the account's own daily_limit", () => {
+    expect(rampCapForAge(daysAgo(1), 4, asOf)).toBe(4);
+    expect(rampCapForAge(daysAgo(1), 0, asOf)).toBe(0);
+  });
+
+  it("rampCapForAge: unknown/unparseable created date → full limit (never trap)", () => {
+    expect(rampCapForAge(null, 45, asOf)).toBe(45);
+    expect(rampCapForAge(undefined, 45, asOf)).toBe(45);
+    expect(rampCapForAge("not-a-date", 45, asOf)).toBe(45);
+  });
+
+  it("rampCapForAge: accepts a Date instance", () => {
+    expect(rampCapForAge(new Date(daysAgo(14)), 45, asOf)).toBe(23);
   });
 
   it("slowRampForAge: fresh → true, mature → false, unknown → null", () => {
