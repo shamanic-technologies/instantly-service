@@ -176,11 +176,10 @@ export function emailDomain(email: string): string {
  * per-user send quota during its first weeks — INDEPENDENT of inbox placement —
  * so pushing full campaign volume onto it day-one trips `550-5.4.5 Daily user
  * sending limit exceeded`. Age is NOT a lifecycle state (a fresh account stays
- * `in_production` if it passes health+delivery); it only (a) de-prioritizes the
- * account in send selection — picked last, taking overflow only once every mature
- * account is filled for the day — and (b) keeps Instantly's slow ramp ON so its
- * volume grows gently. 28 days = the ~4-week ramp window Gmail needs to build
- * per-user send trust.
+ * `in_production` if it passes health+delivery); it only (a) SCALES DOWN the daily
+ * assignment cap send selection uses for it (see `rampCapForAge`) and (b) keeps
+ * Instantly's slow ramp ON so its volume grows gently. 28 days = the ~4-week ramp
+ * window Gmail needs to build per-user send trust.
  */
 export const MATURE_AGE_DAYS = 28;
 const MATURE_AGE_MS = MATURE_AGE_DAYS * 24 * 60 * 60 * 1000;
@@ -199,16 +198,38 @@ function accountAgeMs(
 }
 
 /**
- * True ⇔ the account is younger than {@link MATURE_AGE_DAYS}. Unknown/unparseable
- * created date → false (treated as MATURE — never de-prioritize or trap an account
- * we cannot date; once the timestamp backfills, a genuinely fresh one gates).
+ * Floor for a fresh account's daily assignment cap. Even a day-old mailbox takes
+ * a few leads a day — that IS the ramp. Zero would starve it (and starvation is
+ * not a ramp: an idle mailbox builds no Gmail send trust at all).
  */
-export function isAccountFresh(
+export const RAMP_FLOOR_PER_DAY = 5;
+
+/**
+ * The account's DAILY ASSIGNMENT CAP — how many emails send-selection is willing
+ * to put on this account today. Mature (or undatable) → its full Instantly
+ * `daily_limit`. Fresh → that limit scaled LINEARLY by age over the
+ * {@link MATURE_AGE_DAYS} window, floored at {@link RAMP_FLOOR_PER_DAY} and never
+ * above the account's own limit.
+ *
+ * This REPLACED the former mature-before-fresh tier ordering in send selection.
+ * That ordering made "fresh" a PRIORITY class (fresh took volume only as overflow,
+ * once no mature account had room today) — and since the mature pool's headroom
+ * exceeded fleet volume, the overflow branch never ran and every fresh account got
+ * ZERO sends for weeks (prod 2026-07-29→31: 845/845 campaigns to mature accounts,
+ * 5 accounts never assigned a single campaign in their life). Age is now a CAP,
+ * not a priority: a fresh account always gets a proportional share, bounded by
+ * what Gmail will accept from a young mailbox.
+ */
+export function rampCapForAge(
   timestampCreated: string | Date | null | undefined,
+  dailyLimit: number,
   asOf: Date,
-): boolean {
+): number {
   const age = accountAgeMs(timestampCreated, asOf);
-  return age !== null && age < MATURE_AGE_MS;
+  if (age === null || age >= MATURE_AGE_MS) return dailyLimit;
+  const ageDays = age / (24 * 60 * 60 * 1000);
+  const ramped = Math.round((dailyLimit * ageDays) / MATURE_AGE_DAYS);
+  return Math.min(dailyLimit, Math.max(RAMP_FLOOR_PER_DAY, ramped));
 }
 
 /**
