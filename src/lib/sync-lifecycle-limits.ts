@@ -59,6 +59,8 @@ import {
   warmupDailyForStatus,
   dailyLimitForStatus,
   slowRampForAge,
+  rampCapForAge,
+  IN_PRODUCTION_DAILY_LIMIT,
   type LifecycleStatus,
 } from "./account-lifecycle";
 
@@ -92,7 +94,10 @@ export interface LifecycleLimitsSyncSummary {
  * Pure: compute the per-account drift patch.
  *   - warmup.limit + daily_limit are enforced ONLY when the silver lifecycle is
  *     `in_production` or `in_recovery` (their targets are non-null); any other
- *     state (or unknown lifecycle) leaves both untouched.
+ *     state (or unknown lifecycle) leaves both untouched. The daily_limit target
+ *     is additionally capped by the AGE ramp (`rampCapForAge`), so a fresh mailbox
+ *     is held to what Gmail will actually accept from it rather than the state's
+ *     full 45/20 — this is the Instantly-side twin of the send-selection cap.
  *   - enable_slow_ramp is AGE-driven and INDEPENDENT of lifecycle state: a fresh
  *     account (< MATURE_AGE_DAYS) targets `true` (ramp gently — a fresh Google
  *     mailbox at full volume trips 550-5.4.5), a mature one targets `false`, and
@@ -120,7 +125,20 @@ export function selectLifecycleLimitPatches(
     let daily: number | null = null;
     if (status === "in_production" || status === "in_recovery") {
       const targetWarmup = warmupDailyForStatus(status); // 5 | 30 (never null here)
-      const targetDaily = dailyLimitForStatus(status); // 45 | 20 (never null here)
+      const stateDaily = dailyLimitForStatus(status); // 45 | 20 (never null here)
+      // AGE ceiling: a fresh mailbox cannot physically absorb the state's full
+      // daily_limit (Gmail's real per-user quota is far below it for the first
+      // ~4 weeks — the 550-5.4.5 trigger). The state sets the POLICY ceiling, the
+      // age ramp the PHYSICAL one; the target is whichever binds first. Always
+      // computed off IN_PRODUCTION_DAILY_LIMIT, never off the account's current
+      // daily_limit — otherwise each sweep would re-scale its own previous output.
+      const targetDaily =
+        stateDaily === null
+          ? null
+          : Math.min(
+              stateDaily,
+              rampCapForAge(account.timestamp_created, IN_PRODUCTION_DAILY_LIMIT, asOf),
+            );
       const currentWarmup = account.warmup?.limit;
       const currentDaily = account.daily_limit;
       warmup = targetWarmup !== null && currentWarmup !== targetWarmup ? targetWarmup : null;
@@ -144,17 +162,19 @@ export function selectLifecycleLimitPatches(
 /**
  * IO glue: read the FULL live account list + the silver lifecycle projection,
  * then PATCH each drifting field to its lifecycle target. `limit` bounds the
- * batch (account count); omit to sweep all.
+ * batch (account count); omit to sweep all. `asOf` is optional for deterministic
+ * tests (the age-driven targets would otherwise move with the wall clock).
  */
 export async function syncLifecycleLimits(
   apiKey: string,
   limit?: number,
+  asOf: Date = new Date(),
 ): Promise<LifecycleLimitsSyncSummary> {
   const [accounts, lifecycleByEmail] = await Promise.all([
     listAccounts(apiKey),
     fetchLifecycleByEmail(),
   ]);
-  const patches = selectLifecycleLimitPatches(accounts, lifecycleByEmail);
+  const patches = selectLifecycleLimitPatches(accounts, lifecycleByEmail, asOf);
   const batch = limit && limit > 0 ? patches.slice(0, limit) : patches;
 
   let accountsPatched = 0;

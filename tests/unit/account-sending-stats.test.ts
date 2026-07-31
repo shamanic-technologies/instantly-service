@@ -108,6 +108,8 @@ describe("fetchQueueBreakdownByAccount — per-STEP partition", () => {
       sequences: 2,
       steps: 4,
       firstUnsent: 2,
+      // one never-contacted SEQUENCE (its 2 un-sent steps = one first email due)
+      firstUnsentSequences: 1,
       nextToday: 1,
       nextTomorrow: 0,
       nextLater: 1,
@@ -119,6 +121,7 @@ describe("fetchQueueBreakdownByAccount — per-STEP partition", () => {
       sequences: 1,
       steps: 1,
       firstUnsent: 0,
+      firstUnsentSequences: 0,
       nextToday: 0,
       nextTomorrow: 0,
       nextLater: 1,

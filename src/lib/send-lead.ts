@@ -105,10 +105,14 @@ export function pickCapacityAwareAccount(
   const fillRatio = (a: Account): number => {
     const c = byEmail.get(a.email) ?? EMPTY_CAPACITY;
     const load = c.sentToday + c.q0first + c.q0next;
-    const cap = rampCapForAge(
-      a.timestamp_created,
+    // The age ramp is computed off the LIFECYCLE BASE (IN_PRODUCTION_DAILY_LIMIT),
+    // never off the account's live `daily_limit` — lifecycle-limits-sync now writes
+    // that same ramped value onto Instantly, so scaling the already-scaled value
+    // would compound (45 → 23 → 12 → …). Taking the MIN keeps both enforcement
+    // points idempotent while still honouring a lower operator-set limit.
+    const cap = Math.min(
       a.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT,
-      asOf,
+      rampCapForAge(a.timestamp_created, IN_PRODUCTION_DAILY_LIMIT, asOf),
     );
     // A zero/negative cap (an account deliberately set to daily_limit 0) can never
     // absorb a lead — rank it last rather than dividing by zero.

@@ -132,6 +132,9 @@ describe("aggregateQueueBreakdown — per-STEP partition", () => {
       sequences: 2,
       steps: 5,
       firstUnsent: 2,
+      // ONE never-contacted sequence → one first email due, even though it
+      // carries 2 un-sent steps. This is what send selection counts for today.
+      firstUnsentSequences: 1,
       nextToday: 1,
       nextTomorrow: 0,
       nextLater: 2,
@@ -155,10 +158,10 @@ describe("aggregateQueueBreakdown — per-STEP partition", () => {
     const map = aggregateQueueBreakdown(rows, asOf);
 
     const a = map.get("a")!;
-    expect(a).toEqual({ sequences: 1, steps: 1, firstUnsent: 1, nextToday: 0, nextTomorrow: 0, nextLater: 0 });
+    expect(a).toEqual({ sequences: 1, steps: 1, firstUnsent: 1, firstUnsentSequences: 1, nextToday: 0, nextTomorrow: 0, nextLater: 0 });
 
     const b = map.get("b")!;
-    expect(b).toEqual({ sequences: 1, steps: 2, firstUnsent: 0, nextToday: 0, nextTomorrow: 1, nextLater: 1 });
+    expect(b).toEqual({ sequences: 1, steps: 2, firstUnsent: 0, firstUnsentSequences: 0, nextToday: 0, nextTomorrow: 1, nextLater: 1 });
     expect(b.firstUnsent + b.nextToday + b.nextTomorrow + b.nextLater).toBe(b.steps);
   });
 
