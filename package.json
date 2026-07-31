@@ -20,7 +20,8 @@
     "cleanup:stacked-sigs": "tsx scripts/cleanup-stacked-signatures.ts",
     "audit:dupes": "tsx scripts/audit-cross-campaign-dupes.ts",
     "heal:dupes": "tsx scripts/heal-pause-dupe-campaigns.ts",
-    "cleanup:finished-contacts": "tsx scripts/cleanup-finished-contacts.ts"
+    "cleanup:finished-contacts": "tsx scripts/cleanup-finished-contacts.ts",
+    "cleanup:escaped-newlines": "tsx scripts/cleanup-escaped-newlines.ts"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^8.4.0",
