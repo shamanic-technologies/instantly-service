@@ -913,3 +913,53 @@ export async function getEmailServiceProviderOptions(
   >(apiKey, "/inbox-placement-tests/email-service-provider-options");
   return Array.isArray(response) ? response : (response.items ?? []);
 }
+
+// ─── DFY (done-for-you) pre-warmed domain orders ──────────────────────────────
+
+/**
+ * One `POST /dfy-email-account-orders` order. This is the ONLY Instantly surface
+ * that reveals a domain's PROVISIONING class (DFY pre-warmed vs a mailbox we
+ * connected ourselves) — the account object carries `provider_code`, which is
+ * the connection PROTOCOL and cannot distinguish a Primeforge Google mailbox
+ * from an Instantly DFY one. `timestamp_cancelled` marks an order whose
+ * mailboxes were deprovisioned; its domain is dead, never reusable.
+ */
+export interface DfyOrder {
+  domain: string;
+  workspace_id?: string;
+  is_pre_warmed_up?: boolean;
+  timestamp_created?: string;
+  timestamp_cancelled?: string | null;
+  forwarding_domain?: string;
+  forwarding_mode?: string | null;
+}
+
+/**
+ * Fetch ALL DFY orders. Paginates via `next_starting_after` at the 100-item max
+ * (>100 returns an empty page), per the repo's pagination convention.
+ */
+export async function listDfyOrders(apiKey: string): Promise<DfyOrder[]> {
+  const PAGE_LIMIT = 100;
+  const results: DfyOrder[] = [];
+  let startingAfter: string | undefined;
+  for (;;) {
+    const query = new URLSearchParams({ limit: String(PAGE_LIMIT) });
+    if (startingAfter) query.set("starting_after", startingAfter);
+    const response = await instantlyRequest<PaginatedResponse<DfyOrder>>(
+      apiKey,
+      `/dfy-email-account-orders?${query.toString()}`,
+    );
+    const items = response.items ?? [];
+    results.push(...items);
+    if (!response.next_starting_after || items.length === 0) break;
+    startingAfter = response.next_starting_after;
+  }
+  return results;
+}
+
+/** The workspace's own plan ids (`plan_id`, `plan_id_inbox_placement`). */
+export async function getCurrentWorkspace(
+  apiKey: string,
+): Promise<Record<string, unknown>> {
+  return instantlyRequest<Record<string, unknown>>(apiKey, "/workspaces/current");
+}

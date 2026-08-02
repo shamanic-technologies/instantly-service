@@ -168,6 +168,13 @@ export const instantlyAccounts = pgTable("instantly_accounts", {
   lifecycleStatus: text("lifecycle_status"),
   lifecycleReason: text("lifecycle_reason"),
   lifecycleUpdatedAt: timestamp("lifecycle_updated_at", { withTimezone: true }),
+  // Set when an accounts-sync no longer finds the account in Instantly's live
+  // list — the account was deleted upstream. The row is KEPT (its history and
+  // its sent events stay meaningful) but it must be excluded from any fleet
+  // inventory or capacity view, or a deleted mailbox keeps inflating capacity.
+  // Cleared automatically if the account reappears. Prod at the time of writing
+  // carried 10 such ghosts (266 stored vs 250 live).
+  absentSince: timestamp("absent_since", { withTimezone: true }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -608,3 +615,123 @@ export const instantlyReconcileSnapshot = pgTable("instantly_reconcile_snapshot"
   pendingSends: integer("pending_sends").notNull(),
   refreshedAt: timestamp("refreshed_at").defaultNow().notNull(),
 });
+
+// ─── Provider infrastructure inventory (Gandi / Mailforge / Primeforge / DFY) ──
+//
+// The fleet buys domains and mailboxes from FOUR vendors; until issue #555 only
+// Instantly existed in code, and only at the ACCOUNT grain. These tables add the
+// missing layer UNDERNEATH the account: what we own, from whom, and what it
+// costs. Filled by `POST /internal/infra/sync` (see lib/infra-sync.ts).
+
+// Bronze: one row per domain per poll, append-only. The vendor payload verbatim.
+export const providerDomainsRaw = pgTable(
+  "provider_domains_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    provider: text("provider").notNull(),
+    providerAccount: text("provider_account"),
+    domain: text("domain").notNull(),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("provider_domains_raw_domain_idx").on(table.domain),
+    index("provider_domains_raw_provider_fetched_idx").on(table.provider, table.fetchedAt),
+  ],
+);
+
+// Bronze: one row per mailbox per poll, append-only.
+export const providerMailboxesRaw = pgTable(
+  "provider_mailboxes_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    provider: text("provider").notNull(),
+    providerAccount: text("provider_account"),
+    email: text("email").notNull(),
+    domain: text("domain").notNull(),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("provider_mailboxes_raw_email_idx").on(table.email),
+    index("provider_mailboxes_raw_provider_fetched_idx").on(table.provider, table.fetchedAt),
+  ],
+);
+
+// Bronze: vendor-level facts (Instantly plan ids, Primeforge workspaces, a
+// prepaid balance). One row per (provider, scope) per poll.
+export const providerAccountRaw = pgTable(
+  "provider_account_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    provider: text("provider").notNull(),
+    scope: text("scope").notNull(),
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [index("provider_account_raw_provider_fetched_idx").on(table.provider, table.fetchedAt)],
+);
+
+// Silver: current state of one domain AS SEEN BY ONE PROVIDER. The PK is
+// (provider, domain), NOT domain alone — a domain can legitimately be reported
+// by two vendors (Gandi registers it while Mailforge hosts its mailboxes), and
+// collapsing them here would force a precedence guess into storage. The
+// per-domain rollup is derived on read in gold.
+//
+// `absentSince` marks a row the provider STOPPED reporting. Rows are never
+// deleted: a domain that disappears is itself a fact (it lapsed, or it was
+// transferred), and deleting it would erase the evidence.
+export const infraDomains = pgTable(
+  "infra_domains",
+  {
+    provider: text("provider").notNull(),
+    domain: text("domain").notNull(),
+    providerAccount: text("provider_account"),
+    externalId: text("external_id"),
+    // registrar | mailbox | prewarm — what the vendor does for this domain.
+    role: text("role").notNull(),
+    // The vendor's own status string, verbatim. Never mapped to a local enum:
+    // each vendor's vocabulary is its own, and a lossy mapping hides states.
+    status: text("status"),
+    createdAtProvider: timestamp("created_at_provider", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    // Null = the vendor exposes no such flag. Distinct from false.
+    autorenew: boolean("autorenew"),
+    deletionScheduled: boolean("deletion_scheduled").default(false).notNull(),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    // Price the VENDOR itself reports (Mailforge `priceCents`). Null when the
+    // vendor exposes none — the rate card fills that in gold, never here.
+    priceCents: integer("price_cents"),
+    priceCurrency: text("price_currency"),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).defaultNow().notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
+    absentSince: timestamp("absent_since", { withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.provider, table.domain] }),
+    index("infra_domains_domain_idx").on(table.domain),
+    index("infra_domains_expires_idx").on(table.expiresAt),
+  ],
+);
+
+// Silver: current state of one mailbox as seen by one provider. Same
+// never-delete / mark-absent discipline as infra_domains.
+export const infraMailboxes = pgTable(
+  "infra_mailboxes",
+  {
+    provider: text("provider").notNull(),
+    email: text("email").notNull(),
+    domain: text("domain").notNull(),
+    providerAccount: text("provider_account"),
+    externalId: text("external_id"),
+    status: text("status"),
+    createdAtProvider: timestamp("created_at_provider", { withTimezone: true }),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).defaultNow().notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
+    absentSince: timestamp("absent_since", { withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.provider, table.email] }),
+    index("infra_mailboxes_domain_idx").on(table.domain),
+  ],
+);

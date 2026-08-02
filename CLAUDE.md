@@ -377,12 +377,40 @@ The manual "rest an account" blacklist is GONE (endpoint `POST /internal/audit/a
 
 **Both former "empirical unknowns" are now RESOLVED (2026-07-05, live validation):** (1) **sender selection** — a test does NOT auto-send fleet-wide; you MUST list sender accounts in `emails`. `/run` uses the lifecycle testable pool (`in_recovery` + `in_production` from silver). (2) **type-2 schedule** — moot: automated (type-2) tests are HyperGrowth-gated (402), so we use type-1 one-time tests on our own weekly Saturday cron instead. **Cost:** placement runs on the FLAT Growth Inbox Placement subscription (not per-unit metered to us) → no runs-service cost declared, consistent with other flat-sub external calls. One full-pool type-1 test/week ≈ 4/mo — if the Growth quota can't absorb the weekly full-pool seed volume, widen the cron interval or shrink the pool. If Instantly moves to per-test billing, add a costs-catalog row + a platform-run per created test.
 
+## Provider infrastructure inventory — the layer UNDERNEATH the account
+
+The fleet buys domains and mailboxes from FOUR vendors — **Gandi** (3 organisations), **Mailforge**, **Primeforge** and **Instantly DFY** — and until issue #555 only Instantly existed in code, and only at the ACCOUNT grain. There was no domain entity at all: a domain was `split_part(email,'@',2)`, and `instantly_domain_policy` is a 3-row config table, not a registry. Measured at the time: 66 domains owned, 250 live Instantly accounts across 58 of them, **8 domains paid with zero sending accounts**, and 10 ghost account rows.
+
+`POST /internal/infra/sync` (`src/lib/infra-sync.ts`, platform-scoped, same `serviceAuth` tier as `/internal/audit`) polls all four into bronze, upserts silver, and flags rows a vendor stopped reporting. Driven by `infra-cron.yml`, daily at 05:00 UTC. Provider clients live in `src/lib/providers/` with the pure normalisers exported and unit-tested (`tests/unit/provider-clients.test.ts`).
+
+- **`(provider, domain)` is the primary key, NOT `domain`.** A domain can legitimately be reported by two vendors at once (Gandi registers it while the mailboxes live elsewhere). Collapsing them in storage would bake a precedence guess into the table; the per-domain rollup is derived on read. Do NOT add a `primary_provider` column.
+- **Rows are flagged absent, never deleted.** A domain disappearing IS the fact worth keeping — it lapsed, or it was transferred away. Same for `instantly_accounts.absent_since`, which the accounts-sync now sets for accounts Instantly no longer lists (prod carried 10 such ghosts inflating every capacity view).
+- **The absence sweep runs ONLY for a vendor whose fetch SUCCEEDED**, and for Gandi it is scoped to the reporting organisation. A transient vendor outage must never flag that vendor's whole estate as gone. It keys on `last_seen_at`, never a `NOT IN (…)` list — a per-domain bind list grows with the estate and eventually trips Postgres' 65,534-parameter ceiling.
+- **A single vendor failing does not stop the others** (counted in `failures`, logged); the run throws only when EVERY vendor failed, so a run that ingested nothing never reads as green. An empty Instantly account list likewise throws rather than letting the sweep flag the whole fleet.
+- **Spends nothing metered** — every call is an inventory read against a flat subscription, so no run/cost is declared (same reasoning as the placement tests).
+- **Keys:** five NEW platform keys in key-service — `gandi-org1`, `gandi-org2`, `gandi-org3`, `mailforge`, `primeforge` (Instantly already exists). Gandi issues one token per organisation and a token sees only its own domains, hence three rows. `resolvePlatformKey(provider)` in `key-client.ts` is the generalised resolver; `resolvePlatformInstantlyApiKey` is now a wrapper over it.
+
+**Vendor API gotchas (all probed live 2026-08-02 — the docs and the skills were wrong on two of them):**
+
+| Vendor | Auth | Pagination | Price |
+|---|---|---|---|
+| Gandi | `Bearer <token>`, one token per org; a 403 on an email route means wrong org token, not "no mailboxes" | `page` + `per_page` (100), empty page ends | `/domain/check?processes=renew` per domain, **EUR** |
+| Mailforge | `Authorization: <key>` **raw** — `Bearer` and `X-Mailforge-Key` both fail (the skill doc claimed the REST host rejects the key entirely; it does not, and it is the ONLY place `priceCents` appears) | `limit`+`offset`, 100 max | `priceCents` on the domain object, USD |
+| Primeforge | `Authorization: <key>` **raw**; distinct key from Mailforge | `limit`+`offset`, **`limit=200` returns an EMPTY list rather than erroring** | none — `/subscriptions`, `/billing`, `/invoices`, `/plans`, `/prices`, `/orders`, `/usage` ALL 404. Rate card only |
+| Instantly DFY | the existing platform Instantly key | `next_starting_after`, 100 max | none — rate card |
+
+**`GET /dfy-email-account-orders` closes the "provisioning class is not exposed" gap this file used to record as permanent.** It is not on the ACCOUNT object (`provider_code` is the connection PROTOCOL: 1=IMAP, 2=Google — note the `mapProviderCode` table quoted elsewhere in older notes had these inverted; the CODE is right), but it IS on the ORDER. A cancelled order keeps its row with `cancelledAt` set — a dead domain is still a cost.
+
+**Cost lives HERE, deliberately separate from costs-service.** costs-service prices what we RE-BILL the customer; `infra_price_rates` (PR 2) holds what the vendor actually charges US, with `source` (`api` vs `rate-card`), currency and `effective_from`. Neither replaces the other — the difference is the real margin per email. The costs-service figure is currently a fiction (`instantly-account-email-sent` derives from "domain $20/yr ÷ 5 accounts ÷ 5,040 emails" while Gandi alone charges EUR 38.38/yr for `growthagency.dev`); this layer makes the gap visible without touching it.
+
+**Cron consolidation (same issue):** `/internal/audit/accounts-sync` used to fire from THREE schedules — `accounts-sync-cron.yml` (every 2h), `lifecycle-cron.yml` (hourly) and `placement-cron.yml` (weekly) — ~37 runs/day of one job. `lifecycle-cron` hourly strictly supersedes the others, so `accounts-sync-cron.yml` was deleted and the placement-cron step removed. **`lifecycle-cron.yml` is now the SOLE caller** — do not re-add it elsewhere.
+
 ## Data layering — Bronze / Silver / Gold
 
 Three layers, doctrine per `~/.claude/skills/data-layering/SKILL.md`:
 
-- **Bronze** — raw external mirrors, append-only, never mutated. Tables: `instantly_webhook_payloads_raw`, `instantly_analytics_raw`, `instantly_emails_raw`, `instantly_leads_raw`, `instantly_campaigns_config_raw`. Each row = one payload from Instantly (webhook OR reconcile poll).
-- **Silver** — canonical event log `instantly_events` + state row `instantly_campaigns`. Derived from bronze via `src/lib/silver-promote.ts`. Rebuildable.
+- **Bronze** — raw external mirrors, append-only, never mutated. Tables: `instantly_webhook_payloads_raw`, `instantly_analytics_raw`, `instantly_emails_raw`, `instantly_leads_raw`, `instantly_campaigns_config_raw`, plus the provider-inventory mirrors `provider_domains_raw`, `provider_mailboxes_raw`, `provider_account_raw`. Each row = one payload from Instantly (webhook OR reconcile poll) or from an infrastructure vendor.
+- **Silver** — canonical event log `instantly_events` + state row `instantly_campaigns`, plus the infrastructure inventory `infra_domains` / `infra_mailboxes`. Derived from bronze via `src/lib/silver-promote.ts` and `src/lib/infra-sync.ts`. Rebuildable.
 - **Gold** — stats views in `src/routes/analytics.ts`, `status.ts`. Read silver only.
 
 ### Reply-sentiment gold = CURRENT sentiment (latest event per lead), NOT raw event counts

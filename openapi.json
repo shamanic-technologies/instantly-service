@@ -2463,6 +2463,25 @@
           "created",
           "perDay"
         ]
+      },
+      "InfraSyncAccepted": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "description": "Background run identifier (watch logs)"
+          }
+        },
+        "required": [
+          "accepted",
+          "runId"
+        ]
       }
     },
     "parameters": {}
@@ -4731,6 +4750,27 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/internal/infra/sync": {
+      "post": {
+        "summary": "Poll every infrastructure provider → bronze + silver inventory",
+        "description": "Platform-scoped (no org). Polls Gandi (three organisations), Mailforge, Primeforge and Instantly DFY for the domains and mailboxes we own, mirrors each vendor payload to bronze, upserts the canonical silver inventory, and flags rows a vendor stopped reporting (never deletes them). Read-only against every vendor and free of metered spend — these are flat-subscription inventory reads, so no run or cost is declared. A single vendor failing is counted and logged without stopping the others; the run throws only when every vendor failed. 202 + background; watch logs for `infra-sync: done`.",
+        "responses": {
+          "202": {
+            "description": "Accepted — sync runs in the background",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InfraSyncAccepted"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         }
       }

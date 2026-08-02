@@ -18,6 +18,7 @@ import statusRoutes from "./routes/status";
 import transferBrandRoutes from "./routes/transfer-brand";
 import manualQualificationsRoutes from "./routes/manual-qualifications";
 import auditRoutes from "./routes/audit";
+import infraRoutes from "./routes/infra";
 import { serviceAuth } from "./middleware/serviceAuth";
 import { requireOrgId } from "./middleware/requireOrgId";
 
@@ -50,6 +51,7 @@ app.use("/internal/campaigns", serviceAuth, campaignsRoutes);  // reconcile + re
 app.use("/internal/accounts", serviceAuth, accountsRoutes);    // list all accounts
 app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 app.use("/internal/audit", serviceAuth, auditRoutes);          // staff sending forecast (capacity vs scheduled volume)
+app.use("/internal/infra", serviceAuth, infraRoutes);          // provider inventory sync (Gandi / Mailforge / Primeforge / DFY)
 
 // ─── Org-scoped routes (x-api-key + x-org-id required, rest optional) ───────
 app.use("/orgs/send", serviceAuth, requireOrgId, sendRoutes);

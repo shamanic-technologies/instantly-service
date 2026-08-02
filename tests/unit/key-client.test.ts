@@ -145,4 +145,37 @@ describe("key-client", () => {
       resolvePlatformInstantlyApiKey({ method: "GET", path: "/x" }),
     ).rejects.toBeInstanceOf(KeyServiceError);
   });
+
+  it("resolvePlatformKey builds the decrypt path from the provider name", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ provider: "gandi-org2", key: "gandi-token" }),
+    });
+
+    const { resolvePlatformKey } = await import("../../src/lib/key-client");
+    const key = await resolvePlatformKey("gandi-org2", {
+      method: "POST",
+      path: "/internal/infra/sync",
+    });
+
+    expect(key).toBe("gandi-token");
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain("/keys/platform/gandi-org2/decrypt");
+    // Platform keys are global: no org/user identity may leak onto the call.
+    expect(options.headers["x-org-id"]).toBeUndefined();
+    expect(options.headers["x-user-id"]).toBeUndefined();
+  });
+
+  it("resolvePlatformKey throws KeyServiceError when the provider has no platform key", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      text: () => Promise.resolve("Platform key not found: no 'mailforge' platform key configured"),
+    });
+
+    const { resolvePlatformKey, KeyServiceError } = await import("../../src/lib/key-client");
+    await expect(
+      resolvePlatformKey("mailforge", { method: "POST", path: "/internal/infra/sync" }),
+    ).rejects.toBeInstanceOf(KeyServiceError);
+  });
 });
