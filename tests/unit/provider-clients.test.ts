@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import {
+  extractGandiRenewalPrice,
+  fetchGandiInventory,
   listGandiDomains,
   normalizeGandiDomain,
   normalizeGandiMailbox,
@@ -292,5 +294,92 @@ describe("normalizeDfyOrder", () => {
     const row = normalizeDfyOrder({ domain: "resilientnirvana.com", timestamp_cancelled: null });
     expect(row.status).toBe("active");
     expect(row.cancelledAt).toBeNull();
+  });
+});
+
+describe("extractGandiRenewalPrice", () => {
+  const quote = {
+    currency: "EUR",
+    products: [
+      {
+        name: "growthagency.dev",
+        process: "renew",
+        prices: [
+          { duration_unit: "y", min_duration: 1, price_after_taxes: 38.38, discount: false },
+          { duration_unit: "y", min_duration: 2, price_after_taxes: 34.54, discount: true },
+        ],
+      },
+    ],
+  };
+
+  it("takes the ONE-year tier — the multi-year discount is not what an autorenew bills", () => {
+    expect(extractGandiRenewalPrice(quote)).toEqual({ priceCents: 3838, currency: "EUR" });
+  });
+
+  it("keeps the vendor's currency rather than assuming USD", () => {
+    expect(extractGandiRenewalPrice(quote)?.currency).toBe("EUR");
+  });
+
+  it("returns null when the response carries no usable price", () => {
+    expect(extractGandiRenewalPrice({ currency: "EUR", products: [] })).toBeNull();
+    expect(extractGandiRenewalPrice({ products: quote.products })).toBeNull();
+    expect(
+      extractGandiRenewalPrice({
+        currency: "EUR",
+        products: [{ process: "create", prices: [{ duration_unit: "y", min_duration: 1, price_after_taxes: 9 }] }],
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("fetchGandiInventory", () => {
+  it("attaches the renewal price to each domain", async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([{ fqdn: "growthagency.dev" }]))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          currency: "EUR",
+          products: [
+            {
+              process: "renew",
+              prices: [{ duration_unit: "y", min_duration: 1, price_after_taxes: 38.38 }],
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse([]));
+    global.fetch = mockFetch as unknown as typeof fetch;
+
+    const inventory = await fetchGandiInventory({ account: "org2", token: "tok" });
+
+    expect(inventory.domains[0].priceCents).toBe(3838);
+    expect(inventory.domains[0].priceCurrency).toBe("EUR");
+  });
+
+  it("keeps the domain when its price lookup fails — inventory outranks pricing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([{ fqdn: "growthagency.dev" }]))
+      .mockResolvedValueOnce(jsonResponse({ message: "rate limited" }, 429))
+      .mockResolvedValueOnce(jsonResponse([]));
+    global.fetch = mockFetch as unknown as typeof fetch;
+
+    const inventory = await fetchGandiInventory({ account: "org2", token: "tok" });
+
+    expect(inventory.domains).toHaveLength(1);
+    expect(inventory.domains[0].priceCents).toBeNull();
+    warn.mockRestore();
+  });
+
+  it("still fails loud when the DOMAIN LIST call fails — a short list under-reports the estate", async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ message: "boom" }, 500)) as unknown as typeof fetch;
+
+    await expect(fetchGandiInventory({ account: "org2", token: "tok" })).rejects.toBeInstanceOf(
+      GandiApiError,
+    );
   });
 });
