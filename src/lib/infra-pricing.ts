@@ -119,6 +119,81 @@ export function monthlyCostForDomain(
   };
 }
 
+/**
+ * The same cost, split by WHEN deleting the domain actually saves the money.
+ *
+ * "What do I save by turning this off" has two different answers and the blended
+ * monthly figure hides both:
+ *
+ * - `recurringMonthly` — the mailbox subscription. Cancel the domain and this
+ *   stops billing straight away. Primeforge slots and DFY mailboxes live here.
+ * - `renewal` / `renewalAt` — the registration, already paid until the date
+ *   shown. Deleting today refunds nothing; it avoids the NEXT renewal. Almost
+ *   the whole Gandi estate lives here, where the mailboxes are free and the
+ *   domain is the only thing that bills.
+ *
+ * Presenting one number for both makes a Gandi domain paid up until next May
+ * look as urgent as a Primeforge slot bleeding every month, which is the
+ * opposite of the decision the reader has to make.
+ */
+export interface DomainCostSplit {
+  /** Stops billing the moment the domain is cancelled. Null when unpriced. */
+  recurringMonthlyCents: number | null;
+  /** The yearly registration avoided at `renewalAt`. Null when unpriced. */
+  renewalCents: number | null;
+  /** When that renewal falls due. Null when the vendor reports no expiry. */
+  renewalAt: Date | null;
+  currency: string | null;
+}
+
+export function splitDomainCost(
+  domain: InventoryDomain,
+  rates: Map<string, PriceRate>,
+): DomainCostSplit {
+  const empty: DomainCostSplit = {
+    recurringMonthlyCents: null,
+    renewalCents: null,
+    renewalAt: null,
+    currency: null,
+  };
+
+  // A cancelled domain bills nothing, so there is nothing to save by deleting it.
+  if (domain.cancelledAt) return empty;
+
+  let currency: string | null = null;
+  let renewalCents: number | null = null;
+  let recurringMonthlyCents: number | null = null;
+
+  if (domain.priceCents !== null && domain.priceCurrency) {
+    renewalCents = domain.priceCents;
+    currency = domain.priceCurrency;
+  } else {
+    const yearly = rates.get(`${domain.provider}|domain-year|`);
+    if (yearly) {
+      renewalCents = yearly.unitCents;
+      currency = yearly.currency;
+    }
+  }
+
+  const perMailbox = rates.get(`${domain.provider}|mailbox-month|`);
+  if (perMailbox && domain.mailboxCount > 0) {
+    // Same refusal as monthlyCostForDomain: two currencies on one domain would
+    // need an FX rate, so report nothing rather than a silently wrong split.
+    if (currency !== null && currency !== perMailbox.currency) return empty;
+    recurringMonthlyCents = perMailbox.unitCents * domain.mailboxCount;
+    currency = perMailbox.currency;
+  }
+
+  if (renewalCents === null && recurringMonthlyCents === null) return empty;
+
+  return {
+    recurringMonthlyCents,
+    renewalCents,
+    renewalAt: renewalCents === null ? null : domain.expiresAt,
+    currency,
+  };
+}
+
 /** Cost per email actually sent, over the same trailing window. Null when unpriced or silent. */
 export function costPerEmailCents(
   monthly: MoneyAmount | null,

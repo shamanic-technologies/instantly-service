@@ -15,6 +15,7 @@ import {
   costPerEmailCents,
   indexRates,
   monthlyCostForDomain,
+  splitDomainCost,
   summarizePlanSpend,
   summarizeSpend,
 } from "../lib/infra-pricing";
@@ -80,6 +81,7 @@ router.get("/domains", async (_req: Request, res: Response) => {
         domains: domains.map((domain) => {
           const monthly = monthlyCostForDomain(domain, indexed);
           const perEmail = costPerEmailCents(monthly, domain.sentLast30d);
+          const split = splitDomainCost(domain, indexed);
 
           return {
             domain: domain.domain,
@@ -99,6 +101,12 @@ router.get("/domains", async (_req: Request, res: Response) => {
             currency: monthly?.currency ?? null,
             costSource: monthly?.source ?? null,
             costPerEmailCents: perEmail ? Number(perEmail.cents.toFixed(4)) : null,
+            // The same money split by WHEN cancelling actually saves it: the
+            // mailbox subscription stops immediately, the registration is
+            // already paid until `renewalAt` and is only avoided then.
+            recurringMonthlyCents: split.recurringMonthlyCents,
+            renewalCents: split.renewalCents,
+            renewalAt: split.renewalAt?.toISOString() ?? null,
           };
         }),
       };
