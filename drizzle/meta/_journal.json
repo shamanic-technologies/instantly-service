@@ -239,6 +239,13 @@
       "when": 1784592000000,
       "tag": "0033_infra_price_rates",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1784678400000,
+      "tag": "0034_primeforge_rate_card",
+      "breakpoints": true
     }
   ]
 }
