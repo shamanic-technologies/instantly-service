@@ -2482,6 +2482,305 @@
           "accepted",
           "runId"
         ]
+      },
+      "InfraDomainsResponse": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "type": "string"
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InfraDomainRow"
+            }
+          }
+        },
+        "required": [
+          "asOf",
+          "domains"
+        ]
+      },
+      "InfraDomainRow": {
+        "type": "object",
+        "properties": {
+          "domain": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "description": "gandi | mailforge | primeforge | instantly-dfy"
+          },
+          "role": {
+            "type": "string",
+            "description": "registrar | mailbox | prewarm — what the vendor does for this domain"
+          },
+          "status": {
+            "type": "string",
+            "nullable": true,
+            "description": "The vendor's own status string, verbatim"
+          },
+          "expiresAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "autorenew": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Null when the vendor exposes no such flag — distinct from false"
+          },
+          "deletionScheduled": {
+            "type": "boolean"
+          },
+          "cancelledAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "absentSince": {
+            "type": "string",
+            "nullable": true,
+            "description": "Set when the vendor stopped reporting the domain; the row is kept, never deleted"
+          },
+          "vendorMailboxes": {
+            "type": "integer",
+            "description": "Mailboxes the VENDOR hosts — routinely differs from the Instantly account count on relayed domains"
+          },
+          "instantlyAccounts": {
+            "type": "integer",
+            "description": "Live Instantly sending accounts on this domain (ghosts excluded)"
+          },
+          "inProductionAccounts": {
+            "type": "integer"
+          },
+          "sentLast30d": {
+            "type": "integer",
+            "description": "Real (non-inferred) dispatches over the trailing 30 days"
+          },
+          "monthlyCostCents": {
+            "type": "number",
+            "nullable": true,
+            "description": "Null when nothing prices this domain — never a substitute figure"
+          },
+          "currency": {
+            "type": "string",
+            "nullable": true
+          },
+          "costSource": {
+            "type": "string",
+            "nullable": true,
+            "description": "api (vendor-reported) | rate-card (versioned local row)"
+          },
+          "costPerEmailCents": {
+            "type": "number",
+            "nullable": true
+          }
+        },
+        "required": [
+          "domain",
+          "provider",
+          "role",
+          "status",
+          "expiresAt",
+          "autorenew",
+          "deletionScheduled",
+          "cancelledAt",
+          "absentSince",
+          "vendorMailboxes",
+          "instantlyAccounts",
+          "inProductionAccounts",
+          "sentLast30d",
+          "monthlyCostCents",
+          "currency",
+          "costSource",
+          "costPerEmailCents"
+        ]
+      },
+      "InfraWasteResponse": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "type": "string"
+          },
+          "findingCount": {
+            "type": "integer"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "domain": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "paid_no_sending_accounts | cancelled_by_vendor | deletion_scheduled | expiring_within_30d"
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "monthlyCostCents": {
+                  "type": "number",
+                  "nullable": true
+                },
+                "currency": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "nullable": true
+                }
+              },
+              "required": [
+                "domain",
+                "provider",
+                "reason",
+                "detail",
+                "monthlyCostCents",
+                "currency",
+                "expiresAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "asOf",
+          "findingCount",
+          "findings"
+        ]
+      },
+      "InfraSpendResponse": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "type": "string"
+          },
+          "byProvider": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "domainCount": {
+                  "type": "integer"
+                },
+                "mailboxCount": {
+                  "type": "integer"
+                },
+                "monthlyCents": {
+                  "type": "number"
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string",
+                  "description": "api | rate-card | mixed"
+                }
+              },
+              "required": [
+                "provider",
+                "domainCount",
+                "mailboxCount",
+                "monthlyCents",
+                "currency",
+                "source"
+              ]
+            }
+          },
+          "monthlyByCurrency": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "currency": {
+                  "type": "string"
+                },
+                "cents": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "currency",
+                "cents"
+              ]
+            }
+          },
+          "unpricedProviders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Vendors whose domains we hold and cannot price at all — their cost is MISSING from the totals, not estimated into them"
+          },
+          "unpricedDomainCount": {
+            "type": "integer"
+          },
+          "planSubscriptions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "item": {
+                  "type": "string"
+                },
+                "monthlyCents": {
+                  "type": "number"
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string",
+                  "nullable": true
+                }
+              },
+              "required": [
+                "item",
+                "monthlyCents",
+                "currency",
+                "note"
+              ]
+            }
+          },
+          "sentLast30d": {
+            "type": "integer"
+          },
+          "costPerEmailByCurrency": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "currency": {
+                  "type": "string"
+                },
+                "cents": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "currency",
+                "cents"
+              ]
+            }
+          }
+        },
+        "required": [
+          "asOf",
+          "byProvider",
+          "monthlyByCurrency",
+          "unpricedProviders",
+          "unpricedDomainCount",
+          "planSubscriptions",
+          "sentLast30d",
+          "costPerEmailByCurrency"
+        ]
       }
     },
     "parameters": {}
@@ -4771,6 +5070,99 @@
           },
           "401": {
             "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/infra/domains": {
+      "get": {
+        "summary": "Domain inventory across all four infrastructure vendors",
+        "description": "Platform-scoped (no org). One row per (provider, domain): who we buy it from, when it expires, how many mailboxes the vendor hosts, how many Instantly accounts send from it, and what it costs per month and per email. The vendor mailbox count and the Instantly account count are deliberately both shown and routinely differ — the legacy relayed domains run dozens of accounts against a single vendor mailbox. Every amount carries its provenance; a domain nothing prices reports null.",
+        "responses": {
+          "200": {
+            "description": "Inventory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InfraDomainsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/infra/waste": {
+      "get": {
+        "summary": "Domains billed for but unused, cancelled, or expiring",
+        "description": "Platform-scoped (no org). REPORT-ONLY by design: it never cancels an autorenew and never schedules a deletion. A false positive costs us a domain, and several flagged domains are brand domains held on purpose — a human decides.",
+        "responses": {
+          "200": {
+            "description": "Findings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InfraWasteResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/infra/spend": {
+      "get": {
+        "summary": "Monthly infrastructure run-rate by vendor",
+        "description": "Platform-scoped (no org). What the vendors charge US — deliberately separate from costs-service, which prices what we RE-BILL the customer; the difference between the two is the real margin per email. Totals stay PER CURRENCY (Gandi bills in EUR, the rest in USD) because blending them would need an FX rate this service does not own. `unpricedProviders` is the honest hole, so cost-per-email is a FLOOR while it is non-empty.",
+        "responses": {
+          "200": {
+            "description": "Spend summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InfraSpendResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }

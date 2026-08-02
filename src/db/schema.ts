@@ -735,3 +735,39 @@ export const infraMailboxes = pgTable(
     index("infra_mailboxes_domain_idx").on(table.domain),
   ],
 );
+
+// Silver/config: what a vendor charges US. Deliberately SEPARATE from
+// costs-service, which prices what we RE-BILL the customer — neither replaces
+// the other, and the difference between them is the real margin per email.
+//
+// Two price sources coexist and must stay distinguishable:
+//   - a VENDOR-REPORTED per-domain price lives on `infra_domains.price_cents`
+//     (Mailforge's `priceCents`, Gandi's renewal quote). Per-domain because the
+//     price depends on the TLD.
+//   - a RATE CARD lives here, for vendors whose API exposes no billing surface
+//     at all (Primeforge returns 404 on every billing path; Instantly DFY bills
+//     off-API). `source` records which it is, so a figure on screen can always
+//     say where it came from.
+//
+// A vendor with no row and no per-domain price reports NULL, never a guess.
+export const infraPriceRates = pgTable(
+  "infra_price_rates",
+  {
+    provider: text("provider").notNull(),
+    // domain-year | mailbox-month | plan-month
+    scope: text("scope").notNull(),
+    // Discriminates several rates in one scope (a plan name). '' when there is
+    // only one — part of the PK, so it cannot be null.
+    item: text("item").notNull().default(""),
+    unitCents: integer("unit_cents").notNull(),
+    currency: text("currency").notNull(),
+    // api | rate-card — provenance, shown next to every derived figure.
+    source: text("source").notNull(),
+    // Non-retroactive by construction: a rate change adds a row, never edits one.
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }).defaultNow().notNull(),
+    note: text("note"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.provider, table.scope, table.item, table.effectiveFrom] }),
+  ],
+);
