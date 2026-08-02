@@ -1,6 +1,14 @@
 name: Inbox-placement tests (maintain + sync)
 
 # Keeps the fleet inbox-placement deliverability history fresh. Two steps:
+#
+# NOTE: this workflow no longer calls /internal/audit/accounts-sync. That
+# endpoint used to be the first step here AND in accounts-sync-cron.yml AND in
+# lifecycle-cron.yml — the same job fired ~37 times a day from three schedules.
+# lifecycle-cron runs it HOURLY, which strictly supersedes both other callers, so
+# silver is at most an hour old when the weekly test seeds its pool. The other
+# two callers were removed (issue #555).
+#
 #   1. POST /internal/audit/placement-test/run — create ONE one-time (type-1)
 #      fleet placement test that runs immediately. This is the plan-compatible
 #      path: automated (type-2) tests are HyperGrowth-gated (402 on Growth), so
@@ -22,13 +30,13 @@ name: Inbox-placement tests (maintain + sync)
 # before it could ever leave `in_recovery`. Proven in prod 2026-07-25: test
 # 019f9856 (230 senders) sat in bronze at `status:1` with 0 silver rows while
 # the 07-19 test only landed at that same 07-25 sync.
-# So: the weekly Saturday schedule keeps `accounts-sync` + `run`; a DAILY 07:00
+# So: the weekly Saturday schedule keeps `run`; a DAILY 07:00
 # schedule runs `sync` ALONE (read-only against Instantly, spends no quota), which
 # bounds result latency to <= 24h. Do NOT re-chain sync immediately after run.
 #
 # The weekly-only steps are gated with `if: github.event.schedule != '0 7 * * *'`
 # — that form is TRUE for the weekly cron AND for workflow_dispatch, so a manual
-# run still does the full accounts-sync + run + sync sequence.
+# run still does the full run + sync sequence.
 #
 # The `run` step fires once a week, on SATURDAY → one one-time test covering the
 # WHOLE testable pool. Saturday AND Sunday are both send-free days
@@ -46,7 +54,7 @@ name: Inbox-placement tests (maintain + sync)
 
 on:
   schedule:
-    - cron: "0 6 * * 6" # Saturdays 06:00 UTC — accounts-sync + one weekly full-pool test
+    - cron: "0 6 * * 6" # Saturdays 06:00 UTC — one weekly full-pool test
     - cron: "0 7 * * *" # DAILY 07:00 UTC — sync ONLY (see the sync-cadence note above)
   workflow_dispatch:
 
@@ -55,41 +63,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: POST /internal/audit/accounts-sync
-        if: github.event.schedule != '0 7 * * *'
-        env:
-          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
-          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
-            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
-            exit 1
-          fi
-
-          # Snapshot Instantly accounts → bronze/silver, then reconcile the
-          # per-account lifecycle (health refreshed). 202 + background; the flip
-          # to in_production/in_recovery lands via the reconcile after the sync
-          # below refreshes placement delivery too.
-          response_file=$(mktemp)
-          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
-            -X POST \
-            -H "X-API-Key: ${API_KEY}" \
-            -H "Content-Type: application/json" \
-            --max-time 60 \
-            "${SERVICE_URL}/internal/audit/accounts-sync")
-
-          echo "HTTP ${status}"
-          cat "${response_file}"
-          echo
-
-          # Endpoint returns 202 Accepted and runs in the background. Verify via
-          # Railway logs (`accounts-sync: done`), NOT this curl exit code.
-          if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
-            echo "accounts-sync dispatch failed with HTTP ${status}"
-            exit 1
-          fi
-
       - name: POST /internal/audit/placement-test/run
         if: github.event.schedule != '0 7 * * *'
         env:
