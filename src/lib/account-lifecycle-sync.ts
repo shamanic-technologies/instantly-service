@@ -49,6 +49,8 @@ function rowsOf<T = Record<string, unknown>>(result: unknown): T[] {
 
 export interface SnapshotSummary {
   synced: number;
+  /** Rows Instantly no longer lists — newly flagged `absent_since` this run. */
+  markedAbsent: number;
 }
 
 /**
@@ -59,6 +61,15 @@ export interface SnapshotSummary {
 export async function snapshotAccounts(apiKey: string): Promise<SnapshotSummary> {
   const accounts = await listAccounts(apiKey);
   const now = new Date();
+
+  // An empty account list is not a legitimate state for this workspace, and the
+  // absence sweep below would flag EVERY stored account as deleted. Fail loud
+  // rather than let one bad upstream page wipe the fleet's inventory view.
+  if (accounts.length === 0) {
+    throw new Error(
+      "[instantly-service] accounts-sync: Instantly returned zero accounts — refusing to run the absence sweep",
+    );
+  }
 
   for (const a of accounts) {
     // Bronze: one immutable row per (account, fetch).
@@ -105,12 +116,37 @@ export async function snapshotAccounts(apiKey: string): Promise<SnapshotSummary>
           firstName: a.first_name ?? null,
           lastName: a.last_name ?? null,
           timestampCreated,
+          // The account is live again (or still live) — clear any ghost flag.
+          absentSince: null,
           updatedAt: now,
         },
       });
   }
 
-  return { synced: accounts.length };
+  // Ghost sweep. Every account Instantly still lists was just upserted with
+  // `updated_at = now`, so anything older is an account Instantly no longer has.
+  // Keyed on the timestamp rather than a `NOT IN (…250 emails)` list on purpose:
+  // a bind-parameter list grows with the fleet and eventually trips Postgres'
+  // 65,534-parameter ceiling.
+  //
+  // Rows are flagged, never deleted — their sent events and lifecycle history
+  // stay meaningful; they are simply excluded from inventory and capacity views.
+  const absent = await db.execute(sql`
+    UPDATE instantly_accounts
+       SET absent_since = ${now}
+     WHERE absent_since IS NULL
+       AND updated_at < ${now}
+    RETURNING email
+  `);
+  const markedAbsent = rowsOf<{ email: string }>(absent).length;
+
+  if (markedAbsent > 0) {
+    console.warn(
+      `[instantly-service] accounts-sync: ${markedAbsent} account(s) no longer listed by Instantly — flagged absent`,
+    );
+  }
+
+  return { synced: accounts.length, markedAbsent };
 }
 
 // ─── Gold reads ─────────────────────────────────────────────────────────────

@@ -731,4 +731,65 @@ describe("instantly-client", () => {
     expect(body).not.toHaveProperty("daily_limit");
     expect(body.warmup).not.toHaveProperty("daily_limit");
   });
+
+  // ── DFY pre-warmed domain orders (issue #555) ──────────────────────────────
+  //
+  // The ONLY Instantly surface that reveals a domain's provisioning class. Must
+  // follow the repo's pagination convention: >100 per page silently returns an
+  // empty list, so a non-paginated read would under-report the estate.
+
+  it("listDfyOrders paginates via next_starting_after across pages", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            items: [{ domain: "resilientnirvana.com" }, { domain: "staffresonating.com" }],
+            next_starting_after: "2",
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({ items: [{ domain: "arcadiaquest.org" }], next_starting_after: null }),
+      });
+
+    const { listDfyOrders } = await import("../../src/lib/instantly-client");
+    const orders = await listDfyOrders(TEST_API_KEY);
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(orders.map((o) => o.domain)).toEqual([
+      "resilientnirvana.com",
+      "staffresonating.com",
+      "arcadiaquest.org",
+    ]);
+    expect(String(mockFetch.mock.calls[0][0])).toContain("limit=100");
+    expect(String(mockFetch.mock.calls[1][0])).toContain("starting_after=2");
+  });
+
+  it("listDfyOrders stops when the cursor is null even if items came back", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ items: [{ domain: "a.com" }] }),
+    });
+
+    const { listDfyOrders } = await import("../../src/lib/instantly-client");
+    const orders = await listDfyOrders(TEST_API_KEY);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(orders).toHaveLength(1);
+  });
+
+  it("listDfyOrders stops on an empty page without looping forever", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ items: [], next_starting_after: "cursor" }),
+    });
+
+    const { listDfyOrders } = await import("../../src/lib/instantly-client");
+    const orders = await listDfyOrders(TEST_API_KEY);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(orders).toEqual([]);
+  });
 });

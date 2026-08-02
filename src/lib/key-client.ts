@@ -128,14 +128,20 @@ export async function resolveInstantlyApiKey(
 }
 
 /**
- * Resolve the PLATFORM (global, no-org) Instantly key via key-service's
- * `GET /keys/platform/instantly/decrypt`. Platform keys are global — no
+ * Resolve ANY platform (global, no-org) provider key via key-service's
+ * `GET /keys/platform/{provider}/decrypt`. Platform keys are global — no
  * orgId/userId — so this is the correct source for a platform-scoped fleet
- * read (e.g. the sending-forecast endpoint). Only `x-api-key` + `X-Caller-*`
- * headers are sent. Throws `KeyServiceError` (404 when the platform key is not
- * configured) — fail loud, no fallback.
+ * read (the sending forecast, the provider-infra inventory sync). Only
+ * `x-api-key` + `X-Caller-*` headers are sent. Throws `KeyServiceError`
+ * (404 when the platform key is not configured) — fail loud, no fallback.
+ *
+ * `provider` is the key-service provider NAME, not a vendor family: Gandi
+ * issues one token per organisation, so its three orgs are registered as
+ * three distinct providers (`gandi-org1` … `gandi-org3`) — key-service stores
+ * exactly one platform key per provider row.
  */
-export async function resolvePlatformInstantlyApiKey(
+export async function resolvePlatformKey(
+  provider: string,
   caller: CallerInfo,
 ): Promise<string> {
   const headers: Record<string, string> = {
@@ -146,7 +152,7 @@ export async function resolvePlatformInstantlyApiKey(
   };
 
   const response = await fetch(
-    `${KEY_SERVICE_URL}/keys/platform/instantly/decrypt`,
+    `${KEY_SERVICE_URL}/keys/platform/${provider}/decrypt`,
     { method: "GET", headers },
   );
 
@@ -154,10 +160,21 @@ export async function resolvePlatformInstantlyApiKey(
     const errorText = await response.text();
     throw new KeyServiceError(
       response.status,
-      `key-service GET /keys/platform/instantly/decrypt failed: ${response.status} - ${errorText}`,
+      `key-service GET /keys/platform/${provider}/decrypt failed: ${response.status} - ${errorText}`,
     );
   }
 
   const result = (await response.json()) as { provider: string; key: string };
   return result.key;
+}
+
+/**
+ * Platform Instantly key — thin wrapper over `resolvePlatformKey` kept so the
+ * existing fleet-read callers (sending forecast, reconcile, placement) are
+ * untouched by the generalisation.
+ */
+export async function resolvePlatformInstantlyApiKey(
+  caller: CallerInfo,
+): Promise<string> {
+  return resolvePlatformKey("instantly", caller);
 }

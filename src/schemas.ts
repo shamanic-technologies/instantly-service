@@ -1431,3 +1431,27 @@ registry.registerPath({
     },
   },
 });
+
+// ─── Provider infrastructure inventory (issue #555) ──────────────────────────
+
+const InfraSyncAcceptedSchema = z
+  .object({
+    accepted: z.literal(true),
+    runId: z.string().describe("Background run identifier (watch logs)"),
+  })
+  .openapi("InfraSyncAccepted");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/infra/sync",
+  summary: "Poll every infrastructure provider → bronze + silver inventory",
+  description:
+    "Platform-scoped (no org). Polls Gandi (three organisations), Mailforge, Primeforge and Instantly DFY for the domains and mailboxes we own, mirrors each vendor payload to bronze, upserts the canonical silver inventory, and flags rows a vendor stopped reporting (never deletes them). Read-only against every vendor and free of metered spend — these are flat-subscription inventory reads, so no run or cost is declared. A single vendor failing is counted and logged without stopping the others; the run throws only when every vendor failed. 202 + background; watch logs for `infra-sync: done`.",
+  responses: {
+    202: {
+      description: "Accepted — sync runs in the background",
+      content: { "application/json": { schema: InfraSyncAcceptedSchema } },
+    },
+    401: { description: "Unauthorized" },
+  },
+});

@@ -225,6 +225,13 @@
       "when": 1784419200000,
       "tag": "0031_release_crm_feature_reservation",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1784505600000,
+      "tag": "0032_provider_infra_inventory",
+      "breakpoints": true
     }
   ]
 }
