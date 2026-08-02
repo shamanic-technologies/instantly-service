@@ -232,6 +232,13 @@
       "when": 1784505600000,
       "tag": "0032_provider_infra_inventory",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1784592000000,
+      "tag": "0033_infra_price_rates",
+      "breakpoints": true
     }
   ]
 }
