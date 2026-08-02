@@ -1455,3 +1455,119 @@ registry.registerPath({
     401: { description: "Unauthorized" },
   },
 });
+
+const InfraDomainRowSchema = z
+  .object({
+    domain: z.string(),
+    provider: z.string().describe("gandi | mailforge | primeforge | instantly-dfy"),
+    role: z.string().describe("registrar | mailbox | prewarm — what the vendor does for this domain"),
+    status: z.string().nullable().describe("The vendor's own status string, verbatim"),
+    expiresAt: z.string().nullable(),
+    autorenew: z.boolean().nullable().describe("Null when the vendor exposes no such flag — distinct from false"),
+    deletionScheduled: z.boolean(),
+    cancelledAt: z.string().nullable(),
+    absentSince: z.string().nullable().describe("Set when the vendor stopped reporting the domain; the row is kept, never deleted"),
+    vendorMailboxes: z.number().int().describe("Mailboxes the VENDOR hosts — routinely differs from the Instantly account count on relayed domains"),
+    instantlyAccounts: z.number().int().describe("Live Instantly sending accounts on this domain (ghosts excluded)"),
+    inProductionAccounts: z.number().int(),
+    sentLast30d: z.number().int().describe("Real (non-inferred) dispatches over the trailing 30 days"),
+    monthlyCostCents: z.number().nullable().describe("Null when nothing prices this domain — never a substitute figure"),
+    currency: z.string().nullable(),
+    costSource: z.string().nullable().describe("api (vendor-reported) | rate-card (versioned local row)"),
+    costPerEmailCents: z.number().nullable(),
+  })
+  .openapi("InfraDomainRow");
+
+const InfraDomainsResponseSchema = z
+  .object({ asOf: z.string(), domains: z.array(InfraDomainRowSchema) })
+  .openapi("InfraDomainsResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/infra/domains",
+  summary: "Domain inventory across all four infrastructure vendors",
+  description:
+    "Platform-scoped (no org). One row per (provider, domain): who we buy it from, when it expires, how many mailboxes the vendor hosts, how many Instantly accounts send from it, and what it costs per month and per email. The vendor mailbox count and the Instantly account count are deliberately both shown and routinely differ — the legacy relayed domains run dozens of accounts against a single vendor mailbox. Every amount carries its provenance; a domain nothing prices reports null.",
+  responses: {
+    200: { description: "Inventory", content: { "application/json": { schema: InfraDomainsResponseSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "Server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const InfraWasteResponseSchema = z
+  .object({
+    asOf: z.string(),
+    findingCount: z.number().int(),
+    findings: z.array(
+      z.object({
+        domain: z.string(),
+        provider: z.string(),
+        reason: z
+          .string()
+          .describe("paid_no_sending_accounts | cancelled_by_vendor | deletion_scheduled | expiring_within_30d"),
+        detail: z.string(),
+        monthlyCostCents: z.number().nullable(),
+        currency: z.string().nullable(),
+        expiresAt: z.string().nullable(),
+      }),
+    ),
+  })
+  .openapi("InfraWasteResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/infra/waste",
+  summary: "Domains billed for but unused, cancelled, or expiring",
+  description:
+    "Platform-scoped (no org). REPORT-ONLY by design: it never cancels an autorenew and never schedules a deletion. A false positive costs us a domain, and several flagged domains are brand domains held on purpose — a human decides.",
+  responses: {
+    200: { description: "Findings", content: { "application/json": { schema: InfraWasteResponseSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "Server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const InfraSpendResponseSchema = z
+  .object({
+    asOf: z.string(),
+    byProvider: z.array(
+      z.object({
+        provider: z.string(),
+        domainCount: z.number().int(),
+        mailboxCount: z.number().int(),
+        monthlyCents: z.number(),
+        currency: z.string(),
+        source: z.string().describe("api | rate-card | mixed"),
+      }),
+    ),
+    monthlyByCurrency: z.array(z.object({ currency: z.string(), cents: z.number() })),
+    unpricedProviders: z
+      .array(z.string())
+      .describe("Vendors whose domains we hold and cannot price at all — their cost is MISSING from the totals, not estimated into them"),
+    unpricedDomainCount: z.number().int(),
+    planSubscriptions: z.array(
+      z.object({
+        item: z.string(),
+        monthlyCents: z.number(),
+        currency: z.string(),
+        note: z.string().nullable(),
+      }),
+    ),
+    sentLast30d: z.number().int(),
+    costPerEmailByCurrency: z.array(z.object({ currency: z.string(), cents: z.number() })),
+  })
+  .openapi("InfraSpendResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/infra/spend",
+  summary: "Monthly infrastructure run-rate by vendor",
+  description:
+    "Platform-scoped (no org). What the vendors charge US — deliberately separate from costs-service, which prices what we RE-BILL the customer; the difference between the two is the real margin per email. Totals stay PER CURRENCY (Gandi bills in EUR, the rest in USD) because blending them would need an FX rate this service does not own. `unpricedProviders` is the honest hole, so cost-per-email is a FLOOR while it is non-empty.",
+  responses: {
+    200: { description: "Spend summary", content: { "application/json": { schema: InfraSpendResponseSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "Server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
