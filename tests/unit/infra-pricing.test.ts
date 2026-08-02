@@ -5,6 +5,7 @@ import {
   costPerEmailCents,
   indexRates,
   monthlyCostForDomain,
+  splitDomainCost,
   summarizePlanSpend,
   summarizeSpend,
   type InventoryDomain,
@@ -259,5 +260,92 @@ describe("summarizePlanSpend", () => {
     ]);
 
     expect(plans.map((p) => p.item)).toEqual(["hypergrowth", "inbox-placement"]);
+  });
+});
+
+describe("splitDomainCost", () => {
+  it("puts a mailbox subscription in recurring — cancelling stops it immediately", () => {
+    const split = splitDomainCost(
+      domain({ provider: "instantly-dfy", mailboxCount: 5, expiresAt: new Date("2027-01-01T00:00:00Z") }),
+      DFY_RATES,
+    );
+
+    expect(split.recurringMonthlyCents).toBe(5000);
+    expect(split.currency).toBe("USD");
+  });
+
+  it("puts the registration in renewal, with the date it actually falls due", () => {
+    const split = splitDomainCost(
+      domain({ provider: "gandi", priceCents: 3838, priceCurrency: "EUR", expiresAt: new Date("2027-02-03T00:00:00Z") }),
+      indexRates([]),
+    );
+
+    // Gandi mailboxes are free, so nothing stops billing by deleting today.
+    expect(split.recurringMonthlyCents).toBeNull();
+    expect(split.renewalCents).toBe(3838);
+    expect(split.renewalAt?.toISOString()).toBe("2027-02-03T00:00:00.000Z");
+  });
+
+  it("keeps the renewal figure yearly — it is not a monthly number", () => {
+    const split = splitDomainCost(
+      domain({ provider: "gandi", priceCents: 3838, priceCurrency: "EUR" }),
+      indexRates([]),
+    );
+
+    // The blended monthly read divides by 12; this one must not.
+    expect(split.renewalCents).toBe(3838);
+  });
+
+  it("reports both halves when a vendor charges for the domain AND the mailboxes", () => {
+    const split = splitDomainCost(
+      domain({ provider: "instantly-dfy", mailboxCount: 5, expiresAt: new Date("2027-01-01T00:00:00Z") }),
+      DFY_RATES,
+    );
+
+    expect(split.renewalCents).toBe(1500);
+    expect(split.recurringMonthlyCents).toBe(5000);
+  });
+
+  it("saves nothing on a cancelled domain — it already bills nothing", () => {
+    const split = splitDomainCost(
+      domain({ provider: "instantly-dfy", mailboxCount: 5, cancelledAt: new Date("2026-05-02T00:00:00Z") }),
+      DFY_RATES,
+    );
+
+    expect(split).toEqual({
+      recurringMonthlyCents: null,
+      renewalCents: null,
+      renewalAt: null,
+      currency: null,
+    });
+  });
+
+  it("reports nothing at all for an unpriced vendor", () => {
+    expect(splitDomainCost(domain({ provider: "primeforge" }), DFY_RATES)).toEqual({
+      recurringMonthlyCents: null,
+      renewalCents: null,
+      renewalAt: null,
+      currency: null,
+    });
+  });
+
+  it("has no renewal date when the vendor reports no expiry", () => {
+    const split = splitDomainCost(domain({ provider: "instantly-dfy", mailboxCount: 1 }), DFY_RATES);
+    expect(split.renewalCents).toBe(1500);
+    expect(split.renewalAt).toBeNull();
+  });
+
+  it("refuses to split across two currencies", () => {
+    const mixed = indexRates([
+      rate({ provider: "weird", scope: "mailbox-month", unitCents: 500, currency: "USD" }),
+    ]);
+
+    const split = splitDomainCost(
+      domain({ provider: "weird", priceCents: 1200, priceCurrency: "EUR", mailboxCount: 2 }),
+      mixed,
+    );
+
+    expect(split.currency).toBeNull();
+    expect(split.recurringMonthlyCents).toBeNull();
   });
 });
