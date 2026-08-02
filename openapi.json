@@ -2573,6 +2573,21 @@
           "costPerEmailCents": {
             "type": "number",
             "nullable": true
+          },
+          "recurringMonthlyCents": {
+            "type": "number",
+            "nullable": true,
+            "description": "The mailbox subscription — stops billing the moment the domain is cancelled"
+          },
+          "renewalCents": {
+            "type": "number",
+            "nullable": true,
+            "description": "The YEARLY registration, already paid until renewalAt; deleting today avoids it then, it refunds nothing now"
+          },
+          "renewalAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "When that renewal falls due"
           }
         },
         "required": [
@@ -2592,7 +2607,10 @@
           "monthlyCostCents",
           "currency",
           "costSource",
-          "costPerEmailCents"
+          "costPerEmailCents",
+          "recurringMonthlyCents",
+          "renewalCents",
+          "renewalAt"
         ]
       },
       "InfraWasteResponse": {

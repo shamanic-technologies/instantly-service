@@ -1475,6 +1475,15 @@ const InfraDomainRowSchema = z
     currency: z.string().nullable(),
     costSource: z.string().nullable().describe("api (vendor-reported) | rate-card (versioned local row)"),
     costPerEmailCents: z.number().nullable(),
+    recurringMonthlyCents: z
+      .number()
+      .nullable()
+      .describe("The mailbox subscription — stops billing the moment the domain is cancelled"),
+    renewalCents: z
+      .number()
+      .nullable()
+      .describe("The YEARLY registration, already paid until renewalAt; deleting today avoids it then, it refunds nothing now"),
+    renewalAt: z.string().nullable().describe("When that renewal falls due"),
   })
   .openapi("InfraDomainRow");
 
