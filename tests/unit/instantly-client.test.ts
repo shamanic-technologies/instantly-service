@@ -105,7 +105,10 @@ describe("instantly-client", () => {
     expect(sched.timezone).toBe("America/Chicago");
   });
 
-  it("createCampaign uses the supplied recipient timezone", async () => {
+  it("createCampaign resolves the recipient timezone onto Instantly's accepted enum", async () => {
+    // Instantly 400s any zone outside its closed 102-value enum, and
+    // America/New_York is not in it — so the send must ship the same-offset
+    // member instead of the raw zone. See src/lib/instantly-timezone.ts.
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: () => Promise.resolve({ id: "camp-1", name: "T", status: "draft", created_at: "", updated_at: "" }),
@@ -118,7 +121,23 @@ describe("instantly-client", () => {
     });
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.campaign_schedule.schedules[0].timezone).toBe("America/New_York");
+    expect(body.campaign_schedule.schedules[0].timezone).toBe("America/Detroit");
+  });
+
+  it("createCampaign falls back to US Central on a malformed timezone rather than forwarding it", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: () => Promise.resolve({ id: "camp-1", name: "T", status: "draft", created_at: "", updated_at: "" }),
+    });
+    const { createCampaign } = await import("../../src/lib/instantly-client");
+    await createCampaign(TEST_API_KEY, {
+      name: "T",
+      steps: [{ subject: "s", bodyHtml: "<p>b</p>", daysSinceLastStep: 0 }],
+      timezone: "Not/AZone",
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.campaign_schedule.schedules[0].timezone).toBe("America/Chicago");
   });
 
   it("createCampaign should correctly shift delays for 3-step sequences", async () => {

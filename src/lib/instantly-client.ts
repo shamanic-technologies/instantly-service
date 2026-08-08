@@ -3,6 +3,8 @@
  * https://developer.instantly.ai/
  */
 
+import { resolveInstantlyTimezone } from "./instantly-timezone.js";
+
 const INSTANTLY_API_URL = "https://api.instantly.ai/api/v2";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -368,11 +370,14 @@ export async function createCampaign(apiKey: string, params: CreateCampaignParam
           // (placement-sync.ts) can run its seed spike on an otherwise-empty
           // mailbox day; Saturday is off to keep the send pattern weekday-only.
           // Per-recipient timezone when the caller supplies it (1 campaign = 1
-          // lead, so params.timezone is the lead's tz threaded from upstream);
-          // America/Chicago (US Central) fallback when absent/unknown.
+          // lead, so params.timezone is the lead's tz threaded from upstream).
+          // Instantly accepts only a closed enum of 102 zones, so the value is
+          // resolved onto its nearest accepted member — see
+          // `instantly-timezone.ts`. Absent / malformed / unmappable degrades to
+          // US Central; a timezone must never block a send.
           timing: { from: "08:00", to: "17:00" },
           days: { "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false },
-          timezone: params.timezone ?? "America/Chicago",
+          timezone: resolveInstantlyTimezone(params.timezone),
         },
       ],
     },
