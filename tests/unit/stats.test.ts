@@ -995,6 +995,68 @@ describe("GET /stats", () => {
     expect(allChunks).toContain("America/New_York");
   });
 
+  // Prod incident 2026-08-08: a legacy IANA spelling 500'd on every request
+  // that actually aggregated rows, because the DB host lacks Debian's
+  // `tzdata-legacy` package and `AT TIME ZONE` is evaluated per row. The bind
+  // must carry the PRIMARY name, and the two spellings of one zone must be
+  // byte-identical queries — they denote the same zone.
+  it.each([
+    ["Asia/Saigon", "Asia/Ho_Chi_Minh"],
+    ["Europe/Kiev", "Europe/Kyiv"],
+    ["US/Pacific", "America/Los_Angeles"],
+  ])("binds the primary zone name for the legacy spelling %s", async (legacy, primary) => {
+    const runDay = async (timezone: string) => {
+      mockExecute.mockReset();
+      clearStatsCache();
+      mockExecute.mockResolvedValueOnce({ rows: [{ groupKey: "2026-06-16", ...makeStatsRow({ esSent: 1, rsSent: 1 }) }] });
+      mockExecute.mockResolvedValueOnce({ rows: [{ groupKey: "2026-06-16", emailsContacted: 3, notSending: 0, cancelled: 0 }] });
+      mockExecute.mockResolvedValueOnce({ rows: [] });
+      const app = await createStatsApp();
+      const response = await request(app)
+        .get("/stats")
+        .query({ groupBy: "day", timezone })
+        .set(identityHeadersObj);
+      return { response, chunks: JSON.stringify(mockExecute.mock.calls.map((call) => call[0])) };
+    };
+
+    const legacyRun = await runDay(legacy);
+    const primaryRun = await runDay(primary);
+
+    expect(legacyRun.response.status).toBe(200);
+    expect(legacyRun.chunks).toContain(primary);
+    expect(legacyRun.chunks).not.toContain(legacy);
+    // Same zone ⇒ same SQL ⇒ same buckets.
+    expect(legacyRun.chunks).toBe(primaryRun.chunks);
+    expect(legacyRun.response.body).toEqual(primaryRun.response.body);
+  });
+
+  it("returns 400 naming `timezone` when the database does not recognize the zone", async () => {
+    mockExecute.mockRejectedValue(new Error('time zone "Asia/Saigon" not recognized'));
+
+    const app = await createStatsApp();
+    const response = await request(app)
+      .get("/stats")
+      .query({ groupBy: "day", timezone: "Asia/Saigon" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(response.body)).toContain("timezone");
+    expect(JSON.stringify(response.body)).toContain("Asia/Saigon");
+  });
+
+  it("names the failure in the 500 body for any other aggregation error", async () => {
+    mockExecute.mockRejectedValue(new Error("timeout exceeded when trying to connect"));
+
+    const app = await createStatsApp();
+    const response = await request(app)
+      .get("/stats")
+      .query({ groupBy: "day", timezone: "UTC" })
+      .set(identityHeadersObj);
+
+    expect(response.status).toBe(500);
+    expect(response.body.detail).toContain("timeout exceeded");
+  });
+
   it("should apply existing filters to groupBy day", async () => {
     // Call order: [events, campaign-aggregates, sentiment].
     mockExecute.mockResolvedValueOnce({ rows: [{ groupKey: "2026-06-17", ...makeStatsRow({ esSent: 1, rsSent: 1 }) }] });
