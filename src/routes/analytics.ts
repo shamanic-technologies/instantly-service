@@ -3,6 +3,7 @@ import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
 import { StatsQuerySchema, GroupedStatsRequestSchema } from "../schemas";
 import { statsCacheKey, getOrSetCachedStats } from "../lib/stats-cache";
+import { canonicalIanaTimezone, unrecognizedTimezoneFromError } from "../lib/timezone";
 
 const router = Router();
 
@@ -401,8 +402,22 @@ const GROUP_BY_COLUMNS: Record<string, string> = {
   audienceId: "c.metadata->>'audienceId'",
 };
 
+/**
+ * Day bucket in the caller's local time.
+ *
+ * The zone name is resolved BY POSTGRES against the tzdata installed on the DB
+ * host, and a host without Debian's `tzdata-legacy` package does not carry the
+ * backward-compat links (`Asia/Saigon`, `Europe/Kiev`, `US/Pacific`, `Japan`,
+ * …). `AT TIME ZONE` is evaluated per row, so such a name passes planning, then
+ * throws `time zone "X" not recognized` on the first row — which is why the
+ * failure was data-dependent (a filter matching nothing returned 200). Resolve
+ * every alias to its primary IANA name here so the SQL only ever names a zone a
+ * base tzdata install has. Aliases denote the same zone, so the buckets are
+ * unchanged. See src/lib/timezone.ts. Do NOT pass the raw request value.
+ */
 function localDayKey(timestampExpr: SQL, timezone: string): SQL {
-  return sql`TO_CHAR(((${timestampExpr}) AT TIME ZONE 'UTC') AT TIME ZONE ${timezone}, 'YYYY-MM-DD')`;
+  const zone = canonicalIanaTimezone(timezone);
+  return sql`TO_CHAR(((${timestampExpr}) AT TIME ZONE 'UTC') AT TIME ZONE ${zone}, 'YYYY-MM-DD')`;
 }
 
 function eventGroupColumn(groupBy: string, timezone: string): SQL | null {
@@ -1048,7 +1063,10 @@ router.get("/stats", async (req: Request, res: Response) => {
     featureSlugs,
     groupBy,
   } = parsed.data;
-  const timezone = parsed.data.timezone ?? "UTC";
+  // Canonicalize BEFORE the cache key so two spellings of one zone share an
+  // entry (they produce identical buckets) and so the SQL never names a legacy
+  // alias the DB host's tzdata may lack — see src/lib/timezone.ts.
+  const timezone = canonicalIanaTimezone(parsed.data.timezone ?? "UTC");
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
   const orgId = res.locals.orgId as string;
 
@@ -1091,8 +1109,24 @@ router.get("/stats", async (req: Request, res: Response) => {
     return res.json(payload);
   } catch (error: any) {
     const msg = error.cause?.message ?? error.message ?? String(error);
+    const badZone = unrecognizedTimezoneFromError(error);
+    if (badZone) {
+      console.error(
+        `[instantly-service] stats: database does not recognize timezone "${badZone}" (requested "${parsed.data.timezone}")`,
+      );
+      return res.status(400).json({
+        error: "Invalid request",
+        details: {
+          fieldErrors: {
+            timezone: [`Timezone not supported by the database: ${badZone}`],
+          },
+        },
+      });
+    }
     console.error(`[instantly-service] Failed to aggregate stats: ${msg}`, error);
-    return res.status(500).json({ error: "Failed to aggregate stats" });
+    // Name the failure. This endpoint is service-auth only, and an opaque body
+    // is exactly what kept a timezone-specific 500 undiagnosed for weeks.
+    return res.status(500).json({ error: "Failed to aggregate stats", detail: msg });
   }
 });
 

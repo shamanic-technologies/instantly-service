@@ -8,6 +8,7 @@ import {
   addSlugConditions,
 } from "./analytics";
 import { statsCacheKey, getOrSetCachedStats } from "../lib/stats-cache";
+import { canonicalIanaTimezone, unrecognizedTimezoneFromError } from "../lib/timezone";
 
 const router = Router();
 
@@ -104,7 +105,9 @@ router.get("/stats", async (req: Request, res: Response) => {
     featureSlugs,
     groupBy,
   } = parsed.data;
-  const timezone = parsed.data.timezone ?? "UTC";
+  // Canonicalize before the cache key + SQL: a legacy alias the DB host's
+  // tzdata lacks throws per row. See src/lib/timezone.ts.
+  const timezone = canonicalIanaTimezone(parsed.data.timezone ?? "UTC");
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
 
   const conditions: SQL[] = [];
@@ -148,8 +151,22 @@ router.get("/stats", async (req: Request, res: Response) => {
     return res.json(payload);
   } catch (error: any) {
     const msg = error.cause?.message ?? error.message ?? String(error);
+    const badZone = unrecognizedTimezoneFromError(error);
+    if (badZone) {
+      console.error(
+        `[instantly-service] public stats: database does not recognize timezone "${badZone}" (requested "${parsed.data.timezone}")`,
+      );
+      return res.status(400).json({
+        error: "Invalid request",
+        details: {
+          fieldErrors: {
+            timezone: [`Timezone not supported by the database: ${badZone}`],
+          },
+        },
+      });
+    }
     console.error(`[instantly-service] Failed to aggregate stats: ${msg}`, error);
-    return res.status(500).json({ error: "Failed to aggregate stats" });
+    return res.status(500).json({ error: "Failed to aggregate stats", detail: msg });
   }
 });
 
