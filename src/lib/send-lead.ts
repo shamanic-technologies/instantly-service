@@ -8,9 +8,9 @@
  *     `delivery_status='contacted'` past STUCK_AGE_HOURS without any silver
  *     proof Instantly actually sent — see lib/retry-stuck.ts)
  *
- * One-shot: picks a healthy account via the capacity-aware policy (the account
- * that is emptiest relative to its own daily cap — see
- * pickCapacityAwareAccount), creates a fresh Instantly campaign, adds the lead,
+ * One-shot: picks a healthy account via the sequential-fill policy (saturate the
+ * first account of a fixed, creation-ordered queue before touching the next — see
+ * pickSequentialFillAccount), creates a fresh Instantly campaign, adds the lead,
  * activates. Returns
  * success regardless of post-activate `not_sending_status` (NSS is pacing
  * diagnostic, not error signal — retry-stuck owns the eventual catch-up
@@ -45,55 +45,99 @@ const EMPTY_CAPACITY: AccountCapacity = {
 };
 
 /**
- * argMIN over `accounts` by `metric`, ties broken by a uniform random pick among
- * ONLY the tied minimum set — so a burst of concurrent sends spreads across
- * equally-preferred accounts rather than always landing on the first one, and a
- * heavier account is NEVER chosen even at the random boundary.
+ * Today's assignment cap for one account.
+ *
+ * The age ramp is computed off the LIFECYCLE BASE (IN_PRODUCTION_DAILY_LIMIT),
+ * never off the account's live `daily_limit` — lifecycle-limits-sync writes that
+ * same ramped value onto Instantly, so scaling the already-scaled value would
+ * compound (45 → 23 → 12 → …). Taking the MIN keeps both enforcement points
+ * idempotent while still honouring a lower operator-set limit.
+ *
+ * A mature (or undatable) account keeps its full `daily_limit`; a fresh one is
+ * capped by `rampCapForAge` — a young Google mailbox's real Gmail per-user quota
+ * is far below 45 for its first weeks, independent of inbox placement.
  */
-function argMinRandom(
-  accounts: Account[],
-  metric: (a: Account) => number,
-): Account {
-  let min = Infinity;
-  for (const a of accounts) {
-    const m = metric(a);
-    if (m < min) min = m;
-  }
-  const tied = accounts.filter((a) => metric(a) === min);
-  return tied[Math.floor(Math.random() * tied.length)];
+function capForAccount(a: Account, asOf: Date): number {
+  return Math.min(
+    a.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT,
+    rampCapForAge(a.timestamp_created, IN_PRODUCTION_DAILY_LIMIT, asOf),
+  );
+}
+
+/** Today's committed load for one account: dispatched + queued-for-today. */
+function loadForAccount(
+  a: Account,
+  byEmail: Map<string, AccountCapacity>,
+): number {
+  const c = byEmail.get(a.email) ?? EMPTY_CAPACITY;
+  return c.sentToday + c.q0first + c.q0next;
 }
 
 /**
- * Capacity-aware account selection — ONE number per account, pick the emptiest.
+ * The fleet's fixed fill ORDER: oldest account first, `email` ascending as the
+ * tie-break, accounts with no `timestamp_created` last.
+ *
+ * Stable by construction — an account created later can never move ahead of an
+ * older one, so adding mailboxes appends to the tail and never reshuffles the
+ * head. That stability is the whole point: the accounts at the tail are the ones
+ * that dry up first and become safe to cancel.
+ *
+ * An undatable account sorts last rather than first: we cannot honestly place it
+ * in the sequence, and the tail is the position that risks the least (it only
+ * receives volume once everything datable is full).
+ */
+export function accountFillOrder(accounts: Account[]): Account[] {
+  const rank = (a: Account): number => {
+    const t = a.timestamp_created ? Date.parse(a.timestamp_created) : NaN;
+    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+  };
+  return [...accounts].sort((x, y) => {
+    const rx = rank(x);
+    const ry = rank(y);
+    if (rx !== ry) return rx - ry;
+    return x.email.localeCompare(y.email);
+  });
+}
+
+/**
+ * Sequential-fill account selection — saturate the first account in the fixed
+ * order before touching the second.
  *
  * Per account:
- *   cap   = rampCapForAge(timestamp_created, daily_limit, asOf)
- *           mature/undatable → its own daily_limit; fresh → that limit scaled
- *           linearly by age (floored at RAMP_FLOOR_PER_DAY).
+ *   cap   = min(daily_limit, rampCapForAge(timestamp_created, ...))  (capForAccount)
  *   load  = sentToday + Q0-first + Q0-next
  *           real dispatches today + never-contacted sequences (1 first email each)
- *           + followup steps projected today/overdue.
- *   pick  = argMIN(load / cap), ties broken by uniform random over the tied set.
+ *           + followup steps projected today/overdue — so a followup queued days
+ *           ago but due today counts against today's cap.
+ *   pick  = the FIRST account of `accountFillOrder` whose load < cap.
  *
- * Why a RATIO and not the raw load: accounts have different caps (a 3-day-old
- * mailbox can absorb 5/day, a mature one 45/day). Ranking on the ratio fills every
- * account at the same PACE relative to what it can take, so no account starves and
- * none is overloaded. When every account is already over its cap (a backlogged
- * fleet), argMIN ratio still picks the least-overloaded one — which is also the one
- * with room soonest, so no separate "tomorrow" tier is needed.
+ * Why sequential and not a fill RATIO: the fleet is deliberately over-provisioned
+ * (20 in_production accounts × 45/day ≫ real volume), and spreading volume evenly
+ * means every mailbox carries a little traffic — so none can ever be cancelled.
+ * Concentrating on the head of a STABLE order leaves the tail idle, which is what
+ * makes "this account has sent nothing for N days" a usable delete signal. The
+ * starvation of the tail is the OBJECTIVE here, not a side effect.
  *
- * This REPLACED a 5-tier policy (mature-today > fresh-today > mature-tomorrow >
- * fresh-tomorrow > least-total-queue). That shape is what produced the idle-account
- * bug: mature accounts always satisfied tier 1, so tiers 2-5 never ran and fresh
- * accounts received nothing for weeks. See `rampCapForAge`.
+ * This is deliberately the shape that #543 removed (a mature-before-fresh tier
+ * order whose lower tiers were unreachable). The difference is intent: there the
+ * starved accounts were meant to be sending and silently were not; here they are
+ * meant to go quiet so the fleet can be shrunk. Do NOT "restore" the fill-ratio
+ * policy on the strength of that incident without re-reading this paragraph.
  *
- * An account absent from `byEmail` is all-zeros ⇒ ratio 0 ⇒ maximally preferred.
- * Correctness of `load` depends on the sending account being persisted on the
- * campaign row at send time (see account-sending-stats.ts) so a just-contacted lead
- * counts against its account immediately, not after the lagging first email_sent
- * webhook.
+ * The AGE CAP is kept intact — a fresh mailbox is filled to ITS ramped cap (5/day
+ * at one day old), never to 45, so the sequence never trips Gmail's 550-5.4.5.
+ *
+ * When every account is at or over its cap the fleet is backlogged; we then fall
+ * back to the least-overloaded `load / cap` so a send is never blocked, ties going
+ * to the earlier account in the order. Selection is fully deterministic: the same
+ * inputs always yield the same account.
+ *
+ * An account absent from `byEmail` is all-zeros ⇒ load 0 ⇒ has room. Correctness
+ * of `load` depends on the sending account being persisted on the campaign row at
+ * send time (see account-sending-stats.ts) so a just-contacted lead counts against
+ * its account immediately, not after the lagging first email_sent webhook.
  */
-export function pickCapacityAwareAccount(
+export function pickSequentialFillAccount(
   accounts: Account[],
   byEmail: Map<string, AccountCapacity>,
   asOf: Date = new Date(),
@@ -102,24 +146,29 @@ export function pickCapacityAwareAccount(
     throw new Error("No accounts available");
   }
 
-  const fillRatio = (a: Account): number => {
-    const c = byEmail.get(a.email) ?? EMPTY_CAPACITY;
-    const load = c.sentToday + c.q0first + c.q0next;
-    // The age ramp is computed off the LIFECYCLE BASE (IN_PRODUCTION_DAILY_LIMIT),
-    // never off the account's live `daily_limit` — lifecycle-limits-sync now writes
-    // that same ramped value onto Instantly, so scaling the already-scaled value
-    // would compound (45 → 23 → 12 → …). Taking the MIN keeps both enforcement
-    // points idempotent while still honouring a lower operator-set limit.
-    const cap = Math.min(
-      a.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT,
-      rampCapForAge(a.timestamp_created, IN_PRODUCTION_DAILY_LIMIT, asOf),
-    );
-    // A zero/negative cap (an account deliberately set to daily_limit 0) can never
-    // absorb a lead — rank it last rather than dividing by zero.
-    return cap > 0 ? load / cap : Number.POSITIVE_INFINITY;
-  };
+  const ordered = accountFillOrder(accounts);
 
-  return argMinRandom(accounts, fillRatio);
+  for (const a of ordered) {
+    const cap = capForAccount(a, asOf);
+    // A zero/negative cap (an account deliberately pinned to daily_limit 0) can
+    // never absorb a lead — skip it entirely rather than dividing by zero.
+    if (cap > 0 && loadForAccount(a, byEmail) < cap) return a;
+  }
+
+  // Every account is full: pick the least-overloaded one (it is also the one with
+  // room soonest). `ordered` is stable, so the first minimum wins on a tie.
+  let best = ordered[0];
+  let bestRatio = Number.POSITIVE_INFINITY;
+  for (const a of ordered) {
+    const cap = capForAccount(a, asOf);
+    const ratio =
+      cap > 0 ? loadForAccount(a, byEmail) / cap : Number.POSITIVE_INFINITY;
+    if (ratio < bestRatio) {
+      bestRatio = ratio;
+      best = a;
+    }
+  }
+  return best;
 }
 
 /**
@@ -462,7 +511,7 @@ export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult
   }
 
   const capacityByEmail = await fetchAccountCapacityCached();
-  const account = pickCapacityAwareAccount(accounts, capacityByEmail);
+  const account = pickSequentialFillAccount(accounts, capacityByEmail);
   const steps = buildSequenceSteps(opts.subject, opts.sortedSequence, account);
 
   console.log(

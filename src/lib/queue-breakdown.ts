@@ -164,8 +164,8 @@ function emptyBreakdown(): QueueBreakdown {
 }
 
 /**
- * Per-account CAPACITY buckets feeding the capacity-aware send-selection policy
- * (see send-lead.ts `pickCapacityAwareAccount`). A projection of the same queued
+ * Per-account CAPACITY buckets feeding the sequential-fill send-selection policy
+ * (see send-lead.ts `pickSequentialFillAccount`). A projection of the same queued
  * sequences, but shaped for a per-DAY daily-limit fill instead of the ops table's
  * full four-way partition:
  *
