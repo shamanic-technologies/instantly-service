@@ -255,11 +255,11 @@ export const ACCOUNT_CAPACITY_TTL_MS = 60_000;
 const ACCOUNT_CAPACITY_CACHE_KEY = "account-capacity|send-selection";
 
 /**
- * Per-account capacity snapshot feeding the capacity-aware send-selection policy
- * (send-lead.ts `pickCapacityAwareAccount`). Combines today's observed sends
+ * Per-account capacity snapshot feeding the sequential-fill send-selection policy
+ * (send-lead.ts `pickSequentialFillAccount`). Combines today's observed sends
  * (`sentToday`) with the per-day queued-work buckets (`q0first`/`q0next`/`q1next`)
  * + `totalQueue`, keyed by sending account. Absent from every source ⇒ all zeros
- * (never sent, nothing queued) ⇒ maximally preferred by the policy.
+ * (never sent, nothing queued) ⇒ the account counts as having full room today.
  */
 export interface AccountCapacity extends QueueCapacity {
   /** Real (non-inferred) email_sent events observed today (UTC). */
