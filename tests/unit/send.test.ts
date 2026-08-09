@@ -125,6 +125,8 @@ import {
   buildEmailBodyWithSignature,
   pickSequentialFillAccount,
   accountFillOrder,
+  providerFillRank,
+  UNKNOWN_PROVIDER_FILL_RANK,
   buildSequenceSteps,
   stripAccountSignature,
   sendLeadToInstantly,
@@ -165,7 +167,9 @@ const validBody = {
   leadId: "lead-1",
 };
 
-function acct(overrides: Partial<Account> = {}): Account {
+function acct(
+  overrides: Partial<Account> & { infraProvider?: string | null } = {},
+): Account & { infraProvider?: string | null } {
   return { email: "a@test.com", warmup_status: 1, status: 1, ...overrides };
 }
 
@@ -217,6 +221,137 @@ describe("pickSequentialFillAccount", () => {
     expect(
       pickSequentialFillAccount([a], caps([["only@x.com", { sentToday: 42 }]])),
     ).toBe(a);
+  });
+
+  // ── The vendor tier (primary sort key) ───────────────────────────────────────
+
+  it("ranks the infrastructure vendors gandi < mailforge < primeforge < instantly-dfy", () => {
+    expect(providerFillRank("gandi")).toBe(0);
+    expect(providerFillRank("mailforge")).toBe(1);
+    expect(providerFillRank("primeforge")).toBe(2);
+    expect(providerFillRank("instantly-dfy")).toBe(3);
+    // Anything we cannot attribute sorts behind every known vendor.
+    expect(providerFillRank(null)).toBe(UNKNOWN_PROVIDER_FILL_RANK);
+    expect(providerFillRank(undefined)).toBe(UNKNOWN_PROVIDER_FILL_RANK);
+    expect(providerFillRank("some-new-vendor")).toBe(UNKNOWN_PROVIDER_FILL_RANK);
+  });
+
+  it("puts the vendor AHEAD of age: a younger gandi account beats an older primeforge one", () => {
+    const accounts = [
+      acct({
+        email: "old-primeforge@x.com",
+        infraProvider: "primeforge",
+        timestamp_created: created(365),
+      }),
+      acct({
+        email: "young-gandi@x.com",
+        infraProvider: "gandi",
+        timestamp_created: created(1),
+      }),
+    ];
+    expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
+      "young-gandi@x.com",
+      "old-primeforge@x.com",
+    ]);
+  });
+
+  it("drains the four vendors in order, oldest-first WITHIN each vendor", () => {
+    const accounts = [
+      acct({ email: "dfy@x.com", infraProvider: "instantly-dfy", timestamp_created: created(400) }),
+      acct({ email: "pf-young@x.com", infraProvider: "primeforge", timestamp_created: created(10) }),
+      acct({ email: "pf-old@x.com", infraProvider: "primeforge", timestamp_created: created(60) }),
+      acct({ email: "mf@x.com", infraProvider: "mailforge", timestamp_created: created(5) }),
+      acct({ email: "gandi@x.com", infraProvider: "gandi", timestamp_created: created(2) }),
+    ];
+    expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
+      "gandi@x.com",
+      "mf@x.com",
+      "pf-old@x.com",
+      "pf-young@x.com",
+      "dfy@x.com",
+    ]);
+  });
+
+  it("sorts an account with no known vendor LAST, never first", () => {
+    // A domain missing from infra_domains cannot be honestly placed in the
+    // vendor sequence — the tail is the position that risks the least. Note it
+    // lands behind instantly-dfy even though it is the OLDEST account here.
+    const accounts = [
+      acct({ email: "unattributed@x.com", timestamp_created: created(999) }),
+      acct({ email: "dfy@x.com", infraProvider: "instantly-dfy", timestamp_created: created(1) }),
+      acct({ email: "gandi@x.com", infraProvider: "gandi", timestamp_created: created(1) }),
+    ];
+    expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
+      "gandi@x.com",
+      "dfy@x.com",
+      "unattributed@x.com",
+    ]);
+  });
+
+  it("fills the earlier vendor while it has room, even when a later vendor is emptier", () => {
+    const accounts = [
+      acct({
+        email: "gandi@x.com",
+        infraProvider: "gandi",
+        daily_limit: 45,
+        timestamp_created: created(90),
+      }),
+      acct({
+        email: "primeforge@x.com",
+        infraProvider: "primeforge",
+        daily_limit: 45,
+        timestamp_created: created(90),
+      }),
+    ];
+    const byEmail = caps([
+      ["gandi@x.com", { sentToday: 44 }],
+      ["primeforge@x.com", { sentToday: 0 }],
+    ]);
+    expect(pickSequentialFillAccount(accounts, byEmail, asOf).email).toBe(
+      "gandi@x.com",
+    );
+  });
+
+  it("cascades to the next vendor once the earlier one is at cap", () => {
+    const accounts = [
+      acct({
+        email: "gandi@x.com",
+        infraProvider: "gandi",
+        daily_limit: 45,
+        timestamp_created: created(90),
+      }),
+      acct({
+        email: "mailforge@x.com",
+        infraProvider: "mailforge",
+        daily_limit: 45,
+        timestamp_created: created(90),
+      }),
+      acct({
+        email: "primeforge@x.com",
+        infraProvider: "primeforge",
+        daily_limit: 45,
+        timestamp_created: created(90),
+      }),
+    ];
+    // gandi full → mailforge.
+    expect(
+      pickSequentialFillAccount(
+        accounts,
+        caps([["gandi@x.com", { sentToday: 45 }]]),
+        asOf,
+      ).email,
+    ).toBe("mailforge@x.com");
+    // gandi AND mailforge full → primeforge.
+    expect(
+      pickSequentialFillAccount(
+        accounts,
+        caps([
+          ["gandi@x.com", { sentToday: 45 }],
+          ["mailforge@x.com", { sentToday: 45 }],
+        ]),
+        asOf,
+      ).email,
+    ).toBe("primeforge@x.com");
   });
 
   // ── The fixed order ──────────────────────────────────────────────────────────

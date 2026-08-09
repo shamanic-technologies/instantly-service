@@ -268,10 +268,19 @@ export async function fetchLifecycleByEmail(): Promise<Map<string, LifecycleView
  *     default pool serving the 5 cold-email features + any untagged send.
  * "Reserved slugs" is derived from the table itself (no hardcoded constant), so
  * reserving another feature is a data change, never a deploy.
+ *
+ * Each row also carries `infraProvider` — the infrastructure vendor that owns
+ * the account's domain, read from `infra_domains` (the daily infra sync fills
+ * it). It is the PRIMARY key of the send fill order (see `accountFillOrder`), so
+ * the fleet drains one vendor before touching the next. A domain reported by two
+ * vendors resolves deterministically to the one that fills earliest; a domain
+ * with no inventory row at all yields null, which sorts LAST rather than first.
  */
+export type PooledAccount = Account & { infraProvider: string | null };
+
 export async function fetchInProductionAccounts(
   featureSlug?: string | null,
-): Promise<Account[]> {
+): Promise<PooledAccount[]> {
   const slug = featureSlug ?? null;
   const result = await db.execute(sql`
     SELECT a.email AS "email",
@@ -281,9 +290,24 @@ export async function fetchInProductionAccounts(
            a.warmup_score AS "warmupScore",
            a.daily_limit AS "dailyLimit",
            a.provider_code AS "providerCode",
-           a.timestamp_created AS "timestampCreated"
+           a.timestamp_created AS "timestampCreated",
+           ip.provider AS "infraProvider"
     FROM instantly_accounts a
     LEFT JOIN instantly_account_feature_policy p ON p.account_email = a.email
+    LEFT JOIN LATERAL (
+      SELECT d.provider
+      FROM infra_domains d
+      WHERE d.domain = split_part(a.email, '@', 2)
+      ORDER BY CASE d.provider
+                 WHEN 'gandi' THEN 0
+                 WHEN 'mailforge' THEN 1
+                 WHEN 'primeforge' THEN 2
+                 WHEN 'instantly-dfy' THEN 3
+                 ELSE 4
+               END,
+               d.provider
+      LIMIT 1
+    ) ip ON TRUE
     WHERE a.lifecycle_status = 'in_production'
       AND CASE
             WHEN ${slug}::text IN (
@@ -302,6 +326,7 @@ export async function fetchInProductionAccounts(
     dailyLimit: number | null;
     providerCode: number | null;
     timestampCreated: string | Date | null;
+    infraProvider: string | null;
   }>(result).map((r) => ({
     email: r.email,
     warmup_status: 0,
@@ -315,6 +340,7 @@ export async function fetchInProductionAccounts(
     timestamp_created: r.timestampCreated
       ? new Date(r.timestampCreated).toISOString()
       : undefined,
+    infraProvider: r.infraProvider,
   }));
 }
 
