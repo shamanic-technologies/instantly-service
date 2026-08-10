@@ -37,7 +37,7 @@ Cold email outreach service via [Instantly.ai](https://instantly.ai/) API V2. Ha
 
 - **Runtime:** Node.js 20 + TypeScript
 - **Framework:** Express
-- **Database:** PostgreSQL (Neon) via Drizzle ORM
+- **Database:** PostgreSQL via Drizzle ORM — a self-hosted Postgres container shared by every service (was Neon until 2026-08)
 - **Email API:** Instantly.ai API V2
 - **Testing:** Vitest + Supertest
 
