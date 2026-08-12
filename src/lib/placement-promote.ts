@@ -130,12 +130,13 @@ export interface LatestEspRow {
  * and `lifecycle_reason` agree by construction. There is deliberately no per-ESP
  * headline, no worst-leg selection, and no seed floor — one test, one score.
  *
- * Safety of pooling rests on the 95% bar, measured against the live fleet
- * 2026-07-28: the 198 Gmail-spam accounts this gate exists to catch top out at a
- * pooled 83.3%, so a 95% pooled bar still excludes every one of them, and the
- * worst Gmail leg that can hide behind a passing pooled score is 90.9%. Pooling
- * at a LOWER bar would not be safe (at 90 the worst hideable Gmail leg is ~80%),
- * so do not lower `PRODUCTION_DELIVERY_PCT_BAR` without re-measuring.
+ * Safety of pooling rests on the bar's value, re-measured against the live fleet
+ * whenever it moves. At the current 90% bar (measured 2026-08-12): 37 accounts
+ * qualify, the worst GMAIL leg admitted is 88.9%, and the shared-IP Gmail-spam
+ * fleet stays excluded — the best of those pools to 89.7%. The residual is that
+ * 89.7-vs-90 margin, plus an Outlook-skewed seed split in theory hiding a weak
+ * Gmail leg (no admitted account has one today). Do not lower
+ * `PRODUCTION_DELIVERY_PCT_BAR` without re-running that Gmail-leg distribution.
  *
  * Returns null only when there is no data at all (no rows, or every row 0 seeds)
  * — never a fabricated 0%. A small test still yields a real score: sample size is

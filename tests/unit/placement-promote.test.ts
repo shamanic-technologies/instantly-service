@@ -145,7 +145,7 @@ describe("summarizeEspRows — ONE pooled score across every ESP", () => {
   });
 
   it("pools a Gmail-dead account down, so the score reflects the bad leg", () => {
-    // Gmail 0/20 + Outlook 10/10 → 10/30 = 33%. Nowhere near the 95 bar.
+    // Gmail 0/20 + Outlook 10/10 → 10/30 = 33%. Nowhere near the 90 bar.
     const summary = summarizeEspRows([
       row({ recipientEsp: 2, inboxCount: 10, seedTotal: 10 }),
       row({ recipientEsp: 1, inboxCount: 0, spamCount: 20, seedTotal: 20 }),
