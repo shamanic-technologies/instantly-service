@@ -23,7 +23,10 @@ vi.mock("../../src/lib/instantly-client", () => ({
   listAccounts: vi.fn(async () => []),
 }));
 
-import { reconcileLifecycle } from "../../src/lib/account-lifecycle-sync";
+import {
+  reconcileLifecycle,
+  fetchInProductionAccounts,
+} from "../../src/lib/account-lifecycle-sync";
 
 /**
  * reconcileLifecycle issues exactly three db.execute reads, in order:
@@ -48,6 +51,54 @@ beforeEach(() => {
   mockUpdateWhere.mockClear();
   mockSetWarmup.mockClear();
   mockSetDaily.mockClear();
+});
+
+describe("fetchInProductionAccounts — infra vendor attribution", () => {
+  it("resolves each account's infra vendor from infra_domains and returns it", async () => {
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        {
+          email: "kevin@pressbeat.ai",
+          firstName: "Kevin",
+          lastName: "Lourd",
+          instantlyStatus: 1,
+          warmupScore: 100,
+          dailyLimit: 45,
+          providerCode: 1,
+          timestampCreated: "2026-01-01T00:00:00.000Z",
+          infraProvider: "gandi",
+        },
+        {
+          // No infra_domains row for this domain → null, which sorts LAST in
+          // accountFillOrder rather than first. Never fabricated.
+          email: "orphan@nowhere.com",
+          firstName: null,
+          lastName: null,
+          instantlyStatus: 1,
+          warmupScore: 100,
+          dailyLimit: 45,
+          providerCode: 2,
+          timestampCreated: null,
+          infraProvider: null,
+        },
+      ],
+    });
+
+    const accounts = await fetchInProductionAccounts(null);
+
+    expect(accounts.map((a) => [a.email, a.infraProvider])).toEqual([
+      ["kevin@pressbeat.ai", "gandi"],
+      ["orphan@nowhere.com", null],
+    ]);
+
+    // The vendor is joined from the inventory table on the email's domain, and
+    // a domain reported by two vendors resolves to the one that fills earliest.
+    const sqlText = JSON.stringify(mockExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("infra_domains");
+    expect(sqlText).toContain("split_part");
+    expect(sqlText).toContain("infraProvider");
+  });
 });
 
 describe("reconcileLifecycle", () => {
