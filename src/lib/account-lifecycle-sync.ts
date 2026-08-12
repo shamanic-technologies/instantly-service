@@ -170,18 +170,25 @@ export interface AccountDelivery {
   /** Rounded BLENDED inbox % — display/snapshot only, never the gate. */
   deliveryPct: number | null;
   /**
-   * The GATE: true ⇔ EVERY (account, ESP) row of the latest test inboxed at
-   * >= PRODUCTION_DELIVERY_PCT_BAR. Per-ESP, never the blended pct above — see
-   * {@link isDeliveryAtBar}.
+   * The GATE: true ⇔ the latest test's rows POOL to >= PRODUCTION_DELIVERY_PCT_BAR
+   * (`Σinbox / Σseeds` across every ESP) — see {@link isDeliveryAtBar}. Same
+   * sample as `deliveryPct` above, which is the rounded display form of it.
    */
   atBar: boolean;
+  /**
+   * When that test RAN (newest `tested_at` of its rows), ISO string. Feeds the
+   * evidence-freshness half of the gate — a pass we can no longer vouch for is
+   * not a pass. See DELIVERY_EVIDENCE_MAX_AGE_DAYS.
+   */
+  testedAt: string | null;
 }
 
 /**
  * Latest placement delivery per account. Returns ONE ROW PER (account, ESP) of the
- * account's latest test and applies the per-ESP bar in JS via `isDeliveryAtBar` —
- * the SQL must NOT pre-sum the ESPs, because at a 95 bar a blended average hides a
- * failing Gmail behind a passing Outlook (the sum-equivalence only held at 100).
+ * account's latest test and pools them in JS via `isDeliveryAtBar`. The SQL keeps
+ * the per-ESP grain deliberately: it is the raw silver shape, and the per-leg
+ * split is what surfaced the Gmail-spam-vs-Outlook-fine finding the whole
+ * deliverability model rests on — the GATE pools, the DATA does not.
  * The blended `deliveryPct` is still computed, for the event snapshot / display.
  * Accounts never tested are ABSENT from the map (→ delivery unknown → in_recovery).
  */
@@ -196,19 +203,31 @@ export async function fetchLatestDeliveryByAccount(): Promise<Map<string, Accoun
       r.account_email AS "accountEmail",
       r.recipient_esp AS "recipientEsp",
       r.inbox_count::int AS "inboxCount",
-      r.seed_total::int AS "seedTotal"
+      r.seed_total::int AS "seedTotal",
+      r.tested_at AS "testedAt"
     FROM instantly_placement_results r
     JOIN latest l
       ON l.account_email = r.account_email AND l.test_id = r.test_id
   `);
 
   const espRowsByAccount = new Map<string, { inboxCount: number; seedTotal: number }[]>();
-  for (const r of rowsOf<{ accountEmail: string; inboxCount: number; seedTotal: number }>(
-    result,
-  )) {
+  const testedAtByAccount = new Map<string, string>();
+  for (const r of rowsOf<{
+    accountEmail: string;
+    inboxCount: number;
+    seedTotal: number;
+    testedAt: string | Date | null;
+  }>(result)) {
     const list = espRowsByAccount.get(r.accountEmail) ?? [];
     list.push({ inboxCount: Number(r.inboxCount), seedTotal: Number(r.seedTotal) });
     espRowsByAccount.set(r.accountEmail, list);
+
+    if (r.testedAt !== null && r.testedAt !== undefined) {
+      const iso = r.testedAt instanceof Date ? r.testedAt.toISOString() : String(r.testedAt);
+      const seen = testedAtByAccount.get(r.accountEmail);
+      // Rows of one test share a tested_at, but take the newest defensively.
+      if (seen === undefined || iso > seen) testedAtByAccount.set(r.accountEmail, iso);
+    }
   }
 
   const map = new Map<string, AccountDelivery>();
@@ -216,7 +235,13 @@ export async function fetchLatestDeliveryByAccount(): Promise<Map<string, Accoun
     const inboxCount = espRows.reduce((s, r) => s + r.inboxCount, 0);
     const seedTotal = espRows.reduce((s, r) => s + r.seedTotal, 0);
     const deliveryPct = seedTotal > 0 ? Math.round((inboxCount * 100) / seedTotal) : null;
-    map.set(email, { inboxCount, seedTotal, deliveryPct, atBar: isDeliveryAtBar(espRows) });
+    map.set(email, {
+      inboxCount,
+      seedTotal,
+      deliveryPct,
+      atBar: isDeliveryAtBar(espRows),
+      testedAt: testedAtByAccount.get(email) ?? null,
+    });
   }
   return map;
 }
@@ -422,6 +447,7 @@ interface SilverAccountRow {
  */
 export async function reconcileLifecycle(
   apiKey: string,
+  asOf: Date = new Date(),
 ): Promise<ReconcileLifecycleSummary> {
   const [accountsResult, domainPolicy, deliveryByEmail] = await Promise.all([
     db.execute(sql`
@@ -455,7 +481,10 @@ export async function reconcileLifecycle(
       domain: emailDomain(row.email),
       healthScore,
       deliveryAtBar: delivery ? delivery.atBar : null,
+      deliveryTestedAt: delivery?.testedAt ?? null,
+      currentStatus,
       domainPolicy,
+      asOf,
     });
 
     if (status === currentStatus) {

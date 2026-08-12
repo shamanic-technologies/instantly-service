@@ -36,13 +36,23 @@ import {
 function seedReads(opts: {
   accounts: Array<Record<string, unknown>>;
   domains?: Array<{ domain: string }>;
-  delivery?: Array<{ accountEmail: string; inboxCount: number; seedTotal: number }>;
+  delivery?: Array<{
+    accountEmail: string;
+    inboxCount: number;
+    seedTotal: number;
+    testedAt?: string;
+  }>;
 }) {
+  // Placement rows carry a `tested_at`; without one the evidence reads as stale
+  // and nothing can promote. Default every fixture to "tested just now" so only
+  // the tests that care about freshness have to say so.
+  const now = new Date().toISOString();
+  const delivery = (opts.delivery ?? []).map((d) => ({ testedAt: now, ...d }));
   mockExecute.mockReset();
   mockExecute
     .mockResolvedValueOnce({ rows: opts.accounts })
     .mockResolvedValueOnce({ rows: opts.domains ?? [] })
-    .mockResolvedValueOnce({ rows: opts.delivery ?? [] });
+    .mockResolvedValueOnce({ rows: delivery });
 }
 
 beforeEach(() => {
@@ -102,7 +112,7 @@ describe("fetchInProductionAccounts — infra vendor attribution", () => {
 });
 
 describe("reconcileLifecycle", () => {
-  it("promotes to in_production on a real change: PATCHes warmup 5, writes event + silver", async () => {
+  it("promotes to in_production on a real change: PATCHes warmup 0 + daily 50, writes event + silver", async () => {
     seedReads({
       accounts: [
         {
@@ -119,9 +129,9 @@ describe("reconcileLifecycle", () => {
     const summary = await reconcileLifecycle("api-key");
 
     expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 1, dailyLimitPatched: 1, reasonsRefreshed: 0, failed: 0 });
-    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "prod@dfy.com", 5);
+    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "prod@dfy.com", 0);
     // in_production also opens the campaign daily max-send to 45.
-    expect(mockSetDaily).toHaveBeenCalledWith("api-key", "prod@dfy.com", 45);
+    expect(mockSetDaily).toHaveBeenCalledWith("api-key", "prod@dfy.com", 50);
     expect(mockInsertValues).toHaveBeenCalledTimes(1);
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(event.fromStatus).toBe("in_recovery");
@@ -288,7 +298,7 @@ describe("reconcileLifecycle", () => {
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(event.toStatus).toBe("in_production");
     expect(event.reason).toBe("reactivated");
-    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "back@dfy.com", 5);
+    expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "back@dfy.com", 0);
   });
 
   it("warmup PATCH failure → counted failed, no event/silver persisted (no half-applied state)", async () => {
