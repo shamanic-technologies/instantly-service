@@ -454,7 +454,7 @@ router.post("/slow-ramp-sync", async (req: Request, res: Response) => {
  * POST /internal/audit/lifecycle-limits-sync
  *
  * Platform-scoped. IDEMPOTENT ENFORCEMENT of every account's warmup + campaign
- * daily_limit to the target for its CURRENT lifecycle state (in_production 45/5,
+ * daily_limit to the target for its CURRENT lifecycle state (in_production 50/0,
  * in_recovery 20/30) — on EVERY run, not only on a flip. Closes the gap where
  * reconcile PATCHes limits ONLY on a state change: an account that has sat in a
  * state since before the target changed (or whose values Instantly reset on its

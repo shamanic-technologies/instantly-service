@@ -7,18 +7,22 @@
  * constants, so `deriveLifecycle` can be unit-tested exhaustively.
  *
  * ── The model (LOCKED) — four states, first match wins ───────────────────────
- *   domain ∈ domain_policy                     → deactivated_by_user
- *   instantlyStatus <= 0                       → deactivated_by_instantly
- *   healthScore < BAR OR delivery below BAR    → in_recovery
- *   healthScore >= BAR AND delivery at BAR     → in_production
+ *   domain ∈ domain_policy                          → deactivated_by_user
+ *   instantlyStatus <= 0                            → deactivated_by_instantly
+ *   healthScore < BAR **and not already in prod**   → in_recovery
+ *   delivery below BAR, or its evidence stale       → in_recovery
+ *   otherwise                                       → in_production
  *
- * - `healthScore` = Instantly `stat_warmup_score` (0-100), gated at 95.
- * - `deliveryAtBar` is computed PER ESP (see {@link isDeliveryAtBar}): every
- *   (account, ESP) silver row of the account's latest placement test must inbox
- *   at >= 90%. Deliberately NOT a blended average — Gmail-spam vs Outlook-fine is
- *   the whole deliverability finding, so a 60% Gmail hidden behind a 100% Outlook
- *   must NOT promote. Delivery UNKNOWN (never tested) is passed as `null` and
- *   treated as below bar, so an untested account defaults to in_recovery.
+ * - `healthScore` = Instantly `stat_warmup_score` (0-100), gated at 90. The bar
+ *   is ASYMMETRIC: it gates ENTRY into production, never continued membership,
+ *   because a production account no longer warms and its score therefore decays
+ *   to 0. See {@link deriveLifecycle} for why that is the point, not a leak.
+ * - `deliveryAtBar` POOLS every (account, ESP) row of the account's latest
+ *   placement test into one score (see {@link isDeliveryAtBar}), gated at 90.
+ *   Delivery UNKNOWN (never tested) is passed as `null` and treated as below bar,
+ *   so an untested account defaults to in_recovery. Since delivery is the only
+ *   demotion path, its evidence also expires — see
+ *   {@link DELIVERY_EVIDENCE_MAX_AGE_DAYS}.
  */
 
 export type LifecycleStatus =
@@ -38,6 +42,7 @@ export type LifecycleReason =
   | "deactivated_by_instantly"
   | "health_below_bar"
   | "delivery_below_bar"
+  | "delivery_evidence_stale"
   | "passed"
   | "reactivated";
 
@@ -49,13 +54,30 @@ export interface DeriveLifecycleInput {
   /** Instantly stat_warmup_score (0-100). */
   healthScore: number;
   /**
-   * True ⇔ every ESP of the account's latest placement test inboxed at
-   * >= PRODUCTION_DELIVERY_PCT_BAR (see {@link isDeliveryAtBar}).
+   * True ⇔ the account's latest placement test inboxed at
+   * >= PRODUCTION_DELIVERY_PCT_BAR POOLED across every ESP
+   * (see {@link isDeliveryAtBar}).
    * `null` = never placement-tested → treated as below bar.
    */
   deliveryAtBar: boolean | null;
+  /**
+   * When the account's latest placement test RAN. A passing but ancient result
+   * is not evidence — see {@link DELIVERY_EVIDENCE_MAX_AGE_DAYS}.
+   * `null` = never tested (already covered by `deliveryAtBar: null`).
+   */
+  deliveryTestedAt: Date | string | null;
+  /**
+   * The account's CURRENT lifecycle status, or `null` if never classified.
+   *
+   * Load-bearing: the health bar is asymmetric (entry-only), so the target state
+   * is NOT a pure function of the health/delivery scores alone — see
+   * {@link deriveLifecycle}.
+   */
+  currentStatus: LifecycleStatus | null;
   /** Set of brand/product domains from instantly_domain_policy. */
   domainPolicy: ReadonlySet<string>;
+  /** Clock, for the delivery-evidence freshness check. */
+  asOf: Date;
 }
 
 export interface Lifecycle {
@@ -64,26 +86,41 @@ export interface Lifecycle {
 }
 
 /**
- * The production bars — BOTH 95, both a single score over a single sample:
- *   - health: Instantly `stat_warmup_score` >= 95
- *   - delivery: >= 95% inbox POOLED across every ESP of the latest placement test
+ * The production bars — BOTH 90, both a single score over a single sample:
+ *   - health: Instantly `stat_warmup_score` >= 90
+ *   - delivery: >= 90% inbox POOLED across every ESP of the latest placement test
  *     (`Σinbox / Σseeds`), the same number the ops dashboard displays.
  *
  * Delivery was briefly gated PER ESP (every leg had to clear the bar) with a
  * 5-seed floor to stop Instantly's 1-3 seed "other" bucket from vetoing a good
- * account. That whole apparatus is gone: one test, one score, one bar. Measured
- * against the live fleet 2026-07-28, pooling costs nothing the per-ESP form
- * bought — the 198 Gmail-spam accounts this gate exists to catch top out at a
- * pooled 83.3%, so a 95% pooled bar still excludes every one, and the worst Gmail
- * leg that can hide behind a passing pooled score is 90.9%.
+ * account. That whole apparatus is gone: one test, one score, one bar.
  *
- * ⚠️ The 95 is what makes pooling safe, so the two are a pair. At a pooled 90 bar
- * the worst hideable Gmail leg drops to ~80% — genuine Gmail distrust passing as
- * a good account. Do NOT lower `PRODUCTION_DELIVERY_PCT_BAR` without re-measuring
- * the Gmail-leg distribution of the accounts it would newly admit.
+ * Both bars were 100 until 2026-07-28, then 95, then 90 (2026-08-12). The 95 →
+ * 90 move was driven by a QUANTIZATION artifact, not by a desire for a looser
+ * gate: a placement test seeds ~38-40 mailboxes, so the achievable pooled scores
+ * bracketing 95 are 36/38 = 94.7 and 37/38 = 97.4 — there is NOTHING between
+ * 94.9 and 97.4. A "95" bar therefore meant, in practice, "at most ONE seed in
+ * spam", and 7 accounts sat blocked at 94.7-94.9 (2 spam seeds) while 4 accounts
+ * already IN production sat at exactly 95.0. Dropping to 90 admits that cohort
+ * without reaching the next real cluster down (92.3, then 89.7).
+ *
+ * ⚠️ Pooling blends a strong Outlook leg into a weaker Gmail one, so the bar and
+ * the pooled form are a PAIR — re-measure before moving either. Measured against
+ * the live fleet 2026-08-12, at a 90 bar:
+ *   - 37 accounts qualify (28 under the 95 bar); the worst GMAIL leg admitted is
+ *     88.9%, against a 92.3% worst leg under 95.
+ *   - the ~187 Gmail-spam shared-IP accounts this gate exists to catch stay
+ *     excluded — the best of them pools to 89.7%.
+ *   - residual: the margin under the bar is now thin (89.7 vs 90), so test noise
+ *     will oscillate accounts across it week to week, and a seed split skewed
+ *     toward Outlook (max observed share 83%) could in theory pass a bad Gmail
+ *     leg. No account admitted today has such a split (all are 29-40% Outlook).
+ *
+ * Do NOT lower `PRODUCTION_DELIVERY_PCT_BAR` further without re-running that
+ * Gmail-leg distribution over the accounts it would newly admit.
  */
-export const PRODUCTION_HEALTH_BAR = 95;
-export const PRODUCTION_DELIVERY_PCT_BAR = 95;
+export const PRODUCTION_HEALTH_BAR = 90;
+export const PRODUCTION_DELIVERY_PCT_BAR = 90;
 
 /**
  * Warmup daily send volume pushed to Instantly per target lifecycle state.
@@ -91,25 +128,96 @@ export const PRODUCTION_DELIVERY_PCT_BAR = 95;
  * (campaign + warmup) stays at 50 — under Gmail's per-user daily sending limit,
  * which throttled the fleet with a `550-5.4.5 Daily user sending limit exceeded`
  * when it ran at 60/day (2026-07-19 incident).
+ *
+ * in_production warms at ZERO (2026-08-12, was 5): the fleet is capacity-bound,
+ * and those 5 slots are worth more as real sends. Warmup only exists to keep a
+ * mailbox's reputation alive while it is NOT carrying campaign traffic — an
+ * account sending 50 real emails a day is warming itself.
+ *
+ * ⚠️ This is only safe BECAUSE the health bar is entry-only. Instantly's warmup
+ * score is a rolling 7-day window over warmup activity, so with no warmup it
+ * RESETS TO 0 — it does not hold its last value (verified: a prod account whose
+ * warmup volume stopped went 100 → 44 → 0 in 48h with warmup still enabled).
+ * Under a symmetric bar, every in_production account would demote itself within
+ * a week. See {@link deriveLifecycle}.
  */
-export const IN_PRODUCTION_WARMUP_DAILY = 5; // fully warmed → mostly campaign send (45 + 5 = 50)
+export const IN_PRODUCTION_WARMUP_DAILY = 0; // self-warming via real volume (50 + 0 = 50)
 export const RECOVERY_WARMUP_DAILY = 30; // recover reputation → warm harder, send less (20 + 30 = 50)
 
 /**
- * Campaign daily max-send pushed to Instantly on a flip INTO in_production (45)
+ * Campaign daily max-send pushed to Instantly on a flip INTO in_production (50)
  * or in_recovery (20). Paired with the warmup volume above so the total stays 50.
  * deactivated_* states leave the campaign `daily_limit` untouched (null) so an
  * off account keeps draining its already-loaded queue at whatever limit it had.
  */
-export const IN_PRODUCTION_DAILY_LIMIT = 45;
+export const IN_PRODUCTION_DAILY_LIMIT = 50;
 export const RECOVERY_DAILY_LIMIT = 20;
+
+/**
+ * How long a placement result stays usable as evidence, in days.
+ *
+ * With the health bar entry-only, the weekly placement test is the ONLY signal
+ * that can demote a production account — and `isDeliveryAtBar` reads the LATEST
+ * test without regard for its age, so a passing-but-ancient result would pin an
+ * account in production forever if the placement cron silently stopped
+ * producing. (It has: the `run`/`sync` chaining bug left results up to 7 days
+ * stale.) Past this age the evidence is treated as unknown → in_recovery.
+ *
+ * 16 days = two consecutive missed Saturdays. It CANNOT fire in normal
+ * operation: tests run exactly 7 days apart and ingestion lags the run by 40min
+ * to 3 days (the test itself takes hours; `sync` is daily), so the freshest
+ * evidence legitimately reaches ~10 days old just before a new cycle lands.
+ * A 7-day cap would demote the whole fleet every Sunday morning.
+ */
+export const DELIVERY_EVIDENCE_MAX_AGE_DAYS = 16;
+
+/**
+ * True ⇔ the placement evidence is recent enough to still be believed.
+ * `null`/absent `testedAt` ⇒ false (no evidence is not fresh evidence).
+ */
+export function isDeliveryEvidenceFresh(
+  testedAt: Date | string | null | undefined,
+  asOf: Date,
+): boolean {
+  if (testedAt === null || testedAt === undefined) return false;
+  const t = testedAt instanceof Date ? testedAt : new Date(testedAt);
+  const ms = t.getTime();
+  if (Number.isNaN(ms)) return false;
+  return asOf.getTime() - ms <= DELIVERY_EVIDENCE_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+}
 
 /**
  * Pure lifecycle derivation. First match wins (order is load-bearing — a domain
  * in the policy is deactivated_by_user even if Instantly-disabled or under-warmed).
+ *
+ * ⚠️ THE HEALTH BAR IS ASYMMETRIC — it gates ENTRY into production, never
+ * CONTINUED MEMBERSHIP. An account already `in_production` is never demoted for
+ * a low warmup score; only delivery can put it back into recovery. This is not a
+ * leniency, it is what makes `IN_PRODUCTION_WARMUP_DAILY = 0` possible: Instantly
+ * computes the warmup score over a rolling 7-day window of warmup activity, so an
+ * account that stops warming has its score reset to 0 within a week. Under a
+ * symmetric bar the fleet would demote itself every 7 days, permanently.
+ *
+ * The trade is deliberate: the warmup score is a PROXY (does the warmup pool see
+ * us?), the placement test is the REAL measurement (does Gmail see us?), and the
+ * test does not depend on warmup — it sends its own seeds from the mailbox. So a
+ * production account keeps being graded weekly on the signal that matters, and
+ * the proxy is only used to prove a recovering account is ready to come back.
+ *
+ * Consequence: delivery is the sole demotion path, so its evidence must not be
+ * allowed to go stale unnoticed — hence {@link DELIVERY_EVIDENCE_MAX_AGE_DAYS}.
  */
 export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
-  const { instantlyStatus, domain, healthScore, deliveryAtBar, domainPolicy } = input;
+  const {
+    instantlyStatus,
+    domain,
+    healthScore,
+    deliveryAtBar,
+    deliveryTestedAt,
+    currentStatus,
+    domainPolicy,
+    asOf,
+  } = input;
 
   if (domainPolicy.has(domain)) {
     return { status: "deactivated_by_user", reason: "brand_domain" };
@@ -120,13 +228,18 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
       reason: "deactivated_by_instantly",
     };
   }
-  // deliveryAtBar === null (never tested) is treated as below-bar → in_recovery.
-  if (healthScore < PRODUCTION_HEALTH_BAR || deliveryAtBar !== true) {
-    // Health is checked first for the reason label; if health is fine but
-    // delivery is not (incl. never-tested), the block is delivery.
-    const reason: LifecycleReason =
-      healthScore < PRODUCTION_HEALTH_BAR ? "health_below_bar" : "delivery_below_bar";
-    return { status: "in_recovery", reason };
+  // Health gates ENTRY only: an account already in production keeps its place
+  // regardless of warmup score (it no longer warms — see the note above).
+  if (healthScore < PRODUCTION_HEALTH_BAR && currentStatus !== "in_production") {
+    return { status: "in_recovery", reason: "health_below_bar" };
+  }
+  // Delivery demotes from anywhere. Never tested → below bar.
+  if (deliveryAtBar !== true) {
+    return { status: "in_recovery", reason: "delivery_below_bar" };
+  }
+  // A passing result we can no longer vouch for is not a pass.
+  if (!isDeliveryEvidenceFresh(deliveryTestedAt, asOf)) {
+    return { status: "in_recovery", reason: "delivery_evidence_stale" };
   }
   return { status: "in_production", reason: "passed" };
 }
@@ -149,7 +262,7 @@ export function warmupDailyForStatus(status: LifecycleStatus): number | null {
 
 /**
  * Campaign daily max-send to PATCH into Instantly on a flip. in_production opens
- * the tap to 45, in_recovery caps it to 20 (paired with more warmup so the total
+ * the tap to 50, in_recovery caps it to 20 (paired with more warmup so the total
  * stays 50); deactivated_* states return `null` = do NOT touch the campaign
  * daily_limit, so an off account keeps draining its already-loaded queue.
  */
@@ -253,9 +366,9 @@ export function slowRampForAge(
  *
  * ONE score, no per-leg gating and no seed floor: sample size is deliberately not
  * a gate, so a small test still grades (see {@link PRODUCTION_DELIVERY_PCT_BAR}
- * for the fleet measurement that makes pooling at 95 safe). This is the same
- * number `summarizeEspRows` displays, so the ops row and the lifecycle reason
- * cannot contradict each other.
+ * for the fleet measurement behind the bar's value). This is the same number
+ * `summarizeEspRows` displays, so the ops row and the lifecycle reason cannot
+ * contradict each other.
  *
  * No test at all, or every row 0 seeds → false (delivery unknown → recovery).
  * Never fabricates a pass.

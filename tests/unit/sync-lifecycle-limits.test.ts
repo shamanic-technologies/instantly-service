@@ -58,12 +58,12 @@ function lifecycle(status: string): LifecycleView {
 }
 
 describe("selectLifecycleLimitPatches", () => {
-  it("in_production: patches only fields that drift from 45/5 (slowRamp null when undatable)", () => {
+  it("in_production: patches only fields that drift from 50/0 (slowRamp null when undatable)", () => {
     const accounts = [
-      acct("aligned@x.com", 45, 5), // aligned → no patch
-      acct("drift-both@x.com", 50, 10), // magnolia case → both drift
-      acct("drift-daily@x.com", 40, 5), // only daily drifts
-      acct("drift-warmup@x.com", 45, 50), // only warmup drifts
+      acct("aligned@x.com", 50, 0), // aligned → no patch
+      acct("drift-both@x.com", 45, 10), // both drift
+      acct("drift-daily@x.com", 40, 0), // only daily drifts
+      acct("drift-warmup@x.com", 50, 5), // only warmup drifts (the old 45/5 target)
     ];
     const lc = new Map<string, LifecycleView>([
       ["aligned@x.com", lifecycle("in_production")],
@@ -72,15 +72,29 @@ describe("selectLifecycleLimitPatches", () => {
       ["drift-warmup@x.com", lifecycle("in_production")],
     ]);
     expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
-      { email: "drift-both@x.com", warmup: 5, daily: 45, slowRamp: null },
-      { email: "drift-daily@x.com", warmup: null, daily: 45, slowRamp: null },
-      { email: "drift-warmup@x.com", warmup: 5, daily: null, slowRamp: null },
+      { email: "drift-both@x.com", warmup: 0, daily: 50, slowRamp: null },
+      { email: "drift-daily@x.com", warmup: null, daily: 50, slowRamp: null },
+      { email: "drift-warmup@x.com", warmup: 0, daily: null, slowRamp: null },
     ]);
   });
 
-  it("in_recovery: enforces 20/30 (the stuck-45/5 and stuck-45/50 cases)", () => {
+  it("a warmup target of 0 is a REAL patch, not 'no change' (0 vs null)", () => {
+    // The sweep encodes "leave it alone" as null, so the in_production warmup
+    // target of 0 must survive both the drift check and the `!== null` guard that
+    // decides whether to call Instantly. A truthiness check anywhere here would
+    // silently leave the whole fleet warming at its old value.
+    const accounts = [acct("warming@x.com", 50, 5)];
+    const lc = new Map<string, LifecycleView>([["warming@x.com", lifecycle("in_production")]]);
+    const patches = selectLifecycleLimitPatches(accounts, lc, asOf);
+    expect(patches).toEqual([
+      { email: "warming@x.com", warmup: 0, daily: null, slowRamp: null },
+    ]);
+    expect(patches[0].warmup).not.toBeNull();
+  });
+
+  it("in_recovery: enforces 20/30 (the stuck-50/0 and stuck-45/50 cases)", () => {
     const accounts = [
-      acct("stuck-a@x.com", 45, 5), // both drift → 20/30
+      acct("stuck-a@x.com", 50, 0), // a demoted account → back to 20/30
       acct("stuck-b@x.com", 45, 50), // both drift → 20/30
       acct("ok@x.com", 20, 30), // aligned → no patch
     ];
@@ -95,28 +109,28 @@ describe("selectLifecycleLimitPatches", () => {
     ]);
   });
 
-  it("caps a FRESH account's daily_limit at its age ramp, not the state's full 45", () => {
-    // 14d old → rampCapForAge(14d, 45) = 23. Gmail's real per-user quota is far
-    // below 45 for a young mailbox, so the age ceiling binds before the state one.
+  it("caps a FRESH account's daily_limit at its age ramp, not the state's full 50", () => {
+    // 14d old → rampCapForAge(14d, 50) = 25. Gmail's real per-user quota is far
+    // below 50 for a young mailbox, so the age ceiling binds before the state one.
     // slow ramp pre-aligned on both so the assertion isolates the daily field.
     const accounts = [
-      acct("fresh@x.com", 45, 5, { timestampCreated: created(14), enableSlowRamp: true }),
-      acct("mature@x.com", 45, 5, { timestampCreated: created(90), enableSlowRamp: false }),
+      acct("fresh@x.com", 50, 0, { timestampCreated: created(14), enableSlowRamp: true }),
+      acct("mature@x.com", 50, 0, { timestampCreated: created(90), enableSlowRamp: false }),
     ];
     const lc = new Map<string, LifecycleView>([
       ["fresh@x.com", lifecycle("in_production")],
       ["mature@x.com", lifecycle("in_production")],
     ]);
     expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
-      { email: "fresh@x.com", warmup: null, daily: 23, slowRamp: null },
+      { email: "fresh@x.com", warmup: null, daily: 25, slowRamp: null },
     ]);
   });
 
   it("does NOT re-scale its own output: an already-ramped fresh account is aligned", () => {
     // The ramp is computed off IN_PRODUCTION_DAILY_LIMIT, never off the account's
-    // current daily_limit — otherwise each sweep would shrink it again (45→23→12…).
+    // current daily_limit — otherwise each sweep would shrink it again (50→25→13…).
     const accounts = [
-      acct("fresh@x.com", 23, 5, { timestampCreated: created(14), enableSlowRamp: true }),
+      acct("fresh@x.com", 25, 0, { timestampCreated: created(14), enableSlowRamp: true }),
     ];
     const lc = new Map<string, LifecycleView>([["fresh@x.com", lifecycle("in_production")]]);
     expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([]);
@@ -152,10 +166,10 @@ describe("selectLifecycleLimitPatches", () => {
 
   it("slow ramp is age-driven: fresh→true when off, mature→false when on, aligned→skip", () => {
     const accounts = [
-      acct("fresh-off@x.com", 45, 5, { enableSlowRamp: false, timestampCreated: created(3) }),
-      acct("fresh-on@x.com", 45, 5, { enableSlowRamp: true, timestampCreated: created(3) }), // aligned
-      acct("mature-on@x.com", 45, 5, { enableSlowRamp: true, timestampCreated: created(90) }),
-      acct("mature-off@x.com", 45, 5, { enableSlowRamp: false, timestampCreated: created(90) }), // aligned
+      acct("fresh-off@x.com", 50, 0, { enableSlowRamp: false, timestampCreated: created(3) }),
+      acct("fresh-on@x.com", 50, 0, { enableSlowRamp: true, timestampCreated: created(3) }), // aligned
+      acct("mature-on@x.com", 50, 0, { enableSlowRamp: true, timestampCreated: created(90) }),
+      acct("mature-off@x.com", 50, 0, { enableSlowRamp: false, timestampCreated: created(90) }), // aligned
     ];
     const lc = new Map<string, LifecycleView>([
       ["fresh-off@x.com", lifecycle("in_production")],
@@ -164,7 +178,7 @@ describe("selectLifecycleLimitPatches", () => {
       ["mature-off@x.com", lifecycle("in_production")],
     ]);
     // The two 3-day-old accounts also drift on daily: their age ramp floors them
-    // at 5/day, well under the in_production 45 they currently carry.
+    // at 5/day, well under the in_production 50 they currently carry.
     expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
       { email: "fresh-off@x.com", warmup: null, daily: 5, slowRamp: true },
       { email: "fresh-on@x.com", warmup: null, daily: 5, slowRamp: null },
@@ -173,12 +187,14 @@ describe("selectLifecycleLimitPatches", () => {
   });
 
   it("treats an absent warmup object as drifting (needs the warmup patch)", () => {
-    const accounts = [acct("nowarmup@x.com", 45, undefined)];
+    // `undefined` (Instantly reported no warmup config) is NOT the same as 0
+    // (warmup explicitly off) — the former still needs the PATCH.
+    const accounts = [acct("nowarmup@x.com", 50, undefined)];
     const lc = new Map<string, LifecycleView>([
       ["nowarmup@x.com", lifecycle("in_production")],
     ]);
     expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
-      { email: "nowarmup@x.com", warmup: 5, daily: null, slowRamp: null },
+      { email: "nowarmup@x.com", warmup: 0, daily: null, slowRamp: null },
     ]);
   });
 });
@@ -193,11 +209,11 @@ describe("syncLifecycleLimits", () => {
 
   it("PATCHes drifting fields (warmup/daily/slowRamp), counts field- + account-level totals", async () => {
     mockListAccounts.mockResolvedValue([
-      acct("both@x.com", 50, 10), // → warmup 5 + daily 45
-      acct("aligned@x.com", 45, 5), // skip
-      acct("daily@x.com", 40, 5), // → daily only
+      acct("both@x.com", 45, 10), // → warmup 0 + daily 50
+      acct("aligned@x.com", 50, 0), // skip
+      acct("daily@x.com", 40, 0), // → daily only
       // 3 days old → slowRamp true AND daily floored to the 5/day ramp cap.
-      acct("ramp@x.com", 45, 5, { enableSlowRamp: false, timestampCreated: created(3) }),
+      acct("ramp@x.com", 50, 0, { enableSlowRamp: false, timestampCreated: created(3) }),
     ]);
     mockFetchLifecycle.mockResolvedValue(
       new Map<string, LifecycleView>([
@@ -212,9 +228,9 @@ describe("syncLifecycleLimits", () => {
     // default would make `created(3)` drift further from 3 days every day.
     const summary = await syncLifecycleLimits("key", undefined, asOf);
 
-    expect(mockSetWarmup).toHaveBeenCalledWith("key", "both@x.com", 5);
-    expect(mockSetDaily).toHaveBeenCalledWith("key", "both@x.com", 45);
-    expect(mockSetDaily).toHaveBeenCalledWith("key", "daily@x.com", 45);
+    expect(mockSetWarmup).toHaveBeenCalledWith("key", "both@x.com", 0);
+    expect(mockSetDaily).toHaveBeenCalledWith("key", "both@x.com", 50);
+    expect(mockSetDaily).toHaveBeenCalledWith("key", "daily@x.com", 50);
     expect(mockSetDaily).toHaveBeenCalledWith("key", "ramp@x.com", 5);
     expect(mockSetSlowRamp).toHaveBeenCalledTimes(1);
     expect(mockSetSlowRamp).toHaveBeenCalledWith("key", "ramp@x.com", true);
@@ -249,9 +265,11 @@ describe("syncLifecycleLimits", () => {
   });
 
   it("fails loud per account: a warmup PATCH error skips that account's daily + counts failed", async () => {
+    // Both drift on BOTH fields (warmup 10 → 0, daily 45 → 50) so the assertion
+    // below can show the daily PATCH being skipped for the account that threw.
     mockListAccounts.mockResolvedValue([
-      acct("boom@x.com", 50, 10),
-      acct("ok@x.com", 50, 10),
+      acct("boom@x.com", 45, 10),
+      acct("ok@x.com", 45, 10),
     ]);
     mockFetchLifecycle.mockResolvedValue(
       new Map<string, LifecycleView>([
@@ -267,7 +285,7 @@ describe("syncLifecycleLimits", () => {
 
     // boom's daily PATCH is skipped (warmup threw first); ok patches both.
     expect(mockSetDaily).toHaveBeenCalledTimes(1);
-    expect(mockSetDaily).toHaveBeenCalledWith("key", "ok@x.com", 45);
+    expect(mockSetDaily).toHaveBeenCalledWith("key", "ok@x.com", 50);
     expect(summary).toEqual({
       accountsRead: 2,
       accountsPatched: 1,

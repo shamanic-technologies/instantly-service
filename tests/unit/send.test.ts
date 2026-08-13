@@ -543,19 +543,19 @@ describe("pickSequentialFillAccount", () => {
   // ── AGE: the cap is age-scaled; the ORDER is unaffected by age ────────────────
 
   it("fills a fresh HEAD account only to its age-scaled cap, then moves on", () => {
-    // The head is 14 days old ⇒ cap 23, NOT 45. At 23 it is full even though its
-    // Instantly daily_limit says 45 — this is what keeps a young Google mailbox
-    // under Gmail's per-user quota (550-5.4.5).
+    // The head is 14 days old ⇒ cap 25 (half of the 50 base), NOT 45. At 25 it is
+    // full even though its Instantly daily_limit says 45 — this is what keeps a
+    // young Google mailbox under Gmail's per-user quota (550-5.4.5).
     const accounts = [
       acct({ email: "fresh@x.com", daily_limit: 45, timestamp_created: created(14) }),
       acct({ email: "mature@x.com", daily_limit: 45, timestamp_created: created(1) }),
     ];
     expect(
-      pickSequentialFillAccount(accounts, caps([["fresh@x.com", { sentToday: 22 }]]), asOf)
+      pickSequentialFillAccount(accounts, caps([["fresh@x.com", { sentToday: 24 }]]), asOf)
         .email,
     ).toBe("fresh@x.com");
     expect(
-      pickSequentialFillAccount(accounts, caps([["fresh@x.com", { sentToday: 23 }]]), asOf)
+      pickSequentialFillAccount(accounts, caps([["fresh@x.com", { sentToday: 25 }]]), asOf)
         .email,
     ).toBe("mature@x.com");
   });

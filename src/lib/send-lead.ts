@@ -172,7 +172,7 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
  * policy on the strength of that incident without re-reading this paragraph.
  *
  * The AGE CAP is kept intact — a fresh mailbox is filled to ITS ramped cap (5/day
- * at one day old), never to 45, so the sequence never trips Gmail's 550-5.4.5.
+ * at one day old), never to 50, so the sequence never trips Gmail's 550-5.4.5.
  *
  * When every account is at or over its cap the fleet is backlogged; we then fall
  * back to the least-overloaded `load / cap` so a send is never blocked, ties going
