@@ -74,6 +74,15 @@ export const instantlyCampaigns = pgTable(
     // back to NULL only if the send itself fails, so a later retry re-attempts.
     // NULL = the positive reply for this lead has never been forwarded.
     positiveReplyForwardedAt: timestamp("positive_reply_forwarded_at"),
+    // Which pipe dispatches THIS lead's sequence: 'instantly' (default) or 'smtp'
+    // (our own sender). FROZEN at send time from the chosen account's policy
+    // column, never re-read from the account afterwards — a sequence spans days,
+    // so following the live account policy would re-route a lead's followups
+    // mid-flight when an operator flips that mailbox, and a lead already pushed
+    // to Instantly has no local step bodies to send from, so its followups would
+    // simply stop. Same persist-at-write reasoning as `account_email` (0025).
+    // See src/lib/self-send/transport.ts.
+    sendTransport: text("send_transport").notNull().default("instantly"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -175,6 +184,13 @@ export const instantlyAccounts = pgTable("instantly_accounts", {
   // Cleared automatically if the account reappears. Prod at the time of writing
   // carried 10 such ghosts (266 stored vs 250 live).
   absentSince: timestamp("absent_since", { withTimezone: true }),
+  // ── Send transport POLICY ────────────────────────────────────────────────────
+  // 'instantly' (default) or 'smtp' (dispatch from this mailbox ourselves, over
+  // smtp.gmail.com with its Primeforge app password). This is the policy for NEW
+  // sends only: the decision is frozen onto instantly_campaigns.send_transport at
+  // send time, so flipping this never disturbs sequences already in flight, and
+  // flipping it back is the rollback. See src/lib/self-send/transport.ts.
+  sendTransport: text("send_transport").notNull().default("instantly"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -394,6 +410,44 @@ export const sequenceCosts = pgTable(
       table.instantlyCampaignId,
     ),
     uniqueIndex("sequence_costs_cost_id_idx").on(table.costId),
+  ],
+);
+
+// Silver: the steps of a sequence we dispatch OURSELVES (send_transport='smtp').
+//
+// This is canonical state, not a mirror. While Instantly dispatches, the step
+// bodies live there and `instantly_campaigns_config_raw` is our BRONZE copy of
+// what they hold; once we send, there is no upstream to mirror, so the steps
+// become ours — the same content moving UP a layer rather than a second bronze
+// competing with Instantly's.
+//
+// `step` is 1-based, matching `sequence_costs.step`. `delay_days` is the gap
+// from THIS step to the next, so the gap k → k+1 is `row(step=k).delay_days` and
+// the rows ordered by step drop straight into the existing `delayForGap`
+// resolver — the self-send scheduler, the fleet forecast and the per-account
+// queue breakdown keep one shared cadence source. NULL = fall back to
+// `STEP_GAP_CALENDAR_DAYS`, same as a missing bronze config delay.
+export const sequenceSteps = pgTable(
+  "sequence_steps",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    // Per-lead campaign id — the same globally-unique key `sequence_costs` and
+    // the silver event log already join on (1 campaign = 1 lead = 1 sequence).
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    step: integer("step").notNull(),
+    subject: text("subject"),
+    bodyHtml: text("body_html").notNull(),
+    delayDays: integer("delay_days"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    // Makes the per-step write idempotent: a redispatch re-upserts the same step
+    // instead of stacking a duplicate the scheduler would send twice.
+    uniqueIndex("sequence_steps_campaign_step_idx").on(
+      table.instantlyCampaignId,
+      table.step,
+    ),
   ],
 );
 
