@@ -129,6 +129,26 @@
           "event_type"
         ]
       },
+      "SelfSendDispatchAccepted": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ]
+      },
+      "SelfSendDispatchRequest": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Cap the batch. Omit to send everything currently due."
+          }
+        }
+      },
       "SendResponse": {
         "type": "object",
         "properties": {
@@ -3004,6 +3024,43 @@
               "text/html": {
                 "schema": {
                   "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/self-send/dispatch": {
+      "post": {
+        "summary": "Send the steps now due on the self-hosted SMTP transport",
+        "description": "Platform-scoped ops sweep. Reads the still-provisioned cost ledger for campaigns frozen to send_transport='smtp', picks each lead's next due step from the shared cadence, clips to what each mailbox can still send today (min(daily_limit, rampCapForAge) minus real sends so far), dispatches, and promotes a real `email_sent`. Idempotent: a step leaves the due set as soon as its hold is actualized. Returns 202 and runs in the background — watch for `self-send-dispatch: done`. 409 when SELF_SEND_DISPATCH_ENABLED is not 'true'.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelfSendDispatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Sweep accepted; runs in the background",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelfSendDispatchAccepted"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Disabled (SELF_SEND_DISPATCH_ENABLED is not 'true')",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }

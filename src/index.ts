@@ -20,6 +20,7 @@ import manualQualificationsRoutes from "./routes/manual-qualifications";
 import auditRoutes from "./routes/audit";
 import infraRoutes from "./routes/infra";
 import unsubscribeRoutes from "./routes/unsubscribe";
+import selfSendRoutes from "./routes/self-send";
 import { serviceAuth } from "./middleware/serviceAuth";
 import { requireOrgId } from "./middleware/requireOrgId";
 
@@ -58,6 +59,7 @@ app.use("/internal/accounts", serviceAuth, accountsRoutes);    // list all accou
 app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 app.use("/internal/audit", serviceAuth, auditRoutes);          // staff sending forecast (capacity vs scheduled volume)
 app.use("/internal/infra", serviceAuth, infraRoutes);          // provider inventory sync (Gandi / Mailforge / Primeforge / DFY)
+app.use("/internal/self-send", serviceAuth, selfSendRoutes);   // dispatch sweep for the smtp transport
 
 // ─── Org-scoped routes (x-api-key + x-org-id required, rest optional) ───────
 app.use("/orgs/send", serviceAuth, requireOrgId, sendRoutes);

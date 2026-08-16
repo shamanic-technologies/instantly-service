@@ -238,6 +238,52 @@ registry.registerPath({
   },
 });
 
+// ─── Self-send dispatch (ops trigger) ───────────────────────────────────────
+
+const SelfSendDispatchRequestSchema = z
+  .object({
+    limit: z
+      .number()
+      .int()
+      .optional()
+      .describe("Cap the batch. Omit to send everything currently due."),
+  })
+  .openapi("SelfSendDispatchRequest");
+
+const AcceptedResponseSchema = z
+  .object({ accepted: z.boolean() })
+  .openapi("SelfSendDispatchAccepted");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/self-send/dispatch",
+  summary: "Send the steps now due on the self-hosted SMTP transport",
+  description:
+    "Platform-scoped ops sweep. Reads the still-provisioned cost ledger for " +
+    "campaigns frozen to send_transport='smtp', picks each lead's next due step " +
+    "from the shared cadence, clips to what each mailbox can still send today " +
+    "(min(daily_limit, rampCapForAge) minus real sends so far), dispatches, and " +
+    "promotes a real `email_sent`. Idempotent: a step leaves the due set as soon " +
+    "as its hold is actualized. Returns 202 and runs in the background — watch " +
+    "for `self-send-dispatch: done`. 409 when SELF_SEND_DISPATCH_ENABLED is not " +
+    "'true'.",
+  request: {
+    body: {
+      content: { "application/json": { schema: SelfSendDispatchRequestSchema } },
+    },
+  },
+  responses: {
+    202: {
+      description: "Sweep accepted; runs in the background",
+      content: { "application/json": { schema: AcceptedResponseSchema } },
+    },
+    409: {
+      description: "Disabled (SELF_SEND_DISPATCH_ENABLED is not 'true')",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ─── Send ───────────────────────────────────────────────────────────────────
 
 export const SequenceStepSchema = z.object({
