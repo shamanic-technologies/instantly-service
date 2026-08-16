@@ -284,6 +284,33 @@ registry.registerPath({
   },
 });
 
+registry.registerPath({
+  method: "post",
+  path: "/internal/self-send/poll",
+  summary: "Read the self-send mailboxes and ingest replies and bounces",
+  description:
+    "Platform-scoped ops sweep. Connects to each mailbox on send_transport='smtp' " +
+    "over IMAP, correlates what it finds against the Message-Ids we know we sent, " +
+    "and promotes `reply_received`, `auto_reply_received` or `email_bounced` into " +
+    "silver. An autoresponder is deliberately NOT a reply: `reply_received` stops " +
+    "the sequence and cancels the lead's remaining holds, so filing an " +
+    "out-of-office as one would end the outreach for a prospect who never " +
+    "engaged. Idempotent without a cursor — each run re-reads an overlapping " +
+    "window and the unique (account, message_id) bronze index absorbs the " +
+    "overlap. Returns 202 and runs in the background; watch for " +
+    "`self-send-poll: done`. 409 when SELF_SEND_DISPATCH_ENABLED is not 'true'.",
+  responses: {
+    202: {
+      description: "Poll accepted; runs in the background",
+      content: { "application/json": { schema: AcceptedResponseSchema } },
+    },
+    409: {
+      description: "Disabled (SELF_SEND_DISPATCH_ENABLED is not 'true')",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ─── Send ───────────────────────────────────────────────────────────────────
 
 export const SequenceStepSchema = z.object({

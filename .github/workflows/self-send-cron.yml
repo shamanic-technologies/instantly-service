@@ -1,6 +1,14 @@
-name: Self-send dispatch (hourly)
+name: Self-send (hourly)
 
-# Sends the steps that have come due on the self-hosted SMTP transport.
+# Reads the self-send mailboxes, then sends the steps that have come due.
+#
+# ONE step, not two. The dispatch run polls the mailboxes first, awaited inside
+# the same background run, so a prospect who replied since the last sweep has
+# their sequence stopped BEFORE we select what to send — we never email someone
+# who has already answered. Two separate 202 endpoints could not guarantee that:
+# both answer immediately and work in the background, so the poll would still be
+# running while dispatch selected, and the ordering would be hoped-for rather
+# than real. /internal/self-send/poll stays available for a manual read.
 #
 # Hourly rather than daily because a step's due moment is a timestamp, not a
 # date: a lead contacted at 09:00 with a 2-day gap comes due at 09:00 two days

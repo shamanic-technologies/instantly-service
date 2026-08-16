@@ -13,6 +13,7 @@
 import { Router, type Request, type Response } from "express";
 
 import { runDispatch } from "../lib/self-send/dispatch-worker";
+import { runPoll } from "../lib/self-send/imap-poller";
 
 const router = Router();
 
@@ -39,9 +40,38 @@ router.post("/dispatch", async (req: Request, res: Response) => {
   // request timeout. Watch the logs for `self-send-dispatch: done`.
   res.status(202).json({ accepted: true });
 
-  runDispatch({ limit }).catch((error) => {
+  // Poll the mailboxes first, awaited inside the same background run, so a
+  // reply that landed since the last sweep stops its sequence BEFORE we select
+  // what to send. Two separate 202 endpoints could not guarantee that ordering.
+  runDispatch({ limit, pollFirst: true }).catch((error) => {
     console.error(
       `[instantly-service] self-send-dispatch failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  });
+});
+
+/**
+ * Read every self-send mailbox and ingest what came back.
+ *
+ * Gated on the SAME switch as dispatch, deliberately. The two are one feature:
+ * sending without reading would keep emailing people who have already replied,
+ * which is worse than not sending at all.
+ */
+router.post("/poll", async (_req: Request, res: Response) => {
+  if (!isSelfSendDispatchEnabled()) {
+    res.status(409).json({
+      error: "Self-send is disabled (SELF_SEND_DISPATCH_ENABLED is not 'true')",
+    });
+    return;
+  }
+
+  res.status(202).json({ accepted: true });
+
+  runPoll().catch((error) => {
+    console.error(
+      `[instantly-service] self-send-poll failed: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
