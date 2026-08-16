@@ -493,6 +493,46 @@ export const smtpDispatchRaw = pgTable(
   ],
 );
 
+// Bronze: a message that arrived in one of our own sending mailboxes.
+//
+// Once we dispatch ourselves, nobody tells us a prospect replied or a message
+// bounced — it simply lands as mail, and we read it. Every message the poller
+// looks at is stored, INCLUDING the ones classified `unrelated`: these are real
+// mailboxes that also receive ordinary mail, and keeping the ones we ignored is
+// what makes "why was this reply never picked up?" answerable later.
+//
+// `(account_email, message_id)` is unique, which is the whole dedup strategy: the
+// poller re-reads an overlapping window every run rather than trusting a stored
+// cursor, and the index makes a re-read a no-op. A cursor that drifts silently
+// loses replies; a window that overlaps costs nothing.
+export const imapMessagesRaw = pgTable(
+  "imap_messages_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    accountEmail: text("account_email").notNull(),
+    messageId: text("message_id").notNull(),
+    fromAddress: text("from_address"),
+    subject: text("subject"),
+    // 'reply' | 'auto_reply' | 'bounce' | 'unrelated'
+    kind: text("kind").notNull(),
+    // The send this message answers, once correlated through our own Message-Id.
+    // Null for `unrelated`.
+    instantlyCampaignId: text("instantly_campaign_id"),
+    step: integer("step"),
+    payload: jsonb("payload").notNull(),
+    receivedAt: timestamp("received_at"),
+    polledAt: timestamp("polled_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("imap_messages_raw_account_message_idx").on(
+      table.accountEmail,
+      table.messageId,
+    ),
+    index("imap_messages_raw_campaign_idx").on(table.instantlyCampaignId),
+    index("imap_messages_raw_polled_at_idx").on(table.polledAt),
+  ],
+);
+
 // Bronze: an HTTP hit from a recipient on a link we minted (opt-out click now;
 // open pixel and click redirect once tracking lands).
 //
