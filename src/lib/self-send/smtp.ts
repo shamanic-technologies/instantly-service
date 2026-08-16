@@ -63,7 +63,11 @@ export function extractReplyCode(error: unknown): number | null {
   const basic = /(?:^|\s)([45]\d\d)(?:[\s-]|$)/.exec(response);
   if (basic?.[1]) return Number(basic[1]);
 
-  const enhanced = /(?:^|\s)([45])\.\d+\.\d+/.exec(response);
+  // Hyphen as well as whitespace: SMTP's multiline continuation form writes the
+  // enhanced code straight after the basic one (`550-5.4.5 ...`). The basic
+  // branch above already catches that shape, but keeping the two separators
+  // consistent means a reply carrying ONLY an enhanced code still classifies.
+  const enhanced = /(?:^|[\s-])([45])\.\d+\.\d+/.exec(response);
   if (enhanced?.[1]) return Number(enhanced[1]) * 100;
 
   return null;
