@@ -89,7 +89,18 @@ export const REPLY_CLASSIFICATION_MAP: Record<string, "positive" | "negative" | 
 const LEAD_STATUS_BOUNCED = -1;
 const LEAD_STATUS_UNSUBSCRIBED = -2;
 
-export type EventSource = "webhook" | "poll_emails" | "poll_leads" | "inferred" | "manual";
+// `self_send` = observed by our own sender rather than reported by Instantly: an
+// SMTP dispatch, an opt-out hit on a link we minted, a reply pulled over IMAP.
+// A distinct value rather than reusing `webhook`, so the ingestion path stays
+// readable in silver — and deliberately NOT `manual`, which carries the separate
+// meaning that a human qualification wins a reply-classification tie.
+export type EventSource =
+  | "webhook"
+  | "poll_emails"
+  | "poll_leads"
+  | "inferred"
+  | "manual"
+  | "self_send";
 
 export interface PromoteEventInput {
   eventType: string;

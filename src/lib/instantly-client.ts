@@ -49,9 +49,18 @@ export interface Account {
   signature?: string;
   stat_warmup_score?: number;
   daily_limit?: number;
-  // Instantly's ESP provider code for the mailbox connection. Descriptive of
-  // the account TYPE (how it sends), not its provisioning class: 1=Google,
-  // 2=Microsoft, 3/4=IMAP/SMTP. Absent on older account payloads → null type.
+  // Instantly's ESP provider code for the mailbox CONNECTION. Descriptive of how
+  // the account sends, not of its provisioning class (DFY-prewarmed vs legacy
+  // shared-IP is not exposed on the account at all): 1=IMAP, 2=Google,
+  // 3/4=Microsoft. Absent on older account payloads → null type.
+  //
+  // This comment used to state 1=Google / 2=Microsoft, which is INVERTED and
+  // contradicts `mapProviderCode` (the code was always right — issue #497 fixed
+  // it there and this line was missed, as was the CLAUDE.md line until #557).
+  // Prod confirms: the 185 `provider_code 1` accounts are the growthagency.*
+  // Gandi/Mailforge IMAP relay fleet, the 81 `provider_code 2` ones are Google.
+  // Load-bearing for the self-send transport, which only works on Google
+  // mailboxes — reading it backwards would point the sender at the IMAP fleet.
   provider_code?: number;
   // Warmup config object. Present on BOTH the LIST (GET /accounts) and the
   // single-account (GET /accounts/{email}) responses — but the LIST returns it
