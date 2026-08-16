@@ -453,6 +453,78 @@ export const sequenceSteps = pgTable(
 
 // ─── Bronze tables (raw external sources, append-only, never mutated) ─────────
 
+// Bronze: the raw verdict of an SMTP server on a message we dispatched ourselves.
+//
+// A genuinely PARALLEL bronze source to Instantly's webhooks, not a replacement:
+// both promote into the same silver (`instantly_events`), exactly as the webhook
+// path and the reconcile-poll path already converge on `promoteEvent`. Named for
+// the TRANSPORT rather than the vendor — these are not Instantly payloads.
+//
+// One row per dispatch ATTEMPT, success or failure, so a step that was refused
+// leaves the same evidence trail as one that went out. `outcome` is 'sent' |
+// 'permanent' | 'transient': the SMTP reply class is the discriminator this
+// codebase already uses for account health (5xx = real rejection, 4xx = retry).
+export const smtpDispatchRaw = pgTable(
+  "smtp_dispatch_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    accountEmail: text("account_email").notNull(),
+    step: integer("step").notNull(),
+    outcome: text("outcome").notNull(),
+    // RFC 5322 Message-Id the server accepted. Threads the NEXT step of this
+    // sequence (In-Reply-To / References) and correlates an async DSN bounce
+    // back to the dispatch that caused it. Null on a failed attempt.
+    messageId: text("message_id"),
+    responseCode: integer("response_code"),
+    // The server's reply line, verbatim. Bronze keeps what it said, not our
+    // reading of it — the classification lives in `outcome` beside it.
+    response: text("response"),
+    payload: jsonb("payload").notNull(),
+    dispatchedAt: timestamp("dispatched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("smtp_dispatch_raw_campaign_idx").on(table.instantlyCampaignId),
+    index("smtp_dispatch_raw_account_idx").on(table.accountEmail),
+    index("smtp_dispatch_raw_dispatched_at_idx").on(table.dispatchedAt),
+    // Correlates an inbound DSN back to the dispatch it bounced from.
+    index("smtp_dispatch_raw_message_id_idx").on(table.messageId),
+  ],
+);
+
+// Bronze: an HTTP hit from a recipient on a link we minted (opt-out click now;
+// open pixel and click redirect once tracking lands).
+//
+// Bronze because it is an external request, and because `promoteEvent` requires
+// real provenance — a silver event has to point at the bronze row that caused
+// it, so an unsubscribe cannot be promoted without recording the hit first.
+// One `kind` column rather than a table per link type: they are the same kind of
+// fact (a recipient hit a URL we signed) and differ only in which one.
+export const trackingHitsRaw = pgTable(
+  "tracking_hits_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    // 'unsubscribe' | 'open' | 'click'
+    kind: text("kind").notNull(),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    step: integer("step"),
+    // GET or POST. An opt-out is only ACTED on for POST: corporate link scanners
+    // fetch every URL in an inbound email, so acting on GET would unsubscribe
+    // prospects who never clicked. The GET is still recorded — it is a real hit,
+    // and it is the evidence that the scanner (not the human) came first.
+    method: text("method"),
+    userAgent: text("user_agent"),
+    payload: jsonb("payload").notNull(),
+    receivedAt: timestamp("received_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("tracking_hits_raw_campaign_idx").on(table.instantlyCampaignId),
+    index("tracking_hits_raw_received_at_idx").on(table.receivedAt),
+  ],
+);
+
 // Bronze 1: webhook payloads received from Instantly
 export const instantlyWebhookPayloadsRaw = pgTable(
   "instantly_webhook_payloads_raw",

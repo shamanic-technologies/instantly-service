@@ -19,6 +19,7 @@ import transferBrandRoutes from "./routes/transfer-brand";
 import manualQualificationsRoutes from "./routes/manual-qualifications";
 import auditRoutes from "./routes/audit";
 import infraRoutes from "./routes/infra";
+import unsubscribeRoutes from "./routes/unsubscribe";
 import { serviceAuth } from "./middleware/serviceAuth";
 import { requireOrgId } from "./middleware/requireOrgId";
 
@@ -42,6 +43,11 @@ app.get("/openapi.json", (_req, res) => {
 // ─── Public routes (no auth) ────────────────────────────────────────────────
 app.use(healthRoutes);
 app.use("/webhooks", webhooksRoutes);
+// Opt-out link carried by mail we dispatch ourselves. Necessarily unauthenticated
+// — a prospect clicks it from their inbox — and gated entirely by the HMAC in the
+// URL. Inert until an account is flipped to send_transport='smtp', since no email
+// in flight carries the link yet.
+app.use("/u", unsubscribeRoutes);
 
 // ─── Protected public routes (x-api-key only) ──────────────────────────────
 app.use("/public", serviceAuth, analyticsPublicRoutes);
