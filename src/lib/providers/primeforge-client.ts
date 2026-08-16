@@ -81,6 +81,13 @@ export interface PrimeforgeRawMailbox {
   domainId?: string;
   status?: string;
   createdAt?: string;
+  /**
+   * 16-character Google app password, spaces included as the vendor formats it.
+   * Authenticates BOTH smtp.gmail.com and imap.gmail.com for this mailbox — the
+   * sibling `password` field is the interactive login password and both hosts
+   * reject it. Never log this value.
+   */
+  appPassword?: string;
 }
 
 // ─── Normalisers (pure) ───────────────────────────────────────────────────────
@@ -159,6 +166,17 @@ export async function listPrimeforgeRawDomains(key: string): Promise<PrimeforgeR
   return paginate<PrimeforgeRawDomain>("/domains", key);
 }
 
+/**
+ * Every mailbox in the workspace, app passwords included.
+ *
+ * Paginated, so it returns the full fleet — the forge CLI and the MCP wrapper
+ * both silently ignore `offset`/`limit` and hand back only the first 10, which
+ * is why the self-send credential lookup goes through the direct REST API here.
+ */
+export async function listPrimeforgeRawMailboxes(key: string): Promise<PrimeforgeRawMailbox[]> {
+  return paginate<PrimeforgeRawMailbox>("/mailboxes", key);
+}
+
 export async function fetchPrimeforgeInventory(key: string): Promise<ProviderInventory> {
   const rawDomains = await listPrimeforgeRawDomains(key);
   const domains = rawDomains
@@ -170,7 +188,7 @@ export async function fetchPrimeforgeInventory(key: string): Promise<ProviderInv
     if (raw.id && raw.sld && raw.tld) domainById.set(raw.id, `${raw.sld}.${raw.tld}`.toLowerCase());
   }
 
-  const rawMailboxes = await paginate<PrimeforgeRawMailbox>("/mailboxes", key);
+  const rawMailboxes = await listPrimeforgeRawMailboxes(key);
   const mailboxes = rawMailboxes
     .map((raw) => normalizePrimeforgeMailbox(raw, domainById))
     .filter((m): m is ProviderMailbox => m !== null);
