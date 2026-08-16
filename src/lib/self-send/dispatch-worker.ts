@@ -21,6 +21,7 @@ import type { Account } from "../instantly-client";
 import type { CallerInfo } from "../key-client";
 import { resolveMailboxCredential, type MailboxCredential } from "./mailbox-credentials";
 import { buildMessage } from "./message";
+import { runPoll } from "./imap-poller";
 import { dispatchMessage, SmtpDispatchError } from "./smtp";
 import {
   classifyPermanentFailure,
@@ -253,8 +254,31 @@ async function recordDispatch(values: {
  * continues — a single dead recipient domain must not stop the fleet's sending
  * for the day. Nothing is swallowed; every outcome lands in bronze.
  */
-export async function runDispatch(options: { limit?: number; asOf?: Date } = {}): Promise<DispatchSummary> {
+export async function runDispatch(
+  options: { limit?: number; asOf?: Date; pollFirst?: boolean } = {},
+): Promise<DispatchSummary> {
   const asOf = options.asOf ?? new Date();
+
+  // Read the mailboxes BEFORE deciding what to send, in the same run and
+  // awaited. A prospect who replied since the last sweep has their sequence
+  // stopped by the poll, so they are already out of the queue by the time we
+  // select — we never email someone who has already answered.
+  //
+  // This has to happen HERE rather than as an earlier cron step: both endpoints
+  // answer 202 and work in the background, so a separate poll step would still
+  // be running while dispatch selected, and the ordering would be hoped-for
+  // rather than real. A poll failure is logged and does not block the send — the
+  // worst case is one extra email to someone who replied within the window,
+  // which is the same latency the webhook path already carries.
+  if (options.pollFirst) {
+    await runPoll({ asOf }).catch((error) => {
+      console.error(
+        `[instantly-service] self-send: pre-dispatch poll failed, sending anyway: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+  }
 
   const sequences = await loadPendingSequences();
   const { capacities, accounts } = await loadSendingAccounts(asOf);
