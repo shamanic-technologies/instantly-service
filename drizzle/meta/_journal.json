@@ -253,6 +253,13 @@
       "when": 1784764800000,
       "tag": "0035_self_send_transport",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1784851200000,
+      "tag": "0036_smtp_dispatch_bronze",
+      "breakpoints": true
     }
   ]
 }

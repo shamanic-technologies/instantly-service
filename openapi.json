@@ -2913,6 +2913,104 @@
         }
       }
     },
+    "/u/{payload}/{signature}": {
+      "get": {
+        "summary": "Render the opt-out confirmation for a self-sent email",
+        "description": "Public and unauthenticated — a prospect clicks it from their inbox — so the HMAC in the URL is the entire gate. This endpoint does NOT unsubscribe: corporate link scanners fetch every URL in an inbound email before the human sees it, so acting on GET would opt out prospects who never clicked. It returns an HTML page carrying a POST form. An invalid signature and an unknown campaign both return 404, so the route cannot enumerate campaigns.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "base64url of `<instantlyCampaignId>:<leadEmail>`"
+            },
+            "required": true,
+            "description": "base64url of `<instantlyCampaignId>:<leadEmail>`",
+            "name": "payload",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "base64url HMAC-SHA256 of the payload"
+            },
+            "required": true,
+            "description": "base64url HMAC-SHA256 of the payload",
+            "name": "signature",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "HTML confirmation page",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Invalid signature or malformed payload",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Opt a recipient out of a self-sent sequence",
+        "description": "Performs the opt-out, and is also the RFC 8058 one-click target advertised by the List-Unsubscribe-Post header. Promotes a real `lead_unsubscribed` silver event through the shared promoteEvent path, so the existing machinery stops the sequence, cancels the remaining provisioned holds and marks the campaign terminal.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "base64url of `<instantlyCampaignId>:<leadEmail>`"
+            },
+            "required": true,
+            "description": "base64url of `<instantlyCampaignId>:<leadEmail>`",
+            "name": "payload",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "base64url HMAC-SHA256 of the payload"
+            },
+            "required": true,
+            "description": "base64url HMAC-SHA256 of the payload",
+            "name": "signature",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "HTML confirmation that the recipient was removed",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Invalid signature or malformed payload",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/send": {
       "post": {
         "summary": "Send email via Instantly campaign",

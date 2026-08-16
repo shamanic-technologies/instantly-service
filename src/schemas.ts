@@ -194,6 +194,50 @@ registry.registerPath({
   },
 });
 
+// ─── Unsubscribe (self-send opt-out) ────────────────────────────────────────
+
+const UnsubscribePathParams = z.object({
+  payload: z
+    .string()
+    .describe("base64url of `<instantlyCampaignId>:<leadEmail>`"),
+  signature: z.string().describe("base64url HMAC-SHA256 of the payload"),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/u/{payload}/{signature}",
+  summary: "Render the opt-out confirmation for a self-sent email",
+  description:
+    "Public and unauthenticated — a prospect clicks it from their inbox — so the " +
+    "HMAC in the URL is the entire gate. This endpoint does NOT unsubscribe: " +
+    "corporate link scanners fetch every URL in an inbound email before the human " +
+    "sees it, so acting on GET would opt out prospects who never clicked. It " +
+    "returns an HTML page carrying a POST form. An invalid signature and an " +
+    "unknown campaign both return 404, so the route cannot enumerate campaigns.",
+  request: { params: UnsubscribePathParams },
+  responses: {
+    200: { description: "HTML confirmation page", content: { "text/html": { schema: z.string() } } },
+    404: { description: "Invalid signature or malformed payload", content: { "text/html": { schema: z.string() } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/u/{payload}/{signature}",
+  summary: "Opt a recipient out of a self-sent sequence",
+  description:
+    "Performs the opt-out, and is also the RFC 8058 one-click target advertised " +
+    "by the List-Unsubscribe-Post header. Promotes a real `lead_unsubscribed` " +
+    "silver event through the shared promoteEvent path, so the existing machinery " +
+    "stops the sequence, cancels the remaining provisioned holds and marks the " +
+    "campaign terminal.",
+  request: { params: UnsubscribePathParams },
+  responses: {
+    200: { description: "HTML confirmation that the recipient was removed", content: { "text/html": { schema: z.string() } } },
+    404: { description: "Invalid signature or malformed payload", content: { "text/html": { schema: z.string() } } },
+  },
+});
+
 // ─── Send ───────────────────────────────────────────────────────────────────
 
 export const SequenceStepSchema = z.object({
