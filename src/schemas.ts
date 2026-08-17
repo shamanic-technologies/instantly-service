@@ -1358,6 +1358,12 @@ const AccountHealthSchema = z
       .describe(
         "Q0-next — queued STEPS projected today (UTC) or overdue. Each step's date = lastSentAt + the CHAINED configured delays across every hop up to it (nominal-cadence LOWER BOUND that COMPOUNDS across steps; real Instantly dispatch slips later under throttling), so this reads as 'step DUE today-or-overdue', not a guaranteed send today.",
       ),
+    queuedOverdue: z
+      .number()
+      .int()
+      .describe(
+        "BACKLOG subset of queuedNextToday — queued STEPS whose nominal due date is STRICTLY BEFORE today (UTC), i.e. owed on an earlier day and never dispatched. Always <= queuedNextToday, and NOT part of the four-bucket partition of queueSize (it re-counts steps already in queuedNextToday — do not add it to the sum). Separates 'due today' from 'behind'; a rising value means Instantly is dispatching slower than we assign.",
+      ),
     queuedNextTomorrow: z
       .number()
       .int()

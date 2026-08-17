@@ -112,6 +112,7 @@ describe("fetchQueueBreakdownByAccount — per-STEP partition", () => {
       firstUnsentSequences: 1,
       nextToday: 1,
       nextTomorrow: 0,
+      nextOverdue: 0,
       nextLater: 1,
     });
     // Invariant: the four buckets sum to STEPS (not sequences).
@@ -124,6 +125,7 @@ describe("fetchQueueBreakdownByAccount — per-STEP partition", () => {
       firstUnsentSequences: 0,
       nextToday: 0,
       nextTomorrow: 0,
+      nextOverdue: 0,
       nextLater: 1,
     });
 
@@ -232,5 +234,39 @@ describe("fetchAccountCapacityCached — 60s TTL cache", () => {
     clearStatsCache();
     await fetchAccountCapacityCached();
     expect(mockExecute.mock.calls.length).toBe(4); // 2 per uncached snapshot
+  });
+});
+
+describe("fetchAccountCapacityCached — effective-day scoping", () => {
+  it("does NOT share a snapshot across two different effective days", async () => {
+    mockExecute.mockResolvedValue([]);
+    // A weekend caller measures Monday; a Monday caller measures Monday too —
+    // same key, one snapshot. A Friday caller measures Friday — different key.
+    await fetchAccountCapacityCached(new Date("2026-08-17T00:00:00.000Z"));
+    await fetchAccountCapacityCached(new Date("2026-08-17T09:30:00.000Z"));
+    expect(mockExecute.mock.calls.length).toBe(2); // one uncached snapshot
+
+    await fetchAccountCapacityCached(new Date("2026-08-21T09:30:00.000Z"));
+    expect(mockExecute.mock.calls.length).toBe(4); // a second, separate snapshot
+  });
+
+  it("threads the effective day into the queued-bucket projection", async () => {
+    const DAY = 86_400_000;
+    const monday = new Date("2026-08-17T00:00:00.000Z");
+    // A followup nominally due on Saturday 08-15. Measured for Saturday it is
+    // due "today"; measured for Monday it is ALSO in the today-or-overdue
+    // bucket — which is the point: Monday is what has to dispatch it.
+    mockExecute.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        account_email: "a@x.com",
+        last_sent_step: 1,
+        last_sent_at: new Date(monday.getTime() - 5 * DAY).toISOString(), // Wed 08-12
+        provisioned_steps: [2],
+        step_config: [{ delay: 3 }], // due Sat 08-15
+      },
+    ]);
+
+    const cap = await fetchAccountCapacity(monday);
+    expect(cap.get("a@x.com")?.q0next).toBe(1);
   });
 });
