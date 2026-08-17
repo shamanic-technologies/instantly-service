@@ -13,6 +13,7 @@ import {
 } from "../../src/lib/self-send/mailbox-credentials";
 import {
   stepDelaysFromRows,
+  stepRowsFromSendPayload,
   stepsFromSequenceConfig,
 } from "../../src/lib/self-send/sequence-steps";
 import { delayForGap, STEP_GAP_CALENDAR_DAYS } from "../../src/lib/sending-forecast";
@@ -195,5 +196,66 @@ describe("stepDelaysFromRows", () => {
 
   it("returns an empty array for no rows", () => {
     expect(stepDelaysFromRows([])).toEqual([]);
+  });
+});
+
+// ─── Send-payload → persisted rows (the off-by-one) ───────────────────────────
+
+describe("stepRowsFromSendPayload", () => {
+  const PAYLOAD = [
+    { step: 1, bodyHtml: "<p>one</p>", daysSinceLastStep: 0 },
+    { step: 2, bodyHtml: "<p>two</p>", daysSinceLastStep: 2 },
+    { step: 3, bodyHtml: "<p>three</p>", daysSinceLastStep: 5 },
+  ];
+
+  // The payload's daysSinceLastStep is the delay BEFORE its step; our delay_days
+  // is the delay AFTER it. Reading it straight through shifts every gap by one.
+  it("shifts the delay so a row carries the gap to its NEXT step", () => {
+    expect(stepRowsFromSendPayload("Quick question", PAYLOAD)).toEqual([
+      { step: 1, subject: "Quick question", bodyHtml: "<p>one</p>", delayDays: 2 },
+      { step: 2, subject: null, bodyHtml: "<p>two</p>", delayDays: 5 },
+      { step: 3, subject: null, bodyHtml: "<p>three</p>", delayDays: null },
+    ]);
+  });
+
+  it("round-trips into delayForGap with the gaps the caller asked for", () => {
+    const delays = stepDelaysFromRows(stepRowsFromSendPayload("s", PAYLOAD));
+
+    expect(delayForGap(1, delays)).toBe(2);
+    expect(delayForGap(2, delays)).toBe(5);
+    // Nothing after the last step; falls back rather than inventing a gap.
+    expect(delayForGap(3, delays)).toBe(STEP_GAP_CALENDAR_DAYS);
+  });
+
+  it("discards step 1's own daysSinceLastStep — nothing precedes it", () => {
+    const rows = stepRowsFromSendPayload("s", [
+      { step: 1, bodyHtml: "<p>one</p>", daysSinceLastStep: 99 },
+      { step: 2, bodyHtml: "<p>two</p>", daysSinceLastStep: 3 },
+    ]);
+    expect(rows[0]?.delayDays).toBe(3);
+  });
+
+  it("sorts by step and carries the subject on step 1 only", () => {
+    const rows = stepRowsFromSendPayload("Subject", [
+      { step: 2, bodyHtml: "<p>two</p>", daysSinceLastStep: 4 },
+      { step: 1, bodyHtml: "<p>one</p>", daysSinceLastStep: 0 },
+    ]);
+    expect(rows.map((r) => r.subject)).toEqual(["Subject", null]);
+    expect(rows[0]?.delayDays).toBe(4);
+  });
+
+  it("drops a body-less step and renumbers contiguously", () => {
+    const rows = stepRowsFromSendPayload("s", [
+      { step: 1, bodyHtml: "<p>one</p>", daysSinceLastStep: 0 },
+      { step: 2, bodyHtml: "", daysSinceLastStep: 2 },
+      { step: 3, bodyHtml: "<p>three</p>", daysSinceLastStep: 5 },
+    ]);
+    expect(rows.map((r) => r.step)).toEqual([1, 2]);
+    // The surviving gap is the one before the step that actually follows.
+    expect(rows[0]?.delayDays).toBe(5);
+  });
+
+  it("returns an empty list for an empty sequence", () => {
+    expect(stepRowsFromSendPayload("s", [])).toEqual([]);
   });
 });

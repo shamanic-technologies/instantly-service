@@ -7,6 +7,7 @@ const mockDbInsertValues = vi.fn();
 const mockDbDelete = vi.fn();
 const mockOnConflictDoUpdate = vi.fn();
 const mockRefreshLeadStatusCurrent = vi.fn();
+const mockDbUpdateSet = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
@@ -16,17 +17,24 @@ vi.mock("../../src/db", () => ({
       return {
         // Reservation upsert (onConflictDoUpdate) and the lead insert
         // (onConflictDoNothing) both resolve via the shared returning queue.
-        onConflictDoUpdate: (cfg: unknown) => { mockOnConflictDoUpdate(cfg); return { returning: mockDbReturning }; },
+        onConflictDoUpdate: (cfg: unknown) => { mockOnConflictDoUpdate(cfg); return Object.assign(Promise.resolve([]), { returning: mockDbReturning }); },
         onConflictDoNothing: () => ({ returning: mockDbReturning }),
         returning: mockDbReturning,
       };
     }}),
-    update: () => ({ set: () => ({ where: vi.fn().mockResolvedValue([{}]) }) }),
+    update: () => ({ set: (v: unknown) => { mockDbUpdateSet(v); return { where: vi.fn().mockResolvedValue([{}]) }; } }),
     delete: () => ({ where: (...args: unknown[]) => { mockDbDelete(...args); return Promise.resolve([]); } }),
   },
 }));
 
 vi.mock("../../src/db/schema", () => ({
+  sequenceSteps: {
+    instantlyCampaignId: "instantly_campaign_id",
+    step: "step",
+    subject: "subject",
+    bodyHtml: "body_html",
+    delayDays: "delay_days",
+  },
   instantlyCampaigns: {
     id: "id",
     campaignId: "campaign_id",
@@ -1526,6 +1534,64 @@ describe("POST /send", () => {
     expect(res.body.stepRuns[0]).toMatchObject({ step: 1, runId: "step-run-1" });
     expect(res.body.stepRuns[1]).toMatchObject({ step: 2, runId: "step-run-2" });
     expect(res.body.stepRuns[2]).toMatchObject({ step: 3, runId: "step-run-3" });
+  });
+
+  // ─── Self-send wiring (#590) ──────────────────────────────────────────────
+
+  // Without these rows a mailbox flipped to the smtp transport would find no
+  // body for any step and send nothing at all.
+  it("persists the sequence bodies so the self-send worker has something to send", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    const stepRows = mockDbInsertValues.mock.calls
+      .map((c: unknown[]) => c[0])
+      .find((v: any) => Array.isArray(v) && v[0]?.bodyHtml) as any[];
+
+    expect(stepRows).toBeDefined();
+    expect(stepRows).toHaveLength(validBody.sequence.length);
+    expect(stepRows[0]).toMatchObject({ step: 1, subject: validBody.subject });
+    // The subject rides on step 1 only — followups reuse it under `Re:`.
+    expect(stepRows.slice(1).every((r) => r.subject === null)).toBe(true);
+  });
+
+  // The payload's daysSinceLastStep is the delay BEFORE a step; the stored
+  // delay_days is the delay AFTER it. Reading it straight through would shift
+  // every followup gap by one.
+  it("stores each step's gap to the NEXT step, and null on the last", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    const stepRows = mockDbInsertValues.mock.calls
+      .map((c: unknown[]) => c[0])
+      .find((v: any) => Array.isArray(v) && v[0]?.bodyHtml) as any[];
+
+    expect(stepRows.map((r) => r.delayDays)).toEqual([3, 7, null]);
+  });
+
+  // Frozen at send time and never re-read: flipping the mailbox later must not
+  // re-route a sequence already in flight.
+  it("freezes the chosen account's transport onto the campaign row", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    const phase2 = mockDbUpdateSet.mock.calls
+      .map((c: unknown[]) => c[0])
+      .find(
+        (v: any) =>
+          v?.instantlyCampaignId && !String(v.instantlyCampaignId).startsWith("reserving:"),
+      ) as any;
+
+    expect(phase2).toBeDefined();
+    // The pool fixture carries no explicit transport, and the safe default is
+    // the pipe that is known to work.
+    expect(phase2.sendTransport).toBe("instantly");
   });
 
   it("should read brandIds and workflowSlug from headers only", async () => {

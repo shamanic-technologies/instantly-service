@@ -17,6 +17,7 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "../db";
+import { resolveTransportForSend } from "./self-send/transport";
 import {
   instantlyAccounts,
   instantlyAccountsRaw,
@@ -301,7 +302,16 @@ export async function fetchLifecycleByEmail(): Promise<Map<string, LifecycleView
  * vendors resolves deterministically to the one that fills earliest; a domain
  * with no inventory row at all yields null, which sorts LAST rather than first.
  */
-export type PooledAccount = Account & { infraProvider: string | null };
+/**
+ * `sendTransport` is the account's send-transport POLICY ('instantly' | 'smtp').
+ * It rides along so the send path can FREEZE it onto the campaign row without a
+ * second query — the decision has to be taken at send time, since re-reading the
+ * policy later would re-route a lead's followups mid-flight.
+ */
+export type PooledAccount = Account & {
+  infraProvider: string | null;
+  sendTransport: string;
+};
 
 export async function fetchInProductionAccounts(
   featureSlug?: string | null,
@@ -316,6 +326,7 @@ export async function fetchInProductionAccounts(
            a.daily_limit AS "dailyLimit",
            a.provider_code AS "providerCode",
            a.timestamp_created AS "timestampCreated",
+           a.send_transport AS "sendTransport",
            ip.provider AS "infraProvider"
     FROM instantly_accounts a
     LEFT JOIN instantly_account_feature_policy p ON p.account_email = a.email
@@ -351,6 +362,7 @@ export async function fetchInProductionAccounts(
     dailyLimit: number | null;
     providerCode: number | null;
     timestampCreated: string | Date | null;
+    sendTransport: string | null;
     infraProvider: string | null;
   }>(result).map((r) => ({
     email: r.email,
@@ -366,6 +378,10 @@ export async function fetchInProductionAccounts(
       ? new Date(r.timestampCreated).toISOString()
       : undefined,
     infraProvider: r.infraProvider,
+    // Resolved rather than passed through, so an unrecognised or missing value
+    // can only ever mean Instantly — the only way onto the self-send pipe is an
+    // explicit, reversible UPDATE.
+    sendTransport: resolveTransportForSend(r.sendTransport),
   }));
 }
 
