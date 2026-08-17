@@ -143,6 +143,18 @@ export interface AccountHealth {
   queuedFirstUnsentSequences: number;
   /** Q0-next — step projected today (UTC) or overdue. */
   queuedNextToday: number;
+  /**
+   * The BACKLOG subset of `queuedNextToday` — steps whose nominal due date is
+   * STRICTLY BEFORE today, i.e. owed on an earlier day and never dispatched.
+   * `queuedOverdue <= queuedNextToday` always, and it is NOT part of the
+   * four-bucket partition of `queueSize` (it double-counts steps already in
+   * `queuedNextToday`, by design — do not add it to the sum).
+   *
+   * Separates "work due today" from "work we are behind on", which the merged
+   * today-or-overdue bucket cannot. A rising `queuedOverdue` is the ops signal
+   * that Instantly is dispatching slower than we are assigning.
+   */
+  queuedOverdue: number;
   /** Q1-next — step projected tomorrow (UTC). */
   queuedNextTomorrow: number;
   /** Q-next — step projected after tomorrow (UTC). */
@@ -242,6 +254,7 @@ export function buildAccountHealth(
       queuedFirstUnsent: breakdown?.firstUnsent ?? 0,
       queuedFirstUnsentSequences: breakdown?.firstUnsentSequences ?? 0,
       queuedNextToday: breakdown?.nextToday ?? 0,
+      queuedOverdue: breakdown?.nextOverdue ?? 0,
       queuedNextTomorrow: breakdown?.nextTomorrow ?? 0,
       queuedNextLater: breakdown?.nextLater ?? 0,
       accountType: mapProviderCode(a.provider_code),
