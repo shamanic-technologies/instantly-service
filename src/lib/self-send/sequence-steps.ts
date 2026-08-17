@@ -65,6 +65,60 @@ export function stepsFromSequenceConfig(config: unknown): SequenceStep[] {
   return steps;
 }
 
+/** A step as `POST /orgs/send` receives it. */
+export interface InboundSequenceStep {
+  step: number;
+  bodyHtml: string;
+  /** Calendar days between the PREVIOUS step and this one. */
+  daysSinceLastStep: number;
+}
+
+/**
+ * Convert the send payload's steps into rows for `sequence_steps`.
+ *
+ * ⚠️ THE DELAY SHIFTS BY ONE, and getting it wrong silently doubles or halves
+ * every followup gap. The payload's `daysSinceLastStep` is the delay BEFORE its
+ * step; our `delay_days` is the delay AFTER it, so that a row ordered by step
+ * drops straight into `delayForGap`. So the gap stored on step k is the NEXT
+ * step's `daysSinceLastStep`, and the last step stores null — there is no step
+ * after it to wait for.
+ *
+ * Concretely, for steps arriving as [1: 0d, 2: 2d, 3: 5d]:
+ *   row(1).delay_days = 2   (wait 2 days, then send step 2)
+ *   row(2).delay_days = 5   (wait 5 more, then send step 3)
+ *   row(3).delay_days = null
+ *
+ * Step 1's own `daysSinceLastStep` is discarded: nothing precedes it, and a
+ * never-contacted lead is due immediately.
+ *
+ * The subject rides on step 1 only. Followups reuse it under `Re:` (see
+ * `subjectForStep`), so storing it N times would create N places to disagree.
+ */
+export function stepRowsFromSendPayload(
+  subject: string,
+  sortedSequence: readonly InboundSequenceStep[],
+): SequenceStep[] {
+  const ordered = [...sortedSequence].sort((a, b) => a.step - b.step);
+
+  return ordered
+    .filter((entry) => typeof entry.bodyHtml === "string" && entry.bodyHtml !== "")
+    .map((entry, index, kept) => {
+      const next = kept[index + 1];
+      const delay = next?.daysSinceLastStep;
+
+      return {
+        // Renumbered contiguously, for the same reason as
+        // `stepsFromSequenceConfig`: a hole would desynchronise these rows from
+        // the `sequence_costs` steps they pair with.
+        step: index + 1,
+        subject: index === 0 ? subject : null,
+        bodyHtml: entry.bodyHtml,
+        delayDays:
+          typeof delay === "number" && Number.isFinite(delay) && delay >= 0 ? delay : null,
+      };
+    });
+}
+
 /**
  * Project persisted rows onto the 0-based delay array `delayForGap` indexes.
  *

@@ -28,7 +28,7 @@ import {
   type Lead,
   type SequenceStep,
 } from "./instantly-client";
-import { fetchInProductionAccounts } from "./account-lifecycle-sync";
+import { fetchInProductionAccounts, type PooledAccount } from "./account-lifecycle-sync";
 import {
   fetchAccountCapacityCached,
   type AccountCapacity,
@@ -529,7 +529,12 @@ export interface SendOptions {
 export interface SendSuccess {
   instantlyCampaignId: string;
   added: number;
-  account: Account;
+  /**
+   * The POOLED account, not a bare Instantly one: it carries `sendTransport`,
+   * which the caller freezes onto the campaign row at phase-2. Widened from
+   * `Account` so that decision needs no second query.
+   */
+  account: PooledAccount;
 }
 
 export type SendFailureReason = "no_healthy_accounts_available";
