@@ -4,12 +4,15 @@ import {
   instantlyCampaigns,
   instantlyLeads,
   sequenceCosts,
+  sequenceSteps,
 } from "../db/schema";
 import { eq, and, ne, isNotNull, sql } from "drizzle-orm";
 import {
   Lead,
 } from "../lib/instantly-client";
 import { sendLeadToInstantly } from "../lib/send-lead";
+import { stepRowsFromSendPayload } from "../lib/self-send/sequence-steps";
+import { resolveTransportForSend } from "../lib/self-send/transport";
 import {
   createRun,
   updateRun,
@@ -329,14 +332,61 @@ router.post("/", async (req: Request, res: Response) => {
 
       // 6. Phase-2: attach the real Instantly campaign id to the reserved row.
       //    From here on the row is a committed campaign — release is a no-op.
+      //
+      //    `sendTransport` is FROZEN here from the chosen account's policy, and
+      //    never re-read from the account afterwards. A sequence spans days, so
+      //    following the live policy would re-route a lead's followups the moment
+      //    an operator flips that mailbox — and a lead already pushed to Instantly
+      //    holds no local step bodies, so its followups would simply stop. Same
+      //    persist-at-write reasoning as `accountEmail` beside it.
       await db
         .update(instantlyCampaigns)
         .set({
           instantlyCampaignId: sendResult.value.instantlyCampaignId,
           accountEmail: sendResult.value.account.email,
+          // Resolved AT THE FREEZE POINT, not just upstream: this is where the
+          // decision becomes permanent for the lead, so an account object from
+          // any source — a future code path, a stale row — still cannot write an
+          // unrecognised transport onto a campaign. Anything but 'smtp' means
+          // Instantly.
+          sendTransport: resolveTransportForSend(sendResult.value.account.sendTransport),
           updatedAt: new Date(),
         })
         .where(eq(instantlyCampaigns.id, reservedId));
+
+      // 6b. Persist the sequence we just committed to.
+      //
+      //     While Instantly dispatches, the step bodies live there and our bronze
+      //     config mirror is a copy of what they hold. On the self-send transport
+      //     there is nothing upstream to mirror, so the sender reads these rows —
+      //     without them a flipped account would find no body and send nothing.
+      //     Written for BOTH transports: the row is cheap, and having it already
+      //     there is what makes a later flip a data change rather than a
+      //     migration. Idempotent on (campaign, step), so a redispatch re-upserts
+      //     instead of stacking a duplicate the scheduler would send twice.
+      const stepRows = stepRowsFromSendPayload(body.subject, sortedSequence);
+      if (stepRows.length > 0) {
+        await db
+          .insert(sequenceSteps)
+          .values(
+            stepRows.map((step) => ({
+              instantlyCampaignId: sendResult.value.instantlyCampaignId,
+              step: step.step,
+              subject: step.subject,
+              bodyHtml: step.bodyHtml,
+              delayDays: step.delayDays,
+            })),
+          )
+          .onConflictDoUpdate({
+            target: [sequenceSteps.instantlyCampaignId, sequenceSteps.step],
+            set: {
+              subject: sql`excluded.subject`,
+              bodyHtml: sql`excluded.body_html`,
+              delayDays: sql`excluded.delay_days`,
+              updatedAt: new Date(),
+            },
+          });
+      }
 
       await refreshLeadStatusCurrent(sendResult.value.instantlyCampaignId, body.to);
 
