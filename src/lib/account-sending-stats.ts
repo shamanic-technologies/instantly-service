@@ -24,6 +24,7 @@ import {
   type QueueCapacity,
   type QueuedSequenceInput,
 } from "./queue-breakdown";
+import { dateKeyUTC } from "./sending-forecast";
 
 interface CountRow {
   account_email: string;
@@ -303,10 +304,15 @@ export async function fetchAccountCapacity(
  * collapses a burst down to ~1 snapshot per replica. Reuses the /stats TTL cache
  * (getOrSetCachedStats) rather than a second cache module.
  */
-export function fetchAccountCapacityCached(): Promise<Map<string, AccountCapacity>> {
+export function fetchAccountCapacityCached(
+  asOf: Date = new Date(),
+): Promise<Map<string, AccountCapacity>> {
+  // The effective day is part of the KEY: on a weekend the caller measures
+  // Monday's projected load (see sending-calendar.ts), and that snapshot must
+  // not be served to a Monday caller (or vice versa) out of the same entry.
   return getOrSetCachedStats(
-    ACCOUNT_CAPACITY_CACHE_KEY,
-    () => fetchAccountCapacity(),
+    `${ACCOUNT_CAPACITY_CACHE_KEY}|${dateKeyUTC(asOf)}`,
+    () => fetchAccountCapacity(asOf),
     ACCOUNT_CAPACITY_TTL_MS,
   );
 }

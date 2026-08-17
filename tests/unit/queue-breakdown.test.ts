@@ -137,6 +137,7 @@ describe("aggregateQueueBreakdown — per-STEP partition", () => {
       firstUnsentSequences: 1,
       nextToday: 1,
       nextTomorrow: 0,
+      nextOverdue: 0,
       nextLater: 2,
     });
     // The load-bearing invariant: buckets partition STEPS, not sequences.
@@ -158,10 +159,10 @@ describe("aggregateQueueBreakdown — per-STEP partition", () => {
     const map = aggregateQueueBreakdown(rows, asOf);
 
     const a = map.get("a")!;
-    expect(a).toEqual({ sequences: 1, steps: 1, firstUnsent: 1, firstUnsentSequences: 1, nextToday: 0, nextTomorrow: 0, nextLater: 0 });
+    expect(a).toEqual({ sequences: 1, steps: 1, firstUnsent: 1, firstUnsentSequences: 1, nextToday: 0, nextOverdue: 0, nextTomorrow: 0, nextLater: 0 });
 
     const b = map.get("b")!;
-    expect(b).toEqual({ sequences: 1, steps: 2, firstUnsent: 0, firstUnsentSequences: 0, nextToday: 0, nextTomorrow: 1, nextLater: 1 });
+    expect(b).toEqual({ sequences: 1, steps: 2, firstUnsent: 0, firstUnsentSequences: 0, nextToday: 0, nextOverdue: 0, nextTomorrow: 1, nextLater: 1 });
     expect(b.firstUnsent + b.nextToday + b.nextTomorrow + b.nextLater).toBe(b.steps);
   });
 
@@ -202,5 +203,66 @@ describe("aggregateQueueCapacity — send-selection buckets", () => {
   it("skips rows with no account (unattributable — never fabricated)", () => {
     const rows: QueuedSequenceInput[] = [seq({ account: "", provisionedSteps: [1] })];
     expect(aggregateQueueCapacity(rows, asOf).size).toBe(0);
+  });
+});
+
+describe("nextOverdue — the BACKLOG subset of nextToday", () => {
+  it("counts only steps nominally due on a STRICTLY EARLIER UTC day", () => {
+    const rows: QueuedSequenceInput[] = [
+      // lastSentAt 10 days ago with 3/3/3 delays: step2 = -7d, step3 = -4d,
+      // step4 = -1d → all three overdue. step5 = +2d → later.
+      seq({
+        account: "a",
+        lastSentStep: 1,
+        lastSentAt: new Date(asOf.getTime() - 10 * DAY),
+        provisionedSteps: [2, 3, 4, 5],
+        stepDelays: [3, 3, 3, 3],
+      }),
+    ];
+    const a = aggregateQueueBreakdown(rows, asOf).get("a")!;
+    expect(a.nextToday).toBe(3);
+    expect(a.nextOverdue).toBe(3);
+    expect(a.nextLater).toBe(1);
+  });
+
+  it("does NOT count a step due EXACTLY today — due is not the same as behind", () => {
+    const rows: QueuedSequenceInput[] = [
+      seq({
+        account: "a",
+        lastSentStep: 1,
+        lastSentAt: new Date(asOf.getTime() - 3 * DAY),
+        provisionedSteps: [2],
+        stepDelays: [3],
+      }),
+    ];
+    const a = aggregateQueueBreakdown(rows, asOf).get("a")!;
+    expect(a.nextToday).toBe(1);
+    expect(a.nextOverdue).toBe(0);
+  });
+
+  it("never counts a never-contacted sequence as overdue (no anchor to be late against)", () => {
+    const rows: QueuedSequenceInput[] = [
+      seq({ account: "a", provisionedSteps: [1, 2, 3] }),
+    ];
+    const a = aggregateQueueBreakdown(rows, asOf).get("a")!;
+    expect(a.firstUnsent).toBe(3);
+    expect(a.nextOverdue).toBe(0);
+  });
+
+  it("is a SUBSET counter — it never breaks the four-way step partition", () => {
+    const rows: QueuedSequenceInput[] = [
+      seq({ account: "a", provisionedSteps: [1, 2] }),
+      seq({
+        account: "a",
+        lastSentStep: 1,
+        lastSentAt: new Date(asOf.getTime() - 12 * DAY),
+        provisionedSteps: [2, 3, 4],
+        stepDelays: [3, 3, 20],
+      }),
+    ];
+    const a = aggregateQueueBreakdown(rows, asOf).get("a")!;
+    expect(a.firstUnsent + a.nextToday + a.nextTomorrow + a.nextLater).toBe(a.steps);
+    expect(a.nextOverdue).toBeLessThanOrEqual(a.nextToday);
+    expect(a.nextOverdue).toBeGreaterThan(0);
   });
 });

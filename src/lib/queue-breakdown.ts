@@ -108,6 +108,20 @@ export interface QueueBreakdown {
   firstUnsentSequences: number;
   /** Q0-next — step projected today (UTC) or overdue. */
   nextToday: number;
+  /**
+   * The BACKLOG subset of `nextToday` — steps projected STRICTLY BEFORE today,
+   * i.e. already past their nominal due date. Deliberately a subset counter and
+   * NOT a fifth bucket, so the four-way partition
+   * (`steps === firstUnsent + nextToday + nextTomorrow + nextLater`) is
+   * untouched; `nextOverdue <= nextToday` always.
+   *
+   * Exposed because "Followups due today" and "followups we owed days ago and
+   * never dispatched" are operationally different facts that the merged
+   * today-or-overdue bucket cannot tell apart. A `nextOverdue` that grows week
+   * over week means dispatch is not keeping up with assignment — the signal an
+   * ops surface needs to answer "is this account draining or drowning?".
+   */
+  nextOverdue: number;
   /** Q1-next — step projected tomorrow (UTC). */
   nextTomorrow: number;
   /** Q-next — step projected after tomorrow (UTC). */
@@ -158,9 +172,26 @@ function emptyBreakdown(): QueueBreakdown {
     firstUnsent: 0,
     firstUnsentSequences: 0,
     nextToday: 0,
+    nextOverdue: 0,
     nextTomorrow: 0,
     nextLater: 0,
   };
+}
+
+/**
+ * True when an un-sent `step` of a CONTACTED sequence was nominally due on a day
+ * STRICTLY BEFORE `asOf`'s UTC day — i.e. it is backlog, not work due today.
+ * A never-contacted sequence has no anchor to project from and is never overdue
+ * (it lands in `firstUnsent`), so it returns false rather than fabricating a
+ * date.
+ */
+export function isOverdueStep(
+  seq: QueuedSequenceInput,
+  step: number,
+  asOf: Date,
+): boolean {
+  if (seq.lastSentStep === null || seq.lastSentAt === null) return false;
+  return dateKeyUTC(projectStepDate(seq, step)) < dateKeyUTC(asOf);
 }
 
 /**
@@ -241,6 +272,10 @@ export function aggregateQueueCapacity(
  * increments `steps` AND exactly one date bucket — so both the step-partition
  * invariant (`steps === firstUnsent + nextToday + nextTomorrow + nextLater`) and
  * the sequence count hold for every account by construction.
+ *
+ * `nextOverdue` rides alongside as a SUBSET of `nextToday` (the strictly-past
+ * half of today-or-overdue). It is counted, never bucketed, so it cannot break
+ * the partition.
  */
 export function aggregateQueueBreakdown(
   rows: QueuedSequenceInput[],
@@ -256,7 +291,10 @@ export function aggregateQueueBreakdown(
     if (row.lastSentStep === null || row.lastSentAt === null) b.firstUnsentSequences += 1;
     for (const step of row.provisionedSteps) {
       b.steps += 1;
-      b[classifyQueuedStep(row, step, asOf)] += 1;
+      const bucket = classifyQueuedStep(row, step, asOf);
+      b[bucket] += 1;
+      // Subset counter, NOT a fifth bucket — the partition above stays intact.
+      if (bucket === "nextToday" && isOverdueStep(row, step, asOf)) b.nextOverdue += 1;
     }
     out.set(row.account, b);
   }

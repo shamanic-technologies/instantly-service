@@ -52,6 +52,7 @@ describe("buildAccountHealth", () => {
       queuedFirstUnsent: 0,
       queuedFirstUnsentSequences: 0,
       queuedNextToday: 0,
+      queuedOverdue: 0,
       queuedNextTomorrow: 0,
       queuedNextLater: 0,
       accountType: null,
@@ -238,7 +239,17 @@ describe("buildAccountHealth", () => {
     const breakdown = new Map([
       [
         "a@good.com",
-        { sequences: 5, steps: 8, firstUnsent: 3, nextToday: 3, nextTomorrow: 0, nextLater: 2 },
+        {
+          sequences: 5,
+          steps: 8,
+          firstUnsent: 3,
+          nextToday: 3,
+          // 2 of the 3 today-or-overdue steps are BACKLOG (nominally due before
+          // today) — a subset of nextToday, not a fifth bucket.
+          nextOverdue: 2,
+          nextTomorrow: 0,
+          nextLater: 2,
+        },
       ],
     ]);
     const rows = buildAccountHealth(
@@ -257,6 +268,9 @@ describe("buildAccountHealth", () => {
     expect(a.queuedNextToday).toBe(3);
     expect(a.queuedNextTomorrow).toBe(0);
     expect(a.queuedNextLater).toBe(2);
+    // Backlog subset — surfaced, bounded by nextToday, and NOT in the partition.
+    expect(a.queuedOverdue).toBe(2);
+    expect(a.queuedOverdue).toBeLessThanOrEqual(a.queuedNextToday);
     // queueSize is sourced from the breakdown's step total → equals the bucket sum.
     expect(a.queueSize).toBe(8);
     // The four buckets PARTITION the queued STEPS (== queueSize), not sequences.

@@ -34,6 +34,7 @@ import {
   type AccountCapacity,
 } from "./account-sending-stats";
 import { IN_PRODUCTION_DAILY_LIMIT, rampCapForAge } from "./account-lifecycle";
+import { nextSendingDay } from "./sending-calendar";
 
 /** All-zero capacity for an account absent from the snapshot (idle ⇒ preferred). */
 const EMPTY_CAPACITY: AccountCapacity = {
@@ -173,6 +174,14 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
  *
  * The AGE CAP is kept intact — a fresh mailbox is filled to ITS ramped cap (5/day
  * at one day old), never to 50, so the sequence never trips Gmail's 550-5.4.5.
+ *
+ * `asOf` is the day capacity is measured FOR, and callers on the send path pass
+ * `nextSendingDay(now)` rather than `now`: campaigns dispatch Mon-Fri, so on a
+ * weekend the meaningful question is whether the account is full on MONDAY, not
+ * on a Saturday that consumes nothing. It drives both the load buckets (via the
+ * capacity snapshot, which must be fetched for the same day) and `capForAccount`
+ * — a mailbox is two days older by Monday, so its age ramp is read on that day
+ * too. On a weekday `nextSendingDay` is the identity, so nothing changes.
  *
  * When every account is at or over its cap the fleet is backlogged; we then fall
  * back to the least-overloaded `load / cap` so a send is never blocked, ties going
@@ -557,8 +566,13 @@ export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult
     return { ok: false, reason: "no_healthy_accounts_available" };
   }
 
-  const capacityByEmail = await fetchAccountCapacityCached();
-  const account = pickSequentialFillAccount(accounts, capacityByEmail);
+  // Capacity is measured against the day this lead can ACTUALLY first send:
+  // itself on a weekday, the following Monday on a weekend (campaigns run
+  // Mon-Fri). Measuring a Saturday would hand out a cap nothing can consume and
+  // stack the weekend's slots on top of Monday's — see sending-calendar.ts.
+  const effectiveDay = nextSendingDay(new Date());
+  const capacityByEmail = await fetchAccountCapacityCached(effectiveDay);
+  const account = pickSequentialFillAccount(accounts, capacityByEmail, effectiveDay);
   const steps = buildSequenceSteps(opts.subject, opts.sortedSequence, account);
 
   console.log(

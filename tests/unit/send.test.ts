@@ -132,6 +132,7 @@ import {
   sendLeadToInstantly,
   UNSUBSCRIBE_FOOTER_HTML,
 } from "../../src/lib/send-lead";
+import { nextSendingDay } from "../../src/lib/sending-calendar";
 import { requireOrgId } from "../../src/middleware/requireOrgId";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
@@ -1865,5 +1866,107 @@ describe("POST /send", () => {
     // releaseReservation runs in the catch (no-op at DB level once phase-2 ran,
     // but the handler still attempts it for any still-open reservation).
     expect(mockDbDelete).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("weekend capacity — selection measures the NEXT SENDING day", () => {
+  const caps2 = (
+    entries: [string, Partial<AccountCapacity>][],
+  ): Map<string, AccountCapacity> =>
+    new Map(
+      entries.map(([email, o]) => [
+        email,
+        { sentToday: 0, q0first: 0, q0next: 0, q1next: 0, totalQueue: 0, ...o },
+      ]),
+    );
+
+  const SATURDAY = new Date("2026-08-15T13:00:00.000Z");
+  const MONDAY = new Date("2026-08-17T00:00:00.000Z");
+
+  it("nextSendingDay(Saturday) is the Monday the capacity must be measured for", () => {
+    expect(nextSendingDay(SATURDAY).toISOString()).toBe(MONDAY.toISOString());
+  });
+
+  it("skips a head account already full for MONDAY and cascades to the next in fill order", () => {
+    const head = acct({
+      email: "head@x.com",
+      daily_limit: 50,
+      infraProvider: "gandi",
+      timestamp_created: "2026-01-01T00:00:00.000Z",
+    });
+    const next = acct({
+      email: "next@x.com",
+      daily_limit: 50,
+      infraProvider: "primeforge",
+      timestamp_created: "2026-01-01T00:00:00.000Z",
+    });
+    // Monday's projected load for the head account is already over its cap
+    // (48 followups due by Monday + 5 never-contacted leads = 53 > 50).
+    const byMonday = caps2([
+      ["head@x.com", { sentToday: 0, q0first: 5, q0next: 48 }],
+      ["next@x.com", { sentToday: 0, q0first: 1, q0next: 2 }],
+    ]);
+    expect(
+      pickSequentialFillAccount([head, next], byMonday, nextSendingDay(SATURDAY)).email,
+    ).toBe("next@x.com");
+  });
+
+  it("still fills the head account when MONDAY has room (the fill order is unchanged)", () => {
+    const head = acct({
+      email: "head@x.com",
+      daily_limit: 50,
+      infraProvider: "gandi",
+      timestamp_created: "2026-01-01T00:00:00.000Z",
+    });
+    const next = acct({
+      email: "next@x.com",
+      daily_limit: 50,
+      infraProvider: "primeforge",
+      timestamp_created: "2026-01-01T00:00:00.000Z",
+    });
+    const byMonday = caps2([["head@x.com", { q0first: 10, q0next: 20 }]]);
+    expect(
+      pickSequentialFillAccount([head, next], byMonday, nextSendingDay(SATURDAY)).email,
+    ).toBe("head@x.com");
+  });
+
+  it("reads the AGE RAMP on the effective day — a fresh mailbox is two days older by Monday", () => {
+    // Created 2026-08-01. On Saturday 08-15 it is 14d old → ramp = round(50*14/28) = 25.
+    // On Monday 08-17 it is 16d old → ramp = round(50*16/28) = 29. A load of 27
+    // is over Saturday's cap but under Monday's, and Monday is when it sends.
+    const fresh = acct({
+      email: "fresh@x.com",
+      daily_limit: 50,
+      infraProvider: "gandi",
+      timestamp_created: "2026-08-01T00:00:00.000Z",
+    });
+    const fallback = acct({
+      email: "fallback@x.com",
+      daily_limit: 50,
+      infraProvider: "primeforge",
+      timestamp_created: "2026-01-01T00:00:00.000Z",
+    });
+    const load = caps2([["fresh@x.com", { q0next: 27 }]]);
+
+    expect(pickSequentialFillAccount([fresh, fallback], load, SATURDAY).email).toBe(
+      "fallback@x.com",
+    );
+    expect(
+      pickSequentialFillAccount([fresh, fallback], load, nextSendingDay(SATURDAY)).email,
+    ).toBe("fresh@x.com");
+  });
+
+  it("is a no-op on a weekday — the effective day IS the day", () => {
+    const a = acct({
+      email: "a@x.com",
+      daily_limit: 50,
+      infraProvider: "gandi",
+      timestamp_created: "2026-01-01T00:00:00.000Z",
+    });
+    const weekday = new Date("2026-08-19T09:00:00.000Z"); // Wednesday
+    expect(nextSendingDay(weekday)).toBe(weekday);
+    expect(pickSequentialFillAccount([a], caps2([]), nextSendingDay(weekday)).email).toBe(
+      "a@x.com",
+    );
   });
 });
