@@ -98,6 +98,7 @@ router.post("/", async (req: Request, res: Response) => {
   if (result.inserted) {
     await applyManualQualificationSideEffects({
       bronzeRowId: result.row.id,
+      orgId,
       instantlyCampaignId: campaign.instantlyCampaignId,
       leadEmail: email,
       status,
