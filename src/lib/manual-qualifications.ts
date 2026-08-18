@@ -18,6 +18,8 @@ import {
 import { and, desc, eq } from "drizzle-orm";
 import { promoteEvent } from "./silver-promote";
 import { refreshLeadStatusCurrent } from "./status-gold";
+import { resolveInstantlyApiKey } from "./key-client";
+import { updateCampaignStatus } from "./instantly-client";
 
 // Mirrors the 8 keys of REPLY_CLASSIFICATION_MAP in silver-promote.ts. Kept in
 // sync deliberately: when a human qualifies a reply, the status is the same
@@ -48,6 +50,39 @@ const MANUAL_QUALIFICATION_CLASSIFICATION: Record<
   lead_out_of_office: "neutral",
   auto_reply_received: "neutral",
 };
+
+/**
+ * The manual statuses that assert the prospect actually ENGAGED — i.e. the
+ * sequence must stop.
+ *
+ * `lead_out_of_office` and `auto_reply_received` are deliberately EXCLUDED: an
+ * autoresponder is not a reply (RFC 3834), the prospect is back at their desk
+ * next week and has not engaged. Stopping on one would end the outreach — and
+ * refund the spend — for a lead who never answered. Same reasoning as
+ * `auto_reply_received` being absent from `SEQUENCE_STOP_EVENTS` in
+ * silver-promote.ts and from the self-send inbound classifier.
+ *
+ * This single predicate gates BOTH halves of "the sequence stopped": the
+ * synthesized `reply_received` event (which cancels the lead's remaining
+ * provisioned holds) AND the Instantly pause. Gating only one of the two would
+ * leave the two sides contradicting each other — holds refunded locally while
+ * Instantly keeps dispatching, or vice versa.
+ */
+export const SEQUENCE_STOPPING_MANUAL_STATUSES = new Set<ManualQualificationStatus>([
+  "lead_interested",
+  "lead_meeting_booked",
+  "lead_closed",
+  "lead_not_interested",
+  "lead_wrong_person",
+  "lead_neutral",
+]);
+
+/** True iff this manual qualification means the sequence must stop. */
+export function isSequenceStoppingQualification(
+  status: ManualQualificationStatus,
+): boolean {
+  return SEQUENCE_STOPPING_MANUAL_STATUSES.has(status);
+}
 
 export interface ManualQualificationRow {
   id: string;
@@ -159,6 +194,7 @@ export async function insertManualQualification(
 
 export interface ApplyManualQualificationSideEffectsInput {
   bronzeRowId: string;
+  orgId: string;
   instantlyCampaignId: string;
   leadEmail: string;
   status: ManualQualificationStatus;
@@ -167,18 +203,70 @@ export interface ApplyManualQualificationSideEffectsInput {
 }
 
 /**
+ * Pause the lead's Instantly campaign after a sequence-stopping manual
+ * qualification.
+ *
+ * Load-bearing: a manual qualification exists PRECISELY because Instantly did
+ * not detect the reply itself — so Instantly's own stop-on-reply can never
+ * fire, and without this pause it keeps dispatching the remaining steps to a
+ * prospect who already answered. Cancelling the local cost holds (which the
+ * synthesized `reply_received` does) only refunds the spend; it tells Instantly
+ * nothing.
+ *
+ * Minimal by design — this only PAUSES on Instantly, exactly like
+ * `maybeStopOnClickForSignup`. The nightly reconcile then discovers the paused
+ * Instantly status and its `finish` closure cancels any residual provisioned
+ * holds, deletes the contact and marks the local row terminal. Do NOT duplicate
+ * those here, and do NOT write a local terminal status (a locally-terminal row
+ * is SKIPPED by `reconcileAll`, so the finish closure would never run).
+ *
+ * Fail-soft: any error (key resolution, Instantly) is swallowed and logged. The
+ * caller runs inside a request handler whose bronze row is already committed;
+ * throwing here would 500 a qualification that did land.
+ */
+async function pauseSequenceOnInstantly(
+  orgId: string,
+  instantlyCampaignId: string,
+  leadEmail: string,
+  status: ManualQualificationStatus,
+): Promise<void> {
+  try {
+    const { key } = await resolveInstantlyApiKey(orgId, "system", {
+      method: "POST",
+      path: "/orgs/manual-qualifications",
+    });
+    await updateCampaignStatus(key, instantlyCampaignId, "paused");
+    console.log(
+      `[instantly-service] manual qualification: paused campaign=${instantlyCampaignId} lead=${leadEmail} status=${status}`,
+    );
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[instantly-service] manual qualification: Instantly pause failed for campaign=${instantlyCampaignId} lead=${leadEmail} — ${message}; sequence continues on Instantly`,
+    );
+  }
+}
+
+/**
  * Side effects after a manual qualification is inserted into bronze:
- *  1. **Synthesize a `reply_received` silver event** (source='manual'). The
- *     human is asserting "this lead replied — Instantly missed it", so the
- *     reply event MUST exist in silver for `/orgs/status` to report
- *     `replied=true`. Routed through `promoteEvent` so the normal side
- *     effects fire: `delivery_status='replied'` AND remaining provisioned
- *     costs are cancelled (sequence stops on reply).
+ *  1. **Stop the sequence, on BOTH sides** — but only for a status that
+ *     asserts real engagement (`isSequenceStoppingQualification`; an
+ *     autoresponder / out-of-office is not a reply, see that predicate):
+ *     a. Synthesize a `reply_received` silver event (source='manual'). The
+ *        human is asserting "this lead replied — Instantly missed it", so the
+ *        reply event MUST exist in silver for `/orgs/status` to report
+ *        `replied=true`. Routed through `promoteEvent` so the normal side
+ *        effects fire: `delivery_status='replied'` AND remaining provisioned
+ *        costs are cancelled.
+ *     b. PAUSE the campaign on Instantly. (a) alone stops nothing on
+ *        Instantly's side — see `pauseSequenceOnInstantly`.
  *  2. Mirror the lead-status event (`lead_interested` / `lead_not_interested`
- *     / etc.) in silver via direct insert. Kept as a direct insert so we
- *     can also set `replyClassificationSource='manual'` below — going
- *     through `promoteEvent` would update `replyClassification` from the
- *     status map but not the source field.
+ *     / etc.) in silver via direct insert — for EVERY status, stopping or not,
+ *     because the human's qualification is a fact worth recording either way.
+ *     Kept as a direct insert so we can also set
+ *     `replyClassificationSource='manual'` below — going through
+ *     `promoteEvent` would update `replyClassification` from the status map
+ *     but not the source field.
  *  3. Set `reply_classification` to the derived positive/negative/neutral
  *     value and pin `reply_classification_source='manual'` so subsequent
  *     webhook events do not overwrite the manual choice.
@@ -186,22 +274,33 @@ export interface ApplyManualQualificationSideEffectsInput {
 export async function applyManualQualificationSideEffects(
   input: ApplyManualQualificationSideEffectsInput,
 ): Promise<void> {
-  // 1. Synthesize the reply_received event so `/orgs/status.replied` reports
-  //    true. `promoteEvent` handles the one-shot dedupe: if a real reply
-  //    event already exists (Instantly auto-detected too), this is a no-op.
-  await promoteEvent({
-    eventType: "reply_received",
-    instantlyCampaignId: input.instantlyCampaignId,
-    leadEmail: input.leadEmail,
-    accountEmail: null,
-    step: null,
-    variant: null,
-    timestamp: input.qualifiedAt,
-    rawPayload: input.rawPayload,
-    source: "manual",
-    sourceRowId: input.bronzeRowId,
-    inferred: false,
-  });
+  // 1. The lead engaged ⇒ stop the sequence on both sides.
+  if (isSequenceStoppingQualification(input.status)) {
+    // 1a. Synthesize the reply_received event so `/orgs/status.replied` reports
+    //     true. `promoteEvent` handles the one-shot dedupe: if a real reply
+    //     event already exists (Instantly auto-detected too), this is a no-op.
+    await promoteEvent({
+      eventType: "reply_received",
+      instantlyCampaignId: input.instantlyCampaignId,
+      leadEmail: input.leadEmail,
+      accountEmail: null,
+      step: null,
+      variant: null,
+      timestamp: input.qualifiedAt,
+      rawPayload: input.rawPayload,
+      source: "manual",
+      sourceRowId: input.bronzeRowId,
+      inferred: false,
+    });
+
+    // 1b. Instantly never saw the reply — tell it to stop dispatching.
+    await pauseSequenceOnInstantly(
+      input.orgId,
+      input.instantlyCampaignId,
+      input.leadEmail,
+      input.status,
+    );
+  }
 
   // 2. Mirror the lead-status event in silver (direct insert — source field is
   //    set to 'manual' explicitly below; promoteEvent's auto-update would not
