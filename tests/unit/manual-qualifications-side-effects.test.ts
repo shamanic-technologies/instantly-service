@@ -44,17 +44,35 @@ vi.mock("../../src/lib/status-gold", () => ({
   refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
 }));
 
-import { applyManualQualificationSideEffects } from "../../src/lib/manual-qualifications";
+const mockResolveInstantlyApiKey = vi.fn();
+const mockUpdateCampaignStatus = vi.fn();
+
+vi.mock("../../src/lib/key-client", () => ({
+  resolveInstantlyApiKey: (...args: unknown[]) => mockResolveInstantlyApiKey(...args),
+}));
+
+vi.mock("../../src/lib/instantly-client", () => ({
+  updateCampaignStatus: (...args: unknown[]) => mockUpdateCampaignStatus(...args),
+}));
+
+import {
+  applyManualQualificationSideEffects,
+  isSequenceStoppingQualification,
+  MANUAL_QUALIFICATION_STATUSES,
+} from "../../src/lib/manual-qualifications";
 
 beforeEach(() => {
   vi.resetAllMocks();
   mockPromoteEvent.mockResolvedValue({ promoted: true, silverEventId: "ev-1" });
   mockRefreshLeadStatusCurrent.mockResolvedValue(undefined);
+  mockResolveInstantlyApiKey.mockResolvedValue({ key: "inst-key" });
+  mockUpdateCampaignStatus.mockResolvedValue(undefined);
 });
 
 describe("applyManualQualificationSideEffects", () => {
   const baseInput = {
     bronzeRowId: "bronze-1",
+    orgId: "org-1",
     instantlyCampaignId: "inst-camp-1",
     leadEmail: "lead@test.com",
     qualifiedAt: new Date("2026-05-24T10:00:00.000Z"),
@@ -155,5 +173,121 @@ describe("applyManualQualificationSideEffects", () => {
       expect(updateCall).toBeDefined();
       expect((updateCall![0] as Record<string, unknown>).replyClassification).toBe("neutral");
     }
+  });
+
+  // ── Stopping the sequence on BOTH sides ───────────────────────────────────
+  //
+  // A manual qualification exists because Instantly did NOT detect the reply,
+  // so its own stop-on-reply can never fire. Cancelling the local cost holds
+  // (what the synthesized reply_received does) refunds the spend but tells
+  // Instantly nothing — without the pause it keeps dispatching the remaining
+  // steps to a prospect who already answered.
+
+  it("PAUSES the lead's Instantly campaign on a sequence-stopping qualification", async () => {
+    await applyManualQualificationSideEffects({
+      ...baseInput,
+      status: "lead_interested",
+    });
+
+    expect(mockResolveInstantlyApiKey).toHaveBeenCalledWith(
+      "org-1",
+      "system",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(mockUpdateCampaignStatus).toHaveBeenCalledWith(
+      "inst-key",
+      "inst-camp-1",
+      "paused",
+    );
+  });
+
+  it("pauses for every sequence-stopping status", async () => {
+    for (const status of [
+      "lead_interested",
+      "lead_meeting_booked",
+      "lead_closed",
+      "lead_not_interested",
+      "lead_wrong_person",
+      "lead_neutral",
+    ] as const) {
+      vi.resetAllMocks();
+      mockPromoteEvent.mockResolvedValue({ promoted: true, silverEventId: "ev-1" });
+      mockResolveInstantlyApiKey.mockResolvedValue({ key: "inst-key" });
+
+      await applyManualQualificationSideEffects({ ...baseInput, status });
+
+      expect(isSequenceStoppingQualification(status)).toBe(true);
+      expect(mockUpdateCampaignStatus).toHaveBeenCalledWith(
+        "inst-key",
+        "inst-camp-1",
+        "paused",
+      );
+    }
+  });
+
+  // An autoresponder is NOT a reply (RFC 3834) — the prospect is back next
+  // week and has not engaged. Stopping would end the outreach AND refund the
+  // spend for someone who never answered. The predicate gates BOTH the
+  // reply_received synthesis (which cancels the holds) and the pause, so the
+  // two sides can never contradict each other.
+  it("does NOT stop the sequence for an autoresponder (out_of_office / auto_reply_received)", async () => {
+    for (const status of ["lead_out_of_office", "auto_reply_received"] as const) {
+      vi.resetAllMocks();
+      mockResolveInstantlyApiKey.mockResolvedValue({ key: "inst-key" });
+
+      await applyManualQualificationSideEffects({ ...baseInput, status });
+
+      expect(isSequenceStoppingQualification(status)).toBe(false);
+      // No synthesized reply ⇒ the lead's provisioned holds are NOT cancelled.
+      expect(mockPromoteEvent).not.toHaveBeenCalled();
+      // …and Instantly keeps sending, which is the point.
+      expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
+
+      // The qualification itself is still recorded in silver + pinned.
+      const leadStatusInsert = mockDbInsertValues.mock.calls.find((c) => {
+        const v = c[0] as Record<string, unknown>;
+        return v.eventType === status;
+      });
+      expect(leadStatusInsert).toBeDefined();
+      expect(mockRefreshLeadStatusCurrent).toHaveBeenCalled();
+    }
+  });
+
+  it("every manual status is classified as stopping or not (no status left unhandled)", () => {
+    for (const status of MANUAL_QUALIFICATION_STATUSES) {
+      expect(typeof isSequenceStoppingQualification(status)).toBe("boolean");
+    }
+    const stopping = MANUAL_QUALIFICATION_STATUSES.filter(isSequenceStoppingQualification);
+    expect(stopping).toHaveLength(6);
+    expect(stopping).not.toContain("lead_out_of_office");
+    expect(stopping).not.toContain("auto_reply_received");
+  });
+
+  // Fail-soft: the bronze row is already committed when this runs, so a pause
+  // failure must not 500 a qualification that did land.
+  it("swallows an Instantly pause failure and still pins the classification", async () => {
+    mockUpdateCampaignStatus.mockRejectedValue(new Error("instantly 500"));
+
+    await expect(
+      applyManualQualificationSideEffects({ ...baseInput, status: "lead_interested" }),
+    ).resolves.toBeUndefined();
+
+    const updateCall = mockDbUpdateSet.mock.calls.find((c) => {
+      const v = c[0] as Record<string, unknown>;
+      return "replyClassification" in v;
+    });
+    expect(updateCall).toBeDefined();
+    expect((updateCall![0] as Record<string, unknown>).replyClassification).toBe("positive");
+  });
+
+  it("swallows a key-resolution failure", async () => {
+    mockResolveInstantlyApiKey.mockRejectedValue(new Error("key-service down"));
+
+    await expect(
+      applyManualQualificationSideEffects({ ...baseInput, status: "lead_closed" }),
+    ).resolves.toBeUndefined();
+
+    expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
+    expect(mockRefreshLeadStatusCurrent).toHaveBeenCalled();
   });
 });
