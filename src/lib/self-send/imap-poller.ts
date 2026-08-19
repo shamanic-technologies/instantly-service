@@ -27,6 +27,7 @@ import {
   type MailboxCredential,
 } from "./mailbox-credentials";
 import { classifyInbound, eventTypeForInbound, type InboundHeaders } from "./inbound";
+import { qualifyReply } from "./qualify-reply";
 import { SEND_TRANSPORT_SMTP } from "./transport";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/poll" };
@@ -45,6 +46,10 @@ export interface PollSummary {
   replies: number;
   autoReplies: number;
   bounces: number;
+  /** Replies we obtained a trustworthy sentiment for. */
+  qualified: number;
+  /** Replies recorded and stopped, but left without a sentiment. */
+  unqualified: number;
   unrelated: number;
   accountsFailed: number;
 }
@@ -198,8 +203,48 @@ async function pollAccount(
           sourceRowId: row.id,
         });
 
-        if (classification.kind === "reply") summary.replies += 1;
-        else if (classification.kind === "auto_reply") summary.autoReplies += 1;
+        if (classification.kind === "reply") {
+          summary.replies += 1;
+
+          // Qualify the reply so a hot one reaches the agency inbox. This does
+          // NOT decide whether to stop the sequence — `reply_received` above
+          // already did that, whatever the sentiment. It only decides what the
+          // reply MEANS, which drives the forward and the gold stats.
+          //
+          // Fail-soft and AFTER the stop: a classification we cannot obtain
+          // leaves the reply recorded and the sequence correctly stopped, just
+          // unlabelled. Promoting a guessed sentiment would be worse — a
+          // fabricated "neutral" on a hot reply reads as a real judgement.
+          try {
+            const qualification = await qualifyReply(parsed.text ?? "");
+            if (qualification) {
+              await promoteEvent({
+                eventType: qualification,
+                instantlyCampaignId: send.instantlyCampaignId,
+                leadEmail: send.leadEmail,
+                accountEmail,
+                step: send.step,
+                variant: null,
+                timestamp: parsed.date ?? new Date(),
+                source: "self_send",
+                sourceRowId: row.id,
+              });
+              summary.qualified += 1;
+            } else {
+              console.warn(
+                `[instantly-service] self-send-poll: no usable qualification for campaign=${send.instantlyCampaignId} — reply recorded and sequence stopped, sentiment left unset`,
+              );
+              summary.unqualified += 1;
+            }
+          } catch (error) {
+            console.error(
+              `[instantly-service] self-send-poll: qualification failed for campaign=${send.instantlyCampaignId}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            summary.unqualified += 1;
+          }
+        } else if (classification.kind === "auto_reply") summary.autoReplies += 1;
         else summary.bounces += 1;
       }
     } finally {
@@ -232,6 +277,8 @@ export async function runPoll(options: { asOf?: Date } = {}): Promise<PollSummar
     replies: 0,
     autoReplies: 0,
     bounces: 0,
+    qualified: 0,
+    unqualified: 0,
     unrelated: 0,
     accountsFailed: 0,
   };
