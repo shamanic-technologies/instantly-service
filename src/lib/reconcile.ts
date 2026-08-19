@@ -37,6 +37,7 @@ import {
   isLocallyTerminal,
   isLeadAlreadyGone,
 } from "./finished-contacts";
+import { isSelfSendCampaignId } from "./self-send/transport";
 import { resolveInstantlyApiKey, KeyServiceError } from "./key-client";
 import {
   insertAnalyticsSnapshot,
@@ -500,12 +501,21 @@ export async function reconcileAll(): Promise<ReconcileSummary> {
   // locally (lead deleted on a prior run) — no point re-polling a gone contact.
   // When disabled (default), behaviour is unchanged: scan every row.
   const deleteEnabled = isDeleteFinishedEnabled();
+  const scannable = allRows.filter(
+    // A sequence WE dispatch has no Instantly campaign behind it, so every phase
+    // of this reconcile — analytics, /leads/list, /emails, the finished-contact
+    // delete — would be asking Instantly about something that was never there.
+    // Same exclusion the `reserving:` sentinel needs, and for the same reason.
+    (c) => !isSelfSendCampaignId(c.instantlyCampaignId),
+  );
   const campaigns = deleteEnabled
-    ? allRows.filter((c) => !isLocallyTerminal(c.status))
-    : allRows;
+    ? scannable.filter((c) => !isLocallyTerminal(c.status))
+    : scannable;
 
+  const selfSendSkipped = allRows.length - scannable.length;
   console.log(
     `[instantly-service] reconcile: starting, total=${campaigns.length}` +
+      (selfSendSkipped > 0 ? ` (skipped ${selfSendSkipped} self-send)` : "") +
       (deleteEnabled ? ` (skipped ${allRows.length - campaigns.length} locally-terminal)` : ""),
   );
 

@@ -133,6 +133,9 @@ async function selectCandidates(limit?: number): Promise<CandidateRow[]> {
       -- (it would otherwise fall into the no-config branch below) and getCampaign
       -- 400s on it because the sentinel is not a bare uuid.
       AND c.instantly_campaign_id NOT LIKE 'reserving:%'
+      -- Same reason for a self-dispatched sequence: there is no Instantly
+      -- campaign behind a 'self:<uuid>' id either.
+      AND c.instantly_campaign_id NOT LIKE 'self:%'
       AND (
         lc.instantly_campaign_id IS NULL
         OR position('\\n' in lc.payload::text) > 0

@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import {
+  SELF_SEND_CAMPAIGN_LIKE,
+  SELF_SEND_CAMPAIGN_PREFIX,
   SEND_TRANSPORT_INSTANTLY,
   SEND_TRANSPORT_SMTP,
+  isSelfSendCampaignId,
+  mintSelfSendCampaignId,
   resolveTransportForSend,
 } from "../../src/lib/self-send/transport";
 import {
@@ -257,5 +261,31 @@ describe("stepRowsFromSendPayload", () => {
 
   it("returns an empty list for an empty sequence", () => {
     expect(stepRowsFromSendPayload("s", [])).toEqual([]);
+  });
+});
+
+// ─── Local campaign-id sentinel ───────────────────────────────────────────────
+
+describe("self-send campaign id", () => {
+  it("mints a prefixed, unique local id", () => {
+    const a = mintSelfSendCampaignId();
+    const b = mintSelfSendCampaignId();
+
+    expect(a.startsWith(SELF_SEND_CAMPAIGN_PREFIX)).toBe(true);
+    expect(a).not.toBe(b);
+  });
+
+  it("recognises its own ids and nothing else", () => {
+    expect(isSelfSendCampaignId(mintSelfSendCampaignId())).toBe(true);
+    expect(isSelfSendCampaignId("reserving:abc")).toBe(false);
+    // A real Instantly campaign id is a bare uuid.
+    expect(isSelfSendCampaignId("019f9856-0000-4000-8000-000000000000")).toBe(false);
+  });
+
+  // The SQL predicate every Instantly-calling sweep uses must match the prefix
+  // the minter produces, or a self-send row leaks into a sweep that will ask
+  // Instantly about a campaign that never existed.
+  it("keeps the SQL LIKE pattern in lockstep with the prefix", () => {
+    expect(SELF_SEND_CAMPAIGN_LIKE).toBe(`${SELF_SEND_CAMPAIGN_PREFIX}%`);
   });
 });
