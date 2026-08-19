@@ -9,7 +9,10 @@ import {
 } from "../../src/lib/self-send/dispatch";
 import { STEP_GAP_CALENDAR_DAYS } from "../../src/lib/sending-forecast";
 
-const NOW = new Date("2026-08-16T12:00:00Z");
+// A MONDAY. The original fixture was 2026-08-16, a Sunday — so the whole suite
+// was quietly asserting weekend behaviour, which is exactly the bug this file now
+// guards against.
+const NOW = new Date("2026-08-17T12:00:00Z");
 const DAY = 24 * 60 * 60 * 1000;
 
 function sequence(overrides: Partial<PendingSequence> = {}): PendingSequence {
@@ -249,5 +252,66 @@ describe("classifyPermanentFailure", () => {
     expect(classifyPermanentFailure("", null)).toBe("sender");
     expect(classifyPermanentFailure("500 Syntax error", 500)).toBe("sender");
     expect(classifyPermanentFailure("554 Transaction failed", 554)).toBe("sender");
+  });
+});
+
+// ─── Weekday gate ─────────────────────────────────────────────────────────────
+
+describe("selectDueSteps — sending calendar", () => {
+  const SATURDAY = new Date("2026-08-15T12:00:00Z");
+  const SUNDAY = new Date("2026-08-16T12:00:00Z");
+  const MONDAY = new Date("2026-08-17T12:00:00Z");
+
+  const capacity = { accountEmail: "amy@saviolabsco.com", cap: 45, sentToday: 0 };
+
+  it("confirms the fixture days really are what they claim", () => {
+    expect(SATURDAY.getUTCDay()).toBe(6);
+    expect(SUNDAY.getUTCDay()).toBe(0);
+    expect(MONDAY.getUTCDay()).toBe(1);
+  });
+
+  // Every campaign in the fleet is created Mon-Fri, and both transports run on
+  // the same mailboxes — diverging would change a mailbox's behaviour purely
+  // because of which pipe a lead was assigned to.
+  it.each([
+    ["Saturday", SATURDAY],
+    ["Sunday", SUNDAY],
+  ])("sends nothing on a %s, even with a badly overdue step", (_label, day) => {
+    const overdue = sequence({
+      provisionedSteps: [2],
+      lastSentStep: 1,
+      lastSentAt: new Date(day.getTime() - 60 * DAY),
+    });
+
+    expect(selectDueSteps([overdue], [capacity], day)).toEqual([]);
+  });
+
+  // The weekly placement test runs Saturday precisely because mailboxes are
+  // otherwise empty and can absorb a ~30-50 seed spike.
+  it("leaves the Saturday placement-test slot completely free", () => {
+    const many = Array.from({ length: 20 }, (_, i) =>
+      sequence({ instantlyCampaignId: `c-${i}`, leadEmail: `p${i}@x.com` }),
+    );
+    expect(selectDueSteps(many, [capacity], SATURDAY)).toHaveLength(0);
+  });
+
+  // Nothing is lost — a weekend-due step simply waits, and Monday drains the
+  // backlog most-overdue-first.
+  it("carries a weekend-due step over to Monday", () => {
+    const dueOnSaturday = sequence({
+      provisionedSteps: [2],
+      lastSentStep: 1,
+      lastSentAt: new Date(SATURDAY.getTime() - 2 * DAY),
+    });
+
+    expect(selectDueSteps([dueOnSaturday], [capacity], SATURDAY)).toEqual([]);
+
+    const onMonday = selectDueSteps([dueOnSaturday], [capacity], MONDAY);
+    expect(onMonday).toHaveLength(1);
+    expect(onMonday[0]!.step).toBe(2);
+  });
+
+  it("is unchanged on a weekday", () => {
+    expect(selectDueSteps([sequence()], [capacity], MONDAY)).toHaveLength(1);
   });
 });
