@@ -1,10 +1,32 @@
 /**
- * Stop-on-click for signup-maximizing brands.
+ * Stop-on-click for campaigns whose funnel opens on a website visit.
  *
  * When a prospect CLICKS a link in a cold email (`email_link_clicked`) AND the
- * campaign's brand is currently maximizing signups (`current_goal === 'signup'`),
- * the lead is on the landing page — the conversion happens there, so continuing
- * the cold sequence only distracts. We PAUSE the lead's Instantly campaign.
+ * campaign runs a funnel whose first leg is a visit (`visit_form`,
+ * `visit_signup`), the lead is on the landing page — the conversion happens
+ * there, so continuing the cold sequence only distracts. We PAUSE the lead's
+ * Instantly campaign.
+ *
+ * ⚠️ The gate is the CAMPAIGN's funnel, not the brand's goal. It used to read
+ * `brands.current_goal === 'signup'` from brand-service, which was wrong on both
+ * axes:
+ *   - GRAIN. A funnel belongs to a campaign. Two campaigns of the same brand can
+ *     run different funnels, so a brand-level answer is not an answer to the
+ *     question being asked — it pauses sequences that should keep running, and
+ *     misses ones that should stop.
+ *   - SIGNAL. `current_goal` is a goal in the middle of being retired (see
+ *     campaign-service migration 0042, which rewrites stated goals into stored
+ *     funnels). `campaigns.funnel_key` is the fact that replaced it.
+ *
+ * `reply_meeting` deliberately does NOT stop: that funnel's conversion starts
+ * with a REPLY, so a click says nothing about whether to keep sending. A NULL
+ * funnel does not stop either — campaign-service's own rule is "a funnel is a
+ * fact, never a guess", and pausing a live sequence on an unknown is the wrong
+ * direction to be wrong in.
+ *
+ * A reply, by contrast, ALWAYS stops the sequence whatever its sentiment — that
+ * is `reply_received` in `SEQUENCE_STOP_EVENTS`, entirely separate from this and
+ * not conditioned on any funnel or goal. This side effect is only about clicks.
  *
  * Placement: fired as a fail-soft side effect from `promoteEvent` in
  * silver-promote.ts, on REAL (non-inferred) click events only.
@@ -18,52 +40,40 @@
  *     deletes the contact (quota reclaim, if enabled) and marks the local row
  *     terminal.
  * So no local status write, no cost cancel, no contact delete is duplicated here.
- *
- * Always-on: gated only by the brand's runtime goal (`current_goal === 'signup'`)
- * and by fail-soft availability of brand-service. No env kill-switch — a click on
- * a non-signup brand is a natural no-op, and any error leaves the sequence running.
  */
 
 import { resolveInstantlyApiKey } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
-import { getCurrentGoals } from "./brand-client";
-
-/** The `current_goal` value that means "maximize signups". */
-export const SIGNUP_GOAL = "signup";
-
-/**
- * True iff ANY brand in the set is currently maximizing signups. Multi-brand
- * campaigns stop if any member is in signup mode (signup-max is the aggressive
- * stop; most sends are single-brand anyway).
- */
-export function anyGoalIsSignup(goals: string[]): boolean {
-  return goals.some((g) => g === SIGNUP_GOAL);
-}
+import { funnelStopsOnClick, getCampaignFunnelKey } from "./campaign-client";
 
 /** The subset of a campaign row this side effect needs. */
 export interface StopOnClickCampaign {
   instantlyCampaignId: string;
+  /** The CALLER campaign id — the one campaign-service owns. Null on a platform send. */
+  campaignId: string | null;
   orgId: string | null;
-  brandIds?: string[] | null;
 }
 
 /**
- * Pause the lead's Instantly campaign iff the campaign's brand is maximizing
- * signups. Fully fail-soft: any error (brand-service down, key resolution,
- * Instantly pause) is swallowed and logged — the sequence simply continues.
- * NEVER throws into the webhook promote path (a 5xx would make Instantly
- * auto-pause the webhook).
+ * Pause the lead's Instantly campaign iff its funnel opens on a website visit.
+ *
+ * Fully fail-soft: any error (campaign-service down, key resolution, Instantly
+ * pause) is swallowed and logged — the sequence simply continues. NEVER throws
+ * into the webhook promote path (a 5xx would make Instantly auto-pause the
+ * webhook).
  */
-export async function maybeStopOnClickForSignup(
+export async function maybeStopOnClickForFunnel(
   campaign: StopOnClickCampaign,
   leadEmail: string,
 ): Promise<void> {
   if (!campaign.orgId) return;
-  if (!campaign.brandIds || campaign.brandIds.length === 0) return;
+  // A platform send belongs to no caller campaign, so it runs no funnel and
+  // there is nothing to read. Not an error — simply out of scope.
+  if (!campaign.campaignId) return;
 
   try {
-    const goals = await getCurrentGoals(campaign.brandIds);
-    if (!anyGoalIsSignup(goals)) return;
+    const funnelKey = await getCampaignFunnelKey(campaign.campaignId, campaign.orgId);
+    if (!funnelStopsOnClick(funnelKey)) return;
 
     const { key } = await resolveInstantlyApiKey(campaign.orgId, "system", {
       method: "POST",
@@ -72,7 +82,7 @@ export async function maybeStopOnClickForSignup(
     await updateCampaignStatus(key, campaign.instantlyCampaignId, "paused");
 
     console.log(
-      `[instantly-service] stop-on-click: paused campaign=${campaign.instantlyCampaignId} lead=${leadEmail} (brand goal=signup)`,
+      `[instantly-service] stop-on-click: paused campaign=${campaign.instantlyCampaignId} lead=${leadEmail} (funnel=${funnelKey})`,
     );
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);

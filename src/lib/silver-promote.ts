@@ -18,7 +18,7 @@ import { and, eq, isNull, or, type SQL } from "drizzle-orm";
 import { updateCostStatus, isRunGoneError, type IdentityContext } from "./runs-client";
 import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
-import { maybeStopOnClickForSignup } from "./stop-on-click";
+import { maybeStopOnClickForFunnel } from "./stop-on-click";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
 
 const SEQUENCE_STOP_EVENTS = new Set([
@@ -133,8 +133,7 @@ interface CampaignRow {
   orgId: string | null;
   userId: string | null;
   runId: string | null;
-  // Present at runtime (findCampaign selects all columns); used by the
-  // stop-on-click side effect to read the brand's runtime goal.
+  // Present at runtime (findCampaign selects all columns).
   brandIds?: string[] | null;
 }
 
@@ -620,10 +619,13 @@ export async function promoteEvent(input: PromoteEventInput): Promise<PromoteEve
         await cancelRemainingProvisions(campaign, input.leadEmail);
       }
 
-      // Stop-on-click: a real click on a signup-maximizing brand's campaign
-      // pauses the sequence (flag-gated, fail-soft — never throws here).
+      // Stop-on-click: a real click pauses the sequence when the CAMPAIGN's
+      // funnel opens on a website visit — the prospect is on the landing page,
+      // so more cold email only distracts. Fail-soft, never throws here.
+      // Entirely separate from the reply path above: a reply ALWAYS stops the
+      // sequence whatever its sentiment, conditioned on no funnel at all.
       if (input.eventType === "email_link_clicked") {
-        await maybeStopOnClickForSignup(campaign, input.leadEmail);
+        await maybeStopOnClickForFunnel(campaign, input.leadEmail);
       }
 
       // Forward positive replies: when Instantly qualifies the reply
