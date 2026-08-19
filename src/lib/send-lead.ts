@@ -524,6 +524,12 @@ export interface SendOptions {
    * non-reserved slug or null draws from the shared unreserved fleet.
    */
   featureSlug?: string | null;
+  /**
+   * Pre-selected mailbox. The caller selects it BEFORE deciding the transport,
+   * so on the Instantly path it is passed straight through rather than picked
+   * twice. Omitted only by callers that still let this function choose.
+   */
+  account?: PooledAccount;
 }
 
 export interface SendSuccess {
@@ -560,16 +566,19 @@ export type SendResult =
  *   - `{ok: false, reason: "no_healthy_accounts_available"}` when zero accounts are
  *     currently in_production — caller surfaces this upstream (no row created).
  */
-export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult> {
-  const accounts = await fetchInProductionAccounts(opts.featureSlug ?? null);
-
-  if (accounts.length === 0) {
-    console.warn(
-      `[send-lead] No in_production accounts available for "${opts.campaignName}"` +
-        (opts.featureSlug ? ` (feature "${opts.featureSlug}")` : ""),
-    );
-    return { ok: false, reason: "no_healthy_accounts_available" };
-  }
+/**
+ * Choose the mailbox this lead will be sent from.
+ *
+ * Split out of `sendLeadToInstantly` because it has to happen on BOTH transports
+ * — the account is what decides the transport in the first place, so selecting it
+ * cannot live inside the Instantly-specific path. Returns null when the pool is
+ * empty, which the caller surfaces without creating any row.
+ */
+export async function selectSendingAccount(
+  featureSlug?: string | null,
+): Promise<PooledAccount | null> {
+  const accounts = await fetchInProductionAccounts(featureSlug ?? null);
+  if (accounts.length === 0) return null;
 
   // Capacity is measured against the day this lead can ACTUALLY first send:
   // itself on a weekday, the following Monday on a weekend (campaigns run
@@ -577,7 +586,20 @@ export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult
   // stack the weekend's slots on top of Monday's — see sending-calendar.ts.
   const effectiveDay = nextSendingDay(new Date());
   const capacityByEmail = await fetchAccountCapacityCached(effectiveDay);
-  const account = pickSequentialFillAccount(accounts, capacityByEmail, effectiveDay);
+  return pickSequentialFillAccount(accounts, capacityByEmail, effectiveDay);
+}
+
+export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult> {
+  const account = opts.account ?? (await selectSendingAccount(opts.featureSlug));
+
+  if (!account) {
+    console.warn(
+      `[send-lead] No in_production accounts available for "${opts.campaignName}"` +
+        (opts.featureSlug ? ` (feature "${opts.featureSlug}")` : ""),
+    );
+    return { ok: false, reason: "no_healthy_accounts_available" };
+  }
+
   const steps = buildSequenceSteps(opts.subject, opts.sortedSequence, account);
 
   console.log(

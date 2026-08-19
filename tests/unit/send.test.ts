@@ -1536,6 +1536,55 @@ describe("POST /send", () => {
     expect(res.body.stepRuns[2]).toMatchObject({ step: 3, runId: "step-run-3" });
   });
 
+  // ─── Self-send cutover (#590) ─────────────────────────────────────────────
+
+  // THE guard this PR exists for. The transport used to be read only at phase-2,
+  // AFTER the Instantly campaign had been created — so a flipped account got its
+  // lead pushed to Instantly AND picked up by our own dispatch worker, and every
+  // prospect received each email TWICE from the same mailbox.
+  it("does NOT create an Instantly campaign when the account is on smtp", async () => {
+    mockNewCampaignFlow();
+    mockFetchInProductionAccounts.mockResolvedValueOnce([
+      { email: "smtp@saviolabsco.com", warmup_status: 1, status: 1, sendTransport: "smtp", infraProvider: "primeforge" },
+    ]);
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(mockAddLeads).not.toHaveBeenCalled();
+  });
+
+  it("stores a local self: id when the account is on smtp", async () => {
+    mockNewCampaignFlow();
+    mockFetchInProductionAccounts.mockResolvedValueOnce([
+      { email: "smtp@saviolabsco.com", warmup_status: 1, status: 1, sendTransport: "smtp", infraProvider: "primeforge" },
+    ]);
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    const phase2 = mockDbUpdateSet.mock.calls
+      .map((c: unknown[]) => c[0])
+      .find((v: any) => v?.instantlyCampaignId && !String(v.instantlyCampaignId).startsWith("reserving:")) as any;
+
+    expect(phase2.instantlyCampaignId).toMatch(/^self:/);
+    expect(phase2.sendTransport).toBe("smtp");
+  });
+
+  // The Instantly path must be byte-unchanged — this is the one every live
+  // customer send still takes.
+  it("still creates an Instantly campaign on the instantly transport", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockCreateCampaign).toHaveBeenCalled();
+  });
+
   // ─── Self-send wiring (#590) ──────────────────────────────────────────────
 
   // Without these rows a mailbox flipped to the smtp transport would find no

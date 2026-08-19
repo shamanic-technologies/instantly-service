@@ -10,9 +10,13 @@ import { eq, and, ne, isNotNull, sql } from "drizzle-orm";
 import {
   Lead,
 } from "../lib/instantly-client";
-import { sendLeadToInstantly } from "../lib/send-lead";
+import { selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
 import { stepRowsFromSendPayload } from "../lib/self-send/sequence-steps";
-import { resolveTransportForSend } from "../lib/self-send/transport";
+import {
+  SEND_TRANSPORT_SMTP,
+  mintSelfSendCampaignId,
+  resolveTransportForSend,
+} from "../lib/self-send/transport";
 import {
   createRun,
   updateRun,
@@ -295,16 +299,44 @@ router.post("/", async (req: Request, res: Response) => {
         variables: body.variables,
       };
 
-      const sendResult = await sendLeadToInstantly({
-        apiKey,
-        campaignName,
-        subject: body.subject,
-        sortedSequence,
-        lead,
-        bcc: body.bcc,
-        timezone: body.timezone,
-        featureSlug: tracking.featureSlug ?? null,
-      });
+      // 5. Choose the mailbox FIRST, then let its transport decide the pipe.
+      //
+      //    ⚠️ THE ORDER IS THE WHOLE POINT. The transport used to be read only at
+      //    phase-2, AFTER the Instantly campaign had already been created — so an
+      //    account flipped to 'smtp' got its lead pushed to Instantly AND picked
+      //    up by our own dispatch worker, and every prospect received each email
+      //    TWICE from the same mailbox. Selecting the account before the external
+      //    call is what makes the two paths mutually exclusive.
+      const account = await selectSendingAccount(tracking.featureSlug ?? null);
+      const transport = resolveTransportForSend(account?.sendTransport);
+
+      const sendResult: SendResult = !account
+        ? { ok: false, reason: "no_healthy_accounts_available" }
+        : transport === SEND_TRANSPORT_SMTP
+          ? {
+              // No Instantly campaign exists on this transport. The id stays
+              // because the column is notNull+unique and every join hangs off it
+              // — it simply becomes a local one. `added` is 1 because the lead is
+              // enrolled here and now; the dispatch happens on the worker's next
+              // sweep.
+              ok: true,
+              value: {
+                instantlyCampaignId: mintSelfSendCampaignId(),
+                added: 1,
+                account,
+              },
+            }
+          : await sendLeadToInstantly({
+              apiKey,
+              campaignName,
+              subject: body.subject,
+              sortedSequence,
+              lead,
+              bcc: body.bcc,
+              timezone: body.timezone,
+              featureSlug: tracking.featureSlug ?? null,
+              account,
+            });
 
       if (!sendResult.ok) {
         // Release the reservation so a later legit retry can re-claim.
@@ -344,12 +376,9 @@ router.post("/", async (req: Request, res: Response) => {
         .set({
           instantlyCampaignId: sendResult.value.instantlyCampaignId,
           accountEmail: sendResult.value.account.email,
-          // Resolved AT THE FREEZE POINT, not just upstream: this is where the
-          // decision becomes permanent for the lead, so an account object from
-          // any source — a future code path, a stale row — still cannot write an
-          // unrecognised transport onto a campaign. Anything but 'smtp' means
-          // Instantly.
-          sendTransport: resolveTransportForSend(sendResult.value.account.sendTransport),
+          // The SAME value the branch above acted on, not a re-resolution:
+          // the frozen column and the pipe actually taken can never disagree.
+          sendTransport: transport,
           updatedAt: new Date(),
         })
         .where(eq(instantlyCampaigns.id, reservedId));

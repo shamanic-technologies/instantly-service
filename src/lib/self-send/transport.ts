@@ -41,3 +41,33 @@ export function resolveTransportForSend(
 ): SendTransport {
   return value === SEND_TRANSPORT_SMTP ? SEND_TRANSPORT_SMTP : SEND_TRANSPORT_INSTANTLY;
 }
+
+/**
+ * Prefix of the `instantly_campaigns.instantly_campaign_id` value used when a
+ * sequence is dispatched by US: `self:<uuid>`.
+ *
+ * There IS no Instantly campaign on this transport, but the column is
+ * `notNull().unique()` and is the join key for `sequence_costs`, the silver event
+ * log, the bronze mirrors and the IMAP correlation. So the id stays — it just
+ * stops being an Instantly id and becomes a purely local one.
+ *
+ * ⚠️ THE SAME RULE AS THE `reserving:` SENTINEL APPLIES, and for the same reason:
+ * ANY sweep that selects `instantly_campaigns` and then calls the Instantly API
+ * per row MUST exclude these, or it will ask Instantly about a campaign that was
+ * never there. `GET /campaigns/self:<uuid>` 400s on the uuid format, exactly as
+ * it does for a reservation sentinel. Every such caller is listed in CLAUDE.md.
+ */
+export const SELF_SEND_CAMPAIGN_PREFIX = "self:";
+
+/** SQL-side form of the same exclusion, for a `NOT LIKE` predicate. */
+export const SELF_SEND_CAMPAIGN_LIKE = "self:%";
+
+/** True when this id names one of OUR sequences rather than an Instantly campaign. */
+export function isSelfSendCampaignId(instantlyCampaignId: string): boolean {
+  return instantlyCampaignId.startsWith(SELF_SEND_CAMPAIGN_PREFIX);
+}
+
+/** Mint a fresh local id for a sequence we will dispatch ourselves. */
+export function mintSelfSendCampaignId(): string {
+  return `${SELF_SEND_CAMPAIGN_PREFIX}${crypto.randomUUID()}`;
+}

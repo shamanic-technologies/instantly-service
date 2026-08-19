@@ -46,6 +46,7 @@
  */
 
 import { db } from "../db";
+import { SELF_SEND_CAMPAIGN_LIKE } from "./self-send/transport";
 import { instantlyCampaigns, instantlyLeads, sequenceCosts } from "../db/schema";
 import { and, eq, or, sql } from "drizzle-orm";
 import {
@@ -153,6 +154,10 @@ export async function selectOneStuckRow(): Promise<StuckCampaignRow | null> {
       AND c.campaign_id IS NOT NULL
       AND c.lead_email IS NOT NULL
       AND c.org_id IS NOT NULL
+      -- A sequence WE dispatch has no Instantly campaign to redispatch, and its
+      -- own worker owns the catch-up. Asking Instantly about a self: id would
+      -- 400 on the uuid format, exactly as a reserving: sentinel does.
+      AND c.instantly_campaign_id NOT LIKE ${SELF_SEND_CAMPAIGN_LIKE}
       AND (
         c.metadata->>'lastAttemptAt' IS NULL
         OR (c.metadata->>'lastAttemptAt')::timestamptz < NOW() - INTERVAL '${sql.raw(`${ATTEMPT_COOLDOWN_MINUTES} minutes`)}'
