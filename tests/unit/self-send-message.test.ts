@@ -162,6 +162,11 @@ describe("buildMessage", () => {
       step: 1,
       identity: IDENTITY,
       unsubscribeUrl: URL,
+      // Injected rather than read from the environment, and deliberately the
+      // SAME origin the opt-out URL sits on — that is what makes the "leaves our
+      // own link alone" rule observable here.
+      trackingOrigin: "https://opt.test",
+      trackingSecret: "message-test-secret",
       ...overrides,
     });
   }
@@ -184,6 +189,21 @@ describe("buildMessage", () => {
     const once = build().html;
     const twice = build({ bodyHtml: once }).html;
     expect(twice).toBe(once);
+  });
+
+  // Without this, `email_link_clicked` never fires on the self-send transport, so
+  // stop-on-click would silently never pause a lead on a visit-first funnel.
+  it("routes a prospect-facing link through the click redirect", () => {
+    const message = build({ bodyHtml: '<p>See <a href="https://distribute.you/pricing">pricing</a></p>' });
+
+    expect(message.html).toContain("https://opt.test/c/");
+    expect(message.html).not.toContain('href="https://distribute.you/pricing"');
+  });
+
+  // The opt-out is the one link a prospect must always be able to trust.
+  it("does NOT route the opt-out link through the click redirect", () => {
+    const message = build();
+    expect(message.html).toContain(`href="${URL}"`);
   });
 
   it("sets the RFC 8058 one-click pair pointing at the same URL", () => {
