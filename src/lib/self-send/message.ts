@@ -15,7 +15,8 @@
 
 import type { Account } from "../instantly-client";
 import { buildEmailBodyWithSignature } from "../send-lead";
-import { buildUnsubscribeUrl, type UnsubscribeIdentity } from "./unsubscribe";
+import { rewriteLinksForTracking } from "./click-tracking";
+import { buildUnsubscribeUrl, unsubscribeOrigin, unsubscribeSecret, type UnsubscribeIdentity } from "./unsubscribe";
 
 /** Instantly's placeholder, single-braced. The `{{...}}` form never resolved. */
 export const INSTANTLY_UNSUBSCRIBE_PLACEHOLDER = "{unsubscribe_link}";
@@ -45,6 +46,9 @@ export interface BuildMessageInput {
   priorMessageIds?: readonly string[];
   /** Injected so the URL builder can be exercised without the environment. */
   unsubscribeUrl?: string;
+  /** Injected in tests. `null` disables link rewriting entirely. */
+  trackingOrigin?: string | null;
+  trackingSecret?: string;
 }
 
 /**
@@ -94,7 +98,26 @@ export function buildMessage(input: BuildMessageInput): BuiltMessage {
   const url = input.unsubscribeUrl ?? buildUnsubscribeUrl(input.identity);
 
   const withSignature = buildEmailBodyWithSignature(input.bodyHtml, input.account);
-  const html = resolveUnsubscribePlaceholder(withSignature, url);
+  const withOptOut = resolveUnsubscribePlaceholder(withSignature, url);
+
+  // Route every OUTBOUND link through our own redirect so clicks are observable.
+  // Runs last, on the final html, and skips anything already on our origin —
+  // which is exactly the opt-out link we just resolved. Without this,
+  // `email_link_clicked` never fires on this transport, so `stop-on-click` would
+  // silently never pause a self-sent lead on a visit-first funnel.
+  const html =
+    input.trackingOrigin === null
+      ? withOptOut
+      : rewriteLinksForTracking(
+          withOptOut,
+          {
+            instantlyCampaignId: input.identity.instantlyCampaignId,
+            leadEmail: input.identity.leadEmail,
+            step: input.step,
+          },
+          input.trackingOrigin ?? unsubscribeOrigin(),
+          input.trackingSecret ?? unsubscribeSecret(),
+        );
 
   const headers: Record<string, string> = {
     "List-Unsubscribe": `<${url}>`,

@@ -3036,6 +3036,45 @@
         }
       }
     },
+    "/c/{payload}/{signature}": {
+      "get": {
+        "summary": "Record a click and redirect to its real destination",
+        "description": "Public and unauthenticated — a prospect follows it from their inbox — so the HMAC in the URL is the entire gate. The destination is INSIDE the signed payload, never a query parameter: a redirector that forwards to whatever a caller supplies is an open redirect, which would let anyone borrow the domain to bounce victims at a phishing page and get it blacklisted. Records the hit in bronze, promotes `email_link_clicked` (which is what stop-on-click fires on), then 302s. An invalid signature, a malformed payload and a non-http destination all return 404 identically.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "payload",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "signature",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the signed destination"
+          },
+          "404": {
+            "description": "Invalid signature, malformed payload, or unusable destination",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/internal/self-send/dispatch": {
       "post": {
         "summary": "Send the steps now due on the self-hosted SMTP transport",

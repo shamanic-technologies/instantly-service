@@ -238,6 +238,26 @@ registry.registerPath({
   },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/c/{payload}/{signature}",
+  summary: "Record a click and redirect to its real destination",
+  description:
+    "Public and unauthenticated — a prospect follows it from their inbox — so the " +
+    "HMAC in the URL is the entire gate. The destination is INSIDE the signed " +
+    "payload, never a query parameter: a redirector that forwards to whatever a " +
+    "caller supplies is an open redirect, which would let anyone borrow the " +
+    "domain to bounce victims at a phishing page and get it blacklisted. Records " +
+    "the hit in bronze, promotes `email_link_clicked` (which is what stop-on-click " +
+    "fires on), then 302s. An invalid signature, a malformed payload and a " +
+    "non-http destination all return 404 identically.",
+  request: { params: z.object({ payload: z.string(), signature: z.string() }) },
+  responses: {
+    302: { description: "Redirect to the signed destination" },
+    404: { description: "Invalid signature, malformed payload, or unusable destination", content: { "text/html": { schema: z.string() } } },
+  },
+});
+
 // ─── Self-send dispatch (ops trigger) ───────────────────────────────────────
 
 const SelfSendDispatchRequestSchema = z
