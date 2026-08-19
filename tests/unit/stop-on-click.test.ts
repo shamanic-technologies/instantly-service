@@ -1,13 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// ─── Mocks ───────────────────────────────────────────────────────────────────
-
-const mockGetCurrentGoals = vi.fn();
+const mockGetCampaignFunnelKey = vi.fn();
 const mockResolveInstantlyApiKey = vi.fn();
 const mockUpdateCampaignStatus = vi.fn();
 
-vi.mock("../../src/lib/brand-client", () => ({
-  getCurrentGoals: (...args: unknown[]) => mockGetCurrentGoals(...args),
+vi.mock("../../src/lib/campaign-client", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  getCampaignFunnelKey: (...args: unknown[]) => mockGetCampaignFunnelKey(...args),
 }));
 
 vi.mock("../../src/lib/key-client", () => ({
@@ -18,77 +17,118 @@ vi.mock("../../src/lib/instantly-client", () => ({
   updateCampaignStatus: (...args: unknown[]) => mockUpdateCampaignStatus(...args),
 }));
 
-import { anyGoalIsSignup, maybeStopOnClickForSignup } from "../../src/lib/stop-on-click";
+const { maybeStopOnClickForFunnel } = await import("../../src/lib/stop-on-click");
+const { funnelStopsOnClick } = await import("../../src/lib/campaign-client");
 
-const campaign = {
+const CAMPAIGN = {
   instantlyCampaignId: "inst-camp-1",
+  campaignId: "camp-1",
   orgId: "org-1",
-  brandIds: ["brand-1"],
 };
 
-describe("stop-on-click pure helpers", () => {
-  it("anyGoalIsSignup: ANY-brand semantics", () => {
-    expect(anyGoalIsSignup(["signup"])).toBe(true);
-    expect(anyGoalIsSignup(["purchase"])).toBe(false);
-    expect(anyGoalIsSignup(["purchase", "signup"])).toBe(true);
-    expect(anyGoalIsSignup([])).toBe(false);
-  });
+beforeEach(() => {
+  vi.resetAllMocks();
+  mockResolveInstantlyApiKey.mockResolvedValue({ key: "k", keySource: "platform" });
+  mockUpdateCampaignStatus.mockResolvedValue({});
 });
 
-describe("maybeStopOnClickForSignup", () => {
-  beforeEach(() => {
-    mockGetCurrentGoals.mockReset();
-    mockResolveInstantlyApiKey.mockReset();
-    mockUpdateCampaignStatus.mockReset();
-    mockResolveInstantlyApiKey.mockResolvedValue({ key: "api-key-1", keySource: "platform" });
-    mockUpdateCampaignStatus.mockResolvedValue({});
+// ─── funnelStopsOnClick (pure) ────────────────────────────────────────────────
+
+describe("funnelStopsOnClick", () => {
+  // The key encodes the chain the campaign runs, and its prefix is the leg that
+  // opens it. `visit_*` means the conversion starts on the site, which is exactly
+  // when a click means the prospect is already there.
+  it.each([["visit_form"], ["visit_signup"]])("stops on a visit-first funnel (%s)", (key) => {
+    expect(funnelStopsOnClick(key)).toBe(true);
   });
 
-  it("brand goal signup: pauses the Instantly campaign", async () => {
-    mockGetCurrentGoals.mockResolvedValue(["signup"]);
-
-    await maybeStopOnClickForSignup(campaign, "lead@x.com");
-
-    expect(mockUpdateCampaignStatus).toHaveBeenCalledTimes(1);
-    expect(mockUpdateCampaignStatus).toHaveBeenCalledWith("api-key-1", "inst-camp-1", "paused");
+  // This funnel's conversion starts with a REPLY — a click says nothing about
+  // whether the sequence should continue.
+  it("does NOT stop on reply_meeting", () => {
+    expect(funnelStopsOnClick("reply_meeting")).toBe(false);
   });
 
-  it("brand goal purchase: no pause", async () => {
-    mockGetCurrentGoals.mockResolvedValue(["purchase"]);
+  // campaign-service's own rule: a funnel is a fact, never a guess. Pausing a
+  // live sequence on an unknown is the wrong direction to be wrong in.
+  it.each([[null], [undefined], [""], ["unknown_funnel"]])(
+    "does NOT stop on %p",
+    (key) => {
+      expect(funnelStopsOnClick(key as string | null | undefined)).toBe(false);
+    },
+  );
+});
 
-    await maybeStopOnClickForSignup(campaign, "lead@x.com");
+// ─── maybeStopOnClickForFunnel ────────────────────────────────────────────────
+
+describe("maybeStopOnClickForFunnel", () => {
+  it("pauses the Instantly campaign on a visit-first funnel", async () => {
+    mockGetCampaignFunnelKey.mockResolvedValue("visit_signup");
+
+    await maybeStopOnClickForFunnel(CAMPAIGN, "lead@x.com");
+
+    expect(mockGetCampaignFunnelKey).toHaveBeenCalledWith("camp-1", "org-1");
+    expect(mockUpdateCampaignStatus).toHaveBeenCalledWith("k", "inst-camp-1", "paused");
+  });
+
+  it("leaves a reply-first funnel running", async () => {
+    mockGetCampaignFunnelKey.mockResolvedValue("reply_meeting");
+
+    await maybeStopOnClickForFunnel(CAMPAIGN, "lead@x.com");
 
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
   });
 
-  it("multi-brand, one signup: pauses (ANY)", async () => {
-    mockGetCurrentGoals.mockResolvedValue(["purchase", "signup"]);
+  it("leaves an unknown funnel running", async () => {
+    mockGetCampaignFunnelKey.mockResolvedValue(null);
 
-    await maybeStopOnClickForSignup(
-      { ...campaign, brandIds: ["brand-1", "brand-2"] },
-      "lead@x.com",
-    );
+    await maybeStopOnClickForFunnel(CAMPAIGN, "lead@x.com");
 
-    expect(mockUpdateCampaignStatus).toHaveBeenCalledTimes(1);
-  });
-
-  it("brand-service throws: no pause, no throw (fail-soft)", async () => {
-    mockGetCurrentGoals.mockRejectedValue(new Error("brand-service down"));
-
-    await expect(maybeStopOnClickForSignup(campaign, "lead@x.com")).resolves.toBeUndefined();
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
   });
 
-  it("no brandIds: no pause", async () => {
-    await maybeStopOnClickForSignup({ ...campaign, brandIds: [] }, "lead@x.com");
+  // The funnel is a property of the CAMPAIGN. Reading it anywhere else answers a
+  // different question — two campaigns of one brand can run different funnels.
+  it("reads the caller campaign id, never the Instantly one", async () => {
+    mockGetCampaignFunnelKey.mockResolvedValue("visit_form");
 
-    expect(mockGetCurrentGoals).not.toHaveBeenCalled();
+    await maybeStopOnClickForFunnel(CAMPAIGN, "lead@x.com");
+
+    const [campaignId] = mockGetCampaignFunnelKey.mock.calls[0]!;
+    expect(campaignId).toBe("camp-1");
+    expect(campaignId).not.toBe("inst-camp-1");
+  });
+
+  // A platform send belongs to no caller campaign, so it runs no funnel.
+  it("no-ops on a platform send (campaignId null) without calling out", async () => {
+    await maybeStopOnClickForFunnel({ ...CAMPAIGN, campaignId: null }, "lead@x.com");
+
+    expect(mockGetCampaignFunnelKey).not.toHaveBeenCalled();
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
   });
 
-  it("null orgId: no pause", async () => {
-    await maybeStopOnClickForSignup({ ...campaign, orgId: null }, "lead@x.com");
+  it("no-ops without an org", async () => {
+    await maybeStopOnClickForFunnel({ ...CAMPAIGN, orgId: null }, "lead@x.com");
 
+    expect(mockGetCampaignFunnelKey).not.toHaveBeenCalled();
+  });
+
+  // Never throw into promoteEvent — a 5xx there makes Instantly auto-pause the
+  // webhook, which would cost far more than a missed pause.
+  it("swallows a campaign-service failure and lets the sequence continue", async () => {
+    mockGetCampaignFunnelKey.mockRejectedValue(new Error("campaign-service down"));
+
+    await expect(
+      maybeStopOnClickForFunnel(CAMPAIGN, "lead@x.com"),
+    ).resolves.toBeUndefined();
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
+  });
+
+  it("swallows an Instantly pause failure", async () => {
+    mockGetCampaignFunnelKey.mockResolvedValue("visit_signup");
+    mockUpdateCampaignStatus.mockRejectedValue(new Error("instantly 500"));
+
+    await expect(
+      maybeStopOnClickForFunnel(CAMPAIGN, "lead@x.com"),
+    ).resolves.toBeUndefined();
   });
 });
