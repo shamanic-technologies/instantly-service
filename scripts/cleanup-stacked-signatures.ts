@@ -103,6 +103,13 @@ async function selectEligibleRows(limit?: number, offset = 0): Promise<EligibleR
     FROM instantly_campaigns c
     WHERE c.delivery_status = 'contacted'
       AND c.status = 'active'
+      -- Exclude both sentinel forms. A 'reserving:<uuid>' row is an in-flight
+      -- claim and a 'self:<uuid>' row is a sequence WE dispatch — neither names
+      -- an Instantly campaign, and GET /campaigns/<either> 400s on the uuid
+      -- format. This CLI never had the reserving: guard; CLAUDE.md has required
+      -- it of every such sweep since the escaped-newline dry-run hit one.
+      AND c.instantly_campaign_id NOT LIKE 'reserving:%'
+      AND c.instantly_campaign_id NOT LIKE 'self:%'
       AND c.org_id IS NOT NULL
       AND NOT EXISTS (
         SELECT 1 FROM instantly_events e
