@@ -39,7 +39,9 @@ process.env.SELF_SEND_PUBLIC_URL = "https://opt.test";
 const { runDispatch } = await import("../../src/lib/self-send/dispatch-worker");
 const { SmtpDispatchError } = await import("../../src/lib/self-send/smtp");
 
-const NOW = new Date("2026-08-16T12:00:00Z");
+// A MONDAY. The earlier fixture was a Sunday, so these tests were exercising a
+// run that the sending calendar now correctly refuses to make at all.
+const NOW = new Date("2026-08-17T12:00:00Z");
 
 /**
  * The worker issues three reads in order: pending sequences, sending accounts,

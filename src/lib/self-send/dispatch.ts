@@ -10,6 +10,7 @@
  * picks; it performs no IO and sends nothing.
  */
 
+import { isSendingDay } from "../sending-calendar";
 import { delayForGap } from "../sending-forecast";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -115,6 +116,24 @@ export function selectDueSteps(
   capacities: readonly AccountCapacity[],
   asOf: Date,
 ): DueStep[] {
+  // Nothing goes out on a weekend, matching the Mon-Fri window every campaign in
+  // the fleet is created with. Two reasons this is not optional:
+  //
+  //   - The transport this replaces does not send on weekends, and both run on
+  //     the SAME mailboxes. Diverging would change a mailbox's behaviour purely
+  //     because of which pipe a lead happened to be assigned to.
+  //   - The weekly placement test runs on a Saturday PRECISELY because mailboxes
+  //     are otherwise empty that day and can absorb a ~30-50 seed spike. Real
+  //     volume on top of that spike is exactly what the Saturday slot avoids.
+  //
+  // An overdue step simply stays overdue and goes out on the next sending day —
+  // the ordering below is most-overdue-first, so Monday drains the backlog in
+  // the right order. Deliberately a gate on the RUN rather than a snap on each
+  // step's due date: `sending-calendar` is scoped to send selection, and snapping
+  // due dates here would drift this module away from the ops projections, which
+  // bucket on the raw nominal day on purpose.
+  if (!isSendingDay(asOf)) return [];
+
   const remaining = new Map<string, number>();
   for (const capacity of capacities) {
     remaining.set(capacity.accountEmail, Math.max(0, capacity.cap - capacity.sentToday));
