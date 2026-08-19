@@ -21,6 +21,7 @@ import auditRoutes from "./routes/audit";
 import infraRoutes from "./routes/infra";
 import unsubscribeRoutes from "./routes/unsubscribe";
 import selfSendRoutes from "./routes/self-send";
+import clickRoutes from "./routes/click";
 import { serviceAuth } from "./middleware/serviceAuth";
 import { requireOrgId } from "./middleware/requireOrgId";
 
@@ -49,6 +50,11 @@ app.use("/webhooks", webhooksRoutes);
 // URL. Inert until an account is flipped to send_transport='smtp', since no email
 // in flight carries the link yet.
 app.use("/u", unsubscribeRoutes);
+// Click redirect for links in mail we dispatch ourselves. Same reasoning as /u:
+// unauthenticated because a prospect follows it from their inbox, gated entirely
+// by the HMAC, and the destination is inside the signed payload so a URL we did
+// not mint redirects nowhere.
+app.use("/c", clickRoutes);
 
 // ─── Protected public routes (x-api-key only) ──────────────────────────────
 app.use("/public", serviceAuth, analyticsPublicRoutes);
