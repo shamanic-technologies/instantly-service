@@ -40,6 +40,8 @@ import { instantlyCampaigns } from "../db/schema";
 import { resolveInstantlyApiKey } from "./key-client";
 import { listEmails, type EmailRecord } from "./instantly-client";
 import { sendEmail } from "./email-client";
+import { isSelfSendCampaignId } from "./self-send/transport";
+import { fetchSelfSendThread } from "./self-send/thread";
 
 /** The agency inbox that receives forwarded positive replies. */
 const AGENCY_INBOX = process.env.ADMIN_NOTIFICATION_EMAIL || "kevin@distribute.you";
@@ -222,12 +224,23 @@ export async function sendThreadForward(
   if (!campaign.orgId) {
     throw new Error("forward-thread requires an org-scoped campaign (orgId is null)");
   }
-  const { key } = await resolveInstantlyApiKey(campaign.orgId, "system", {
-    method: "POST",
-    path: "/internal/forward-positive-reply",
-  });
-  const records = await listEmails(key, { campaignId: campaign.instantlyCampaignId });
-  const messages = messagesFromFirstReply(selectThreadMessages(records));
+  // A sequence WE dispatched has no Instantly thread to fetch — but both halves
+  // are already in bronze (what we sent, what came back), so the same
+  // conversation is reconstructed locally into the SAME ThreadMessage shape.
+  // Without this branch a positive reply on the self-send transport would reach
+  // Instantly's /emails, find nothing, and forward an empty thread.
+  const messages = isSelfSendCampaignId(campaign.instantlyCampaignId)
+    ? messagesFromFirstReply(await fetchSelfSendThread(campaign.instantlyCampaignId))
+    : await (async () => {
+        const { key } = await resolveInstantlyApiKey(campaign.orgId!, "system", {
+          method: "POST",
+          path: "/internal/forward-positive-reply",
+        });
+        const records = await listEmails(key, {
+          campaignId: campaign.instantlyCampaignId,
+        });
+        return messagesFromFirstReply(selectThreadMessages(records));
+      })();
 
   await sendEmail(
     {
