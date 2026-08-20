@@ -103,7 +103,12 @@ export async function dispatchMessage(
   const transport = nodemailer.createTransport({
     host: credential.smtpHost,
     port: GMAIL_SMTP_PORT,
-    secure: true,
+    // 587 starts in the clear and upgrades. `secure: false` selects that
+    // handshake; `requireTLS` makes the upgrade MANDATORY, so a server that
+    // fails to offer STARTTLS aborts the send rather than silently putting the
+    // mailbox password on the wire in clear text.
+    secure: false,
+    requireTLS: true,
     auth: { user: credential.address, pass: credential.appPassword },
   });
 
