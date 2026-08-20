@@ -20,6 +20,8 @@ import { promoteEvent } from "./silver-promote";
 import { refreshLeadStatusCurrent } from "./status-gold";
 import { resolveInstantlyApiKey } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
+import { isSelfSendCampaignId } from "./self-send/transport";
+import { stopSelfSendSequence } from "./self-send/stop-sequence";
 
 // Mirrors the 8 keys of REPLY_CLASSIFICATION_MAP in silver-promote.ts. Kept in
 // sync deliberately: when a human qualifies a reply, the status is the same
@@ -231,6 +233,19 @@ async function pauseSequenceOnInstantly(
   status: ManualQualificationStatus,
 ): Promise<void> {
   try {
+    // A sequence WE dispatch has no Instantly campaign to pause, and reconcile
+    // skips a `self:` row outright — so the stop has to happen locally, holds
+    // included, or the lead would keep receiving followups after a human said
+    // they had already replied.
+    if (isSelfSendCampaignId(instantlyCampaignId)) {
+      await stopSelfSendSequence(
+        { instantlyCampaignId, campaignId: null, orgId, userId: null, runId: null },
+        leadEmail,
+        `manual qualification status=${status}`,
+      );
+      return;
+    }
+
     const { key } = await resolveInstantlyApiKey(orgId, "system", {
       method: "POST",
       path: "/orgs/manual-qualifications",
