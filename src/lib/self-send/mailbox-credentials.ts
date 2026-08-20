@@ -24,8 +24,20 @@ import {
 export const GMAIL_SMTP_HOST = "smtp.gmail.com";
 export const GMAIL_IMAP_HOST = "imap.gmail.com";
 
-/** Implicit TLS. No STARTTLS negotiation to get wrong. */
-export const GMAIL_SMTP_PORT = 465;
+/**
+ * Submission port, STARTTLS — NOT 465.
+ *
+ * ⚠️ The host blocks outbound 465 and 25 (the usual anti-spam policy on a cloud
+ * VPS) and leaves 587 open. Measured from the box itself: 465 and 25 time out,
+ * 587 and 993 connect. A laptop can reach 465 fine, which is exactly how this
+ * was missed — the credential was proven from a machine that is not the one the
+ * code runs on.
+ *
+ * STARTTLS is REQUIRED by the transport (`requireTLS`), not merely offered: on
+ * 587 an unencrypted session is syntactically valid, and a silent downgrade
+ * would put the mailbox password on the wire in clear text.
+ */
+export const GMAIL_SMTP_PORT = 587;
 export const GMAIL_IMAP_PORT = 993;
 
 export class MailboxCredentialError extends Error {
