@@ -45,6 +45,8 @@
 import { resolveInstantlyApiKey } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
 import { funnelStopsOnClick, getCampaignFunnelKey } from "./campaign-client";
+import { isSelfSendCampaignId } from "./self-send/transport";
+import { stopSelfSendSequence } from "./self-send/stop-sequence";
 
 /** The subset of a campaign row this side effect needs. */
 export interface StopOnClickCampaign {
@@ -52,6 +54,8 @@ export interface StopOnClickCampaign {
   /** The CALLER campaign id — the one campaign-service owns. Null on a platform send. */
   campaignId: string | null;
   orgId: string | null;
+  userId: string | null;
+  runId: string | null;
 }
 
 /**
@@ -74,6 +78,14 @@ export async function maybeStopOnClickForFunnel(
   try {
     const funnelKey = await getCampaignFunnelKey(campaign.campaignId, campaign.orgId);
     if (!funnelStopsOnClick(funnelKey)) return;
+
+    // A sequence WE dispatch has no Instantly campaign to pause, and reconcile
+    // skips a `self:` row outright — so the stop has to be performed locally,
+    // holds included, or it would not happen at all.
+    if (isSelfSendCampaignId(campaign.instantlyCampaignId)) {
+      await stopSelfSendSequence(campaign, leadEmail, `stop-on-click funnel=${funnelKey}`);
+      return;
+    }
 
     const { key } = await resolveInstantlyApiKey(campaign.orgId, "system", {
       method: "POST",
