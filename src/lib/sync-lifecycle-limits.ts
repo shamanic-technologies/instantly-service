@@ -60,6 +60,7 @@ import {
   dailyLimitForStatus,
   slowRampForAge,
   rampCapForAge,
+  isInstantlyEnforced,
   IN_PRODUCTION_DAILY_LIMIT,
   type LifecycleStatus,
 } from "./account-lifecycle";
@@ -116,16 +117,21 @@ export function selectLifecycleLimitPatches(
   const patches: LifecycleLimitPatch[] = [];
   for (const account of accounts) {
     if (!account.email) continue;
-    const status = lifecycleByEmail.get(account.email)?.status as
-      | LifecycleStatus
-      | null
-      | undefined;
+    const view = lifecycleByEmail.get(account.email);
+    const status = view?.status as LifecycleStatus | null | undefined;
+    // An account we dispatch OURSELVES has no Instantly-side limits to enforce:
+    // Instantly is not the pipe, our own worker owns the cap, and the mailbox is
+    // frequently one Instantly disabled — so every PATCH here would be both
+    // meaningless and likely to fail. Skipped wholesale, slow ramp included:
+    // `enable_slow_ramp` is an Instantly campaign setting and has no effect on a
+    // sequence Instantly never sends.
+    const instantlyEnforced = isInstantlyEnforced(view?.sendTransport ?? "instantly");
 
     let warmup: number | null = null;
     let daily: number | null = null;
-    if (status === "in_production" || status === "in_recovery") {
-      const targetWarmup = warmupDailyForStatus(status); // 5 | 30 (never null here)
-      const stateDaily = dailyLimitForStatus(status); // 45 | 20 (never null here)
+    if (instantlyEnforced && (status === "in_production" || status === "in_recovery")) {
+      const targetWarmup = warmupDailyForStatus(status); // 0 | 30 (never null here)
+      const stateDaily = dailyLimitForStatus(status); // 50 | 20 (never null here)
       // AGE ceiling: a fresh mailbox cannot physically absorb the state's full
       // daily_limit (Gmail's real per-user quota is far below it for the first
       // ~4 weeks — the 550-5.4.5 trigger). The state sets the POLICY ceiling, the
@@ -145,8 +151,11 @@ export function selectLifecycleLimitPatches(
       daily = targetDaily !== null && currentDaily !== targetDaily ? targetDaily : null;
     }
 
-    // Age-driven slow ramp — every account, every state.
-    const targetSlowRamp = slowRampForAge(account.timestamp_created, asOf);
+    // Age-driven slow ramp — every account, every state (but still only where
+    // Instantly is the pipe; see above).
+    const targetSlowRamp = instantlyEnforced
+      ? slowRampForAge(account.timestamp_created, asOf)
+      : null;
     const slowRamp =
       targetSlowRamp !== null && account.enable_slow_ramp !== targetSlowRamp
         ? targetSlowRamp

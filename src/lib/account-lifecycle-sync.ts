@@ -17,7 +17,7 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "../db";
-import { resolveTransportForSend } from "./self-send/transport";
+import { resolveTransportForSend, type SendTransport } from "./self-send/transport";
 import {
   instantlyAccounts,
   instantlyAccountsRaw,
@@ -251,6 +251,13 @@ export interface LifecycleView {
   status: LifecycleStatus | null;
   reason: string | null;
   updatedAt: string | null;
+  /**
+   * The account's resolved send-transport policy. Carried here so the hourly
+   * limits sweep can tell whether Instantly is still the pipe without a second
+   * query — it must NOT enforce Instantly-side limits on a mailbox we dispatch
+   * ourselves. See `selectLifecycleLimitPatches`.
+   */
+  sendTransport: SendTransport;
 }
 
 /** Current lifecycle projection per account (for account-health + forecast). */
@@ -259,7 +266,8 @@ export async function fetchLifecycleByEmail(): Promise<Map<string, LifecycleView
     SELECT email AS "email",
            lifecycle_status AS "status",
            lifecycle_reason AS "reason",
-           lifecycle_updated_at AS "updatedAt"
+           lifecycle_updated_at AS "updatedAt",
+           send_transport AS "sendTransport"
     FROM instantly_accounts
   `);
   const map = new Map<string, LifecycleView>();
@@ -268,11 +276,13 @@ export async function fetchLifecycleByEmail(): Promise<Map<string, LifecycleView
     status: string | null;
     reason: string | null;
     updatedAt: string | Date | null;
+    sendTransport: string | null;
   }>(result)) {
     map.set(r.email, {
       status: (r.status as LifecycleStatus | null) ?? null,
       reason: r.reason ?? null,
       updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
+      sendTransport: resolveTransportForSend(r.sendTransport),
     });
   }
   return map;
@@ -407,11 +417,23 @@ export const TESTABLE_MIN_AGE_DAYS = 7;
  * measures nothing and burns the Growth-sub quota. An account with no
  * `timestamp_created` (not yet backfilled) is treated as old enough — the
  * pre-backfill behaviour.
+ *
+ * ⚠️ `instantly_status > 0` is REQUIRED, and it is not redundant with the
+ * lifecycle filter. THIS test is Instantly's: it dispatches its seeds from the
+ * connected account (`delivery_mode: 1`), so an account Instantly has disabled
+ * physically cannot send them — seeding it burns Growth-sub quota to measure
+ * nothing. That used to fall out of the lifecycle filter for free, because such
+ * an account was always `deactivated_by_instantly`. It no longer does: a
+ * self-send account skips that gate (Instantly's verdict is not binding on our
+ * pipe), so it can legitimately be `in_recovery` while still being unable to
+ * send an Instantly seed. Measuring THOSE mailboxes is what the in-house
+ * placement harness is for.
  */
 export async function fetchTestablePoolEmails(): Promise<string[]> {
   const result = await db.execute(sql`
     SELECT email FROM instantly_accounts
     WHERE lifecycle_status IN ('in_recovery', 'in_production')
+      AND COALESCE(instantly_status, 0) > 0
       AND (
         timestamp_created IS NULL
         OR timestamp_created <= now() - make_interval(days => ${TESTABLE_MIN_AGE_DAYS})
@@ -439,6 +461,7 @@ interface SilverAccountRow {
   instantlyStatus: number | null;
   warmupScore: number | null;
   dailyLimit: number | null;
+  sendTransport: string | null;
   lifecycleStatus: string | null;
   lifecycleReason: string | null;
 }
@@ -471,6 +494,7 @@ export async function reconcileLifecycle(
              instantly_status AS "instantlyStatus",
              warmup_score AS "warmupScore",
              daily_limit AS "dailyLimit",
+             send_transport AS "sendTransport",
              lifecycle_status AS "lifecycleStatus",
              lifecycle_reason AS "lifecycleReason"
       FROM instantly_accounts
@@ -491,8 +515,13 @@ export async function reconcileLifecycle(
     const healthScore = Number(row.warmupScore ?? 0);
     const delivery = deliveryByEmail.get(row.email);
     const deliveryPctSnapshot = delivery?.deliveryPct ?? null;
+    // Resolved rather than passed through, so an unrecognised stored value can
+    // only ever mean Instantly — the only way onto the self-send pipe stays an
+    // explicit, reversible UPDATE.
+    const sendTransport = resolveTransportForSend(row.sendTransport);
 
     const { status, reason } = deriveLifecycle({
+      sendTransport,
       instantlyStatus: Number(row.instantlyStatus ?? 0),
       domain: emailDomain(row.email),
       healthScore,
@@ -533,8 +562,12 @@ export async function reconcileLifecycle(
         ? "reactivated"
         : reason;
 
-    const warmupTarget = warmupDailyForStatus(status);
-    const dailyLimitTarget = dailyLimitForStatus(status);
+    // Both null on `smtp`: Instantly does not dispatch this mailbox, so its
+    // warmup and daily_limit are no longer our enforcement points there — and
+    // the account is often one Instantly disabled, so the PATCH would fail and
+    // (because the persist is skipped on error) block the flip from landing.
+    const warmupTarget = warmupDailyForStatus(status, sendTransport);
+    const dailyLimitTarget = dailyLimitForStatus(status, sendTransport);
 
     try {
       // ORDERING (load-bearing): PATCH Instantly FIRST. On failure we do NOT
