@@ -391,6 +391,70 @@ describe("promoteFromWebhookPayload", () => {
     );
   });
 
+  it("resolves an UNBILLED hold (costId NULL) locally, without a runs-service PATCH", async () => {
+    // Holds written since the Instantly spend became a fixed cost carry no cost
+    // id. The local flip still has to happen — it is what removes the step from
+    // the send queue and makes the self-send dispatch worker idempotent — but
+    // there is nothing to declare.
+    mockCampaign();
+    mockNewSilverRow();
+    mockProvisions({
+      id: "sc-unbilled",
+      campaignId: "camp-1",
+      instantlyCampaignId: "inst-camp-1",
+      leadEmail: "lead@test.com",
+      step: 1,
+      runId: "step-run-1",
+      costId: null,
+      status: "provisioned",
+    });
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-unbilled",
+      payload: {
+        event_type: "email_sent",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 1,
+      },
+    });
+
+    expect(mockUpdateCostStatus).not.toHaveBeenCalled();
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "actual" }),
+    );
+  });
+
+  it("cancels an UNBILLED hold locally when the sequence stops", async () => {
+    mockCampaign();
+    mockNewSilverRow();
+    mockProvisions({
+      id: "sc-unbilled-2",
+      campaignId: "camp-1",
+      instantlyCampaignId: "inst-camp-1",
+      leadEmail: "lead@test.com",
+      step: 2,
+      runId: "step-run-2",
+      costId: null,
+      status: "provisioned",
+    });
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-unbilled-2",
+      payload: {
+        event_type: "reply_received",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 1,
+      },
+    });
+
+    expect(mockUpdateCostStatus).not.toHaveBeenCalled();
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "cancelled" }),
+    );
+  });
+
   it("converts step-1 provisioned cost to actual on email_sent", async () => {
     mockCampaign();
     mockNewSilverRow();
