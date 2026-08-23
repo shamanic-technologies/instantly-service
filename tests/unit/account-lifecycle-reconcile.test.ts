@@ -322,4 +322,100 @@ describe("reconcileLifecycle", () => {
     expect(mockInsertValues).not.toHaveBeenCalled();
     expect(mockUpdateSet).not.toHaveBeenCalled();
   });
+
+  it("smtp: an Instantly-DISABLED account promotes, with ZERO Instantly PATCH", async () => {
+    // The end-to-end shape of the transport branch. Instantly disabled this
+    // mailbox (-1), which on the instantly transport is a hard stop; on smtp we
+    // hold the credential ourselves, so only the delivery measurement gates it.
+    //
+    // And the PATCHes must NOT fire: reconcile PATCHes BEFORE it persists and
+    // skips the persist on error, so a PATCH aimed at a dead Instantly account
+    // would leave the flip permanently unable to land (exactly the `failed: 1`
+    // case above).
+    seedReads({
+      accounts: [
+        {
+          email: "self@fuseconnectio.com",
+          instantlyStatus: -1,
+          warmupScore: 0, // structurally 0 — it is not in Instantly's warmup pool
+          dailyLimit: 20,
+          sendTransport: "smtp",
+          lifecycleStatus: "deactivated_by_instantly",
+        },
+      ],
+      delivery: [
+        { accountEmail: "self@fuseconnectio.com", inboxCount: 37, seedTotal: 39 }, // 94.9% → at bar
+      ],
+    });
+
+    const summary = await reconcileLifecycle("api-key");
+
+    expect(summary).toEqual({
+      scanned: 1,
+      changed: 1,
+      warmupPatched: 0,
+      dailyLimitPatched: 0,
+      reasonsRefreshed: 0,
+      failed: 0,
+    });
+    expect(mockSetWarmup).not.toHaveBeenCalled();
+    expect(mockSetDaily).not.toHaveBeenCalled();
+    const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(event.fromStatus).toBe("deactivated_by_instantly");
+    expect(event.toStatus).toBe("in_production");
+    // Leaving deactivated_by_instantly reports `reactivated`, whatever the pipe.
+    expect(event.reason).toBe("reactivated");
+  });
+
+  it("smtp: a mailbox BELOW the delivery bar still lands in_recovery and sends nothing", async () => {
+    // The safety half. Moving a dead mailbox onto our own pipe does not promote
+    // it — it only stops excluding it for a reason that no longer applies.
+    seedReads({
+      accounts: [
+        {
+          email: "dead@growthagency.studio",
+          instantlyStatus: -3,
+          warmupScore: 0,
+          dailyLimit: 20,
+          sendTransport: "smtp",
+          lifecycleStatus: "deactivated_by_instantly",
+        },
+      ],
+      delivery: [
+        { accountEmail: "dead@growthagency.studio", inboxCount: 0, seedTotal: 29 }, // 0% inbox
+      ],
+    });
+
+    const summary = await reconcileLifecycle("api-key");
+
+    expect(summary.changed).toBe(1);
+    expect(mockSetWarmup).not.toHaveBeenCalled();
+    expect(mockSetDaily).not.toHaveBeenCalled();
+    const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(event.toStatus).toBe("in_recovery");
+  });
+
+  it("an unrecognised send_transport resolves to instantly (no silent diversion)", async () => {
+    // Same asymmetry `resolveTransportForSend` enforces everywhere else: the only
+    // way onto the self-send pipe is an explicit, exact 'smtp'.
+    seedReads({
+      accounts: [
+        {
+          email: "typo@dfy.com",
+          instantlyStatus: -1,
+          warmupScore: 0,
+          dailyLimit: 20,
+          sendTransport: "SMTP ", // not exactly 'smtp'
+          lifecycleStatus: "in_recovery",
+        },
+      ],
+      delivery: [{ accountEmail: "typo@dfy.com", inboxCount: 98, seedTotal: 98 }],
+    });
+
+    const summary = await reconcileLifecycle("api-key");
+
+    expect(summary.changed).toBe(1);
+    const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(event.toStatus).toBe("deactivated_by_instantly");
+  });
 });

@@ -16,6 +16,7 @@ import {
   slowRampForAge,
   MATURE_AGE_DAYS,
   isDeliveryEvidenceFresh,
+  isInstantlyEnforced,
   DELIVERY_EVIDENCE_MAX_AGE_DAYS,
   type DeriveLifecycleInput,
 } from "../../src/lib/account-lifecycle";
@@ -28,6 +29,7 @@ const FRESH_TEST = new Date("2026-08-10T12:00:00.000Z").toISOString();
 
 function input(overrides: Partial<DeriveLifecycleInput> = {}): DeriveLifecycleInput {
   return {
+    sendTransport: "instantly",
     instantlyStatus: 1,
     domain: "dfy-prewarmed.com",
     healthScore: 100,
@@ -244,6 +246,95 @@ describe("deriveLifecycle — delivery evidence expires", () => {
         }),
       ),
     ).toEqual({ status: "in_recovery", reason: "delivery_below_bar" });
+  });
+});
+
+describe("deriveLifecycle — the two Instantly-owned gates are skipped on smtp", () => {
+  const smtp = (overrides: Partial<DeriveLifecycleInput> = {}) =>
+    deriveLifecycle(input({ sendTransport: "smtp", ...overrides }));
+
+  it("an Instantly-DISABLED account still promotes when we dispatch it ourselves", () => {
+    // The whole point of owning the pipe: Instantly refusing to send is a fact
+    // about Instantly, not about the mailbox.
+    expect(smtp({ instantlyStatus: -1, deliveryAtBar: true })).toEqual({
+      status: "in_production",
+      reason: "passed",
+    });
+    expect(smtp({ instantlyStatus: -3, deliveryAtBar: true })).toEqual({
+      status: "in_production",
+      reason: "passed",
+    });
+  });
+
+  it("a ZERO warmup score does not block entry on smtp", () => {
+    // Instantly computes the score over ITS warmup pool, which a self-send
+    // mailbox is not in — so the score is structurally 0 and reading it would
+    // pin every self-send account in recovery forever.
+    expect(smtp({ healthScore: 0, currentStatus: null, deliveryAtBar: true })).toEqual({
+      status: "in_production",
+      reason: "passed",
+    });
+  });
+
+  it("both gates STILL apply on the instantly transport (no leak)", () => {
+    expect(deriveLifecycle(input({ instantlyStatus: -1 })).status).toBe(
+      "deactivated_by_instantly",
+    );
+    expect(deriveLifecycle(input({ healthScore: 0, currentStatus: null })).status).toBe(
+      "in_recovery",
+    );
+  });
+
+  it("DELIVERY still gates smtp — a dead mailbox on our own pipe sends nothing", () => {
+    // The safety story. Changing the pipe does not change whether real mail from
+    // this mailbox reaches an inbox, so the one MEASURED input keeps its veto.
+    expect(smtp({ deliveryAtBar: false })).toEqual({
+      status: "in_recovery",
+      reason: "delivery_below_bar",
+    });
+    expect(smtp({ deliveryAtBar: null })).toEqual({
+      status: "in_recovery",
+      reason: "delivery_below_bar",
+    });
+  });
+
+  it("stale delivery evidence still demotes on smtp", () => {
+    expect(
+      smtp({
+        deliveryAtBar: true,
+        deliveryTestedAt: new Date("2026-07-01T12:00:00.000Z").toISOString(),
+      }),
+    ).toEqual({ status: "in_recovery", reason: "delivery_evidence_stale" });
+  });
+
+  it("a brand domain stays deactivated_by_user on smtp", () => {
+    // Reputation is the domain's, whichever pipe carries the mail.
+    expect(
+      smtp({ domain: "growthagency.dev", instantlyStatus: -1, deliveryAtBar: true }),
+    ).toEqual({ status: "deactivated_by_user", reason: "brand_domain" });
+  });
+});
+
+describe("isInstantlyEnforced — Instantly-side limits follow the pipe", () => {
+  it("is true on instantly, false on smtp", () => {
+    expect(isInstantlyEnforced("instantly")).toBe(true);
+    expect(isInstantlyEnforced("smtp")).toBe(false);
+  });
+
+  it("nulls BOTH Instantly PATCH targets on smtp, whatever the state", () => {
+    // A PATCH here would target a mailbox Instantly does not dispatch (and often
+    // has disabled). reconcile PATCHes before it persists and skips the persist
+    // on error, so a doomed PATCH would block the flip from ever landing.
+    for (const status of ["in_production", "in_recovery"] as const) {
+      expect(warmupDailyForStatus(status, "smtp")).toBeNull();
+      expect(dailyLimitForStatus(status, "smtp")).toBeNull();
+    }
+  });
+
+  it("keeps the instantly targets unchanged (default arg = instantly)", () => {
+    expect(warmupDailyForStatus("in_production")).toBe(warmupDailyForStatus("in_production", "instantly"));
+    expect(dailyLimitForStatus("in_recovery")).toBe(dailyLimitForStatus("in_recovery", "instantly"));
+    expect(dailyLimitForStatus("in_production", "instantly")).toBe(50);
   });
 });
 

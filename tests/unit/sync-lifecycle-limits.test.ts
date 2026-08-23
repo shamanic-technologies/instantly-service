@@ -53,8 +53,16 @@ function acct(
   } as Account;
 }
 
-function lifecycle(status: string): LifecycleView {
-  return { status: status as LifecycleView["status"], reason: null, updatedAt: null };
+function lifecycle(
+  status: string,
+  sendTransport: LifecycleView["sendTransport"] = "instantly",
+): LifecycleView {
+  return {
+    status: status as LifecycleView["status"],
+    reason: null,
+    updatedAt: null,
+    sendTransport,
+  };
 }
 
 describe("selectLifecycleLimitPatches", () => {
@@ -195,6 +203,34 @@ describe("selectLifecycleLimitPatches", () => {
     ]);
     expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
       { email: "nowarmup@x.com", warmup: 0, daily: null, slowRamp: null },
+    ]);
+  });
+
+  it("an smtp account is skipped ENTIRELY — warmup, daily AND slow ramp", () => {
+    // Instantly does not dispatch this mailbox: our own worker owns the cap, and
+    // the mailbox is frequently one Instantly disabled, so every PATCH here would
+    // be both meaningless and likely to fail. Slow ramp included — it is an
+    // Instantly campaign setting with no effect on a sequence Instantly never sends.
+    const accounts = [
+      // Drifts on every single field, and is fresh (so slow ramp would target true).
+      acct("self@x.com", 12, 7, { enableSlowRamp: false, timestampCreated: created(3) }),
+    ];
+    const lc = new Map<string, LifecycleView>([
+      ["self@x.com", lifecycle("in_production", "smtp")],
+    ]);
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([]);
+  });
+
+  it("the SAME drifting account on the instantly transport IS patched", () => {
+    // Guards the skip above against becoming a silent blanket no-op.
+    const accounts = [
+      acct("relay@x.com", 12, 7, { enableSlowRamp: false, timestampCreated: created(3) }),
+    ];
+    const lc = new Map<string, LifecycleView>([
+      ["relay@x.com", lifecycle("in_production", "instantly")],
+    ]);
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+      { email: "relay@x.com", warmup: 0, daily: 5, slowRamp: true },
     ]);
   });
 });
