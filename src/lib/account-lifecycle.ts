@@ -8,10 +8,16 @@
  *
  * ── The model (LOCKED) — four states, first match wins ───────────────────────
  *   domain ∈ domain_policy                          → deactivated_by_user
- *   instantlyStatus <= 0                            → deactivated_by_instantly
- *   healthScore < BAR **and not already in prod**   → in_recovery
+ *   instantlyStatus <= 0        [instantly only]    → deactivated_by_instantly
+ *   healthScore < BAR           [instantly only]
+ *     **and not already in prod**                   → in_recovery
  *   delivery below BAR, or its evidence stale       → in_recovery
  *   otherwise                                       → in_production
+ *
+ * The two `[instantly only]` gates read signals Instantly OWNS, and they are
+ * skipped for an account whose `send_transport` is `smtp` — see
+ * {@link deriveLifecycle}. The delivery gate applies on BOTH transports: it is
+ * the only one that measures the mailbox rather than the vendor's opinion of it.
  *
  * - `healthScore` = Instantly `stat_warmup_score` (0-100), gated at 90. The bar
  *   is ASYMMETRIC: it gates ENTRY into production, never continued membership,
@@ -24,6 +30,11 @@
  *   demotion path, its evidence also expires — see
  *   {@link DELIVERY_EVIDENCE_MAX_AGE_DAYS}.
  */
+
+import {
+  SEND_TRANSPORT_SMTP,
+  type SendTransport,
+} from "./self-send/transport";
 
 export type LifecycleStatus =
   | "in_production"
@@ -47,6 +58,16 @@ export type LifecycleReason =
   | "reactivated";
 
 export interface DeriveLifecycleInput {
+  /**
+   * The account's send-transport POLICY, already resolved
+   * (`resolveTransportForSend`) so an unrecognised stored value can only ever
+   * mean `instantly`.
+   *
+   * Load-bearing: on `smtp` we dispatch the mailbox ourselves, so two of the
+   * inputs below stop being facts about whether it can send — see
+   * {@link deriveLifecycle}.
+   */
+  sendTransport: SendTransport;
   /** Instantly account.status (numeric; <= 0 ⇒ Instantly disabled the account). */
   instantlyStatus: number;
   /** The account's email domain (part after `@`). */
@@ -206,9 +227,27 @@ export function isDeliveryEvidenceFresh(
  *
  * Consequence: delivery is the sole demotion path, so its evidence must not be
  * allowed to go stale unnoticed — hence {@link DELIVERY_EVIDENCE_MAX_AGE_DAYS}.
+ *
+ * ⚠️ TWO GATES ARE INSTANTLY-OWNED AND ARE SKIPPED ON THE `smtp` TRANSPORT —
+ * the Instantly account STATUS and the warmup HEALTH score. Neither is a fact
+ * about a mailbox we dispatch ourselves: the first is Instantly's decision not
+ * to send, the second is its rolling measure of ITS warmup pool, which a
+ * self-send mailbox does not participate in. Inheriting them would make every
+ * self-send account permanently ineligible for the pool it is supposed to feed,
+ * which is exactly backwards — the point of owning the pipe is that the vendor's
+ * verdict stops being binding.
+ *
+ * The domain policy and the DELIVERY gate are NOT skipped, and that asymmetry is
+ * the whole safety story. Delivery is measured, not asserted: it is the only
+ * input that says whether real mail from this mailbox reaches an inbox, and that
+ * is equally true on either pipe. So a dead mailbox moved onto `smtp` still
+ * lands in `in_recovery` and still sends nothing — it has merely stopped being
+ * excluded for a reason that no longer applies, and now has to earn its place on
+ * the measurement instead.
  */
 export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
   const {
+    sendTransport,
     instantlyStatus,
     domain,
     healthScore,
@@ -219,10 +258,19 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
     asOf,
   } = input;
 
+  const instantlyDispatches = sendTransport !== SEND_TRANSPORT_SMTP;
+
+  // The domain policy applies on EVERY transport: a brand/product domain must
+  // stay out of the cold stream whichever pipe carries it. Changing the pipe
+  // does not change whose reputation is at stake.
   if (domainPolicy.has(domain)) {
     return { status: "deactivated_by_user", reason: "brand_domain" };
   }
-  if (instantlyStatus <= 0) {
+  // Instantly's own status is a fact about INSTANTLY's willingness to dispatch,
+  // not about the mailbox. Once we hold the credential and open the SMTP session
+  // ourselves, its refusal says nothing about whether the mailbox can send — so
+  // on `smtp` this gate is skipped rather than inherited.
+  if (instantlyDispatches && instantlyStatus <= 0) {
     return {
       status: "deactivated_by_instantly",
       reason: "deactivated_by_instantly",
@@ -230,7 +278,19 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
   }
   // Health gates ENTRY only: an account already in production keeps its place
   // regardless of warmup score (it no longer warms — see the note above).
-  if (healthScore < PRODUCTION_HEALTH_BAR && currentStatus !== "in_production") {
+  //
+  // Skipped entirely on `smtp` for the same reason, one step further: the score
+  // is Instantly's rolling 7-day view of ITS warmup pool, and an account we
+  // dispatch ourselves is not in that pool at all — Instantly may not even be
+  // connected to it. Its score is therefore structurally 0 and reading it would
+  // pin every self-send mailbox in recovery forever. The measurement that
+  // survives the transport change is the delivery gate below, and it is the one
+  // that was always the real signal (the warmup score is the proxy).
+  if (
+    instantlyDispatches &&
+    healthScore < PRODUCTION_HEALTH_BAR &&
+    currentStatus !== "in_production"
+  ) {
     return { status: "in_recovery", reason: "health_below_bar" };
   }
   // Delivery demotes from anywhere. Never tested → below bar.
@@ -245,10 +305,30 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
 }
 
 /**
- * Warmup daily volume to PATCH into Instantly when an account flips INTO a state.
- * `null` ⇒ do NOT touch warmup (deactivated_by_instantly — the account is off).
+ * True ⇔ Instantly is still the pipe for this account, so its warmup and
+ * campaign `daily_limit` are OUR enforcement points there.
+ *
+ * On `smtp` they are not: Instantly does not dispatch this mailbox, our own
+ * worker enforces the cap (`rampCapForAge` / `IN_PRODUCTION_DAILY_LIMIT`), and
+ * the account is frequently one Instantly has disabled — so the PATCH would
+ * target a dead account and fail. That failure is not harmless: `reconcile`
+ * PATCHes BEFORE it persists and skips the persist on error, so a doomed PATCH
+ * would block the lifecycle flip from ever landing.
  */
-export function warmupDailyForStatus(status: LifecycleStatus): number | null {
+export function isInstantlyEnforced(sendTransport: SendTransport): boolean {
+  return sendTransport !== SEND_TRANSPORT_SMTP;
+}
+
+/**
+ * Warmup daily volume to PATCH into Instantly when an account flips INTO a state.
+ * `null` ⇒ do NOT touch warmup (deactivated_by_instantly — the account is off;
+ * or `smtp` — Instantly is not the pipe, see {@link isInstantlyEnforced}).
+ */
+export function warmupDailyForStatus(
+  status: LifecycleStatus,
+  sendTransport: SendTransport = "instantly",
+): number | null {
+  if (!isInstantlyEnforced(sendTransport)) return null;
   switch (status) {
     case "in_production":
       return IN_PRODUCTION_WARMUP_DAILY;
@@ -265,8 +345,13 @@ export function warmupDailyForStatus(status: LifecycleStatus): number | null {
  * the tap to 50, in_recovery caps it to 20 (paired with more warmup so the total
  * stays 50); deactivated_* states return `null` = do NOT touch the campaign
  * daily_limit, so an off account keeps draining its already-loaded queue.
+ * `smtp` likewise returns null — see {@link isInstantlyEnforced}.
  */
-export function dailyLimitForStatus(status: LifecycleStatus): number | null {
+export function dailyLimitForStatus(
+  status: LifecycleStatus,
+  sendTransport: SendTransport = "instantly",
+): number | null {
+  if (!isInstantlyEnforced(sendTransport)) return null;
   switch (status) {
     case "in_production":
       return IN_PRODUCTION_DAILY_LIMIT;
