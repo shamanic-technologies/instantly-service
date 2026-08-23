@@ -371,40 +371,33 @@ describe("processRow — success path", () => {
     );
   });
 
-  it("charges a fresh instantly-contact-uploaded (actual) at step 1 of the re-send", async () => {
+  it("declares NO cost on a redispatch — the re-upload consumes a slot we already paid for", async () => {
     queueSelectLead();
     queueSelectCosts([]);
 
     await processRow(row());
 
-    // Multi-step would call addCosts multiple times — for single-step LIVE
-    // we expect exactly one call. It must include the upload cost as actual.
-    expect(mockAddCosts).toHaveBeenCalled();
-    const firstCall = mockAddCosts.mock.calls[0];
-    const items = firstCall[1] as Array<{ costName: string; status: string }>;
-    const uploadCost = items.find((c) => c.costName === "instantly-contact-uploaded");
-    expect(uploadCost).toBeDefined();
-    expect(uploadCost!.status).toBe("actual");
+    // A redispatch used to charge a fresh instantly-contact-uploaded plus a
+    // provisioned email pair per step. The Instantly subscription is a fixed
+    // cost we absorb now, so nothing is declared.
+    expect(mockAddCosts).not.toHaveBeenCalled();
   });
 
-  it("does NOT persist the contact-uploaded cost into sequence_costs (it is never cancelled)", async () => {
-    mockAddCosts.mockResolvedValueOnce({
-      costs: [
-        { id: "new-cost-account-id", costName: "instantly-account-email-sent" },
-        { id: "new-cost-domain-id", costName: "instantly-domain-email-sent" },
-        { id: "new-cost-upload-id", costName: "instantly-contact-uploaded" },
-      ],
-    });
+  it("queues the redispatched steps with a NULL cost id", async () => {
     queueSelectLead();
     queueSelectCosts([]);
 
     await processRow(row());
 
-    const uploadInsert = mockDbInsertValues.mock.calls.find((c) => {
+    const queueInserts = mockDbInsertValues.mock.calls.filter((c) => {
       const v = c[0] as Record<string, unknown>;
-      return v.costId === "new-cost-upload-id";
+      return v.step !== undefined && v.leadEmail !== undefined;
     });
-    expect(uploadInsert).toBeUndefined();
+    expect(queueInserts.length).toBeGreaterThan(0);
+    for (const [value] of queueInserts) {
+      expect((value as Record<string, unknown>).costId).toBeNull();
+      expect((value as Record<string, unknown>).status).toBe("provisioned");
+    }
   });
 
   it("falls back to the row's current identity when row.runId is null (top-level run)", async () => {
@@ -489,8 +482,10 @@ describe("processRow — terminal cancel paths", () => {
   it("cancels the row when runs-service throws 409 mid-flight", async () => {
     queueSelectLead();
     queueSelectCosts([]);
-    // Make addCosts throw a 409 — typical "Parent-child field conflict" path.
-    mockAddCosts.mockRejectedValueOnce(new Error("runs-service POST /v1/runs failed: 409 - Parent-child conflict"));
+    // Make the per-step createRun throw a 409 — the "Parent-child field
+    // conflict" path. (It used to be raised from addCosts, which this route no
+    // longer calls; the run creation is now the first runs-service write.)
+    mockCreateRun.mockRejectedValueOnce(new Error("runs-service POST /v1/runs failed: 409 - Parent-child conflict"));
 
     const outcome = await processRow(row());
 

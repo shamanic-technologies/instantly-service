@@ -396,7 +396,28 @@ export const sequenceCosts = pgTable(
     leadEmail: text("lead_email").notNull(),
     step: integer("step").notNull(),
     runId: text("run_id").notNull(),
-    costId: text("cost_id").notNull(),
+    // Runs-service cost id — NULL on every row written from 2026-08 onwards.
+    //
+    // This table is TWO things at once, and only one of them still involves
+    // money. It is the billing hold ledger (a `provisioned` row is a reserved
+    // charge that later actualizes or cancels), AND it is the send QUEUE: every
+    // ops surface — the self-send dispatch worker, the fleet sending-forecast,
+    // the per-account queue breakdown, capacity-aware account selection,
+    // account-health `queueSize`, reconcile's `pendingSends` — reads
+    // `status='provisioned'` as "steps scheduled but not yet sent".
+    //
+    // The Instantly subscriptions became a FIXED cost we absorb rather than
+    // rebill, so instantly-service stopped declaring `instantly-*-email-sent` /
+    // `instantly-contact-uploaded` to runs-service entirely. The queue still has
+    // to exist, so the row is still written — it simply no longer carries a cost
+    // id. Do NOT re-add `.notNull()`: that would make the queue undeclarable
+    // without a billing row and silently empty the send pipeline.
+    //
+    // Historical rows keep their cost id and keep resolving against
+    // runs-service; `settleHoldCost` branches on NULL. The unique index below
+    // stays non-partial — Postgres treats every NULL as distinct, so unbilled
+    // rows never collide.
+    costId: text("cost_id"),
     status: text("status").notNull().default("provisioned"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),

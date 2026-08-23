@@ -36,7 +36,8 @@ import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { eq } from "drizzle-orm";
 import { sequenceCosts } from "../db/schema";
-import { updateCostStatus, isRunGoneError, type IdentityContext } from "./runs-client";
+import { isRunGoneError, type IdentityContext } from "./runs-client";
+import { settleHoldCost } from "./hold-settlement";
 
 const NIL_USER_UUID = "00000000-0000-0000-0000-000000000000";
 
@@ -68,7 +69,8 @@ export function classifyHold(e: HoldEvidence): HoldAction {
 export interface HoldRow {
   id: string;
   runId: string;
-  costId: string;
+  /** NULL for a hold written after the Instantly spend became a fixed cost. */
+  costId: string | null;
   orgId: string | null;
   userId: string | null;
   action: HoldAction;
@@ -253,11 +255,7 @@ export async function reconcileProvisionedHolds(
     };
     const target = h.action === "actualize" ? "actual" : "cancelled";
     try {
-      await updateCostStatus(h.runId, h.costId, target, identity);
-      await db
-        .update(sequenceCosts)
-        .set({ status: target, updatedAt: new Date() })
-        .where(eq(sequenceCosts.id, h.id));
+      await settleHoldCost(h, target, identity);
       if (target === "actual") summary.actualized++;
       else summary.cancelled++;
     } catch (error: unknown) {
