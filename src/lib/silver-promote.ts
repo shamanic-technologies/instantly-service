@@ -15,7 +15,8 @@
 import { db } from "../db";
 import { instantlyCampaigns, instantlyEvents, sequenceCosts } from "../db/schema";
 import { and, eq, isNull, or, type SQL } from "drizzle-orm";
-import { updateCostStatus, isRunGoneError, type IdentityContext } from "./runs-client";
+import { isRunGoneError, type IdentityContext } from "./runs-client";
+import { settleHoldCost } from "./hold-settlement";
 import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
 import { maybeStopOnClickForFunnel } from "./stop-on-click";
@@ -278,14 +279,11 @@ export async function handleEmailSent(
     };
 
     try {
-      await updateCostStatus(cost.runId, cost.costId, "actual", identity);
-      await db
-        .update(sequenceCosts)
-        .set({ status: "actual", updatedAt: new Date() })
-        .where(eq(sequenceCosts.id, cost.id));
+      await settleHoldCost(cost, "actual", identity);
       outcome.actualized++;
       console.log(
-        `[instantly-service] silver: cost ${cost.costId} provisioned→actual step=${step}`,
+        `[instantly-service] silver: hold ${cost.id} provisioned→actual step=${step}` +
+          (cost.costId ? ` cost=${cost.costId}` : " (unbilled)"),
       );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -344,13 +342,10 @@ export async function cancelRemainingProvisions(
       runId: cost.runId,
     };
     try {
-      await updateCostStatus(cost.runId, cost.costId, "cancelled", identity);
-      await db
-        .update(sequenceCosts)
-        .set({ status: "cancelled", updatedAt: new Date() })
-        .where(eq(sequenceCosts.id, cost.id));
+      await settleHoldCost(cost, "cancelled", identity);
       console.log(
-        `[instantly-service] silver: cost ${cost.costId} cancelled step=${cost.step}`,
+        `[instantly-service] silver: hold ${cost.id} cancelled step=${cost.step}` +
+          (cost.costId ? ` cost=${cost.costId}` : " (unbilled)"),
       );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
