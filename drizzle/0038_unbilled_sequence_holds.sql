@@ -1,0 +1,21 @@
+-- Sequence holds no longer require a runs-service cost id.
+--
+-- `sequence_costs` is two things at once: the billing hold ledger AND the send
+-- queue (every ops surface reads `status='provisioned'` as "scheduled, not yet
+-- sent" — the self-send dispatch worker, the fleet sending-forecast, the
+-- per-account queue breakdown, capacity-aware account selection, account-health
+-- queueSize, reconcile's pendingSends).
+--
+-- The Instantly / MailForge / PrimeForge subscriptions became a FIXED cost we
+-- absorb rather than rebill, so instantly-service stopped declaring
+-- `instantly-account-email-sent`, `instantly-domain-email-sent` and
+-- `instantly-contact-uploaded` to runs-service. The queue still has to exist, so
+-- the row is still written — it simply carries no cost id.
+--
+-- Historical rows keep theirs and keep resolving against runs-service;
+-- `settleHoldCost` branches on NULL. The unique index on `cost_id` stays
+-- non-partial: Postgres treats every NULL as distinct, so unbilled rows never
+-- collide with each other.
+--
+-- Idempotent: DROP NOT NULL on an already-nullable column is a no-op.
+ALTER TABLE "sequence_costs" ALTER COLUMN "cost_id" DROP NOT NULL;

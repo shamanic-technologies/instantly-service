@@ -1308,7 +1308,7 @@ describe("POST /send", () => {
     });
   });
 
-  it("should create per-step runs with correct cost items: contact upload (step 1 only) + 2 email costs per step", async () => {
+  it("should create a run per step and declare NO cost — the Instantly spend is a fixed cost we absorb", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
@@ -1319,27 +1319,29 @@ describe("POST /send", () => {
     expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-2" }), expect.objectContaining({ orgId: "org-1", userId: "user-1" }));
     expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-3" }), expect.objectContaining({ orgId: "org-1", userId: "user-1" }));
 
-    expect(mockAddCosts).toHaveBeenCalledTimes(3);
-    // Step 1: 2 email costs (provisioned — only actualized on webhook email_sent)
-    // + contact upload (actual — lead is uploaded regardless of dispatch)
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [
-      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
-      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
-      { costName: "instantly-contact-uploaded", quantity: 1, costSource: "platform", status: "actual" },
-    ], expect.objectContaining({ orgId: "org-1" }));
-    // Steps 2-3: 2 email costs (provisioned), no contact upload
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-2", [
-      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
-      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
-    ], expect.objectContaining({ orgId: "org-1" }));
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-3", [
-      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
-      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
-    ], expect.objectContaining({ orgId: "org-1" }));
+    // The run is the unit of volume and stays. The three cost names it used to
+    // declare (instantly-account-email-sent, instantly-domain-email-sent,
+    // instantly-contact-uploaded) are gone — NOT replaced by a zero-priced row,
+    // which would assert "this cost nothing" when it costs us real money.
+    expect(mockAddCosts).not.toHaveBeenCalled();
   });
 
+  it("should never declare an Instantly cost name to runs-service", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
 
-  it("should store per-step email cost IDs in sequence_costs table (2 per step, excluding contact upload)", async () => {
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    const declaredNames = mockAddCosts.mock.calls.flatMap(
+      ([, items]: [string, Array<{ costName: string }>]) =>
+        (items ?? []).map((i) => i.costName),
+    );
+    expect(declaredNames).not.toContain("instantly-account-email-sent");
+    expect(declaredNames).not.toContain("instantly-domain-email-sent");
+    expect(declaredNames).not.toContain("instantly-contact-uploaded");
+  });
+
+  it("should queue ONE sequence_costs row per step with a NULL cost id", async () => {
     mockNewCampaignFlow();
     // Reset to track sequence_costs inserts
     mockDbReturning.mockReset();
@@ -1351,25 +1353,21 @@ describe("POST /send", () => {
 
     await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
-    // Check that sequence_costs were inserted for ALL steps with 2 rows per step (account + domain)
-    // Contact upload cost should NOT be in sequence_costs
+    // The queue row survives the billing change — `sequence_costs` is what every
+    // ops surface reads as "scheduled, not yet sent". It is now ONE row per step
+    // (it was two, one per cost name); every reader collapses to DISTINCT step,
+    // so counts are unchanged.
     const insertCalls = mockDbInsertValues.mock.calls;
     const sequenceCostInserts = insertCalls.filter(
-      ([v]: [any]) => v.costId && v.step,
+      ([v]: [any]) => v.step !== undefined && v.leadEmail !== undefined,
     );
-    expect(sequenceCostInserts).toHaveLength(6); // 2 costs × 3 steps
-    // Step 1: 2 provisioned costs (flipped to actual on webhook email_sent)
-    expect(sequenceCostInserts[0][0]).toMatchObject({ step: 1, runId: "step-run-1", status: "provisioned" });
-    expect(sequenceCostInserts[1][0]).toMatchObject({ step: 1, runId: "step-run-1", status: "provisioned" });
-    // Step 2: 2 provisioned costs
-    expect(sequenceCostInserts[2][0]).toMatchObject({ step: 2, runId: "step-run-2", status: "provisioned" });
-    expect(sequenceCostInserts[3][0]).toMatchObject({ step: 2, runId: "step-run-2", status: "provisioned" });
-    // Step 3: 2 provisioned costs
-    expect(sequenceCostInserts[4][0]).toMatchObject({ step: 3, runId: "step-run-3", status: "provisioned" });
-    expect(sequenceCostInserts[5][0]).toMatchObject({ step: 3, runId: "step-run-3", status: "provisioned" });
+    expect(sequenceCostInserts).toHaveLength(3); // 1 row × 3 steps
+    expect(sequenceCostInserts[0][0]).toMatchObject({ step: 1, runId: "step-run-1", status: "provisioned", costId: null });
+    expect(sequenceCostInserts[1][0]).toMatchObject({ step: 2, runId: "step-run-2", status: "provisioned", costId: null });
+    expect(sequenceCostInserts[2][0]).toMatchObject({ step: 3, runId: "step-run-3", status: "provisioned", costId: null });
   });
 
-  it("should work with a single-step sequence (1 run, 3 costs: account + domain + contact upload)", async () => {
+  it("should work with a single-step sequence (1 run, no cost)", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
 
@@ -1383,12 +1381,7 @@ describe("POST /send", () => {
     expect(res.status).toBe(200);
     expect(mockCreateRun).toHaveBeenCalledTimes(1);
     expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }), expect.objectContaining({ orgId: "org-1" }));
-    expect(mockAddCosts).toHaveBeenCalledTimes(1);
-    expect(mockAddCosts).toHaveBeenCalledWith("step-run-1", [
-      { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
-      { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
-      { costName: "instantly-contact-uploaded", quantity: 1, costSource: "platform", status: "actual" },
-    ], expect.objectContaining({ orgId: "org-1" }));
+    expect(mockAddCosts).not.toHaveBeenCalled();
     expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" }));
   });
 
@@ -1763,11 +1756,12 @@ describe("POST /send", () => {
     expect(campaignInsert![0].campaignId).toBeNull();
 
     const sequenceCostInserts = mockDbInsertValues.mock.calls.filter(
-      ([v]: [any]) => v.costId && v.step,
+      ([v]: [any]) => v.step !== undefined && v.leadEmail !== undefined,
     );
-    expect(sequenceCostInserts).toHaveLength(6);
+    expect(sequenceCostInserts).toHaveLength(3);
     for (const [value] of sequenceCostInserts) {
       expect(value.campaignId).toBeNull();
+      expect(value.costId).toBeNull();
     }
   });
 
@@ -1844,42 +1838,36 @@ describe("POST /send", () => {
     expect(mockCreateCampaign).toHaveBeenCalledTimes(1); // still ONE — no duplicate campaign
   });
 
-  it("should return 402 when credit authorization fails for platform keySource", async () => {
-    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: false, balance_cents: 2, required_cents: 15 });
+  // ── No affordability gate on this route ─────────────────────────────────────
+  // Sending used to authorize the org's balance against three Instantly cost
+  // names. Those subscriptions are now a fixed cost we absorb, so there is no
+  // spend here to authorize. The credit gate did not disappear — it moved
+  // upstream, where the Apollo pull and the LLM body generation still declare
+  // and authorize, so an org out of credit never reaches /send.
+
+  it("should NOT authorize credit — there is no spend on this route to gate", async () => {
+    mockNewCampaignFlow();
     const app = await createSendApp();
 
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
-    expect(res.status).toBe(402);
-    expect(res.body.error).toBe("Insufficient credits");
-    expect(res.body.balance_cents).toBe(2);
-    expect(res.body.required_cents).toBe(15);
-    expect(mockCreateCampaign).not.toHaveBeenCalled();
-    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mockAuthorizeCreditSpend).not.toHaveBeenCalled();
   });
 
-  it("should call authorizeCreditSpend with 3 cost items (contact + account + domain)", async () => {
+  it("should send even when the org balance is insufficient — /send no longer returns 402", async () => {
+    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: false, balance_cents: 2, required_cents: 15 });
     mockNewCampaignFlow();
     const app = await createSendApp();
 
-    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
-    expect(mockAuthorizeCreditSpend).toHaveBeenCalledWith(
-      [
-        { costName: "instantly-contact-uploaded", quantity: 1 },
-        { costName: "instantly-account-email-sent", quantity: 3 },
-        { costName: "instantly-domain-email-sent", quantity: 3 },
-      ],
-      "instantly-send",
-      expect.objectContaining({
-        orgId: "org-1",
-        userId: "user-1",
-        runId: "run-1",
-      }),
-    );
+    expect(res.status).toBe(200);
+    expect(mockAuthorizeCreditSpend).not.toHaveBeenCalled();
+    expect(mockCreateCampaign).toHaveBeenCalled();
   });
 
-  it("should skip credit authorization when keySource is org (BYOK)", async () => {
+  it("should not authorize credit on a BYOK (org keySource) send either", async () => {
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "org-key", keySource: "org" });
     mockNewCampaignFlow();
     const app = await createSendApp();

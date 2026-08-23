@@ -18,7 +18,8 @@
 import { db } from "../db";
 import { instantlyCampaigns, sequenceCosts } from "../db/schema";
 import { eq, and, or } from "drizzle-orm";
-import { updateRun, updateCostStatus, type IdentityContext } from "./runs-client";
+import { updateRun, type IdentityContext } from "./runs-client";
+import { settleHoldCost } from "./hold-settlement";
 import { sendEmail } from "./email-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
 
@@ -119,13 +120,10 @@ export async function handleCampaignError(
 
     for (const cost of remaining) {
       const costIdentity: IdentityContext = { ...identity, runId: cost.runId };
-      await updateCostStatus(cost.runId, cost.costId, "cancelled", costIdentity);
-      await db
-        .update(sequenceCosts)
-        .set({ status: "cancelled", updatedAt: new Date() })
-        .where(eq(sequenceCosts.id, cost.id));
+      await settleHoldCost(cost, "cancelled", costIdentity);
       console.log(
-        `[campaign-error] Cancelled ${cost.status} cost ${cost.costId} for step ${cost.step}`,
+        `[campaign-error] Cancelled ${cost.status} hold ${cost.id} for step ${cost.step}` +
+          (cost.costId ? ` cost=${cost.costId}` : " (unbilled)"),
       );
       // Fail the step's run (may already be completed for step 1)
       try {

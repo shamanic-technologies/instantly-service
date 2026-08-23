@@ -20,11 +20,9 @@ import {
 import {
   createRun,
   updateRun,
-  addCosts,
   type TrackingHeaders,
 } from "../lib/runs-client";
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
-import { authorizeCreditSpend } from "../lib/billing-client";
 import { SendRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
 import { refreshLeadStatusCurrent } from "../lib/status-gold";
@@ -131,36 +129,22 @@ router.post("/", async (req: Request, res: Response) => {
     });
     traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-key-resolved", detail: `keySource=${keySource}` }, req.headers).catch(() => {});
 
-    // 1. Credit authorization (platform keys only)
-    if (keySource === "platform") {
-      const auth = await authorizeCreditSpend(
-        [
-          { costName: "instantly-contact-uploaded", quantity: 1 },
-          { costName: "instantly-account-email-sent", quantity: body.sequence.length },
-          { costName: "instantly-domain-email-sent", quantity: body.sequence.length },
-        ],
-        "instantly-send",
-        {
-          orgId,
-          userId,
-          runId: res.locals.runId as string,
-          campaignId: campaignId ?? undefined,
-          brandId,
-          workflowSlug,
-          featureSlug: tracking.featureSlug,
-          goal: tracking.goal,
-          brandProfileId: tracking.brandProfileId,
-          audienceId: tracking.audienceId,
-        },
-      );
-      if (!auth.sufficient) {
-        return res.status(402).json({
-          error: "Insufficient credits",
-          balance_cents: auth.balance_cents,
-          required_cents: auth.required_cents,
-        });
-      }
-    }
+    // 1. No affordability gate here, deliberately.
+    //
+    // Sending used to authorize the org's balance against three Instantly cost
+    // names. Those subscriptions (Email Outreach, Inbox Placement, the
+    // pre-warmed accounts, and the MailForge / PrimeForge mailbox estate) are
+    // now a FIXED cost we absorb rather than rebill, so there is no longer any
+    // spend on this path to authorize — and an authorize call over an empty
+    // basket would gate live sends on a question with no content.
+    //
+    // The credit gate is not lost, it moved UPSTREAM. A cold-email run pulls
+    // the lead (Apollo credits) and generates the body (LLM tokens via
+    // chat-service) before it ever reaches this route, and both still declare
+    // and authorize normally, so an org out of credit fails long before a send.
+    //
+    // Consequence on the contract: `/orgs/send` no longer returns 402. Callers
+    // that branch on it simply never take that branch.
 
     // 2. Per-step runs are created AFTER successful campaign activation
     const stepRuns: { step: number; runId: string }[] = [];
@@ -437,22 +421,28 @@ router.post("/", async (req: Request, res: Response) => {
 
       if (createdLead) savedLead = createdLead;
 
-      // 4. Create per-step runs. Every step's email costs are inserted as
-      //    `provisioned` and flipped to `actual` when the `email_sent` webhook
-      //    arrives (silver-promote.ts:handleFollowUpSent). Instantly's daily
-      //    quota slot per sender is only consumed at actual dispatch, so we
-      //    must not charge customers at /send time for step 1.
+      // 4. Create per-step runs and queue every step.
       //
-      //    Cost model:
-      //    - instantly-contact-uploaded: 1× on first step, actual at /send (the
-      //      lead IS uploaded to Instantly, regardless of subsequent dispatch).
-      //    - instantly-account-email-sent: 1× per step, provisioned at /send,
-      //      promoted to actual on webhook email_sent.
-      //    - instantly-domain-email-sent: 1× per step, provisioned at /send,
-      //      promoted to actual on webhook email_sent.
+      //    NO COST IS DECLARED HERE. The Instantly / MailForge / PrimeForge
+      //    subscriptions are a fixed cost we absorb, so the three cost names
+      //    this loop used to declare (`instantly-account-email-sent`,
+      //    `instantly-domain-email-sent`, `instantly-contact-uploaded`) are no
+      //    longer written to runs-service at all. Deliberately NOT replaced by
+      //    a zero-priced row: a zero asserts "this cost nothing", which is
+      //    false — it costs us real money, we simply stopped passing it on.
+      //    Absence is the honest representation.
+      //
+      //    The per-step RUN stays. It is the unit of volume (how many sends,
+      //    for which brand, on which campaign) and dropping it would blind
+      //    every downstream stat for the sake of a billing change.
+      //
+      //    The `sequence_costs` row also stays, now with a NULL cost id,
+      //    because that table is the send QUEUE as much as it is a ledger —
+      //    see the column comment in `db/schema.ts`. One row per step now
+      //    (it used to be two, one per cost name); every reader already
+      //    collapses to `DISTINCT step`, so counts are unchanged.
       const parentIdentity = { orgId, userId, runId: res.locals.runId as string, tracking };
       for (const s of sortedSequence) {
-        const isFirstStep = s.step === sortedSequence[0].step;
         const stepRun = await createRun({
           serviceName: "instantly-service",
           taskName: `email-send-step-${s.step}`,
@@ -462,34 +452,18 @@ router.post("/", async (req: Request, res: Response) => {
 
         const stepIdentity = { orgId, userId, runId: stepRun.id, tracking };
 
-        const costItems: { costName: string; quantity: number; costSource: "platform" | "org"; status: "actual" | "provisioned" }[] = [
-          { costName: "instantly-account-email-sent", quantity: 1, costSource: keySource, status: "provisioned" },
-          { costName: "instantly-domain-email-sent", quantity: 1, costSource: keySource, status: "provisioned" },
-        ];
-        // Contact upload cost: once per send, always actual, not tracked in sequence_costs
-        if (isFirstStep) {
-          costItems.push({ costName: "instantly-contact-uploaded", quantity: 1, costSource: keySource, status: "actual" });
-        }
-
-        const costResult = await addCosts(stepRun.id, costItems, stepIdentity);
-
-        // Store email costs in sequence_costs for webhook lifecycle management
-        // Contact upload cost is NOT stored here — it is never cancelled
-        for (const cost of costResult.costs) {
-          if (cost.costName === "instantly-contact-uploaded") continue;
-          await db.insert(sequenceCosts).values({
-            campaignId,
-            // Persist the per-lead Instantly campaign id so the webhook/reconcile
-            // resolvers can actualize/cancel this hold even for platform sends
-            // (campaignId NULL). See migration 0027.
-            instantlyCampaignId: sendResult.value.instantlyCampaignId,
-            leadEmail: body.to,
-            step: s.step,
-            runId: stepRun.id,
-            costId: cost.id,
-            status: "provisioned",
-          });
-        }
+        await db.insert(sequenceCosts).values({
+          campaignId,
+          // Persist the per-lead Instantly campaign id so the webhook/reconcile
+          // resolvers can settle this hold even for platform sends
+          // (campaignId NULL). See migration 0027.
+          instantlyCampaignId: sendResult.value.instantlyCampaignId,
+          leadEmail: body.to,
+          step: s.step,
+          runId: stepRun.id,
+          costId: null,
+          status: "provisioned",
+        });
 
         await updateRun(stepRun.id, "completed", stepIdentity);
 
