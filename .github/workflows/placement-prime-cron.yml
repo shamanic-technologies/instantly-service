@@ -1,0 +1,129 @@
+name: Inbox-placement — prime the sender pool
+
+# Runs 30 minutes BEFORE the weekly placement test (placement-cron.yml, Saturday
+# 06:00 UTC) and does one thing: put as many mailboxes as possible back into a
+# state the test will seed.
+#
+# WHY THIS EXISTS
+#
+# The weekly test seeds `fetchTestablePoolEmails()` — every account whose silver
+# `lifecycle_status` is `in_recovery` or `in_production` at the moment the test is
+# created. A large part of the fleet FLAPS: `reactivate-accounts` resumes a
+# disabled mailbox, Instantly disables it again, and the next `accounts-sync`
+# records that. So whether a flapping mailbox is measured at all comes down to
+# which side of that cycle it happens to be on at 06:00.
+#
+# That matters more than it sounds, because the placement test is the ONLY
+# deliverability measurement those mailboxes get, and delivery is the sole
+# demotion path out of `in_production`. A mailbox that keeps missing the test
+# sits on a frozen score, ages past DELIVERY_EVIDENCE_MAX_AGE_DAYS (16), and is
+# then pinned in `in_recovery` for good — not because it delivers badly, but
+# because nobody looked. Priming the pool is what keeps that from happening.
+#
+# Seeding a mailbox that turns out to be disabled is NOT the failure mode to
+# optimise against: the seeds cost a slice of a FLAT monthly subscription, and
+# every sender the fleet has seeded so far produced results (198/198 and 36/36 on
+# the two largest tests). Measuring too many is cheap; measuring too few is not.
+#
+# ⚠️ SEPARATE SCHEDULE, NOT EXTRA STEPS IN placement-cron.yml — load-bearing.
+# Both endpoints below answer 202 and do the work in the BACKGROUND, so chaining
+# them immediately before the test in one job would create the test while the
+# sweeps were still running: the pool read would race the writes it depends on
+# and the priming would be silently worthless. That is exactly the
+# create-then-read-in-the-same-run trap placement-cron.yml already documents for
+# `run` vs `sync`. 30 minutes is the decoupling; it is far more than the sweeps
+# need (a full accounts snapshot is a few hundred accounts) and still leaves only
+# a short window for Instantly to disable a mailbox again before 06:00.
+#
+# ORDER IS LOAD-BEARING: reactivate FIRST, then accounts-sync.
+#   1. reactivate-accounts — resumes eligible disabled mailboxes on Instantly.
+#      Nothing local changes yet; only Instantly's own status moves.
+#   2. accounts-sync — re-reads GET /accounts (so the new status reaches silver)
+#      and runs reconcileLifecycle, which is what actually moves the account to
+#      `in_recovery` and therefore INTO the test pool.
+# Running them the other way round primes nothing: the sync would read the state
+# from before the resume.
+#
+# Both are idempotent and safe to re-run. Neither spends Instantly quota
+# (reactivate is a resume, accounts-sync is a read), so this workflow adds no
+# cost of its own. `reactivate-accounts` returns 409 when
+# REACTIVATE_ACCOUNTS_ENABLED is not armed — tolerated, the sync still runs.
+#
+# Required secrets (same as placement-cron.yml / reconcile-cron.yml):
+#   INSTANTLY_SERVICE_URL, INSTANTLY_SERVICE_API_KEY
+# Scheduled runs fire from the DEFAULT branch (main).
+
+on:
+  schedule:
+    - cron: "30 5 * * 6" # Saturday 05:30 UTC — 30 min before the 06:00 test
+  workflow_dispatch:
+
+jobs:
+  prime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: POST /internal/audit/reactivate-accounts
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
+            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
+            exit 1
+          fi
+
+          response_file=$(mktemp)
+          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time 60 \
+            "${SERVICE_URL}/internal/audit/reactivate-accounts")
+
+          echo "HTTP ${status}"
+          cat "${response_file}"
+          echo
+
+          # 202 = sweep dispatched (completion shows as `reactivate-accounts: done`
+          # in the service logs). 409 = REACTIVATE_ACCOUNTS_ENABLED not armed —
+          # tolerated, the sync below still runs and primes what it can.
+          if [ "${status}" != "202" ] && [ "${status}" != "200" ] && [ "${status}" != "409" ]; then
+            echo "reactivate-accounts dispatch failed with HTTP ${status}"
+            exit 1
+          fi
+
+      - name: Wait for the reactivate sweep to land
+        # The endpoint above is fire-and-forget, so the sync must not read the
+        # account list until the resumes have actually been issued. Two minutes
+        # covers a sweep over the whole disabled cohort (a single-account GET plus
+        # a resume each, a few dozen accounts).
+        run: sleep 120
+
+      - name: POST /internal/audit/accounts-sync
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          response_file=$(mktemp)
+          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time 120 \
+            "${SERVICE_URL}/internal/audit/accounts-sync")
+
+          echo "HTTP ${status}"
+          cat "${response_file}"
+          echo
+
+          # 202 + background (`accounts-sync: done` in the logs). This is the step
+          # that moves a resumed mailbox into `in_recovery` and therefore into the
+          # test pool, via the reconcileLifecycle it runs.
+          if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
+            echo "accounts-sync dispatch failed with HTTP ${status}"
+            exit 1
+          fi
