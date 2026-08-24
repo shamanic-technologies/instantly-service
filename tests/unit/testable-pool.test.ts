@@ -42,15 +42,16 @@ describe("fetchTestablePoolEmails — weekly placement-test seeding", () => {
     expect(text).toContain("lifecycle_status IN ('in_recovery', 'in_production')");
   });
 
-  it("excludes accounts Instantly has disabled — THIS test sends its seeds via Instantly", async () => {
-    // Not redundant with the lifecycle filter any more. A self-send account skips
-    // the Instantly-status gate (that verdict does not bind our own pipe), so it
-    // can legitimately be in_recovery while still unable to send an Instantly
-    // seed. Without this predicate the weekly test would burn Growth-sub quota on
-    // senders that physically cannot dispatch.
+  it("does NOT filter on instantly_status — this test is the only measurement those mailboxes get", async () => {
+    // Reverted 2026-08-24. Excluding Instantly-disabled accounts looks like a
+    // saving and is the wrong direction: it strands them at a frozen delivery
+    // score forever, and the premise is not supported by the data (every
+    // disabled account has a recent test with missing_count = 0, so the seeds
+    // did go out). A wasted seed costs a slice of a flat subscription; an
+    // unmeasurable mailbox can never leave in_recovery.
     await fetchTestablePoolEmails();
     const text = sqlTextOf(mockExecute.mock.calls[0][0]);
-    expect(text).toContain("COALESCE(instantly_status, 0) > 0");
+    expect(text).not.toContain("instantly_status");
   });
 
   it("excludes accounts younger than the age floor, keeping undated ones", async () => {
