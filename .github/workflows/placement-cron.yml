@@ -38,6 +38,13 @@ name: Inbox-placement tests (maintain + sync)
 # — that form is TRUE for the weekly cron AND for workflow_dispatch, so a manual
 # run still does the full run + sync sequence.
 #
+# A companion workflow, placement-prime-cron.yml, runs 30 minutes BEFORE the
+# Saturday test and resumes + re-syncs disabled mailboxes so they are inside the
+# pool this test seeds. It is a separate schedule rather than two more steps here
+# precisely because those endpoints are 202 + background: chaining them just
+# before `run` would race the pool read against the writes it depends on, the
+# same trap as `run` vs `sync` above.
+#
 # The `run` step fires once a week, on SATURDAY → one one-time test covering the
 # WHOLE testable pool. Saturday AND Sunday are both send-free days
 # (campaign send window is Mon-Fri, warmup is weekday-only), so the ~30-50
