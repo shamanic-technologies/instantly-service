@@ -536,6 +536,18 @@ The fleet buys domains and mailboxes from FOUR vendors — **Gandi** (3 organisa
 
 **Cron consolidation (same issue):** `/internal/audit/accounts-sync` used to fire from THREE schedules — `accounts-sync-cron.yml` (every 2h), `lifecycle-cron.yml` (hourly) and `placement-cron.yml` (weekly) — ~37 runs/day of one job. `lifecycle-cron` hourly strictly supersedes the others, so `accounts-sync-cron.yml` was deleted and the placement-cron step removed. **`lifecycle-cron.yml` is now the SOLE caller** — do not re-add it elsewhere.
 
+## Webhook ingestion — `POST /webhooks/instantly` NEVER answers non-200
+
+**Every path in the handler returns 200. There is no 4xx and no 5xx branch, and adding one disables the webhook fleet-wide.** Instantly counts a **4xx exactly like a 5xx** toward its delivery-failure threshold, and on that threshold it DISABLES the webhook — not the single event, the whole subscription — after which we receive nothing at all until someone re-enables it. An unusable payload therefore answers `200 {success:true, degraded:true, degradedReason:"…"}` and is logged; it is never rejected.
+
+The subscription is **`all_events`** (verified live: `GET /api/v2/webhooks`, one hook on `https://instantly.distribute.you/webhooks/instantly`), so we receive event types this service has never modelled — including **account-level events that carry no `campaign_id` at all**. Bronze keys on a non-null `instantly_campaign_id`, so such an event genuinely cannot be stored: it is logged under `missing_campaign_id` and dropped. Dropping ONE unattributable event is cheap; being disabled loses EVERY event.
+
+Degraded reasons, all 200: `invalid_payload` (no `event_type`), `missing_campaign_id`, `unknown_campaign_id` (matches no local row nor `metadata.redispatchHistory[*].from` alias), `campaign lookup failed: …`, `bronze failed: …`, `silver failed: …`. **The campaign-lookup `db.select` is inside a try/catch** — `src/index.ts` installs no global error handler, so an uncaught throw there is an Express default **500**, i.e. a delivery failure on every request for as long as the DB is unhappy.
+
+**⚠️ Re-enabling a disabled webhook is NOT possible via the API — `status` is server-managed.** `PATCH /api/v2/webhooks/{id}` accepts only `name` / `event_type` / `target_hook_url` and answers `400 {"message":"No valid updates provided"}` for `{status:1}`; patching the other fields returns 200 and leaves `status:-1` untouched. The only API path back is **DELETE + re-create** with the same `target_hook_url` / `event_type` / `headers` (which mints a new webhook id). Read the live state with `GET /api/v2/webhooks` — `status:-1` plus a `timestamp_error` is the disabled shape.
+
+Incident 2026-08-25: disabled at **07:47:08 UTC**, last ingested event 07:45. Prior incident 2026-05-20 (a `promoteEvent` bug → 6 days of webhook silence) produced PR #228, which hardened the BODY of the handler to always-200 and left these two entry guards returning 400 — the recurrence came in through exactly that gap. Guard: the three "never 4xx / never 5xx" tests in `tests/unit/webhooks.test.ts`, and `grep -nE 'res\.status\(' src/routes/webhooks.ts` must match only the `/instantly/config` route.
+
 ## Data layering — Bronze / Silver / Gold
 
 Three layers, doctrine per `~/.claude/skills/data-layering/SKILL.md`:
