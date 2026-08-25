@@ -134,11 +134,11 @@ export const WebhookPayloadSchema = z
 const WebhookResponseSchema = z
   .object({
     success: z.boolean(),
-    eventType: z.string(),
+    eventType: z.string().nullable().describe("Null when the payload carried no event_type"),
     bronzeRowId: z.string().nullable(),
     promoted: z.boolean(),
-    degraded: z.boolean().describe("True when bronze or silver write failed but webhook was acknowledged with 200 to avoid Instantly auto-pause"),
-    degradedReason: z.string().nullable().describe("Failure message when degraded=true, null otherwise"),
+    degraded: z.boolean().describe("True when the event could not be fully ingested. The endpoint still answers 200 — Instantly disables a webhook on repeated non-2xx"),
+    degradedReason: z.string().nullable().describe("invalid_payload | missing_campaign_id | unknown_campaign_id | campaign lookup failed: … | bronze failed: … | silver failed: …"),
   })
   .openapi("WebhookResponse");
 
@@ -182,14 +182,6 @@ registry.registerPath({
     200: {
       description: "Webhook processed",
       content: { "application/json": { schema: WebhookResponseSchema } },
-    },
-    400: {
-      description: "Missing event_type or campaign_id",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Unknown campaign_id",
-      content: { "application/json": { schema: ErrorSchema } },
     },
   },
 });

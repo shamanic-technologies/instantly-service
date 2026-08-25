@@ -37,46 +37,87 @@ router.get("/instantly/config", (_req: Request, res: Response) => {
  *      Silver promotion fires side effects (delivery_status update, reply
  *      classification, sequence cost lifecycle) ONLY on first insert.
  *
- * Failure handling: bronze write and silver promotion are each wrapped in
- * try/catch. ANY failure inside the validated handler returns HTTP 200 with
- * `degraded: true` and a `degradedReason` field. Rationale: Instantly
- * auto-pauses webhooks after repetitive 5xx responses (observed 2026-05-20:
- * a bug in promoteEvent caused 6 days of webhook silence). The cost of
- * silently losing the dedup on rare DB hiccups is far lower than the cost
- * of a multi-day webhook outage. Failures are logged loudly (`console.error`)
- * and reconcile cron will backfill any missed events at 03:00 UTC.
+ * Failure handling: EVERY path returns HTTP 200. There is no 4xx and no 5xx
+ * branch — an unusable payload answers 200 with `degraded: true` and a
+ * `degradedReason`, and is logged loudly. Rationale: Instantly disables a
+ * webhook after repeated delivery failures, and it counts a 4xx as a failure
+ * exactly like a 5xx. It subscribes us to `all_events`, which includes
+ * account-level events carrying no `campaign_id` at all, so rejecting those
+ * accumulated failures until the whole webhook was disabled (observed
+ * 2026-08-25: disabled at 07:47 UTC; before that, 2026-05-20, a promoteEvent
+ * bug caused 6 days of silence). Losing one unattributable event is far
+ * cheaper than losing every event, and reconcile cron backfills at 03:00 UTC.
  *
- * Unknown campaign_id (not matching current nor any alias) returns 200 with
- * `degraded: true, degradedReason: "unknown_campaign_id"`. Same rationale:
- * Instantly retries on 4xx are wasted and accumulate toward auto-pause; a
- * truly orphan id is logged and dropped silently.
+ * Degraded reasons: `invalid_payload` (no event_type), `missing_campaign_id`
+ * (an event we cannot attribute — bronze requires a non-null campaign id, so
+ * it is dropped), `unknown_campaign_id` (matches no local row nor alias),
+ * `campaign lookup failed: ...`, `bronze failed: ...`, `silver failed: ...`.
  */
 router.post("/instantly", async (req: Request, res: Response) => {
   const parsed = WebhookPayloadSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: "Missing event_type" });
+    console.warn(
+      `[instantly-service] webhook invalid_payload (returning 200 to avoid Instantly auto-disable): body=${JSON.stringify(req.body).slice(0, 500)}`,
+    );
+    return res.json({
+      success: true,
+      eventType: null,
+      bronzeRowId: null,
+      promoted: false,
+      degraded: true,
+      degradedReason: "invalid_payload",
+    });
   }
   const payload = parsed.data;
 
+  // Instantly subscribes us to `all_events`, which includes account-level events
+  // carrying no campaign_id. Bronze keys on a non-null instantly_campaign_id, so
+  // such an event cannot be stored — log it and acknowledge, never reject.
   if (!payload.campaign_id) {
-    return res.status(400).json({ error: "Missing campaign_id" });
+    console.warn(
+      `[instantly-service] webhook missing_campaign_id (returning 200 to avoid Instantly auto-disable): type=${payload.event_type} account=${payload.email_account ?? "none"} lead=${payload.lead_email ?? "none"}`,
+    );
+    return res.json({
+      success: true,
+      eventType: payload.event_type,
+      bronzeRowId: null,
+      promoted: false,
+      degraded: true,
+      degradedReason: "missing_campaign_id",
+    });
   }
 
   // Match the current instantly_campaign_id OR any historical alias preserved
   // in `metadata.redispatchHistory[*].from`. The GIN index on `metadata`
   // (migration 0016) backs the JSONB containment check.
-  const [campaign] = await db
-    .select()
-    .from(instantlyCampaigns)
-    .where(
-      or(
-        eq(instantlyCampaigns.instantlyCampaignId, payload.campaign_id),
-        sql`${instantlyCampaigns.metadata} @? ${sql.raw(
-          `'$.redispatchHistory[*] ? (@.from == ${JSON.stringify(payload.campaign_id)})'`,
-        )}`,
-      ),
-    )
-    .limit(1);
+  let campaign: typeof instantlyCampaigns.$inferSelect | undefined;
+  try {
+    [campaign] = await db
+      .select()
+      .from(instantlyCampaigns)
+      .where(
+        or(
+          eq(instantlyCampaigns.instantlyCampaignId, payload.campaign_id),
+          sql`${instantlyCampaigns.metadata} @? ${sql.raw(
+            `'$.redispatchHistory[*] ? (@.from == ${JSON.stringify(payload.campaign_id)})'`,
+          )}`,
+        ),
+      )
+      .limit(1);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[instantly-service] webhook campaign lookup failed (returning 200 to avoid Instantly auto-disable): campaign=${payload.campaign_id} type=${payload.event_type} error=${message}`,
+    );
+    return res.json({
+      success: true,
+      eventType: payload.event_type,
+      bronzeRowId: null,
+      promoted: false,
+      degraded: true,
+      degradedReason: `campaign lookup failed: ${message}`,
+    });
+  }
 
   if (!campaign) {
     console.warn(
