@@ -68,14 +68,48 @@ describe("POST /webhooks/instantly", () => {
     });
   });
 
-  it("should reject requests without campaign_id", async () => {
+  it("returns 200 degraded (never 4xx) when campaign_id is missing", async () => {
     const app = await createWebhookApp();
     const res = await request(app)
       .post("/webhooks/instantly")
-      .send({ event_type: "email_sent" });
+      .send({ event_type: "account_error" });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Missing campaign_id");
+    expect(res.status).toBe(200);
+    expect(res.body.degraded).toBe(true);
+    expect(res.body.degradedReason).toBe("missing_campaign_id");
+    expect(res.body.promoted).toBe(false);
+    expect(res.body.bronzeRowId).toBeNull();
+    // Bronze requires a non-null instantly_campaign_id — the event is dropped, loudly.
+    expect(mockInsertWebhookPayload).not.toHaveBeenCalled();
+  });
+
+  it("returns 200 degraded (never 4xx) when the payload fails validation", async () => {
+    const app = await createWebhookApp();
+    const res = await request(app)
+      .post("/webhooks/instantly")
+      .send({ campaign_id: "inst-camp-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.degraded).toBe(true);
+    expect(res.body.degradedReason).toBe("invalid_payload");
+    expect(res.body.eventType).toBeNull();
+    expect(mockInsertWebhookPayload).not.toHaveBeenCalled();
+  });
+
+  it("returns 200 degraded (never 5xx) when the campaign lookup throws", async () => {
+    mockDbSelect.mockImplementationOnce(() => {
+      throw new Error("timeout exceeded when trying to connect");
+    });
+
+    const app = await createWebhookApp();
+    const res = await request(app)
+      .post("/webhooks/instantly")
+      .send({ event_type: "email_sent", campaign_id: "inst-camp-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.degraded).toBe(true);
+    expect(res.body.degradedReason).toContain("campaign lookup failed");
+    expect(mockInsertWebhookPayload).not.toHaveBeenCalled();
   });
 
   it("should return 200 + degraded for unknown campaign_id (avoid Instantly auto-pause)", async () => {

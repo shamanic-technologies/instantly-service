@@ -418,22 +418,28 @@ export const TESTABLE_MIN_AGE_DAYS = 7;
  * `timestamp_created` (not yet backfilled) is treated as old enough — the
  * pre-backfill behaviour.
  *
- * ⚠️ `instantly_status > 0` is REQUIRED, and it is not redundant with the
- * lifecycle filter. THIS test is Instantly's: it dispatches its seeds from the
- * connected account (`delivery_mode: 1`), so an account Instantly has disabled
- * physically cannot send them — seeding it burns Growth-sub quota to measure
- * nothing. That used to fall out of the lifecycle filter for free, because such
- * an account was always `deactivated_by_instantly`. It no longer does: a
- * self-send account skips that gate (Instantly's verdict is not binding on our
- * pipe), so it can legitimately be `in_recovery` while still being unable to
- * send an Instantly seed. Measuring THOSE mailboxes is what the in-house
- * placement harness is for.
+ * ⚠️ DO NOT add an `instantly_status > 0` predicate here. It reads as an obvious
+ * saving — why seed a mailbox Instantly has disabled? — and it is the wrong
+ * direction: this test is the ONLY deliverability measurement those mailboxes
+ * get, so excluding them strands them at a frozen score forever. It was added
+ * and reverted on 2026-08-24.
+ *
+ * The premise behind it ("a disabled account cannot dispatch its seeds") is not
+ * supported by the data: every one of the 13 disabled accounts carries a recent
+ * test with `missing_count = 0`, i.e. every seed was delivered somewhere, so the
+ * mail did go out. In practice these accounts also FLAP — `reactivate-accounts`
+ * resumes them hourly and Instantly disables them again — so at the moment the
+ * weekly test picks its senders they are routinely back in a sendable state.
+ * That churn is ugly, but it is what keeps them measurable.
+ *
+ * The asymmetry that settles it: a wasted seed costs a slice of a flat monthly
+ * subscription, while an unmeasurable mailbox can never leave `in_recovery`.
+ * Prefer measuring.
  */
 export async function fetchTestablePoolEmails(): Promise<string[]> {
   const result = await db.execute(sql`
     SELECT email FROM instantly_accounts
     WHERE lifecycle_status IN ('in_recovery', 'in_production')
-      AND COALESCE(instantly_status, 0) > 0
       AND (
         timestamp_created IS NULL
         OR timestamp_created <= now() - make_interval(days => ${TESTABLE_MIN_AGE_DAYS})
