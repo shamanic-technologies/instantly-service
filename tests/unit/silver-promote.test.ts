@@ -1197,16 +1197,19 @@ describe("promoteSyntheticInterestFromLead", () => {
   type EnumCase = { status: number; eventType: string };
   const cases: EnumCase[] = [
     { status: 1, eventType: "lead_interested" },
-    { status: 2, eventType: "lead_meeting_booked" },
-    { status: 3, eventType: "lead_meeting_completed" },
-    { status: 4, eventType: "lead_closed" },
+    // 2 / 3 / 4 are Instantly's deal progress. This service no longer records
+    // deal progress, so promoteEvent resolves all three to the reply kind the
+    // domain fact supports before they can reach silver.
+    { status: 2, eventType: "lead_interested" },
+    { status: 3, eventType: "lead_interested" },
+    { status: 4, eventType: "lead_interested" },
     { status: 0, eventType: "lead_out_of_office" },
     { status: -1, eventType: "lead_not_interested" },
     { status: -2, eventType: "lead_wrong_person" },
   ];
 
   for (const { status, eventType } of cases) {
-    it(`maps lt_interest_status=${status} to ${eventType}`, async () => {
+    it(`maps lt_interest_status=${status} to silver event ${eventType}`, async () => {
       mockCampaign();
       mockNewSilverRow();
 

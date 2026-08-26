@@ -60,7 +60,7 @@ function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
 /** A row from the latest-sentiment query (querySentiment). */
 function makeSentimentRow(overrides: Partial<Record<string, number>> = {}) {
   return {
-    rdInterested: 0, rdMeetingBooked: 0, rdClosed: 0,
+    rdInterested: 0, rdReferral: 0, rdInfoRequested: 0, rdMeetingRequested: 0,
     rdNotInterested: 0, rdWrongPerson: 0,
     rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0,
     ...overrides,

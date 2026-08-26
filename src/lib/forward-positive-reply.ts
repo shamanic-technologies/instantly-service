@@ -42,23 +42,26 @@ import { listEmails, type EmailRecord } from "./instantly-client";
 import { sendEmail } from "./email-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { fetchSelfSendThread } from "./self-send/thread";
+import { POSITIVE_REPLY_KINDS } from "./reply-kind";
 
 /** The agency inbox that receives forwarded positive replies. */
 const AGENCY_INBOX = process.env.ADMIN_NOTIFICATION_EMAIL || "kevin@distribute.you";
 
 /**
- * The Instantly qualification events that mean "positive reply". Kept in lockstep
- * with the 'positive' entries of silver-promote's REPLY_CLASSIFICATION_MAP — a
- * unit test asserts the two never drift. We forward ONLY on these; negative /
- * neutral / non-qualified replies never trigger a forward.
+ * The reply kinds that mean "positive reply". Kept in lockstep with the
+ * 'positive' entries of REPLY_CLASSIFICATION_MAP — a unit test asserts the two
+ * never drift. We forward ONLY on these; negative / neutral / automated replies
+ * never trigger a forward.
+ *
+ * All four positive distinctions forward: someone who wants to know more, or
+ * points us at the right buyer, is exactly as worth reading as someone asking
+ * for a call. Deal progress is absent because it is no longer a reply kind at
+ * all — a booked meeting is recorded by the lead-outcomes service, and it is
+ * not evidence that a reply just arrived.
  */
-export const POSITIVE_QUALIFICATION_EVENT_TYPES = new Set<string>([
-  "lead_interested",
-  "lead_meeting_booked",
-  "lead_closed",
-]);
+export const POSITIVE_QUALIFICATION_EVENT_TYPES = new Set<string>(POSITIVE_REPLY_KINDS);
 
-/** True iff Instantly has qualified this event as a positive reply. */
+/** True iff this event is a positive reply kind. */
 export function isPositiveQualification(eventType: string): boolean {
   return POSITIVE_QUALIFICATION_EVENT_TYPES.has(eventType);
 }

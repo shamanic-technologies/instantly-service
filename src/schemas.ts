@@ -1028,10 +1028,32 @@ const StatusResponseSchema = z
 
 // ─── Manual Qualifications ──────────────────────────────────────────────────
 
+/**
+ * The reply-kind vocabulary, plus the two legacy deal-progress values the staff
+ * console is still writing today. Every value resolves to a reply kind at WRITE
+ * (see lib/reply-kind) — bronze keeps the raw statement, readers see the new
+ * vocabulary only. Dropping the legacy pair is a separate, later change.
+ */
 const MANUAL_QUALIFICATION_STATUS_VALUES = [
   "lead_interested",
+  "lead_referral",
+  "lead_info_requested",
+  "lead_meeting_requested",
+  "lead_not_interested",
+  "lead_wrong_person",
+  "lead_neutral",
+  "lead_out_of_office",
+  "auto_reply_received",
+  // Legacy deal-progress values — accepted, resolved to `lead_interested`.
   "lead_meeting_booked",
   "lead_closed",
+] as const;
+
+const REPLY_KIND_VALUES = [
+  "lead_interested",
+  "lead_referral",
+  "lead_info_requested",
+  "lead_meeting_requested",
   "lead_not_interested",
   "lead_wrong_person",
   "lead_neutral",
@@ -1039,10 +1061,16 @@ const MANUAL_QUALIFICATION_STATUS_VALUES = [
   "auto_reply_received",
 ] as const;
 
+export const ReplyKindSchema = z
+  .enum(REPLY_KIND_VALUES)
+  .describe(
+    "What KIND of reply arrived, and nothing about how far the deal got. Positive splits four ways: lead_interested (personally interested), lead_referral (not personally interested but relevant — points at the right person), lead_info_requested (wants to know more), lead_meeting_requested (wants to book). Deal outcomes (a booked meeting, a closed deal) are lead outcomes owned by the lead-outcomes service, not reply kinds.",
+  );
+
 export const ManualQualificationStatusSchema = z
   .enum(MANUAL_QUALIFICATION_STATUS_VALUES)
   .describe(
-    "Manual reply qualification status — mirrors Instantly webhook reply event_type values exactly. Set by a human via the dashboard when Instantly fails to detect a reply (e.g. reply received on a non-leurre email account).",
+    "The raw statement a human made about a reply. Normally a reply kind; the two deal-progress values (lead_meeting_booked, lead_closed) are still ACCEPTED while the consoles migrate their pickers and resolve to lead_interested at write.",
   );
 
 export type ManualQualificationStatus = z.infer<typeof ManualQualificationStatusSchema>;
@@ -1082,6 +1110,9 @@ const ManualQualificationRowSchema = z.object({
   instantlyCampaignId: z.string(),
   email: z.string(),
   status: ManualQualificationStatusSchema,
+  replyKind: ReplyKindSchema.describe(
+    "The reply kind this statement resolved to at write time. Always a value of the current vocabulary, including for a statement made with a legacy deal-progress value.",
+  ),
   qualifiedBy: z.string(),
   notes: z.string().nullable(),
   qualifiedAt: z.string().describe("ISO 8601 timestamp"),

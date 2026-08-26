@@ -682,7 +682,13 @@ export const instantlyManualQualificationsRaw = pgTable(
     campaignId: text("campaign_id").notNull(),
     instantlyCampaignId: text("instantly_campaign_id").notNull(),
     leadEmail: text("lead_email").notNull(),
+    /** The RAW human statement — append-only, never rewritten. May still be one
+     *  of the two legacy deal-progress values while the consoles migrate. */
     status: text("status").notNull(),
+    /** The reply kind `status` RESOLVES to, frozen at write (`resolveReplyKind`).
+     *  Persisted rather than derived on read so no consumer ever needs a
+     *  read-time translation of a legacy value. */
+    replyKind: text("reply_kind").notNull(),
     qualifiedBy: text("qualified_by").notNull(),
     notes: text("notes"),
     payload: jsonb("payload").notNull(),
