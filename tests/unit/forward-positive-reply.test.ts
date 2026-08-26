@@ -75,15 +75,19 @@ function record(overrides: Record<string, unknown>) {
 }
 
 describe("isPositiveQualification / positive set", () => {
-  it("is true only for Instantly's positive qualification events", () => {
+  it("is true for all four positive reply kinds", () => {
     expect(isPositiveQualification("lead_interested")).toBe(true);
-    expect(isPositiveQualification("lead_meeting_booked")).toBe(true);
-    expect(isPositiveQualification("lead_closed")).toBe(true);
+    expect(isPositiveQualification("lead_referral")).toBe(true);
+    expect(isPositiveQualification("lead_info_requested")).toBe(true);
+    expect(isPositiveQualification("lead_meeting_requested")).toBe(true);
     // Negative / neutral / non-qualified → never
     expect(isPositiveQualification("lead_not_interested")).toBe(false);
     expect(isPositiveQualification("lead_out_of_office")).toBe(false);
     expect(isPositiveQualification("reply_received")).toBe(false);
     expect(isPositiveQualification("email_opened")).toBe(false);
+    // Deal progress is not a reply kind at all any more.
+    expect(isPositiveQualification("lead_meeting_booked")).toBe(false);
+    expect(isPositiveQualification("lead_closed")).toBe(false);
   });
 
   it("stays in lockstep with REPLY_CLASSIFICATION_MAP's 'positive' entries", () => {
@@ -286,7 +290,7 @@ describe("maybeForwardPositiveReply", () => {
 
   it("already forwarded (claim lost): no send", async () => {
     mockReturning.mockResolvedValue([]); // claim lost
-    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_closed");
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_meeting_requested");
     expect(mockListEmails).not.toHaveBeenCalled();
     expect(mockSendEmail).not.toHaveBeenCalled();
   });

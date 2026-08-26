@@ -71,7 +71,7 @@ function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
  *  Optionally carries a groupKey for grouped responses. */
 function makeSentimentRow(overrides: Partial<Record<string, number | string>> = {}) {
   return {
-    rdInterested: 0, rdMeetingBooked: 0, rdClosed: 0,
+    rdInterested: 0, rdReferral: 0, rdInfoRequested: 0, rdMeetingRequested: 0,
     rdNotInterested: 0, rdWrongPerson: 0,
     rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0,
     ...overrides,
@@ -218,7 +218,7 @@ describe("GET /stats", () => {
   });
 
   it("should compute reply aggregates from detail correctly", async () => {
-    // unsubscribe stays an event count on the main query; the 8 sentiment types
+    // unsubscribe stays an event count on the main query; the 9 reply kinds
     // come from the latest-sentiment query.
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
@@ -230,7 +230,7 @@ describe("GET /stats", () => {
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 500 }] });
     mockExecute.mockResolvedValueOnce({
       rows: [makeSentimentRow({
-        rdInterested: 3, rdMeetingBooked: 2, rdClosed: 1,
+        rdInterested: 3, rdReferral: 2, rdInfoRequested: 1, rdMeetingRequested: 4,
         rdNotInterested: 4, rdWrongPerson: 1,
         rdNeutral: 5,
         rdAutoReply: 11, rdOutOfOffice: 13,
@@ -242,13 +242,17 @@ describe("GET /stats", () => {
     const response = await request(app).get("/stats").set(identityHeadersObj);
 
     expect(response.status).toBe(200);
-    expect(response.body.recipientStats.repliesPositive).toBe(6);  // 3+2+1
+    expect(response.body.recipientStats.repliesPositive).toBe(10); // 3+2+1+4, all four positive kinds
     expect(response.body.recipientStats.repliesNegative).toBe(7);  // 4+1+2 (notInterested+wrongPerson+unsubscribe)
     expect(response.body.recipientStats.repliesNeutral).toBe(5);
     expect(response.body.recipientStats.repliesAutoReply).toBe(24); // 11+13
     expect(response.body.recipientStats.repliesDetail.interested).toBe(3);
-    expect(response.body.recipientStats.repliesDetail.meetingBooked).toBe(2);
-    expect(response.body.recipientStats.repliesDetail.closed).toBe(1);
+    expect(response.body.recipientStats.repliesDetail.referral).toBe(2);
+    expect(response.body.recipientStats.repliesDetail.infoRequested).toBe(1);
+    expect(response.body.recipientStats.repliesDetail.meetingRequested).toBe(4);
+    // Deal progress is not recorded here any more — honestly zero, not stale.
+    expect(response.body.recipientStats.repliesDetail.meetingBooked).toBe(0);
+    expect(response.body.recipientStats.repliesDetail.closed).toBe(0);
     expect(response.body.recipientStats.repliesDetail.wrongPerson).toBe(1);
     expect(response.body.recipientStats.repliesDetail.neutral).toBe(5);
   });
@@ -472,7 +476,7 @@ describe("GET /stats", () => {
     consoleSpy.mockRestore();
   });
 
-  it("should query all 9 reply event types across the stats SQL", async () => {
+  it("should query all 10 reply-kind event types across the stats SQL", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
     const app = await createStatsApp();
@@ -483,8 +487,9 @@ describe("GET /stats", () => {
     // stays in the main events query. Scan all issued SQL.
     const allSql = mockExecute.mock.calls.map((c) => extractSqlText(c[0])).join(" ");
     expect(allSql).toContain("lead_interested");
-    expect(allSql).toContain("lead_meeting_booked");
-    expect(allSql).toContain("lead_closed");
+    expect(allSql).toContain("lead_referral");
+    expect(allSql).toContain("lead_info_requested");
+    expect(allSql).toContain("lead_meeting_requested");
     expect(allSql).toContain("lead_not_interested");
     expect(allSql).toContain("lead_wrong_person");
     expect(allSql).toContain("lead_unsubscribed");
@@ -492,6 +497,10 @@ describe("GET /stats", () => {
     expect(allSql).toContain("auto_reply_received");
     expect(allSql).toContain("lead_out_of_office");
     expect(allSql).not.toMatch(/event_type = 'reply_received'/);
+    // Deal progress is no longer a reply kind — it must not be queried as one,
+    // or a booked meeting silently overwrites the lead's reply sentiment again.
+    expect(allSql).not.toContain("lead_meeting_booked");
+    expect(allSql).not.toContain("lead_closed");
   });
 
   it("should derive current sentiment from the LATEST event per lead (manual wins ties)", async () => {
@@ -918,7 +927,10 @@ describe("GET /stats", () => {
           repliesAutoReply: 0,
           repliesDetail: {
             interested: 1,
-            meetingBooked: 0,
+            referral: 0,
+          infoRequested: 0,
+          meetingRequested: 0,
+          meetingBooked: 0,
             closed: 0,
             notInterested: 1,
             wrongPerson: 0,

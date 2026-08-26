@@ -37,6 +37,13 @@ export function internalExclusionClause(): SQL {
 
 export const ZERO_REPLIES_DETAIL = {
   interested: 0,
+  referral: 0,
+  infoRequested: 0,
+  meetingRequested: 0,
+  // Deal progress — no longer recorded by this service (the lead-outcomes
+  // service owns it). Kept in the shape at 0 because they are REQUIRED fields
+  // of the published `email-domain-contract` RepliesDetail; contract v2 drops
+  // them. Not a silent zero: this service genuinely records none.
   meetingBooked: 0,
   closed: 0,
   notInterested: 0,
@@ -100,7 +107,8 @@ const ZERO_ENGAGEMENT_LATENCY_METRIC: EngagementLatencyMetric = {
 /** Compute reply aggregates from detail counts */
 export function buildRepliesFromDetail(detail: typeof ZERO_REPLIES_DETAIL) {
   return {
-    repliesPositive: detail.interested + detail.meetingBooked + detail.closed,
+    repliesPositive:
+      detail.interested + detail.referral + detail.infoRequested + detail.meetingRequested,
     repliesNegative: detail.notInterested + detail.wrongPerson + detail.unsubscribe,
     repliesNeutral: detail.neutral,
     repliesAutoReply: detail.autoReply + detail.outOfOffice,
@@ -207,8 +215,9 @@ export async function queryEngagementLatencyGroups(
           FILTER (
             WHERE e.event_type IN (
               'lead_interested',
-              'lead_meeting_booked',
-              'lead_closed'
+              'lead_referral',
+              'lead_info_requested',
+              'lead_meeting_requested'
             )
           ) AS positive_reply_latency_ms
       FROM first_sends s
@@ -477,8 +486,9 @@ const BRAND_LATERAL_JOIN = sql`CROSS JOIN LATERAL unnest(c.brand_ids) AS brand_i
  */
 export const SENTIMENT_EVENT_TYPES = [
   "lead_interested",
-  "lead_meeting_booked",
-  "lead_closed",
+  "lead_referral",
+  "lead_info_requested",
+  "lead_meeting_requested",
   "lead_not_interested",
   "lead_wrong_person",
   "lead_neutral",
@@ -488,8 +498,9 @@ export const SENTIMENT_EVENT_TYPES = [
 
 export interface SentimentDetail {
   interested: number;
-  meetingBooked: number;
-  closed: number;
+  referral: number;
+  infoRequested: number;
+  meetingRequested: number;
   notInterested: number;
   wrongPerson: number;
   neutral: number;
@@ -499,8 +510,9 @@ export interface SentimentDetail {
 
 const ZERO_SENTIMENT_DETAIL: SentimentDetail = {
   interested: 0,
-  meetingBooked: 0,
-  closed: 0,
+  referral: 0,
+  infoRequested: 0,
+  meetingRequested: 0,
   notInterested: 0,
   wrongPerson: 0,
   neutral: 0,
@@ -537,8 +549,9 @@ function latestSentimentCteBody(): SQL {
 /** Per-sentiment COUNT FILTERs over the latest-sentiment derived table. */
 const SENTIMENT_COUNT_COLUMNS = sql`
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_interested')::int AS "rdInterested",
-  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_meeting_booked')::int AS "rdMeetingBooked",
-  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_closed')::int AS "rdClosed",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_referral')::int AS "rdReferral",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_info_requested')::int AS "rdInfoRequested",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_meeting_requested')::int AS "rdMeetingRequested",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_not_interested')::int AS "rdNotInterested",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_wrong_person')::int AS "rdWrongPerson",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_neutral')::int AS "rdNeutral",
@@ -550,8 +563,9 @@ function rowToSentimentDetail(row: Record<string, number> | undefined): Sentimen
   if (!row) return { ...ZERO_SENTIMENT_DETAIL };
   return {
     interested: row.rdInterested ?? 0,
-    meetingBooked: row.rdMeetingBooked ?? 0,
-    closed: row.rdClosed ?? 0,
+    referral: row.rdReferral ?? 0,
+    infoRequested: row.rdInfoRequested ?? 0,
+    meetingRequested: row.rdMeetingRequested ?? 0,
     notInterested: row.rdNotInterested ?? 0,
     wrongPerson: row.rdWrongPerson ?? 0,
     neutral: row.rdNeutral ?? 0,
@@ -769,8 +783,11 @@ export async function queryGroupedStats(
     const sentiment = sentimentMap.get(String(key)) ?? ZERO_SENTIMENT_DETAIL;
     const detail = {
       interested: sentiment.interested,
-      meetingBooked: sentiment.meetingBooked,
-      closed: sentiment.closed,
+      referral: sentiment.referral,
+      infoRequested: sentiment.infoRequested,
+      meetingRequested: sentiment.meetingRequested,
+      meetingBooked: 0,
+      closed: 0,
       notInterested: sentiment.notInterested,
       wrongPerson: sentiment.wrongPerson,
       unsubscribe: row?.rdUnsubscribe ?? 0,
@@ -877,8 +894,11 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
   const row = rows[0] as Record<string, number>;
   const detail = {
     interested: sentiment.interested,
-    meetingBooked: sentiment.meetingBooked,
-    closed: sentiment.closed,
+    referral: sentiment.referral,
+    infoRequested: sentiment.infoRequested,
+    meetingRequested: sentiment.meetingRequested,
+    meetingBooked: 0,
+    closed: 0,
     notInterested: sentiment.notInterested,
     wrongPerson: sentiment.wrongPerson,
     unsubscribe: row.rdUnsubscribe ?? 0,
@@ -988,8 +1008,11 @@ export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
     const sentiment = stepSentimentMap.get(Number(sr.step));
     const detail = {
       interested: sentiment?.interested ?? 0,
-      meetingBooked: sentiment?.meetingBooked ?? 0,
-      closed: sentiment?.closed ?? 0,
+      referral: sentiment?.referral ?? 0,
+      infoRequested: sentiment?.infoRequested ?? 0,
+      meetingRequested: sentiment?.meetingRequested ?? 0,
+      meetingBooked: 0,
+      closed: 0,
       notInterested: sentiment?.notInterested ?? 0,
       wrongPerson: sentiment?.wrongPerson ?? 0,
       unsubscribe: sr.rdUnsubscribe ?? 0,
