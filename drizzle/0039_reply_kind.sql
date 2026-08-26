@@ -52,11 +52,16 @@ ALTER TABLE "instantly_manual_qualifications_raw" ALTER COLUMN "reply_kind" SET 
 -- `source_row_id`; the gold latest-sentiment projection breaks the tie on
 -- `created_at DESC`, so the resolved kind wins over the retired event.
 -- Idempotent: re-running inserts nothing.
+-- `instantly_events.id` has NO database default — the app supplies it through
+-- drizzle's `$defaultFn(crypto.randomUUID)`, so raw SQL has to mint its own or
+-- the insert dies on the NOT NULL.
 INSERT INTO "instantly_events" (
+  "id",
   "event_type", "campaign_id", "lead_email", "account_email", "step", "variant",
   "timestamp", "raw_payload", "source", "source_row_id", "inferred"
 )
 SELECT
+  gen_random_uuid()::text,
   'lead_interested', q."instantly_campaign_id", q."lead_email", NULL, NULL, NULL,
   q."qualified_at", q."payload", 'manual', q."id", false
 FROM "instantly_manual_qualifications_raw" q
