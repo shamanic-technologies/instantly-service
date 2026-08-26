@@ -22,68 +22,31 @@ import { resolveInstantlyApiKey } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { stopSelfSendSequence } from "./self-send/stop-sequence";
-
-// Mirrors the 8 keys of REPLY_CLASSIFICATION_MAP in silver-promote.ts. Kept in
-// sync deliberately: when a human qualifies a reply, the status is the same
-// event_type Instantly would have fired had it detected the reply itself.
-export const MANUAL_QUALIFICATION_STATUSES = [
-  "lead_interested",
-  "lead_meeting_booked",
-  "lead_closed",
-  "lead_not_interested",
-  "lead_wrong_person",
-  "lead_neutral",
-  "lead_out_of_office",
-  "auto_reply_received",
-] as const;
-
-export type ManualQualificationStatus = (typeof MANUAL_QUALIFICATION_STATUSES)[number];
-
-const MANUAL_QUALIFICATION_CLASSIFICATION: Record<
-  ManualQualificationStatus,
-  "positive" | "negative" | "neutral"
-> = {
-  lead_interested: "positive",
-  lead_meeting_booked: "positive",
-  lead_closed: "positive",
-  lead_not_interested: "negative",
-  lead_wrong_person: "negative",
-  lead_neutral: "neutral",
-  lead_out_of_office: "neutral",
-  auto_reply_received: "neutral",
-};
+import {
+  ACCEPTED_QUALIFICATION_STATUSES,
+  REPLY_KIND_CLASSIFICATION,
+  isSequenceStoppingReplyKind,
+  resolveReplyKind,
+  type AcceptedQualificationStatus,
+  type ReplyKind,
+} from "./reply-kind";
 
 /**
- * The manual statuses that assert the prospect actually ENGAGED — i.e. the
- * sequence must stop.
- *
- * `lead_out_of_office` and `auto_reply_received` are deliberately EXCLUDED: an
- * autoresponder is not a reply (RFC 3834), the prospect is back at their desk
- * next week and has not engaged. Stopping on one would end the outreach — and
- * refund the spend — for a lead who never answered. Same reasoning as
- * `auto_reply_received` being absent from `SEQUENCE_STOP_EVENTS` in
- * silver-promote.ts and from the self-send inbound classifier.
- *
- * This single predicate gates BOTH halves of "the sequence stopped": the
- * synthesized `reply_received` event (which cancels the lead's remaining
- * provisioned holds) AND the Instantly pause. Gating only one of the two would
- * leave the two sides contradicting each other — holds refunded locally while
- * Instantly keeps dispatching, or vice versa.
+ * What the write path accepts: the reply-kind vocabulary plus the two legacy
+ * deal-progress values the staff console is still sending today. Every value is
+ * RESOLVED to a reply kind at write (`resolveReplyKind`) — see lib/reply-kind.
+ * Removing the legacy pair from this list is a separate, later change, once
+ * both dashboards ship their new pickers.
  */
-export const SEQUENCE_STOPPING_MANUAL_STATUSES = new Set<ManualQualificationStatus>([
-  "lead_interested",
-  "lead_meeting_booked",
-  "lead_closed",
-  "lead_not_interested",
-  "lead_wrong_person",
-  "lead_neutral",
-]);
+export const MANUAL_QUALIFICATION_STATUSES = ACCEPTED_QUALIFICATION_STATUSES;
+
+export type ManualQualificationStatus = AcceptedQualificationStatus;
 
 /** True iff this manual qualification means the sequence must stop. */
 export function isSequenceStoppingQualification(
   status: ManualQualificationStatus,
 ): boolean {
-  return SEQUENCE_STOPPING_MANUAL_STATUSES.has(status);
+  return isSequenceStoppingReplyKind(resolveReplyKind(status));
 }
 
 export interface ManualQualificationRow {
@@ -92,7 +55,10 @@ export interface ManualQualificationRow {
   campaignId: string;
   instantlyCampaignId: string;
   leadEmail: string;
+  /** The raw human statement, exactly as it was clicked. Append-only. */
   status: ManualQualificationStatus;
+  /** The reply kind `status` resolves to — the new vocabulary, frozen at write. */
+  replyKind: ReplyKind;
   qualifiedBy: string;
   notes: string | null;
   qualifiedAt: Date;
@@ -122,6 +88,7 @@ function toRow(raw: {
   instantlyCampaignId: string;
   leadEmail: string;
   status: string;
+  replyKind: string;
   qualifiedBy: string;
   notes: string | null;
   qualifiedAt: Date;
@@ -133,6 +100,7 @@ function toRow(raw: {
     instantlyCampaignId: raw.instantlyCampaignId,
     leadEmail: raw.leadEmail,
     status: raw.status as ManualQualificationStatus,
+    replyKind: raw.replyKind as ReplyKind,
     qualifiedBy: raw.qualifiedBy,
     notes: raw.notes,
     qualifiedAt: raw.qualifiedAt,
@@ -185,6 +153,10 @@ export async function insertManualQualification(
       instantlyCampaignId: input.instantlyCampaignId,
       leadEmail: input.leadEmail,
       status: input.status,
+      // Resolve at WRITE, never at read: bronze keeps the raw intent, every
+      // reader downstream sees the new vocabulary only. Throws on an
+      // unresolvable status — a statement we cannot record fails loudly.
+      replyKind: resolveReplyKind(input.status),
       qualifiedBy: input.qualifiedBy,
       notes: input.notes ?? null,
       payload: input.payload as Record<string, unknown>,
@@ -200,6 +172,8 @@ export interface ApplyManualQualificationSideEffectsInput {
   instantlyCampaignId: string;
   leadEmail: string;
   status: ManualQualificationStatus;
+  /** The reply kind the statement resolved to at write. */
+  replyKind: ReplyKind;
   qualifiedAt: Date;
   rawPayload: unknown;
 }
@@ -290,7 +264,7 @@ export async function applyManualQualificationSideEffects(
   input: ApplyManualQualificationSideEffectsInput,
 ): Promise<void> {
   // 1. The lead engaged ⇒ stop the sequence on both sides.
-  if (isSequenceStoppingQualification(input.status)) {
+  if (isSequenceStoppingReplyKind(input.replyKind)) {
     // 1a. Synthesize the reply_received event so `/orgs/status.replied` reports
     //     true. `promoteEvent` handles the one-shot dedupe: if a real reply
     //     event already exists (Instantly auto-detected too), this is a no-op.
@@ -321,7 +295,9 @@ export async function applyManualQualificationSideEffects(
   //    set to 'manual' explicitly below; promoteEvent's auto-update would not
   //    touch `reply_classification_source`).
   await db.insert(instantlyEvents).values({
-    eventType: input.status,
+    // The RESOLVED kind, not the raw statement — silver carries the new
+    // vocabulary only, so no reader ever has to translate a legacy value.
+    eventType: input.replyKind,
     campaignId: input.instantlyCampaignId,
     leadEmail: input.leadEmail,
     accountEmail: null,
@@ -341,7 +317,7 @@ export async function applyManualQualificationSideEffects(
   await db
     .update(instantlyCampaigns)
     .set({
-      replyClassification: MANUAL_QUALIFICATION_CLASSIFICATION[input.status],
+      replyClassification: REPLY_KIND_CLASSIFICATION[input.replyKind],
       replyClassificationSource: "manual",
       updatedAt: new Date(),
     })
@@ -350,7 +326,7 @@ export async function applyManualQualificationSideEffects(
   await refreshLeadStatusCurrent(input.instantlyCampaignId, input.leadEmail);
 
   console.log(
-    `[instantly-service] manual qualification applied: campaign=${input.instantlyCampaignId} lead=${input.leadEmail} status=${input.status}`,
+    `[instantly-service] manual qualification applied: campaign=${input.instantlyCampaignId} lead=${input.leadEmail} status=${input.status} replyKind=${input.replyKind}`,
   );
 }
 

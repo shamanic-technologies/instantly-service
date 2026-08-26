@@ -1473,15 +1473,33 @@
                 "type": "string",
                 "enum": [
                   "lead_interested",
+                  "lead_referral",
+                  "lead_info_requested",
+                  "lead_meeting_requested",
+                  "lead_not_interested",
+                  "lead_wrong_person",
+                  "lead_neutral",
+                  "lead_out_of_office",
+                  "auto_reply_received",
                   "lead_meeting_booked",
-                  "lead_closed",
+                  "lead_closed"
+                ],
+                "description": "The raw statement a human made about a reply. Normally a reply kind; the two deal-progress values (lead_meeting_booked, lead_closed) are still ACCEPTED while the consoles migrate their pickers and resolve to lead_interested at write."
+              },
+              "replyKind": {
+                "type": "string",
+                "enum": [
+                  "lead_interested",
+                  "lead_referral",
+                  "lead_info_requested",
+                  "lead_meeting_requested",
                   "lead_not_interested",
                   "lead_wrong_person",
                   "lead_neutral",
                   "lead_out_of_office",
                   "auto_reply_received"
                 ],
-                "description": "Manual reply qualification status — mirrors Instantly webhook reply event_type values exactly. Set by a human via the dashboard when Instantly fails to detect a reply (e.g. reply received on a non-leurre email account)."
+                "description": "The reply kind this statement resolved to at write time. Always a value of the current vocabulary, including for a statement made with a legacy deal-progress value."
               },
               "qualifiedBy": {
                 "type": "string"
@@ -1502,6 +1520,7 @@
               "instantlyCampaignId",
               "email",
               "status",
+              "replyKind",
               "qualifiedBy",
               "notes",
               "qualifiedAt"
@@ -1530,15 +1549,18 @@
             "type": "string",
             "enum": [
               "lead_interested",
-              "lead_meeting_booked",
-              "lead_closed",
+              "lead_referral",
+              "lead_info_requested",
+              "lead_meeting_requested",
               "lead_not_interested",
               "lead_wrong_person",
               "lead_neutral",
               "lead_out_of_office",
-              "auto_reply_received"
+              "auto_reply_received",
+              "lead_meeting_booked",
+              "lead_closed"
             ],
-            "description": "Manual reply qualification status — mirrors Instantly webhook reply event_type values exactly. Set by a human via the dashboard when Instantly fails to detect a reply (e.g. reply received on a non-leurre email account)."
+            "description": "The raw statement a human made about a reply. Normally a reply kind; the two deal-progress values (lead_meeting_booked, lead_closed) are still ACCEPTED while the consoles migrate their pickers and resolve to lead_interested at write."
           },
           "notes": {
             "type": "string",
@@ -1585,15 +1607,33 @@
                   "type": "string",
                   "enum": [
                     "lead_interested",
+                    "lead_referral",
+                    "lead_info_requested",
+                    "lead_meeting_requested",
+                    "lead_not_interested",
+                    "lead_wrong_person",
+                    "lead_neutral",
+                    "lead_out_of_office",
+                    "auto_reply_received",
                     "lead_meeting_booked",
-                    "lead_closed",
+                    "lead_closed"
+                  ],
+                  "description": "The raw statement a human made about a reply. Normally a reply kind; the two deal-progress values (lead_meeting_booked, lead_closed) are still ACCEPTED while the consoles migrate their pickers and resolve to lead_interested at write."
+                },
+                "replyKind": {
+                  "type": "string",
+                  "enum": [
+                    "lead_interested",
+                    "lead_referral",
+                    "lead_info_requested",
+                    "lead_meeting_requested",
                     "lead_not_interested",
                     "lead_wrong_person",
                     "lead_neutral",
                     "lead_out_of_office",
                     "auto_reply_received"
                   ],
-                  "description": "Manual reply qualification status — mirrors Instantly webhook reply event_type values exactly. Set by a human via the dashboard when Instantly fails to detect a reply (e.g. reply received on a non-leurre email account)."
+                  "description": "The reply kind this statement resolved to at write time. Always a value of the current vocabulary, including for a statement made with a legacy deal-progress value."
                 },
                 "qualifiedBy": {
                   "type": "string"
@@ -1614,6 +1654,7 @@
                 "instantlyCampaignId",
                 "email",
                 "status",
+                "replyKind",
                 "qualifiedBy",
                 "notes",
                 "qualifiedAt"

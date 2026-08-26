@@ -21,6 +21,11 @@ import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
 import { maybeStopOnClickForFunnel } from "./stop-on-click";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
+import {
+  DEAL_PROGRESS_TO_REPLY_KIND,
+  REPLY_KIND_CLASSIFICATION,
+  isDealProgressEventType,
+} from "./reply-kind";
 
 const SEQUENCE_STOP_EVENTS = new Set([
   "reply_received",
@@ -75,16 +80,19 @@ function normalizeWebhookEventType(raw: string): string {
   return WEBHOOK_EVENT_TYPE_ALIASES[raw] ?? raw;
 }
 
-export const REPLY_CLASSIFICATION_MAP: Record<string, "positive" | "negative" | "neutral"> = {
-  lead_interested: "positive",
-  lead_meeting_booked: "positive",
-  lead_closed: "positive",
-  lead_not_interested: "negative",
-  lead_wrong_person: "negative",
-  lead_neutral: "neutral",
-  lead_out_of_office: "neutral",
-  auto_reply_received: "neutral",
-};
+/**
+ * The reply-kind vocabulary projected onto the shared contract's coarse
+ * `positive | negative | neutral`. Deliberately re-exported from lib/reply-kind
+ * rather than redeclared: the deal-progress values (`lead_meeting_booked`,
+ * `lead_closed`) are NOT in it any more — they are lead outcomes owned by the
+ * lead-outcomes service, and while they lived here a booked meeting silently
+ * overwrote the lead's reply sentiment.
+ *
+ * Ingestion never writes them into silver either (see `promoteEvent`), so an
+ * event type absent from this map is genuinely not a reply kind.
+ */
+export const REPLY_CLASSIFICATION_MAP: Record<string, "positive" | "negative" | "neutral"> =
+  REPLY_KIND_CLASSIFICATION;
 
 /** Instantly lead.status values that mean the lead is terminal */
 const LEAD_STATUS_BOUNCED = -1;
@@ -588,7 +596,18 @@ async function insertOrUpgradeSilverEvent(
  * an inferred row was upgraded), in which case side effects (delivery_status,
  * cost lifecycle) have fired for real events.
  */
-export async function promoteEvent(input: PromoteEventInput): Promise<PromoteEventResult> {
+export async function promoteEvent(rawInput: PromoteEventInput): Promise<PromoteEventResult> {
+  // Deal progress is not a reply kind, and this service no longer records it —
+  // the lead-outcomes service does. Instantly still reports it (webhook
+  // `lead_meeting_booked` / `lead_closed`, poll `lt_interest_status` 2/3/4), so
+  // resolve it to the reply kind the domain fact supports (`lead_interested` —
+  // they had by definition replied positively) at the single ingestion choke
+  // point. Write-time, never read-time: bronze keeps the raw provider payload,
+  // silver carries the new vocabulary only.
+  const input: PromoteEventInput = isDealProgressEventType(rawInput.eventType)
+    ? { ...rawInput, eventType: DEAL_PROGRESS_TO_REPLY_KIND[rawInput.eventType] }
+    : rawInput;
+
   const campaign = await findCampaign(input.instantlyCampaignId);
   if (!campaign) {
     return { promoted: false, silverEventId: null };
@@ -934,6 +953,10 @@ export async function promoteSyntheticClicksFromLead(params: {
  *  -3  → (skipped — no webhook equivalent)
  *  -4  → (skipped — no webhook equivalent)
  */
+// NOTE: 2 / 3 / 4 are deal progress, which this service no longer records as
+// such — `promoteEvent` resolves all three to `lead_interested` before they
+// reach silver. They stay named here so the mapping still reads as Instantly's
+// own enum rather than a pre-collapsed one.
 const INTEREST_STATUS_TO_EVENT_TYPE: Record<number, string> = {
   1: "lead_interested",
   2: "lead_meeting_booked",

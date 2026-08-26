@@ -16,17 +16,20 @@
 import { platformComplete } from "../chat-client";
 
 /**
- * The only outputs we accept, and they are exactly the existing silver
- * vocabulary (`REPLY_CLASSIFICATION_MAP` in silver-promote.ts). Emitting a name
- * outside this set would write an event no reader maps to a sentiment.
+ * The only outputs we accept, and they are exactly the reply-kind vocabulary
+ * (`REPLY_KINDS` in lib/reply-kind, projected by `REPLY_CLASSIFICATION_MAP`).
+ * Emitting a name outside this set would write an event no reader maps.
  *
- * `lead_closed` is deliberately absent even though it is a positive event: a
- * closed deal is an outcome someone records, not something a reply's text can
- * honestly support.
+ * Deal progress is absent by construction: a closed deal, or a meeting sitting
+ * on a calendar, is an outcome someone records in the lead-outcomes service —
+ * never something a reply's text can honestly support. `lead_meeting_requested`
+ * is the reply fact that CAN be read off the text ("they asked for a call").
  */
 export const QUALIFICATION_EVENT_TYPES = [
   "lead_interested",
-  "lead_meeting_booked",
+  "lead_referral",
+  "lead_info_requested",
+  "lead_meeting_requested",
   "lead_not_interested",
   "lead_wrong_person",
   "lead_out_of_office",
@@ -40,10 +43,12 @@ const SYSTEM_PROMPT = `You classify a single reply to a cold outreach email.
 Answer with JSON only: {"classification": "<one of the labels>"}
 
 Labels, and what each one means:
-- lead_interested — they want to know more, ask a question about the offer, or say yes
-- lead_meeting_booked — they propose or accept a specific time, or share a booking link
+- lead_interested — they are personally interested and say so, without asking a question or proposing a time
+- lead_referral — they are not the buyer themselves, but it is relevant to their company and they point you at the right person
+- lead_info_requested — they want to know more: they ask a question about the offer without committing
+- lead_meeting_requested — they propose or accept a specific time, or share a booking link
 - lead_not_interested — they decline, say it is not relevant, or ask to stop
-- lead_wrong_person — they are not the right contact, and may or may not name someone else
+- lead_wrong_person — they are not the right contact and hand you nothing: no name, no relevance
 - lead_out_of_office — they are away and will return; the message says nothing about the offer
 - lead_neutral — anything else, including a bare acknowledgement or an unclear reply
 

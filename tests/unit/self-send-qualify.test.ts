@@ -17,11 +17,20 @@ describe("QUALIFICATION_EVENT_TYPES", () => {
     }
   });
 
-  // A closed deal is an outcome someone records, not something a reply's text
-  // can honestly support.
-  it("excludes lead_closed even though it is a positive event", () => {
-    expect(REPLY_CLASSIFICATION_MAP.lead_closed).toBe("positive");
+  // Deal progress is an outcome someone records in the lead-outcomes service,
+  // not something a reply's text can honestly support — and it is no longer a
+  // reply kind at all, so it is not in the map either.
+  it("excludes deal progress entirely", () => {
+    expect(REPLY_CLASSIFICATION_MAP.lead_closed).toBeUndefined();
+    expect(REPLY_CLASSIFICATION_MAP.lead_meeting_booked).toBeUndefined();
     expect(QUALIFICATION_EVENT_TYPES).not.toContain("lead_closed");
+    expect(QUALIFICATION_EVENT_TYPES).not.toContain("lead_meeting_booked");
+  });
+
+  it("can produce every positive distinction a reader needs", () => {
+    expect(QUALIFICATION_EVENT_TYPES).toContain("lead_referral");
+    expect(QUALIFICATION_EVENT_TYPES).toContain("lead_info_requested");
+    expect(QUALIFICATION_EVENT_TYPES).toContain("lead_meeting_requested");
   });
 
   it("can produce every sentiment silver distinguishes", () => {

@@ -34,6 +34,7 @@ function serializeRow(row: {
   instantlyCampaignId: string;
   leadEmail: string;
   status: string;
+  replyKind: string;
   qualifiedBy: string;
   notes: string | null;
   qualifiedAt: Date;
@@ -45,6 +46,7 @@ function serializeRow(row: {
     instantlyCampaignId: row.instantlyCampaignId,
     email: row.leadEmail,
     status: row.status,
+    replyKind: row.replyKind,
     qualifiedBy: row.qualifiedBy,
     notes: row.notes,
     qualifiedAt: row.qualifiedAt.toISOString(),
@@ -102,6 +104,7 @@ router.post("/", async (req: Request, res: Response) => {
       instantlyCampaignId: campaign.instantlyCampaignId,
       leadEmail: email,
       status,
+      replyKind: result.row.replyKind,
       qualifiedAt: result.row.qualifiedAt,
       rawPayload: req.body,
     });

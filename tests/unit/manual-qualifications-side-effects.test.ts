@@ -59,7 +59,9 @@ import {
   applyManualQualificationSideEffects,
   isSequenceStoppingQualification,
   MANUAL_QUALIFICATION_STATUSES,
+  type ManualQualificationStatus,
 } from "../../src/lib/manual-qualifications";
+import { resolveReplyKind } from "../../src/lib/reply-kind";
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -79,11 +81,15 @@ describe("applyManualQualificationSideEffects", () => {
     rawPayload: { campaign_id: "camp-1", email: "lead@test.com" },
   };
 
+  /** Build the side-effect input the way the route does: resolve at write. */
+  const inputFor = (status: ManualQualificationStatus) => ({
+    ...baseInput,
+    status,
+    replyKind: resolveReplyKind(status),
+  });
+
   it("synthesizes a `reply_received` silver event via promoteEvent (source='manual', inferred=false)", async () => {
-    await applyManualQualificationSideEffects({
-      ...baseInput,
-      status: "lead_interested",
-    });
+    await applyManualQualificationSideEffects(inputFor("lead_interested"));
 
     expect(mockPromoteEvent).toHaveBeenCalledTimes(1);
     const call = mockPromoteEvent.mock.calls[0][0];
@@ -99,15 +105,20 @@ describe("applyManualQualificationSideEffects", () => {
     );
   });
 
-  it("also writes the lead-status event in silver (direct insert)", async () => {
-    await applyManualQualificationSideEffects({
-      ...baseInput,
-      status: "lead_meeting_booked",
-    });
+  // The RESOLVED kind reaches silver, never the raw legacy statement — that is
+  // what keeps every reader on the new vocabulary with no read-time map.
+  it("writes the RESOLVED reply kind in silver for a legacy deal-progress statement", async () => {
+    await applyManualQualificationSideEffects(inputFor("lead_meeting_booked"));
+
+    expect(
+      mockDbInsertValues.mock.calls.some(
+        (c) => (c[0] as Record<string, unknown>).eventType === "lead_meeting_booked",
+      ),
+    ).toBe(false);
 
     const leadStatusInsert = mockDbInsertValues.mock.calls.find((c) => {
       const v = c[0] as Record<string, unknown>;
-      return v.eventType === "lead_meeting_booked";
+      return v.eventType === "lead_interested";
     });
     expect(leadStatusInsert).toBeDefined();
     const v = leadStatusInsert![0] as Record<string, unknown>;
@@ -118,10 +129,7 @@ describe("applyManualQualificationSideEffects", () => {
   });
 
   it("pins reply_classification + source='manual' on instantly_campaigns", async () => {
-    await applyManualQualificationSideEffects({
-      ...baseInput,
-      status: "lead_interested",
-    });
+    await applyManualQualificationSideEffects(inputFor("lead_interested"));
 
     const updateCall = mockDbUpdateSet.mock.calls.find((c) => {
       const v = c[0] as Record<string, unknown>;
@@ -134,10 +142,7 @@ describe("applyManualQualificationSideEffects", () => {
   });
 
   it("refreshes the Gold status row after pinning the manual classification", async () => {
-    await applyManualQualificationSideEffects({
-      ...baseInput,
-      status: "lead_not_interested",
-    });
+    await applyManualQualificationSideEffects(inputFor("lead_not_interested"));
 
     expect(mockRefreshLeadStatusCurrent).toHaveBeenCalledWith(
       "inst-camp-1",
@@ -146,10 +151,7 @@ describe("applyManualQualificationSideEffects", () => {
   });
 
   it("maps lead_not_interested to negative", async () => {
-    await applyManualQualificationSideEffects({
-      ...baseInput,
-      status: "lead_not_interested",
-    });
+    await applyManualQualificationSideEffects(inputFor("lead_not_interested"));
 
     const updateCall = mockDbUpdateSet.mock.calls.find((c) => {
       const v = c[0] as Record<string, unknown>;
@@ -164,7 +166,7 @@ describe("applyManualQualificationSideEffects", () => {
       vi.resetAllMocks();
       mockPromoteEvent.mockResolvedValue({ promoted: true, silverEventId: "ev-1" });
 
-      await applyManualQualificationSideEffects({ ...baseInput, status });
+      await applyManualQualificationSideEffects(inputFor(status));
 
       const updateCall = mockDbUpdateSet.mock.calls.find((c) => {
         const v = c[0] as Record<string, unknown>;
@@ -184,10 +186,7 @@ describe("applyManualQualificationSideEffects", () => {
   // steps to a prospect who already answered.
 
   it("PAUSES the lead's Instantly campaign on a sequence-stopping qualification", async () => {
-    await applyManualQualificationSideEffects({
-      ...baseInput,
-      status: "lead_interested",
-    });
+    await applyManualQualificationSideEffects(inputFor("lead_interested"));
 
     expect(mockResolveInstantlyApiKey).toHaveBeenCalledWith(
       "org-1",
@@ -214,7 +213,7 @@ describe("applyManualQualificationSideEffects", () => {
       mockPromoteEvent.mockResolvedValue({ promoted: true, silverEventId: "ev-1" });
       mockResolveInstantlyApiKey.mockResolvedValue({ key: "inst-key" });
 
-      await applyManualQualificationSideEffects({ ...baseInput, status });
+      await applyManualQualificationSideEffects(inputFor(status));
 
       expect(isSequenceStoppingQualification(status)).toBe(true);
       expect(mockUpdateCampaignStatus).toHaveBeenCalledWith(
@@ -235,7 +234,7 @@ describe("applyManualQualificationSideEffects", () => {
       vi.resetAllMocks();
       mockResolveInstantlyApiKey.mockResolvedValue({ key: "inst-key" });
 
-      await applyManualQualificationSideEffects({ ...baseInput, status });
+      await applyManualQualificationSideEffects(inputFor(status));
 
       expect(isSequenceStoppingQualification(status)).toBe(false);
       // No synthesized reply ⇒ the lead's provisioned holds are NOT cancelled.
@@ -258,7 +257,9 @@ describe("applyManualQualificationSideEffects", () => {
       expect(typeof isSequenceStoppingQualification(status)).toBe("boolean");
     }
     const stopping = MANUAL_QUALIFICATION_STATUSES.filter(isSequenceStoppingQualification);
-    expect(stopping).toHaveLength(6);
+    // 4 positive + 2 negative + lead_neutral + the 2 still-accepted legacy
+    // deal-progress values (which resolve to a positive kind).
+    expect(stopping).toHaveLength(9);
     expect(stopping).not.toContain("lead_out_of_office");
     expect(stopping).not.toContain("auto_reply_received");
   });
@@ -269,7 +270,7 @@ describe("applyManualQualificationSideEffects", () => {
     mockUpdateCampaignStatus.mockRejectedValue(new Error("instantly 500"));
 
     await expect(
-      applyManualQualificationSideEffects({ ...baseInput, status: "lead_interested" }),
+      applyManualQualificationSideEffects(inputFor("lead_interested")),
     ).resolves.toBeUndefined();
 
     const updateCall = mockDbUpdateSet.mock.calls.find((c) => {
@@ -284,7 +285,7 @@ describe("applyManualQualificationSideEffects", () => {
     mockResolveInstantlyApiKey.mockRejectedValue(new Error("key-service down"));
 
     await expect(
-      applyManualQualificationSideEffects({ ...baseInput, status: "lead_closed" }),
+      applyManualQualificationSideEffects(inputFor("lead_closed")),
     ).resolves.toBeUndefined();
 
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
