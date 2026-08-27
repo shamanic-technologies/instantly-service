@@ -13,7 +13,7 @@ const CAMPAIGN_SERVICE_API_KEY = process.env.CAMPAIGN_SERVICE_API_KEY;
 /**
  * Funnel keys whose FIRST leg is a visit to the website.
  *
- * The key encodes the chain the campaign runs, and its prefix is the leg that
+ * The key encodes the sales funnel the campaign runs, and its prefix is the leg that
  * opens it — so `visit_*` means the conversion starts on the site. That is
  * exactly when a click matters: the prospect is on the landing page and the
  * conversion happens there, so more cold email only distracts.
