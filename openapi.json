@@ -193,6 +193,41 @@
           "added"
         ]
       },
+      "SendRefusal": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "recent_brand_contact",
+              "lead_id_conflict"
+            ]
+          },
+          "details": {
+            "type": "string"
+          },
+          "brandId": {
+            "type": "string",
+            "description": "recent_brand_contact only — the brand already contacted"
+          },
+          "lastEmailedAt": {
+            "type": "string",
+            "description": "recent_brand_contact only — when the previous email to this person for that brand went out"
+          },
+          "windowInterval": {
+            "type": "string",
+            "description": "recent_brand_contact only — the re-contact window, e.g. \"3 months\""
+          }
+        },
+        "required": [
+          "error",
+          "code",
+          "details"
+        ]
+      },
       "SendRequest": {
         "type": "object",
         "properties": {
@@ -3276,6 +3311,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "description": "Refused, not a transport failure — no email was sent and nothing was billed. `code: \"recent_brand_contact\"` = the recipient was already emailed for one of this send's brands inside the 3-month re-contact window. `code: \"lead_id_conflict\"` = the email already exists under a different lead_id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendRefusal"
+                }
+              }
+            }
           },
           "500": {
             "description": "Failed to send",

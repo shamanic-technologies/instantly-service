@@ -110,6 +110,12 @@ export const instantlyCampaigns = pgTable(
     index("instantly_campaigns_campaign_id_idx").on(table.campaignId),
     index("instantly_campaigns_lead_id_idx").on(table.leadId),
     index("instantly_campaigns_lead_email_idx").on(table.leadEmail),
+    // NOTE: a second, hand-written EXPRESSION index on `lower(lead_email)`
+    // exists in migration 0040 — drizzle has no expression-index form, so it
+    // cannot be declared here. It serves the per-brand re-contact-window
+    // lookup (src/lib/recontact-window.ts), which normalizes the prospect's
+    // address the same way the serve path does. Do NOT drop it on a
+    // `db:generate` diff.
     index("instantly_campaigns_brand_ids_idx").using("gin", table.brandIds),
     index("instantly_campaigns_org_id_idx").on(table.orgId),
     index("instantly_campaigns_run_id_idx").on(table.runId),

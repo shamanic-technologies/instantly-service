@@ -382,6 +382,27 @@ const SendResponseSchema = z
   })
   .openapi("SendResponse");
 
+/**
+ * A 409 on /orgs/send is a REFUSAL, distinguishable from a success (200) and
+ * from a transport failure (500). `code` separates the two refusal reasons.
+ */
+const SendRefusalSchema = z
+  .object({
+    error: z.string(),
+    code: z.enum(["recent_brand_contact", "lead_id_conflict"]),
+    details: z.string(),
+    brandId: z.string().optional().describe("recent_brand_contact only — the brand already contacted"),
+    lastEmailedAt: z
+      .string()
+      .optional()
+      .describe("recent_brand_contact only — when the previous email to this person for that brand went out"),
+    windowInterval: z
+      .string()
+      .optional()
+      .describe("recent_brand_contact only — the re-contact window, e.g. \"3 months\""),
+  })
+  .openapi("SendRefusal");
+
 registry.registerPath({
   method: "post",
   path: "/orgs/send",
@@ -404,6 +425,14 @@ registry.registerPath({
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: { description: "Unauthorized" },
+    409: {
+      description:
+        "Refused, not a transport failure — no email was sent and nothing was billed. " +
+        "`code: \"recent_brand_contact\"` = the recipient was already emailed for one of " +
+        "this send's brands inside the 3-month re-contact window. " +
+        "`code: \"lead_id_conflict\"` = the email already exists under a different lead_id.",
+      content: { "application/json": { schema: SendRefusalSchema } },
+    },
     500: {
       description: "Failed to send",
       content: { "application/json": { schema: ErrorSchema } },

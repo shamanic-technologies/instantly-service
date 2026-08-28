@@ -12,6 +12,7 @@ import {
 } from "../lib/instantly-client";
 import { selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
 import { stepRowsFromSendPayload } from "../lib/self-send/sequence-steps";
+import { findRecentBrandContact, recontactRefusal } from "../lib/recontact-window";
 import {
   SEND_TRANSPORT_SMTP,
   mintSelfSendCampaignId,
@@ -173,9 +174,39 @@ router.post("/", async (req: Request, res: Response) => {
           console.error(`[send] Lead ID conflict: email=${body.to} existing=${conflict.leadId} received=${body.leadId}`);
           return res.status(409).json({
             error: "Lead ID conflict",
+            // Both 409s on this route carry a `code` so a caller can tell an
+            // identity conflict from a re-contact-window refusal.
+            code: "lead_id_conflict",
             details: `Email ${body.to} already exists with lead_id ${conflict.leadId}, received ${body.leadId}`,
           });
         }
+      }
+
+      // 3b. RE-CONTACT WINDOW — refuse a prospect this service already emailed
+      //     for the same brand inside the last three months.
+      //
+      //     Placed BEFORE the reservation and before the account selection, so
+      //     a refused send creates no reservation, no Instantly campaign, no
+      //     run and no `sequence_costs` row: nothing is billed for an email
+      //     that never left. Fail loud — a DB error here propagates rather
+      //     than waving the send through.
+      //
+      //     See src/lib/recontact-window.ts for why this half of the rule can
+      //     only live in this service.
+      const recentContact = await findRecentBrandContact(body.to, brandIds);
+      if (recentContact) {
+        const refusal = recontactRefusal(body.to, recentContact);
+        console.warn(`[send] Refused — ${refusal.details}`);
+        traceEvent(
+          res.locals.runId as string,
+          {
+            service: "instantly-service",
+            event: "send-refused-recent-contact",
+            detail: `to=${body.to}, brandId=${recentContact.brandId}, lastEmailedAt=${recentContact.lastEmailedAt.toISOString()}`,
+          },
+          req.headers,
+        ).catch(() => {});
+        return res.status(409).json(refusal);
       }
 
       let savedLead: { id: string } | undefined;
