@@ -548,6 +548,11 @@ function latestSentimentCteBody(): SQL {
       e.event_type AS sentiment
     FROM instantly_events e
     WHERE e.event_type IN (${typeList})
+      -- A WITHDRAWN statement is a kind nobody stands behind any more. The row
+      -- stays in silver (it is the audit of what was asserted) but it must not
+      -- count here, or a lead reads as carrying a kind its author took back.
+      -- Only manual mirror rows can ever be withdrawn; NULL on everything else.
+      AND e.withdrawn_at IS NULL
       AND ${internalExclusionClause()}
     ORDER BY e.campaign_id, e.lead_email,
       e.timestamp DESC, (e.source = 'manual') DESC, e.created_at DESC, e.id DESC

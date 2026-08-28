@@ -13,9 +13,10 @@ import { db } from "../db";
 import {
   instantlyCampaigns,
   instantlyEvents,
+  instantlyManualQualificationWithdrawals,
   instantlyManualQualificationsRaw,
 } from "../db/schema";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { promoteEvent } from "./silver-promote";
 import { refreshLeadStatusCurrent } from "./status-gold";
 import { resolveInstantlyApiKey } from "./key-client";
@@ -24,7 +25,9 @@ import { isSelfSendCampaignId } from "./self-send/transport";
 import { stopSelfSendSequence } from "./self-send/stop-sequence";
 import {
   ACCEPTED_QUALIFICATION_STATUSES,
+  REPLY_KINDS,
   REPLY_KIND_CLASSIFICATION,
+  isReplyKind,
   isSequenceStoppingReplyKind,
   resolveReplyKind,
   type AcceptedQualificationStatus,
@@ -62,6 +65,12 @@ export interface ManualQualificationRow {
   qualifiedBy: string;
   notes: string | null;
   qualifiedAt: Date;
+  /** When this statement was WITHDRAWN, or null while it still stands. A
+   *  withdrawn statement is kept for audit and must not be rendered as a kind
+   *  anybody stands behind. */
+  withdrawnAt: Date | null;
+  /** Who withdrew it, or null while it still stands. */
+  withdrawnBy: string | null;
 }
 
 export interface InsertManualQualificationInput {
@@ -81,18 +90,21 @@ export interface InsertManualQualificationResult {
   row: ManualQualificationRow;
 }
 
-function toRow(raw: {
-  id: string;
-  orgId: string;
-  campaignId: string;
-  instantlyCampaignId: string;
-  leadEmail: string;
-  status: string;
-  replyKind: string;
-  qualifiedBy: string;
-  notes: string | null;
-  qualifiedAt: Date;
-}): ManualQualificationRow {
+function toRow(
+  raw: {
+    id: string;
+    orgId: string;
+    campaignId: string;
+    instantlyCampaignId: string;
+    leadEmail: string;
+    status: string;
+    replyKind: string;
+    qualifiedBy: string;
+    notes: string | null;
+    qualifiedAt: Date;
+  },
+  withdrawal?: { withdrawnAt: Date; withdrawnBy: string } | null,
+): ManualQualificationRow {
   return {
     id: raw.id,
     orgId: raw.orgId,
@@ -104,38 +116,59 @@ function toRow(raw: {
     qualifiedBy: raw.qualifiedBy,
     notes: raw.notes,
     qualifiedAt: raw.qualifiedAt,
+    withdrawnAt: withdrawal?.withdrawnAt ?? null,
+    withdrawnBy: withdrawal?.withdrawnBy ?? null,
   };
 }
 
-async function findLatestManualQualification(
+/**
+ * The STANDING human statement for a (org, instantly_campaign, lead) pair — the
+ * latest bronze row that has NOT been withdrawn, or null when nobody currently
+ * stands behind a kind for this lead.
+ *
+ * "Latest that is not withdrawn", not "latest": a withdrawn statement is still
+ * the most recent ROW (bronze is append-only, nothing is rewritten), so reading
+ * the plain latest would report a kind the person has explicitly retracted.
+ */
+export async function findStandingManualQualification(
   orgId: string,
   instantlyCampaignId: string,
   leadEmail: string,
 ): Promise<ManualQualificationRow | null> {
   const [row] = await db
-    .select()
+    .select({ q: instantlyManualQualificationsRaw })
     .from(instantlyManualQualificationsRaw)
+    .leftJoin(
+      instantlyManualQualificationWithdrawals,
+      eq(
+        instantlyManualQualificationWithdrawals.qualificationId,
+        instantlyManualQualificationsRaw.id,
+      ),
+    )
     .where(
       and(
         eq(instantlyManualQualificationsRaw.orgId, orgId),
         eq(instantlyManualQualificationsRaw.instantlyCampaignId, instantlyCampaignId),
         eq(instantlyManualQualificationsRaw.leadEmail, leadEmail),
+        isNull(instantlyManualQualificationWithdrawals.id),
       ),
     )
     .orderBy(desc(instantlyManualQualificationsRaw.qualifiedAt))
     .limit(1);
-  return row ? toRow(row) : null;
+  return row ? toRow(row.q) : null;
 }
 
 /**
- * Insert a new manual qualification row in bronze. Idempotent: if the latest
- * row for (org, instantly_campaign, lead_email) already matches `status`,
- * returns { inserted: false, row: existing } without writing.
+ * Insert a new manual qualification row in bronze. Idempotent: if the STANDING
+ * statement for (org, instantly_campaign, lead_email) already matches `status`,
+ * returns { inserted: false, row: existing } without writing. A withdrawn
+ * statement is not standing, so re-stating the same kind after a withdrawal
+ * records it again rather than being swallowed as a no-op.
  */
 export async function insertManualQualification(
   input: InsertManualQualificationInput,
 ): Promise<InsertManualQualificationResult> {
-  const existing = await findLatestManualQualification(
+  const existing = await findStandingManualQualification(
     input.orgId,
     input.instantlyCampaignId,
     input.leadEmail,
@@ -354,11 +387,186 @@ export async function listManualQualifications(
   }
 
   const rows = await db
-    .select()
+    .select({
+      q: instantlyManualQualificationsRaw,
+      w: {
+        withdrawnAt: instantlyManualQualificationWithdrawals.withdrawnAt,
+        withdrawnBy: instantlyManualQualificationWithdrawals.withdrawnBy,
+      },
+    })
     .from(instantlyManualQualificationsRaw)
+    .leftJoin(
+      instantlyManualQualificationWithdrawals,
+      eq(
+        instantlyManualQualificationWithdrawals.qualificationId,
+        instantlyManualQualificationsRaw.id,
+      ),
+    )
     .where(and(...conditions))
     .orderBy(desc(instantlyManualQualificationsRaw.qualifiedAt))
     .limit(input.limit ?? 200);
 
-  return rows.map(toRow);
+  // Every statement ever made is returned, withdrawn ones included — that is
+  // the audit. The caller tells them apart by `withdrawnAt`; a row carrying one
+  // is a kind nobody stands behind and must not be rendered as current.
+  return rows.map((row) =>
+    toRow(row.q, row.w?.withdrawnAt ? { withdrawnAt: row.w.withdrawnAt, withdrawnBy: row.w.withdrawnBy! } : null),
+  );
+}
+
+export interface WithdrawManualQualificationInput {
+  orgId: string;
+  instantlyCampaignId: string;
+  leadEmail: string;
+  withdrawnBy: string;
+  notes?: string;
+}
+
+export type WithdrawManualQualificationResult =
+  | { withdrawn: true; qualification: ManualQualificationRow }
+  /** Nobody stands behind a kind for this pair — there is nothing to take back. */
+  | { withdrawn: false; reason: "no_standing_qualification" };
+
+/**
+ * Withdraw the standing human statement for a (campaign, lead) pair.
+ *
+ * A correction, not an erasure. Nothing is deleted and no "none" value enters
+ * the reply-kind vocabulary: the statement row stays exactly as it was written
+ * and a withdrawal row is APPENDED beside it, so both what was stated and the
+ * fact that it was taken back stay readable.
+ *
+ * Refuses with `no_standing_qualification` when nothing is standing — including
+ * a second withdrawal of the same statement, which finds nothing standing and
+ * writes nothing. Idempotent by construction.
+ *
+ * SCOPE, stated rather than papered over: this withdraws the SENTIMENT — the
+ * kind, and the pin that froze it. It does NOT retract the separate assertion
+ * that a reply arrived at all. On a sequence-stopping statement the write
+ * synthesized a `reply_received` event, which stopped the sequence, cancelled
+ * the remaining holds and paused the campaign at Instantly; those are real,
+ * already-taken, irreversible actions, and un-asserting the reply while its
+ * consequences stand would be incoherent. The resulting state — a reply on
+ * record with no kind attached — is exactly the state of an auto-detected reply
+ * nobody has qualified, which is the state this endpoint exists to restore.
+ */
+export async function withdrawManualQualification(
+  input: WithdrawManualQualificationInput,
+): Promise<WithdrawManualQualificationResult> {
+  const standing = await findStandingManualQualification(
+    input.orgId,
+    input.instantlyCampaignId,
+    input.leadEmail,
+  );
+  if (!standing) return { withdrawn: false, reason: "no_standing_qualification" };
+
+  const [withdrawal] = await db
+    .insert(instantlyManualQualificationWithdrawals)
+    .values({
+      qualificationId: standing.id,
+      orgId: standing.orgId,
+      campaignId: standing.campaignId,
+      instantlyCampaignId: standing.instantlyCampaignId,
+      leadEmail: standing.leadEmail,
+      withdrawnBy: input.withdrawnBy,
+      notes: input.notes ?? null,
+    })
+    .returning();
+
+  await applyManualQualificationWithdrawalSideEffects({
+    bronzeRowId: standing.id,
+    instantlyCampaignId: standing.instantlyCampaignId,
+    leadEmail: standing.leadEmail,
+    withdrawnAt: withdrawal.withdrawnAt,
+  });
+
+  return {
+    withdrawn: true,
+    qualification: {
+      ...standing,
+      withdrawnAt: withdrawal.withdrawnAt,
+      withdrawnBy: withdrawal.withdrawnBy,
+    },
+  };
+}
+
+export interface ApplyManualQualificationWithdrawalSideEffectsInput {
+  bronzeRowId: string;
+  instantlyCampaignId: string;
+  leadEmail: string;
+  withdrawnAt: Date;
+}
+
+/**
+ * Release everything the withdrawn statement moved:
+ *
+ *  1. Mark its silver mirror event withdrawn. The row is kept (silver records
+ *     what was asserted), but the gold current-sentiment projection skips a
+ *     withdrawn row, so the counters a manual statement moved stop counting it.
+ *  2. Recompute `reply_classification` from what is LEFT — the latest silver
+ *     reply-kind event that is not withdrawn, under the same ordering gold
+ *     uses — and release the pin by setting the source back to 'auto'. With no
+ *     event left the classification is NULL: nothing at all, which is the
+ *     honest reading when nobody has said anything. Releasing the pin is what
+ *     lets a subsequent webhook classify the reply as it normally would.
+ *  3. Refresh the gold status row so the read path converges immediately.
+ *
+ * Fail loud — a withdrawal that cannot release the pin must not report success.
+ */
+export async function applyManualQualificationWithdrawalSideEffects(
+  input: ApplyManualQualificationWithdrawalSideEffectsInput,
+): Promise<void> {
+  // 1. The mirror event of THIS statement, identified by the bronze row it was
+  //    promoted from. Only manual rows carry a source_row_id, so this can never
+  //    touch a webhook event.
+  await db
+    .update(instantlyEvents)
+    .set({ withdrawnAt: input.withdrawnAt })
+    .where(
+      and(
+        eq(instantlyEvents.sourceRowId, input.bronzeRowId),
+        eq(instantlyEvents.source, "manual"),
+        eq(instantlyEvents.campaignId, input.instantlyCampaignId),
+        eq(instantlyEvents.leadEmail, input.leadEmail),
+        isNull(instantlyEvents.withdrawnAt),
+      ),
+    );
+
+  // 2. What the automatic classification says now that the human statement is
+  //    gone — the same latest-wins ordering as the gold sentiment projection.
+  const kindList = sql.join(
+    REPLY_KINDS.map((kind) => sql`${kind}`),
+    sql`, `,
+  );
+  const remaining = await db.execute<{ event_type: string }>(sql`
+    SELECT e.event_type
+    FROM instantly_events e
+    WHERE e.campaign_id = ${input.instantlyCampaignId}
+      AND e.lead_email = ${input.leadEmail}
+      AND e.event_type IN (${kindList})
+      AND e.withdrawn_at IS NULL
+    ORDER BY e.timestamp DESC, (e.source = 'manual') DESC, e.created_at DESC, e.id DESC
+    LIMIT 1
+  `);
+  const remainingKind = remaining.rows[0]?.event_type;
+  const classification =
+    remainingKind && isReplyKind(remainingKind)
+      ? REPLY_KIND_CLASSIFICATION[remainingKind]
+      : null;
+
+  await db
+    .update(instantlyCampaigns)
+    .set({
+      replyClassification: classification,
+      // The pin is released whatever is left: a classification that survives a
+      // withdrawal is the automatic one, so 'auto' is the truthful source.
+      replyClassificationSource: "auto",
+      updatedAt: new Date(),
+    })
+    .where(eq(instantlyCampaigns.instantlyCampaignId, input.instantlyCampaignId));
+
+  await refreshLeadStatusCurrent(input.instantlyCampaignId, input.leadEmail);
+
+  console.log(
+    `[instantly-service] manual qualification withdrawn: campaign=${input.instantlyCampaignId} lead=${input.leadEmail} replyClassification=${classification ?? "null"}`,
+  );
 }

@@ -1147,7 +1147,31 @@ const ManualQualificationRowSchema = z.object({
   qualifiedBy: z.string(),
   notes: z.string().nullable(),
   qualifiedAt: z.string().describe("ISO 8601 timestamp"),
+  withdrawnAt: z
+    .string()
+    .nullable()
+    .describe(
+      "ISO 8601 timestamp of the withdrawal, or null while the statement still STANDS. Non-null means a human took this statement back: it is kept for audit and must never be rendered as the lead's current reply kind.",
+    ),
+  withdrawnBy: z
+    .string()
+    .nullable()
+    .describe("Who withdrew the statement, or null while it still stands."),
 });
+
+export const ManualQualificationWithdrawBodySchema = z
+  .object({
+    campaign_id: z.string().min(1).describe("Logical campaign id (groups sub-campaigns for the same workflow run)"),
+    email: z.string().email().describe("Lead email address"),
+    notes: z.string().max(2000).optional().describe("Optional free-text human note for audit"),
+  })
+  .openapi("ManualQualificationWithdrawBody", {
+    example: {
+      campaign_id: "c1a2b3c4-0000-0000-0000-000000000001",
+      email: "alice@media.com",
+      notes: "Picked the wrong kind by mistake",
+    },
+  });
 
 const ManualQualificationCreateResponseSchema = z
   .object({
@@ -1162,6 +1186,27 @@ const ManualQualificationListResponseSchema = z
   .object({ qualifications: z.array(ManualQualificationRowSchema) })
   .openapi("ManualQualificationListResponse");
 
+/** The 404 body of the withdrawal route — `code` is what makes the refusal
+ *  distinguishable from a transport failure and from its sibling 404. */
+const ManualQualificationWithdrawErrorSchema = z
+  .object({
+    error: z.string(),
+    code: z
+      .enum(["no_standing_qualification", "campaign_not_found"])
+      .describe(
+        "no_standing_qualification: nobody currently stands behind a reply kind for this pair (nothing was ever stated, or the statement is already withdrawn). campaign_not_found: no campaign in this org for the given email.",
+      ),
+  })
+  .openapi("ManualQualificationWithdrawError");
+
+const ManualQualificationWithdrawResponseSchema = z
+  .object({
+    qualification: ManualQualificationRowSchema.describe(
+      "The statement that was withdrawn, now carrying withdrawnAt / withdrawnBy.",
+    ),
+  })
+  .openapi("ManualQualificationWithdrawResponse");
+
 registry.registerPath({
   method: "post",
   path: "/orgs/manual-qualifications",
@@ -1170,7 +1215,7 @@ registry.registerPath({
     "Record a human-set reply classification for a lead in a campaign. Used when Instantly's automatic webhook reply classification fails to detect a reply (e.g. the reply was sent to a non-leurre account that Instantly does not monitor).\n\n" +
     "**Bronze:** an `instantly_manual_qualifications_raw` row is appended for audit (append-only).\n\n" +
     "**Silver / Gold:** a corresponding row is inserted into `instantly_events` with `source='manual'`, so analytics counters (RepliesDetail) include the manual qualification alongside webhook events. `instantly_campaigns.reply_classification` is updated to the derived positive/negative/neutral value and `reply_classification_source` is set to `manual` so subsequent webhook events do not overwrite the human choice.\n\n" +
-    "**Idempotence:** if the latest row for (org, campaign, lead) already has `status`, the call is a no-op — no new bronze row, no side effects. The response includes `idempotent: true` and the existing row.",
+    "**Idempotence:** if the STANDING statement for (org, campaign, lead) already has `status`, the call is a no-op — no new bronze row, no side effects. The response includes `idempotent: true` and the existing row. A withdrawn statement does not stand, so re-stating the same kind after a withdrawal records it again.",
   request: {
     headers: TrackingHeadersSchema,
     body: {
@@ -1190,6 +1235,40 @@ registry.registerPath({
     404: {
       description: "Campaign not found in this org for the given email",
       content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/manual-qualifications/withdrawals",
+  summary: "Withdraw the standing manual reply qualification for a (campaign, lead) pair",
+  description:
+    "Take back a human statement about a reply — for a person who picked the wrong kind by mistake. After the withdrawal the lead reads as it did before anybody said anything: no standing human statement, and the AUTOMATIC classification takes over again.\n\n" +
+    "**A correction, not an erasure.** Nothing is deleted and no \"none\" value is added to the reply-kind vocabulary. The statement row stays byte-identical in `instantly_manual_qualifications_raw` and a row is APPENDED to `instantly_manual_qualification_withdrawals` recording that it no longer stands, by whom and when. `GET /orgs/manual-qualifications` returns both, and a withdrawn one carries a non-null `withdrawnAt`.\n\n" +
+    "**Silver / Gold:** the statement's silver mirror event is marked withdrawn (the row is kept — it is the audit of what was asserted) so the current-sentiment projection stops counting it; `instantly_campaigns.reply_classification` is recomputed from whatever automatic classification is left (NULL when there is none) and `reply_classification_source` returns to `auto`, which releases the pin so a subsequent webhook event is free to classify the reply as it normally would.\n\n" +
+    "**Scope:** this withdraws the reply KIND and its pin. It does not retract the separate fact that a reply arrived, nor undo the sequence stop, hold cancellation and Instantly pause a sequence-stopping statement already caused — those are irreversible actions already taken. The resulting state (a reply on record with no kind attached) is exactly the state of an auto-detected reply nobody has qualified.\n\n" +
+    "**Idempotence:** withdrawing when nothing is standing writes nothing and returns 404 with `code: \"no_standing_qualification\"` — including a second withdrawal of the same statement.",
+  request: {
+    headers: TrackingHeadersSchema,
+    body: {
+      content: { "application/json": { schema: ManualQualificationWithdrawBodySchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "The standing statement was withdrawn",
+      content: { "application/json": { schema: ManualQualificationWithdrawResponseSchema } },
+    },
+    400: {
+      description: "Invalid body or missing identity header",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    404: {
+      description:
+        "Nothing to withdraw. `code: \"no_standing_qualification\"` — nobody has stated a reply kind for this pair, or the statement was already withdrawn. `code: \"campaign_not_found\"` — no campaign in this org for the given email.",
+      content: { "application/json": { schema: ManualQualificationWithdrawErrorSchema } },
     },
   },
 });

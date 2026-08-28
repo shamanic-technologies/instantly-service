@@ -288,6 +288,13 @@
       "when": 1785196800000,
       "tag": "0040_recontact_window_index",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1785282800000,
+      "tag": "0041_withdraw_manual_qualification",
+      "breakpoints": true
     }
   ]
 }
