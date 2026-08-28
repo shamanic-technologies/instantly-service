@@ -72,7 +72,7 @@ function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
 function makeSentimentRow(overrides: Partial<Record<string, number | string>> = {}) {
   return {
     rdInterested: 0, rdReferral: 0, rdInfoRequested: 0, rdMeetingRequested: 0,
-    rdNotInterested: 0, rdWrongPerson: 0,
+    rdNotInterested: 0, rdWrongPerson: 0, rdChangedJob: 0,
     rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0,
     ...overrides,
   };
@@ -231,7 +231,7 @@ describe("GET /stats", () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeSentimentRow({
         rdInterested: 3, rdReferral: 2, rdInfoRequested: 1, rdMeetingRequested: 4,
-        rdNotInterested: 4, rdWrongPerson: 1,
+        rdNotInterested: 4, rdWrongPerson: 1, rdChangedJob: 6,
         rdNeutral: 5,
         rdAutoReply: 11, rdOutOfOffice: 13,
       })],
@@ -243,7 +243,9 @@ describe("GET /stats", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.recipientStats.repliesPositive).toBe(10); // 3+2+1+4, all four positive kinds
-    expect(response.body.recipientStats.repliesNegative).toBe(7);  // 4+1+2 (notInterested+wrongPerson+unsubscribe)
+    // 4+1+6+2 — a job change is a negative reply like any other; it is the
+    // per-kind detail, not the aggregate, that separates it from a decline.
+    expect(response.body.recipientStats.repliesNegative).toBe(13);
     expect(response.body.recipientStats.repliesNeutral).toBe(5);
     expect(response.body.recipientStats.repliesAutoReply).toBe(24); // 11+13
     expect(response.body.recipientStats.repliesDetail.interested).toBe(3);
@@ -254,6 +256,7 @@ describe("GET /stats", () => {
     expect(response.body.recipientStats.repliesDetail.meetingBooked).toBe(0);
     expect(response.body.recipientStats.repliesDetail.closed).toBe(0);
     expect(response.body.recipientStats.repliesDetail.wrongPerson).toBe(1);
+    expect(response.body.recipientStats.repliesDetail.changedJob).toBe(6);
     expect(response.body.recipientStats.repliesDetail.neutral).toBe(5);
   });
 
@@ -934,6 +937,7 @@ describe("GET /stats", () => {
             closed: 0,
             notInterested: 1,
             wrongPerson: 0,
+            changedJob: 0,
             unsubscribe: 0,
             neutral: 0,
             autoReply: 0,

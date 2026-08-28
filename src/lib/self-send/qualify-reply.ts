@@ -32,6 +32,7 @@ export const QUALIFICATION_EVENT_TYPES = [
   "lead_meeting_requested",
   "lead_not_interested",
   "lead_wrong_person",
+  "lead_changed_job",
   "lead_out_of_office",
   "lead_neutral",
 ] as const;
@@ -49,6 +50,7 @@ Labels, and what each one means:
 - lead_meeting_requested — they propose or accept a specific time, or share a booking link
 - lead_not_interested — they decline, say it is not relevant, or ask to stop
 - lead_wrong_person — they are not the right contact and hand you nothing: no name, no relevance
+- lead_changed_job — they say they have left the role or the company, so the role we wrote to is no longer theirs
 - lead_out_of_office — they are away and will return; the message says nothing about the offer
 - lead_neutral — anything else, including a bare acknowledgement or an unclear reply
 
