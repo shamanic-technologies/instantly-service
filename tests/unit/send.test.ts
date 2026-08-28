@@ -8,6 +8,9 @@ const mockDbDelete = vi.fn();
 const mockOnConflictDoUpdate = vi.fn();
 const mockRefreshLeadStatusCurrent = vi.fn();
 const mockDbUpdateSet = vi.fn();
+// Raw SQL reads (the per-brand re-contact-window lookup). Defaults to "no
+// prior contact" in beforeEach so every pre-existing send test is unaffected.
+const mockDbExecute = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
@@ -24,6 +27,7 @@ vi.mock("../../src/db", () => ({
     }}),
     update: () => ({ set: (v: unknown) => { mockDbUpdateSet(v); return { where: vi.fn().mockResolvedValue([{}]) }; } }),
     delete: () => ({ where: (...args: unknown[]) => { mockDbDelete(...args); return Promise.resolve([]); } }),
+    execute: (...args: unknown[]) => mockDbExecute(...args),
   },
 }));
 
@@ -1100,6 +1104,8 @@ describe("POST /send", () => {
 
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
     mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: true, balance_cents: 1000 });
+    // Re-contact-window lookup: no prior email to this person for this brand.
+    mockDbExecute.mockResolvedValue({ rows: [] });
 
     mockCreateRun.mockImplementation(() => {
       runCounter++;
@@ -2071,5 +2077,138 @@ describe("weekend capacity — selection measures the NEXT SENDING day", () => {
     expect(pickSequentialFillAccount([a], caps2([]), nextSendingDay(weekday)).email).toBe(
       "a@x.com",
     );
+  });
+});
+
+/** Recursively extract SQL text fragments from a drizzle SQL object. */
+function extractSendSqlText(obj: unknown): string {
+  if (typeof obj === "string") return obj;
+  if (obj == null) return "";
+  if (Array.isArray(obj)) return obj.map(extractSendSqlText).join("");
+  if (typeof obj === "object") {
+    const o = obj as Record<string, unknown>;
+    if (Array.isArray(o.value)) return o.value.join("");
+    if (Array.isArray(o.queryChunks)) return extractSendSqlText(o.queryChunks);
+    return Object.values(o).map(extractSendSqlText).join("");
+  }
+  return "";
+}
+
+// ─── Per-brand re-contact window ────────────────────────────────────────────
+//
+// A brand's prospect must not receive two cold emails from us inside three
+// months. The upstream serve-time guard cannot enforce this half: the sending
+// queue decouples a serve from the email it eventually produces, so a
+// compliant serve still lands an email days after the previous one. This
+// service performed the terminal send, so it is the only place that can look
+// the answer up.
+describe("POST /send — per-brand re-contact window", () => {
+  let runCounter: number;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    runCounter = 0;
+
+    mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
+    mockDbExecute.mockResolvedValue({ rows: [] });
+    mockCreateRun.mockImplementation(() => {
+      runCounter++;
+      return Promise.resolve({ id: `step-run-${runCounter}` });
+    });
+    mockAddLeads.mockResolvedValue({ added: 1 });
+    mockListAccounts.mockResolvedValue([
+      acct({ email: "sender@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+    ]);
+    mockUpdateCampaign.mockResolvedValue({ id: "inst-camp-new", email_list: [], bcc_list: [], not_sending_status: null, status: "active" });
+    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-new", status: "draft" });
+    mockGetCampaign.mockResolvedValue({ email_list: ["sender@example.com"], not_sending_status: null });
+    mockUpdateCampaignStatus.mockResolvedValue({});
+    mockDbWhere.mockResolvedValue([]);
+    mockDbReturning.mockResolvedValue([{ id: "row-1" }]);
+  });
+
+  const lastWeek = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+
+  it("refuses a recipient already emailed for the same brand inside the window — 409, no Instantly campaign, no run, no cost", async () => {
+    mockDbExecute.mockResolvedValue({
+      rows: [{ brand_id: "brand-1", last_emailed_at: lastWeek.toISOString() }],
+    });
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("recent_brand_contact");
+    expect(res.body.brandId).toBe("brand-1");
+    expect(res.body.lastEmailedAt).toBe(lastWeek.toISOString());
+    expect(res.body.windowInterval).toBe("3 months");
+    // The email never left, and nothing was billed or reserved for it.
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(mockAddLeads).not.toHaveBeenCalled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("the refusal is distinguishable from the OTHER 409 on this route", async () => {
+    // lead-id conflict: same email, different lead_id.
+    mockDbWhere.mockResolvedValueOnce([{ leadId: "existing-lead-99" }]);
+
+    const app = await createSendApp();
+    const res = await request(app)
+      .post("/send")
+      .set(identityHeadersObj)
+      .send({ ...validBody, leadId: "different-lead-1" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("lead_id_conflict");
+  });
+
+  it("a first-ever contact is unaffected", async () => {
+    mockDbExecute.mockResolvedValue({ rows: [] });
+    mockNewCampaignFlow();
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockCreateCampaign).toHaveBeenCalled();
+  });
+
+  it("a re-contact PAST the window is unaffected — the SQL, not the route, bounds it", async () => {
+    // The window lives in the query (`now() - interval '3 months'`), so an
+    // out-of-window prior send simply returns no row.
+    mockDbExecute.mockResolvedValue({ rows: [] });
+    mockNewCampaignFlow();
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    const sqlText = extractSendSqlText(mockDbExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("interval '3 months'");
+    expect(sqlText).toContain("email_sent");
+    expect(sqlText).toContain("e.inferred = false");
+    expect(sqlText).toContain("lower(c.lead_email)");
+  });
+
+  it("a platform send (no brand) never runs the lookup — the window is per brand", async () => {
+    mockNewCampaignFlow();
+    const { "x-brand-id": _drop, ...noBrand } = identityHeadersObj;
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(noBrand).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockDbExecute).not.toHaveBeenCalled();
+  });
+
+  it("fails loud when the lookup errors — never waves the send through", async () => {
+    mockDbExecute.mockRejectedValue(new Error("connection terminated"));
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(500);
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
   });
 });
