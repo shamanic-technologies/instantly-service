@@ -27,6 +27,7 @@ vi.mock("../../src/db/schema", () => ({
 const mockInsertManualQualification = vi.fn();
 const mockApplyManualQualificationSideEffects = vi.fn();
 const mockListManualQualifications = vi.fn();
+const mockWithdrawManualQualification = vi.fn();
 
 vi.mock("../../src/lib/manual-qualifications", () => ({
   insertManualQualification: (...args: unknown[]) =>
@@ -35,6 +36,8 @@ vi.mock("../../src/lib/manual-qualifications", () => ({
     mockApplyManualQualificationSideEffects(...args),
   listManualQualifications: (...args: unknown[]) =>
     mockListManualQualifications(...args),
+  withdrawManualQualification: (...args: unknown[]) =>
+    mockWithdrawManualQualification(...args),
 }));
 
 async function createApp() {
@@ -260,5 +263,113 @@ describe("GET /orgs/manual-qualifications", () => {
     const call = mockListManualQualifications.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(call.campaignId).toBeUndefined();
     expect(call.leadEmail).toBeUndefined();
+  });
+});
+
+describe("POST /orgs/manual-qualifications/withdrawals", () => {
+  const body = { campaign_id: "camp-logical-1", email: "lead@test.com" };
+
+  it("rejects when x-user-id is missing — a withdrawal is somebody's act", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/orgs/manual-qualifications/withdrawals")
+      .set("x-org-id", "org-1")
+      .send(body);
+
+    expect(res.status).toBe(400);
+    expect(mockWithdrawManualQualification).not.toHaveBeenCalled();
+  });
+
+  it("404s with code campaign_not_found when the pair is not this org's", async () => {
+    mockCampaignSelect.mockResolvedValue([]);
+    const app = await createApp();
+    const res = await request(app)
+      .post("/orgs/manual-qualifications/withdrawals")
+      .set("x-org-id", "org-1")
+      .set("x-user-id", "user-1")
+      .send(body);
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe("campaign_not_found");
+    expect(mockWithdrawManualQualification).not.toHaveBeenCalled();
+  });
+
+  it("refuses a withdrawal on a pair nobody stated anything about — 404 with a code, distinguishable from a 500", async () => {
+    mockCampaignSelect.mockResolvedValue([
+      { campaignId: "camp-logical-1", instantlyCampaignId: "inst-camp-1" },
+    ]);
+    mockWithdrawManualQualification.mockResolvedValue({
+      withdrawn: false,
+      reason: "no_standing_qualification",
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/orgs/manual-qualifications/withdrawals")
+      .set("x-org-id", "org-1")
+      .set("x-user-id", "user-1")
+      .send(body);
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe("no_standing_qualification");
+    // Distinguishable from its sibling 404 by the code alone.
+    expect(res.body.code).not.toBe("campaign_not_found");
+  });
+
+  it("withdraws the standing statement and returns it MARKED, not deleted", async () => {
+    mockCampaignSelect.mockResolvedValue([
+      { campaignId: "camp-logical-1", instantlyCampaignId: "inst-camp-1" },
+    ]);
+    mockWithdrawManualQualification.mockResolvedValue({
+      withdrawn: true,
+      qualification: {
+        ...SAMPLE_BRONZE_ROW,
+        replyKind: "lead_interested" as const,
+        withdrawnAt: new Date("2026-08-28T10:00:00.000Z"),
+        withdrawnBy: "user-1",
+      },
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/orgs/manual-qualifications/withdrawals")
+      .set("x-org-id", "org-1")
+      .set("x-user-id", "user-1")
+      .send({ ...body, notes: "picked the wrong kind" });
+
+    expect(res.status).toBe(200);
+    // What was stated is still readable — this is a correction, not an erasure.
+    expect(res.body.qualification.status).toBe("lead_interested");
+    expect(res.body.qualification.withdrawnAt).toBe("2026-08-28T10:00:00.000Z");
+    expect(res.body.qualification.withdrawnBy).toBe("user-1");
+    expect(mockWithdrawManualQualification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: "org-1",
+        instantlyCampaignId: "inst-camp-1",
+        leadEmail: "lead@test.com",
+        withdrawnBy: "user-1",
+        notes: "picked the wrong kind",
+      }),
+    );
+  });
+
+  it("a listed withdrawn statement carries withdrawnAt so a consumer can tell it from a standing one", async () => {
+    mockListManualQualifications.mockResolvedValue([
+      {
+        ...SAMPLE_BRONZE_ROW,
+        withdrawnAt: new Date("2026-08-28T10:00:00.000Z"),
+        withdrawnBy: "user-1",
+      },
+      { ...SAMPLE_BRONZE_ROW, id: "bronze-row-2", withdrawnAt: null, withdrawnBy: null },
+    ]);
+
+    const app = await createApp();
+    const res = await request(app)
+      .get("/orgs/manual-qualifications")
+      .set("x-org-id", "org-1");
+
+    expect(res.status).toBe(200);
+    expect(res.body.qualifications[0].withdrawnAt).toBe("2026-08-28T10:00:00.000Z");
+    expect(res.body.qualifications[1].withdrawnAt).toBeNull();
   });
 });
