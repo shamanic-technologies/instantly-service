@@ -24,6 +24,28 @@ describe("the reply-kind vocabulary", () => {
     ]);
   });
 
+  // A "no" about the MOMENT and a "no" about the PERSON are acted on
+  // completely differently: the first lead is recycled, the second is
+  // disqualified. Collapsing a job change into `lead_not_interested` is the
+  // conflation that turns the negative bucket into a dumping ground.
+  it("separates the permanent, person-level negatives from the temporary one", () => {
+    expect([...NEGATIVE_REPLY_KINDS]).toEqual([
+      "lead_not_interested",
+      "lead_wrong_person",
+      "lead_changed_job",
+    ]);
+    expect(isReplyKind("lead_changed_job")).toBe(true);
+    expect(REPLY_KIND_CLASSIFICATION.lead_changed_job).toBe("negative");
+  });
+
+  // Two different statements: one says we picked the wrong contact, the other
+  // says the right contact left the role. A person who once held it would read
+  // the first back as false.
+  it("keeps a job change distinct from a wrong contact and from a decline", () => {
+    expect(new Set(NEGATIVE_REPLY_KINDS).size).toBe(NEGATIVE_REPLY_KINDS.length);
+    expect(resolveReplyKind("lead_changed_job")).toBe("lead_changed_job");
+  });
+
   it("carries no deal progress at all", () => {
     expect(REPLY_KINDS).not.toContain("lead_meeting_booked");
     expect(REPLY_KINDS).not.toContain("lead_closed");
@@ -96,6 +118,10 @@ describe("the write path while the consoles migrate", () => {
 });
 
 describe("isSequenceStoppingReplyKind", () => {
+  it("stops on a job change — a person stating it has replied", () => {
+    expect(isSequenceStoppingReplyKind("lead_changed_job")).toBe(true);
+  });
+
   it("stops on every human reply, whatever its sentiment", () => {
     for (const kind of [...POSITIVE_REPLY_KINDS, ...NEGATIVE_REPLY_KINDS, "lead_neutral" as const]) {
       expect(isSequenceStoppingReplyKind(kind)).toBe(true);

@@ -50,10 +50,37 @@ export const POSITIVE_REPLY_KINDS = [
 ] as const;
 
 /**
- * A negative reply. `lead_wrong_person` is the mirror of `lead_referral`: not
- * the right contact AND no relevance handed back, so there is nowhere to go.
+ * A negative reply, split by whether the "no" is about the MOMENT or about the
+ * PERSON — the distinction the sales canon draws between a lead that is
+ * recycled and one that is disqualified.
+ *
+ *  - `lead_not_interested` — they decline today. A commercial judgement about
+ *                            this offer at this moment; the person is still
+ *                            reachable and the lead stays recyclable.
+ *  - `lead_wrong_person`   — they are not the right contact and hand nothing
+ *                            back. The mirror of `lead_referral`: no name, no
+ *                            relevance, nowhere to go.
+ *  - `lead_changed_job`    — they have LEFT the role we were selling to. Like
+ *                            `lead_wrong_person` this is an objective fact
+ *                            about the person rather than an opinion about the
+ *                            offer, and it is permanent for this lead: no
+ *                            follow-up and no later re-approach can reach the
+ *                            role at this company through them.
+ *
+ * The last two are DISQUALIFYING (permanent, about the person); the first is
+ * not (temporary, about the moment). Collapsing a job change into
+ * `lead_not_interested` is exactly the conflation that turns a "no" bucket
+ * into a dumping ground and quietly loses recyclable pipeline, so the two are
+ * kept apart. `lead_changed_job` is also NOT `lead_wrong_person`: that one
+ * says we picked the wrong contact, which a person who once held the role
+ * would read back as false.
  */
-export const NEGATIVE_REPLY_KINDS = ["lead_not_interested", "lead_wrong_person"] as const;
+export const NEGATIVE_REPLY_KINDS = [
+  "lead_not_interested",
+  "lead_wrong_person",
+  "lead_changed_job",
+] as const;
+
 
 /**
  * A real human reply that commits to nothing either way. Kept as its own kind
@@ -159,6 +186,7 @@ export const REPLY_KIND_CLASSIFICATION: Record<ReplyKind, "positive" | "negative
   lead_meeting_requested: "positive",
   lead_not_interested: "negative",
   lead_wrong_person: "negative",
+  lead_changed_job: "negative",
   lead_neutral: "neutral",
   lead_out_of_office: "neutral",
   auto_reply_received: "neutral",
