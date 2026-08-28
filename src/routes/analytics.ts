@@ -48,6 +48,10 @@ export const ZERO_REPLIES_DETAIL = {
   closed: 0,
   notInterested: 0,
   wrongPerson: 0,
+  // A permanent, person-level disqualification, distinct from the temporary
+  // `notInterested`. Beyond the published contract's RepliesDetail, exactly
+  // like the three positive splits above.
+  changedJob: 0,
   unsubscribe: 0,
   neutral: 0,
   autoReply: 0,
@@ -109,7 +113,8 @@ export function buildRepliesFromDetail(detail: typeof ZERO_REPLIES_DETAIL) {
   return {
     repliesPositive:
       detail.interested + detail.referral + detail.infoRequested + detail.meetingRequested,
-    repliesNegative: detail.notInterested + detail.wrongPerson + detail.unsubscribe,
+    repliesNegative:
+      detail.notInterested + detail.wrongPerson + detail.changedJob + detail.unsubscribe,
     repliesNeutral: detail.neutral,
     repliesAutoReply: detail.autoReply + detail.outOfOffice,
     repliesDetail: detail,
@@ -491,6 +496,7 @@ export const SENTIMENT_EVENT_TYPES = [
   "lead_meeting_requested",
   "lead_not_interested",
   "lead_wrong_person",
+  "lead_changed_job",
   "lead_neutral",
   "lead_out_of_office",
   "auto_reply_received",
@@ -503,6 +509,7 @@ export interface SentimentDetail {
   meetingRequested: number;
   notInterested: number;
   wrongPerson: number;
+  changedJob: number;
   neutral: number;
   autoReply: number;
   outOfOffice: number;
@@ -515,6 +522,7 @@ const ZERO_SENTIMENT_DETAIL: SentimentDetail = {
   meetingRequested: 0,
   notInterested: 0,
   wrongPerson: 0,
+  changedJob: 0,
   neutral: 0,
   autoReply: 0,
   outOfOffice: 0,
@@ -554,6 +562,7 @@ const SENTIMENT_COUNT_COLUMNS = sql`
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_meeting_requested')::int AS "rdMeetingRequested",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_not_interested')::int AS "rdNotInterested",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_wrong_person')::int AS "rdWrongPerson",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_changed_job')::int AS "rdChangedJob",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_neutral')::int AS "rdNeutral",
   COUNT(*) FILTER (WHERE ls.sentiment = 'auto_reply_received')::int AS "rdAutoReply",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_out_of_office')::int AS "rdOutOfOffice"
@@ -568,6 +577,7 @@ function rowToSentimentDetail(row: Record<string, number> | undefined): Sentimen
     meetingRequested: row.rdMeetingRequested ?? 0,
     notInterested: row.rdNotInterested ?? 0,
     wrongPerson: row.rdWrongPerson ?? 0,
+    changedJob: row.rdChangedJob ?? 0,
     neutral: row.rdNeutral ?? 0,
     autoReply: row.rdAutoReply ?? 0,
     outOfOffice: row.rdOutOfOffice ?? 0,
@@ -790,6 +800,7 @@ export async function queryGroupedStats(
       closed: 0,
       notInterested: sentiment.notInterested,
       wrongPerson: sentiment.wrongPerson,
+      changedJob: sentiment.changedJob,
       unsubscribe: row?.rdUnsubscribe ?? 0,
       neutral: sentiment.neutral,
       autoReply: sentiment.autoReply,
@@ -901,6 +912,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
     closed: 0,
     notInterested: sentiment.notInterested,
     wrongPerson: sentiment.wrongPerson,
+    changedJob: sentiment.changedJob,
     unsubscribe: row.rdUnsubscribe ?? 0,
     neutral: sentiment.neutral,
     autoReply: sentiment.autoReply,
@@ -1015,6 +1027,7 @@ export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
       closed: 0,
       notInterested: sentiment?.notInterested ?? 0,
       wrongPerson: sentiment?.wrongPerson ?? 0,
+      changedJob: sentiment?.changedJob ?? 0,
       unsubscribe: sr.rdUnsubscribe ?? 0,
       neutral: sentiment?.neutral ?? 0,
       autoReply: sentiment?.autoReply ?? 0,

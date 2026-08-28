@@ -61,7 +61,7 @@ function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
 function makeSentimentRow(overrides: Partial<Record<string, number>> = {}) {
   return {
     rdInterested: 0, rdReferral: 0, rdInfoRequested: 0, rdMeetingRequested: 0,
-    rdNotInterested: 0, rdWrongPerson: 0,
+    rdNotInterested: 0, rdWrongPerson: 0, rdChangedJob: 0,
     rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0,
     ...overrides,
   };
