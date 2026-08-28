@@ -1,6 +1,7 @@
 /**
  * Manual reply qualifications — POST sets a human reply classification for a
- * (campaign, lead) pair; GET returns the org-scoped audit history.
+ * (campaign, lead) pair, POST /withdrawals takes that statement back, and GET
+ * returns the org-scoped audit history (withdrawn statements included, marked).
  *
  * Auth: `serviceAuth` (X-API-Key) + `requireOrgId` (x-org-id). x-user-id is
  * additionally required on POST so the bronze row carries the qualifier's id.
@@ -18,11 +19,13 @@ import { and, eq } from "drizzle-orm";
 import {
   ManualQualificationCreateBodySchema,
   ManualQualificationListQuerySchema,
+  ManualQualificationWithdrawBodySchema,
 } from "../schemas";
 import {
   insertManualQualification,
   applyManualQualificationSideEffects,
   listManualQualifications,
+  withdrawManualQualification,
 } from "../lib/manual-qualifications";
 
 const router = Router();
@@ -38,6 +41,8 @@ function serializeRow(row: {
   qualifiedBy: string;
   notes: string | null;
   qualifiedAt: Date;
+  withdrawnAt: Date | null;
+  withdrawnBy: string | null;
 }) {
   return {
     id: row.id,
@@ -50,6 +55,32 @@ function serializeRow(row: {
     qualifiedBy: row.qualifiedBy,
     notes: row.notes,
     qualifiedAt: row.qualifiedAt.toISOString(),
+    // Non-null ⇒ the statement was taken back and no longer stands. A consumer
+    // that renders it as a current kind is showing a kind nobody stands behind.
+    withdrawnAt: row.withdrawnAt ? row.withdrawnAt.toISOString() : null,
+    withdrawnBy: row.withdrawnBy,
+  };
+}
+
+/** Resolve the (campaign, lead) pair to this org's campaign row, or null. */
+async function findOrgCampaign(orgId: string, campaignId: string, email: string) {
+  const [campaign] = await db
+    .select({
+      campaignId: instantlyCampaigns.campaignId,
+      instantlyCampaignId: instantlyCampaigns.instantlyCampaignId,
+    })
+    .from(instantlyCampaigns)
+    .where(
+      and(
+        eq(instantlyCampaigns.campaignId, campaignId),
+        eq(instantlyCampaigns.leadEmail, email),
+        eq(instantlyCampaigns.orgId, orgId),
+      ),
+    );
+  if (!campaign || !campaign.campaignId) return null;
+  return {
+    campaignId: campaign.campaignId,
+    instantlyCampaignId: campaign.instantlyCampaignId,
   };
 }
 
@@ -66,21 +97,8 @@ router.post("/", async (req: Request, res: Response) => {
   }
   const { campaign_id, email, status, notes } = parsed.data;
 
-  const [campaign] = await db
-    .select({
-      campaignId: instantlyCampaigns.campaignId,
-      instantlyCampaignId: instantlyCampaigns.instantlyCampaignId,
-    })
-    .from(instantlyCampaigns)
-    .where(
-      and(
-        eq(instantlyCampaigns.campaignId, campaign_id),
-        eq(instantlyCampaigns.leadEmail, email),
-        eq(instantlyCampaigns.orgId, orgId),
-      ),
-    );
-
-  if (!campaign || !campaign.campaignId) {
+  const campaign = await findOrgCampaign(orgId, campaign_id, email);
+  if (!campaign) {
     return res
       .status(404)
       .json({ error: "Campaign not found in this org for the given email" });
@@ -114,6 +132,59 @@ router.post("/", async (req: Request, res: Response) => {
     idempotent: !result.inserted,
     qualification: serializeRow(result.row),
   });
+});
+
+/**
+ * Withdraw the standing statement for a (campaign, lead) pair — a person who
+ * picked the wrong kind taking it back.
+ *
+ * Append-only: nothing is deleted, the statement stays readable, and a
+ * withdrawal row records that it no longer stands. After it the automatic
+ * classification takes over again (the manual pin is released), so a later
+ * webhook is free to classify the reply as it normally would.
+ *
+ * 404 `no_standing_qualification` when nobody has stated anything for this pair
+ * (or the statement was already withdrawn) — an explicit refusal a caller can
+ * tell apart from a 500 and from the sibling "campaign not found" 404 by its
+ * `code`.
+ */
+router.post("/withdrawals", async (req: Request, res: Response) => {
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string | undefined;
+  if (!userId) {
+    return res.status(400).json({ error: "x-user-id header is required" });
+  }
+
+  const parsed = ManualQualificationWithdrawBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.message });
+  }
+  const { campaign_id, email, notes } = parsed.data;
+
+  const campaign = await findOrgCampaign(orgId, campaign_id, email);
+  if (!campaign) {
+    return res.status(404).json({
+      error: "Campaign not found in this org for the given email",
+      code: "campaign_not_found",
+    });
+  }
+
+  const result = await withdrawManualQualification({
+    orgId,
+    instantlyCampaignId: campaign.instantlyCampaignId,
+    leadEmail: email,
+    withdrawnBy: userId,
+    notes,
+  });
+
+  if (!result.withdrawn) {
+    return res.status(404).json({
+      error: "No standing manual qualification to withdraw for this campaign and lead",
+      code: result.reason,
+    });
+  }
+
+  res.status(200).json({ qualification: serializeRow(result.qualification) });
 });
 
 router.get("/", async (req: Request, res: Response) => {

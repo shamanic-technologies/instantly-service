@@ -311,6 +311,14 @@ export const instantlyEvents = pgTable(
     inferred: boolean("inferred").notNull().default(false),
     inferredFromEventId: text("inferred_from_event_id"),
     inferredRule: text("inferred_rule"),
+    // Set when the human statement this event mirrors has been WITHDRAWN
+    // (source='manual' rows only). The row is kept — silver is the audit of
+    // what was asserted — but the gold current-sentiment projection skips it,
+    // so the lead reads as if nobody had stated a kind. Silver is derived and
+    // rebuildable, so marking a row here is legitimate; the bronze statement it
+    // mirrors is never touched. NULL = the statement still stands (and on every
+    // non-manual row, which can never be withdrawn).
+    withdrawnAt: timestamp("withdrawn_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [
@@ -711,6 +719,44 @@ export const instantlyManualQualificationsRaw = pgTable(
       table.leadEmail,
     ),
     index("instantly_manual_qualifications_raw_qualified_at_idx").on(table.qualifiedAt),
+  ],
+);
+
+// Bronze: withdrawals of manual reply qualifications — a human retracting a
+// statement they got wrong.
+//
+// A withdrawal is an APPEND, never an edit or a delete: the statement row above
+// stays byte-identical (what was stated is part of the audit) and this row
+// records that it no longer stands, by whom and when. Nothing is ever removed,
+// so "the vocabulary has no 'nothing stated' member" stays true — absence of a
+// standing statement is expressed by a superseding row, not by a sentinel kind.
+//
+// The STANDING statement for a (org, instantly_campaign, lead) pair is the
+// latest `instantly_manual_qualifications_raw` row that has NO withdrawal row
+// pointing at it. Withdrawing keys on the statement id rather than on a
+// timestamp watermark so a later re-statement is unaffected by an earlier
+// withdrawal, and so re-withdrawing the same statement is a no-op by the unique
+// index rather than by a read-then-write race.
+export const instantlyManualQualificationWithdrawals = pgTable(
+  "instantly_manual_qualification_withdrawals",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    /** The withdrawn statement's bronze row id. Unique — one withdrawal per statement. */
+    qualificationId: text("qualification_id").notNull().unique(),
+    orgId: text("org_id").notNull(),
+    campaignId: text("campaign_id").notNull(),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    withdrawnBy: text("withdrawn_by").notNull(),
+    notes: text("notes"),
+    withdrawnAt: timestamp("withdrawn_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("instantly_manual_qualification_withdrawals_org_campaign_email_idx").on(
+      table.orgId,
+      table.campaignId,
+      table.leadEmail,
+    ),
   ],
 );
 

@@ -521,6 +521,9 @@ describe("GET /stats", () => {
     expect(sentimentSql).toContain("DISTINCT ON (e.campaign_id, e.lead_email)");
     expect(sentimentSql).toContain("e.timestamp DESC");
     expect(sentimentSql).toContain("e.source = 'manual'");
+    // A WITHDRAWN human statement is a kind nobody stands behind — the current
+    // sentiment must skip it, or the counters it moved never come back.
+    expect(sentimentSql).toContain("e.withdrawn_at IS NULL");
   });
 
   it("should count a re-qualified reply by its CURRENT sentiment, not the stale one", async () => {
