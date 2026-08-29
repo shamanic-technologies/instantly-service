@@ -2770,6 +2770,17 @@
           "perDay"
         ]
       },
+      "SeedPlacementRunRequest": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Cap the number of seed emails dispatched this run (batching / smoke test)"
+          }
+        }
+      },
       "InfraSyncAccepted": {
         "type": "object",
         "properties": {
@@ -5718,6 +5729,68 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/internal/audit/seed-placement/run": {
+      "post": {
+        "summary": "Dispatch one in-house seed inbox-placement test",
+        "description": "Platform-scoped (no org). Sends one seed email from every testable mailbox to every receiver mailbox we own and can read over IMAP — the self-hosted replacement for Instantly's paid Growth Inbox Placement subscription, which it spends nothing to do. SENDS REAL MAIL from the fleet, so it is gated behind SEED_PLACEMENT_ENABLED=true (409 when disabled). Results are read by the SEPARATE /seed-placement/sync run on its own schedule — never chained here, or the read would run before the seeds land. 202 + background; watch logs for `seed-placement-run: done`.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeedPlacementRunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted — the seed dispatch runs in the background",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlacementSyncAccepted"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "409": {
+            "description": "Seed placement disabled (SEED_PLACEMENT_ENABLED != true)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/audit/seed-placement/sync": {
+      "post": {
+        "summary": "Read the seeds back and promote them to placement silver",
+        "description": "Platform-scoped (no org). Opens every receiver mailbox that still owes an observation, records which folder each seed landed in (inbox vs spam), and promotes the affected tests into the SAME `instantly_placement_results` silver the Instantly path writes — so the lifecycle delivery gate and account-health read them with no code change. Read-only against the mailboxes and idempotent, so it is NOT behind the kill-switch. 202 + background; watch logs for `seed-placement-sync: done`.",
+        "responses": {
+          "202": {
+            "description": "Accepted — the read + promotion runs in the background",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlacementSyncAccepted"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         }
       }
