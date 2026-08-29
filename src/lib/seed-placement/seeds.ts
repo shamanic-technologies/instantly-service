@@ -60,18 +60,32 @@ const OUTLOOK_DOMAINS = new Set([
 ]);
 
 /**
- * Which ESP a receiving address belongs to.
+ * Hosts that mean "this mailbox is really Google".
  *
- * Only the consumer domains can be told apart by name. A custom domain is
- * resolved by the caller (our fleet is Google Workspace throughout), so this
- * defaults to Google rather than guessing — and the default is stated at the
- * call site, not hidden here.
+ * ⚠️ THE HOST IS THE GROUND TRUTH, NOT THE DOMAIN. Every mailbox in this fleet
+ * sits on a custom domain, so the domain name says nothing about who filters its
+ * mail: `kevin@growthagency.bio` is Gandi, `k.lourd@growdistribute.com` is
+ * Google Workspace, and both look identical from the address alone. The
+ * credential we resolved carries the real host, so that is what decides.
  */
-export function espForReceiver(email: string, fallback: number = ESP_GOOGLE): number {
+const GOOGLE_IMAP_HOSTS = new Set(["imap.gmail.com", "imap.google.com"]);
+
+/**
+ * Which ESP a receiving mailbox belongs to, from its resolved IMAP host.
+ *
+ * Returns null when the host is one we cannot attribute to a consumer-relevant
+ * ESP — a Gandi mailbox, a Mailforge relay. Null is NOT "assume Google": the
+ * first version of this defaulted every custom domain to Google, which labelled
+ * six Gandi receivers as Gmail placement in the very first run. A placement
+ * score is a claim about a specific ESP, and claiming the wrong one is worse
+ * than declining to claim.
+ */
+export function espForReceiverHost(email: string, imapHost: string): number | null {
   const domain = domainOf(email);
   if (OUTLOOK_DOMAINS.has(domain)) return ESP_OUTLOOK;
+  if (GOOGLE_IMAP_HOSTS.has(imapHost.trim().toLowerCase())) return ESP_GOOGLE;
   if (domain === "gmail.com" || domain === "googlemail.com") return ESP_GOOGLE;
-  return fallback;
+  return null;
 }
 
 export interface SeedReceiver {
@@ -79,29 +93,51 @@ export interface SeedReceiver {
   recipientEsp: number;
 }
 
+/** A candidate receiver: the address plus the host its credential resolved to. */
+export interface ReceiverCandidate {
+  email: string;
+  imapHost: string;
+}
+
 /**
  * Pick the receiver set: at most one mailbox per domain, up to `max`.
  *
- * Deterministic (sorted by domain then address) so the same fleet produces the
- * same receivers every week — a moving receiver set would make week-over-week
- * scores incomparable, which is the only thing a placement history is for.
+ * ⚠️ ONLY MAILBOXES ON A CONSUMER-RELEVANT ESP ARE ELIGIBLE. A Gandi-hosted or
+ * relay-hosted receiver is filtered by that host, not by Gmail — so a seed
+ * landing in its inbox says nothing about whether our mail reaches the prospects
+ * we actually email, who are on Google and Microsoft. Including them does not
+ * merely add noise, it silently answers a different question under the same
+ * label. Such mailboxes remain perfectly good SENDERS; they just cannot grade.
+ *
+ * Deterministic (sorted by domain) so the same fleet produces the same receivers
+ * every week — a moving receiver set would make week-over-week scores
+ * incomparable, which is the only thing a placement history is for.
  */
 export function selectSeedReceivers(
-  candidates: readonly string[],
+  candidates: readonly ReceiverCandidate[],
   max: number = MAX_SEED_RECEIVERS,
 ): SeedReceiver[] {
-  const byDomain = new Map<string, string>();
+  const byDomain = new Map<string, SeedReceiver>();
 
-  for (const raw of [...candidates].map((c) => c.trim().toLowerCase()).sort()) {
-    const domain = domainOf(raw);
+  const sorted = [...candidates]
+    .map((c) => ({ email: c.email.trim().toLowerCase(), imapHost: c.imapHost }))
+    .sort((a, b) => (a.email < b.email ? -1 : a.email > b.email ? 1 : 0));
+
+  for (const candidate of sorted) {
+    const domain = domainOf(candidate.email);
     if (!domain) continue;
-    if (!byDomain.has(domain)) byDomain.set(domain, raw);
+    if (byDomain.has(domain)) continue;
+
+    const recipientEsp = espForReceiverHost(candidate.email, candidate.imapHost);
+    if (recipientEsp === null) continue;
+
+    byDomain.set(domain, { email: candidate.email, recipientEsp });
   }
 
   return [...byDomain.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .slice(0, max)
-    .map(([, email]) => ({ email, recipientEsp: espForReceiver(email) }));
+    .map(([, receiver]) => receiver);
 }
 
 export interface SeedSend {

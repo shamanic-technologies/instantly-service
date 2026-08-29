@@ -23,6 +23,7 @@ import { promoteEvent } from "../silver-promote";
 import type { CallerInfo } from "../key-client";
 import {
   GMAIL_IMAP_PORT,
+  loginFor,
   resolveMailboxCredential,
   type MailboxCredential,
 } from "./mailbox-credentials";
@@ -117,7 +118,7 @@ async function pollAccount(
     host: credential.imapHost,
     port: GMAIL_IMAP_PORT,
     secure: true,
-    auth: { user: credential.address, pass: credential.appPassword },
+    auth: { user: loginFor(credential), pass: credential.appPassword },
     logger: false,
   });
 

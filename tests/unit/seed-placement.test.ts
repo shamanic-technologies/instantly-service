@@ -34,7 +34,7 @@ import {
   MAX_SEED_RECEIVERS,
   SEED_TEST_ID_PREFIX,
   domainOf,
-  espForReceiver,
+  espForReceiverHost,
   isSeedTestId,
   mintSeedTestId,
   planSeedSends,
@@ -45,6 +45,7 @@ import {
   classifySeedFolder,
   parseAuthResults,
 } from "../../src/lib/seed-placement/classify";
+import { loginFor } from "../../src/lib/self-send/mailbox-credentials";
 import {
   MANUAL_CREDENTIALS_PROVIDER,
   loadSeedCredentialResolver,
@@ -70,13 +71,16 @@ describe("seed test id", () => {
   });
 });
 
+const G = (email: string) => ({ email, imapHost: "imap.gmail.com" });
+const GANDI = (email: string) => ({ email, imapHost: "mail.gandi.net" });
+
 describe("selectSeedReceivers", () => {
   it("takes at most ONE mailbox per domain — diversity is the signal, not count", () => {
     const receivers = selectSeedReceivers([
-      "a@one.com",
-      "b@one.com",
-      "c@two.com",
-      "d@three.com",
+      G("a@one.com"),
+      G("b@one.com"),
+      G("c@two.com"),
+      G("d@three.com"),
     ]);
 
     // Ordered by DOMAIN (one, three, two), not by input order — that stability
@@ -88,33 +92,58 @@ describe("selectSeedReceivers", () => {
     ]);
   });
 
+  it("EXCLUDES a mailbox that cannot grade — a Gandi inbox is filtered by Gandi, not Gmail", () => {
+    // The whole point of the score is "does our mail reach the prospects we
+    // email", and they are on Google/Microsoft. A Gandi receiver answers a
+    // different question under the same label.
+    const receivers = selectSeedReceivers([
+      GANDI("kevin@growthagency.bio"),
+      G("k.lourd@growdistribute.com"),
+    ]);
+
+    expect(receivers.map((r) => r.email)).toEqual(["k.lourd@growdistribute.com"]);
+  });
+
+  it("returns an empty set rather than grading against an unattributable host", () => {
+    expect(selectSeedReceivers([GANDI("kevin@growthagency.bio")])).toEqual([]);
+  });
+
   it("is deterministic, so week-over-week scores stay comparable", () => {
-    const pool = ["z@three.com", "a@one.com", "m@two.com"];
+    const pool = [G("z@three.com"), G("a@one.com"), G("m@two.com")];
     expect(selectSeedReceivers(pool)).toEqual(selectSeedReceivers([...pool].reverse()));
   });
 
   it("caps the receiver set", () => {
-    const many = Array.from({ length: 30 }, (_, i) => `a@d${i}.com`);
+    const many = Array.from({ length: 30 }, (_, i) => G(`a@d${i}.com`));
     expect(selectSeedReceivers(many)).toHaveLength(MAX_SEED_RECEIVERS);
     expect(selectSeedReceivers(many, 3)).toHaveLength(3);
   });
 
   it("skips an address with no domain rather than inventing one", () => {
-    expect(selectSeedReceivers(["not-an-email", "ok@d.com"]).map((r) => r.email)).toEqual([
-      "ok@d.com",
-    ]);
+    expect(
+      selectSeedReceivers([G("not-an-email"), G("ok@d.com")]).map((r) => r.email),
+    ).toEqual(["ok@d.com"]);
   });
 });
 
-describe("espForReceiver", () => {
-  it("recognises the consumer ESPs by name", () => {
-    expect(espForReceiver("x@gmail.com")).toBe(ESP_GOOGLE);
-    expect(espForReceiver("x@outlook.com")).toBe(ESP_OUTLOOK);
-    expect(espForReceiver("x@hotmail.com")).toBe(ESP_OUTLOOK);
+describe("espForReceiverHost", () => {
+  it("reads Google off the resolved HOST, not off the domain name", () => {
+    // Every mailbox here is on a custom domain, so the domain says nothing.
+    expect(espForReceiverHost("k.lourd@growdistribute.com", "imap.gmail.com")).toBe(ESP_GOOGLE);
   });
 
-  it("falls back for a custom domain — our fleet is Workspace, so Google", () => {
-    expect(espForReceiver("x@growdistribute.com")).toBe(ESP_GOOGLE);
+  it("returns NULL for a host it cannot attribute — never a Google default", () => {
+    // The first version defaulted custom domains to Google and mislabelled six
+    // Gandi receivers as Gmail placement on the very first run.
+    expect(espForReceiverHost("kevin@growthagency.bio", "mail.gandi.net")).toBeNull();
+    expect(espForReceiverHost("kevin.lourd@teamdistribute.com", "mail.theplanetelebor.com"))
+      .toBeNull();
+  });
+
+  it("still recognises the consumer ESPs by name", () => {
+    expect(espForReceiverHost("x@gmail.com", "whatever")).toBe(ESP_GOOGLE);
+    expect(espForReceiverHost("x@outlook.com", "whatever")).toBe(ESP_OUTLOOK);
+    expect(espForReceiverHost("x@hotmail.com", "whatever")).toBe(ESP_OUTLOOK);
   });
 
   it("domainOf lowercases and trims", () => {
@@ -124,7 +153,7 @@ describe("espForReceiver", () => {
 
 describe("planSeedSends", () => {
   it("NEVER pairs a mailbox with itself — a local delivery crosses no filter", () => {
-    const receivers = selectSeedReceivers(["a@one.com", "b@two.com"]);
+    const receivers = selectSeedReceivers([G("a@one.com"), G("b@two.com")]);
     const plan = planSeedSends(["a@one.com", "c@three.com"], receivers);
 
     expect(plan.some((p) => p.senderEmail === p.receiverEmail)).toBe(false);
@@ -132,9 +161,19 @@ describe("planSeedSends", () => {
   });
 
   it("carries the receiver's ESP onto each planned send", () => {
-    const receivers = selectSeedReceivers(["r@outlook.com"]);
+    const receivers = selectSeedReceivers([{ email: "r@outlook.com", imapHost: "x" }]);
     const [send] = planSeedSends(["s@one.com"], receivers);
     expect(send.recipientEsp).toBe(ESP_OUTLOOK);
+  });
+
+  it("keeps a NON-gradeable mailbox usable as a SENDER", () => {
+    // A Gandi mailbox cannot grade, but measuring whether ITS mail lands is
+    // exactly what the shared-IP investigation needs.
+    const receivers = selectSeedReceivers([G("r@grow.com")]);
+    const plan = planSeedSends(["kevin@growthagency.bio"], receivers);
+    expect(plan).toEqual([
+      { senderEmail: "kevin@growthagency.bio", receiverEmail: "r@grow.com", recipientEsp: ESP_GOOGLE },
+    ]);
   });
 });
 
@@ -410,5 +449,55 @@ describe("loadSeedCredentialResolver", () => {
     });
 
     await expect(loadSeedCredentialResolver(caller)).rejects.toThrow(/unauthorized/);
+  });
+});
+
+describe("alias logins (authUser)", () => {
+  // A Gandi domain is one real mailbox plus several aliases, and Instantly holds
+  // an account per alias: 175 IMAP accounts across 44 mailboxes. The account
+  // sends AS the alias but authenticates as the mailbox.
+  const entries = parseManualCredentials(
+    JSON.stringify([
+      {
+        address: "klourd@pressbeat.ai",
+        authUser: "Kevin@PressBeat.ai",
+        appPassword: "shared-pass",
+        smtpHost: "mail.gandi.net",
+        imapHost: "mail.gandi.net",
+      },
+      {
+        address: "kevin@pressbeat.ai",
+        appPassword: "shared-pass",
+        smtpHost: "mail.gandi.net",
+        imapHost: "mail.gandi.net",
+      },
+    ]),
+  );
+
+  it("keeps the alias as the ADDRESS and the mailbox as the LOGIN", () => {
+    const alias = selectManualCredential("klourd@pressbeat.ai", entries)!;
+    expect(alias.address).toBe("klourd@pressbeat.ai");
+    expect(loginFor(alias)).toBe("kevin@pressbeat.ai");
+  });
+
+  it("falls back to the address when no authUser is given (the Primeforge case)", () => {
+    const direct = selectManualCredential("kevin@pressbeat.ai", entries)!;
+    expect(direct.authUser).toBeUndefined();
+    expect(loginFor(direct)).toBe("kevin@pressbeat.ai");
+  });
+
+  it("drops a redundant authUser equal to the address", () => {
+    const [only] = parseManualCredentials(
+      JSON.stringify([
+        {
+          address: "a@b.com",
+          authUser: "a@b.com",
+          appPassword: "p",
+          smtpHost: "h",
+          imapHost: "h",
+        },
+      ]),
+    );
+    expect(only.authUser).toBeUndefined();
   });
 });

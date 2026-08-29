@@ -100,8 +100,25 @@ export async function runSeedPlacementTest(
 
   // Receivers are drawn from the SENDABLE set, because a receiver has to be read
   // over IMAP with the same credential — a mailbox we cannot authenticate is no
-  // more readable than it is sendable.
-  const receivers = selectSeedReceivers(sendable, MAX_SEED_RECEIVERS);
+  // more readable than it is sendable. The credential also carries the real
+  // HOST, which is what decides whether the mailbox can grade at all (only a
+  // Google/Microsoft-hosted one can; see `selectSeedReceivers`).
+  const receivers = selectSeedReceivers(
+    sendable.map((email) => ({
+      email,
+      imapHost: credentials.get(email)?.imapHost ?? "",
+    })),
+    MAX_SEED_RECEIVERS,
+  );
+
+  if (receivers.length === 0) {
+    // No gradeable receiver means no measurement is possible. Say so and stop,
+    // rather than sending mail nobody can score.
+    console.warn(
+      `[seed-placement] no receiver on a consumer ESP among ${sendable.length} sendable mailboxes — nothing to measure`,
+    );
+    return summary;
+  }
   const planned = planSeedSends(sendable, receivers);
   const work = options.limit ? planned.slice(0, options.limit) : planned;
 
