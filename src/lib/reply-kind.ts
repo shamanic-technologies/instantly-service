@@ -178,10 +178,31 @@ export function isDealProgressEventType(eventType: string): boolean {
  * (`positive | negative | neutral`). An automated reply keeps projecting to
  * `neutral` there — widening the contract's enum is a cross-repo change, and
  * `repliesAutoReply` already separates it for every consumer that cares.
+ *
+ * ⚠️ `lead_referral` projects to `neutral`, NOT `positive`, and that is the one
+ * place where this map deliberately DIVERGES from `POSITIVE_REPLY_KINDS`.
+ * The two answer different questions:
+ *
+ *  - `POSITIVE_REPLY_KINDS` decides what is worth READING — it drives the
+ *    forward to the agency inbox. A referral is very much worth reading.
+ *  - this map decides what is REPORTED as the customer's sales interest — it
+ *    becomes the brand's positive-reply count, its cost-per-positive-reply and
+ *    the learning-threshold gate downstream (email-gateway → lead-service →
+ *    features-service).
+ *
+ * "Not me, but talk to X" is valuable and it is NOT this person's buying
+ * interest, which is exactly the distinction the metric exists to make. Pricing
+ * a referral as a buying signal made a customer dashboard read "1 sales
+ * interest" for a lead its own leads board correctly showed as merely contacted
+ * (prod, 2026-08-29). The downstream consumer already excludes `lead_referral`
+ * from its interest set; this map was the straggler.
+ *
+ * Do NOT "restore the lockstep" between this map's positive entries and
+ * `POSITIVE_REPLY_KINDS` — the divergence is the fix.
  */
 export const REPLY_KIND_CLASSIFICATION: Record<ReplyKind, "positive" | "negative" | "neutral"> = {
   lead_interested: "positive",
-  lead_referral: "positive",
+  lead_referral: "neutral",
   lead_info_requested: "positive",
   lead_meeting_requested: "positive",
   lead_not_interested: "negative",

@@ -90,12 +90,28 @@ describe("isPositiveQualification / positive set", () => {
     expect(isPositiveQualification("lead_closed")).toBe(false);
   });
 
-  it("stays in lockstep with REPLY_CLASSIFICATION_MAP's 'positive' entries", () => {
+  // The forwarding set and the coarse metric map answer DIFFERENT questions, so
+  // they are no longer the same set. Forwarding = "is this worth a human's
+  // eyes"; the coarse map = "was this a buying signal we count and price". A
+  // referral is the one kind where those answers differ: forward it, but never
+  // report it as the customer's sales interest.
+  it("is a strict superset of REPLY_CLASSIFICATION_MAP's 'positive' entries", () => {
     const positiveFromMap = Object.entries(REPLY_CLASSIFICATION_MAP)
       .filter(([, v]) => v === "positive")
       .map(([k]) => k)
       .sort();
-    expect([...POSITIVE_QUALIFICATION_EVENT_TYPES].sort()).toEqual(positiveFromMap);
+    for (const kind of positiveFromMap) {
+      expect(POSITIVE_QUALIFICATION_EVENT_TYPES.has(kind)).toBe(true);
+    }
+    const forwardedButNotPositive = [...POSITIVE_QUALIFICATION_EVENT_TYPES]
+      .filter((k) => !positiveFromMap.includes(k))
+      .sort();
+    expect(forwardedButNotPositive).toEqual(["lead_referral"]);
+  });
+
+  it("forwards a referral even though it reports as neutral", () => {
+    expect(isPositiveQualification("lead_referral")).toBe(true);
+    expect(REPLY_CLASSIFICATION_MAP.lead_referral).toBe("neutral");
   });
 });
 

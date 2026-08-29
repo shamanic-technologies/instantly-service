@@ -53,15 +53,51 @@ describe("the reply-kind vocabulary", () => {
     expect(isReplyKind("lead_meeting_booked")).toBe(false);
   });
 
-  it("classifies every kind, and only positive kinds as positive", () => {
+  it("classifies every kind", () => {
     for (const kind of REPLY_KINDS) {
       expect(REPLY_KIND_CLASSIFICATION[kind]).toBeDefined();
     }
+  });
+
+  // The coarse projection is what becomes the customer's reported SALES
+  // INTEREST downstream. A referral is worth reading (it still forwards) but it
+  // is not this person's buying interest, so it must not be counted or priced
+  // as one. This is the one deliberate divergence from POSITIVE_REPLY_KINDS.
+  it("reports a referral as neutral, not positive", () => {
+    expect(REPLY_KIND_CLASSIFICATION.lead_referral).toBe("neutral");
+    expect(POSITIVE_REPLY_KINDS).toContain("lead_referral");
+  });
+
+  it("counts only the buying-interest kinds as positive", () => {
     const positive = Object.entries(REPLY_KIND_CLASSIFICATION)
       .filter(([, v]) => v === "positive")
       .map(([k]) => k)
       .sort();
-    expect(positive).toEqual([...POSITIVE_REPLY_KINDS].sort());
+    expect(positive).toEqual([
+      "lead_info_requested",
+      "lead_interested",
+      "lead_meeting_requested",
+    ]);
+  });
+
+  it("classifies every reply kind exactly as intended", () => {
+    expect(REPLY_KIND_CLASSIFICATION).toEqual({
+      lead_interested: "positive",
+      lead_referral: "neutral",
+      lead_info_requested: "positive",
+      lead_meeting_requested: "positive",
+      lead_not_interested: "negative",
+      lead_wrong_person: "negative",
+      lead_changed_job: "negative",
+      lead_neutral: "neutral",
+      lead_out_of_office: "neutral",
+      auto_reply_received: "neutral",
+    });
+  });
+
+  // A referral is a human reply, so it stops the sequence like every other one.
+  it("still stops the sequence on a referral", () => {
+    expect(isSequenceStoppingReplyKind("lead_referral")).toBe(true);
   });
 });
 

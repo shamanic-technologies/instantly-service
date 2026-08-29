@@ -11,9 +11,12 @@
  * dependency on the paid Instantly CRM.
  *
  * We trust Instantly's qualification as-is — NO separate sentiment classifier.
- * "Positive" is exactly the set of lead_* events that flip
- * `reply_classification` to 'positive' in silver-promote's
- * REPLY_CLASSIFICATION_MAP (lead_interested / lead_meeting_booked / lead_closed).
+ * "Positive" here is `POSITIVE_REPLY_KINDS`, i.e. what is worth READING. It is
+ * deliberately NOT the same set as the 'positive' entries of
+ * REPLY_CLASSIFICATION_MAP any more: `lead_referral` is forwarded (a name to
+ * talk to is worth reading) while it reports as `neutral` (it is not this
+ * person's buying interest). See the divergence note on
+ * REPLY_KIND_CLASSIFICATION in lib/reply-kind.
  *
  * Placement: fired as a fail-soft side effect from `promoteEvent` in
  * silver-promote.ts, on REAL (non-inferred) events only. Both the webhook path
@@ -48,16 +51,20 @@ import { POSITIVE_REPLY_KINDS } from "./reply-kind";
 const AGENCY_INBOX = process.env.ADMIN_NOTIFICATION_EMAIL || "kevin@distribute.you";
 
 /**
- * The reply kinds that mean "positive reply". Kept in lockstep with the
- * 'positive' entries of REPLY_CLASSIFICATION_MAP — a unit test asserts the two
- * never drift. We forward ONLY on these; negative / neutral / automated replies
- * never trigger a forward.
+ * The reply kinds that mean "worth forwarding to the agency inbox". We forward
+ * ONLY on these; negative / automated replies never trigger a forward.
  *
  * All four positive distinctions forward: someone who wants to know more, or
  * points us at the right buyer, is exactly as worth reading as someone asking
  * for a call. Deal progress is absent because it is no longer a reply kind at
  * all — a booked meeting is recorded by the lead-outcomes service, and it is
  * not evidence that a reply just arrived.
+ *
+ * ⚠️ This set is a SUPERSET of the coarse map's 'positive' entries, on purpose:
+ * `lead_referral` forwards but reports `neutral`. Forwarding answers "is this
+ * worth a human's eyes"; the coarse map answers "was this a buying signal we
+ * should price and count". A unit test asserts exactly that relationship — do
+ * not restore an equality assertion between the two.
  */
 export const POSITIVE_QUALIFICATION_EVENT_TYPES = new Set<string>(POSITIVE_REPLY_KINDS);
 
