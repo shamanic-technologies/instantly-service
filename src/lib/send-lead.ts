@@ -80,7 +80,10 @@ function loadForAccount(
  * Instantly field — it is our own inventory attribution — so it rides alongside
  * the Instantly `Account` shape rather than inside it.
  */
-export type FillOrderAccount = Account & { infraProvider?: string | null };
+export type FillOrderAccount = Account & {
+  infraProvider?: string | null;
+  domainFillRank?: number | null;
+};
 
 /**
  * The order in which infrastructure vendors are drained. Lower fills first, so
@@ -105,26 +108,56 @@ export const PROVIDER_FILL_RANK: Record<string, number> = {
  */
 export const UNKNOWN_PROVIDER_FILL_RANK = 4;
 
+/**
+ * Rank for a domain with no `instantly_domain_fill_order` row. Sorts LAST within
+ * its vendor, for the same reason an unattributed vendor does: nobody has stated
+ * where this domain belongs, and the tail is the position that risks the least.
+ * `Number.POSITIVE_INFINITY` rather than a magic integer, so a real rank can be
+ * any number an operator likes without colliding with "unranked".
+ */
+export const UNRANKED_DOMAIN_FILL_RANK = Number.POSITIVE_INFINITY;
+
+export function domainFillRankOf(rank?: number | null): number {
+  return typeof rank === "number" && Number.isFinite(rank)
+    ? rank
+    : UNRANKED_DOMAIN_FILL_RANK;
+}
+
 export function providerFillRank(provider?: string | null): number {
   if (!provider) return UNKNOWN_PROVIDER_FILL_RANK;
   return PROVIDER_FILL_RANK[provider] ?? UNKNOWN_PROVIDER_FILL_RANK;
 }
 
 /**
- * The fleet's fixed fill ORDER: vendor first, then oldest account, then `email`
- * as the final tie-break. Accounts with no `timestamp_created` sort last within
- * their vendor; accounts with no known vendor sort last overall.
+ * The fleet's fixed fill ORDER: vendor first, then the account's DOMAIN rank,
+ * then oldest account, then `email` as the final tie-break. Accounts with no
+ * `timestamp_created` sort last within their domain; domains with no stated rank
+ * sort last within their vendor; accounts with no known vendor sort last overall.
  *
  * The VENDOR key is the primary sort so the fleet drains one vendor at a time:
  * gandi → mailforge → primeforge → instantly-dfy. That is what lets us stop
  * feeding new sends to a vendor we are winding down — its accounts only receive
  * volume once every vendor ahead of it is at cap.
  *
- * Within a vendor the order is unchanged and stable by construction — an account
+ * The DOMAIN key exists because the vendor key alone cannot make a domain go
+ * quiet. A vendor's mailboxes are provisioned in batches that INTERLEAVE domains
+ * (Primeforge creates them alphabetically by first name, so five domains alternate
+ * through one batch), and a domain can even straddle two batches — so an
+ * age-ordered vendor drains every one of its domains at once and not a single one
+ * can ever be cancelled. Ranking by domain groups a domain's mailboxes together and
+ * puts the whole group where an operator decided, which is a row in
+ * `instantly_domain_fill_order`, never a timestamp we happen to have.
+ *
+ * Within a domain the order is unchanged and stable by construction — an account
  * created later can never move ahead of an older one, so adding mailboxes
- * appends to that vendor's tail and never reshuffles its head. That stability is
+ * appends to that domain's tail and never reshuffles its head. That stability is
  * the whole point: the accounts at the tail are the ones that dry up first and
  * become safe to cancel.
+ *
+ * Note what this does NOT do: it only picks the account for a NEW sequence.
+ * Followups stay pinned to the account that started their sequence, so a domain
+ * moved to the tail keeps DISPATCHING for a full sequence length afterwards. The
+ * delete signal is "no real email_sent for N days", never "no new assignment".
  */
 export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[] {
   const age = (a: T): number => {
@@ -135,6 +168,9 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
     const px = providerFillRank(x.infraProvider);
     const py = providerFillRank(y.infraProvider);
     if (px !== py) return px - py;
+    const dx = domainFillRankOf(x.domainFillRank);
+    const dy = domainFillRankOf(y.domainFillRank);
+    if (dx !== dy) return dx - dy;
     const ax = age(x);
     const ay = age(y);
     if (ax !== ay) return ax - ay;
@@ -157,7 +193,10 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
  * Because `accountFillOrder` keys on the infrastructure VENDOR first, the
  * waterfall drains one vendor before touching the next (gandi → mailforge →
  * primeforge → instantly-dfy). A vendor we are winding down therefore receives
- * no NEW sends while any vendor ahead of it still has room.
+ * no NEW sends while any vendor ahead of it still has room. The DOMAIN rank is
+ * the same waterfall one level down: within a vendor, a domain at the tail gets
+ * nothing while any domain ahead of it has room, which is what lets a single
+ * domain go quiet and be cancelled while its vendor keeps sending.
  *
  * Why sequential and not a fill RATIO: the fleet is deliberately over-provisioned
  * (20 in_production accounts × 45/day ≫ real volume), and spreading volume evenly
