@@ -43,9 +43,28 @@ export function isPlacementSchedulingEnabled(): boolean {
   return process.env.PLACEMENT_TESTS_ENABLED === "true";
 }
 
-function testedAtOf(test: InboxPlacementTest): Date {
+/**
+ * When a test ran, or NULL when the vendor did not say.
+ *
+ * ⚠️ NEVER fabricate `now` here. This value is what the 16-day staleness gate
+ * (`DELIVERY_EVIDENCE_MAX_AGE_DAYS`) measures against, so stamping an
+ * undated test with the INGEST time makes arbitrarily old evidence look
+ * fresh — and silently disables the one protection that stops the fleet
+ * sending on reputation nobody has measured.
+ *
+ * A test we cannot date is not evidence, so the caller skips it. An accurate
+ * "we don't know" beats a confident wrong date.
+ *
+ * As of 2026-08-29 every test Instantly has returned carries a
+ * `timestamp_created`, so this guard has never actually fired — it is here
+ * because the failure it prevents is silent and unbounded, not because it was
+ * observed.
+ */
+function testedAtOf(test: InboxPlacementTest): Date | null {
   const t = test.timestamp_created;
-  return t ? new Date(t) : new Date();
+  if (!t) return null;
+  const parsed = new Date(t);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 export interface PlacementSyncSummary {
@@ -98,7 +117,17 @@ export async function syncPlacement(apiKey: string): Promise<PlacementSyncSummar
     }
     summary.analyticsRows += rows.length;
 
-    const silver = aggregatePlacementRows(rows, test.id, testedAtOf(test));
+    const testedAt = testedAtOf(test);
+    if (!testedAt) {
+      // Bronze keeps the payload (above); silver does not, because an undated
+      // result cannot be aged and would read as fresh forever.
+      console.warn(
+        `[placement-sync] test ${test.id} has no usable timestamp_created — not promoted to silver`,
+      );
+      continue;
+    }
+
+    const silver = aggregatePlacementRows(rows, test.id, testedAt);
     for (const s of silver) {
       await db
         .insert(instantlyPlacementResults)
