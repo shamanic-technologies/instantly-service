@@ -14,6 +14,8 @@
  * than as a bad score.
  */
 
+import { sql } from "drizzle-orm";
+
 import { db } from "../../db";
 import { seedPlacementDispatches } from "../../db/schema";
 import type { CallerInfo } from "../key-client";
@@ -27,6 +29,7 @@ import {
   planSeedSends,
   selectSeedReceivers,
 } from "./seeds";
+import { decideSeedTestDue, type SeedDueReason } from "./due";
 
 const CALLER: CallerInfo = {
   method: "POST",
@@ -44,6 +47,24 @@ export function isSeedPlacementEnabled(): boolean {
   return process.env.SEED_PLACEMENT_ENABLED === "true";
 }
 
+/**
+ * The newest seed test we have run, or null if we never have.
+ *
+ * Reads the DISPATCH side rather than silver: a test that was sent but whose
+ * results have not been read yet still counts as "measured recently", and
+ * keying on silver would re-send every day until the sync caught up.
+ */
+export async function fetchLastSeedTestAt(): Promise<Date | null> {
+  const result = await db.execute(sql`
+    SELECT max(dispatched_at) AS "lastAt" FROM seed_placement_dispatches
+  `);
+  const rows = (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as {
+    lastAt: string | Date | null;
+  }[];
+  const raw = rows[0]?.lastAt ?? null;
+  return raw ? new Date(raw) : null;
+}
+
 export interface SeedPlacementRunSummary {
   testId: string;
   senders: number;
@@ -53,12 +74,45 @@ export interface SeedPlacementRunSummary {
   failed: number;
   /** Mailboxes we hold no credential for — expected for the legacy fleet, not an error. */
   skippedNoCredential: number;
+  /** Set when the run was declined because no test was due. */
+  skippedReason?: SeedDueReason;
 }
 
 export async function runSeedPlacementTest(
-  options: { limit?: number } = {},
+  options: { limit?: number; force?: boolean; asOf?: Date } = {},
 ): Promise<SeedPlacementRunSummary> {
   const testId = mintSeedTestId();
+  const asOf = options.asOf ?? new Date();
+
+  // Cadence lives in the DATA, not in the scheduler. The cron calls this daily
+  // and most days it declines — which is what makes a skipped cron tick free
+  // rather than a missed week. `force` is the manual override.
+  if (!options.force) {
+    const decision = decideSeedTestDue(await fetchLastSeedTestAt(), asOf);
+    if (!decision.due) {
+      console.log(
+        `[seed-placement] not due (${decision.reason}, age=${
+          decision.ageDays === null ? "n/a" : decision.ageDays.toFixed(1)
+        }d)`,
+      );
+      return {
+        testId,
+        senders: 0,
+        receivers: 0,
+        planned: 0,
+        sent: 0,
+        failed: 0,
+        skippedNoCredential: 0,
+        skippedReason: decision.reason,
+      };
+    }
+    console.log(
+      `[seed-placement] due (${decision.reason}, age=${
+        decision.ageDays === null ? "n/a" : decision.ageDays.toFixed(1)
+      }d)`,
+    );
+  }
+
   const pool = await fetchTestablePoolEmails();
 
   const summary: SeedPlacementRunSummary = {

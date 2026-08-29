@@ -1763,6 +1763,10 @@ const SeedPlacementRunRequestSchema = z
       .positive()
       .optional()
       .describe("Cap the number of seed emails dispatched this run (batching / smoke test)"),
+    force: z
+      .boolean()
+      .optional()
+      .describe("Bypass the due check and run now. The cron never sets this."),
   })
   .openapi("SeedPlacementRunRequest");
 
