@@ -17,6 +17,7 @@ import {
   fetchLifecycleByEmail,
 } from "../lib/account-lifecycle-sync";
 import { fetchCapacityHistory } from "../lib/capacity-history";
+import { backfillEmails } from "../lib/emails-backfill";
 import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
 import { syncSlowRampOff } from "../lib/sync-slow-ramp";
 import { syncLifecycleLimits } from "../lib/sync-lifecycle-limits";
@@ -346,6 +347,43 @@ router.post("/accounts-sync", async (_req: Request, res: Response) => {
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] accounts-sync run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/audit/emails-backfill
+ *
+ * Platform-scoped. Mirrors the WHOLE Instantly Unibox into bronze
+ * (`instantly_emails_raw`) by walking `GET /emails` with no campaign filter.
+ * Cancelling an Instantly plan or a single inbox permanently deletes those
+ * conversations — replies included — and our silver log records only THAT a lead
+ * replied, never what they wrote. Read-only against Instantly, so it spends no
+ * quota and declares no cost. Idempotent (conflict on `instantly_email_id` does
+ * nothing) and each page is persisted as it arrives, so an interrupted sweep
+ * keeps what it read. Optional `{maxPages}` bounds the walk for a probe; a full
+ * sweep is ~1,200 pages at Instantly's mandated 3.5s pacing (~75 min).
+ * 202 + background; watch logs for `emails-backfill: done`.
+ */
+router.post("/emails-backfill", async (req: Request, res: Response) => {
+  const runId = crypto.randomUUID();
+  const rawMaxPages = (req.body as { maxPages?: unknown } | undefined)?.maxPages;
+  const maxPages =
+    typeof rawMaxPages === "number" && rawMaxPages > 0 ? rawMaxPages : undefined;
+  res.status(202).json({ accepted: true, runId });
+  console.log(
+    `[audit] emails-backfill: dispatched run=${runId} maxPages=${maxPages ?? "all"}`,
+  );
+
+  (async () => {
+    const apiKey = await resolvePlatformInstantlyApiKey({
+      method: "POST",
+      path: "/internal/audit/emails-backfill",
+    });
+    const summary = await backfillEmails(apiKey, { maxPages });
+    console.log(`[audit] emails-backfill: done run=${runId} ${JSON.stringify(summary)}`);
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] emails-backfill run=${runId} failed: ${message}`);
   });
 });
 

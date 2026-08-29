@@ -782,6 +782,46 @@ export async function listEmails(
   return results;
 }
 
+/** One page of `GET /emails`, plus the cursor for the next one. */
+export interface EmailPage {
+  items: EmailRecord[];
+  /** Cursor for the next page; null once the list is exhausted. */
+  nextStartingAfter: string | null;
+}
+
+/**
+ * GET /emails — ONE page, workspace-wide when no campaign is given.
+ *
+ * Deliberately caller-driven pagination, unlike the "all of X" helpers this file
+ * otherwise standardises on. The workspace holds well over a hundred thousand
+ * emails: an all-of-X helper would hold the entire Unibox in the heap before
+ * writing a single row, and lose every page it had read if the sweep died. The
+ * caller loops this and persists each page as it arrives.
+ *
+ * Omitting `campaignId` returns the whole workspace, newest first — the only way
+ * to mirror mail whose campaign we do not know, or whose sending account has
+ * since been deleted. Rate-limited by Instantly to 20 req/min, paced by
+ * `instantlyRequest`'s `/emails` throttle slot; an unpaced call returns a 429
+ * whose body carries no `items`, which reads exactly like an empty page.
+ */
+export async function listEmailsPage(
+  apiKey: string,
+  params: { campaignId?: string; startingAfter?: string; limit?: number } = {},
+): Promise<EmailPage> {
+  const { campaignId, startingAfter, limit = 100 } = params;
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (campaignId) query.set("campaign_id", campaignId);
+  if (startingAfter) query.set("starting_after", startingAfter);
+  const response = await instantlyRequest<{
+    items?: EmailRecord[];
+    next_starting_after?: string | null;
+  }>(apiKey, `/emails?${query.toString()}`);
+  return {
+    items: response.items ?? [],
+    nextStartingAfter: response.next_starting_after ?? null,
+  };
+}
+
 // ─── Inbox-placement (deliverability) tests + analytics ─────────────────────
 
 /** An inbox-placement test object (POST/GET /inbox-placement-tests). */

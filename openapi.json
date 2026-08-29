@@ -2674,6 +2674,33 @@
           "testedAt"
         ]
       },
+      "EmailsBackfillAccepted": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          },
+          "runId": {
+            "type": "string",
+            "description": "Background run identifier (watch logs)"
+          }
+        },
+        "required": [
+          "accepted",
+          "runId"
+        ]
+      },
+      "EmailsBackfillRequest": {
+        "type": "object",
+        "properties": {
+          "maxPages": {
+            "type": "integer",
+            "minimum": 0,
+            "exclusiveMinimum": true,
+            "description": "Bound the walk to N pages (100 emails each). Omit to sweep the whole Unibox."
+          }
+        }
+      },
       "PlacementSyncAccepted": {
         "type": "object",
         "properties": {
@@ -5557,6 +5584,37 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/internal/audit/emails-backfill": {
+      "post": {
+        "summary": "Mirror the whole Instantly Unibox into bronze",
+        "description": "Platform-scoped (no org). Walks `GET /emails` with no campaign filter and mirrors every email — sent and received — into `instantly_emails_raw`. Cancelling an Instantly plan or a single inbox permanently deletes those conversations, replies included, and silver records only THAT a lead replied, never what they wrote. Read-only against Instantly (spends no quota, declares no cost). Idempotent: a re-run re-reads pages but writes only what is new. 202 + background; watch logs for `emails-backfill: done`.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailsBackfillRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted — backfill runs in the background",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailsBackfillAccepted"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         }
       }

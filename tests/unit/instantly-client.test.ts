@@ -355,6 +355,40 @@ describe("instantly-client", () => {
     }
   });
 
+  it("listEmailsPage returns one page plus its cursor, workspace-wide when no campaign is given", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({ items: [{ id: "e1" }, { id: "e2" }], next_starting_after: "cur-1" }),
+    });
+
+    const { listEmailsPage } = await import("../../src/lib/instantly-client");
+    const page = await listEmailsPage(TEST_API_KEY, { startingAfter: "cur-0", limit: 100 });
+
+    expect(page.items.map((e) => e.id)).toEqual(["e1", "e2"]);
+    expect(page.nextStartingAfter).toBe("cur-1");
+    const url = String(mockFetch.mock.calls[0][0]);
+    expect(url).toContain("limit=100");
+    expect(url).toContain("starting_after=cur-0");
+    // No campaign filter — the sweep must see mail whose campaign we do not know.
+    expect(url).not.toContain("campaign_id");
+  });
+
+  it("listEmailsPage reports an exhausted cursor as null and a missing items list as empty", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({}),
+    });
+
+    const { listEmailsPage } = await import("../../src/lib/instantly-client");
+    const page = await listEmailsPage(TEST_API_KEY);
+
+    expect(page.items).toEqual([]);
+    expect(page.nextStartingAfter).toBeNull();
+  });
+
   it("listEmails serializes /emails requests via ≥3s throttle gate", async () => {
     vi.useFakeTimers();
     const setTimeoutSpy = vi.spyOn(global, "setTimeout");
