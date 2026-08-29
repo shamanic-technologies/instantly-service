@@ -109,6 +109,53 @@ describe("fetchInProductionAccounts — infra vendor attribution", () => {
     expect(sqlText).toContain("split_part");
     expect(sqlText).toContain("infraProvider");
   });
+
+  it("reads each account's DOMAIN fill rank, coercing it to a number", async () => {
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        {
+          email: "a@ranked.com",
+          firstName: null,
+          lastName: null,
+          instantlyStatus: 1,
+          warmupScore: 100,
+          dailyLimit: 45,
+          providerCode: 2,
+          timestampCreated: null,
+          infraProvider: "primeforge",
+          // node-postgres hands a numeric-typed column back as TEXT; "10" sorts
+          // before "2" as a string, which would silently invert the order.
+          domainFillRank: "10",
+        },
+        {
+          // No row in instantly_domain_fill_order → null, which sorts LAST
+          // within the vendor. Never fabricated as 0.
+          email: "b@unranked.com",
+          firstName: null,
+          lastName: null,
+          instantlyStatus: 1,
+          warmupScore: 100,
+          dailyLimit: 45,
+          providerCode: 2,
+          timestampCreated: null,
+          infraProvider: "primeforge",
+          domainFillRank: null,
+        },
+      ],
+    });
+
+    const accounts = await fetchInProductionAccounts(null);
+
+    expect(accounts.map((a) => [a.email, a.domainFillRank])).toEqual([
+      ["a@ranked.com", 10],
+      ["b@unranked.com", null],
+    ]);
+
+    const sqlText = JSON.stringify(mockExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("instantly_domain_fill_order");
+    expect(sqlText).toContain("domainFillRank");
+  });
 });
 
 describe("reconcileLifecycle", () => {

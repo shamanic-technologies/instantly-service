@@ -181,8 +181,11 @@ const validBody = {
 };
 
 function acct(
-  overrides: Partial<Account> & { infraProvider?: string | null } = {},
-): Account & { infraProvider?: string | null } {
+  overrides: Partial<Account> & {
+    infraProvider?: string | null;
+    domainFillRank?: number | null;
+  } = {},
+): Account & { infraProvider?: string | null; domainFillRank?: number | null } {
   return { email: "a@test.com", warmup_status: 1, status: 1, ...overrides };
 }
 
@@ -413,6 +416,108 @@ describe("pickSequentialFillAccount", () => {
       "second@x.com",
       "aaa-newcomer@x.com",
     ]);
+  });
+
+  // ── The DOMAIN rank, within a vendor ────────────────────────────────────────
+
+  it("ranks by DOMAIN before age, so a whole domain can be pushed to the tail", () => {
+    // The reason this key exists: PrimeForge provisions a vendor's mailboxes in
+    // batches ordered alphabetically by first name, so several domains interleave
+    // through one batch. Ordered by age alone, no domain is ever contiguous and
+    // none can go quiet. Here `tail.com` is the OLDEST domain and still sorts last.
+    const accounts = [
+      acct({ email: "a@tail.com", infraProvider: "primeforge", domainFillRank: 9, timestamp_created: created(400) }),
+      acct({ email: "b@head.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(10) }),
+      acct({ email: "c@tail.com", infraProvider: "primeforge", domainFillRank: 9, timestamp_created: created(390) }),
+      acct({ email: "d@head.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(5) }),
+    ];
+    expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
+      "b@head.com",
+      "d@head.com",
+      "a@tail.com",
+      "c@tail.com",
+    ]);
+  });
+
+  it("keeps a domain's mailboxes CONTIGUOUS even when another domain interleaves by age", () => {
+    // Exactly the production shape: one batch created seconds apart, alternating
+    // between two domains. Age alone shuffles them together; the domain rank
+    // groups each domain so the second one can drain and be cancelled.
+    const accounts = [
+      acct({ email: "alexander@keep.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(50) }),
+      acct({ email: "bailey@drop.com", infraProvider: "primeforge", domainFillRank: 1, timestamp_created: created(49) }),
+      acct({ email: "clara@keep.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(48) }),
+      acct({ email: "emily@drop.com", infraProvider: "primeforge", domainFillRank: 1, timestamp_created: created(47) }),
+    ];
+    expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
+      "alexander@keep.com",
+      "clara@keep.com",
+      "bailey@drop.com",
+      "emily@drop.com",
+    ]);
+  });
+
+  it("sorts an UNRANKED domain last within its vendor, never first", () => {
+    // Nobody stated where this domain belongs, so it takes the position that
+    // risks the least — the tail — exactly like an unattributed vendor. Note it
+    // lands behind rank 9 even though it is the oldest account here.
+    const accounts = [
+      acct({ email: "unranked@x.com", infraProvider: "primeforge", timestamp_created: created(999) }),
+      acct({ email: "ranked-late@y.com", infraProvider: "primeforge", domainFillRank: 9, timestamp_created: created(1) }),
+      acct({ email: "ranked-first@z.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(1) }),
+    ];
+    expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
+      "ranked-first@z.com",
+      "ranked-late@y.com",
+      "unranked@x.com",
+    ]);
+  });
+
+  it("keeps the VENDOR primary — a rank-0 domain still sorts after every gandi account", () => {
+    // The domain rank orders WITHIN a vendor. It must never let a cheaper vendor
+    // be skipped, or the whole point of the vendor tier is lost.
+    const accounts = [
+      acct({ email: "rank0@primeforge.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(400) }),
+      acct({ email: "rank9@gandi.com", infraProvider: "gandi", domainFillRank: 9, timestamp_created: created(1) }),
+      acct({ email: "unranked@gandi.com", infraProvider: "gandi", timestamp_created: created(1) }),
+    ];
+    expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
+      "rank9@gandi.com",
+      "unranked@gandi.com",
+      "rank0@primeforge.com",
+    ]);
+  });
+
+  it("is byte-identical to the age order when NO domain is ranked", () => {
+    // The rollback is `DELETE FROM instantly_domain_fill_order`; this pins that
+    // an empty table restores the previous behaviour exactly.
+    const accounts = [
+      acct({ email: "young@x.com", infraProvider: "primeforge", timestamp_created: created(10) }),
+      acct({ email: "old@y.com", infraProvider: "primeforge", timestamp_created: created(90) }),
+      acct({ email: "mid@z.com", infraProvider: "primeforge", timestamp_created: created(50) }),
+    ];
+    expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
+      "old@y.com",
+      "mid@z.com",
+      "young@x.com",
+    ]);
+  });
+
+  it("cascades to the NEXT domain when the head domain is full, not to the oldest account", () => {
+    // The waterfall one level down: `head.com` is saturated, so a new sequence
+    // goes to rank 1 — not to `tail.com`, which is older but ranked last and is
+    // the domain we are trying to let go quiet so it can be cancelled.
+    const accounts = [
+      acct({ email: "a@head.com", daily_limit: 45, infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(10) }),
+      acct({ email: "b@middle.com", daily_limit: 45, infraProvider: "primeforge", domainFillRank: 1, timestamp_created: created(20) }),
+      acct({ email: "c@tail.com", daily_limit: 45, infraProvider: "primeforge", domainFillRank: 9, timestamp_created: created(400) }),
+    ];
+    const byEmail = caps([
+      ["a@head.com", { sentToday: 45 }],
+      ["b@middle.com", { sentToday: 0 }],
+      ["c@tail.com", { sentToday: 0 }],
+    ]);
+    expect(pickSequentialFillAccount(accounts, byEmail).email).toBe("b@middle.com");
   });
 
   // ── The waterfall ────────────────────────────────────────────────────────────
