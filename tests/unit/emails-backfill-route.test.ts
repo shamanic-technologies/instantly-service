@@ -38,6 +38,7 @@ describe("POST /internal/audit/emails-backfill", () => {
       inboundRead: 0,
       campaignlessRead: 0,
       exhausted: true,
+      nextCursor: null,
     });
   });
 
@@ -50,7 +51,10 @@ describe("POST /internal/audit/emails-backfill", () => {
     expect(typeof res.body.runId).toBe("string");
 
     await settle();
-    expect(mockBackfillEmails).toHaveBeenCalledWith("platform-key", { maxPages: undefined });
+    expect(mockBackfillEmails).toHaveBeenCalledWith("platform-key", {
+      maxPages: undefined,
+      startingAfter: undefined,
+    });
   });
 
   it("passes a positive maxPages through to bound the walk", async () => {
@@ -58,7 +62,10 @@ describe("POST /internal/audit/emails-backfill", () => {
     await request(app).post("/internal/audit/emails-backfill").send({ maxPages: 5 });
 
     await settle();
-    expect(mockBackfillEmails).toHaveBeenCalledWith("platform-key", { maxPages: 5 });
+    expect(mockBackfillEmails).toHaveBeenCalledWith("platform-key", {
+      maxPages: 5,
+      startingAfter: undefined,
+    });
   });
 
   it("ignores a non-positive maxPages rather than sweeping zero pages", async () => {
@@ -66,7 +73,34 @@ describe("POST /internal/audit/emails-backfill", () => {
     await request(app).post("/internal/audit/emails-backfill").send({ maxPages: 0 });
 
     await settle();
-    expect(mockBackfillEmails).toHaveBeenCalledWith("platform-key", { maxPages: undefined });
+    expect(mockBackfillEmails).toHaveBeenCalledWith("platform-key", {
+      maxPages: undefined,
+      startingAfter: undefined,
+    });
+  });
+
+  it("passes startingAfter through so a killed sweep resumes instead of re-walking", async () => {
+    const app = await makeApp();
+    await request(app)
+      .post("/internal/audit/emails-backfill")
+      .send({ startingAfter: "cur-500" });
+
+    await settle();
+    expect(mockBackfillEmails).toHaveBeenCalledWith("platform-key", {
+      maxPages: undefined,
+      startingAfter: "cur-500",
+    });
+  });
+
+  it("ignores an empty startingAfter rather than resuming from nowhere", async () => {
+    const app = await makeApp();
+    await request(app).post("/internal/audit/emails-backfill").send({ startingAfter: "" });
+
+    await settle();
+    expect(mockBackfillEmails).toHaveBeenCalledWith("platform-key", {
+      maxPages: undefined,
+      startingAfter: undefined,
+    });
   });
 
   it("still answers 202 when the sweep fails — the failure is logged, not swallowed silently", async () => {
