@@ -108,14 +108,22 @@ const ZERO_ENGAGEMENT_LATENCY_METRIC: EngagementLatencyMetric = {
   sampleSize: 0,
 };
 
-/** Compute reply aggregates from detail counts */
+/**
+ * Compute reply aggregates from detail counts.
+ *
+ * ⚠️ A REFERRAL COUNTS AS NEUTRAL, NOT POSITIVE. `repliesPositive` is the
+ * customer's reported SALES INTEREST — it becomes the brand's positive-reply
+ * count and its cost-per-positive-reply downstream — and "not me, but talk to
+ * X" is not this person's buying interest. It stays visible in its own right as
+ * `repliesDetail.referral`, and it is still forwarded to the agency inbox. Same
+ * rule as REPLY_KIND_CLASSIFICATION in lib/reply-kind; keep the two together.
+ */
 export function buildRepliesFromDetail(detail: typeof ZERO_REPLIES_DETAIL) {
   return {
-    repliesPositive:
-      detail.interested + detail.referral + detail.infoRequested + detail.meetingRequested,
+    repliesPositive: detail.interested + detail.infoRequested + detail.meetingRequested,
     repliesNegative:
       detail.notInterested + detail.wrongPerson + detail.changedJob + detail.unsubscribe,
-    repliesNeutral: detail.neutral,
+    repliesNeutral: detail.neutral + detail.referral,
     repliesAutoReply: detail.autoReply + detail.outOfOffice,
     repliesDetail: detail,
   };
@@ -218,9 +226,11 @@ export async function queryEngagementLatencyGroups(
           FILTER (WHERE e.event_type = 'email_link_clicked') AS click_latency_ms,
         MIN(EXTRACT(EPOCH FROM (e.timestamp - s.first_sent_at)) * 1000)
           FILTER (
+            -- The positive-CLASSIFICATION kinds only: a referral is neutral
+            -- (see REPLY_KIND_CLASSIFICATION), so it is not a positive reply
+            -- and must not set the time-to-first-positive-reply latency.
             WHERE e.event_type IN (
               'lead_interested',
-              'lead_referral',
               'lead_info_requested',
               'lead_meeting_requested'
             )

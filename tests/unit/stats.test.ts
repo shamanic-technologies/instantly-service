@@ -242,11 +242,13 @@ describe("GET /stats", () => {
     const response = await request(app).get("/stats").set(identityHeadersObj);
 
     expect(response.status).toBe(200);
-    expect(response.body.recipientStats.repliesPositive).toBe(10); // 3+2+1+4, all four positive kinds
+    // 3+1+4 — a REFERRAL is deliberately NOT counted as sales interest; it
+    // lands in repliesNeutral instead, while staying visible per-kind below.
+    expect(response.body.recipientStats.repliesPositive).toBe(8);
     // 4+1+6+2 — a job change is a negative reply like any other; it is the
     // per-kind detail, not the aggregate, that separates it from a decline.
     expect(response.body.recipientStats.repliesNegative).toBe(13);
-    expect(response.body.recipientStats.repliesNeutral).toBe(5);
+    expect(response.body.recipientStats.repliesNeutral).toBe(7); // 5 neutral + 2 referral
     expect(response.body.recipientStats.repliesAutoReply).toBe(24); // 11+13
     expect(response.body.recipientStats.repliesDetail.interested).toBe(3);
     expect(response.body.recipientStats.repliesDetail.referral).toBe(2);
