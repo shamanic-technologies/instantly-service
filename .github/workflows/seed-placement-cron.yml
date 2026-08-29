@@ -5,16 +5,26 @@ name: Seed placement cron
 # every receiver is a mailbox we already own, and the only cost is the seed mail
 # itself.
 #
-# Two steps on two SEPARATE schedules, and the separation is load-bearing:
+# BOTH steps run DAILY, and the run step decides for itself whether a test is due.
 #
-#   1. POST /internal/audit/seed-placement/run   — Saturday only.
-#      Dispatches one seed from every testable mailbox to every receiver.
-#      Gated behind SEED_PLACEMENT_ENABLED=true; a 409 (not armed) is tolerated.
+#   1. POST /internal/audit/seed-placement/run   — daily, DECLINES most days.
+#      The endpoint asks `decideSeedTestDue`: not due inside 6 days, due on a
+#      send-free day once the interval has passed, and due on ANY day once the
+#      evidence is 12 days old. Gated behind SEED_PLACEMENT_ENABLED=true; a 409
+#      (not armed) is tolerated.
 #
-#   2. POST /internal/audit/seed-placement/sync  — DAILY.
+#   2. POST /internal/audit/seed-placement/sync  — daily.
 #      Reads the receiver mailboxes, records which folder each seed landed in,
 #      and promotes the result into `instantly_placement_results` (the same
 #      silver the Instantly path writes).
+#
+# ⚠️ WHY DAILY RATHER THAN A WEEKLY CRON. GitHub Actions silently delays and
+# skips scheduled workflows under load — on 2026-08-29 the 06:00 Saturday
+# placement job never fired at all and the 05:30 prime job ran at 11:45. A
+# weekly cron therefore means "most weeks", and here the cost of a miss is not a
+# late report: DELIVERY_EVIDENCE_MAX_AGE_DAYS is 16, so two consecutive misses
+# age every account into `delivery_evidence_stale` and the fleet stops sending.
+# Calling daily and letting the DATA decide makes a skipped tick free.
 #
 # ⚠️ Do NOT chain `sync` onto `run` in one job. Both endpoints answer 202 and work
 # in the background, so a chained read would race the writes it depends on — and
@@ -23,11 +33,12 @@ name: Seed placement cron
 # week-old results for months. A daily sync bounds result latency at ~24h while
 # the seeds themselves land within minutes.
 #
-# Saturday for the send, mirroring placement-cron.yml and for the same reason:
-# the campaign send window is Mon-Fri and warmup is weekday-only, so a Saturday
-# mailbox is otherwise empty and absorbs the seed spike safely. The send runs at
-# 08:00, two hours AFTER the paid Instantly test at 06:00, so during the parallel
-# run the two do not contend for the same mailboxes at the same minute.
+# The send still LANDS on a weekend in the normal case: `decideSeedTestDue`
+# declines on a sending day, so the first tick that passes the 6-day interval is
+# a Saturday (or the Sunday after, if Saturday's tick is skipped). The campaign
+# send window is Mon-Fri and warmup is weekday-only, so the seed spike lands on
+# an otherwise-idle mailbox. Only the 12-day urgent trigger overrides that, and
+# a weekday spike is the lesser evil against the whole fleet ageing out.
 #
 # Scheduled runs fire from the DEFAULT branch (main).
 #
@@ -39,7 +50,7 @@ name: Seed placement cron
 
 on:
   schedule:
-    - cron: "0 8 * * 6" # Saturdays 08:00 UTC — dispatch one weekly full-pool seed test
+    - cron: "0 8 * * *" # DAILY 08:00 UTC — ask whether a seed test is due (declines most days)
     - cron: "0 9 * * *" # DAILY 09:00 UTC — read the seeds back (see the cadence note above)
   workflow_dispatch:
 
@@ -75,8 +86,9 @@ jobs:
           cat "${response_file}"
           echo
 
-          # 202 = the seed dispatch was accepted and runs in the background.
-          # 409 = SEED_PLACEMENT_ENABLED not armed yet — tolerated, the sync step
+          # 202 = accepted; the endpoint decides in the background whether a test
+          # is due and logs `not due (...)` when it declines.
+          # 409 = SEED_PLACEMENT_ENABLED not armed — tolerated, the sync step
           # still runs (and finds nothing pending). Anything else is a real failure.
           if [ "${http_status}" != "202" ] && [ "${http_status}" != "409" ]; then
             echo "seed-placement/run failed with HTTP ${http_status}"

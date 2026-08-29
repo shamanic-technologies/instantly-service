@@ -2782,6 +2782,10 @@
             "minimum": 0,
             "exclusiveMinimum": true,
             "description": "Cap the number of seed emails dispatched this run (batching / smoke test)"
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Bypass the due check and run now. The cron never sets this."
           }
         }
       },

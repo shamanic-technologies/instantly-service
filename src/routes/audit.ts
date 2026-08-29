@@ -882,12 +882,15 @@ router.post("/seed-placement/run", async (req: Request, res: Response) => {
   }
 
   const limit = typeof req.body?.limit === "number" ? req.body.limit : undefined;
+  // `force` bypasses the due check for a manual run. The cron never sets it —
+  // that is the whole point of the daily-call/decline-most-days design.
+  const force = req.body?.force === true;
   const runId = crypto.randomUUID();
   res.status(202).json({ accepted: true, runId });
-  console.log(`[audit] seed-placement-run: dispatched run=${runId}`);
+  console.log(`[audit] seed-placement-run: dispatched run=${runId} force=${force}`);
 
   (async () => {
-    const summary = await runSeedPlacementTest({ limit });
+    const summary = await runSeedPlacementTest({ limit, force });
     console.log(`[audit] seed-placement-run: done run=${runId} ${JSON.stringify(summary)}`);
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
