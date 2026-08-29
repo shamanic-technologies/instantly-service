@@ -311,6 +311,13 @@ export async function fetchLifecycleByEmail(): Promise<Map<string, LifecycleView
  * the fleet drains one vendor before touching the next. A domain reported by two
  * vendors resolves deterministically to the one that fills earliest; a domain
  * with no inventory row at all yields null, which sorts LAST rather than first.
+ *
+ * `domainFillRank` is the SECOND key of that order: the domain's position within
+ * its vendor, read from `instantly_domain_fill_order`. It is what lets a whole
+ * domain go quiet — the vendor tier drains a vendor at a time, but a vendor's
+ * mailboxes interleave domains, so without this key every domain of a vendor
+ * stays mildly busy and none can be cancelled. Null (no row) sorts LAST within
+ * the vendor, same reasoning as a null provider.
  */
 /**
  * `sendTransport` is the account's send-transport POLICY ('instantly' | 'smtp').
@@ -320,6 +327,7 @@ export async function fetchLifecycleByEmail(): Promise<Map<string, LifecycleView
  */
 export type PooledAccount = Account & {
   infraProvider: string | null;
+  domainFillRank: number | null;
   sendTransport: string;
 };
 
@@ -337,7 +345,8 @@ export async function fetchInProductionAccounts(
            a.provider_code AS "providerCode",
            a.timestamp_created AS "timestampCreated",
            a.send_transport AS "sendTransport",
-           ip.provider AS "infraProvider"
+           ip.provider AS "infraProvider",
+           dfo.fill_rank AS "domainFillRank"
     FROM instantly_accounts a
     LEFT JOIN instantly_account_feature_policy p ON p.account_email = a.email
     LEFT JOIN LATERAL (
@@ -354,6 +363,8 @@ export async function fetchInProductionAccounts(
                d.provider
       LIMIT 1
     ) ip ON TRUE
+    LEFT JOIN instantly_domain_fill_order dfo
+      ON dfo.domain = split_part(a.email, '@', 2)
     WHERE a.lifecycle_status = 'in_production'
       AND CASE
             WHEN ${slug}::text IN (
@@ -374,6 +385,7 @@ export async function fetchInProductionAccounts(
     timestampCreated: string | Date | null;
     sendTransport: string | null;
     infraProvider: string | null;
+    domainFillRank: number | string | null;
   }>(result).map((r) => ({
     email: r.email,
     warmup_status: 0,
@@ -388,6 +400,12 @@ export async function fetchInProductionAccounts(
       ? new Date(r.timestampCreated).toISOString()
       : undefined,
     infraProvider: r.infraProvider,
+    // node-postgres returns an int column as a JS number, but a `numeric`-typed
+    // one as text; coerce so the sort compares numbers, never strings ("10" < "2").
+    domainFillRank:
+      r.domainFillRank === null || r.domainFillRank === undefined
+        ? null
+        : Number(r.domainFillRank),
     // Resolved rather than passed through, so an unrecognised or missing value
     // can only ever mean Instantly — the only way onto the self-send pipe is an
     // explicit, reversible UPDATE.
