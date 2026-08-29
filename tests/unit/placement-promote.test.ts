@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, it, expect } from "vitest";
 import {
   aggregatePlacementRows,
@@ -186,5 +188,26 @@ describe("summarizeEspRows — ONE pooled score across every ESP", () => {
   it("returns null for empty input or zero-seed rows (never fabricates 0%)", () => {
     expect(summarizeEspRows([])).toBeNull();
     expect(summarizeEspRows([row({ seedTotal: 0 })])).toBeNull();
+  });
+});
+
+describe("undated placement tests are not evidence", () => {
+  // `tested_at` is what DELIVERY_EVIDENCE_MAX_AGE_DAYS measures against, so
+  // stamping an undated test with the ingest time would make arbitrarily old
+  // evidence read as fresh — silently disabling the staleness gate. The sync
+  // skips such a test instead; bronze still keeps the payload.
+  it("promotion is driven by a real timestamp, never by the ingest clock", () => {
+    const src = readFileSync(
+      new URL("../../src/lib/placement-sync.ts", import.meta.url),
+      "utf8",
+    );
+    const fn = src.slice(src.indexOf("function testedAtOf"), src.indexOf("export interface PlacementSyncSummary"));
+
+    expect(fn).toContain("Date | null");
+    expect(fn).toContain("if (!t) return null");
+    // The fabricating fallback must not come back.
+    expect(fn).not.toMatch(/return\s+t\s*\?\s*new Date\(t\)\s*:\s*new Date\(\)/);
+    // And the caller must skip rather than promote.
+    expect(src).toContain("not promoted to silver");
   });
 });
