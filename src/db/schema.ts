@@ -1020,3 +1020,82 @@ export const infraPriceRates = pgTable(
     primaryKey({ columns: [table.provider, table.scope, table.item, table.effectiveFrom] }),
   ],
 );
+
+// ─── In-house seed placement (Bronze) ───────────────────────────────────────
+//
+// The self-hosted replacement for Instantly's paid inbox-placement test. We
+// send a seed from every testable mailbox to a small set of receiver mailboxes
+// we own, then read each receiver over IMAP and record which folder the seed
+// landed in. Two bronze tables because the measurement has two independent
+// halves and BOTH are needed to be honest:
+//
+//   dispatches   — the DENOMINATOR. A seed we sent. Written at send time.
+//   observations — the NUMERATOR. A seed we found. Written at read time.
+//
+// `missing` is derived as dispatched-minus-observed, so a seed that vanished is
+// counted against the sender instead of silently shrinking the sample. Keeping
+// the halves apart is what makes that possible: a single "result" table would
+// have no way to represent a seed that was sent and never arrived.
+//
+// Silver is the EXISTING `instantly_placement_results` — nothing in that table
+// is Instantly-specific (`test_id` is plain text), so these rows promote into it
+// under a `seed:` test id and every downstream reader (the lifecycle delivery
+// gate, account-health, the history series) works unchanged.
+
+// Bronze A: one row per seed email dispatched. `message_id` is the correlation
+// key against the observation side, and is globally unique per sent message, so
+// it doubles as the idempotency key for a re-run.
+export const seedPlacementDispatches = pgTable(
+  "seed_placement_dispatches",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    testId: text("test_id").notNull(),
+    senderEmail: text("sender_email").notNull(),
+    receiverEmail: text("receiver_email").notNull(),
+    // Recipient ESP, same enum as the Instantly silver rows (1=Google, 2=Outlook).
+    recipientEsp: integer("recipient_esp").notNull(),
+    messageId: text("message_id").notNull(),
+    // `sent` counts toward the denominator. A `permanent` / `transient` failure
+    // is recorded but NOT counted — we never learned anything about placement,
+    // and scoring an SMTP refusal as a missing inbox would blame the receiver
+    // for a send that never left.
+    outcome: text("outcome").notNull(),
+    response: text("response"),
+    dispatchedAt: timestamp("dispatched_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("seed_placement_dispatches_message_id_idx").on(table.messageId),
+    index("seed_placement_dispatches_test_idx").on(table.testId),
+  ],
+);
+
+// Bronze B: one row per seed found in a receiver mailbox.
+//
+// FIRST OBSERVATION WINS (the unique index makes a re-read a no-op). Gmail can
+// reclassify a message after delivery; where it landed AT DELIVERY is the answer
+// the deliverability question is actually asking, so a later move must not
+// overwrite it.
+export const seedPlacementObservations = pgTable(
+  "seed_placement_observations",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    testId: text("test_id").notNull(),
+    messageId: text("message_id").notNull(),
+    receiverEmail: text("receiver_email").notNull(),
+    // The IMAP path the seed was read from, kept verbatim for auditability.
+    folder: text("folder").notNull(),
+    // `inbox` | `spam` — the classified verdict for that folder.
+    placement: text("placement").notNull(),
+    spfPass: boolean("spf_pass"),
+    dkimPass: boolean("dkim_pass"),
+    dmarcPass: boolean("dmarc_pass"),
+    observedAt: timestamp("observed_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("seed_placement_observations_receiver_message_idx").on(
+      table.receiverEmail,
+      table.messageId,
+    ),
+    index("seed_placement_observations_test_idx").on(table.testId),
+  ],
+);

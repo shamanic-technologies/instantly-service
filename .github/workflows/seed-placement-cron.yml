@@ -1,0 +1,114 @@
+name: Seed placement cron
+
+# The IN-HOUSE inbox-placement test — the self-hosted replacement for Instantly's
+# $47/mo Growth Inbox Placement subscription. It spends nothing: every sender and
+# every receiver is a mailbox we already own, and the only cost is the seed mail
+# itself.
+#
+# Two steps on two SEPARATE schedules, and the separation is load-bearing:
+#
+#   1. POST /internal/audit/seed-placement/run   — Saturday only.
+#      Dispatches one seed from every testable mailbox to every receiver.
+#      Gated behind SEED_PLACEMENT_ENABLED=true; a 409 (not armed) is tolerated.
+#
+#   2. POST /internal/audit/seed-placement/sync  — DAILY.
+#      Reads the receiver mailboxes, records which folder each seed landed in,
+#      and promotes the result into `instantly_placement_results` (the same
+#      silver the Instantly path writes).
+#
+# ⚠️ Do NOT chain `sync` onto `run` in one job. Both endpoints answer 202 and work
+# in the background, so a chained read would race the writes it depends on — and
+# even setting that aside, seeds need time to be delivered and filed. That exact
+# create-then-read-in-one-run shape is what made `placement-cron.yml` ingest
+# week-old results for months. A daily sync bounds result latency at ~24h while
+# the seeds themselves land within minutes.
+#
+# Saturday for the send, mirroring placement-cron.yml and for the same reason:
+# the campaign send window is Mon-Fri and warmup is weekday-only, so a Saturday
+# mailbox is otherwise empty and absorbs the seed spike safely. The send runs at
+# 08:00, two hours AFTER the paid Instantly test at 06:00, so during the parallel
+# run the two do not contend for the same mailboxes at the same minute.
+#
+# Scheduled runs fire from the DEFAULT branch (main).
+#
+# Required secrets (already used by reconcile-cron.yml / placement-cron.yml):
+#   INSTANTLY_SERVICE_URL       — production service URL
+#   INSTANTLY_SERVICE_API_KEY   — service API key for /internal/* routes
+#
+# Manually trigger via the workflow_dispatch button on the GitHub Actions page.
+
+on:
+  schedule:
+    - cron: "0 8 * * 6" # Saturdays 08:00 UTC — dispatch one weekly full-pool seed test
+    - cron: "0 9 * * *" # DAILY 09:00 UTC — read the seeds back (see the cadence note above)
+  workflow_dispatch:
+
+jobs:
+  seed-placement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: POST /internal/audit/seed-placement/run
+        # Weekly step. The condition is TRUE for the Saturday cron AND for a
+        # manual workflow_dispatch (whose `schedule` is empty), so a manual run
+        # still does the full send-then-read sequence.
+        if: github.event.schedule != '0 9 * * *'
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
+            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
+            exit 1
+          fi
+
+          response_file=$(mktemp)
+          http_status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time 120 \
+            "${SERVICE_URL}/internal/audit/seed-placement/run")
+
+          echo "HTTP ${http_status}"
+          cat "${response_file}"
+          echo
+
+          # 202 = the seed dispatch was accepted and runs in the background.
+          # 409 = SEED_PLACEMENT_ENABLED not armed yet — tolerated, the sync step
+          # still runs (and finds nothing pending). Anything else is a real failure.
+          if [ "${http_status}" != "202" ] && [ "${http_status}" != "409" ]; then
+            echo "seed-placement/run failed with HTTP ${http_status}"
+            exit 1
+          fi
+
+      - name: POST /internal/audit/seed-placement/sync
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
+            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
+            exit 1
+          fi
+
+          response_file=$(mktemp)
+          http_status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time 60 \
+            "${SERVICE_URL}/internal/audit/seed-placement/sync")
+
+          echo "HTTP ${http_status}"
+          cat "${response_file}"
+          echo
+
+          # 202 + background. Completion is confirmed in the service logs
+          # (`seed-placement-sync: done`), NOT by this curl's exit code.
+          if [ "${http_status}" != "202" ] && [ "${http_status}" != "200" ]; then
+            echo "seed-placement/sync dispatch failed with HTTP ${http_status}"
+            exit 1
+          fi
