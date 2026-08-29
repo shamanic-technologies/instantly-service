@@ -24,7 +24,7 @@ import {
   seedPlacementObservations,
 } from "../../db/schema";
 import type { CallerInfo } from "../key-client";
-import { GMAIL_IMAP_PORT, type MailboxCredential } from "../self-send/mailbox-credentials";
+import { GMAIL_IMAP_PORT, loginFor, type MailboxCredential } from "../self-send/mailbox-credentials";
 import { loadSeedCredentialResolver } from "./credentials";
 import {
   aggregateSeedPlacement,
@@ -104,7 +104,7 @@ async function pollReceiver(
     host: credential.imapHost,
     port: GMAIL_IMAP_PORT,
     secure: true,
-    auth: { user: credential.address, pass: credential.appPassword },
+    auth: { user: loginFor(credential), pass: credential.appPassword },
     logger: false,
   });
 

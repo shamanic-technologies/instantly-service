@@ -18,7 +18,7 @@
 
 import nodemailer from "nodemailer";
 
-import { GMAIL_SMTP_PORT, type MailboxCredential } from "./mailbox-credentials";
+import { GMAIL_SMTP_PORT, loginFor, type MailboxCredential } from "./mailbox-credentials";
 import type { BuiltMessage } from "./message";
 
 export interface DispatchResult {
@@ -109,7 +109,7 @@ export async function dispatchMessage(
     // mailbox password on the wire in clear text.
     secure: false,
     requireTLS: true,
-    auth: { user: credential.address, pass: credential.appPassword },
+    auth: { user: loginFor(credential), pass: credential.appPassword },
   });
 
   try {

@@ -52,6 +52,23 @@ export interface MailboxCredential {
   appPassword: string;
   smtpHost: string;
   imapHost: string;
+  /**
+   * SMTP/IMAP login, when it differs from the address.
+   *
+   * A Gandi domain is typically ONE mailbox plus several aliases, and Instantly
+   * holds an account per alias — so the account `klourd@pressbeat.ai` sends as
+   * itself but authenticates as `kevin@pressbeat.ai`, the only real mailbox on
+   * that domain. Measured: 175 Instantly IMAP accounts sit on 44 Gandi
+   * mailboxes. Conflating the two makes every alias unauthenticable.
+   *
+   * Absent means the address IS the login, which is the Primeforge case.
+   */
+  authUser?: string;
+}
+
+/** The SMTP/IMAP username for a credential — the alias-aware login. */
+export function loginFor(credential: MailboxCredential): string {
+  return credential.authUser ?? credential.address;
 }
 
 /**

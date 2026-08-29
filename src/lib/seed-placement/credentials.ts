@@ -38,6 +38,11 @@ export interface ManualMailboxEntry {
   appPassword: string;
   smtpHost: string;
   imapHost: string;
+  /**
+   * SMTP/IMAP login when it differs from the address (the Gandi alias case).
+   * Optional — omitted means the address is the login.
+   */
+  authUser?: string;
 }
 
 /**
@@ -72,6 +77,7 @@ export function parseManualCredentials(raw: string): ManualMailboxEntry[] {
     const appPassword = String(e?.appPassword ?? "").replace(/\s/g, "");
     const smtpHost = String(e?.smtpHost ?? "").trim();
     const imapHost = String(e?.imapHost ?? "").trim();
+    const authUser = String(e?.authUser ?? "").trim().toLowerCase();
 
     if (!address || !appPassword || !smtpHost || !imapHost) {
       throw new MailboxCredentialError(
@@ -79,7 +85,13 @@ export function parseManualCredentials(raw: string): ManualMailboxEntry[] {
       );
     }
 
-    return { address, appPassword, smtpHost, imapHost };
+    return {
+      address,
+      appPassword,
+      smtpHost,
+      imapHost,
+      ...(authUser && authUser !== address ? { authUser } : {}),
+    };
   });
 }
 
@@ -97,6 +109,7 @@ export function selectManualCredential(
     appPassword: entry.appPassword,
     smtpHost: entry.smtpHost,
     imapHost: entry.imapHost,
+    ...(entry.authUser ? { authUser: entry.authUser } : {}),
   };
 }
 
