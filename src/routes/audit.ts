@@ -358,6 +358,11 @@ router.post("/accounts-sync", async (_req: Request, res: Response) => {
 /**
  * POST /internal/audit/emails-backfill
  *
+ * `{startingAfter}` resumes a previous run from the cursor its summary (and its
+ * progress lines) reported. That is not a nicety: a deploy recreates the
+ * container and kills the sweep, and re-walking from the newest email each time
+ * spends the whole run re-reading pages that are already stored.
+ *
  * Platform-scoped. Mirrors the WHOLE Instantly Unibox into bronze
  * (`instantly_emails_raw`) by walking `GET /emails` with no campaign filter.
  * Cancelling an Instantly plan or a single inbox permanently deletes those
@@ -371,12 +376,18 @@ router.post("/accounts-sync", async (_req: Request, res: Response) => {
  */
 router.post("/emails-backfill", async (req: Request, res: Response) => {
   const runId = crypto.randomUUID();
-  const rawMaxPages = (req.body as { maxPages?: unknown } | undefined)?.maxPages;
+  const body = req.body as { maxPages?: unknown; startingAfter?: unknown } | undefined;
+  const rawMaxPages = body?.maxPages;
   const maxPages =
     typeof rawMaxPages === "number" && rawMaxPages > 0 ? rawMaxPages : undefined;
+  const rawStartingAfter = body?.startingAfter;
+  const startingAfter =
+    typeof rawStartingAfter === "string" && rawStartingAfter.length > 0
+      ? rawStartingAfter
+      : undefined;
   res.status(202).json({ accepted: true, runId });
   console.log(
-    `[audit] emails-backfill: dispatched run=${runId} maxPages=${maxPages ?? "all"}`,
+    `[audit] emails-backfill: dispatched run=${runId} maxPages=${maxPages ?? "all"} resumeFrom=${startingAfter ?? "newest"}`,
   );
 
   (async () => {
@@ -384,7 +395,7 @@ router.post("/emails-backfill", async (req: Request, res: Response) => {
       method: "POST",
       path: "/internal/audit/emails-backfill",
     });
-    const summary = await backfillEmails(apiKey, { maxPages });
+    const summary = await backfillEmails(apiKey, { maxPages, startingAfter });
     console.log(`[audit] emails-backfill: done run=${runId} ${JSON.stringify(summary)}`);
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);

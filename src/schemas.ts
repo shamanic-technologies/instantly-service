@@ -1630,6 +1630,12 @@ const EmailsBackfillRequestSchema = z
       .positive()
       .optional()
       .describe("Bound the walk to N pages (100 emails each). Omit to sweep the whole Unibox."),
+    startingAfter: z
+      .string()
+      .optional()
+      .describe(
+        "Resume from the cursor a previous run reported (its summary log line, or a progress line). Omit to start from the newest email.",
+      ),
   })
   .openapi("EmailsBackfillRequest");
 
@@ -1645,7 +1651,7 @@ registry.registerPath({
   path: "/internal/audit/emails-backfill",
   summary: "Mirror the whole Instantly Unibox into bronze",
   description:
-    "Platform-scoped (no org). Walks `GET /emails` with no campaign filter and mirrors every email — sent and received — into `instantly_emails_raw`. Cancelling an Instantly plan or a single inbox permanently deletes those conversations, replies included, and silver records only THAT a lead replied, never what they wrote. Read-only against Instantly (spends no quota, declares no cost). Idempotent: a re-run re-reads pages but writes only what is new. 202 + background; watch logs for `emails-backfill: done`.",
+    "Platform-scoped (no org). Walks `GET /emails` with no campaign filter and mirrors every email — sent and received — into `instantly_emails_raw`. Cancelling an Instantly plan or a single inbox permanently deletes those conversations, replies included, and silver records only THAT a lead replied, never what they wrote. Read-only against Instantly (spends no quota, declares no cost). Idempotent: a re-run re-reads pages but writes only what is new. A deploy recreates the container and kills the sweep, so the summary and each progress line report the cursor to resume from — pass it back as `startingAfter`. 202 + background; watch logs for `emails-backfill: done`.",
   request: {
     body: {
       required: false,

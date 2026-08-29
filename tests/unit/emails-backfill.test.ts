@@ -197,6 +197,50 @@ describe("backfillEmails", () => {
     expect(summary.emailsStored).toBe(0);
   });
 
+  it("resumes from a supplied cursor instead of re-walking from the newest email", async () => {
+    mockListEmailsPage.mockResolvedValueOnce({
+      items: [email({ id: "1" })],
+      nextStartingAfter: null,
+    });
+
+    await backfillEmails(API_KEY, { startingAfter: "cur-500" });
+
+    expect(mockListEmailsPage.mock.calls[0][1]).toMatchObject({ startingAfter: "cur-500" });
+  });
+
+  it("reports the cursor to resume from when maxPages cuts the walk short", async () => {
+    mockListEmailsPage
+      .mockResolvedValueOnce({ items: [email({ id: "1" })], nextStartingAfter: "cur-1" })
+      .mockResolvedValueOnce({ items: [email({ id: "2" })], nextStartingAfter: "cur-2" });
+
+    const summary = await backfillEmails(API_KEY, { maxPages: 2 });
+
+    expect(summary.exhausted).toBe(false);
+    expect(summary.nextCursor).toBe("cur-2");
+  });
+
+  it("reports a null cursor once the list is exhausted — there is nothing to resume", async () => {
+    mockListEmailsPage.mockResolvedValueOnce({
+      items: [email({ id: "1" })],
+      nextStartingAfter: null,
+    });
+
+    const summary = await backfillEmails(API_KEY);
+
+    expect(summary.exhausted).toBe(true);
+    expect(summary.nextCursor).toBeNull();
+  });
+
+  it("keeps the supplied cursor as the resume point when the very first page errors", async () => {
+    // A run killed immediately must not report "start from the newest email".
+    mockListEmailsPage.mockResolvedValueOnce({ items: [], nextStartingAfter: null });
+
+    const summary = await backfillEmails(API_KEY, { startingAfter: "cur-500" });
+
+    expect(summary.nextCursor).toBeNull();
+    expect(summary.exhausted).toBe(true);
+  });
+
   it("fails loud when a page errors — a partial copy must not read as a clean run", async () => {
     mockListEmailsPage
       .mockResolvedValueOnce({ items: [email({ id: "1" })], nextStartingAfter: "cur-1" })
