@@ -40,6 +40,11 @@ import {
   isPlacementSchedulingEnabled,
 } from "../lib/placement-sync";
 import {
+  runSeedPlacementTest,
+  isSeedPlacementEnabled,
+} from "../lib/seed-placement/run";
+import { syncSeedPlacement } from "../lib/seed-placement/sync";
+import {
   buildReconciliation,
   isSnapshotStale,
   type LocalReconcileCounts,
@@ -840,6 +845,87 @@ router.post("/forward-thread", async (req: Request, res: Response) => {
     console.error(`[audit] forward-thread: failed for campaign=${campaignId}: ${message}`);
     res.status(500).json({ error: message });
   }
+});
+
+/**
+ * POST /internal/audit/seed-placement/run
+ *
+ * Platform-scoped. Dispatches ONE in-house seed placement test: a seed from
+ * every testable mailbox to every receiver mailbox we own and can read. This is
+ * the self-hosted replacement for Instantly's $47/mo Growth Inbox Placement
+ * subscription — it spends nothing.
+ *
+ * SENDS REAL MAIL from the fleet, so it is gated behind
+ * `SEED_PLACEMENT_ENABLED=true` and returns 409 when disabled. Results are read
+ * by the SEPARATE /sync run on its own schedule — never chained here, or the
+ * poll would run before the seeds land and ingest nothing (the failure that made
+ * the Instantly placement cron a week stale for months).
+ *
+ * 202 + background; watch logs for `seed-placement-run: done`.
+ */
+router.post("/seed-placement/run", async (req: Request, res: Response) => {
+  if (!isSeedPlacementEnabled()) {
+    return res.status(409).json({
+      error: "seed placement disabled — set SEED_PLACEMENT_ENABLED=true to arm",
+    });
+  }
+
+  const limit = typeof req.body?.limit === "number" ? req.body.limit : undefined;
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, runId });
+  console.log(`[audit] seed-placement-run: dispatched run=${runId}`);
+
+  (async () => {
+    const summary = await runSeedPlacementTest({ limit });
+    console.log(`[audit] seed-placement-run: done run=${runId} ${JSON.stringify(summary)}`);
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] seed-placement-run run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/audit/seed-placement/sync
+ *
+ * Platform-scoped. Reads every receiver mailbox that still owes us an
+ * observation, records which folder each seed landed in, and promotes the
+ * affected tests into `instantly_placement_results` — the SAME silver the
+ * Instantly path writes, so the lifecycle delivery gate and account-health pick
+ * the results up with no code change.
+ *
+ * Read-only against the mailboxes and idempotent, so it is NOT behind the
+ * kill-switch: with the run disabled there is simply nothing pending. Refreshing
+ * delivery is what can move a lifecycle, so reconcile follows — exactly as the
+ * Instantly sync does.
+ *
+ * 202 + background; watch logs for `seed-placement-sync: done`.
+ */
+router.post("/seed-placement/sync", async (_req: Request, res: Response) => {
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, runId });
+  console.log(`[audit] seed-placement-sync: dispatched run=${runId}`);
+
+  (async () => {
+    const summary = await syncSeedPlacement();
+
+    // Only reconcile when delivery actually changed. A no-op sync must not churn
+    // the fleet's lifecycle, and reconcile is an Instantly-key call.
+    let lifecycle: unknown = "skipped";
+    if (summary.silverRows > 0) {
+      const apiKey = await resolvePlatformInstantlyApiKey({
+        method: "POST",
+        path: "/internal/audit/seed-placement/sync",
+      });
+      lifecycle = await reconcileLifecycle(apiKey);
+    }
+
+    console.log(
+      `[audit] seed-placement-sync: done run=${runId} ${JSON.stringify({ ...summary, lifecycle })}`,
+    );
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] seed-placement-sync run=${runId} failed: ${message}`);
+  });
 });
 
 export default router;
