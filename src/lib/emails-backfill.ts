@@ -50,6 +50,18 @@ export interface EmailsBackfillSummary {
   campaignlessRead: number;
   /** Whether the sweep reached the end of the list (false when `maxPages` cut it). */
   exhausted: boolean;
+  /**
+   * The cursor to resume from, or null once the list is exhausted.
+   *
+   * This is what makes an interrupted sweep cheap to finish. The service is
+   * redeployed whenever anyone merges, and a redeploy recreates the container
+   * and kills whatever background work was running — three times during the
+   * first full run. Without a cursor to resume from, every restart re-walks the
+   * pages it already stored, and at Instantly's mandated 3.5s pacing that costs
+   * ~22 minutes per 400 pages already covered, so a sweep that is killed every
+   * ~20 minutes never reaches new ground at all.
+   */
+  nextCursor: string | null;
 }
 
 /**
@@ -107,9 +119,9 @@ async function resolveOrgIds(campaignIds: string[]): Promise<Map<string, string 
  * Walk the whole workspace and mirror every email into bronze.
  *
  * Idempotent: the insert conflicts on `instantly_email_id` and does nothing, so
- * a re-run re-reads pages but writes only what is new. Resumable in the only
- * sense that matters — each page is persisted as it arrives, so an interrupted
- * sweep keeps everything it had already read and a re-run picks the rest up.
+ * a re-run re-reads pages but writes only what is new. Each page is persisted as
+ * it arrives, so an interrupted sweep keeps everything it had already read, and
+ * the summary reports the cursor to resume from.
  *
  * Fail-loud: an error on any page propagates. A sweep that silently skipped a
  * page would report a clean run over a Unibox it had not finished copying, and
@@ -117,10 +129,15 @@ async function resolveOrgIds(campaignIds: string[]): Promise<Map<string, string 
  *
  * `maxPages` bounds the walk for a probe; without it the sweep runs to the end
  * of the list (~1,200 pages at 3.5s of mandated pacing ≈ 75 minutes).
+ *
+ * `startingAfter` resumes a previous run from the cursor it reported, which is
+ * the only practical way to finish: a deploy kills the sweep, and re-walking
+ * from the newest email each time spends the whole run re-reading pages that
+ * are already stored.
  */
 export async function backfillEmails(
   apiKey: string,
-  options: { maxPages?: number } = {},
+  options: { maxPages?: number; startingAfter?: string } = {},
 ): Promise<EmailsBackfillSummary> {
   const { maxPages } = options;
   const summary: EmailsBackfillSummary = {
@@ -130,9 +147,10 @@ export async function backfillEmails(
     inboundRead: 0,
     campaignlessRead: 0,
     exhausted: false,
+    nextCursor: options.startingAfter ?? null,
   };
 
-  let startingAfter: string | undefined;
+  let startingAfter: string | undefined = options.startingAfter;
   for (;;) {
     if (maxPages !== undefined && summary.pages >= maxPages) break;
 
@@ -163,6 +181,8 @@ export async function backfillEmails(
           emailsRead: summary.emailsRead,
           emailsStored: summary.emailsStored,
           inboundRead: summary.inboundRead,
+          // Logged so an interrupted run can be resumed from here.
+          cursor: page.nextStartingAfter,
         })}`,
       );
     }
@@ -171,9 +191,11 @@ export async function backfillEmails(
     // nothing while still handing back a cursor would otherwise loop forever.
     if (page.nextStartingAfter === null || page.items.length === 0) {
       summary.exhausted = true;
+      summary.nextCursor = null;
       break;
     }
     startingAfter = page.nextStartingAfter;
+    summary.nextCursor = page.nextStartingAfter;
   }
 
   return summary;
