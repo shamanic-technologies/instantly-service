@@ -56,9 +56,13 @@ export async function insertAnalyticsSnapshot(
 /**
  * Insert /emails records. Idempotent: on conflict (instantly_email_id) do nothing.
  * Returns the IDs of newly inserted rows (excludes rows that already existed).
+ *
+ * `instantlyCampaignId` is nullable because the workspace-wide Unibox backfill
+ * reads `/emails` with no campaign filter and that list carries mail attached to
+ * no campaign; the reconcile poll always passes a concrete id.
  */
 export async function insertEmailsBatch(
-  instantlyCampaignId: string,
+  instantlyCampaignId: string | null,
   orgId: string | null,
   emails: EmailRecord[],
 ): Promise<BronzeRowRef[]> {

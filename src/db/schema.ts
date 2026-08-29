@@ -638,7 +638,11 @@ export const instantlyEmailsRaw = pgTable(
   {
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     orgId: text("org_id"),
-    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    // Nullable since migration 0043: the workspace-wide Unibox backfill reads
+    // `/emails` with no campaign filter, and that list legitimately carries mail
+    // attached to no campaign. The reconcile poll still always writes a concrete
+    // id, and every reader filters by one.
+    instantlyCampaignId: text("instantly_campaign_id"),
     instantlyEmailId: text("instantly_email_id").notNull(),
     payload: jsonb("payload").notNull(),
     fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
