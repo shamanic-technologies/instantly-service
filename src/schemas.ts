@@ -1622,6 +1622,45 @@ const PlacementSyncAcceptedSchema = z
   })
   .openapi("PlacementSyncAccepted");
 
+const EmailsBackfillRequestSchema = z
+  .object({
+    maxPages: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Bound the walk to N pages (100 emails each). Omit to sweep the whole Unibox."),
+  })
+  .openapi("EmailsBackfillRequest");
+
+const EmailsBackfillAcceptedSchema = z
+  .object({
+    accepted: z.boolean(),
+    runId: z.string().describe("Background run identifier (watch logs)"),
+  })
+  .openapi("EmailsBackfillAccepted");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/audit/emails-backfill",
+  summary: "Mirror the whole Instantly Unibox into bronze",
+  description:
+    "Platform-scoped (no org). Walks `GET /emails` with no campaign filter and mirrors every email — sent and received — into `instantly_emails_raw`. Cancelling an Instantly plan or a single inbox permanently deletes those conversations, replies included, and silver records only THAT a lead replied, never what they wrote. Read-only against Instantly (spends no quota, declares no cost). Idempotent: a re-run re-reads pages but writes only what is new. 202 + background; watch logs for `emails-backfill: done`.",
+  request: {
+    body: {
+      required: false,
+      content: { "application/json": { schema: EmailsBackfillRequestSchema } },
+    },
+  },
+  responses: {
+    202: {
+      description: "Accepted — backfill runs in the background",
+      content: { "application/json": { schema: EmailsBackfillAcceptedSchema } },
+    },
+    401: { description: "Unauthorized" },
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/internal/audit/placement-test/sync",
