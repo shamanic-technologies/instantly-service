@@ -151,6 +151,33 @@ export async function resolveMailboxCredential(
   return selectMailboxCredential(email, mailboxes);
 }
 
+/**
+ * Every mailbox we can authenticate as, from both sources at once.
+ *
+ * The send path resolves ONE mailbox at a time and throws when it cannot, which
+ * is right for dispatching. Deciding whether a mailbox is ELIGIBLE for the
+ * self-send pipe is a different question asked on the request path, where an
+ * exception is the wrong answer and a per-send vendor pagination is the wrong
+ * cost. So this reads both sources once and returns the addresses; the caller
+ * treats absence as "not eligible", never as an error.
+ */
+export async function loadCredentialedMailboxes(
+  caller: CallerInfo,
+): Promise<Set<string>> {
+  const manual = await loadManualCredentials(caller);
+  const key = await resolvePlatformKey("primeforge", caller);
+  const mailboxes = await listPrimeforgeRawMailboxes(key);
+
+  const addresses = new Set<string>();
+  for (const entry of manual) addresses.add(entry.address);
+  for (const mailbox of mailboxes) {
+    const address = String(mailbox.address ?? "").trim().toLowerCase();
+    const appPassword = String(mailbox.appPassword ?? "").replace(/\s/g, "");
+    if (address && appPassword) addresses.add(address);
+  }
+  return addresses;
+}
+
 // ─── Manual credentials (non-Primeforge mailboxes) ──────────────────────────
 
 /** key-service platform provider holding the hand-entered mailbox credentials. */
