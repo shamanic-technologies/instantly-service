@@ -39,6 +39,23 @@ import {
   type SendTransport,
 } from "./transport";
 
+/**
+ * Local row unwrapper — same shape every other module in this repo defines.
+ *
+ * This service runs on node-postgres, where `db.execute` resolves to a
+ * `QueryResult` object (`{ rows, rowCount, … }`), NOT to an array. Casting the
+ * result to an array type compiles clean and then throws `rows is not iterable`
+ * on the first real query — which is exactly how this counting query took every
+ * send down in production. Reading `.rows` is the only correct access; the
+ * array branch is kept because every sibling module carries it.
+ */
+function rowsOf<T = Record<string, unknown>>(result: unknown): T[] {
+  if (!result) return [];
+  return Array.isArray(result)
+    ? (result as T[])
+    : (((result as { rows?: T[] }).rows) ?? []);
+}
+
 /** Assignments made in the last 24h, per pipe. */
 export interface TransportAssignmentCounts {
   instantly: number;
@@ -81,13 +98,15 @@ export function chooseSequenceTransport(
  * that have not yet decided anything skew the next decision.
  */
 export async function fetchTransportAssignmentCounts(): Promise<TransportAssignmentCounts> {
-  const rows = (await db.execute(sql`
-    SELECT send_transport, COUNT(*)::int AS n
-    FROM instantly_campaigns
-    WHERE created_at > now() - interval '24 hours'
-      AND instantly_campaign_id NOT LIKE 'reserving:%'
-    GROUP BY send_transport
-  `)) as unknown as Array<{ send_transport: string | null; n: number }>;
+  const rows = rowsOf<{ send_transport: string | null; n: number }>(
+    await db.execute(sql`
+      SELECT send_transport, COUNT(*)::int AS n
+      FROM instantly_campaigns
+      WHERE created_at > now() - interval '24 hours'
+        AND instantly_campaign_id NOT LIKE 'reserving:%'
+      GROUP BY send_transport
+    `),
+  );
 
   const counts: TransportAssignmentCounts = { instantly: 0, smtp: 0 };
   for (const row of rows) {

@@ -22,11 +22,24 @@ import { clearStatsCache } from "../../src/lib/stats-cache";
 
 const CALLER = { method: "POST", path: "/orgs/send" } as const;
 
+/**
+ * What `db.execute` ACTUALLY resolves to in this service.
+ *
+ * instantly-service runs on node-postgres, whose driver returns a `QueryResult`
+ * object — not an array. Every mock here goes through this helper so the unit
+ * tests exercise the same shape production does; the previous mocks returned a
+ * bare array (the postgres.js shape), which is why a query that threw
+ * `rows is not iterable` on the very first send shipped green.
+ */
+function pgResult<T>(rows: T[]) {
+  return { command: "SELECT", rowCount: rows.length, oid: null, fields: [], rows };
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   clearStatsCache();
   delete process.env.SEND_TRANSPORT_AB_ENABLED;
-  mockDbExecute.mockResolvedValue([]);
+  mockDbExecute.mockResolvedValue(pgResult([]));
   mockLoadCredentialedMailboxes.mockResolvedValue(
     new Set(["kevin@boostdistribute.com", "kevinl@marketingagency.life"]),
   );
@@ -66,11 +79,11 @@ describe("chooseSequenceTransport", () => {
 
 describe("fetchTransportAssignmentCounts", () => {
   it("counts each pipe's assignments, treating an unset transport as instantly", async () => {
-    mockDbExecute.mockResolvedValue([
+    mockDbExecute.mockResolvedValue(pgResult([
       { send_transport: "instantly", n: 12 },
       { send_transport: "smtp", n: 5 },
       { send_transport: null, n: 3 },
-    ]);
+    ]));
 
     expect(await fetchTransportAssignmentCounts()).toEqual({ instantly: 15, smtp: 5 });
   });
@@ -85,8 +98,31 @@ describe("fetchTransportAssignmentCounts", () => {
     expect(sqlText).toContain("instantly_campaigns");
   });
 
+  it("reads a node-postgres QueryResult, not an array — the shape prod returns", async () => {
+    // Regression, 2026-08-30: the query result was cast `as unknown as Array<…>`
+    // and iterated directly. `tsc` stayed green because the cast lies; every
+    // /send in production then threw `rows is not iterable` from 06:46 UTC on,
+    // and no lead reached a sending pipe at all until the experiment was
+    // disarmed on the box. The counting must read `.rows`.
+    mockDbExecute.mockResolvedValue({
+      command: "SELECT",
+      rowCount: 2,
+      oid: null,
+      fields: [],
+      rows: [
+        { send_transport: "instantly", n: 8 },
+        { send_transport: "smtp", n: 3 },
+      ],
+    });
+
+    await expect(fetchTransportAssignmentCounts()).resolves.toEqual({
+      instantly: 8,
+      smtp: 3,
+    });
+  });
+
   it("reports zeroes when nothing has been assigned yet", async () => {
-    mockDbExecute.mockResolvedValue([]);
+    mockDbExecute.mockResolvedValue(pgResult([]));
     expect(await fetchTransportAssignmentCounts()).toEqual({ instantly: 0, smtp: 0 });
   });
 });
@@ -97,7 +133,7 @@ describe("resolveTransportForNewSequence", () => {
   const account = { email: "kevin@boostdistribute.com", sendTransport: null };
 
   it("stays on instantly while the experiment is disarmed", async () => {
-    mockDbExecute.mockResolvedValue([{ send_transport: "instantly", n: 99 }]);
+    mockDbExecute.mockResolvedValue(pgResult([{ send_transport: "instantly", n: 99 }]));
 
     expect(await resolveTransportForNewSequence(account, CALLER)).toBe("instantly");
     // Disarmed means it does not even look at the counts.
@@ -106,9 +142,27 @@ describe("resolveTransportForNewSequence", () => {
 
   it("balances once armed", async () => {
     process.env.SEND_TRANSPORT_AB_ENABLED = "true";
-    mockDbExecute.mockResolvedValue([{ send_transport: "instantly", n: 9 }]);
+    mockDbExecute.mockResolvedValue(pgResult([{ send_transport: "instantly", n: 9 }]));
 
     expect(await resolveTransportForNewSequence(account, CALLER)).toBe("smtp");
+  });
+
+  it("resolves a real transport on the armed, capable path — never throws", async () => {
+    // The failing branch: armed AND self-send-capable is the only path that
+    // reaches the counting query, which is exactly why the outage shipped with
+    // a green suite. Driven through the driver's real result shape.
+    process.env.SEND_TRANSPORT_AB_ENABLED = "true";
+    mockDbExecute.mockResolvedValue({
+      command: "SELECT",
+      rowCount: 1,
+      oid: null,
+      fields: [],
+      rows: [{ send_transport: "smtp", n: 11 }],
+    });
+
+    await expect(resolveTransportForNewSequence(account, CALLER)).resolves.toBe(
+      "instantly",
+    );
   });
 
   it("honours an account explicitly pinned to smtp, armed or not", async () => {
@@ -122,7 +176,7 @@ describe("resolveTransportForNewSequence", () => {
 
   it("keeps a mailbox we cannot authenticate on instantly", async () => {
     process.env.SEND_TRANSPORT_AB_ENABLED = "true";
-    mockDbExecute.mockResolvedValue([{ send_transport: "instantly", n: 99 }]);
+    mockDbExecute.mockResolvedValue(pgResult([{ send_transport: "instantly", n: 99 }]));
 
     // A DFY mailbox: Instantly owns the Workspace, so no credential exists and
     // the self-send pipe could never dispatch from it.
@@ -132,7 +186,7 @@ describe("resolveTransportForNewSequence", () => {
 
   it("matches the credential list case-insensitively", async () => {
     process.env.SEND_TRANSPORT_AB_ENABLED = "true";
-    mockDbExecute.mockResolvedValue([{ send_transport: "instantly", n: 9 }]);
+    mockDbExecute.mockResolvedValue(pgResult([{ send_transport: "instantly", n: 9 }]));
 
     const upper = { email: "Kevin@BoostDistribute.com", sendTransport: null };
     expect(await resolveTransportForNewSequence(upper, CALLER)).toBe("smtp");
@@ -140,7 +194,7 @@ describe("resolveTransportForNewSequence", () => {
 
   it("reads the credential sources once across sends rather than per send", async () => {
     process.env.SEND_TRANSPORT_AB_ENABLED = "true";
-    mockDbExecute.mockResolvedValue([{ send_transport: "instantly", n: 9 }]);
+    mockDbExecute.mockResolvedValue(pgResult([{ send_transport: "instantly", n: 9 }]));
 
     await resolveTransportForNewSequence(account, CALLER);
     await resolveTransportForNewSequence(account, CALLER);
