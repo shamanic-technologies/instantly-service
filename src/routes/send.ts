@@ -13,10 +13,11 @@ import {
 import { selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
 import { stepRowsFromSendPayload } from "../lib/self-send/sequence-steps";
 import { findRecentBrandContact, recontactRefusal } from "../lib/recontact-window";
+import { resolveTransportForNewSequence } from "../lib/self-send/transport-split";
 import {
+  SEND_TRANSPORT_INSTANTLY,
   SEND_TRANSPORT_SMTP,
   mintSelfSendCampaignId,
-  resolveTransportForSend,
 } from "../lib/self-send/transport";
 import {
   createRun,
@@ -331,7 +332,16 @@ router.post("/", async (req: Request, res: Response) => {
         timezone: body.timezone ?? null,
         sequence: sortedSequence,
       });
-      const transport = resolveTransportForSend(account?.sendTransport);
+      // The pipe for a NEW sequence. With the A/B off this is exactly the
+      // account's own policy; with it on, a credentialed mailbox alternates so
+      // both pipes carry comparable work on the SAME mailboxes. Frozen on the
+      // campaign row below, so every later step of this lead follows it.
+      const transport = account
+        ? await resolveTransportForNewSequence(
+            { email: account.email, sendTransport: account.sendTransport },
+            { method: "POST", path: "/orgs/send" },
+          )
+        : SEND_TRANSPORT_INSTANTLY;
 
       const sendResult: SendResult = !account
         ? { ok: false, reason: "no_healthy_accounts_available" }
@@ -388,8 +398,9 @@ router.post("/", async (req: Request, res: Response) => {
       // 6. Phase-2: attach the real Instantly campaign id to the reserved row.
       //    From here on the row is a committed campaign — release is a no-op.
       //
-      //    `sendTransport` is FROZEN here from the chosen account's policy, and
-      //    never re-read from the account afterwards. A sequence spans days, so
+      //    `sendTransport` is FROZEN here from the decision taken above — the
+      //    account's policy, or the A/B split when it is armed — and never
+      //    re-read afterwards. A sequence spans days, so
       //    following the live policy would re-route a lead's followups the moment
       //    an operator flips that mailbox — and a lead already pushed to Instantly
       //    holds no local step bodies, so its followups would simply stop. Same
