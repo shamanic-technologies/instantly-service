@@ -62,6 +62,7 @@
  */
 
 import { MS_PER_DAY, dateKeyUTC, delayForGap } from "./sending-forecast";
+import { chainBookedDays, nextLocalSendInstant, resolveLeadTimezone } from "./sending-window";
 
 /** One queued sequence's projection inputs (resolved from the cost ledger + config). */
 export interface QueuedSequenceInput {
@@ -81,6 +82,17 @@ export interface QueuedSequenceInput {
    * `STEP_GAP_CALENDAR_DAYS` so a step is never dropped from the partition.
    */
   stepDelays: (number | null)[] | null;
+  /**
+   * The lead's IANA timezone — the zone the campaign's Instantly schedule runs
+   * in, so the zone that decides which UTC day each of its sends actually books
+   * on the mailbox. Null when we hold none (historical rows, a caller that sent
+   * no timezone); `resolveLeadTimezone` then uses the same default the schedule
+   * itself degraded to, never a guess about the prospect.
+   *
+   * Read ONLY by the capacity projection (`aggregateQueueCapacity`). The ops
+   * breakdown deliberately ignores it — see the note on `aggregateQueueCapacity`.
+   */
+  timezone?: string | null;
 }
 
 export type QueueBucket = "firstUnsent" | "nextToday" | "nextTomorrow" | "nextLater";
@@ -195,71 +207,132 @@ export function isOverdueStep(
 }
 
 /**
- * Per-account CAPACITY buckets feeding the sequential-fill send-selection policy
+ * How far ahead the capacity projection books. A three-step sequence at the
+ * fleet's D0 / D+3 / D+10 cadence lands inside two weeks; 21 days leaves room
+ * for a weekend snap on every hop and for a longer sequence than any campaign
+ * currently configures.
+ *
+ * A step beyond the horizon is simply absent from `byDay`, which selection reads
+ * as room. That is the never-block direction: refusing an account over a day we
+ * did not project would be a decision made on missing information.
+ */
+export const CAPACITY_HORIZON_DAYS = 21;
+
+/**
+ * Per-account CAPACITY feeding the sequential-fill send-selection policy
  * (see send-lead.ts `pickSequentialFillAccount`). A projection of the same queued
- * sequences, but shaped for a per-DAY daily-limit fill instead of the ops table's
- * full four-way partition:
+ * sequences as the ops breakdown, answering a different question: not "when is
+ * this step nominally due" but "which day of this mailbox's quota does it spend".
  *
- *   q0first     — count of never-contacted SEQUENCES (leads whose first email has
- *                 not sent yet). ONE per sequence, NOT its step total: a brand-new
- *                 lead dispatches exactly one email ~today (its step 1); its steps
- *                 2+ are future days, so counting the whole `firstUnsent` step
- *                 total would over-inflate today's projected volume.
- *   q0next      — followup STEPS of a contacted sequence projected today/overdue
- *                 (nextToday). Real un-sent emails due to fire today.
- *   q1next      — followup STEPS projected tomorrow (nextTomorrow).
- *   totalQueue  — ALL queued steps for the account (= queueSize). The step-7
- *                 fallback tiebreak metric ("account with the minimal queue total").
+ * ── Why this diverges from `aggregateQueueBreakdown`, deliberately ────────────
+ * Two differences, both required for selection and both WRONG for the ops table:
  *
- * `q0next`/`q1next` use the SAME per-step chained-delay projection + UTC-day
- * bucketing as the breakdown (`classifyQueuedStep`), so today/tomorrow mean the
- * same thing on both surfaces. Never-contacted sequences contribute only to
- * `q0first` (one each) + `totalQueue` (their step count) — never date-projected.
+ *   1. A never-contacted sequence IS projected here. The breakdown refuses to
+ *      date one (anchoring on "now" would fabricate a date for a sequence
+ *      Instantly has not started). But selection has already decided such a lead
+ *      sends imminently — that is exactly what assigning it meant — so its
+ *      followups land on real future days and must be booked. Leaving them out
+ *      makes the projection blind to precisely the leads the head of the fill
+ *      order accumulates, which is the over-booking this whole shape exists to
+ *      stop.
+ *
+ *   2. Every step is booked on the day it will ACTUALLY leave — resolved through
+ *      the lead's own timezone window (`sending-window.ts`) — not on its raw
+ *      nominal UTC day. A New Zealand lead's local Monday is the mailbox's
+ *      Sunday. The ops table keeps the raw day because that is what makes it
+ *      agree with the fleet forecast step-for-step; selection needs the day the
+ *      quota is really spent.
+ *
+ * A step already past its nominal date is booked on the next window at or after
+ * `asOf`, never in the past: an overdue followup competes for TODAY's capacity,
+ * which is the same thing the breakdown's today-or-overdue bucket says.
  */
 export interface QueueCapacity {
-  /** Never-contacted sequences (1 first-email each ≈ today). */
-  q0first: number;
-  /** Followup steps projected today or overdue. */
-  q0next: number;
-  /** Followup steps projected tomorrow. */
-  q1next: number;
-  /** All queued steps for the account (= queueSize). */
-  totalQueue: number;
+  /**
+   * Committed un-sent steps per UTC day key (`YYYY-MM-DD`), within
+   * `CAPACITY_HORIZON_DAYS` of `asOf`. The single source of an account's future
+   * load — there is deliberately no second, separately-maintained "today" or
+   * "tomorrow" counter to drift away from it.
+   */
+  byDay: Record<string, number>;
 }
 
 function emptyCapacity(): QueueCapacity {
-  return { q0first: 0, q0next: 0, q1next: 0, totalQueue: 0 };
+  return { byDay: {} };
 }
 
 /**
- * Aggregate queued sequences into the per-account CAPACITY shape above. Pure —
- * same inputs as `aggregateQueueBreakdown`, different projection: a never-
- * contacted sequence adds 1 to `q0first` (not its step count); a contacted
- * sequence's steps add to `q0next`/`q1next` by their projected UTC day. Every
- * queued step (from either) adds to `totalQueue`, so `totalQueue` equals the
- * account's `queueSize`.
+ * The UTC day each un-sent step of one queued sequence books on its mailbox.
+ *
+ * Contacted sequence: chain the real per-hop delays off `lastSentAt` exactly as
+ * the ops projection does, clamp anything overdue up to `asOf`, then resolve the
+ * lead's next open window. Never-contacted: anchor on `asOf`'s window and chain
+ * the sequence's own gaps from its first pending step.
+ */
+function bookedDaysForSequence(
+  seq: QueuedSequenceInput,
+  asOf: Date,
+): Map<number, string> {
+  const tz = resolveLeadTimezone(seq.timezone);
+  const steps = [...seq.provisionedSteps].sort((a, b) => a - b);
+  const out = new Map<number, string>();
+  if (steps.length === 0) return out;
+
+  if (seq.lastSentStep !== null && seq.lastSentAt !== null) {
+    for (const step of steps) {
+      const nominal = projectStepDate(seq, step);
+      // An overdue step is owed NOW, not on the day it was owed.
+      const from = nominal.getTime() < asOf.getTime() ? asOf : nominal;
+      out.set(step, dateKeyUTC(nextLocalSendInstant(from, tz)));
+    }
+    return out;
+  }
+
+  // Never contacted: the first pending step goes out at the next open window and
+  // the rest chain off it, hop by hop, through the same shared delay resolver.
+  const stepDelays = seq.stepDelays ?? [];
+  const gaps: number[] = [];
+  for (let i = 1; i < steps.length; i += 1) {
+    let days = 0;
+    for (let hop = steps[i - 1]!; hop < steps[i]!; hop += 1) {
+      days += delayForGap(hop, stepDelays);
+    }
+    gaps.push(days);
+  }
+  const keys = chainBookedDays(asOf, tz, gaps);
+  steps.forEach((step, i) => out.set(step, keys[i]!));
+  return out;
+}
+
+/** Day keys strictly inside the projection horizon, as a lookup set. */
+function horizonKeys(asOf: Date): Set<string> {
+  const keys = new Set<string>();
+  for (let i = 0; i <= CAPACITY_HORIZON_DAYS; i += 1) {
+    keys.add(dateKeyUTC(new Date(asOf.getTime() + i * MS_PER_DAY)));
+  }
+  return keys;
+}
+
+/**
+ * Aggregate queued sequences into the per-account capacity shape above. Pure.
+ *
+ * Every un-sent step of every queued sequence is booked onto exactly one UTC day
+ * (or dropped, when it falls past the horizon). Days before `asOf` cannot occur:
+ * an overdue step is clamped up to today before its window is resolved.
  */
 export function aggregateQueueCapacity(
   rows: QueuedSequenceInput[],
   asOf: Date,
 ): Map<string, QueueCapacity> {
   const out = new Map<string, QueueCapacity>();
+  const inHorizon = horizonKeys(asOf);
+
   for (const row of rows) {
     if (!row.account) continue;
     const c = out.get(row.account) ?? emptyCapacity();
-    const neverContacted = row.lastSentStep === null || row.lastSentAt === null;
-    if (neverContacted) {
-      // One first-email fires ~today per never-started sequence; its future
-      // steps are NOT projected onto today (see q0first doc above).
-      c.q0first += 1;
-    }
-    for (const step of row.provisionedSteps) {
-      c.totalQueue += 1;
-      if (neverContacted) continue; // counted once under q0first, not per-step
-      const bucket = classifyQueuedStep(row, step, asOf);
-      if (bucket === "nextToday") c.q0next += 1;
-      else if (bucket === "nextTomorrow") c.q1next += 1;
-      // nextLater is irrelevant to today/tomorrow capacity (still in totalQueue).
+    for (const key of bookedDaysForSequence(row, asOf).values()) {
+      if (!inHorizon.has(key)) continue;
+      c.byDay[key] = (c.byDay[key] ?? 0) + 1;
     }
     out.set(row.account, c);
   }

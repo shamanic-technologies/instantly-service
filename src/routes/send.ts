@@ -322,7 +322,15 @@ router.post("/", async (req: Request, res: Response) => {
       //    up by our own dispatch worker, and every prospect received each email
       //    TWICE from the same mailbox. Selecting the account before the external
       //    call is what makes the two paths mutually exclusive.
-      const account = await selectSendingAccount(tracking.featureSlug ?? null);
+      //
+      //    The lead's timezone and its full sequence ride along: capacity is
+      //    booked for every day this sequence will need the mailbox (D0, D+3,
+      //    D+10 …), each resolved through the prospect's own local window.
+      const account = await selectSendingAccount({
+        featureSlug: tracking.featureSlug ?? null,
+        timezone: body.timezone ?? null,
+        sequence: sortedSequence,
+      });
       const transport = resolveTransportForSend(account?.sendTransport);
 
       const sendResult: SendResult = !account
@@ -391,6 +399,11 @@ router.post("/", async (req: Request, res: Response) => {
         .set({
           instantlyCampaignId: sendResult.value.instantlyCampaignId,
           accountEmail: sendResult.value.account.email,
+          // The lead's own timezone, raw as the caller sent it. It decides which
+          // UTC day each of this sequence's sends spends on the mailbox, and a
+          // self-send campaign has no bronze config to recover it from later.
+          // Null when the caller supplied none — an absence, never a guess.
+          timezone: body.timezone ?? null,
           // The SAME value the branch above acted on, not a re-resolution:
           // the frozen column and the pipe actually taken can never disagree.
           sendTransport: transport,

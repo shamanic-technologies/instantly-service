@@ -12,6 +12,7 @@
 
 import { isSendingDay } from "../sending-calendar";
 import { delayForGap } from "../sending-forecast";
+import { isWithinLocalSendWindow } from "../sending-window";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -28,6 +29,12 @@ export interface PendingSequence {
   lastSentAt: Date | null;
   /** 0-based delays from `sequence_steps`, ordered by step. */
   stepDelays: readonly (number | null)[];
+  /**
+   * The lead's IANA timezone, as persisted on the campaign row. Null when we
+   * hold none; the fleet default then applies — the same one the Instantly
+   * schedule degrades to, so both transports treat such a lead identically.
+   */
+  timezone?: string | null;
 }
 
 export interface DueStep {
@@ -140,6 +147,19 @@ export function selectDueSteps(
   }
 
   const due = sequences
+    // A step due by cadence still waits for its prospect's business hours. The
+    // Instantly transport gets this from the campaign schedule it dispatches
+    // against; here we are the scheduler, so the gate has to be ours. Without
+    // it a lead's first email fires at whatever hour the hourly cron happens to
+    // run — 03:00 local for anyone far enough east — purely because their
+    // mailbox was flipped to this pipe.
+    //
+    // Note this is STRICTER than the UTC gate above, never looser: a lead whose
+    // local window opens while it is still the weekend here is held to the next
+    // UTC sending day. Capacity books the earlier of the two, so such a send can
+    // arrive on its booked day or after it, never before — the same one-sided
+    // slip the nominal-cadence projection already carries.
+    .filter((sequence) => isWithinLocalSendWindow(asOf, sequence.timezone))
     .map((sequence) => nextDueStep(sequence, asOf))
     .filter((step): step is DueStep => step !== null)
     .sort(
