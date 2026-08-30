@@ -83,6 +83,19 @@ export const instantlyCampaigns = pgTable(
     // simply stop. Same persist-at-write reasoning as `account_email` (0025).
     // See src/lib/self-send/transport.ts.
     sendTransport: text("send_transport").notNull().default("instantly"),
+    // The RECIPIENT's IANA timezone, exactly as the caller supplied it (raw, not
+    // enum-snapped — the column is the fact; `resolveInstantlyTimezone` is the
+    // lossy projection Instantly's closed 102-value enum forces, applied where a
+    // day is computed). It is the zone this lead's Mon-Fri 08:00-17:00 schedule
+    // runs in, so it decides which UTC day each of its sends spends on the
+    // mailbox: a New Zealand lead's local Monday is the mailbox's Sunday.
+    //
+    // Persisted at send time because the writer already held it and dropped it,
+    // and because a self-send campaign has NO bronze config row to recover it
+    // from — there was never an Instantly campaign to mirror. NULL on rows
+    // written before migration 0046; the capacity loader falls back to the
+    // schedule stored in bronze, which is what those rows are really sent on.
+    timezone: text("timezone"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),

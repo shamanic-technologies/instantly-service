@@ -34,16 +34,11 @@ import {
   type AccountCapacity,
 } from "./account-sending-stats";
 import { IN_PRODUCTION_DAILY_LIMIT, rampCapForAge } from "./account-lifecycle";
-import { nextSendingDay } from "./sending-calendar";
+import { dateKeyUTC } from "./sending-forecast";
+import { sequenceFootprintDays } from "./sending-window";
 
 /** All-zero capacity for an account absent from the snapshot (idle ⇒ preferred). */
-const EMPTY_CAPACITY: AccountCapacity = {
-  sentToday: 0,
-  q0first: 0,
-  q0next: 0,
-  q1next: 0,
-  totalQueue: 0,
-};
+const EMPTY_CAPACITY: AccountCapacity = { sentToday: 0, byDay: {} };
 
 /**
  * Today's assignment cap for one account.
@@ -58,20 +53,67 @@ const EMPTY_CAPACITY: AccountCapacity = {
  * capped by `rampCapForAge` — a young Google mailbox's real Gmail per-user quota
  * is far below 45 for its first weeks, independent of inbox placement.
  */
-function capForAccount(a: Account, asOf: Date): number {
+function capForAccount(a: Account, on: Date): number {
   return Math.min(
     a.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT,
-    rampCapForAge(a.timestamp_created, IN_PRODUCTION_DAILY_LIMIT, asOf),
+    rampCapForAge(a.timestamp_created, IN_PRODUCTION_DAILY_LIMIT, on),
   );
 }
 
-/** Today's committed load for one account: dispatched + queued-for-today. */
-function loadForAccount(
+/**
+ * One account's committed load on a given booked day.
+ *
+ * `sentToday` counts real dispatches already made and therefore applies to the
+ * FIRST day only — adding it to a future day would charge tomorrow for mail that
+ * went out today. Everything else comes from `byDay`, which is the single record
+ * of what this mailbox already owes on each day.
+ */
+function loadOnDay(
   a: Account,
   byEmail: Map<string, AccountCapacity>,
+  dayKey: string,
+  isFirstDay: boolean,
 ): number {
   const c = byEmail.get(a.email) ?? EMPTY_CAPACITY;
-  return c.sentToday + c.q0first + c.q0next;
+  return (isFirstDay ? c.sentToday : 0) + (c.byDay[dayKey] ?? 0);
+}
+
+/**
+ * The inter-step gaps (calendar days) of a sequence about to be sent, as the
+ * footprint projection needs them: one gap per hop between consecutive steps.
+ *
+ * The caller hands us `daysSinceLastStep`, which is the delay BEFORE its own
+ * step; the gap AFTER step `k` is therefore step `k+1`'s value. Step 1's own is
+ * discarded — nothing precedes it. Reading it straight through would shift every
+ * followup by one hop, the same off-by-one `sequence_steps` is written to avoid.
+ */
+export function gapsFromSequence(
+  sequence: readonly { step: number; daysSinceLastStep: number }[],
+): number[] {
+  const sorted = [...sequence].sort((x, y) => x.step - y.step);
+  return sorted.slice(1).map((s) => s.daysSinceLastStep);
+}
+
+/**
+ * The days one incoming lead would book on a mailbox, and whether that mailbox
+ * has room on every one of them.
+ *
+ * The cap is re-read PER DAY: a mailbox is older on D+10 than on D0, so its age
+ * ramp is higher there — a fresh account that cannot take the first email today
+ * may comfortably carry the followup a week later, and pinning the cap to day
+ * zero would hide that.
+ */
+function fitsFootprint(
+  a: Account,
+  byEmail: Map<string, AccountCapacity>,
+  footprint: readonly string[],
+  asOf: Date,
+): boolean {
+  return footprint.every((dayKey, i) => {
+    const on = new Date(`${dayKey}T00:00:00.000Z`);
+    const cap = capForAccount(a, i === 0 ? asOf : on);
+    return cap > 0 && loadOnDay(a, byEmail, dayKey, i === 0) < cap;
+  });
 }
 
 /**
@@ -182,13 +224,21 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
  * Sequential-fill account selection — saturate the first account in the fixed
  * order before touching the second.
  *
- * Per account:
- *   cap   = min(daily_limit, rampCapForAge(timestamp_created, ...))  (capForAccount)
- *   load  = sentToday + Q0-first + Q0-next
- *           real dispatches today + never-contacted sequences (1 first email each)
- *           + followup steps projected today/overdue — so a followup queued days
- *           ago but due today counts against today's cap.
- *   pick  = the FIRST account of `accountFillOrder` whose load < cap.
+ * Per account, per day of the incoming lead's FOOTPRINT (the days its D0 / D+3 /
+ * D+10 emails will each book, resolved through the lead's own timezone window —
+ * see `sending-window.ts`):
+ *   cap   = min(daily_limit, rampCapForAge(timestamp_created, THAT day))
+ *   load  = committed steps already booked on that day (+ today's real
+ *           dispatches, on the first day only)
+ *   pick  = the FIRST account of `accountFillOrder` with room on EVERY footprint
+ *           day; failing that, the first with room on day one; failing that, the
+ *           least-overloaded.
+ *
+ * Checking only day one — which is what this did before — assigns a lead whose
+ * followups then collide on a day nobody looked at. The mailbox does not refuse
+ * them; they simply go out late, so the head of the order silently accumulates
+ * backlog while its today-number still reads healthy. Booking the whole sequence
+ * turns that silent over-booking into an honest cascade to the next account.
  *
  * Because `accountFillOrder` keys on the infrastructure VENDOR first, the
  * waterfall drains one vendor before touching the next (gandi → mailforge →
@@ -214,18 +264,17 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
  * The AGE CAP is kept intact — a fresh mailbox is filled to ITS ramped cap (5/day
  * at one day old), never to 50, so the sequence never trips Gmail's 550-5.4.5.
  *
- * `asOf` is the day capacity is measured FOR, and callers on the send path pass
- * `nextSendingDay(now)` rather than `now`: campaigns dispatch Mon-Fri, so on a
- * weekend the meaningful question is whether the account is full on MONDAY, not
- * on a Saturday that consumes nothing. It drives both the load buckets (via the
- * capacity snapshot, which must be fetched for the same day) and `capForAccount`
- * — a mailbox is two days older by Monday, so its age ramp is read on that day
- * too. On a weekday `nextSendingDay` is the identity, so nothing changes.
+ * `asOf` is the FIRST day of the footprint — the day this lead can actually
+ * first send, which `selectSendingAccount` resolves from the lead's own local
+ * window rather than from a fleet-wide weekday snap. It must match the day the
+ * capacity snapshot was fetched for, and it is also the clock the first day's age
+ * ramp is read on. Passing no footprint reduces this to the original "room for
+ * one email today" question, which is what the ops-shaped callers want.
  *
- * When every account is at or over its cap the fleet is backlogged; we then fall
- * back to the least-overloaded `load / cap` so a send is never blocked, ties going
- * to the earlier account in the order. Selection is fully deterministic: the same
- * inputs always yield the same account.
+ * When no account can carry the whole sequence the fleet is backlogged; the two
+ * lower tiers keep a send from ever being blocked, ties going to the earlier
+ * account in the order. Selection is fully deterministic: the same inputs always
+ * yield the same account.
  *
  * An account absent from `byEmail` is all-zeros ⇒ load 0 ⇒ has room. Correctness
  * of `load` depends on the sending account being persisted on the campaign row at
@@ -236,28 +285,43 @@ export function pickSequentialFillAccount<T extends FillOrderAccount>(
   accounts: T[],
   byEmail: Map<string, AccountCapacity>,
   asOf: Date = new Date(),
+  footprint: readonly string[] = [],
 ): T {
   if (accounts.length === 0) {
     throw new Error("No accounts available");
   }
 
   const ordered = accountFillOrder(accounts);
+  // A caller that passes no footprint is asking the original question — has this
+  // mailbox room for one email today — so the first day alone is the footprint.
+  const days = footprint.length > 0 ? footprint : [dateKeyUTC(asOf)];
+  const firstDay = days.slice(0, 1);
 
+  // Tier 1 — the whole sequence fits.
   for (const a of ordered) {
-    const cap = capForAccount(a, asOf);
-    // A zero/negative cap (an account deliberately pinned to daily_limit 0) can
-    // never absorb a lead — skip it entirely rather than dividing by zero.
-    if (cap > 0 && loadForAccount(a, byEmail) < cap) return a;
+    if (fitsFootprint(a, byEmail, days, asOf)) return a;
   }
 
-  // Every account is full: pick the least-overloaded one (it is also the one with
-  // room soonest). `ordered` is stable, so the first minimum wins on a tie.
+  // Tier 2 — nobody can carry the whole sequence, so fall back to the question
+  // this selector asked before it could see past today. Deliberately NOT a
+  // refusal: a fleet with no multi-day room is exactly the backlogged state in
+  // which sends must still go out, and holding the lead would only move the
+  // problem to a queue nobody watches.
+  for (const a of ordered) {
+    if (fitsFootprint(a, byEmail, firstDay, asOf)) return a;
+  }
+
+  // Tier 3 — everything is full on day one too: the least-overloaded account is
+  // also the one with room soonest. `ordered` is stable, so the first minimum
+  // wins on a tie.
   let best = ordered[0];
   let bestRatio = Number.POSITIVE_INFINITY;
   for (const a of ordered) {
     const cap = capForAccount(a, asOf);
     const ratio =
-      cap > 0 ? loadForAccount(a, byEmail) / cap : Number.POSITIVE_INFINITY;
+      cap > 0
+        ? loadOnDay(a, byEmail, days[0]!, true) / cap
+        : Number.POSITIVE_INFINITY;
     if (ratio < bestRatio) {
       bestRatio = ratio;
       best = a;
@@ -613,23 +677,43 @@ export type SendResult =
  * cannot live inside the Instantly-specific path. Returns null when the pool is
  * empty, which the caller surfaces without creating any row.
  */
+export interface SelectAccountOptions {
+  featureSlug?: string | null;
+  /** The lead's IANA timezone — decides which UTC days its sends will book. */
+  timezone?: string | null;
+  /** The sequence about to be sent, so its whole footprint can be booked. */
+  sequence?: readonly { step: number; daysSinceLastStep: number }[];
+}
+
 export async function selectSendingAccount(
-  featureSlug?: string | null,
+  opts: SelectAccountOptions = {},
 ): Promise<PooledAccount | null> {
-  const accounts = await fetchInProductionAccounts(featureSlug ?? null);
+  const accounts = await fetchInProductionAccounts(opts.featureSlug ?? null);
   if (accounts.length === 0) return null;
 
-  // Capacity is measured against the day this lead can ACTUALLY first send:
-  // itself on a weekday, the following Monday on a weekend (campaigns run
-  // Mon-Fri). Measuring a Saturday would hand out a cap nothing can consume and
-  // stack the weekend's slots on top of Monday's — see sending-calendar.ts.
-  const effectiveDay = nextSendingDay(new Date());
+  // The footprint is anchored on the lead's OWN next open window, not on a
+  // fleet-wide weekday snap: a prospect whose local business hours have already
+  // closed is a tomorrow lead even though it is mid-morning here, and one on the
+  // far side of the date line books a day we are not on yet.
+  const now = new Date();
+  const footprint = sequenceFootprintDays(
+    now,
+    opts.timezone ?? null,
+    gapsFromSequence(opts.sequence ?? []),
+  );
+  const effectiveDay = new Date(`${footprint[0]!}T00:00:00.000Z`);
   const capacityByEmail = await fetchAccountCapacityCached(effectiveDay);
-  return pickSequentialFillAccount(accounts, capacityByEmail, effectiveDay);
+  return pickSequentialFillAccount(accounts, capacityByEmail, effectiveDay, footprint);
 }
 
 export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult> {
-  const account = opts.account ?? (await selectSendingAccount(opts.featureSlug));
+  const account =
+    opts.account ??
+    (await selectSendingAccount({
+      featureSlug: opts.featureSlug,
+      timezone: opts.timezone,
+      sequence: opts.sortedSequence,
+    }));
 
   if (!account) {
     console.warn(

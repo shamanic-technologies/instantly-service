@@ -172,37 +172,152 @@ describe("aggregateQueueBreakdown — per-STEP partition", () => {
   });
 });
 
-describe("aggregateQueueCapacity — send-selection buckets", () => {
-  it("counts never-contacted SEQUENCES once (q0first), steps by day, totalQueue = all steps", () => {
+describe("aggregateQueueCapacity — books every step on the day it will really leave", () => {
+  // A weekday "today" (Monday 2026-08-31, 09:00 in Chicago), so nothing snaps
+  // unless the projection genuinely lands on a weekend.
+  const weekday = new Date("2026-08-31T14:00:00.000Z");
+  const CHICAGO = "America/Chicago";
+
+  it("projects a NEVER-CONTACTED sequence's followups onto FUTURE days, not today", () => {
+    // This is the whole point of the divergence from the ops breakdown: the
+    // breakdown refuses to date these (it has no send anchor), but selection has
+    // just decided this lead sends imminently, so its D+3 / D+10 are real days
+    // the mailbox owes and must be booked.
     const rows: QueuedSequenceInput[] = [
-      // never-contacted, 3 un-sent steps → q0first 1 (NOT 3), totalQueue +3.
-      seq({ account: "a", provisionedSteps: [1, 2, 3] }),
-      // contacted 3d ago at step 1; steps 2,3; delays [3,7]:
-      // step2 = +3 → today (q0next), step3 = +10 → later. totalQueue +2.
+      seq({
+        account: "a",
+        provisionedSteps: [1, 2, 3],
+        stepDelays: [3, 7],
+        timezone: CHICAGO,
+      }),
+    ];
+    expect(aggregateQueueCapacity(rows, weekday).get("a")).toEqual({
+      byDay: { "2026-08-31": 1, "2026-09-03": 1, "2026-09-10": 1 },
+    });
+  });
+
+  it("books a CONTACTED sequence's remaining steps off its real last send", () => {
+    const rows: QueuedSequenceInput[] = [
+      // Sent step 1 three days ago; delays [3,7] → step 2 today, step 3 in a week.
       seq({
         account: "a",
         lastSentStep: 1,
-        lastSentAt: new Date(asOf.getTime() - 3 * 86_400_000),
+        lastSentAt: new Date(weekday.getTime() - 3 * DAY),
         provisionedSteps: [2, 3],
         stepDelays: [3, 7],
-      }),
-      // contacted today at step 1; step 2 queued; delay [1] → tomorrow. totalQueue +1.
-      seq({
-        account: "b",
-        lastSentStep: 1,
-        lastSentAt: new Date(asOf.getTime()),
-        provisionedSteps: [2],
-        stepDelays: [1],
+        timezone: CHICAGO,
       }),
     ];
-    const map = aggregateQueueCapacity(rows, asOf);
-    expect(map.get("a")).toEqual({ q0first: 1, q0next: 1, q1next: 0, totalQueue: 5 });
-    expect(map.get("b")).toEqual({ q0first: 0, q0next: 0, q1next: 1, totalQueue: 1 });
+    expect(aggregateQueueCapacity(rows, weekday).get("a")).toEqual({
+      byDay: { "2026-08-31": 1, "2026-09-07": 1 },
+    });
+  });
+
+  it("books an OVERDUE step on today, never in the past", () => {
+    const rows: QueuedSequenceInput[] = [
+      // Nominally due a week ago and never dispatched — it competes for TODAY's
+      // capacity, which is what the breakdown's today-or-overdue bucket says too.
+      seq({
+        account: "a",
+        lastSentStep: 1,
+        lastSentAt: new Date(weekday.getTime() - 10 * DAY),
+        provisionedSteps: [2],
+        stepDelays: [3],
+        timezone: CHICAGO,
+      }),
+    ];
+    expect(aggregateQueueCapacity(rows, weekday).get("a")).toEqual({
+      byDay: { "2026-08-31": 1 },
+    });
+  });
+
+  it("books a New Zealand lead's local MONDAY on the mailbox's SUNDAY", () => {
+    // Sunday 2026-08-30 06:00Z is Sunday evening in Auckland, so the next open
+    // window is Monday 08:00 local = Sunday 20:00 UTC. The mailbox spends its
+    // SUNDAY on this send; counting it on Monday would over-book Monday and hand
+    // out a Sunday slot nothing consumes.
+    const sunday = new Date("2026-08-30T06:00:00.000Z");
+    const rows: QueuedSequenceInput[] = [
+      seq({ account: "a", provisionedSteps: [1], timezone: "Pacific/Auckland" }),
+      seq({ account: "b", provisionedSteps: [1], timezone: "America/Chicago" }),
+    ];
+    const map = aggregateQueueCapacity(rows, sunday);
+    expect(map.get("a")).toEqual({ byDay: { "2026-08-30": 1 } });
+    // The US lead's own window does not open until Monday local, which is Monday
+    // UTC — same step, different day, purely because of where the prospect is.
+    expect(map.get("b")).toEqual({ byDay: { "2026-08-31": 1 } });
+  });
+
+  it("falls back to the fleet default timezone rather than guessing", () => {
+    const withNull = aggregateQueueCapacity(
+      [seq({ account: "a", provisionedSteps: [1, 2], stepDelays: [3], timezone: null })],
+      weekday,
+    );
+    const withDefault = aggregateQueueCapacity(
+      [seq({ account: "a", provisionedSteps: [1, 2], stepDelays: [3], timezone: CHICAGO })],
+      weekday,
+    );
+    expect(withNull.get("a")).toEqual(withDefault.get("a"));
+  });
+
+  it("drops a step booked past the horizon — an unprojected day reads as room", () => {
+    const rows: QueuedSequenceInput[] = [
+      seq({
+        account: "a",
+        provisionedSteps: [1, 2],
+        stepDelays: [90], // far beyond CAPACITY_HORIZON_DAYS
+        timezone: CHICAGO,
+      }),
+    ];
+    expect(aggregateQueueCapacity(rows, weekday).get("a")).toEqual({
+      byDay: { "2026-08-31": 1 },
+    });
+  });
+
+  it("sums several sequences onto the same day", () => {
+    const rows: QueuedSequenceInput[] = [
+      seq({ account: "a", provisionedSteps: [1], timezone: CHICAGO }),
+      seq({ account: "a", provisionedSteps: [1], timezone: CHICAGO }),
+      seq({ account: "b", provisionedSteps: [1], timezone: CHICAGO }),
+    ];
+    const map = aggregateQueueCapacity(rows, weekday);
+    expect(map.get("a")).toEqual({ byDay: { "2026-08-31": 2 } });
+    expect(map.get("b")).toEqual({ byDay: { "2026-08-31": 1 } });
   });
 
   it("skips rows with no account (unattributable — never fabricated)", () => {
     const rows: QueuedSequenceInput[] = [seq({ account: "", provisionedSteps: [1] })];
     expect(aggregateQueueCapacity(rows, asOf).size).toBe(0);
+  });
+
+  // This runs on the SEND path (behind a 60s cache email-gateway abandons after
+  // ~10s, then retries), over the whole fleet's queue — ~6,000 sequences in prod.
+  // The first version took ~9 SECONDS there, because `canonicalIanaTimezone`
+  // builds a fresh Intl.DateTimeFormat on every primary zone name. The bound is
+  // ~20x the measured 86ms, so it is not a flaky timing assertion — it fails
+  // only if per-call Intl construction comes back.
+  it("stays fast at fleet scale — a per-call Intl construction would blow this", () => {
+    const zones = [
+      "America/Chicago",
+      "America/Detroit",
+      "America/Dawson",
+      "Europe/Belgrade",
+      "Asia/Kolkata",
+      "Pacific/Auckland",
+    ];
+    const rows: QueuedSequenceInput[] = Array.from({ length: 6000 }, (_, i) =>
+      seq({
+        account: `acct${i % 25}@x.com`,
+        lastSentStep: i % 3 === 0 ? null : 1,
+        lastSentAt: i % 3 === 0 ? null : new Date(weekday.getTime() - 3 * DAY),
+        provisionedSteps: i % 3 === 0 ? [1, 2, 3] : [2, 3],
+        stepDelays: [3, 7],
+        timezone: zones[i % zones.length],
+      }),
+    );
+    const started = Date.now();
+    expect(aggregateQueueCapacity(rows, weekday).size).toBe(25);
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 });
 
