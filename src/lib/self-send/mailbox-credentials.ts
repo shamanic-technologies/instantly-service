@@ -11,11 +11,25 @@
  * are the wrong hosts and fail to connect, and the vendor's `password` field is
  * the interactive login password, which these endpoints reject.
  *
+ * Not every mailbox is on Primeforge, though. The legacy Gandi and Mailforge
+ * fleets are real senders whose vendors do NOT hand an existing mailbox's
+ * password back over an API, so a MANUAL layer sits in front: a key-service
+ * platform key holding hand-entered credentials, hosts included (the whole point
+ * of the layer is that these mailboxes are not on Google). Manual wins, so an
+ * operator can override a vendor-reported password without waiting on the
+ * vendor.
+ *
+ * This resolution is the ONE source of truth for "how do I authenticate as this
+ * mailbox". The seed harness reads it too — it used to carry its own copy that
+ * knew about the manual layer while the SENDER did not, so a Gandi mailbox could
+ * be measured and not sent from. Two implementations of one concept drift, and
+ * the one nobody remembers to update is the one that breaks.
+ *
  * Fail loud throughout: a mailbox we cannot authenticate must abort the send,
  * never degrade to some other sender.
  */
 
-import { resolvePlatformKey, type CallerInfo } from "../key-client";
+import { KeyServiceError, resolvePlatformKey, type CallerInfo } from "../key-client";
 import {
   listPrimeforgeRawMailboxes,
   type PrimeforgeRawMailbox,
@@ -111,18 +125,134 @@ export function selectMailboxCredential(
 }
 
 /**
- * Resolve one mailbox's live credential: platform Primeforge key from
- * key-service, then the vendor mailbox list, then the pure selection above.
+ * Resolve one mailbox's live credential: the manual list first, then Primeforge.
  *
- * The Primeforge key is a PLATFORM key (global, org-less) — the mailbox fleet is
- * ours, not a customer's, so this is the same resolution path the provider-infra
- * sync already uses.
+ * Manual wins so that a non-Primeforge mailbox (Gandi, Mailforge) resolves at
+ * all, and so an operator can override a vendor-reported password without
+ * waiting on the vendor. Both keys are PLATFORM keys (global, org-less) — the
+ * mailbox fleet is ours, not a customer's.
+ *
+ * Throws when neither source knows the mailbox. That is the right behaviour for
+ * the SEND path: a mailbox we cannot authenticate must abort its send rather
+ * than degrade to another sender. (The seed harness wants the opposite for the
+ * same fact — an unmeasurable mailbox is skipped, not fatal — so it wraps this
+ * resolution in its own batch loader.)
  */
 export async function resolveMailboxCredential(
   email: string,
   caller: CallerInfo,
 ): Promise<MailboxCredential> {
+  const manual = await loadManualCredentials(caller);
+  const override = selectManualCredential(email, manual);
+  if (override) return override;
+
   const key = await resolvePlatformKey("primeforge", caller);
   const mailboxes = await listPrimeforgeRawMailboxes(key);
   return selectMailboxCredential(email, mailboxes);
+}
+
+// ─── Manual credentials (non-Primeforge mailboxes) ──────────────────────────
+
+/** key-service platform provider holding the hand-entered mailbox credentials. */
+export const MANUAL_CREDENTIALS_PROVIDER = "mailbox-credentials";
+
+export interface ManualMailboxEntry {
+  address: string;
+  appPassword: string;
+  smtpHost: string;
+  imapHost: string;
+  /**
+   * SMTP/IMAP login when it differs from the address (the Gandi alias case).
+   * Optional — omitted means the address is the login.
+   */
+  authUser?: string;
+}
+
+/**
+ * Parse the manual-credential payload.
+ *
+ * Fail loud on a shape we do not recognise: a typo in the stored JSON must not
+ * silently degrade to "no manual mailboxes", which would look identical to the
+ * key being absent and would send the caller down the Primeforge path for a
+ * mailbox Primeforge has never heard of.
+ */
+export function parseManualCredentials(raw: string): ManualMailboxEntry[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new MailboxCredentialError(
+      `${MANUAL_CREDENTIALS_PROVIDER} platform key is not valid JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new MailboxCredentialError(
+      `${MANUAL_CREDENTIALS_PROVIDER} platform key must be a JSON array of mailbox credentials`,
+    );
+  }
+
+  return parsed.map((entry, index) => {
+    const e = entry as Partial<ManualMailboxEntry> | null;
+    const address = String(e?.address ?? "").trim().toLowerCase();
+    const appPassword = String(e?.appPassword ?? "").replace(/\s/g, "");
+    const smtpHost = String(e?.smtpHost ?? "").trim();
+    const imapHost = String(e?.imapHost ?? "").trim();
+    const authUser = String(e?.authUser ?? "").trim().toLowerCase();
+
+    if (!address || !appPassword || !smtpHost || !imapHost) {
+      throw new MailboxCredentialError(
+        `${MANUAL_CREDENTIALS_PROVIDER}[${index}] must carry address, appPassword, smtpHost and imapHost`,
+      );
+    }
+
+    return {
+      address,
+      appPassword,
+      smtpHost,
+      imapHost,
+      ...(authUser && authUser !== address ? { authUser } : {}),
+    };
+  });
+}
+
+/** Pure lookup of one address in the manual list. Null when it is not listed. */
+export function selectManualCredential(
+  email: string,
+  entries: readonly ManualMailboxEntry[],
+): MailboxCredential | null {
+  const wanted = email.trim().toLowerCase();
+  const entry = entries.find((e) => e.address === wanted);
+  if (!entry) return null;
+
+  return {
+    address: entry.address,
+    appPassword: entry.appPassword,
+    smtpHost: entry.smtpHost,
+    imapHost: entry.imapHost,
+    ...(entry.authUser ? { authUser: entry.authUser } : {}),
+  };
+}
+
+/**
+ * Read the manual credential list. An absent key means "none configured".
+ *
+ * The 404 carve-out is deliberately narrow: only a missing key yields an empty
+ * list. Every other failure (401, 5xx, a malformed payload) throws, because
+ * those mean we could not READ the credentials, which is a different thing from
+ * there being none — and treating them the same would send a Gandi mailbox down
+ * the Primeforge path that cannot possibly know it.
+ */
+export async function loadManualCredentials(
+  caller: CallerInfo,
+): Promise<ManualMailboxEntry[]> {
+  try {
+    const raw = await resolvePlatformKey(MANUAL_CREDENTIALS_PROVIDER, caller);
+    return parseManualCredentials(raw);
+  } catch (error) {
+    if (error instanceof KeyServiceError && error.statusCode === 404) return [];
+    throw error;
+  }
 }
