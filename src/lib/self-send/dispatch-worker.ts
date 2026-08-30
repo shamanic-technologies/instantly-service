@@ -72,7 +72,8 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
           '[]'::jsonb
         ) AS provisioned_steps,
         MAX(sc.step) FILTER (WHERE sc.status = 'actual') AS last_sent_step,
-        MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at
+        MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at,
+        MIN(c.timezone) AS timezone
       FROM sequence_costs sc
       JOIN instantly_campaigns c
         ON c.instantly_campaign_id = sc.instantly_campaign_id
@@ -90,6 +91,7 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
       p.provisioned_steps     AS "provisionedSteps",
       p.last_sent_step        AS "lastSentStep",
       p.last_sent_at          AS "lastSentAt",
+      p.timezone              AS "timezone",
       (
         SELECT COALESCE(jsonb_agg(s.delay_days ORDER BY s.step), '[]'::jsonb)
         FROM sequence_steps s
@@ -112,6 +114,10 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
     stepDelays: Array.isArray(row.stepDelays)
       ? (row.stepDelays as (number | null)[])
       : [],
+    // Decides the prospect's business-hours window. Null on a row written before
+    // migration 0046; the fleet default then applies, which is the same zone the
+    // Instantly schedule degrades to.
+    timezone: row.timezone === null || row.timezone === undefined ? null : String(row.timezone),
   }));
 }
 

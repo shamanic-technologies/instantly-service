@@ -12,7 +12,9 @@ import { STEP_GAP_CALENDAR_DAYS } from "../../src/lib/sending-forecast";
 // A MONDAY. The original fixture was 2026-08-16, a Sunday — so the whole suite
 // was quietly asserting weekend behaviour, which is exactly the bug this file now
 // guards against.
-const NOW = new Date("2026-08-17T12:00:00Z");
+// Monday 10:00 in America/Chicago — the fleet default zone, inside the
+// prospect-local 08:00-17:00 window every campaign schedule carries.
+const NOW = new Date("2026-08-17T15:00:00Z");
 const DAY = 24 * 60 * 60 * 1000;
 
 function sequence(overrides: Partial<PendingSequence> = {}): PendingSequence {
@@ -255,12 +257,84 @@ describe("classifyPermanentFailure", () => {
   });
 });
 
+// ─── Prospect-local send window ───────────────────────────────────────────────
+
+describe("selectDueSteps — the prospect's own business hours", () => {
+  const capacity = { accountEmail: "amy@saviolabsco.com", cap: 45, sentToday: 0 };
+  const due = () => sequence({ provisionedSteps: [1] });
+
+  // On the Instantly transport the campaign schedule holds the send until the
+  // prospect's business hours. Here we ARE the scheduler, so without this gate a
+  // lead's first email fires at whatever hour the hourly cron happens to run.
+  it("holds a step until the lead's local window OPENS", () => {
+    // Monday 07:00 in Chicago — the campaign schedule opens at 08:00.
+    const beforeOpen = new Date("2026-08-17T12:00:00Z");
+    expect(selectDueSteps([due()], [capacity], beforeOpen)).toEqual([]);
+    // ...and one hour later it goes.
+    const afterOpen = new Date("2026-08-17T13:00:00Z");
+    expect(selectDueSteps([due()], [capacity], afterOpen)).toHaveLength(1);
+  });
+
+  it("stops once the lead's local window CLOSES", () => {
+    // Monday 17:00 in Chicago — the window is half-open, so this is shut.
+    const afterClose = new Date("2026-08-17T22:00:00Z");
+    expect(selectDueSteps([due()], [capacity], afterClose)).toEqual([]);
+  });
+
+  it("uses each lead's OWN zone, so one sends while another waits", () => {
+    // 2026-08-17T13:30Z is 08:30 in Chicago (open) and 06:30 in Los Angeles
+    // (shut) — the same instant, two different answers.
+    const asOf = new Date("2026-08-17T13:30:00Z");
+    const chicago = sequence({
+      instantlyCampaignId: "c-chi",
+      leadEmail: "chi@x.com",
+      provisionedSteps: [1],
+      timezone: "America/Chicago",
+    });
+    const pacific = sequence({
+      instantlyCampaignId: "c-pac",
+      leadEmail: "pac@x.com",
+      provisionedSteps: [1],
+      timezone: "America/Los_Angeles",
+    });
+    const picked = selectDueSteps([chicago, pacific], [capacity], asOf);
+    expect(picked.map((d) => d.instantlyCampaignId)).toEqual(["c-chi"]);
+  });
+
+  it("holds a lead whose local day is a weekend even though ours is not", () => {
+    // Friday 2026-08-21 22:30Z is already SATURDAY in Auckland.
+    const fridayHere = new Date("2026-08-21T22:30:00Z");
+    expect(fridayHere.getUTCDay()).toBe(5);
+    const nz = sequence({ provisionedSteps: [1], timezone: "Pacific/Auckland" });
+    expect(selectDueSteps([nz], [capacity], fridayHere)).toEqual([]);
+  });
+
+  // The UTC gate is the outer floor and this one is stricter, never looser: a
+  // lead whose local window opens while it is still the weekend HERE waits for
+  // the next UTC sending day. Capacity books the earlier of the two, so a send
+  // arrives on its booked day or after it — never before.
+  it("still refuses a lead whose local window is open on OUR weekend", () => {
+    // Sunday 2026-08-16 20:30Z is Monday 08:30 in Auckland — open for the
+    // prospect, but the fleet-wide weekend gate holds it anyway.
+    const sundayHere = new Date("2026-08-16T20:30:00Z");
+    expect(sundayHere.getUTCDay()).toBe(0);
+    const nz = sequence({ provisionedSteps: [1], timezone: "Pacific/Auckland" });
+    expect(selectDueSteps([nz], [capacity], sundayHere)).toEqual([]);
+  });
+
+  it("falls back to the fleet default zone rather than guessing, when none is stored", () => {
+    const asOf = new Date("2026-08-17T13:30:00Z"); // 08:30 Chicago
+    const noZone = sequence({ provisionedSteps: [1], timezone: null });
+    expect(selectDueSteps([noZone], [capacity], asOf)).toHaveLength(1);
+  });
+});
+
 // ─── Weekday gate ─────────────────────────────────────────────────────────────
 
 describe("selectDueSteps — sending calendar", () => {
-  const SATURDAY = new Date("2026-08-15T12:00:00Z");
-  const SUNDAY = new Date("2026-08-16T12:00:00Z");
-  const MONDAY = new Date("2026-08-17T12:00:00Z");
+  const SATURDAY = new Date("2026-08-15T15:00:00Z");
+  const SUNDAY = new Date("2026-08-16T15:00:00Z");
+  const MONDAY = new Date("2026-08-17T15:00:00Z");
 
   const capacity = { accountEmail: "amy@saviolabsco.com", cap: 45, sentToday: 0 };
 

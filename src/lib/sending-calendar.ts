@@ -13,8 +13,17 @@
  * Monday's single cap, which is one of the ways a head-of-fill-order account
  * ends up carrying more queued work than it can drain.
  *
- * `nextSendingDay` answers "which day will a lead assigned right now actually
- * first send on?" — itself on a weekday, the following Monday on a weekend.
+ * `isSendingDay` answers the fleet-wide half of that question: is this a day the
+ * campaigns dispatch on at all. The PER-LEAD half — is this instant inside THIS
+ * prospect's own local business-hours window, and which UTC day does their send
+ * therefore book — lives in `sending-window.ts`, which is what send selection
+ * and the self-send dispatcher actually consult.
+ *
+ * A `nextSendingDay` helper used to live here, snapping a weekend instant to the
+ * following Monday for send selection. It was superseded by that per-lead
+ * resolution, which is strictly more accurate (it also catches a prospect whose
+ * local day is already over, and one on the far side of the date line) — and a
+ * fleet-wide snap left beside it would be a second answer to the same question.
  *
  * ── Scope: SEND SELECTION ONLY. Do NOT use this in the ops projections ────────
  * `aggregateQueueBreakdown` (per-account queue table) and `sending-forecast`
@@ -34,26 +43,4 @@ export const SENDING_WEEKDAYS: readonly number[] = [1, 2, 3, 4, 5];
 /** True when `d` falls on a day the fleet's campaigns can dispatch (Mon-Fri, UTC). */
 export function isSendingDay(d: Date): boolean {
   return SENDING_WEEKDAYS.includes(d.getUTCDay());
-}
-
-/**
- * The day a lead assigned at `asOf` will first be able to send.
- *
- * On a sending day this is `asOf` itself, returned UNCHANGED — so weekday
- * behaviour is byte-identical to before this module existed. On a Saturday or a
- * Sunday it is UTC midnight of the following Monday, which is both the correct
- * bucketing key (`dateKeyUTC`) for "what will be due then" and the correct clock
- * for the age ramp (a mailbox is two days older by Monday).
- *
- * Idempotent: snapping an already-snapped instant returns it unchanged.
- */
-export function nextSendingDay(asOf: Date): Date {
-  if (isSendingDay(asOf)) return asOf;
-  const d = new Date(
-    Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth(), asOf.getUTCDate()),
-  );
-  // At most two hops (Sat -> Sun -> Mon); the loop keeps it honest if the
-  // sending week ever changes shape.
-  while (!isSendingDay(d)) d.setUTCDate(d.getUTCDate() + 1);
-  return d;
 }

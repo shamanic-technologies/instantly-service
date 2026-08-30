@@ -136,6 +136,7 @@ import {
   autolinkifyHtml,
   buildEmailBodyWithSignature,
   pickSequentialFillAccount,
+  gapsFromSequence,
   accountFillOrder,
   providerFillRank,
   UNKNOWN_PROVIDER_FILL_RANK,
@@ -144,7 +145,7 @@ import {
   sendLeadToInstantly,
   UNSUBSCRIBE_FOOTER_HTML,
 } from "../../src/lib/send-lead";
-import { nextSendingDay } from "../../src/lib/sending-calendar";
+import { sequenceFootprintDays } from "../../src/lib/sending-window";
 import { requireOrgId } from "../../src/middleware/requireOrgId";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
@@ -211,18 +212,27 @@ describe("pickSequentialFillAccount", () => {
     vi.restoreAllMocks();
   });
 
-  /** Build a capacity map from partial per-account overrides. */
+  const asOf = new Date("2026-07-22T00:00:00Z");
+  const ASOF_KEY = "2026-07-22";
+
+  /**
+   * Build a capacity map. `today` is the number of steps already booked on the
+   * asOf day — the quantity the selector compares against the cap alongside
+   * `sentToday`. `byDay` overrides it outright when a case needs future days.
+   */
   const caps = (
-    entries: [string, Partial<AccountCapacity>][],
+    entries: [string, { sentToday?: number; today?: number; byDay?: Record<string, number> }][],
   ): Map<string, AccountCapacity> =>
     new Map(
       entries.map(([email, o]) => [
         email,
-        { sentToday: 0, q0first: 0, q0next: 0, q1next: 0, totalQueue: 0, ...o },
+        {
+          sentToday: o.sentToday ?? 0,
+          byDay: o.byDay ?? (o.today ? { [ASOF_KEY]: o.today } : {}),
+        },
       ]),
     );
 
-  const asOf = new Date("2026-07-22T00:00:00Z");
   const created = (daysOld: number) =>
     new Date(asOf.getTime() - daysOld * 24 * 60 * 60 * 1000).toISOString();
 
@@ -569,15 +579,15 @@ describe("pickSequentialFillAccount", () => {
     );
   });
 
-  it("counts sentToday + Q0-first + Q0-next together against the cap", () => {
-    // 20 dispatched + 15 never-contacted sequences + 10 followups due today = 45,
-    // i.e. FULL — a followup queued days ago but due today occupies today's cap.
+  it("counts real dispatches AND everything booked for today against the cap", () => {
+    // 20 dispatched + 25 steps booked for today = 45, i.e. FULL — a followup
+    // queued days ago but due today occupies today's cap just as a fresh one does.
     const accounts = [
       acct({ email: "first@x.com", daily_limit: 45, timestamp_created: created(90) }),
       acct({ email: "second@x.com", daily_limit: 45, timestamp_created: created(60) }),
     ];
     const full = caps([
-      ["first@x.com", { sentToday: 20, q0first: 15, q0next: 10 }],
+      ["first@x.com", { sentToday: 20, today: 25 }],
       ["second@x.com", { sentToday: 0 }],
     ]);
     expect(pickSequentialFillAccount(accounts, full, asOf).email).toBe(
@@ -586,7 +596,7 @@ describe("pickSequentialFillAccount", () => {
 
     // One below the cap and the head still wins.
     const nearlyFull = caps([
-      ["first@x.com", { sentToday: 20, q0first: 15, q0next: 9 }],
+      ["first@x.com", { sentToday: 20, today: 24 }],
       ["second@x.com", { sentToday: 0 }],
     ]);
     expect(pickSequentialFillAccount(accounts, nearlyFull, asOf).email).toBe(
@@ -796,8 +806,8 @@ describe("send gate — only in_production accounts (lifecycle)", () => {
     ]);
     mockFetchAccountCapacity.mockResolvedValueOnce(
       new Map<string, AccountCapacity>([
-        ["older@good.com", { sentToday: 37, q0first: 0, q0next: 0, q1next: 0, totalQueue: 37 }],
-        ["newer@good.com", { sentToday: 2, q0first: 0, q0next: 0, q1next: 0, totalQueue: 2 }],
+        ["older@good.com", { sentToday: 37, byDay: {} }],
+        ["newer@good.com", { sentToday: 2, byDay: {} }],
       ]),
     );
     mockCreateCampaign.mockResolvedValue({ id: "ic", status: "draft" });
@@ -834,8 +844,8 @@ describe("send gate — only in_production accounts (lifecycle)", () => {
     ]);
     mockFetchAccountCapacity.mockResolvedValueOnce(
       new Map<string, AccountCapacity>([
-        ["older@good.com", { sentToday: 50, q0first: 0, q0next: 0, q1next: 0, totalQueue: 50 }],
-        ["newer@good.com", { sentToday: 2, q0first: 0, q0next: 0, q1next: 0, totalQueue: 2 }],
+        ["older@good.com", { sentToday: 50, byDay: {} }],
+        ["newer@good.com", { sentToday: 2, byDay: {} }],
       ]),
     );
     mockCreateCampaign.mockResolvedValue({ id: "ic", status: "draft" });
@@ -1747,6 +1757,44 @@ describe("POST /send", () => {
     expect(phase2.sendTransport).toBe("instantly");
   });
 
+  it("persists the LEAD's timezone onto the campaign row at phase-2", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app)
+      .post("/send")
+      .set(identityHeadersObj)
+      .send({ ...validBody, timezone: "Pacific/Auckland" });
+
+    const phase2 = mockDbUpdateSet.mock.calls
+      .map((c: unknown[]) => c[0])
+      .find(
+        (v: any) =>
+          v?.instantlyCampaignId && !String(v.instantlyCampaignId).startsWith("reserving:"),
+      ) as any;
+
+    expect(phase2).toBeDefined();
+    // Stored RAW, not snapped onto Instantly's closed enum: the column is the
+    // fact, the snap is a projection applied where a day is computed.
+    expect(phase2.timezone).toBe("Pacific/Auckland");
+  });
+
+  it("stores NULL rather than a guess when the caller sends no timezone", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    const phase2 = mockDbUpdateSet.mock.calls
+      .map((c: unknown[]) => c[0])
+      .find(
+        (v: any) =>
+          v?.instantlyCampaignId && !String(v.instantlyCampaignId).startsWith("reserving:"),
+      ) as any;
+
+    expect(phase2.timezone).toBeNull();
+  });
+
   it("should read brandIds and workflowSlug from headers only", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
@@ -2083,105 +2131,201 @@ describe("POST /send", () => {
   });
 });
 
-describe("weekend capacity — selection measures the NEXT SENDING day", () => {
+describe("gapsFromSequence — the payload's delay is BEFORE its step, the gap is AFTER", () => {
+  it("shifts by one: the gap after step k is step k+1's daysSinceLastStep", () => {
+    // The fleet's cadence arrives as [0, 3, 7] and means D0 / D+3 / D+10.
+    expect(
+      gapsFromSequence([
+        { step: 1, daysSinceLastStep: 0 },
+        { step: 2, daysSinceLastStep: 3 },
+        { step: 3, daysSinceLastStep: 7 },
+      ]),
+    ).toEqual([3, 7]);
+  });
+
+  it("discards step 1's own value — nothing precedes it", () => {
+    // Reading it straight through would shift every followup by a hop, the same
+    // off-by-one `sequence_steps` is written to avoid.
+    expect(
+      gapsFromSequence([
+        { step: 1, daysSinceLastStep: 5 },
+        { step: 2, daysSinceLastStep: 3 },
+      ]),
+    ).toEqual([3]);
+  });
+
+  it("sorts by step, so an out-of-order payload still yields the right gaps", () => {
+    expect(
+      gapsFromSequence([
+        { step: 3, daysSinceLastStep: 7 },
+        { step: 1, daysSinceLastStep: 0 },
+        { step: 2, daysSinceLastStep: 3 },
+      ]),
+    ).toEqual([3, 7]);
+  });
+
+  it("a single-step sequence has no gaps at all", () => {
+    expect(gapsFromSequence([{ step: 1, daysSinceLastStep: 0 }])).toEqual([]);
+    expect(gapsFromSequence([])).toEqual([]);
+  });
+});
+
+describe("sequence footprint — booking every day the lead will need the mailbox", () => {
   const caps2 = (
-    entries: [string, Partial<AccountCapacity>][],
+    entries: [string, { sentToday?: number; byDay?: Record<string, number> }][],
   ): Map<string, AccountCapacity> =>
     new Map(
       entries.map(([email, o]) => [
         email,
-        { sentToday: 0, q0first: 0, q0next: 0, q1next: 0, totalQueue: 0, ...o },
+        { sentToday: o.sentToday ?? 0, byDay: o.byDay ?? {} },
       ]),
     );
 
-  const SATURDAY = new Date("2026-08-15T13:00:00.000Z");
-  const MONDAY = new Date("2026-08-17T00:00:00.000Z");
+  // Monday 2026-08-31, 09:00 in Chicago. The fleet's cadence puts the followups
+  // on Thursday 09-03 and the Thursday after, 09-10.
+  const MONDAY = new Date("2026-08-31T14:00:00.000Z");
+  const CHICAGO = "America/Chicago";
+  const FOOTPRINT = ["2026-08-31", "2026-09-03", "2026-09-10"];
 
-  it("nextSendingDay(Saturday) is the Monday the capacity must be measured for", () => {
-    expect(nextSendingDay(SATURDAY).toISOString()).toBe(MONDAY.toISOString());
+  const mature = (email: string, provider: string) =>
+    acct({
+      email,
+      daily_limit: 50,
+      infraProvider: provider,
+      timestamp_created: "2026-01-01T00:00:00.000Z",
+    });
+
+  it("agrees with sequenceFootprintDays for the fleet's D0 / D+3 / D+10 cadence", () => {
+    expect(sequenceFootprintDays(MONDAY, CHICAGO, [3, 7])).toEqual(FOOTPRINT);
   });
 
-  it("skips a head account already full for MONDAY and cascades to the next in fill order", () => {
-    const head = acct({
-      email: "head@x.com",
-      daily_limit: 50,
-      infraProvider: "gandi",
-      timestamp_created: "2026-01-01T00:00:00.000Z",
-    });
-    const next = acct({
-      email: "next@x.com",
-      daily_limit: 50,
-      infraProvider: "primeforge",
-      timestamp_created: "2026-01-01T00:00:00.000Z",
-    });
-    // Monday's projected load for the head account is already over its cap
-    // (48 followups due by Monday + 5 never-contacted leads = 53 > 50).
-    const byMonday = caps2([
-      ["head@x.com", { sentToday: 0, q0first: 5, q0next: 48 }],
-      ["next@x.com", { sentToday: 0, q0first: 1, q0next: 2 }],
+  it("cascades past a head account that is full on D+3 ONLY — the day nobody used to check", () => {
+    const head = mature("head@x.com", "gandi");
+    const next = mature("next@x.com", "primeforge");
+    // Plenty of room today; already saturated on the day this lead's SECOND
+    // email would land. Before the footprint check this lead was assigned to the
+    // head anyway and its followup simply went out late.
+    const load = caps2([
+      ["head@x.com", { byDay: { "2026-08-31": 2, "2026-09-03": 50 } }],
     ]);
     expect(
-      pickSequentialFillAccount([head, next], byMonday, nextSendingDay(SATURDAY)).email,
+      pickSequentialFillAccount([head, next], load, MONDAY, FOOTPRINT).email,
     ).toBe("next@x.com");
   });
 
-  it("still fills the head account when MONDAY has room (the fill order is unchanged)", () => {
-    const head = acct({
-      email: "head@x.com",
-      daily_limit: 50,
-      infraProvider: "gandi",
-      timestamp_created: "2026-01-01T00:00:00.000Z",
-    });
-    const next = acct({
-      email: "next@x.com",
-      daily_limit: 50,
-      infraProvider: "primeforge",
-      timestamp_created: "2026-01-01T00:00:00.000Z",
-    });
-    const byMonday = caps2([["head@x.com", { q0first: 10, q0next: 20 }]]);
+  it("cascades on a collision at the LAST step too, not just the next one", () => {
+    const head = mature("head@x.com", "gandi");
+    const next = mature("next@x.com", "primeforge");
+    const load = caps2([
+      ["head@x.com", { byDay: { "2026-09-10": 50 } }],
+    ]);
     expect(
-      pickSequentialFillAccount([head, next], byMonday, nextSendingDay(SATURDAY)).email,
+      pickSequentialFillAccount([head, next], load, MONDAY, FOOTPRINT).email,
+    ).toBe("next@x.com");
+  });
+
+  it("keeps the head when the WHOLE footprint fits — the fill order is unchanged", () => {
+    const head = mature("head@x.com", "gandi");
+    const next = mature("next@x.com", "primeforge");
+    const load = caps2([
+      ["head@x.com", { byDay: { "2026-08-31": 40, "2026-09-03": 49, "2026-09-10": 10 } }],
+    ]);
+    expect(
+      pickSequentialFillAccount([head, next], load, MONDAY, FOOTPRINT).email,
     ).toBe("head@x.com");
   });
 
-  it("reads the AGE RAMP on the effective day — a fresh mailbox is two days older by Monday", () => {
-    // Created 2026-08-01. On Saturday 08-15 it is 14d old → ramp = round(50*14/28) = 25.
-    // On Monday 08-17 it is 16d old → ramp = round(50*16/28) = 29. A load of 27
-    // is over Saturday's cap but under Monday's, and Monday is when it sends.
+  it("charges sentToday to the FIRST day only — today's dispatches are not tomorrow's", () => {
+    const head = mature("head@x.com", "gandi");
+    const next = mature("next@x.com", "primeforge");
+    // 50 already sent today: full on D0, empty on every later day. If sentToday
+    // were charged to all three the account would look full everywhere.
+    const load = caps2([["head@x.com", { sentToday: 50 }]]);
+    expect(
+      pickSequentialFillAccount([head, next], load, MONDAY, FOOTPRINT).email,
+    ).toBe("next@x.com");
+    // ...and one below the cap it takes the lead on all three days.
+    const nearly = caps2([["head@x.com", { sentToday: 49 }]]);
+    expect(
+      pickSequentialFillAccount([head, next], nearly, MONDAY, FOOTPRINT).email,
+    ).toBe("head@x.com");
+  });
+
+  it("reads the AGE RAMP on EACH footprint day — a mailbox is older by D+10", () => {
+    // Created 2026-08-24. On 08-31 it is 7d old → ramp round(50*7/28) = 13.
+    // On 09-10 it is 17d old → ramp round(50*17/28) = 30. A load of 20 on the
+    // later day is over the FIRST day's cap but comfortably under that day's own.
     const fresh = acct({
       email: "fresh@x.com",
       daily_limit: 50,
       infraProvider: "gandi",
-      timestamp_created: "2026-08-01T00:00:00.000Z",
+      timestamp_created: "2026-08-24T00:00:00.000Z",
     });
-    const fallback = acct({
-      email: "fallback@x.com",
-      daily_limit: 50,
-      infraProvider: "primeforge",
-      timestamp_created: "2026-01-01T00:00:00.000Z",
-    });
-    const load = caps2([["fresh@x.com", { q0next: 27 }]]);
+    const fallback = mature("fallback@x.com", "primeforge");
 
-    expect(pickSequentialFillAccount([fresh, fallback], load, SATURDAY).email).toBe(
-      "fallback@x.com",
-    );
+    const laterOnly = caps2([["fresh@x.com", { byDay: { "2026-09-10": 20 } }]]);
     expect(
-      pickSequentialFillAccount([fresh, fallback], load, nextSendingDay(SATURDAY)).email,
+      pickSequentialFillAccount([fresh, fallback], laterOnly, MONDAY, FOOTPRINT).email,
     ).toBe("fresh@x.com");
+
+    // Pinning the cap to day zero would have rejected it: 20 >= 13.
+    const sameLoadToday = caps2([["fresh@x.com", { byDay: { "2026-08-31": 20 } }]]);
+    expect(
+      pickSequentialFillAccount([fresh, fallback], sameLoadToday, MONDAY, FOOTPRINT).email,
+    ).toBe("fallback@x.com");
   });
 
-  it("is a no-op on a weekday — the effective day IS the day", () => {
-    const a = acct({
-      email: "a@x.com",
-      daily_limit: 50,
-      infraProvider: "gandi",
-      timestamp_created: "2026-01-01T00:00:00.000Z",
-    });
-    const weekday = new Date("2026-08-19T09:00:00.000Z"); // Wednesday
-    expect(nextSendingDay(weekday)).toBe(weekday);
-    expect(pickSequentialFillAccount([a], caps2([]), nextSendingDay(weekday)).email).toBe(
-      "a@x.com",
-    );
+  it("falls back to a DAY-ONE fit when nobody can carry the whole sequence", () => {
+    const head = mature("head@x.com", "gandi");
+    const next = mature("next@x.com", "primeforge");
+    // Both are saturated on D+3, so no account fits the footprint. The head still
+    // has room today and wins the second tier — a send is never blocked.
+    const load = caps2([
+      ["head@x.com", { byDay: { "2026-09-03": 50 } }],
+      ["next@x.com", { byDay: { "2026-08-31": 10, "2026-09-03": 50 } }],
+    ]);
+    expect(
+      pickSequentialFillAccount([head, next], load, MONDAY, FOOTPRINT).email,
+    ).toBe("head@x.com");
+  });
+
+  it("falls back to the LEAST-OVERLOADED account when even day one is full everywhere", () => {
+    const head = mature("head@x.com", "gandi");
+    const next = mature("next@x.com", "primeforge");
+    const load = caps2([
+      ["head@x.com", { byDay: { "2026-08-31": 80 } }],
+      ["next@x.com", { byDay: { "2026-08-31": 55 } }],
+    ]);
+    expect(
+      pickSequentialFillAccount([head, next], load, MONDAY, FOOTPRINT).email,
+    ).toBe("next@x.com");
+  });
+
+  it("is byte-identical to the old today-only question when no footprint is given", () => {
+    const head = mature("head@x.com", "gandi");
+    const next = mature("next@x.com", "primeforge");
+    const day = new Date("2026-08-31T00:00:00.000Z");
+    const load = caps2([["head@x.com", { byDay: { "2026-08-31": 50 } }]]);
+    expect(pickSequentialFillAccount([head, next], load, day).email).toBe("next@x.com");
+  });
+
+  it("anchors on the LEAD's window: a prospect whose local day is over books tomorrow", () => {
+    // 2026-08-31T23:00Z is 18:00 Monday in Chicago — the window has closed, so
+    // this lead is a TUESDAY lead even though it is still Monday for the fleet.
+    const closed = new Date("2026-08-31T23:00:00.000Z");
+    expect(sequenceFootprintDays(closed, CHICAGO, [3, 7])).toEqual([
+      "2026-09-01",
+      "2026-09-04",
+      "2026-09-11",
+    ]);
+  });
+
+  it("books a New Zealand lead's first email on the mailbox's SUNDAY", () => {
+    // Sunday 06:00Z is Sunday evening in Auckland → next window is Monday 08:00
+    // local, which is still SUNDAY here. The mailbox spends its Sunday.
+    const sunday = new Date("2026-08-30T06:00:00.000Z");
+    expect(sequenceFootprintDays(sunday, "Pacific/Auckland", [3, 7])[0]).toBe("2026-08-30");
+    expect(sequenceFootprintDays(sunday, CHICAGO, [3, 7])[0]).toBe("2026-08-31");
   });
 });
 
@@ -2199,14 +2343,6 @@ function extractSendSqlText(obj: unknown): string {
   return "";
 }
 
-// ─── Per-brand re-contact window ────────────────────────────────────────────
-//
-// A brand's prospect must not receive two cold emails from us inside three
-// months. The upstream serve-time guard cannot enforce this half: the sending
-// queue decouples a serve from the email it eventually produces, so a
-// compliant serve still lands an email days after the previous one. This
-// service performed the terminal send, so it is the only place that can look
-// the answer up.
 describe("POST /send — per-brand re-contact window", () => {
   let runCounter: number;
 

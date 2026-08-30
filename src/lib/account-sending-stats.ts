@@ -146,6 +146,7 @@ interface BreakdownRow {
   last_sent_at: string | Date | null;
   provisioned_steps: (number | string)[] | null;
   step_config: Array<{ delay?: number | string | null }> | null;
+  lead_timezone?: string | null;
 }
 
 /**
@@ -196,6 +197,7 @@ async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
     seq AS (
       SELECT c.instantly_campaign_id,
              MIN(c.account_email) AS persisted_account,
+             MIN(c.timezone) AS persisted_timezone,
              MAX(sc.step) FILTER (WHERE sc.status = 'actual') AS last_sent_step,
              MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at,
              array_agg(DISTINCT sc.step) FILTER (WHERE sc.status = 'provisioned')
@@ -214,7 +216,15 @@ async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
            s.last_sent_step,
            s.last_sent_at,
            s.provisioned_steps,
-           cfg.payload->'sequences'->0->'steps' AS step_config
+           cfg.payload->'sequences'->0->'steps' AS step_config,
+           -- The lead's zone decides which UTC day each of its sends books on the
+           -- mailbox. Prefer the value persisted at send time; fall back to the
+           -- schedule we shipped to Instantly, which is what a historical row
+           -- (written before the column existed) is actually being sent on.
+           COALESCE(
+             s.persisted_timezone,
+             cfg.payload->'campaign_schedule'->'schedules'->0->>'timezone'
+           ) AS lead_timezone
     FROM seq s
     LEFT JOIN campaign_account ca
       ON ca.instantly_campaign_id = s.instantly_campaign_id
@@ -241,6 +251,7 @@ async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
           return d === null || d === undefined ? null : Number(d);
         })
       : null,
+    timezone: r.lead_timezone ?? null,
   }));
 }
 
@@ -258,8 +269,8 @@ const ACCOUNT_CAPACITY_CACHE_KEY = "account-capacity|send-selection";
 /**
  * Per-account capacity snapshot feeding the sequential-fill send-selection policy
  * (send-lead.ts `pickSequentialFillAccount`). Combines today's observed sends
- * (`sentToday`) with the per-day queued-work buckets (`q0first`/`q0next`/`q1next`)
- * + `totalQueue`, keyed by sending account. Absent from every source ⇒ all zeros
+ * (`sentToday`) with the per-day booked-work map (`byDay`), keyed by sending
+ * account. Absent from every source ⇒ all zeros
  * (never sent, nothing queued) ⇒ the account counts as having full room today.
  */
 export interface AccountCapacity extends QueueCapacity {
@@ -287,10 +298,7 @@ export async function fetchAccountCapacity(
     const c = caps.get(email);
     out.set(email, {
       sentToday: sent.get(email) ?? 0,
-      q0first: c?.q0first ?? 0,
-      q0next: c?.q0next ?? 0,
-      q1next: c?.q1next ?? 0,
-      totalQueue: c?.totalQueue ?? 0,
+      byDay: c?.byDay ?? {},
     });
   }
   return out;

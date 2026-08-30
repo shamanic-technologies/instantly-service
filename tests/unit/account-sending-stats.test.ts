@@ -143,72 +143,82 @@ describe("fetchQueueBreakdownByAccount — per-STEP partition", () => {
   });
 });
 
-describe("fetchAccountCapacity — merge sentToday + per-day queued buckets", () => {
-  it("builds q0first (never-contacted seq count), q0next/q1next (steps), totalQueue, + sentToday", async () => {
-    const asOf = new Date("2026-07-11T12:00:00.000Z");
+describe("fetchAccountCapacity — merge sentToday with the per-day booked map", () => {
+  it("books every un-sent step onto the UTC day it will really leave, per lead timezone", async () => {
+    // Monday 2026-08-31, 09:00 in Chicago.
+    const asOf = new Date("2026-08-31T14:00:00.000Z");
     const DAY = 86_400_000;
     // Array order: fetchSentTodayByAccount() first (db.execute #0), then the
     // queued-sequence loader (db.execute #1).
     mockExecute
       .mockResolvedValueOnce([{ account_email: "a@x.com", count: 5 }]) // sentToday
       .mockResolvedValueOnce([
-        // a@x.com never-contacted: 2 un-sent steps → q0first 1, totalQueue +2.
+        // a@x.com never contacted, 2 un-sent steps, delay 3 → today + Thursday.
         {
           account_email: "a@x.com",
           last_sent_step: null,
           last_sent_at: null,
           provisioned_steps: [1, 2],
-          step_config: null,
+          step_config: [{ delay: 3 }],
+          lead_timezone: "America/Chicago",
         },
-        // a@x.com contacted 3d ago at step 1; steps 2,3 queued; delays [3,7]:
-        // step2 = +3 → today (q0next), step3 = +10 → later. totalQueue +2.
+        // a@x.com contacted 3d ago at step 1; steps 2,3; delays [3,7]:
+        // step 2 due today, step 3 a week out.
         {
           account_email: "a@x.com",
           last_sent_step: 1,
           last_sent_at: new Date(asOf.getTime() - 3 * DAY).toISOString(),
           provisioned_steps: [2, 3],
           step_config: [{ delay: 3 }, { delay: 7 }],
+          lead_timezone: "America/Chicago",
         },
-        // b@x.com contacted today at step 2; step 3 queued; delay steps[1]=9 → later.
+        // b@x.com in Auckland: its local Tuesday morning is still MONDAY here,
+        // so it books the same UTC day the US leads do.
         {
           account_email: "b@x.com",
-          last_sent_step: 2,
-          last_sent_at: new Date(asOf.getTime()).toISOString(),
-          provisioned_steps: [3],
-          step_config: [{ delay: 1 }, { delay: 9 }],
+          last_sent_step: null,
+          last_sent_at: null,
+          provisioned_steps: [1],
+          step_config: null,
+          lead_timezone: "Pacific/Auckland",
         },
-        // c@x.com contacted today at step 1; step 2 queued; delay steps[0]=1 → tomorrow.
+        // c@x.com carries no timezone — the fleet default applies, never a guess.
         {
           account_email: "c@x.com",
-          last_sent_step: 1,
-          last_sent_at: new Date(asOf.getTime()).toISOString(),
-          provisioned_steps: [2],
-          step_config: [{ delay: 1 }],
+          last_sent_step: null,
+          last_sent_at: null,
+          provisioned_steps: [1],
+          step_config: null,
+          lead_timezone: null,
         },
       ]);
 
     const cap = await fetchAccountCapacity(asOf);
     expect(cap.get("a@x.com")).toEqual({
       sentToday: 5,
-      q0first: 1, // one never-contacted sequence (NOT its 2-step count)
-      q0next: 1, // step 2 of the contacted sequence, due today
-      q1next: 0,
-      totalQueue: 4, // 2 + 2 across both sequences
+      byDay: {
+        "2026-08-31": 2, // the never-contacted first email + the due followup
+        "2026-09-03": 1, // the never-contacted sequence's step 2
+        "2026-09-07": 1, // the contacted sequence's step 3
+      },
     });
     expect(cap.get("b@x.com")).toEqual({
       sentToday: 0, // absent from sentToday ⇒ honest 0
-      q0first: 0,
-      q0next: 0,
-      q1next: 0,
-      totalQueue: 1,
+      byDay: { "2026-08-31": 1 },
     });
     expect(cap.get("c@x.com")).toEqual({
       sentToday: 0,
-      q0first: 0,
-      q0next: 0,
-      q1next: 1, // step 2 projected tomorrow
-      totalQueue: 1,
+      byDay: { "2026-08-31": 1 },
     });
+  });
+
+  it("reads the lead timezone from the persisted column, falling back to bronze", async () => {
+    mockExecute.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    await fetchAccountCapacity(new Date("2026-08-31T14:00:00.000Z"));
+    const text = executedSqlText(1).toLowerCase();
+    expect(text).toContain("min(c.timezone)");
+    expect(text).toContain("'campaign_schedule'");
+    expect(text).toContain("as lead_timezone");
   });
 });
 
@@ -267,6 +277,8 @@ describe("fetchAccountCapacityCached — effective-day scoping", () => {
     ]);
 
     const cap = await fetchAccountCapacity(monday);
-    expect(cap.get("a@x.com")?.q0next).toBe(1);
+    // Monday is a sending day in Chicago too, so the overdue Saturday step books
+    // on Monday itself — never on the Saturday it was owed.
+    expect(cap.get("a@x.com")?.byDay).toEqual({ "2026-08-17": 1 });
   });
 });

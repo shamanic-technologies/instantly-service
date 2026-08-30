@@ -1,0 +1,25 @@
+-- The recipient's timezone, persisted on the campaign row at send time.
+--
+-- Every campaign we create carries a Mon-Fri 08:00-17:00 schedule in the LEAD's
+-- timezone (one campaign = one lead), so that zone decides which UTC day the
+-- send actually lands on -- and therefore which day of the sending mailbox's
+-- daily quota it spends. A New Zealand lead's local Monday 08:00 is SUNDAY
+-- 19:00 UTC. Send selection has to book the day the mail really leaves, or it
+-- hands out capacity on a day nothing consumes.
+--
+-- The value was already in hand at send time (POST /orgs/send `timezone`) and
+-- was forwarded to Instantly and dropped. It is stored RAW, exactly as the
+-- caller supplied it: the column is the fact, and the lossy snap onto Instantly's
+-- closed 102-value enum belongs where a day is computed, not in storage.
+--
+-- Nullable, and it stays null on every historical row. The capacity loader falls
+-- back to the schedule mirrored in bronze
+-- (`instantly_campaigns_config_raw.payload->campaign_schedule->schedules[0]`),
+-- which is what those campaigns are genuinely being dispatched on. A self-send
+-- campaign has no bronze config at all -- there was never an Instantly campaign
+-- to mirror -- which is why the column, not the mirror, is the home.
+--
+-- Rollback is `ALTER TABLE instantly_campaigns DROP COLUMN timezone`: selection
+-- then falls back to bronze for Instantly rows and to the fleet default for
+-- self-send ones, which is the pre-migration behaviour.
+ALTER TABLE "instantly_campaigns" ADD COLUMN IF NOT EXISTS "timezone" text;

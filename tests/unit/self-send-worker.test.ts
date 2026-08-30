@@ -41,7 +41,8 @@ const { SmtpDispatchError } = await import("../../src/lib/self-send/smtp");
 
 // A MONDAY. The earlier fixture was a Sunday, so these tests were exercising a
 // run that the sending calendar now correctly refuses to make at all.
-const NOW = new Date("2026-08-17T12:00:00Z");
+// Monday 10:00 in America/Chicago — inside the prospect-local send window.
+const NOW = new Date("2026-08-17T15:00:00Z");
 
 /**
  * The worker issues three reads in order: pending sequences, sending accounts,
