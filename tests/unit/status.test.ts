@@ -24,7 +24,7 @@ async function createStatusApp() {
   return app;
 }
 
-const emptyScoped = { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
+const emptyScoped = { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, replyKind: null, disqualified: false, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
 
 /** Recursively concatenate every string fragment in a drizzle SQL query. */
 function chunkText(query: unknown): string {
@@ -736,4 +736,110 @@ describe("POST /status", () => {
     // Distinct cache keys → each request runs its own 2 DB queries.
     expect(mockExecute).toHaveBeenCalledTimes(4);
   });
+
+  // ── Recyclable "no" vs permanent disqualification (additive fields) ───────
+
+  function row(overrides: Record<string, unknown> = {}) {
+    return {
+      key: "john@acme.com",
+      campaignId: "camp-1",
+      contacted: true,
+      sent: true,
+      delivered: true,
+      opened: true,
+      clicked: false,
+      replied: true,
+      replyClassification: "negative",
+      replyKind: null,
+      bounced: false,
+      unsubscribed: false,
+      cancelled: false,
+      sentCount: 1,
+      lastDeliveredAt: "2026-03-01T10:00:00.000Z",
+      firstContactedAt: null,
+      firstSentAt: null,
+      firstDeliveredAt: null,
+      firstOpenedAt: null,
+      firstClickedAt: null,
+      firstRepliedAt: null,
+      firstBouncedAt: null,
+      firstUnsubscribedAt: null,
+      ...overrides,
+    };
+  }
+
+  // Each call uses a fresh campaignId: the route caches per (org, brand,
+  // campaign, emails), so reusing one inside a test would serve the previous
+  // answer and leave the queued db results for the NEXT test to pick up.
+  let scopeSeq = 0;
+  async function campaignScope(replyKind: string | null) {
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({ rows: [row({ replyKind })] });
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      campaignId: `camp-scope-${scopeSeq++}`,
+      items: [{ email: "john@acme.com" }],
+    });
+    expect(res.status).toBe(200);
+    return res.body.results[0].campaign;
+  }
+
+  it("a lead whose only negative reply is 'not interested' is NOT disqualified — the no is about the moment", async () => {
+    const c = await campaignScope("lead_not_interested");
+    expect(c.replyKind).toBe("lead_not_interested");
+    expect(c.disqualified).toBe(false);
+    // The coarse value a downstream stats consumer reads is unchanged.
+    expect(c.replyClassification).toBe("negative");
+  });
+
+  it("'wrong person' and 'changed job' ARE disqualified — the no is about the person", async () => {
+    expect((await campaignScope("lead_wrong_person")).disqualified).toBe(true);
+    expect((await campaignScope("lead_changed_job")).disqualified).toBe(true);
+  });
+
+  it("no kind on record ⇒ not disqualified — an absence is not a disqualification", async () => {
+    const c = await campaignScope(null);
+    expect(c.replyKind).toBeNull();
+    expect(c.disqualified).toBe(false);
+  });
+
+  it("never reports disqualified for a positive or neutral kind", async () => {
+    for (const kind of ["lead_interested", "lead_referral", "lead_neutral", "lead_out_of_office"]) {
+      expect((await campaignScope(kind)).disqualified).toBe(false);
+    }
+  });
+
+  it("reads reply_kind from the gold row in both scoped queries", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+    const app = await createStatusApp();
+    await request(app).post("/").send({ brandId: "brand-1", items: [{ email: "john@acme.com" }] });
+    const brandSql = chunkText(mockExecute.mock.calls[1][0]);
+    expect(brandSql).toContain("s.reply_kind");
+  });
+
+  it("brand scope sources replyKind and replyClassification from the SAME campaign row", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        row({ campaignId: "camp-1", replyClassification: "negative", replyKind: "lead_wrong_person", lastDeliveredAt: "2026-03-01T10:00:00.000Z" }),
+        row({ campaignId: "camp-2", replyClassification: "positive", replyKind: "lead_interested", lastDeliveredAt: "2026-03-05T10:00:00.000Z" }),
+      ],
+    });
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      brandId: "brand-1",
+      items: [{ email: "john@acme.com" }],
+    });
+
+    const brand = res.body.results[0].brand;
+    // The later campaign wins the coarse value, so it must win the kind too —
+    // otherwise the pair contradicts itself for one person.
+    expect(brand.replyClassification).toBe("positive");
+    expect(brand.replyKind).toBe("lead_interested");
+    expect(brand.disqualified).toBe(false);
+    expect(res.body.results[0].byCampaign["camp-1"].disqualified).toBe(true);
+  });
+
 });

@@ -3,12 +3,14 @@ import {
   ACCEPTED_QUALIFICATION_STATUSES,
   AUTOMATED_REPLY_KINDS,
   DEAL_PROGRESS_TO_REPLY_KIND,
+  DISQUALIFYING_REPLY_KINDS,
   LEGACY_DEAL_PROGRESS_STATUSES,
   NEGATIVE_REPLY_KINDS,
   POSITIVE_REPLY_KINDS,
   REPLY_KINDS,
   REPLY_KIND_CLASSIFICATION,
   isDealProgressEventType,
+  isDisqualifyingReplyKind,
   isReplyKind,
   isSequenceStoppingReplyKind,
   resolveReplyKind,
@@ -169,6 +171,39 @@ describe("isSequenceStoppingReplyKind", () => {
   it("never stops on an automated reply", () => {
     for (const kind of AUTOMATED_REPLY_KINDS) {
       expect(isSequenceStoppingReplyKind(kind)).toBe(false);
+    }
+  });
+});
+
+describe("disqualifying reply kinds — a 'no' about the PERSON, not the MOMENT", () => {
+  it("disqualifies only the two kinds that are permanent facts about the person", () => {
+    expect(isDisqualifyingReplyKind("lead_wrong_person")).toBe(true);
+    expect(isDisqualifyingReplyKind("lead_changed_job")).toBe(true);
+  });
+
+  it("does NOT disqualify a lead who simply declines today — that lead stays recyclable", () => {
+    expect(isDisqualifyingReplyKind("lead_not_interested")).toBe(false);
+  });
+
+  it("disqualifies nothing outside the negative kinds", () => {
+    for (const kind of REPLY_KINDS) {
+      if (isDisqualifyingReplyKind(kind)) {
+        expect(NEGATIVE_REPLY_KINDS).toContain(kind);
+      }
+    }
+  });
+
+  it("changes nothing about the coarse classification — all three negatives stay 'negative'", () => {
+    // The finer reading is ADDITIVE. A consumer that reads only the coarse
+    // value (features-service counts stats off it) sees no difference at all.
+    for (const kind of NEGATIVE_REPLY_KINDS) {
+      expect(REPLY_KIND_CLASSIFICATION[kind]).toBe("negative");
+    }
+  });
+
+  it("leaves the disqualifying kinds sequence-stopping, like every other human reply", () => {
+    for (const kind of DISQUALIFYING_REPLY_KINDS) {
+      expect(isSequenceStoppingReplyKind(kind)).toBe(true);
     }
   });
 });
