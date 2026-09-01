@@ -232,3 +232,36 @@ export const SEQUENCE_STOPPING_REPLY_KINDS = new Set<ReplyKind>([
 export function isSequenceStoppingReplyKind(kind: ReplyKind): boolean {
   return SEQUENCE_STOPPING_REPLY_KINDS.has(kind);
 }
+
+/**
+ * The negative kinds that are permanent facts about the PERSON rather than a
+ * judgement about the offer — i.e. the ones that DISQUALIFY the lead.
+ *
+ * `lead_not_interested` is deliberately absent, and that absence is the whole
+ * point of the set. "Not interested" / "can't buy right now" is a commercial
+ * judgement about this offer at this moment: the person is still reachable, the
+ * company is still in the audience, and the lead stays recyclable. Filing it as
+ * a disqualification is exactly the conflation that turns a "no" bucket into a
+ * dumping ground and quietly loses recyclable pipeline.
+ *
+ * `lead_wrong_person` and `lead_changed_job` are the opposite: each states an
+ * objective fact about this contact that no later re-approach can change, so
+ * the lead is permanently out.
+ *
+ * NOTE this is a strictly FINER reading of the same statements — it does NOT
+ * change what `REPLY_KIND_CLASSIFICATION` says. All three kinds stay `negative`
+ * for every consumer that reads only the coarse classification.
+ */
+export const DISQUALIFYING_REPLY_KINDS = new Set<ReplyKind>([
+  "lead_wrong_person",
+  "lead_changed_job",
+]);
+
+/**
+ * True iff a reply of this kind permanently disqualifies the lead — a fact
+ * about the person, not about the moment. False for every other kind,
+ * `lead_not_interested` very much included.
+ */
+export function isDisqualifyingReplyKind(kind: ReplyKind): boolean {
+  return DISQUALIFYING_REPLY_KINDS.has(kind);
+}

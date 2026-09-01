@@ -990,6 +990,25 @@ const StatusItemSchema = z.object({
   email: z.string().describe("Email address"),
 });
 
+const REPLY_KIND_VALUES = [
+  "lead_interested",
+  "lead_referral",
+  "lead_info_requested",
+  "lead_meeting_requested",
+  "lead_not_interested",
+  "lead_wrong_person",
+  "lead_changed_job",
+  "lead_neutral",
+  "lead_out_of_office",
+  "auto_reply_received",
+] as const;
+
+export const ReplyKindSchema = z
+  .enum(REPLY_KIND_VALUES)
+  .describe(
+    "What KIND of reply arrived, and nothing about how far the deal got. Positive splits four ways: lead_interested (personally interested), lead_referral (not personally interested but relevant — points at the right person), lead_info_requested (wants to know more), lead_meeting_requested (wants to book). Negative splits by whether the no is about the moment or the person: lead_not_interested (declines today — recyclable), lead_wrong_person (not the right contact, hands nothing back) and lead_changed_job (has left the role we were selling to). The last two are objective facts about the person and permanent for the lead; the first is not. Deal outcomes (a booked meeting, a closed deal) are lead outcomes owned by the lead-outcomes service, not reply kinds.",
+  );
+
 export const StatusRequestSchema = z
   .object({
     brandId: z
@@ -1014,11 +1033,36 @@ export const StatusRequestSchema = z
 
 export type StatusRequest = z.infer<typeof StatusRequestSchema>;
 
+/**
+ * The contract's `StatusScope`, plus the two ADDITIVE fields this service
+ * serves on top of it.
+ *
+ * `replyClassification` keeps its exact meaning — every existing consumer is
+ * unaffected — but it cannot answer the question the triage board asks: a "no"
+ * about the MOMENT and a "no" about the PERSON are both `negative`, so a
+ * recyclable lead and a permanently disqualified one arrive downstream looking
+ * identical. `replyKind` carries the finer statement and `disqualified` is
+ * strictly derived from it, so the two can never contradict each other.
+ *
+ * Declared here rather than in the contract package: the vocabulary is this
+ * service's, and widening the shared contract is a separate cross-repo change.
+ */
+const ScopedStatusSchema = StatusScopeSchema.extend({
+  replyKind: ReplyKindSchema.nullable().describe(
+    "WHICH reply this is — the finer reading of `replyClassification`, from the human statement when one exists and from the automatic classification otherwise. Null when no reply kind is on record.",
+  ),
+  disqualified: z
+    .boolean()
+    .describe(
+      "True iff this person is PERMANENTLY out: they are not the right contact (`lead_wrong_person`) or they have left the role (`lead_changed_job`). A prospect who simply declines today (`lead_not_interested`) is NOT disqualified — the lead stays recyclable. Strictly a function of `replyKind`, so the two fields never disagree; false whenever no kind is on record, because an absence is not a disqualification.",
+    ),
+});
+
 const StatusResultSchema = z.object({
   email: z.string(),
-  byCampaign: z.record(z.string(), StatusScopeSchema).nullable().describe("Per-campaign breakdown — present only when brandId is provided without campaignId"),
-  brand: StatusScopeSchema.nullable().describe("Aggregated brand status (most advanced across campaigns) — present only when brandId is provided without campaignId"),
-  campaign: StatusScopeSchema.nullable().describe("Campaign-scoped status — present only when campaignId is provided"),
+  byCampaign: z.record(z.string(), ScopedStatusSchema).nullable().describe("Per-campaign breakdown — present only when brandId is provided without campaignId"),
+  brand: ScopedStatusSchema.nullable().describe("Aggregated brand status (most advanced across campaigns) — present only when brandId is provided without campaignId"),
+  campaign: ScopedStatusSchema.nullable().describe("Campaign-scoped status — present only when campaignId is provided"),
   global: GlobalStatusSchema,
 });
 
@@ -1034,18 +1078,21 @@ const StatusResponseSchema = z
           byCampaign: {
             "c1a2b3c4-0000-0000-0000-000000000001": {
               contacted: true, sent: true, delivered: true, opened: true, clicked: false,
-              replied: false, replyClassification: null, bounced: false, unsubscribed: false,
+              replied: false, replyClassification: null, replyKind: null, disqualified: false,
+              bounced: false, unsubscribed: false,
               cancelled: false, lastDeliveredAt: "2026-03-01T10:00:00.000Z",
             },
             "c1a2b3c4-0000-0000-0000-000000000002": {
               contacted: true, sent: true, delivered: true, opened: false, clicked: true,
-              replied: true, replyClassification: "positive", bounced: false, unsubscribed: false,
+              replied: true, replyClassification: "positive", replyKind: "lead_interested",
+              disqualified: false, bounced: false, unsubscribed: false,
               cancelled: false, lastDeliveredAt: "2026-03-02T12:00:00.000Z",
             },
           },
           brand: {
             contacted: true, sent: true, delivered: true, opened: true, clicked: true,
-            replied: true, replyClassification: "positive", bounced: false, unsubscribed: false,
+            replied: true, replyClassification: "positive", replyKind: "lead_interested",
+            disqualified: false, bounced: false, unsubscribed: false,
             cancelled: false, lastDeliveredAt: "2026-03-02T12:00:00.000Z",
           },
           campaign: null,
@@ -1078,25 +1125,6 @@ const MANUAL_QUALIFICATION_STATUS_VALUES = [
   "lead_meeting_booked",
   "lead_closed",
 ] as const;
-
-const REPLY_KIND_VALUES = [
-  "lead_interested",
-  "lead_referral",
-  "lead_info_requested",
-  "lead_meeting_requested",
-  "lead_not_interested",
-  "lead_wrong_person",
-  "lead_changed_job",
-  "lead_neutral",
-  "lead_out_of_office",
-  "auto_reply_received",
-] as const;
-
-export const ReplyKindSchema = z
-  .enum(REPLY_KIND_VALUES)
-  .describe(
-    "What KIND of reply arrived, and nothing about how far the deal got. Positive splits four ways: lead_interested (personally interested), lead_referral (not personally interested but relevant — points at the right person), lead_info_requested (wants to know more), lead_meeting_requested (wants to book). Negative splits by whether the no is about the moment or the person: lead_not_interested (declines today — recyclable), lead_wrong_person (not the right contact, hands nothing back) and lead_changed_job (has left the role we were selling to). The last two are objective facts about the person and permanent for the lead; the first is not. Deal outcomes (a booked meeting, a closed deal) are lead outcomes owned by the lead-outcomes service, not reply kinds.",
-  );
 
 export const ManualQualificationStatusSchema = z
   .enum(MANUAL_QUALIFICATION_STATUS_VALUES)
@@ -1333,6 +1361,194 @@ registry.registerPath({
       description: "Server error",
       content: { "application/json": { schema: ErrorSchema } },
     },
+  },
+});
+
+// ─── Recorded opt-outs (a person asked a human to stop) ─────────────────────
+
+/**
+ * How the person told us. Closed on purpose: an opt-out with no channel is an
+ * assertion nobody can audit later, which is the one thing a consent record must
+ * never be.
+ */
+const OPT_OUT_CHANNEL_VALUES = [
+  "sms",
+  "phone_call",
+  "email_reply",
+  "forwarded_thread",
+  "in_person",
+  "web_form",
+  "other",
+] as const;
+
+export const OptOutChannelSchema = z
+  .enum(OPT_OUT_CHANNEL_VALUES)
+  .describe(
+    "The channel the person used to ask us to stop. Required — this is what makes the record auditable as a consent record rather than a flag.",
+  );
+
+export const LeadOptOutCreateBodySchema = z
+  .object({
+    email: z.string().email().describe("The person who asked us to stop"),
+    channel: OptOutChannelSchema,
+    notes: z.string().max(2000).optional().describe("Optional free-text human note for audit"),
+  })
+  .openapi("LeadOptOutCreateBody", {
+    example: {
+      email: "alice@media.com",
+      channel: "sms",
+      notes: "Texted my mobile asking not to be contacted again",
+    },
+  });
+
+export const LeadOptOutWithdrawBodySchema = z
+  .object({
+    email: z.string().email().describe("The person whose opt-out is being taken back"),
+    notes: z.string().max(2000).optional().describe("Optional free-text human note for audit"),
+  })
+  .openapi("LeadOptOutWithdrawBody", {
+    example: { email: "alice@media.com", notes: "Recorded on the wrong lead" },
+  });
+
+export const LeadOptOutListQuerySchema = z.object({
+  email: z.string().email().optional().describe("Filter by lead email"),
+  standing_only: z
+    .coerce.boolean()
+    .optional()
+    .describe("Return only records that still STAND (default false — withdrawn records are part of the audit)"),
+  limit: z
+    .coerce.number()
+    .int()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe("Max rows to return (default 200, max 500)"),
+});
+
+const LeadOptOutRowSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  email: z.string(),
+  channel: OptOutChannelSchema,
+  statedBy: z.string().describe("The staff member who recorded it (x-user-id)"),
+  notes: z.string().nullable(),
+  statedAt: z.string().describe("ISO 8601 timestamp"),
+  withdrawnAt: z
+    .string()
+    .nullable()
+    .describe(
+      "ISO 8601 timestamp of the withdrawal, or null while the record still STANDS. Non-null means it was taken back: it is kept for audit and must never be rendered as a current opt-out.",
+    ),
+  withdrawnBy: z.string().nullable(),
+});
+
+const LeadOptOutCreateResponseSchema = z
+  .object({
+    idempotent: z
+      .boolean()
+      .describe("True if a standing opt-out already existed — no new record, no repeated side effects"),
+    campaignsAffected: z.number().int().describe("Campaigns of this org holding that address"),
+    campaignsStopped: z
+      .number()
+      .int()
+      .describe("How many of them could be stopped at the SENDER. Below campaignsAffected means a pause failed and is logged — the local stop and the opt-out record still hold."),
+    optOut: LeadOptOutRowSchema,
+  })
+  .openapi("LeadOptOutCreateResponse");
+
+const LeadOptOutWithdrawResponseSchema = z
+  .object({
+    campaignsAffected: z.number().int(),
+    optOut: LeadOptOutRowSchema.describe("The record that was withdrawn, now carrying withdrawnAt / withdrawnBy."),
+  })
+  .openapi("LeadOptOutWithdrawResponse");
+
+const LeadOptOutWithdrawErrorSchema = z
+  .object({
+    error: z.string(),
+    code: z
+      .enum(["no_standing_optout"])
+      .describe("Nothing currently stands for this lead — nothing was ever recorded, or it is already withdrawn."),
+  })
+  .openapi("LeadOptOutWithdrawError");
+
+const LeadOptOutListResponseSchema = z
+  .object({ optOuts: z.array(LeadOptOutRowSchema) })
+  .openapi("LeadOptOutListResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/opt-outs",
+  summary: "Record that a person asked a human to stop contacting them",
+  description:
+    "A prospect rarely clicks the unsubscribe link: they send an SMS, they call, they reply to a thread somebody forwarded them, they say it in person. This records that statement — never infers it — and then honours it.\n\n" +
+    "**It stops the sending.** For every campaign this org holds for that address, a real `lead_unsubscribed` silver event is promoted through the SAME path a clicked unsubscribe uses (the sequence stops, the remaining provisioned holds are cancelled) AND the campaign is paused at the sender. The pause is the half the click path gets for free from Instantly and this path cannot: Instantly never saw the SMS.\n\n" +
+    "**It surfaces where a clicked unsubscribe surfaces.** `POST /orgs/status` reports `unsubscribed: true` for that person, scoped and global, with no second field for a consumer to learn.\n\n" +
+    "**Scope is the PERSON, not a campaign.** Honouring \"stop contacting me\" in one campaign while another keeps sending is the outcome the law cares about.\n\n" +
+    "**Bronze:** an `instantly_lead_optouts_raw` row is appended (append-only) carrying who stated it, when, and through which channel — it is a consent record.\n\n" +
+    "**Idempotence:** a standing record for the same person returns `idempotent: true` with no second row and no repeated side effects. The record is written even when the org holds no campaign for the address; the response then reports zero campaigns.",
+  request: {
+    headers: TrackingHeadersSchema,
+    body: { content: { "application/json": { schema: LeadOptOutCreateBodySchema } } },
+  },
+  responses: {
+    200: {
+      description: "Opt-out recorded (or idempotent no-op)",
+      content: { "application/json": { schema: LeadOptOutCreateResponseSchema } },
+    },
+    400: {
+      description: "Invalid body or missing identity header",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/opt-outs/withdrawals",
+  summary: "Withdraw the standing recorded opt-out for a person",
+  description:
+    "Take a recorded opt-out back — recorded on the wrong lead, or a prospect who came back and asked to hear from us again. After it, `POST /orgs/status` stops reporting that person as unsubscribed.\n\n" +
+    "**A correction, not an erasure.** The record stays byte-identical in `instantly_lead_optouts_raw` and a row is APPENDED to `instantly_lead_optout_withdrawals`. `GET /orgs/opt-outs` returns both; a withdrawn one carries a non-null `withdrawnAt`.\n\n" +
+    "**Silver / Gold:** only the `lead_unsubscribed` events THIS record promoted are marked withdrawn (the rows are kept — silver is the audit of what was asserted), and the gold status row is refreshed. A `lead_unsubscribed` the prospect produced by clicking the link is never touched: nobody withdrew that.\n\n" +
+    "**Scope:** this releases the OPT-OUT. It does not resume the sequences it stopped — the holds were cancelled and the campaigns paused, and silently restarting outreach at somebody who asked us to stop is the one mistake worth being unable to make by accident.\n\n" +
+    "**Idempotence:** withdrawing when nothing stands writes nothing and returns 404 `no_standing_optout`, including a second withdrawal of the same record.",
+  request: {
+    headers: TrackingHeadersSchema,
+    body: { content: { "application/json": { schema: LeadOptOutWithdrawBodySchema } } },
+  },
+  responses: {
+    200: {
+      description: "The standing opt-out was withdrawn",
+      content: { "application/json": { schema: LeadOptOutWithdrawResponseSchema } },
+    },
+    400: {
+      description: "Invalid body or missing identity header",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    404: {
+      description: "Nothing stands for this lead",
+      content: { "application/json": { schema: LeadOptOutWithdrawErrorSchema } },
+    },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/opt-outs",
+  summary: "The org's recorded opt-out log",
+  description:
+    "Every opt-out recorded by a human for this org, newest first. Withdrawn records are returned too and carry `withdrawnAt` / `withdrawnBy` — hiding them would destroy the audit. Pass `standing_only=true` for only the records that still stand.",
+  request: { query: LeadOptOutListQuerySchema, headers: TrackingHeadersSchema },
+  responses: {
+    200: {
+      description: "Recorded opt-outs",
+      content: { "application/json": { schema: LeadOptOutListResponseSchema } },
+    },
+    400: { description: "Invalid query", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
   },
 });
 
