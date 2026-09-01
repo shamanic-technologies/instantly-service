@@ -3,6 +3,7 @@ import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { StatusRequestSchema } from "../schemas";
 import { getOrSetCachedStats, statsCacheKey } from "../lib/stats-cache";
+import { isDisqualifyingReplyKind, isReplyKind } from "../lib/reply-kind";
 
 const router = Router();
 
@@ -23,6 +24,9 @@ interface AggRow {
   clicked: boolean | null;
   replied: boolean | null;
   replyClassification: string | null;
+  // The FINER reading of the same reply — which KIND it was. Additive: the
+  // coarse `replyClassification` above is unchanged for consumers that read it.
+  replyKind: string | null;
   bounced: boolean | null;
   unsubscribed: boolean | null;
   cancelled: boolean | null;
@@ -46,8 +50,22 @@ function extractRows(result: unknown): AggRow[] {
   return raw as AggRow[];
 }
 
+/**
+ * Is this lead permanently out, or merely not buying today?
+ *
+ * A consumer that only has `replyClassification` cannot tell: "not interested"
+ * and "wrong person" are both `negative`, so a recyclable lead and a genuinely
+ * disqualified one arrive downstream looking identical. `disqualified` is
+ * strictly a function of `replyKind`, so the two fields can never contradict
+ * each other, and it is false whenever no kind is on record — an absence is not
+ * a disqualification.
+ */
+function disqualifiedFrom(replyKind: string | null): boolean {
+  return isReplyKind(replyKind) && isDisqualifyingReplyKind(replyKind);
+}
+
 function emptyScoped() {
-  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
+  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, replyKind: null, disqualified: false, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
 }
 
 function formatTimestamp(val: string | null | undefined): string | null {
@@ -64,6 +82,8 @@ function buildScopedStatus(row: AggRow | undefined) {
         clicked: row.clicked === true,
         replied: row.replied === true,
         replyClassification: row.replyClassification ?? null,
+        replyKind: row.replyKind ?? null,
+        disqualified: disqualifiedFrom(row.replyKind ?? null),
         bounced: row.bounced === true,
         unsubscribed: row.unsubscribed === true,
         cancelled: row.cancelled === true,
@@ -121,6 +141,7 @@ function scopedQueryByEmail(orgId: string, filterClause: ReturnType<typeof sql>,
       BOOL_OR(s.clicked) AS "clicked",
       BOOL_OR(s.replied) AS "replied",
       (array_agg(s.reply_classification ORDER BY s.updated_at DESC) FILTER (WHERE s.reply_classification IS NOT NULL))[1] AS "replyClassification",
+      (array_agg(s.reply_kind ORDER BY s.updated_at DESC) FILTER (WHERE s.reply_kind IS NOT NULL))[1] AS "replyKind",
       BOOL_OR(s.bounced) AS "bounced",
       BOOL_OR(s.unsubscribed) AS "unsubscribed",
       BOOL_OR(s.cancelled) AS "cancelled",
@@ -157,6 +178,7 @@ function brandBreakdownQuery(orgId: string, brandId: string, emails: string[]) {
       BOOL_OR(s.clicked) AS "clicked",
       BOOL_OR(s.replied) AS "replied",
       (array_agg(s.reply_classification ORDER BY s.updated_at DESC) FILTER (WHERE s.reply_classification IS NOT NULL))[1] AS "replyClassification",
+      (array_agg(s.reply_kind ORDER BY s.updated_at DESC) FILTER (WHERE s.reply_kind IS NOT NULL))[1] AS "replyKind",
       BOOL_OR(s.bounced) AS "bounced",
       BOOL_OR(s.unsubscribed) AS "unsubscribed",
       BOOL_OR(s.cancelled) AS "cancelled",
@@ -184,17 +206,28 @@ function brandBreakdownQuery(orgId: string, brandId: string, emails: string[]) {
 function aggregateBrandStatus(rows: AggRow[]) {
   if (rows.length === 0) return emptyScoped();
 
-  // Pick the most recent non-null replyClassification
+  // Pick the most recent non-null replyClassification — and take `replyKind`
+  // off the SAME row. They are two readings of ONE reply, so sourcing them from
+  // different campaigns could hand a consumer a coarse value and a kind that
+  // disagree ("negative" beside `lead_interested`) for the same person.
   let replyClassification: string | null = null;
+  let replyKind: string | null = null;
   let latestReplyAt: Date | null = null;
   for (const row of rows) {
     if (row.replyClassification != null) {
       const ts = row.lastDeliveredAt ? new Date(row.lastDeliveredAt) : null;
       if (!latestReplyAt || (ts && ts > latestReplyAt)) {
         replyClassification = row.replyClassification;
+        replyKind = row.replyKind ?? null;
         latestReplyAt = ts;
       }
     }
+  }
+  // A kind can legitimately exist with no coarse value on the same row only for
+  // a lead nobody has classified at all; fall back to the first kind on record
+  // so the finer field is never emptier than the coarse one.
+  if (replyKind == null) {
+    replyKind = rows.find((r) => r.replyKind != null)?.replyKind ?? null;
   }
 
   // Pick the latest lastDeliveredAt across all campaigns
@@ -227,6 +260,8 @@ function aggregateBrandStatus(rows: AggRow[]) {
     clicked: rows.some((r) => r.clicked === true),
     replied: rows.some((r) => r.replied === true),
     replyClassification,
+    replyKind,
+    disqualified: disqualifiedFrom(replyKind),
     bounced: rows.some((r) => r.bounced === true),
     unsubscribed: rows.some((r) => r.unsubscribed === true),
     cancelled: rows.some((r) => r.cancelled === true),

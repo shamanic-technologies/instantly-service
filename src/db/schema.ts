@@ -393,6 +393,17 @@ export const instantlyLeadStatusCurrent = pgTable(
     clicked: boolean("clicked").notNull().default(false),
     replied: boolean("replied").notNull().default(false),
     replyClassification: text("reply_classification"),
+    // The FINER reading of the same reply: which kind of reply this lead's
+    // current statement actually is (`lead_not_interested` vs
+    // `lead_wrong_person` vs ...), so a consumer can tell a "no" about the
+    // MOMENT from a "no" about the PERSON. `reply_classification` above keeps
+    // its exact meaning — this column is additive and never overrides it.
+    //
+    // Precedence mirrors the `reply_classification_source='manual'` pin: a
+    // standing human statement wins outright, otherwise the latest automatic
+    // reply-kind event. A withdrawn statement is skipped. Derived in
+    // `refreshLeadStatusCurrent`; NULL means no reply kind is on record.
+    replyKind: text("reply_kind"),
     bounced: boolean("bounced").notNull().default(false),
     unsubscribed: boolean("unsubscribed").notNull().default(false),
     cancelled: boolean("cancelled").notNull().default(false),
@@ -792,6 +803,68 @@ export const instantlyManualQualificationWithdrawals = pgTable(
     index("instantly_manual_qualification_withdrawals_org_campaign_email_idx").on(
       table.orgId,
       table.campaignId,
+      table.leadEmail,
+    ),
+  ],
+);
+
+// Bronze: a person asked a HUMAN to stop contacting them — by SMS, on a call,
+// in a forwarded thread, in person. Recorded through
+// POST /orgs/opt-outs by a staff member; never inferred from anything.
+//
+// Append-only, exactly like the manual reply qualifications above: this is a
+// CONSENT record, so who stated it, when and through which channel has to stay
+// recoverable forever.
+//
+// Keyed on (org, lead_email) and deliberately NOT on a campaign. "Stop
+// contacting me" is a statement about the PERSON; honouring it in one campaign
+// while another keeps sending is precisely the outcome CAN-SPAM/GDPR care
+// about, so recording it stops every campaign this org holds for that address.
+export const instantlyLeadOptoutsRaw = pgTable(
+  "instantly_lead_optouts_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    /** How they told us — required. An opt-out with no channel is an assertion
+     *  nobody can audit; the channel is what makes this a consent record. */
+    channel: text("channel").notNull(),
+    /** The staff member who recorded it (x-user-id). */
+    statedBy: text("stated_by").notNull(),
+    notes: text("notes"),
+    payload: jsonb("payload").notNull(),
+    statedAt: timestamp("stated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("instantly_lead_optouts_raw_org_email_idx").on(table.orgId, table.leadEmail),
+    index("instantly_lead_optouts_raw_stated_at_idx").on(table.statedAt),
+  ],
+);
+
+// Bronze: withdrawing a recorded opt-out — a staff member who recorded it on
+// the wrong person, or a prospect who came back and asked to hear from us again.
+//
+// An APPEND, never a delete or an edit: the statement stays byte-identical and
+// this row records that it no longer stands. Keyed on the statement id (unique)
+// so a later re-statement is unaffected by an earlier withdrawal, and so a
+// second withdrawal of the same statement is a no-op at the index rather than a
+// read-then-write race. Same shape, and the same reasoning, as
+// `instantly_manual_qualification_withdrawals`.
+export const instantlyLeadOptoutWithdrawals = pgTable(
+  "instantly_lead_optout_withdrawals",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    /** The withdrawn opt-out's bronze row id. Unique — one withdrawal per record. */
+    optoutId: text("optout_id").notNull().unique(),
+    orgId: text("org_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    withdrawnBy: text("withdrawn_by").notNull(),
+    notes: text("notes"),
+    withdrawnAt: timestamp("withdrawn_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("instantly_lead_optout_withdrawals_org_email_idx").on(
+      table.orgId,
       table.leadEmail,
     ),
   ],

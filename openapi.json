@@ -1990,6 +1990,28 @@
                         "type": "integer",
                         "minimum": 0,
                         "description": "Number of emails actually sent to the recipient in this scope (send-event count, not a boolean); 0 when no send. Sequence position derives from it: 1 = initial, 2 = first follow-up, 3 = second follow-up. Optional in contract v1; brand scope = SUM across the brand's campaigns."
+                      },
+                      "replyKind": {
+                        "type": "string",
+                        "nullable": true,
+                        "enum": [
+                          "lead_interested",
+                          "lead_referral",
+                          "lead_info_requested",
+                          "lead_meeting_requested",
+                          "lead_not_interested",
+                          "lead_wrong_person",
+                          "lead_changed_job",
+                          "lead_neutral",
+                          "lead_out_of_office",
+                          "auto_reply_received",
+                          null
+                        ],
+                        "description": "WHICH reply this is — the finer reading of `replyClassification`, from the human statement when one exists and from the automatic classification otherwise. Null when no reply kind is on record."
+                      },
+                      "disqualified": {
+                        "type": "boolean",
+                        "description": "True iff this person is PERMANENTLY out: they are not the right contact (`lead_wrong_person`) or they have left the role (`lead_changed_job`). A prospect who simply declines today (`lead_not_interested`) is NOT disqualified — the lead stays recyclable. Strictly a function of `replyKind`, so the two fields never disagree; false whenever no kind is on record, because an absence is not a disqualification."
                       }
                     },
                     "required": [
@@ -2002,7 +2024,9 @@
                       "replyClassification",
                       "bounced",
                       "unsubscribed",
-                      "lastDeliveredAt"
+                      "lastDeliveredAt",
+                      "replyKind",
+                      "disqualified"
                     ]
                   },
                   "description": "Per-campaign breakdown — present only when brandId is provided without campaignId"
@@ -2107,6 +2131,28 @@
                       "type": "integer",
                       "minimum": 0,
                       "description": "Number of emails actually sent to the recipient in this scope (send-event count, not a boolean); 0 when no send. Sequence position derives from it: 1 = initial, 2 = first follow-up, 3 = second follow-up. Optional in contract v1; brand scope = SUM across the brand's campaigns."
+                    },
+                    "replyKind": {
+                      "type": "string",
+                      "nullable": true,
+                      "enum": [
+                        "lead_interested",
+                        "lead_referral",
+                        "lead_info_requested",
+                        "lead_meeting_requested",
+                        "lead_not_interested",
+                        "lead_wrong_person",
+                        "lead_changed_job",
+                        "lead_neutral",
+                        "lead_out_of_office",
+                        "auto_reply_received",
+                        null
+                      ],
+                      "description": "WHICH reply this is — the finer reading of `replyClassification`, from the human statement when one exists and from the automatic classification otherwise. Null when no reply kind is on record."
+                    },
+                    "disqualified": {
+                      "type": "boolean",
+                      "description": "True iff this person is PERMANENTLY out: they are not the right contact (`lead_wrong_person`) or they have left the role (`lead_changed_job`). A prospect who simply declines today (`lead_not_interested`) is NOT disqualified — the lead stays recyclable. Strictly a function of `replyKind`, so the two fields never disagree; false whenever no kind is on record, because an absence is not a disqualification."
                     }
                   },
                   "required": [
@@ -2119,7 +2165,9 @@
                     "replyClassification",
                     "bounced",
                     "unsubscribed",
-                    "lastDeliveredAt"
+                    "lastDeliveredAt",
+                    "replyKind",
+                    "disqualified"
                   ],
                   "description": "Aggregated brand status (most advanced across campaigns) — present only when brandId is provided without campaignId"
                 },
@@ -2223,6 +2271,28 @@
                       "type": "integer",
                       "minimum": 0,
                       "description": "Number of emails actually sent to the recipient in this scope (send-event count, not a boolean); 0 when no send. Sequence position derives from it: 1 = initial, 2 = first follow-up, 3 = second follow-up. Optional in contract v1; brand scope = SUM across the brand's campaigns."
+                    },
+                    "replyKind": {
+                      "type": "string",
+                      "nullable": true,
+                      "enum": [
+                        "lead_interested",
+                        "lead_referral",
+                        "lead_info_requested",
+                        "lead_meeting_requested",
+                        "lead_not_interested",
+                        "lead_wrong_person",
+                        "lead_changed_job",
+                        "lead_neutral",
+                        "lead_out_of_office",
+                        "auto_reply_received",
+                        null
+                      ],
+                      "description": "WHICH reply this is — the finer reading of `replyClassification`, from the human statement when one exists and from the automatic classification otherwise. Null when no reply kind is on record."
+                    },
+                    "disqualified": {
+                      "type": "boolean",
+                      "description": "True iff this person is PERMANENTLY out: they are not the right contact (`lead_wrong_person`) or they have left the role (`lead_changed_job`). A prospect who simply declines today (`lead_not_interested`) is NOT disqualified — the lead stays recyclable. Strictly a function of `replyKind`, so the two fields never disagree; false whenever no kind is on record, because an absence is not a disqualification."
                     }
                   },
                   "required": [
@@ -2235,7 +2305,9 @@
                     "replyClassification",
                     "bounced",
                     "unsubscribed",
-                    "lastDeliveredAt"
+                    "lastDeliveredAt",
+                    "replyKind",
+                    "disqualified"
                   ],
                   "description": "Campaign-scoped status — present only when campaignId is provided"
                 },
@@ -2292,6 +2364,8 @@
                   "clicked": false,
                   "replied": false,
                   "replyClassification": null,
+                  "replyKind": null,
+                  "disqualified": false,
                   "bounced": false,
                   "unsubscribed": false,
                   "cancelled": false,
@@ -2305,6 +2379,8 @@
                   "clicked": true,
                   "replied": true,
                   "replyClassification": "positive",
+                  "replyKind": "lead_interested",
+                  "disqualified": false,
                   "bounced": false,
                   "unsubscribed": false,
                   "cancelled": false,
@@ -2319,6 +2395,8 @@
                 "clicked": true,
                 "replied": true,
                 "replyClassification": "positive",
+                "replyKind": "lead_interested",
+                "disqualified": false,
                 "bounced": false,
                 "unsubscribed": false,
                 "cancelled": false,
@@ -2378,6 +2456,308 @@
             }
           ]
         }
+      },
+      "LeadOptOutCreateResponse": {
+        "type": "object",
+        "properties": {
+          "idempotent": {
+            "type": "boolean",
+            "description": "True if a standing opt-out already existed — no new record, no repeated side effects"
+          },
+          "campaignsAffected": {
+            "type": "integer",
+            "description": "Campaigns of this org holding that address"
+          },
+          "campaignsStopped": {
+            "type": "integer",
+            "description": "How many of them could be stopped at the SENDER. Below campaignsAffected means a pause failed and is logged — the local stop and the opt-out record still hold."
+          },
+          "optOut": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "orgId": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              },
+              "channel": {
+                "type": "string",
+                "enum": [
+                  "sms",
+                  "phone_call",
+                  "email_reply",
+                  "forwarded_thread",
+                  "in_person",
+                  "web_form",
+                  "other"
+                ],
+                "description": "The channel the person used to ask us to stop. Required — this is what makes the record auditable as a consent record rather than a flag."
+              },
+              "statedBy": {
+                "type": "string",
+                "description": "The staff member who recorded it (x-user-id)"
+              },
+              "notes": {
+                "type": "string",
+                "nullable": true
+              },
+              "statedAt": {
+                "type": "string",
+                "description": "ISO 8601 timestamp"
+              },
+              "withdrawnAt": {
+                "type": "string",
+                "nullable": true,
+                "description": "ISO 8601 timestamp of the withdrawal, or null while the record still STANDS. Non-null means it was taken back: it is kept for audit and must never be rendered as a current opt-out."
+              },
+              "withdrawnBy": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "id",
+              "orgId",
+              "email",
+              "channel",
+              "statedBy",
+              "notes",
+              "statedAt",
+              "withdrawnAt",
+              "withdrawnBy"
+            ]
+          }
+        },
+        "required": [
+          "idempotent",
+          "campaignsAffected",
+          "campaignsStopped",
+          "optOut"
+        ]
+      },
+      "LeadOptOutCreateBody": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "The person who asked us to stop"
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "sms",
+              "phone_call",
+              "email_reply",
+              "forwarded_thread",
+              "in_person",
+              "web_form",
+              "other"
+            ],
+            "description": "The channel the person used to ask us to stop. Required — this is what makes the record auditable as a consent record rather than a flag."
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Optional free-text human note for audit"
+          }
+        },
+        "required": [
+          "email",
+          "channel"
+        ],
+        "example": {
+          "email": "alice@media.com",
+          "channel": "sms",
+          "notes": "Texted my mobile asking not to be contacted again"
+        }
+      },
+      "LeadOptOutWithdrawResponse": {
+        "type": "object",
+        "properties": {
+          "campaignsAffected": {
+            "type": "integer"
+          },
+          "optOut": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "orgId": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              },
+              "channel": {
+                "type": "string",
+                "enum": [
+                  "sms",
+                  "phone_call",
+                  "email_reply",
+                  "forwarded_thread",
+                  "in_person",
+                  "web_form",
+                  "other"
+                ],
+                "description": "The channel the person used to ask us to stop. Required — this is what makes the record auditable as a consent record rather than a flag."
+              },
+              "statedBy": {
+                "type": "string",
+                "description": "The staff member who recorded it (x-user-id)"
+              },
+              "notes": {
+                "type": "string",
+                "nullable": true
+              },
+              "statedAt": {
+                "type": "string",
+                "description": "ISO 8601 timestamp"
+              },
+              "withdrawnAt": {
+                "type": "string",
+                "nullable": true,
+                "description": "ISO 8601 timestamp of the withdrawal, or null while the record still STANDS. Non-null means it was taken back: it is kept for audit and must never be rendered as a current opt-out."
+              },
+              "withdrawnBy": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "id",
+              "orgId",
+              "email",
+              "channel",
+              "statedBy",
+              "notes",
+              "statedAt",
+              "withdrawnAt",
+              "withdrawnBy"
+            ],
+            "description": "The record that was withdrawn, now carrying withdrawnAt / withdrawnBy."
+          }
+        },
+        "required": [
+          "campaignsAffected",
+          "optOut"
+        ]
+      },
+      "LeadOptOutWithdrawError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "no_standing_optout"
+            ],
+            "description": "Nothing currently stands for this lead — nothing was ever recorded, or it is already withdrawn."
+          }
+        },
+        "required": [
+          "error",
+          "code"
+        ]
+      },
+      "LeadOptOutWithdrawBody": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "The person whose opt-out is being taken back"
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Optional free-text human note for audit"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "example": {
+          "email": "alice@media.com",
+          "notes": "Recorded on the wrong lead"
+        }
+      },
+      "LeadOptOutListResponse": {
+        "type": "object",
+        "properties": {
+          "optOuts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "orgId": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "channel": {
+                  "type": "string",
+                  "enum": [
+                    "sms",
+                    "phone_call",
+                    "email_reply",
+                    "forwarded_thread",
+                    "in_person",
+                    "web_form",
+                    "other"
+                  ],
+                  "description": "The channel the person used to ask us to stop. Required — this is what makes the record auditable as a consent record rather than a flag."
+                },
+                "statedBy": {
+                  "type": "string",
+                  "description": "The staff member who recorded it (x-user-id)"
+                },
+                "notes": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "statedAt": {
+                  "type": "string",
+                  "description": "ISO 8601 timestamp"
+                },
+                "withdrawnAt": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "ISO 8601 timestamp of the withdrawal, or null while the record still STANDS. Non-null means it was taken back: it is kept for audit and must never be rendered as a current opt-out."
+                },
+                "withdrawnBy": {
+                  "type": "string",
+                  "nullable": true
+                }
+              },
+              "required": [
+                "id",
+                "orgId",
+                "email",
+                "channel",
+                "statedBy",
+                "notes",
+                "statedAt",
+                "withdrawnAt",
+                "withdrawnBy"
+              ]
+            }
+          }
+        },
+        "required": [
+          "optOuts"
+        ]
       },
       "SendingForecastResponse": {
         "type": "object",
@@ -5485,6 +5865,375 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/opt-outs": {
+      "post": {
+        "summary": "Record that a person asked a human to stop contacting them",
+        "description": "A prospect rarely clicks the unsubscribe link: they send an SMS, they call, they reply to a thread somebody forwarded them, they say it in person. This records that statement — never infers it — and then honours it.\n\n**It stops the sending.** For every campaign this org holds for that address, a real `lead_unsubscribed` silver event is promoted through the SAME path a clicked unsubscribe uses (the sequence stops, the remaining provisioned holds are cancelled) AND the campaign is paused at the sender. The pause is the half the click path gets for free from Instantly and this path cannot: Instantly never saw the SMS.\n\n**It surfaces where a clicked unsubscribe surfaces.** `POST /orgs/status` reports `unsubscribed: true` for that person, scoped and global, with no second field for a consumer to learn.\n\n**Scope is the PERSON, not a campaign.** Honouring \"stop contacting me\" in one campaign while another keeps sending is the outcome the law cares about.\n\n**Bronze:** an `instantly_lead_optouts_raw` row is appended (append-only) carrying who stated it, when, and through which channel — it is a consent record.\n\n**Idempotence:** a standing record for the same person returns `idempotent: true` with no second row and no repeated side effects. The record is written even when the org holds no campaign for the address; the response then reports zero campaigns.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeadOptOutCreateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Opt-out recorded (or idempotent no-op)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadOptOutCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body or missing identity header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      },
+      "get": {
+        "summary": "The org's recorded opt-out log",
+        "description": "Every opt-out recorded by a human for this org, newest first. Withdrawn records are returned too and carry `withdrawnAt` / `withdrawnBy` — hiding them would destroy the audit. Pass `standing_only=true` for only the records that still stand.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "email",
+              "description": "Filter by lead email"
+            },
+            "required": false,
+            "description": "Filter by lead email",
+            "name": "email",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean",
+              "nullable": true,
+              "description": "Return only records that still STAND (default false — withdrawn records are part of the audit)"
+            },
+            "required": false,
+            "description": "Return only records that still STAND (default false — withdrawn records are part of the audit)",
+            "name": "standing_only",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "description": "Max rows to return (default 200, max 500)"
+            },
+            "required": false,
+            "description": "Max rows to return (default 200, max 500)",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recorded opt-outs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadOptOutListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/orgs/opt-outs/withdrawals": {
+      "post": {
+        "summary": "Withdraw the standing recorded opt-out for a person",
+        "description": "Take a recorded opt-out back — recorded on the wrong lead, or a prospect who came back and asked to hear from us again. After it, `POST /orgs/status` stops reporting that person as unsubscribed.\n\n**A correction, not an erasure.** The record stays byte-identical in `instantly_lead_optouts_raw` and a row is APPENDED to `instantly_lead_optout_withdrawals`. `GET /orgs/opt-outs` returns both; a withdrawn one carries a non-null `withdrawnAt`.\n\n**Silver / Gold:** only the `lead_unsubscribed` events THIS record promoted are marked withdrawn (the rows are kept — silver is the audit of what was asserted), and the gold status row is refreshed. A `lead_unsubscribed` the prospect produced by clicking the link is never touched: nobody withdrew that.\n\n**Scope:** this releases the OPT-OUT. It does not resume the sequences it stopped — the holds were cancelled and the campaigns paused, and silently restarting outreach at somebody who asked us to stop is the one mistake worth being unable to make by accident.\n\n**Idempotence:** withdrawing when nothing stands writes nothing and returns 404 `no_standing_optout`, including a second withdrawal of the same record.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeadOptOutWithdrawBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The standing opt-out was withdrawn",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadOptOutWithdrawResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body or missing identity header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Nothing stands for this lead",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadOptOutWithdrawError"
                 }
               }
             }

@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "../db";
+import { REPLY_KINDS } from "./reply-kind";
 
 const STATUS_EVENT_TYPES = [
   "email_sent",
@@ -12,6 +13,40 @@ const STATUS_EVENT_TYPES = [
 
 function eventTypesSql() {
   return sql.join(STATUS_EVENT_TYPES.map((eventType) => sql`${eventType}`), sql`, `);
+}
+
+function replyKindsSql() {
+  return sql.join(REPLY_KINDS.map((kind) => sql`${kind}`), sql`, `);
+}
+
+/**
+ * The reply kind currently on record for this lead — the FINER reading of the
+ * reply that `reply_classification` reports coarsely.
+ *
+ * Precedence mirrors the `reply_classification_source='manual'` pin exactly: a
+ * standing human statement wins OUTRIGHT, whatever the timestamps, and only
+ * when there is none does the latest automatic reply-kind event answer. Doing
+ * it any other way (latest-wins with manual as a tie-break) would let a webhook
+ * arriving after a human statement quietly outrank the human — and the coarse
+ * column beside it would still be pinned to the human's value, so the two
+ * fields on the same row would disagree about the same reply.
+ *
+ * A withdrawn statement is skipped: `withdrawn_at` marks a statement nobody
+ * stands behind any more, and the lead must read as it did before anybody spoke.
+ */
+function replyKindLateral() {
+  return sql`
+    LEFT JOIN LATERAL (
+      SELECT k.event_type
+      FROM instantly_events k
+      WHERE k.campaign_id = c.instantly_campaign_id
+        AND k.lead_email = c.lead_email
+        AND k.event_type IN (${replyKindsSql()})
+        AND k.withdrawn_at IS NULL
+      ORDER BY (k.source = 'manual') DESC, k.timestamp DESC, k.created_at DESC, k.id DESC
+      LIMIT 1
+    ) rk ON TRUE
+  `;
 }
 
 /**
@@ -42,6 +77,7 @@ export async function refreshLeadStatusCurrent(
       clicked,
       replied,
       reply_classification,
+      reply_kind,
       bounced,
       unsubscribed,
       cancelled,
@@ -73,6 +109,7 @@ export async function refreshLeadStatusCurrent(
       COALESCE(BOOL_OR(e.event_type = 'email_link_clicked'), FALSE) AS clicked,
       COALESCE(BOOL_OR(e.event_type = 'reply_received'), FALSE) AS replied,
       c.reply_classification,
+      rk.event_type AS reply_kind,
       COALESCE(BOOL_OR(e.event_type = 'email_bounced'), FALSE) AS bounced,
       COALESCE(BOOL_OR(e.event_type = 'lead_unsubscribed'), FALSE) AS unsubscribed,
       c.delivery_status = 'cancelled' AS cancelled,
@@ -97,6 +134,16 @@ export async function refreshLeadStatusCurrent(
       ON e.campaign_id = c.instantly_campaign_id
       AND e.lead_email = c.lead_email
       AND e.event_type IN (${eventTypesSql()})
+      -- A WITHDRAWN opt-out is not an opt-out. withdrawn_at is set when a human
+      -- takes a recorded opt-out back, and this read is exactly what has to
+      -- stop reporting them as opted out. Scoped to lead_unsubscribed on
+      -- purpose: withdrawing a reply QUALIFICATION deliberately does NOT
+      -- retract the fact that a reply arrived (see
+      -- applyManualQualificationWithdrawalSideEffects), so the same filter
+      -- applied to every event type would silently flip replied back to false,
+      -- which no withdrawal ever claimed.
+      AND (e.event_type <> 'lead_unsubscribed' OR e.withdrawn_at IS NULL)
+    ${replyKindLateral()}
     WHERE c.instantly_campaign_id = ${instantlyCampaignId}
       AND c.org_id IS NOT NULL
       AND c.lead_email IS NOT NULL
@@ -109,6 +156,7 @@ export async function refreshLeadStatusCurrent(
       c.lead_email,
       c.brand_ids,
       c.reply_classification,
+      rk.event_type,
       c.delivery_status,
       c.created_at
     ON CONFLICT (instantly_campaign_id, lead_email)
@@ -123,6 +171,7 @@ export async function refreshLeadStatusCurrent(
       clicked = EXCLUDED.clicked,
       replied = EXCLUDED.replied,
       reply_classification = EXCLUDED.reply_classification,
+      reply_kind = EXCLUDED.reply_kind,
       bounced = EXCLUDED.bounced,
       unsubscribed = EXCLUDED.unsubscribed,
       cancelled = EXCLUDED.cancelled,

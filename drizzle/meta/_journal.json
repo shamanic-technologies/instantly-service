@@ -330,6 +330,13 @@
       "when": 1785542002000,
       "tag": "0046_campaign_lead_timezone",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1785542003000,
+      "tag": "0047_disqualification_and_recorded_optout",
+      "breakpoints": true
     }
   ]
 }
