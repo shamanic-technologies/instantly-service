@@ -21,6 +21,7 @@ import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
 import { maybeStopOnClickForFunnel } from "./stop-on-click";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
+import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
 import {
   DEAL_PROGRESS_TO_REPLY_KIND,
   REPLY_KIND_CLASSIFICATION,
@@ -646,6 +647,12 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // positive/interested, email the full thread to the agency inbox
       // (exactly-once, fail-soft — never throws here). No-op on any other event.
       await maybeForwardPositiveReply(campaign, input.leadEmail, input.eventType);
+
+      // A buyer opened a conversation: ask campaign-service to run the campaign
+      // bought for the leg OUT of that step now, rather than on its next tick.
+      // Fail-soft — the qualification above is the primary job and stands
+      // whatever this does. No-op on any other event.
+      await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
     }
   }
 
