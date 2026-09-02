@@ -431,6 +431,36 @@ export function rampCapForAge(
 }
 
 /**
+ * Today's assignment cap for one account: the number send SELECTION compares an
+ * account's load against on a given day.
+ *
+ * The age ramp is computed off the LIFECYCLE BASE (IN_PRODUCTION_DAILY_LIMIT),
+ * never off the account's live `daily_limit` — lifecycle-limits-sync writes that
+ * same ramped value onto Instantly, so scaling the already-scaled value would
+ * compound (45 → 23 → 12 → …). Taking the MIN keeps both enforcement points
+ * idempotent while still honouring a lower operator-set limit.
+ *
+ * A mature (or undatable) account keeps its full `daily_limit`; a fresh one is
+ * capped by `rampCapForAge` — a young Google mailbox's real Gmail per-user quota
+ * is far below 45 for its first weeks, independent of inbox placement.
+ *
+ * It lives HERE, beside `rampCapForAge`, rather than in the send path, because
+ * the account-health ops table displays this exact number and must not hold a
+ * second copy of the ramp: a table rendering `daily_limit` alone reads 50 for a
+ * mailbox the selector is holding at 23, i.e. the ops view contradicting the
+ * selector about the same account.
+ */
+export function capForAccount(
+  account: { daily_limit?: number | null; timestamp_created?: string | Date | null },
+  on: Date,
+): number {
+  return Math.min(
+    account.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT,
+    rampCapForAge(account.timestamp_created, IN_PRODUCTION_DAILY_LIMIT, on),
+  );
+}
+
+/**
  * Target `enable_slow_ramp` by age: fresh → `true` (ramp volume gently), mature →
  * `false` (full volume, no throttle needed). Unknown created date → `null` = do
  * NOT touch (avoid flipping an account we cannot date until the timestamp backfills).
