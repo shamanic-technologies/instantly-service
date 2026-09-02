@@ -17,7 +17,11 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "../db";
-import { resolveTransportForSend, type SendTransport } from "./self-send/transport";
+import {
+  resolveTransportForSend,
+  SEND_TRANSPORT_SMTP,
+  type SendTransport,
+} from "./self-send/transport";
 import {
   instantlyAccounts,
   instantlyAccountsRaw,
@@ -29,8 +33,10 @@ import {
   setDailyLimit,
   type Account,
 } from "./instantly-client";
+import { isSelfSendCapable } from "./self-send/transport-split";
 import {
   deriveLifecycle,
+  shouldAdoptSelfSendTransport,
   warmupDailyForStatus,
   dailyLimitForStatus,
   emailDomain,
@@ -470,6 +476,16 @@ export async function fetchTestablePoolEmails(): Promise<string[]> {
 
 // ─── Gold: reconcile ────────────────────────────────────────────────────────
 
+/**
+ * Identity this sweep presents to key-service when it asks which mailboxes we
+ * hold a credential for. The sweep has no inbound request of its own, so it
+ * names the route that drives it.
+ */
+const RECONCILE_CALLER = {
+  method: "POST",
+  path: "/internal/audit/accounts-sync",
+} as const;
+
 export interface ReconcileLifecycleSummary {
   scanned: number;
   changed: number;
@@ -477,6 +493,8 @@ export interface ReconcileLifecycleSummary {
   dailyLimitPatched: number;
   /** Accounts whose STATUS was unchanged but whose stale `lifecycle_reason` was refreshed. */
   reasonsRefreshed: number;
+  /** Accounts moved onto our own sender because Instantly had disabled them. */
+  adoptedSelfSend: number;
   failed: number;
 }
 
@@ -532,6 +550,7 @@ export async function reconcileLifecycle(
   let warmupPatched = 0;
   let dailyLimitPatched = 0;
   let reasonsRefreshed = 0;
+  let adoptedSelfSend = 0;
   let failed = 0;
 
   for (const row of accounts) {
@@ -542,11 +561,38 @@ export async function reconcileLifecycle(
     // Resolved rather than passed through, so an unrecognised stored value can
     // only ever mean Instantly — the only way onto the self-send pipe stays an
     // explicit, reversible UPDATE.
-    const sendTransport = resolveTransportForSend(row.sendTransport);
+    let sendTransport = resolveTransportForSend(row.sendTransport);
+
+    // RESCUE: Instantly disabled this mailbox for a reason that is a fact about
+    // Instantly (its own IPs are Spamhaus-listed; a dead PROSPECT domain), not
+    // about the mailbox. If we hold a credential, move it onto our own sender —
+    // which makes `deriveLifecycle` skip both Instantly-owned gates below, so the
+    // account is graded on DELIVERY alone. See shouldAdoptSelfSendTransport.
+    const instantlyStatus = Number(row.instantlyStatus ?? 0);
+    if (
+      shouldAdoptSelfSendTransport({
+        sendTransport,
+        instantlyStatus,
+        selfSendCapable:
+          sendTransport !== SEND_TRANSPORT_SMTP && instantlyStatus <= 0
+            ? await isSelfSendCapable(row.email, RECONCILE_CALLER)
+            : false,
+      })
+    ) {
+      await db
+        .update(instantlyAccounts)
+        .set({ sendTransport: SEND_TRANSPORT_SMTP, updatedAt: new Date() })
+        .where(sql`${instantlyAccounts.email} = ${row.email}`);
+      sendTransport = SEND_TRANSPORT_SMTP;
+      adoptedSelfSend += 1;
+      console.log(
+        `[account-lifecycle] ${row.email}: Instantly disabled it (status ${instantlyStatus}) → send_transport=smtp`,
+      );
+    }
 
     const { status, reason } = deriveLifecycle({
       sendTransport,
-      instantlyStatus: Number(row.instantlyStatus ?? 0),
+      instantlyStatus,
       domain: emailDomain(row.email),
       healthScore,
       deliveryAtBar: delivery ? delivery.atBar : null,
@@ -648,6 +694,7 @@ export async function reconcileLifecycle(
     warmupPatched,
     dailyLimitPatched,
     reasonsRefreshed,
+    adoptedSelfSend,
     failed,
   };
 }
