@@ -38,6 +38,11 @@ describe("buildAccountHealth", () => {
       status: "active",
       warmupScore: 100,
       dailyLimit: 40,
+      // Undatable mailbox ⇒ mature ⇒ the ramp never binds, so the cap it is
+      // actually selected against is its own limit.
+      effectiveDailyCap: 40,
+      // No selection view passed ⇒ not in the ranked pool ⇒ no position.
+      fillRank: null,
       warmupLimit: null,
       blocked: false,
       blockReason: null,
@@ -335,5 +340,143 @@ describe("mapProviderCode", () => {
     expect(mapProviderCode(8)).toBeNull();
     expect(mapProviderCode(0)).toBeNull();
     expect(mapProviderCode(undefined)).toBeNull();
+  });
+});
+
+/**
+ * The two fields that let the ops table agree with the selector: WHERE a mailbox
+ * sits in the fill order, and WHAT cap its load is actually measured against.
+ */
+describe("buildAccountHealth — fill rank + effective cap", () => {
+  const ASOF = new Date("2026-09-02T06:00:00.000Z");
+
+  it("carries the 1-based position from the injected fill order", () => {
+    const rows = buildAccountHealth(
+      [acc({ email: "head@a.com" }), acc({ email: "tail@a.com" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      {
+        fillRankByEmail: new Map([
+          ["head@a.com", 1],
+          ["tail@a.com", 2],
+        ]),
+        asOf: ASOF,
+      },
+    );
+
+    expect(rows.map((r) => [r.email, r.fillRank])).toEqual([
+      ["head@a.com", 1],
+      ["tail@a.com", 2],
+    ]);
+  });
+
+  it("an account outside the pool has NO rank — never a fabricated position", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "blocked@a.com" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([["blocked@a.com", lifecycle("in_recovery", "health_below_bar")]]),
+      new Map(),
+      new Map(),
+      { fillRankByEmail: new Map([["other@a.com", 1]]), asOf: ASOF },
+    );
+
+    expect(row.fillRank).toBeNull();
+    expect(row.blocked).toBe(true);
+  });
+
+  it("a MATURE mailbox reports its own limit as the effective cap", () => {
+    const [row] = buildAccountHealth(
+      [
+        acc({
+          email: "mature@a.com",
+          daily_limit: 50,
+          // ~2 months old — well past MATURE_AGE_DAYS, so the ramp cannot bind.
+          timestamp_created: "2026-07-01T00:00:00.000Z",
+        }),
+      ],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      { asOf: ASOF },
+    );
+
+    expect(row.dailyLimit).toBe(50);
+    expect(row.effectiveDailyCap).toBe(50);
+  });
+
+  it("a FRESH mailbox is capped BELOW its stated limit — the number the selector uses", () => {
+    const [row] = buildAccountHealth(
+      [
+        acc({
+          email: "fresh@a.com",
+          daily_limit: 50,
+          // 14 days old ⇒ half the 28-day ramp ⇒ 25, not the stated 50.
+          timestamp_created: "2026-08-19T06:00:00.000Z",
+        }),
+      ],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      { asOf: ASOF },
+    );
+
+    expect(row.dailyLimit).toBe(50);
+    expect(row.effectiveDailyCap).toBe(25);
+  });
+
+  it("an operator limit BELOW the age cap still wins — min, never max", () => {
+    const [row] = buildAccountHealth(
+      [
+        acc({
+          email: "throttled@a.com",
+          daily_limit: 10,
+          timestamp_created: "2026-07-01T00:00:00.000Z",
+        }),
+      ],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      { asOf: ASOF },
+    );
+
+    expect(row.effectiveDailyCap).toBe(10);
+  });
+
+  it("no stated daily limit ⇒ no cap to report — the lifecycle base is not invented", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "unknown@a.com", daily_limit: undefined })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      { asOf: ASOF },
+    );
+
+    expect(row.dailyLimit).toBeNull();
+    expect(row.effectiveDailyCap).toBeNull();
+  });
+
+  it("callers that pass no selection view are unchanged — null rank, cap from the limit", () => {
+    const [row] = buildAccountHealth([acc({ email: "legacy@a.com", daily_limit: 30 })]);
+
+    expect(row.fillRank).toBeNull();
+    expect(row.effectiveDailyCap).toBe(30);
   });
 });

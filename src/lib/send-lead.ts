@@ -33,32 +33,12 @@ import {
   fetchAccountCapacityCached,
   type AccountCapacity,
 } from "./account-sending-stats";
-import { IN_PRODUCTION_DAILY_LIMIT, rampCapForAge } from "./account-lifecycle";
+import { capForAccount } from "./account-lifecycle";
 import { dateKeyUTC } from "./sending-forecast";
 import { sequenceFootprintDays } from "./sending-window";
 
 /** All-zero capacity for an account absent from the snapshot (idle ⇒ preferred). */
 const EMPTY_CAPACITY: AccountCapacity = { sentToday: 0, byDay: {} };
-
-/**
- * Today's assignment cap for one account.
- *
- * The age ramp is computed off the LIFECYCLE BASE (IN_PRODUCTION_DAILY_LIMIT),
- * never off the account's live `daily_limit` — lifecycle-limits-sync writes that
- * same ramped value onto Instantly, so scaling the already-scaled value would
- * compound (45 → 23 → 12 → …). Taking the MIN keeps both enforcement points
- * idempotent while still honouring a lower operator-set limit.
- *
- * A mature (or undatable) account keeps its full `daily_limit`; a fresh one is
- * capped by `rampCapForAge` — a young Google mailbox's real Gmail per-user quota
- * is far below 45 for its first weeks, independent of inbox placement.
- */
-function capForAccount(a: Account, on: Date): number {
-  return Math.min(
-    a.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT,
-    rampCapForAge(a.timestamp_created, IN_PRODUCTION_DAILY_LIMIT, on),
-  );
-}
 
 /**
  * One account's committed load on a given booked day.

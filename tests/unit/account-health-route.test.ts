@@ -152,4 +152,86 @@ describe("GET /internal/audit/account-health", () => {
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/instantly boom/);
   });
+  /**
+   * The rank must come from the SELECTOR's own pool read + comparator, not from
+   * an ordering the route invents — otherwise the ops table can quietly disagree
+   * with the mailbox a send is actually offered.
+   */
+  it("ranks the pool by the real fill order, and leaves an out-of-pool account unranked", async () => {
+    mockListAccounts.mockResolvedValue([
+      { email: "young@primeforge-dom.com", status: 1, stat_warmup_score: 100, daily_limit: 50 },
+      { email: "head@gandi-dom.com", status: 1, stat_warmup_score: 100, daily_limit: 50 },
+      { email: "resting@gandi-dom.com", status: 1, stat_warmup_score: 100, daily_limit: 20 },
+    ]);
+    mockExecute
+      .mockResolvedValueOnce({ rows: [] }) // placement
+      .mockResolvedValueOnce({ rows: [] }) // sentToday
+      .mockResolvedValueOnce({ rows: [] }) // sentYesterday
+      .mockResolvedValueOnce({ rows: [] }) // queueSize
+      .mockResolvedValueOnce({ rows: [] }) // queueBreakdown
+      .mockResolvedValueOnce({
+        rows: [
+          { email: "head@gandi-dom.com", status: "in_production", reason: "passed", updatedAt: null },
+          { email: "young@primeforge-dom.com", status: "in_production", reason: "passed", updatedAt: null },
+          { email: "resting@gandi-dom.com", status: "in_recovery", reason: "health_below_bar", updatedAt: null },
+        ],
+      })
+      // fetchInProductionAccounts — the pool, deliberately returned in the
+      // WRONG order so a passthrough of this list could not produce the
+      // expected ranks. primeforge (vendor rank 2) must fall behind gandi (0).
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            email: "young@primeforge-dom.com",
+            instantlyStatus: 1,
+            dailyLimit: 50,
+            timestampCreated: "2026-08-01T00:00:00.000Z",
+            infraProvider: "primeforge",
+            domainFillRank: null,
+          },
+          {
+            email: "head@gandi-dom.com",
+            instantlyStatus: 1,
+            dailyLimit: 50,
+            timestampCreated: "2026-04-27T00:00:00.000Z",
+            infraProvider: "gandi",
+            domainFillRank: null,
+          },
+        ],
+      });
+
+    const app = await makeApp();
+    const res = await request(app).get("/internal/audit/account-health");
+
+    expect(res.status).toBe(200);
+    const byEmail = Object.fromEntries(
+      res.body.accounts.map((r: { email: string }) => [r.email, r]),
+    );
+    // gandi drains before primeforge — the vendor tier, not the response order.
+    expect(byEmail["head@gandi-dom.com"].fillRank).toBe(1);
+    expect(byEmail["young@primeforge-dom.com"].fillRank).toBe(2);
+    // Not in_production ⇒ absent from the pool ⇒ no position, never a fake one.
+    expect(byEmail["resting@gandi-dom.com"].fillRank).toBeNull();
+  });
+
+  it("reports the effective cap the selector uses, below the stated limit for a fresh mailbox", async () => {
+    // 14 days before the request ⇒ half of the 28-day ramp ⇒ 25 of a stated 50.
+    const fresh = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    mockListAccounts.mockResolvedValue([
+      { email: "fresh@a.com", status: 1, stat_warmup_score: 100, daily_limit: 50, timestamp_created: fresh },
+      { email: "mature@a.com", status: 1, stat_warmup_score: 100, daily_limit: 50, timestamp_created: "2026-04-27T00:00:00.000Z" },
+    ]);
+
+    const app = await makeApp();
+    const res = await request(app).get("/internal/audit/account-health");
+
+    expect(res.status).toBe(200);
+    const byEmail = Object.fromEntries(
+      res.body.accounts.map((r: { email: string }) => [r.email, r]),
+    );
+    expect(byEmail["fresh@a.com"].dailyLimit).toBe(50);
+    expect(byEmail["fresh@a.com"].effectiveDailyCap).toBe(25);
+    // A mature mailbox reads exactly as before — the two numbers agree.
+    expect(byEmail["mature@a.com"].effectiveDailyCap).toBe(50);
+  });
 });
