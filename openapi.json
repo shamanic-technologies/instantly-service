@@ -1479,6 +1479,126 @@
           "enabled"
         ]
       },
+      "ReplyToLeadResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "reply": {
+            "$ref": "#/components/schemas/ReplyToLeadResult"
+          }
+        },
+        "required": [
+          "success",
+          "reply"
+        ]
+      },
+      "ReplyToLeadResult": {
+        "type": "object",
+        "properties": {
+          "transport": {
+            "type": "string",
+            "enum": [
+              "instantly",
+              "smtp"
+            ],
+            "description": "Which pipe carried the reply — the one that carried the outreach"
+          },
+          "instantlyCampaignId": {
+            "type": "string"
+          },
+          "leadEmail": {
+            "type": "string"
+          },
+          "accountEmail": {
+            "type": "string",
+            "description": "The mailbox that answered. Resolved by this service, never supplied by the caller."
+          },
+          "from": {
+            "type": "string",
+            "description": "The From header as the prospect sees it, persona included"
+          },
+          "subject": {
+            "type": "string",
+            "description": "The conversation's own subject under `Re:`"
+          },
+          "messageId": {
+            "type": "string",
+            "description": "Instantly's email id, or the RFC 5322 Message-Id we sent"
+          },
+          "inReplyTo": {
+            "type": "string",
+            "description": "The prospect message this reply threads onto"
+          }
+        },
+        "required": [
+          "transport",
+          "instantlyCampaignId",
+          "leadEmail",
+          "accountEmail",
+          "from",
+          "subject",
+          "messageId",
+          "inReplyTo"
+        ]
+      },
+      "ReplyToLeadError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "campaign_not_found",
+              "no_reply_to_thread",
+              "sending_account_unresolved",
+              "mailbox_credential_unavailable",
+              "reply_dispatch_failed"
+            ],
+            "description": "campaign_not_found: no campaign in this org for the given email. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. reply_dispatch_failed: the transport refused the send."
+          }
+        },
+        "required": [
+          "error",
+          "code"
+        ]
+      },
+      "ReplyToLeadBody": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Logical campaign id — the same key manual qualifications and opt-outs use"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "The lead who replied"
+          },
+          "body_html": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The answer, HTML. Signed by this service with the sending account's persona — do NOT include a signature."
+          }
+        },
+        "required": [
+          "campaign_id",
+          "email",
+          "body_html"
+        ],
+        "example": {
+          "campaign_id": "c1a2b3c4-0000-0000-0000-000000000001",
+          "email": "alice@media.com",
+          "body_html": "<p>Great — how does Thursday 3pm look?</p>"
+        }
+      },
       "ManualQualificationCreateResponse": {
         "type": "object",
         "properties": {
@@ -5379,6 +5499,148 @@
           },
           "401": {
             "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/orgs/replies": {
+      "post": {
+        "summary": "Reply to a lead who replied, in their existing thread",
+        "description": "Answer a prospect who wrote back, in the SAME email thread, from the SAME mailbox that originally contacted them, under the SAME persona they have been corresponding with.\n\n**The sending identity is resolved here, never supplied.** Which mailbox answers comes from `instantly_campaigns.account_email` (persisted at send time), with the mailbox recorded on the inbound message as the fallback for a historical row. The display name and signature follow that account. A caller-supplied from-address would let a reply arrive from a mailbox this prospect has never heard from — the exact failure this endpoint exists to prevent.\n\n**Threaded or nothing.** On the Instantly transport the reply goes out through `POST /emails/reply`, threaded onto the prospect's latest inbound message; on the self-send transport we dispatch it ourselves with `In-Reply-To` / `References` over the conversation we already hold in bronze. There is NO fallback to a fresh email: if the thread cannot be found the call fails with `code: \"no_reply_to_thread\"`.\n\n**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail, and the footer's `{unsubscribe_link}` merge variable only resolves on a campaign send.\n\n**Cost:** none declared. The mailbox estate is a fixed cost we absorb rather than rebill, so a reply is priced exactly like the sequence sends themselves.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplyToLeadBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The reply was sent into the lead's existing thread",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplyToLeadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body or missing x-user-id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "No campaign in this org for the given email",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplyToLeadError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The reply cannot be threaded or attributed: `no_reply_to_thread`, `sending_account_unresolved`, or `mailbox_credential_unavailable`. Nothing was sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplyToLeadError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The transport refused the send (`reply_dispatch_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplyToLeadError"
+                }
+              }
+            }
           }
         }
       }

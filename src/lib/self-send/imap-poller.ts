@@ -64,14 +64,26 @@ interface KnownSend {
 /** Our own sends from this mailbox, keyed by the Message-Id the server accepted. */
 async function loadKnownSends(accountEmail: string): Promise<Map<string, KnownSend>> {
   const result = await db.execute(sql`
-    SELECT message_id            AS "messageId",
-           instantly_campaign_id AS "instantlyCampaignId",
-           lead_email            AS "leadEmail",
-           step                  AS "step"
-    FROM smtp_dispatch_raw
-    WHERE account_email = ${accountEmail}
-      AND outcome = 'sent'
-      AND message_id IS NOT NULL
+    SELECT d.message_id            AS "messageId",
+           d.instantly_campaign_id AS "instantlyCampaignId",
+           d.lead_email            AS "leadEmail",
+           -- A manual reply is recorded at step 0 (it is not a step of the
+           -- sequence). An answer threading onto it belongs, honestly, to the
+           -- last sequence step the prospect actually received — attributing it
+           -- to step 0 would put a step that does not exist into silver, and the
+           -- inference rule would then project a step-0 email_sent nobody sent.
+           CASE WHEN d.step = 0 THEN COALESCE((
+                  SELECT MAX(x.step)
+                  FROM smtp_dispatch_raw x
+                  WHERE x.instantly_campaign_id = d.instantly_campaign_id
+                    AND x.outcome = 'sent'
+                ), 1)
+                ELSE d.step
+           END                     AS "step"
+    FROM smtp_dispatch_raw d
+    WHERE d.account_email = ${accountEmail}
+      AND d.outcome = 'sent'
+      AND d.message_id IS NOT NULL
   `);
 
   const sends = new Map<string, KnownSend>();

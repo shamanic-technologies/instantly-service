@@ -204,7 +204,7 @@ async function loadStepContent(
       (SELECT s.subject FROM sequence_steps s
         WHERE s.instantly_campaign_id = ${instantlyCampaignId} AND s.step = 1) AS "subject",
       COALESCE((
-        SELECT jsonb_agg(d.message_id ORDER BY d.step, d.dispatched_at)
+        SELECT jsonb_agg(d.message_id ORDER BY d.dispatched_at)
         FROM smtp_dispatch_raw d
         WHERE d.instantly_campaign_id = ${instantlyCampaignId}
           AND d.outcome = 'sent'
