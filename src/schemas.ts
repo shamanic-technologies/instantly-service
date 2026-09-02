@@ -1335,6 +1335,100 @@ registry.registerPath({
   },
 });
 
+export const LeadConversationQuerySchema = z
+  .object({
+    campaign_id: z
+      .string()
+      .min(1)
+      .describe("Logical campaign id — the same key POST /orgs/replies takes"),
+    email: z.string().email().describe("The lead whose conversation to read"),
+  })
+  .openapi("LeadConversationQuery");
+
+const ConversationMessageSchema = z
+  .object({
+    direction: z
+      .enum(["inbound", "outbound"])
+      .describe("inbound: the prospect wrote it. outbound: we did."),
+    from: z.string(),
+    to: z.string(),
+    at: z.string().describe("ISO 8601 UTC. Empty only when the source carried no timestamp."),
+    subject: z.string(),
+    text: z
+      .string()
+      .describe("The message as readable TEXT — markup stripped, never HTML"),
+  })
+  .openapi("ConversationMessage");
+
+const LeadConversationSchema = z
+  .object({
+    campaignId: z.string(),
+    instantlyCampaignId: z.string(),
+    leadEmail: z.string().describe("The stored casing, which may differ from the one asked for"),
+    accountEmail: z
+      .string()
+      .nullable()
+      .describe("The mailbox that carried the outreach; null on a row predating the account persist"),
+    transport: z
+      .enum(["instantly", "smtp"])
+      .describe("Which pipe carried it — the caller does not need to know this to ask"),
+    messageCount: z.number().int(),
+    messages: z
+      .array(ConversationMessageSchema)
+      .describe("Oldest first. Empty when the sequence exists but nothing has been exchanged."),
+  })
+  .openapi("LeadConversation");
+
+const LeadConversationResponseSchema = z
+  .object({ success: z.literal(true), conversation: LeadConversationSchema })
+  .openapi("LeadConversationResponse");
+
+const LeadConversationErrorSchema = z
+  .object({
+    error: z.string(),
+    code: z
+      .enum(["campaign_not_found", "thread_unavailable"])
+      .describe(
+        "campaign_not_found: this org holds no such sequence for that email — distinct from a sequence that exists and is empty, which is a 200 with messages: []. thread_unavailable: the sequence exists but its thread could not be read; returning it as empty would claim the prospect said nothing.",
+      ),
+  })
+  .openapi("LeadConversationError");
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/conversations",
+  summary: "Read the messages exchanged with a lead on a campaign",
+  description:
+    "Return what a prospect wrote and what we sent, oldest first, for one (campaign, lead) pair — the exact identity `POST /orgs/replies` takes. Intended for a worker about to answer a reply: it reads the conversation so its answer can address what that person actually said.\n\n" +
+    "**Both transports.** The consumer cannot know which pipe carried a given prospect, exactly as the reply endpoint cannot. On the Instantly transport the messages come from Instantly's Unibox; on the self-send transport they are interleaved from what we dispatched and what we read back over IMAP. One response shape either way.\n\n" +
+    "**Text, not HTML.** Every `text` is markup-stripped so it drops straight into a prompt. No truncation is applied here; note that a self-send inbound body is stored as the first 4000 characters of the message at ingestion time.\n\n" +
+    "**Absent is not empty.** A conversation this org has no record of is a 404 (`campaign_not_found`); a sequence that exists and has nothing exchanged yet is a 200 with an empty `messages`; a thread we hold but cannot read is a 502 (`thread_unavailable`). No path returns an empty list to stand in for a failure.\n\n" +
+    "**Cost:** none. It sends nothing and declares nothing — a read of what already happened.",
+  request: {
+    headers: TrackingHeadersSchema,
+    query: LeadConversationQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "The conversation, oldest first (possibly empty)",
+      content: { "application/json": { schema: LeadConversationResponseSchema } },
+    },
+    400: {
+      description: "Invalid query or missing x-user-id",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    404: {
+      description: "No campaign in this org for the given email (`campaign_not_found`)",
+      content: { "application/json": { schema: LeadConversationErrorSchema } },
+    },
+    502: {
+      description: "The sequence exists but its thread could not be read (`thread_unavailable`)",
+      content: { "application/json": { schema: LeadConversationErrorSchema } },
+    },
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/orgs/manual-qualifications",
