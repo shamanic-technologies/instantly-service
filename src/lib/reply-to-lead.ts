@@ -1,0 +1,501 @@
+/**
+ * Answering a prospect who replied, in the thread they replied on.
+ *
+ * A cold sequence exists to produce one thing: someone writes back. Until now
+ * nothing in the fleet could write back to them. The only other send path routes
+ * through the transactional provider, which means a different sending domain and
+ * a brand-new thread — the prospect would see a message from a stranger, on a
+ * domain that never contacted them, and the conversation they started would be
+ * orphaned.
+ *
+ * So the reply goes out over the SAME pipe that carried the outreach, from the
+ * SAME mailbox, threaded onto the message the prospect actually sent.
+ *
+ * ⚠️ THE SENDING IDENTITY IS RESOLVED HERE, NEVER ACCEPTED FROM THE CALLER.
+ * Which mailbox answers is a fact about what already happened — it is
+ * `instantly_campaigns.account_email`, persisted at send time (migration 0025),
+ * with the mailbox Instantly recorded on the inbound message as the fallback.
+ * A caller-supplied from-address would let a reply arrive from a mailbox this
+ * prospect has never heard from, which is exactly the failure this path exists
+ * to prevent. The persona (display name + signature) follows the same account,
+ * through the existing `buildReplyBodyWithSignature`.
+ *
+ * ⚠️ NO SILENT FALLBACK. A reply that cannot be threaded is a DIFFERENT email
+ * than the caller asked for. Every refusal is an explicit status + a named
+ * `code` the caller can branch on; nothing degrades into a fresh cold email.
+ *
+ * Transport-aware, because the fleet runs two pipes. On the Instantly transport
+ * the thread lives in Instantly's Unibox and `POST /emails/reply` threads onto
+ * it; on ours, both halves are in bronze and we send the SMTP reply ourselves
+ * with `In-Reply-To` / `References`. Either way the prospect sees one thread.
+ *
+ * Declares NO cost — same reasoning as the sequence sends themselves: the
+ * mailbox estate is a fixed cost we absorb rather than rebill, so a zero-priced
+ * row would assert something false (see CLAUDE.md, "Sending declares NO cost").
+ */
+
+import { sql } from "drizzle-orm";
+
+import { db } from "../db";
+import { smtpDispatchRaw } from "../db/schema";
+import {
+  getAccount,
+  listEmails,
+  replyToEmail,
+  type Account,
+  type EmailRecord,
+} from "./instantly-client";
+import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
+import { buildReplyBodyWithSignature } from "./send-lead";
+import { resolveMailboxCredential } from "./self-send/mailbox-credentials";
+import { buildFromHeader, subjectForStep } from "./self-send/message";
+import { dispatchMessage } from "./self-send/smtp";
+import {
+  resolveTransportForSend,
+  SEND_TRANSPORT_SMTP,
+  type SendTransport,
+} from "./self-send/transport";
+
+const CALLER: CallerInfo = { method: "POST", path: "/orgs/replies" };
+
+/**
+ * The `step` a manual reply is recorded under in `smtp_dispatch_raw`.
+ *
+ * Sequence steps are 1-based everywhere in this repo (`sequence_costs.step`,
+ * `sequence_steps.step`), so 0 is unambiguously "not a step of the sequence".
+ * The row still has to exist: it is what lets the IMAP poller correlate the
+ * prospect's answer to OUR answer back to this lead, and what keeps the
+ * forwarded thread complete. It is deliberately NOT a `sequence_steps` row and
+ * carries no hold — a reply is not a scheduled step and must never enter the
+ * dispatch queue.
+ */
+export const MANUAL_REPLY_STEP = 0;
+
+/** A refusal a caller can act on, rather than a bare 500. */
+export class ReplyToLeadError extends Error {
+  constructor(
+    public readonly code:
+      | "campaign_not_found"
+      | "no_reply_to_thread"
+      | "sending_account_unresolved"
+      | "mailbox_credential_unavailable"
+      | "reply_dispatch_failed",
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ReplyToLeadError";
+  }
+}
+
+export interface ReplyToLeadInput {
+  orgId: string;
+  userId: string;
+  /** Logical campaign id — the same key manual qualifications and opt-outs use. */
+  campaignId: string;
+  leadEmail: string;
+  /** The answer itself, HTML. Signed here; never signed by the caller. */
+  bodyHtml: string;
+}
+
+export interface ReplyToLeadResult {
+  transport: SendTransport;
+  instantlyCampaignId: string;
+  leadEmail: string;
+  /** The mailbox that answered — resolved here, not supplied. */
+  accountEmail: string;
+  /** The From header as the prospect sees it, persona included. */
+  from: string;
+  subject: string;
+  /** Identifier of the message we sent (Instantly's email id, or a Message-Id). */
+  messageId: string;
+  /** The message this one threads onto. Never null — a reply without one fails. */
+  inReplyTo: string;
+}
+
+interface CampaignRow {
+  instantlyCampaignId: string;
+  leadEmail: string;
+  accountEmail: string | null;
+  sendTransport: SendTransport;
+}
+
+/**
+ * The campaign this lead sits in, for this org.
+ *
+ * Matched on `lower(lead_email)` — the same normalization the re-contact window
+ * and the serve-side suppression use. `Joe@X.com` and `joe@x.com` are one inbox,
+ * and a case-sensitive lookup would refuse to answer a prospect we did email.
+ */
+async function loadCampaign(
+  orgId: string,
+  campaignId: string,
+  leadEmail: string,
+): Promise<CampaignRow | null> {
+  const result = await db.execute(sql`
+    SELECT
+      c.instantly_campaign_id AS "instantlyCampaignId",
+      c.lead_email            AS "leadEmail",
+      c.account_email         AS "accountEmail",
+      c.send_transport        AS "sendTransport"
+    FROM instantly_campaigns c
+    WHERE c.org_id = ${orgId}
+      AND c.campaign_id = ${campaignId}
+      AND lower(c.lead_email) = lower(${leadEmail})
+    ORDER BY c.created_at DESC
+    LIMIT 1
+  `);
+
+  const row = (result.rows as Record<string, unknown>[])[0];
+  if (!row) return null;
+
+  return {
+    instantlyCampaignId: String(row.instantlyCampaignId),
+    leadEmail: String(row.leadEmail),
+    accountEmail: row.accountEmail === null || row.accountEmail === undefined
+      ? null
+      : String(row.accountEmail),
+    sendTransport: resolveTransportForSend(
+      row.sendTransport === null || row.sendTransport === undefined
+        ? null
+        : String(row.sendTransport),
+    ),
+  };
+}
+
+/**
+ * The message a reply must thread onto: the prospect's LATEST inbound message.
+ *
+ * Latest rather than first, because a prospect who wrote twice expects the
+ * answer under what they said last. `ue_type === 2` is Instantly's inbound
+ * marker — an outbound message of ours is not something to reply to, and
+ * threading onto one would open a second branch of the conversation.
+ *
+ * Returns null when the lead has never written back. That is a refusal, not a
+ * reason to send something else.
+ */
+export function selectReplyTarget(
+  records: EmailRecord[],
+): { emailId: string; subject: string; eaccount: string | null } | null {
+  const inbound = records
+    .filter((r) => r.ue_type === 2 && typeof r.id === "string" && r.id !== "")
+    .slice()
+    .sort(
+      (a, b) =>
+        new Date(a.timestamp_email).getTime() - new Date(b.timestamp_email).getTime(),
+    );
+
+  const latest = inbound[inbound.length - 1];
+  if (!latest) return null;
+
+  return {
+    emailId: latest.id,
+    subject: latest.subject ?? "",
+    eaccount: latest.eaccount || null,
+  };
+}
+
+/**
+ * The subject a reply carries: the conversation's own subject under `Re:`.
+ *
+ * Reuses `subjectForStep`, which already refuses to double an existing `Re:` —
+ * clients render `Re: Re:` verbatim and it reads as machine-sent. An empty
+ * subject stays empty rather than becoming a bare `Re:`, which would tell the
+ * prospect nothing.
+ */
+export function replySubject(subject: string): string {
+  const trimmed = subject.trim();
+  if (!trimmed) return "";
+  return subjectForStep(trimmed, 2);
+}
+
+/** The sending account as a persona: display name + signature come from it. */
+async function loadSelfSendAccount(accountEmail: string): Promise<Account> {
+  const result = await db.execute(sql`
+    SELECT a.email      AS "email",
+           a.first_name AS "firstName",
+           a.last_name  AS "lastName"
+    FROM instantly_accounts a
+    WHERE a.email = ${accountEmail}
+    LIMIT 1
+  `);
+
+  const row = (result.rows as Record<string, unknown>[])[0];
+  return {
+    email: accountEmail,
+    warmup_status: 1,
+    status: 1,
+    first_name: typeof row?.firstName === "string" ? row.firstName : undefined,
+    last_name: typeof row?.lastName === "string" ? row.lastName : undefined,
+  } as Account;
+}
+
+interface SelfSendThreadAnchor {
+  inReplyTo: string;
+  subject: string;
+  /** Every Message-Id of this conversation, oldest first (RFC 5322 References). */
+  references: string[];
+}
+
+/**
+ * The thread anchor for a sequence WE dispatched.
+ *
+ * `In-Reply-To` is the prospect's latest inbound Message-Id; `References` is the
+ * whole conversation — our sends plus their replies — in the order it happened,
+ * which is what keeps the exchange collapsed in their client.
+ */
+async function loadSelfSendAnchor(
+  instantlyCampaignId: string,
+): Promise<SelfSendThreadAnchor | null> {
+  const result = await db.execute(sql`
+    SELECT m.message_id AS "messageId",
+           m.subject    AS "subject",
+           COALESCE(m.received_at, m.polled_at) AS "at"
+    FROM imap_messages_raw m
+    WHERE m.instantly_campaign_id = ${instantlyCampaignId}
+      AND m.kind IN ('reply', 'auto_reply')
+    ORDER BY COALESCE(m.received_at, m.polled_at) DESC
+    LIMIT 1
+  `);
+
+  const latest = (result.rows as Record<string, unknown>[])[0];
+  if (!latest) return null;
+
+  const chain = await db.execute(sql`
+    SELECT "messageId" FROM (
+      SELECT d.message_id AS "messageId", d.dispatched_at AS "at"
+      FROM smtp_dispatch_raw d
+      WHERE d.instantly_campaign_id = ${instantlyCampaignId}
+        AND d.outcome = 'sent'
+        AND d.message_id IS NOT NULL
+
+      UNION ALL
+
+      SELECT m.message_id AS "messageId",
+             COALESCE(m.received_at, m.polled_at) AS "at"
+      FROM imap_messages_raw m
+      WHERE m.instantly_campaign_id = ${instantlyCampaignId}
+        AND m.kind IN ('reply', 'auto_reply')
+    ) t
+    ORDER BY t."at"
+  `);
+
+  return {
+    inReplyTo: String(latest.messageId),
+    subject: typeof latest.subject === "string" ? latest.subject : "",
+    references: (chain.rows as Record<string, unknown>[]).map((r) =>
+      String(r.messageId),
+    ),
+  };
+}
+
+/** Instantly holds the thread; ask it to answer inside it. */
+async function replyOverInstantly(
+  campaign: CampaignRow,
+  input: ReplyToLeadInput,
+): Promise<ReplyToLeadResult> {
+  const { key } = await resolveInstantlyApiKey(input.orgId, input.userId, CALLER);
+
+  const records = await listEmails(key, {
+    campaignId: campaign.instantlyCampaignId,
+  });
+  const target = selectReplyTarget(records);
+  if (!target) {
+    throw new ReplyToLeadError(
+      "no_reply_to_thread",
+      409,
+      `No inbound message from ${campaign.leadEmail} on campaign ${campaign.instantlyCampaignId} — there is no thread to reply into`,
+    );
+  }
+
+  // Persisted first: it is what this service DECIDED at send time. The inbound
+  // record's own eaccount covers a historical row written before migration 0025.
+  const accountEmail = campaign.accountEmail ?? target.eaccount;
+  if (!accountEmail) {
+    throw new ReplyToLeadError(
+      "sending_account_unresolved",
+      409,
+      `Cannot tell which mailbox contacted ${campaign.leadEmail} on campaign ${campaign.instantlyCampaignId}`,
+    );
+  }
+
+  const account = await getAccount(key, accountEmail);
+  const subject = replySubject(target.subject);
+  const bodyHtml = buildReplyBodyWithSignature(input.bodyHtml, account);
+
+  let sent: EmailRecord;
+  try {
+    sent = await replyToEmail(key, {
+      eaccount: accountEmail,
+      replyToUuid: target.emailId,
+      subject,
+      bodyHtml,
+    });
+  } catch (error: unknown) {
+    throw new ReplyToLeadError(
+      "reply_dispatch_failed",
+      502,
+      `Instantly refused the reply from ${accountEmail} to ${campaign.leadEmail}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  return {
+    transport: "instantly",
+    instantlyCampaignId: campaign.instantlyCampaignId,
+    leadEmail: campaign.leadEmail,
+    accountEmail,
+    from: buildFromHeader(account),
+    subject,
+    messageId: String(sent.id ?? ""),
+    inReplyTo: target.emailId,
+  };
+}
+
+/** We hold the thread; send the reply ourselves and record what happened. */
+async function replyOverSmtp(
+  campaign: CampaignRow,
+  input: ReplyToLeadInput,
+): Promise<ReplyToLeadResult> {
+  const anchor = await loadSelfSendAnchor(campaign.instantlyCampaignId);
+  if (!anchor) {
+    throw new ReplyToLeadError(
+      "no_reply_to_thread",
+      409,
+      `No inbound message from ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} — there is no thread to reply into`,
+    );
+  }
+
+  const accountEmail = campaign.accountEmail;
+  if (!accountEmail) {
+    throw new ReplyToLeadError(
+      "sending_account_unresolved",
+      409,
+      `Sequence ${campaign.instantlyCampaignId} carries no sending account, so nothing can answer as the mailbox this lead knows`,
+    );
+  }
+
+  let credential;
+  try {
+    credential = await resolveMailboxCredential(accountEmail, CALLER);
+  } catch (error: unknown) {
+    throw new ReplyToLeadError(
+      "mailbox_credential_unavailable",
+      409,
+      `No credential for ${accountEmail}, so we cannot authenticate as the mailbox that contacted ${campaign.leadEmail}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  const account = await loadSelfSendAccount(accountEmail);
+  const subject = replySubject(anchor.subject);
+  const html = buildReplyBodyWithSignature(input.bodyHtml, account);
+  const from = buildFromHeader(account);
+
+  const message = {
+    from,
+    to: campaign.leadEmail,
+    subject,
+    html,
+    // No List-Unsubscribe pair: this is a one-to-one answer, not bulk mail, and
+    // the original outreach already carried it.
+    headers: {} as Record<string, string>,
+    inReplyTo: anchor.inReplyTo,
+    references: anchor.references,
+  };
+
+  try {
+    const sent = await dispatchMessage(credential, message);
+
+    // Bronze, at step 0. Two things depend on it: the IMAP poller correlates the
+    // prospect's next answer through the Message-Id it records, and the
+    // forwarded thread reads our reply back out of it.
+    await db.insert(smtpDispatchRaw).values({
+      instantlyCampaignId: campaign.instantlyCampaignId,
+      leadEmail: campaign.leadEmail,
+      accountEmail,
+      step: MANUAL_REPLY_STEP,
+      outcome: "sent",
+      messageId: sent.messageId,
+      responseCode: null,
+      response: sent.response,
+      payload: {
+        kind: "manual_reply",
+        subject,
+        bodyHtml: html,
+        inReplyTo: anchor.inReplyTo,
+        references: anchor.references,
+        accepted: sent.accepted,
+      },
+    });
+
+    return {
+      transport: SEND_TRANSPORT_SMTP,
+      instantlyCampaignId: campaign.instantlyCampaignId,
+      leadEmail: campaign.leadEmail,
+      accountEmail,
+      from,
+      subject,
+      messageId: sent.messageId,
+      inReplyTo: anchor.inReplyTo,
+    };
+  } catch (error: unknown) {
+    // The attempt is recorded whether or not it went out — the same evidence
+    // trail the dispatch worker leaves, so a refused reply is not invisible.
+    await db
+      .insert(smtpDispatchRaw)
+      .values({
+        instantlyCampaignId: campaign.instantlyCampaignId,
+        leadEmail: campaign.leadEmail,
+        accountEmail,
+        step: MANUAL_REPLY_STEP,
+        outcome: "transient",
+        messageId: null,
+        responseCode:
+          (error as { responseCode?: number } | null)?.responseCode ?? null,
+        response: (error as { response?: string } | null)?.response ?? null,
+        payload: {
+          kind: "manual_reply",
+          subject,
+          inReplyTo: anchor.inReplyTo,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+      .catch(() => {});
+
+    throw new ReplyToLeadError(
+      "reply_dispatch_failed",
+      502,
+      `SMTP refused the reply from ${accountEmail} to ${campaign.leadEmail}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
+ * Answer a lead who replied, in their own thread, from the mailbox that
+ * contacted them. Throws `ReplyToLeadError` on every refusal.
+ */
+export async function replyToLead(
+  input: ReplyToLeadInput,
+): Promise<ReplyToLeadResult> {
+  const campaign = await loadCampaign(
+    input.orgId,
+    input.campaignId,
+    input.leadEmail,
+  );
+  if (!campaign) {
+    throw new ReplyToLeadError(
+      "campaign_not_found",
+      404,
+      `No campaign ${input.campaignId} in this org for ${input.leadEmail}`,
+    );
+  }
+
+  return campaign.sendTransport === SEND_TRANSPORT_SMTP
+    ? replyOverSmtp(campaign, input)
+    : replyOverInstantly(campaign, input);
+}

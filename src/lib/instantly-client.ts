@@ -822,6 +822,43 @@ export async function listEmailsPage(
   };
 }
 
+/**
+ * POST /emails/reply — answer an existing message IN ITS OWN THREAD.
+ *
+ * `reply_to_uuid` is the id of an email Instantly already holds (the same id
+ * every `/emails` read returns). Instantly threads the outgoing message onto
+ * that one and sends it from `eaccount`, so the prospect sees the reply arrive
+ * under the conversation they are already in, from the mailbox that has been
+ * writing to them.
+ *
+ * There is deliberately NO "send a fresh email" fallback here: a reply that
+ * cannot be threaded is a different email than the caller asked for, and sending
+ * it from a mailbox the prospect has never heard from is the outcome this whole
+ * path exists to avoid. The caller gets an error instead.
+ *
+ * `body` needs at least one of html/text per Instantly's schema; we always send
+ * html because the body pipeline (signature included) is html.
+ */
+export async function replyToEmail(
+  apiKey: string,
+  params: {
+    eaccount: string;
+    replyToUuid: string;
+    subject: string;
+    bodyHtml: string;
+  },
+): Promise<EmailRecord> {
+  return instantlyRequest<EmailRecord>(apiKey, "/emails/reply", {
+    method: "POST",
+    body: {
+      eaccount: params.eaccount,
+      reply_to_uuid: params.replyToUuid,
+      subject: params.subject,
+      body: { html: params.bodyHtml },
+    },
+  });
+}
+
 // ─── Inbox-placement (deliverability) tests + analytics ─────────────────────
 
 /** An inbox-placement test object (POST/GET /inbox-placement-tests). */

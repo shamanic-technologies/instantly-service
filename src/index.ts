@@ -18,6 +18,7 @@ import statusRoutes from "./routes/status";
 import transferBrandRoutes from "./routes/transfer-brand";
 import manualQualificationsRoutes from "./routes/manual-qualifications";
 import leadOptOutsRoutes from "./routes/lead-optouts";
+import repliesRoutes from "./routes/replies";
 import auditRoutes from "./routes/audit";
 import infraRoutes from "./routes/infra";
 import unsubscribeRoutes from "./routes/unsubscribe";
@@ -76,6 +77,7 @@ app.use("/orgs/campaigns", serviceAuth, requireOrgId, leadsRoutes);
 app.use("/orgs/accounts", serviceAuth, requireOrgId, accountsRoutes);
 app.use("/orgs/manual-qualifications", serviceAuth, requireOrgId, manualQualificationsRoutes);
 app.use("/orgs/opt-outs", serviceAuth, requireOrgId, leadOptOutsRoutes);
+app.use("/orgs/replies", serviceAuth, requireOrgId, repliesRoutes);
 app.use("/orgs", serviceAuth, requireOrgId, analyticsRoutes);
 
 const PORT = process.env.PORT || 3011;

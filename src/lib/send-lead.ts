@@ -445,6 +445,31 @@ export function buildEmailBodyWithSignature(body: string, account: Account): str
 }
 
 /**
+ * Body of a CONVERSATIONAL REPLY, signed with the sending account's persona.
+ *
+ * Same strip-then-append shape as `buildEmailBodyWithSignature` — the same
+ * `stripAccountSignature`, the same separator, the same per-account signature —
+ * so a reply is signed by the person the prospect has been talking to, and is
+ * idempotent (`f(f(x)) === f(x)`) for exactly the reasons that function
+ * documents.
+ *
+ * The ONE difference is deliberate: `UNSUBSCRIBE_FOOTER_HTML` is NOT appended.
+ * That footer carries `{unsubscribe_link}`, Instantly's SERVER-SIDE merge
+ * variable, which only resolves on a campaign send — on a one-to-one reply it
+ * would ship to the prospect verbatim as a dead link. And a reply to someone who
+ * just answered us is not bulk mail: an opt-out footer under a personal answer
+ * reads as a mail-merge, which is the opposite of what a threaded reply is for.
+ * The RFC 8058 `List-Unsubscribe` header on the original outreach is untouched.
+ */
+export function buildReplyBodyWithSignature(body: string, account: Account): string {
+  const accountSig = account.signature?.trim() || "";
+  const signature = accountSig || buildDefaultSignature(account);
+  const stripped = stripAccountSignature(body);
+  const linkedBody = autolinkifyHtml(stripped);
+  return `${linkedBody}${SIG_SEPARATOR_HTML}${signature}`;
+}
+
+/**
  * Markers that announce a signature block. Each matches a standalone `--`
  * line in one of the common email/HTML forms:
  *   - `\n\n--\n` plain text (RFC 3676 sig delimiter, with optional trailing space)
