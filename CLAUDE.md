@@ -531,6 +531,20 @@ A cold sequence exists to make someone write back, and until v0.76.0 nothing in 
 - **Declares NO cost**, exactly like the sequence sends: the mailbox estate is a fixed cost we absorb rather than rebill, so a zero-priced row would assert something false (see [Sending declares NO cost](#sending-declares-no-cost--the-mailbox-estate-is-a-fixed-cost-we-absorb-migration-0038)). It also promotes NO silver event — a reply we sent is not one of the sequence's `email_sent` steps, and minting one would corrupt step accounting, the per-account queue attribution and the re-contact window.
 - **It does NOT restart anything.** The lead's reply already stopped the sequence and cancelled the remaining holds; answering them is a conversation, not a resumed sequence.
 
+## Reading a conversation — the words, not just that a reply happened
+
+`POST /orgs/replies` could already ANSWER a prospect; nothing could READ what they wrote. A caller could learn THAT someone replied (delivery status, reply classification, reply kind) and nothing about WHAT they said, so a worker drafting the answer was reduced to a template — the exact failure the reply path exists to avoid. `GET /orgs/conversations?campaign_id=&email=` (org-scoped, `x-user-id` required) returns the exchange. Logic in `src/lib/lead-conversation.ts`; the route does IO dispatch only.
+
+- **⚠️ SAME IDENTITY, SAME LOOKUP AS THE REPLY.** It takes the exact `(campaign_id, email)` pair `POST /orgs/replies` takes and resolves the sequence through the SAME exported `loadCampaign` — so a caller that can answer a lead can read the thread it is about to answer, with nothing extra. Do NOT add a second lookup: two answers to "which sequence is this" is how a worker reads one conversation and answers into another.
+- **Both transports, one response shape.** The consumer cannot know which pipe carried a given prospect (exactly as the reply endpoint cannot): Instantly's Unibox via `listEmails` + `selectThreadMessages`, or bronze via `fetchSelfSendThread`. Both already produce the SAME `ThreadMessage`, which is what makes one shape honest for both.
+- **⚠️ It does NOT start at the prospect's first reply, unlike the positive-reply forward.** `messagesFromFirstReply` is right for a human reading the newest part (the reply quotes the rest beneath it) and wrong here — half of what the prospect is responding to is OUR words, and a worker drafting an answer needs them.
+- **⚠️ ABSENT IS NOT EMPTY.** A pair this org holds no record of is **404 `campaign_not_found`**; a sequence that exists with nothing exchanged is **200 with `messages: []`**; a thread we hold but cannot READ is **502 `thread_unavailable`**. Returning an empty list for either failure would claim the prospect said nothing, which is a claim we cannot make.
+- **Org scope is in the lookup itself** (`org_id = <caller>`), so another org's campaign reads as absent, never as a thread. The response echoes the STORED lead-email casing, not the caller's — the match is `lower()` on both sides, same normalization as the re-contact window.
+- **`text` is markup-stripped through the SAME `htmlToText` the forward uses**, so a message reads identically wherever it surfaces. No truncation is applied here; note a self-send inbound body was stored as the first 4000 characters at IMAP ingestion (`imap-poller.ts`), which is a property of the mirror, not of this read.
+- **Sends nothing, declares no cost** — a read of what already happened.
+
+Guard: `tests/unit/lead-conversation.test.ts` + `tests/unit/lead-conversations-route.test.ts`.
+
 ## Cross-campaign duplicate audit — read-only
 
 `POST /send` dedups on `(campaign_id, lead_email)` (`instantly_campaigns_campaign_lead_idx`), **not** on `(org_id, lead_email)` or `(brand, lead_email)`. So the same person reached by two **different** logical campaigns of the same org/brand creates two separate active Instantly campaigns — the same prospect gets double-contacted. DIS-77 healed this once (Phase A cancelled 6 same-wave dups, Phase B cancelled 51 re-contacts) but its **root-cause prevention in `POST /send` was never shipped**, so duplicates re-accumulate.
