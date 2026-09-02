@@ -1235,6 +1235,106 @@ const ManualQualificationWithdrawResponseSchema = z
   })
   .openapi("ManualQualificationWithdrawResponse");
 
+export const ReplyToLeadBodySchema = z
+  .object({
+    campaign_id: z
+      .string()
+      .min(1)
+      .describe("Logical campaign id — the same key manual qualifications and opt-outs use"),
+    email: z.string().email().describe("The lead who replied"),
+    body_html: z
+      .string()
+      .min(1)
+      .describe(
+        "The answer, HTML. Signed by this service with the sending account's persona — do NOT include a signature.",
+      ),
+  })
+  .openapi("ReplyToLeadBody", {
+    example: {
+      campaign_id: "c1a2b3c4-0000-0000-0000-000000000001",
+      email: "alice@media.com",
+      body_html: "<p>Great — how does Thursday 3pm look?</p>",
+    },
+  });
+
+const ReplyToLeadResultSchema = z
+  .object({
+    transport: z
+      .enum(["instantly", "smtp"])
+      .describe("Which pipe carried the reply — the one that carried the outreach"),
+    instantlyCampaignId: z.string(),
+    leadEmail: z.string(),
+    accountEmail: z
+      .string()
+      .describe("The mailbox that answered. Resolved by this service, never supplied by the caller."),
+    from: z.string().describe("The From header as the prospect sees it, persona included"),
+    subject: z.string().describe("The conversation's own subject under `Re:`"),
+    messageId: z.string().describe("Instantly's email id, or the RFC 5322 Message-Id we sent"),
+    inReplyTo: z.string().describe("The prospect message this reply threads onto"),
+  })
+  .openapi("ReplyToLeadResult");
+
+const ReplyToLeadResponseSchema = z
+  .object({ success: z.literal(true), reply: ReplyToLeadResultSchema })
+  .openapi("ReplyToLeadResponse");
+
+const ReplyToLeadErrorSchema = z
+  .object({
+    error: z.string(),
+    code: z
+      .enum([
+        "campaign_not_found",
+        "no_reply_to_thread",
+        "sending_account_unresolved",
+        "mailbox_credential_unavailable",
+        "reply_dispatch_failed",
+      ])
+      .describe(
+        "campaign_not_found: no campaign in this org for the given email. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. reply_dispatch_failed: the transport refused the send.",
+      ),
+  })
+  .openapi("ReplyToLeadError");
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/replies",
+  summary: "Reply to a lead who replied, in their existing thread",
+  description:
+    "Answer a prospect who wrote back, in the SAME email thread, from the SAME mailbox that originally contacted them, under the SAME persona they have been corresponding with.\n\n" +
+    "**The sending identity is resolved here, never supplied.** Which mailbox answers comes from `instantly_campaigns.account_email` (persisted at send time), with the mailbox recorded on the inbound message as the fallback for a historical row. The display name and signature follow that account. A caller-supplied from-address would let a reply arrive from a mailbox this prospect has never heard from — the exact failure this endpoint exists to prevent.\n\n" +
+    "**Threaded or nothing.** On the Instantly transport the reply goes out through `POST /emails/reply`, threaded onto the prospect's latest inbound message; on the self-send transport we dispatch it ourselves with `In-Reply-To` / `References` over the conversation we already hold in bronze. There is NO fallback to a fresh email: if the thread cannot be found the call fails with `code: \"no_reply_to_thread\"`.\n\n" +
+    "**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail, and the footer's `{unsubscribe_link}` merge variable only resolves on a campaign send.\n\n" +
+    "**Cost:** none declared. The mailbox estate is a fixed cost we absorb rather than rebill, so a reply is priced exactly like the sequence sends themselves.",
+  request: {
+    headers: TrackingHeadersSchema,
+    body: { content: { "application/json": { schema: ReplyToLeadBodySchema } } },
+  },
+  responses: {
+    200: {
+      description: "The reply was sent into the lead's existing thread",
+      content: { "application/json": { schema: ReplyToLeadResponseSchema } },
+    },
+    400: {
+      description: "Invalid body or missing x-user-id",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    404: {
+      description: "No campaign in this org for the given email",
+      content: { "application/json": { schema: ReplyToLeadErrorSchema } },
+    },
+    409: {
+      description:
+        "The reply cannot be threaded or attributed: `no_reply_to_thread`, `sending_account_unresolved`, or `mailbox_credential_unavailable`. Nothing was sent.",
+      content: { "application/json": { schema: ReplyToLeadErrorSchema } },
+    },
+    502: {
+      description: "The transport refused the send (`reply_dispatch_failed`)",
+      content: { "application/json": { schema: ReplyToLeadErrorSchema } },
+    },
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/orgs/manual-qualifications",

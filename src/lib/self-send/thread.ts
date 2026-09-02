@@ -36,8 +36,8 @@ export async function fetchSelfSendThread(
       'outbound'                          AS "direction",
       d.account_email                     AS "from",
       d.lead_email                        AS "to",
-      COALESCE(s.subject, '')             AS "subject",
-      COALESCE(s.body_html, '')           AS "bodyHtml",
+      COALESCE(s.subject, d.payload->>'subject', '')     AS "subject",
+      COALESCE(s.body_html, d.payload->>'bodyHtml', '')  AS "bodyHtml",
       d.dispatched_at                     AS "at"
     FROM smtp_dispatch_raw d
     LEFT JOIN sequence_steps s
