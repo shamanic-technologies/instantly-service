@@ -19,6 +19,7 @@ import {
   isInstantlyEnforced,
   DELIVERY_EVIDENCE_MAX_AGE_DAYS,
   type DeriveLifecycleInput,
+  shouldAdoptSelfSendTransport,
 } from "../../src/lib/account-lifecycle";
 
 const POLICY = new Set(["distribute.you", "growthagency.dev", "arcadiaquest.org"]);
@@ -552,5 +553,31 @@ describe("account age gate — rampCapForAge / slowRampForAge", () => {
     expect(slowRampForAge(daysAgo(MATURE_AGE_DAYS + 1), asOf)).toBe(false);
     expect(slowRampForAge(null, asOf)).toBeNull();
     expect(slowRampForAge("bad", asOf)).toBeNull();
+  });
+});
+
+describe("shouldAdoptSelfSendTransport", () => {
+  const base = { sendTransport: "instantly" as const, instantlyStatus: -1, selfSendCapable: true };
+
+  it("rescues a credentialed mailbox Instantly has disabled", () => {
+    expect(shouldAdoptSelfSendTransport(base)).toBe(true);
+    expect(shouldAdoptSelfSendTransport({ ...base, instantlyStatus: -3 })).toBe(true);
+    expect(shouldAdoptSelfSendTransport({ ...base, instantlyStatus: 0 })).toBe(true);
+  });
+
+  it("leaves a HEALTHY mailbox on Instantly — this is a rescue, not a migration", () => {
+    // Both arms of the per-sequence A/B need mailboxes on the instantly policy.
+    expect(shouldAdoptSelfSendTransport({ ...base, instantlyStatus: 1 })).toBe(false);
+  });
+
+  it("leaves a mailbox we cannot authenticate alone", () => {
+    // Our own worker could not dispatch it either, so the flip would only swap
+    // one pipe that cannot send for another.
+    expect(shouldAdoptSelfSendTransport({ ...base, selfSendCapable: false })).toBe(false);
+  });
+
+  it("never re-decides a mailbox already pinned to smtp", () => {
+    // That column is the operator override and the rollback lever.
+    expect(shouldAdoptSelfSendTransport({ ...base, sendTransport: "smtp" })).toBe(false);
   });
 });

@@ -23,6 +23,14 @@ vi.mock("../../src/lib/instantly-client", () => ({
   listAccounts: vi.fn(async () => []),
 }));
 
+// ── Mock the self-send credential lookup ─────────────────────────────────────
+// Default: we hold NO credential, so the rescue below never fires unless a test
+// says it does. That keeps every pre-existing case on the instantly transport.
+const mockSelfSendCapable = vi.fn(async () => false);
+vi.mock("../../src/lib/self-send/transport-split", () => ({
+  isSelfSendCapable: (...a: unknown[]) => mockSelfSendCapable(...a),
+}));
+
 import {
   reconcileLifecycle,
   fetchInProductionAccounts,
@@ -61,6 +69,8 @@ beforeEach(() => {
   mockUpdateWhere.mockClear();
   mockSetWarmup.mockClear();
   mockSetDaily.mockClear();
+  mockSelfSendCapable.mockClear();
+  mockSelfSendCapable.mockResolvedValue(false);
 });
 
 describe("fetchInProductionAccounts — infra vendor attribution", () => {
@@ -175,7 +185,7 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 1, dailyLimitPatched: 1, reasonsRefreshed: 0, failed: 0 });
+    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 1, dailyLimitPatched: 1, reasonsRefreshed: 0, adoptedSelfSend: 0, failed: 0 });
     expect(mockSetWarmup).toHaveBeenCalledWith("api-key", "prod@dfy.com", 0);
     // in_production also opens the campaign daily max-send to 45.
     expect(mockSetDaily).toHaveBeenCalledWith("api-key", "prod@dfy.com", 50);
@@ -204,7 +214,7 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, dailyLimitPatched: 0, reasonsRefreshed: 0, failed: 0 });
+    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, dailyLimitPatched: 0, reasonsRefreshed: 0, adoptedSelfSend: 0, failed: 0 });
     expect(mockSetWarmup).not.toHaveBeenCalled();
     expect(mockInsertValues).not.toHaveBeenCalled();
     expect(mockUpdateSet).not.toHaveBeenCalled();
@@ -237,6 +247,7 @@ describe("reconcileLifecycle", () => {
       warmupPatched: 0,
       dailyLimitPatched: 0,
       reasonsRefreshed: 1,
+      adoptedSelfSend: 0,
       failed: 0,
     });
     // No transition → no Instantly PATCH and no lifecycle event.
@@ -319,7 +330,7 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 0, dailyLimitPatched: 0, reasonsRefreshed: 0, failed: 0 });
+    expect(summary).toEqual({ scanned: 1, changed: 1, warmupPatched: 0, dailyLimitPatched: 0, reasonsRefreshed: 0, adoptedSelfSend: 0, failed: 0 });
     expect(mockSetDaily).not.toHaveBeenCalled();
     expect(mockSetWarmup).not.toHaveBeenCalled();
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
@@ -365,7 +376,7 @@ describe("reconcileLifecycle", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, dailyLimitPatched: 0, reasonsRefreshed: 0, failed: 1 });
+    expect(summary).toEqual({ scanned: 1, changed: 0, warmupPatched: 0, dailyLimitPatched: 0, reasonsRefreshed: 0, adoptedSelfSend: 0, failed: 1 });
     expect(mockInsertValues).not.toHaveBeenCalled();
     expect(mockUpdateSet).not.toHaveBeenCalled();
   });
@@ -403,6 +414,7 @@ describe("reconcileLifecycle", () => {
       warmupPatched: 0,
       dailyLimitPatched: 0,
       reasonsRefreshed: 0,
+      adoptedSelfSend: 0,
       failed: 0,
     });
     expect(mockSetWarmup).not.toHaveBeenCalled();
@@ -464,5 +476,123 @@ describe("reconcileLifecycle", () => {
     expect(summary.changed).toBe(1);
     const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
     expect(event.toStatus).toBe("deactivated_by_instantly");
+  });
+});
+
+describe("reconcileLifecycle — rescuing a mailbox Instantly disabled", () => {
+  it("moves a credentialed disabled mailbox onto smtp, then grades it on DELIVERY alone", async () => {
+    // Instantly disabled it for a fact about ITSELF (its outbound IPs are
+    // Spamhaus-listed; a dead prospect domain). We hold the credential, so the
+    // sweep turns the one column that makes deriveLifecycle skip both
+    // Instantly-owned gates — and the mailbox is then judged only on whether its
+    // mail actually reaches an inbox.
+    mockSelfSendCapable.mockResolvedValue(true);
+    seedReads({
+      accounts: [
+        {
+          email: "kevin@marketingagency.forum",
+          instantlyStatus: -3,
+          warmupScore: 100,
+          dailyLimit: 20,
+          sendTransport: "instantly",
+          lifecycleStatus: "deactivated_by_instantly",
+        },
+      ],
+      delivery: [
+        { accountEmail: "kevin@marketingagency.forum", inboxCount: 12, seedTotal: 12 },
+      ],
+    });
+
+    const summary = await reconcileLifecycle("api-key");
+
+    expect(summary.adoptedSelfSend).toBe(1);
+    expect(summary.changed).toBe(1);
+    // The column was actually persisted — the rescue is a data change, not a
+    // per-run inference.
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ sendTransport: "smtp" }),
+    );
+    // And no Instantly PATCH: the account is dead there, and reconcile skips the
+    // persist on a PATCH error, so a doomed PATCH would block the flip forever.
+    expect(mockSetWarmup).not.toHaveBeenCalled();
+    expect(mockSetDaily).not.toHaveBeenCalled();
+    const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(event.toStatus).toBe("in_production");
+  });
+
+  it("leaves a disabled mailbox we hold NO credential for exactly where it was", async () => {
+    // Without a credential our own worker cannot dispatch either, so the flip
+    // would move it from one pipe that cannot send to another — and would drop
+    // the honest `deactivated_by_instantly` label for one that measures nothing.
+    mockSelfSendCapable.mockResolvedValue(false);
+    seedReads({
+      accounts: [
+        {
+          email: "bailey@dfy.com",
+          instantlyStatus: -1,
+          warmupScore: 0,
+          dailyLimit: 20,
+          sendTransport: "instantly",
+          lifecycleStatus: "in_recovery",
+        },
+      ],
+      delivery: [{ accountEmail: "bailey@dfy.com", inboxCount: 29, seedTotal: 29 }],
+    });
+
+    const summary = await reconcileLifecycle("api-key");
+
+    expect(summary.adoptedSelfSend).toBe(0);
+    expect(mockUpdateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ sendTransport: "smtp" }),
+    );
+    const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(event.toStatus).toBe("deactivated_by_instantly");
+  });
+
+  it("never touches a HEALTHY account — the credential lookup is not even consulted", async () => {
+    // This is a rescue, not a migration. A mailbox Instantly is happy to send
+    // from stays on `instantly` so the per-sequence A/B keeps both arms fed.
+    mockSelfSendCapable.mockResolvedValue(true);
+    seedReads({
+      accounts: [
+        {
+          email: "kevin@growthagency.bio",
+          instantlyStatus: 1,
+          warmupScore: 100,
+          dailyLimit: 20,
+          sendTransport: "instantly",
+          lifecycleStatus: "in_recovery",
+        },
+      ],
+      delivery: [{ accountEmail: "kevin@growthagency.bio", inboxCount: 29, seedTotal: 29 }],
+    });
+
+    const summary = await reconcileLifecycle("api-key");
+
+    expect(summary.adoptedSelfSend).toBe(0);
+    expect(mockSelfSendCapable).not.toHaveBeenCalled();
+  });
+
+  it("does not re-decide a mailbox an operator already pinned to smtp", async () => {
+    // That column is the manual override AND the rollback lever.
+    mockSelfSendCapable.mockResolvedValue(true);
+    seedReads({
+      accounts: [
+        {
+          email: "pinned@growthagency.dev",
+          instantlyStatus: -1,
+          warmupScore: 0,
+          dailyLimit: 20,
+          sendTransport: "smtp",
+          lifecycleStatus: "in_production",
+        },
+      ],
+      delivery: [{ accountEmail: "pinned@growthagency.dev", inboxCount: 29, seedTotal: 29 }],
+    });
+
+    const summary = await reconcileLifecycle("api-key");
+
+    expect(summary.adoptedSelfSend).toBe(0);
+    expect(mockSelfSendCapable).not.toHaveBeenCalled();
   });
 });

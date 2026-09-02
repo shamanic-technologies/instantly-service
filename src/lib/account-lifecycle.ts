@@ -305,6 +305,46 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
 }
 
 /**
+ * Should this mailbox be moved onto our own sender because Instantly disabled it?
+ *
+ * Instantly turns an account off for reasons that are facts about ITSELF, not
+ * about the mailbox: its outbound IPs are listed on `xbl.spamhaus.org` (observed
+ * on three separate AWS addresses), or one PROSPECT domain in the list no longer
+ * resolves and it deactivates OUR sender over the resulting `450 4.1.2`. Neither
+ * survives the move — our dispatcher connects to the mailbox's own provider, and
+ * a dead recipient is a per-step transient there, never a mailbox verdict.
+ *
+ * `deriveLifecycle` already SKIPS the two Instantly-owned gates on `smtp`, so a
+ * mailbox we can authenticate is one column away from sending again. This is the
+ * decision to turn that column, and the three conditions are all load-bearing:
+ *
+ *   - the account is not ALREADY pinned (that column is the manual override and
+ *     the rollback lever — never re-decide it),
+ *   - Instantly reports it disabled (`status <= 0`). A healthy account stays on
+ *     `instantly` so the A/B split keeps both arms populated; this is a rescue,
+ *     not a migration,
+ *   - and we hold a credential for it. Without one our worker cannot dispatch
+ *     either, so the flip would only move the mailbox from one pipe that cannot
+ *     send to another — and it would leave `in_recovery` on a lifecycle that no
+ *     longer measures anything.
+ *
+ * Deliberately STICKY: nothing flips it back when Instantly re-enables the
+ * account. The population it draws from flaps (measured: ~50% turnover in 12
+ * hours, 312 deactivations against 299 reactivations in a week), so returning a
+ * rescued mailbox to the pipe that keeps disabling it would re-enter that loop.
+ * Reverting is `UPDATE instantly_accounts SET send_transport='instantly'`.
+ */
+export function shouldAdoptSelfSendTransport(input: {
+  sendTransport: SendTransport;
+  instantlyStatus: number;
+  selfSendCapable: boolean;
+}): boolean {
+  if (input.sendTransport === SEND_TRANSPORT_SMTP) return false;
+  if (input.instantlyStatus > 0) return false;
+  return input.selfSendCapable;
+}
+
+/**
  * True ⇔ Instantly is still the pipe for this account, so its warmup and
  * campaign `daily_limit` are OUR enforcement points there.
  *
