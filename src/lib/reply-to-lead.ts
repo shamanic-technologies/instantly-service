@@ -113,7 +113,7 @@ export interface ReplyToLeadResult {
   inReplyTo: string;
 }
 
-interface CampaignRow {
+export interface CampaignRow {
   instantlyCampaignId: string;
   leadEmail: string;
   accountEmail: string | null;
@@ -127,7 +127,7 @@ interface CampaignRow {
  * and the serve-side suppression use. `Joe@X.com` and `joe@x.com` are one inbox,
  * and a case-sensitive lookup would refuse to answer a prospect we did email.
  */
-async function loadCampaign(
+export async function loadCampaign(
   orgId: string,
   campaignId: string,
   leadEmail: string,
