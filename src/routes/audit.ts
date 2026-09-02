@@ -15,7 +15,9 @@ import {
   snapshotAccounts,
   reconcileLifecycle,
   fetchLifecycleByEmail,
+  fetchInProductionAccounts,
 } from "../lib/account-lifecycle-sync";
+import { accountFillOrder } from "../lib/send-lead";
 import { fetchCapacityHistory } from "../lib/capacity-history";
 import { backfillEmails } from "../lib/emails-backfill";
 import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
@@ -254,6 +256,7 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       queueSizeByEmail,
       queueBreakdownByEmail,
       lifecycleByEmail,
+      pool,
     ] = await Promise.all([
       listAccounts(apiKey),
       fetchLatestPlacementByAccount(),
@@ -262,7 +265,20 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       fetchQueueSizeByAccount(),
       fetchQueueBreakdownByAccount(asOf),
       fetchLifecycleByEmail(),
+      // The selector's OWN pool read, slug-less — i.e. exactly the set an
+      // unreserved send draws from. Ranking a set we assembled here instead
+      // would be a second implementation of the selection gate, free to drift
+      // from the one that actually picks the mailbox.
+      fetchInProductionAccounts(null),
     ]);
+
+    // Position in the fill order, 1-based. `accountFillOrder` is the selector's
+    // own comparator, so rank 1 is by construction the mailbox a new sequence is
+    // offered first. An account outside the pool is simply absent from the map
+    // and reports a null rank — never a fabricated position.
+    const fillRankByEmail = new Map<string, number>(
+      accountFillOrder(pool).map((a, i) => [a.email, i + 1]),
+    );
 
     res.json({
       asOf: asOf.toISOString(),
@@ -274,6 +290,7 @@ router.get("/account-health", async (_req: Request, res: Response) => {
         lifecycleByEmail,
         sentYesterdayByEmail,
         queueBreakdownByEmail,
+        { fillRankByEmail, asOf },
       ),
     });
   } catch (error: unknown) {

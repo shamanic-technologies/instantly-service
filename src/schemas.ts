@@ -1647,6 +1647,20 @@ const AccountHealthSchema = z
       .int()
       .nullable()
       .describe("Per-account daily MAX-SEND limit (cold-send cap); null if unknown"),
+    effectiveDailyCap: z
+      .number()
+      .int()
+      .nullable()
+      .describe(
+        "The daily cap send SELECTION actually compares this account's load against: min(dailyLimit, age ramp) at asOf. Equal to dailyLimit for a mature mailbox, strictly lower for one under 4 weeks old (whose real per-user quota is far below the fleet cap). Rendering dailyLimit alone reads 50 for an account the selector holds at 23. Null when the account carries no daily limit at all.",
+      ),
+    fillRank: z
+      .number()
+      .int()
+      .nullable()
+      .describe(
+        "1-based position of this account in the send-selection fill order over the in-production pool — rank 1 is the mailbox a NEW sequence is offered first, and the fleet saturates it before touching rank 2. Null when the account is not in that pool (blocked / not in_production, or reserved to a feature slug). Never fabricated: an account the selector would not consider has no position in its order. Followups stay pinned to their originating account, so a high rank still DISPATCHES for a full sequence length after it stops being assigned.",
+      ),
     warmupLimit: z
       .number()
       .int()

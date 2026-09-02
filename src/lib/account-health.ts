@@ -26,6 +26,23 @@ import type { Account } from "./instantly-client";
 import type { LifecycleStatus } from "./account-lifecycle";
 import type { LifecycleView } from "./account-lifecycle-sync";
 import type { QueueBreakdown } from "./queue-breakdown";
+import { capForAccount } from "./account-lifecycle";
+
+/**
+ * What SEND SELECTION says about the fleet, injected into the ops row so the
+ * table cannot disagree with the selector. Both members are optional: a caller
+ * that passes neither gets `fillRank: null` everywhere and the cap evaluated at
+ * `new Date()`, which is what every pre-existing caller wants.
+ */
+export interface SelectionView {
+  /**
+   * email → 1-based position in `accountFillOrder` over the in-production pool.
+   * An account absent from the map is absent from the pool, so its rank is null.
+   */
+  fillRankByEmail?: Map<string, number>;
+  /** Instant the age ramp is evaluated at — explicit so tests are deterministic. */
+  asOf?: Date;
+}
 
 /**
  * Inbox placement for one account: ONE pooled score over its latest placement
@@ -56,6 +73,36 @@ export interface AccountHealth {
   warmupScore: number | null;
   /** Per-account daily MAX-SEND limit (cold-send cap), null if unknown. */
   dailyLimit: number | null;
+  /**
+   * The daily cap send SELECTION actually compares an account's load against:
+   * `min(dailyLimit, rampCapForAge(timestamp_created, IN_PRODUCTION_DAILY_LIMIT))`
+   * at `asOf`. Equal to `dailyLimit` for a mature (or undatable) mailbox; strictly
+   * lower for one under `MATURE_AGE_DAYS`, whose real per-user quota is far below
+   * the fleet cap for its first weeks.
+   *
+   * It exists because `dailyLimit` alone MISREPRESENTS a young mailbox on the ops
+   * table: it renders 50 for an account the selector is holding at 23, so the
+   * table and the selector disagree about the same account. Computed through the
+   * SAME `capForAccount` the selector uses — never a second copy of the ramp.
+   * Null only when the account carries no daily limit at all.
+   */
+  effectiveDailyCap: number | null;
+  /**
+   * 1-based position of this account in `accountFillOrder` over the in-production
+   * pool — rank 1 is the mailbox a NEW sequence is offered first, and the fleet
+   * saturates it before touching rank 2 (see `pickSequentialFillAccount`).
+   *
+   * This is the one number that explains the table: without it, an operator sorts
+   * by sends and sees the mailboxes that DISPATCHED most (old followups, pinned to
+   * their originating account) rather than the ones being ASSIGNED, and reads a
+   * working waterfall as a broken one.
+   *
+   * Null when the account is not in that pool — blocked / not `in_production`, or
+   * reserved to a feature slug (the pool read is the slug-less one, i.e. exactly
+   * what an unreserved send draws from). Never fabricated: an account the selector
+   * would not consider has no position in its order.
+   */
+  fillRank: number | null;
   /**
    * Per-account daily WARMUP send volume — Instantly `warmup.limit`, the number
    * of warm-up emails/day the account targets. A DISTINCT number from
@@ -224,7 +271,13 @@ export function buildAccountHealth(
   lifecycleByEmail: Map<string, LifecycleView> = new Map(),
   sentYesterdayByEmail: Map<string, number> = new Map(),
   queueBreakdownByEmail: Map<string, QueueBreakdown> = new Map(),
+  selection: SelectionView = {},
 ): AccountHealth[] {
+  // The age ramp is evaluated at ONE instant for the whole table, so two rows can
+  // never be capped against different clocks. Defaulted here rather than inside
+  // the row loop, which would read a slightly different `now` per account.
+  const asOf = selection.asOf ?? new Date();
+  const fillRankByEmail = selection.fillRankByEmail ?? new Map<string, number>();
   return accounts.map((a) => {
     const lifecycle = lifecycleByEmail.get(a.email) ?? null;
     const lifecycleStatus = lifecycle?.status ?? null;
@@ -237,6 +290,13 @@ export function buildAccountHealth(
       status: statusLabel(a.status),
       warmupScore: a.stat_warmup_score ?? null,
       dailyLimit: a.daily_limit ?? null,
+      // Null stays null: an account with no stated limit has no cap to report, and
+      // `capForAccount`'s own fallback to the lifecycle base would invent one.
+      effectiveDailyCap:
+        a.daily_limit === undefined || a.daily_limit === null
+          ? null
+          : capForAccount(a, asOf),
+      fillRank: fillRankByEmail.get(a.email) ?? null,
       warmupLimit: a.warmup?.limit ?? null,
       blocked,
       blockReason,
