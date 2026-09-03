@@ -57,6 +57,9 @@ describe("loadKnownSends", () => {
       leadEmail: "jason@uhmedical.com",
       // Instantly's `0_1_0` is our step 2.
       step: 2,
+      // Carried so a reply can pause the sequence on Instantly's side — the
+      // mirror row's campaign join supplies it.
+      orgId: null,
     });
   });
 

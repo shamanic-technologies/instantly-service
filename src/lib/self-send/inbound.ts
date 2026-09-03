@@ -153,6 +153,71 @@ export function classifyInbound(
   };
 }
 
+/**
+ * One send of ours that an inbound message can be attributed to.
+ *
+ * Deliberately transport-agnostic. A mailbox holds mail from sequences WE
+ * dispatched and from sequences Instantly dispatched on our behalf, and a
+ * prospect answering does not know or care which — so the correlation must not
+ * either. What makes both attributable is the same fact: we know the
+ * `Message-Id` that left this mailbox, ours from `smtp_dispatch_raw` and
+ * Instantly's from the Unibox mirror it hands back in `instantly_emails_raw`.
+ */
+export interface CorrelatedSend {
+  instantlyCampaignId: string;
+  leadEmail: string;
+  step: number;
+}
+
+/**
+ * The outcome of attributing one inbound message to a sequence.
+ *
+ * `ambiguous` is its own outcome and NOT a silent pick of the first candidate.
+ * A message whose references reach two different live sequences on the same
+ * mailbox cannot be attributed without guessing, and the cost of guessing is
+ * asymmetric: attributing a stranger's words to a lead puts a fabricated reply
+ * into silver AND stops the wrong sequence, while declining leaves a message
+ * sitting in bronze for a human to read. Decline.
+ */
+export type SendCorrelation<T extends CorrelatedSend = CorrelatedSend> =
+  | { outcome: "matched"; send: T }
+  | { outcome: "ambiguous"; campaignIds: string[] }
+  | { outcome: "none" };
+
+/**
+ * Resolve the referenced Message-Ids to the single sequence they belong to.
+ *
+ * Several referenced ids resolving to the SAME sequence is the normal case, not
+ * an ambiguity — `References` carries the whole thread, so a reply to step 3
+ * legitimately names steps 1, 2 and 3 of one sequence. Only DISTINCT campaigns
+ * are ambiguous. When one sequence is named by several of its steps the LATEST
+ * one wins, because that is the email the prospect was looking at.
+ *
+ * Note what this deliberately does not do: it never looks at who SENT the
+ * message. A prospect frequently answers from an address we never wrote to (an
+ * assistant, a shared `partners@`), so matching the sender against the lead
+ * would drop exactly the replies most worth having — and matching the sender
+ * against nothing at all is what lets a correct one through.
+ */
+export function correlateSend<T extends CorrelatedSend>(
+  referencedMessageIds: readonly string[],
+  knownSends: ReadonlyMap<string, T>,
+): SendCorrelation<T> {
+  const matched = referencedMessageIds
+    .map((id) => knownSends.get(id))
+    .filter((send): send is T => send !== undefined);
+
+  if (matched.length === 0) return { outcome: "none" };
+
+  const campaignIds = [...new Set(matched.map((send) => send.instantlyCampaignId))];
+  if (campaignIds.length > 1) return { outcome: "ambiguous", campaignIds };
+
+  const send = matched.reduce((latest, candidate) =>
+    candidate.step > latest.step ? candidate : latest,
+  );
+  return { outcome: "matched", send };
+}
+
 /** The silver event type each classification promotes. `unrelated` promotes none. */
 export function eventTypeForInbound(kind: InboundKind): string | null {
   switch (kind) {
