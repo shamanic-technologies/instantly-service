@@ -115,8 +115,14 @@ export function parseQualification(result: {
 /**
  * Classify one reply. Returns null when no trustworthy label could be obtained.
  *
- * `flash-lite` on purpose: this is a short, closed-set classification on a few
- * hundred words, run once per reply. Reasoning is disabled for the same reason.
+ * `deepseek-flash` on purpose: this is a short, closed-set classification on a
+ * few hundred words, run once per reply, and DeepSeek V4 Flash is the cheapest
+ * model in the catalogue that does it reliably. Reasoning is disabled for the
+ * same reason — there is nothing to reason about, only a label to pick.
+ *
+ * The spend is chat-service's, on a platform run: this runs inside a sweep with
+ * no inbound org request, so there is no customer to bill for classifying a
+ * reply to our own outreach.
  */
 export async function qualifyReply(
   replyText: string,
@@ -127,8 +133,8 @@ export async function qualifyReply(
   const result = await platformComplete({
     message,
     systemPrompt: SYSTEM_PROMPT,
-    provider: "google",
-    model: "flash-lite",
+    provider: "deepseek",
+    model: "deepseek-flash",
     responseFormat: "json",
     temperature: 0,
     disableThinking: true,

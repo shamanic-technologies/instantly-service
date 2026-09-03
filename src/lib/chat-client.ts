@@ -18,7 +18,7 @@
  * customer request we can bill.
  */
 
-export type ChatProvider = "google" | "anthropic";
+export type ChatProvider = "google" | "anthropic" | "deepseek";
 export type ChatModel =
   | "flash"
   | "flash-lite"
@@ -26,7 +26,9 @@ export type ChatModel =
   | "pro"
   | "sonnet"
   | "haiku"
-  | "opus";
+  | "opus"
+  | "deepseek-flash"
+  | "deepseek-pro";
 
 export interface ChatCompleteParams {
   message: string;

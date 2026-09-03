@@ -58,8 +58,15 @@ router.post("/dispatch", async (req: Request, res: Response) => {
  * Gated on the SAME switch as dispatch, deliberately. The two are one feature:
  * sending without reading would keep emailing people who have already replied,
  * which is worse than not sending at all.
+ *
+ * Body `{ sinceDays?: number }` widens the window for a ONE-SHOT catch-up on a
+ * mailbox that has just become readable — a newly credentialed inbox, or one
+ * Instantly disabled months ago. Those replies exist in no other store (Instantly
+ * could not log in either, so its Unibox never mirrored them), so this is the
+ * only instrument that can reach them. Clamped inside `runPoll`; the cron never
+ * sends it, so routine runs keep the narrow window.
  */
-router.post("/poll", async (_req: Request, res: Response) => {
+router.post("/poll", async (req: Request, res: Response) => {
   if (!isSelfSendDispatchEnabled()) {
     res.status(409).json({
       error: "Self-send is disabled (SELF_SEND_DISPATCH_ENABLED is not 'true')",
@@ -67,9 +74,14 @@ router.post("/poll", async (_req: Request, res: Response) => {
     return;
   }
 
+  const sinceDays =
+    typeof req.body?.sinceDays === "number" && Number.isFinite(req.body.sinceDays)
+      ? req.body.sinceDays
+      : undefined;
+
   res.status(202).json({ accepted: true });
 
-  runPoll().catch((error) => {
+  runPoll({ sinceDays }).catch((error) => {
     console.error(
       `[instantly-service] self-send-poll failed: ${
         error instanceof Error ? error.message : String(error)
