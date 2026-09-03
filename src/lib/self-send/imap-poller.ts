@@ -35,10 +35,20 @@ import {
   type InboundHeaders,
 } from "./inbound";
 import { stopLeadSequence } from "../stop-lead-sequence";
+import { parseInstantlySequenceStep } from "./instantly-sends";
 import { qualifyReply } from "./qualify-reply";
 import { isSelfSendCampaignId, SEND_TRANSPORT_SMTP } from "./transport";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/poll" };
+
+/**
+ * `db.execute` resolves to a node-postgres `QueryResult`, never a bare array —
+ * see the repo rule. Read through this rather than casting.
+ */
+function rowsOf(result: unknown): Record<string, unknown>[] {
+  const rows = (result as { rows?: unknown }).rows;
+  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+}
 
 /**
  * How far back each run looks.
@@ -47,6 +57,21 @@ const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/poll" };
  * a clock skew cannot open a gap. The unique index absorbs the overlap.
  */
 const POLL_WINDOW_DAYS = 3;
+
+/**
+ * The widest window a caller may ask for.
+ *
+ * A mailbox nobody has ever read holds replies far older than the routine
+ * window — and for those mailboxes the mail exists NOWHERE ELSE. Instantly
+ * cannot log in either, so its Unibox never mirrored them and no bronze backfill
+ * can reach them: the only instrument that can is this poller, pointed further
+ * back. Hence an explicit, bounded override rather than a second sweep.
+ *
+ * Bounded because the window is an IMAP fetch per mailbox, and unbounded means
+ * re-reading and re-parsing an entire inbox on every routine run if the value
+ * ever leaks into the cron. A year is past the age of the fleet.
+ */
+const MAX_POLL_WINDOW_DAYS = 365;
 
 export interface PollSummary {
   accountsPolled: number;
@@ -73,39 +98,22 @@ export interface PollSummary {
   accountsFailed: number;
 }
 
-/** A correlated send, plus the org that owns it (needed to pause on Instantly). */
 interface KnownSend extends CorrelatedSend {
+  /** The org that owns the sequence — needed to resolve a key and pause it. */
   orgId: string | null;
 }
 
 /**
- * Every send that left this mailbox, keyed by the Message-Id it carried —
- * BOTH transports.
+ * Sends from this mailbox, keyed by the Message-Id that went on the wire.
  *
- * ⚠️ THE SECOND HALF IS LOAD-BEARING AND IS NOT A NICE-TO-HAVE. A mailbox on
- * `send_transport='smtp'` holds, almost always, sequences Instantly dispatched
- * BEFORE the flip — the transport is frozen per campaign at send time, so a
- * mailbox rescued onto our own sender keeps draining Instantly-sent sequences
- * for weeks. Reading only `smtp_dispatch_raw` therefore classifies every reply
- * to those sequences as `unrelated` and touches nothing, which is precisely how
- * a real "I would be interested" reply reached nobody: Instantly had lost its
- * IMAP link to the mailbox (so it emitted no `reply_received`) and our own
- * poller had no id to match against.
- *
- * The key is EXACT on both sides, never a heuristic. Instantly hands back the
- * `Message-Id` of the mail it sent in its own Unibox payload, which the reconcile
- * poll and the Unibox backfill mirror into `instantly_emails_raw` — 39,749 such
- * ids across 65 of these mailboxes in prod at the time of writing. So the
- * widening buys the Instantly-transport case without inventing a single
- * inference about senders, subjects or timing.
- *
- * The lead email comes from the CAMPAIGN ROW, not from the payload's `lead`
- * field: the campaign row is this service's own record of who the sequence is
- * for, and it is the value every other silver writer uses.
+ * TWO sources, and the second one is what makes a reply on an Instantly-sent
+ * sequence correlatable at all — see `instantly-sends.ts`. Both are exact
+ * Message-Id keys; neither is an address heuristic.
  */
-async function loadKnownSends(accountEmail: string): Promise<Map<string, KnownSend>> {
+export async function loadKnownSends(accountEmail: string): Promise<Map<string, KnownSend>> {
+  const sends = new Map<string, KnownSend>();
+
   const result = await db.execute(sql`
-    -- Our own dispatches.
     SELECT d.message_id            AS "messageId",
            d.instantly_campaign_id AS "instantlyCampaignId",
            d.lead_email            AS "leadEmail",
@@ -129,50 +137,60 @@ async function loadKnownSends(accountEmail: string): Promise<Map<string, KnownSe
     WHERE d.account_email = ${accountEmail}
       AND d.outcome = 'sent'
       AND d.message_id IS NOT NULL
+  `);
 
-    UNION ALL
+  for (const row of rowsOf(result)) {
+    sends.set(String(row.messageId), {
+      instantlyCampaignId: String(row.instantlyCampaignId),
+      leadEmail: String(row.leadEmail),
+      step: Number(row.step),
+      orgId: (row.orgId as string | null) ?? null,
+    });
+  }
 
-    -- Sends Instantly made from this same mailbox, as Instantly itself recorded
-    -- them. ue_type = 1 is its outbound marker.
-    SELECT m.payload->>'message_id'  AS "messageId",
-           c.instantly_campaign_id   AS "instantlyCampaignId",
-           c.lead_email              AS "leadEmail",
-           -- Instantly's step is a 0-based "<sequence>_<step>_<variant>" string,
-           -- ours is 1-based. Verified against prod: 0_0_0 pairs with silver
-           -- step 1 (36,766 rows), 0_1_0 with 2 (31,570), 0_2_0 with 3 (30,025).
-           -- An unparseable value falls back to the campaign's last real send
-           -- rather than to a guessed 1 — the same reasoning as the step-0 case
-           -- above, since inventing a step corrupts step accounting downstream.
-           COALESCE(
-             NULLIF(split_part(m.payload->>'step', '_', 2), '')::int + 1,
-             (SELECT MAX(e.step) FROM instantly_events e
-              WHERE e.campaign_id = c.instantly_campaign_id
-                AND e.event_type = 'email_sent'),
-             1
-           )                         AS "step",
-           c.org_id                  AS "orgId"
+  // Second source: what INSTANTLY sent from this mailbox. `eaccount` is the
+  // sending mailbox on Instantly's own email object, and the lead comes from our
+  // campaign row rather than the payload — one Instantly campaign is one lead, so
+  // the join is authoritative and does not depend on a payload field that is
+  // absent on some shapes.
+  //
+  // Our own dispatch wins a collision (the loop below only fills a key we do not
+  // already hold): a message-id we put on the wire is a fact about a send we
+  // made, and `smtp_dispatch_raw` additionally resolves the step-0 manual-reply
+  // case that this mirror knows nothing about.
+  const instantlyResult = await db.execute(sql`
+    SELECT m.payload->>'message_id' AS "messageId",
+           m.instantly_campaign_id  AS "instantlyCampaignId",
+           c.lead_email             AS "leadEmail",
+           m.payload->>'step'       AS "rawStep",
+           c.org_id                 AS "orgId"
     FROM instantly_emails_raw m
-    JOIN instantly_campaigns c
-      ON c.instantly_campaign_id = m.instantly_campaign_id
+    JOIN instantly_campaigns c ON c.instantly_campaign_id = m.instantly_campaign_id
     WHERE m.payload->>'eaccount' = ${accountEmail}
       AND m.payload->>'ue_type' = '1'
       AND m.payload->>'message_id' IS NOT NULL
   `);
 
-  const sends = new Map<string, KnownSend>();
-  for (const row of result.rows as Record<string, unknown>[]) {
+  for (const row of rowsOf(instantlyResult)) {
     const messageId = String(row.messageId);
-    // Our own dispatch row wins a collision: it is first-party evidence of what
-    // we put on the wire, where the Instantly row is a mirror of a third party's
-    // record. In practice they never collide — a Message-Id is unique.
     if (sends.has(messageId)) continue;
+
+    const step = parseInstantlySequenceStep(
+      row.rawStep === null || row.rawStep === undefined ? null : String(row.rawStep),
+    );
+    // An unreadable step is dropped rather than defaulted. Correlating the reply
+    // to the wrong step would make the inference rule project `email_sent` rows
+    // for steps nobody sent.
+    if (step === null) continue;
+
     sends.set(messageId, {
-      instantlyCampaignId: row.instantlyCampaignId as string,
-      leadEmail: row.leadEmail as string,
-      step: Number(row.step),
+      instantlyCampaignId: String(row.instantlyCampaignId),
+      leadEmail: String(row.leadEmail),
+      step,
       orgId: (row.orgId as string | null) ?? null,
     });
   }
+
   return sends;
 }
 
@@ -319,15 +337,14 @@ async function pollAccount(
           // `promoteEvent` above did OUR half of the stop — the row is marked
           // and the remaining holds are cancelled. On an Instantly-transport
           // sequence that tells the SENDER nothing, and we only ever read this
-          // reply ourselves because Instantly could not: its IMAP link to the
+          // reply ourselves BECAUSE Instantly could not: its IMAP link to the
           // mailbox is broken, so its own stop-on-reply never fired and it will
           // keep dispatching the rest of the sequence at someone who has
           // already answered. Exactly the manual-qualification situation, and
-          // it takes the same second half.
+          // it takes the same second half, through the same helper.
           //
-          // A `self:` sequence needs nothing here: `stopSelfSendSequence` is
-          // reached through `cancelRemainingProvisions` + the row status that
-          // `promoteEvent` already applied, and there is no campaign to pause.
+          // A `self:` sequence needs nothing here: there is no campaign to
+          // pause, and `promoteEvent` already did both halves.
           if (!isSelfSendCampaignId(send.instantlyCampaignId) && send.orgId) {
             const stopped = await stopLeadSequence({
               orgId: send.orgId,
@@ -398,9 +415,25 @@ async function pollAccount(
  * logged, and the sweep moves on — the alternative is that a single bad mailbox
  * stops the fleet from noticing anyone's reply.
  */
-export async function runPoll(options: { asOf?: Date } = {}): Promise<PollSummary> {
+export async function runPoll(
+  options: { asOf?: Date; sinceDays?: number } = {},
+): Promise<PollSummary> {
   const asOf = options.asOf ?? new Date();
-  const since = new Date(asOf.getTime() - POLL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+
+  // A caller may reach further back for a one-shot catch-up on a mailbox that
+  // has just become readable — clamped, never trusted raw. Anything absent or
+  // unusable falls to the routine window; a wider-than-max ask is clamped rather
+  // than refused, since the caller's intent ("as far back as you can") is clear.
+  const windowDays = Math.min(
+    Math.max(
+      Number.isFinite(options.sinceDays) && (options.sinceDays as number) > 0
+        ? (options.sinceDays as number)
+        : POLL_WINDOW_DAYS,
+      POLL_WINDOW_DAYS,
+    ),
+    MAX_POLL_WINDOW_DAYS,
+  );
+  const since = new Date(asOf.getTime() - windowDays * 24 * 60 * 60 * 1000);
 
   const accounts = await loadSelfSendAccounts();
 
@@ -433,7 +466,9 @@ export async function runPoll(options: { asOf?: Date } = {}): Promise<PollSummar
     }
   }
 
-  console.log(`[instantly-service] self-send-poll: done ${JSON.stringify(summary)}`);
+  console.log(
+    `[instantly-service] self-send-poll: done windowDays=${windowDays} ${JSON.stringify(summary)}`,
+  );
 
   return summary;
 }

@@ -1,4 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const mockPlatformComplete = vi.fn();
+vi.mock("../../src/lib/chat-client", () => ({
+  platformComplete: (...a: unknown[]) => mockPlatformComplete(...a),
+}));
 
 import {
   QUALIFICATION_EVENT_TYPES,
@@ -7,6 +12,52 @@ import {
   stripQuotedHistory,
 } from "../../src/lib/self-send/qualify-reply";
 import { REPLY_CLASSIFICATION_MAP } from "../../src/lib/silver-promote";
+import { qualifyReply } from "../../src/lib/self-send/qualify-reply";
+
+beforeEach(() => {
+  vi.resetAllMocks();
+});
+
+describe("qualifyReply", () => {
+  // The cheapest model in the catalogue that does a short closed-set pick
+  // reliably. The spend is chat-service's, on a platform run — this sweep has no
+  // inbound org request, so there is no customer to bill for classifying a reply
+  // to our own outreach.
+  it("classifies on deepseek-flash, with reasoning off and JSON out", async () => {
+    mockPlatformComplete.mockResolvedValue({
+      content: "",
+      json: { classification: "lead_interested" },
+      tokensInput: 1,
+      tokensOutput: 1,
+      model: "deepseek-v4-flash",
+    });
+
+    await qualifyReply("I would be interested, send me the costs");
+
+    expect(mockPlatformComplete).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "deepseek",
+        model: "deepseek-flash",
+        responseFormat: "json",
+        temperature: 0,
+        disableThinking: true,
+      }),
+    );
+  });
+
+  // An unusable answer must not become a fabricated neutral — a wrong "neutral"
+  // on a hot reply reads as a real judgement.
+  it("returns null rather than a label it did not obtain", async () => {
+    mockPlatformComplete.mockResolvedValue({
+      content: "I think it is probably positive?",
+      tokensInput: 1,
+      tokensOutput: 1,
+      model: "deepseek-v4-flash",
+    });
+
+    expect(await qualifyReply("hello")).toBeNull();
+  });
+});
 
 describe("QUALIFICATION_EVENT_TYPES", () => {
   // Emitting a label outside the silver vocabulary would write an event that no

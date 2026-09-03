@@ -115,21 +115,14 @@ export function parseQualification(result: {
 /**
  * Classify one reply. Returns null when no trustworthy label could be obtained.
  *
- * `deepseek-flash` on purpose: a short, closed-set classification over a few
- * hundred words, run once per reply, where the answer is one token from a list
- * of nine. Reasoning is disabled for the same reason — there is nothing here to
- * reason about, and on this vendor `disableThinking` is a genuine full-off.
+ * `deepseek-flash` on purpose: this is a short, closed-set classification on a
+ * few hundred words, run once per reply, and DeepSeek V4 Flash is the cheapest
+ * model in the catalogue that does it reliably. Reasoning is disabled for the
+ * same reason — there is nothing to reason about, only a label to pick.
  *
- * ⚠️ THE JSON GUARANTEE IS WEAKER HERE THAN ON GEMINI, and that is why the
- * parse is allowed to fail. DeepSeek supports `json_object` only — it refuses a
- * `json_schema` outright — so the model is asked for JSON but nothing enforces
- * the SHAPE of it server-side. `parseQualification` therefore does real work
- * rather than being a formality: an answer that is prose, or JSON carrying a
- * label outside the vocabulary, returns null and the caller promotes NOTHING.
- * Do not "fix" a parse failure by defaulting to `lead_neutral`; a fabricated
- * sentiment on a hot reply reads as a real judgement, where an absent one
- * reads as absent. The vendor also documents that the word "JSON" must appear
- * in the prompt for `json_object` to engage, which `SYSTEM_PROMPT` satisfies.
+ * The spend is chat-service's, on a platform run: this runs inside a sweep with
+ * no inbound org request, so there is no customer to bill for classifying a
+ * reply to our own outreach.
  */
 export async function qualifyReply(
   replyText: string,
