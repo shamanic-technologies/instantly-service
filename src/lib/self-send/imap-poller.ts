@@ -27,10 +27,17 @@ import {
   resolveMailboxCredential,
   type MailboxCredential,
 } from "./mailbox-credentials";
-import { classifyInbound, eventTypeForInbound, type InboundHeaders } from "./inbound";
+import {
+  classifyInbound,
+  correlateSend,
+  eventTypeForInbound,
+  type CorrelatedSend,
+  type InboundHeaders,
+} from "./inbound";
+import { stopLeadSequence } from "../stop-lead-sequence";
 import { parseInstantlySequenceStep } from "./instantly-sends";
 import { qualifyReply } from "./qualify-reply";
-import { SEND_TRANSPORT_SMTP } from "./transport";
+import { isSelfSendCampaignId, SEND_TRANSPORT_SMTP } from "./transport";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/poll" };
 
@@ -77,13 +84,23 @@ export interface PollSummary {
   /** Replies recorded and stopped, but left without a sentiment. */
   unqualified: number;
   unrelated: number;
+  /**
+   * Messages whose references reached MORE THAN ONE sequence on this mailbox.
+   * Stored in bronze, promoted to nothing — see `correlateSend`.
+   */
+  ambiguous: number;
+  /**
+   * Sequences we told the SENDER to stop, on top of our own hold cancel. Only
+   * an Instantly-transport sequence needs it, and only when Instantly did not
+   * see the reply itself.
+   */
+  sequencesStopped: number;
   accountsFailed: number;
 }
 
-interface KnownSend {
-  instantlyCampaignId: string;
-  leadEmail: string;
-  step: number;
+interface KnownSend extends CorrelatedSend {
+  /** The org that owns the sequence — needed to resolve a key and pause it. */
+  orgId: string | null;
 }
 
 /**
@@ -112,8 +129,11 @@ export async function loadKnownSends(accountEmail: string): Promise<Map<string, 
                     AND x.outcome = 'sent'
                 ), 1)
                 ELSE d.step
-           END                     AS "step"
+           END                     AS "step",
+           dc.org_id               AS "orgId"
     FROM smtp_dispatch_raw d
+    LEFT JOIN instantly_campaigns dc
+      ON dc.instantly_campaign_id = d.instantly_campaign_id
     WHERE d.account_email = ${accountEmail}
       AND d.outcome = 'sent'
       AND d.message_id IS NOT NULL
@@ -124,6 +144,7 @@ export async function loadKnownSends(accountEmail: string): Promise<Map<string, 
       instantlyCampaignId: String(row.instantlyCampaignId),
       leadEmail: String(row.leadEmail),
       step: Number(row.step),
+      orgId: (row.orgId as string | null) ?? null,
     });
   }
 
@@ -141,7 +162,8 @@ export async function loadKnownSends(accountEmail: string): Promise<Map<string, 
     SELECT m.payload->>'message_id' AS "messageId",
            m.instantly_campaign_id  AS "instantlyCampaignId",
            c.lead_email             AS "leadEmail",
-           m.payload->>'step'       AS "rawStep"
+           m.payload->>'step'       AS "rawStep",
+           c.org_id                 AS "orgId"
     FROM instantly_emails_raw m
     JOIN instantly_campaigns c ON c.instantly_campaign_id = m.instantly_campaign_id
     WHERE m.payload->>'eaccount' = ${accountEmail}
@@ -165,6 +187,7 @@ export async function loadKnownSends(accountEmail: string): Promise<Map<string, 
       instantlyCampaignId: String(row.instantlyCampaignId),
       leadEmail: String(row.leadEmail),
       step,
+      orgId: (row.orgId as string | null) ?? null,
     });
   }
 
@@ -233,9 +256,22 @@ async function pollAccount(
         const body = `${parsed.text ?? ""}\n${parsed.html || ""}`;
         const classification = classifyInbound(headers, body, new Set(knownSends.keys()));
 
-        const send = classification.referencedMessageIds
-          .map((id) => knownSends.get(id))
-          .find((s): s is KnownSend => s !== undefined);
+        const correlation = correlateSend(
+          classification.referencedMessageIds,
+          knownSends,
+        );
+
+        // Ambiguous is NOT "pick the first". Two live sequences on one mailbox
+        // both claiming this message means we cannot say whose reply it is, and
+        // a wrong attribution both fabricates a reply on a lead AND stops the
+        // wrong sequence. Record it, say so, promote nothing.
+        if (correlation.outcome === "ambiguous") {
+          console.warn(
+            `[instantly-service] self-send-poll: AMBIGUOUS inbound on account=${accountEmail} message=${messageId} — references reach ${correlation.campaignIds.length} sequences (${correlation.campaignIds.join(", ")}); stored in bronze, nothing promoted`,
+          );
+        }
+
+        const send = correlation.outcome === "matched" ? correlation.send : undefined;
 
         // Bronze first, and for EVERY message including `unrelated`: the row is
         // both the dedup key and the record of what we chose to ignore.
@@ -267,6 +303,11 @@ async function pollAccount(
         // Re-promoting would be harmless (silver dedups too) but pointless.
         if (!row) continue;
 
+        if (correlation.outcome === "ambiguous") {
+          summary.ambiguous += 1;
+          continue;
+        }
+
         if (classification.kind === "unrelated" || !send) {
           summary.unrelated += 1;
           continue;
@@ -292,6 +333,28 @@ async function pollAccount(
 
         if (classification.kind === "reply") {
           summary.replies += 1;
+
+          // `promoteEvent` above did OUR half of the stop — the row is marked
+          // and the remaining holds are cancelled. On an Instantly-transport
+          // sequence that tells the SENDER nothing, and we only ever read this
+          // reply ourselves BECAUSE Instantly could not: its IMAP link to the
+          // mailbox is broken, so its own stop-on-reply never fired and it will
+          // keep dispatching the rest of the sequence at someone who has
+          // already answered. Exactly the manual-qualification situation, and
+          // it takes the same second half, through the same helper.
+          //
+          // A `self:` sequence needs nothing here: there is no campaign to
+          // pause, and `promoteEvent` already did both halves.
+          if (!isSelfSendCampaignId(send.instantlyCampaignId) && send.orgId) {
+            const stopped = await stopLeadSequence({
+              orgId: send.orgId,
+              instantlyCampaignId: send.instantlyCampaignId,
+              leadEmail: send.leadEmail,
+              reason: "reply read from our own mailbox; Instantly never saw it",
+              caller: CALLER,
+            });
+            if (stopped) summary.sequencesStopped += 1;
+          }
 
           // Qualify the reply so a hot one reaches the agency inbox. This does
           // NOT decide whether to stop the sequence — `reply_received` above
@@ -383,6 +446,8 @@ export async function runPoll(
     qualified: 0,
     unqualified: 0,
     unrelated: 0,
+    ambiguous: 0,
+    sequencesStopped: 0,
     accountsFailed: 0,
   };
 

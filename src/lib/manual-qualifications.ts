@@ -19,10 +19,7 @@ import {
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { promoteEvent } from "./silver-promote";
 import { refreshLeadStatusCurrent } from "./status-gold";
-import { resolveInstantlyApiKey } from "./key-client";
-import { updateCampaignStatus } from "./instantly-client";
-import { isSelfSendCampaignId } from "./self-send/transport";
-import { stopSelfSendSequence } from "./self-send/stop-sequence";
+import { stopLeadSequence } from "./stop-lead-sequence";
 import {
   ACCEPTED_QUALIFICATION_STATUSES,
   REPLY_KINDS,
@@ -239,34 +236,18 @@ async function pauseSequenceOnInstantly(
   leadEmail: string,
   status: ManualQualificationStatus,
 ): Promise<void> {
-  try {
-    // A sequence WE dispatch has no Instantly campaign to pause, and reconcile
-    // skips a `self:` row outright — so the stop has to happen locally, holds
-    // included, or the lead would keep receiving followups after a human said
-    // they had already replied.
-    if (isSelfSendCampaignId(instantlyCampaignId)) {
-      await stopSelfSendSequence(
-        { instantlyCampaignId, campaignId: null, orgId, userId: null, runId: null },
-        leadEmail,
-        `manual qualification status=${status}`,
-      );
-      return;
-    }
-
-    const { key } = await resolveInstantlyApiKey(orgId, "system", {
-      method: "POST",
-      path: "/orgs/manual-qualifications",
-    });
-    await updateCampaignStatus(key, instantlyCampaignId, "paused");
-    console.log(
-      `[instantly-service] manual qualification: paused campaign=${instantlyCampaignId} lead=${leadEmail} status=${status}`,
-    );
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(
-      `[instantly-service] manual qualification: Instantly pause failed for campaign=${instantlyCampaignId} lead=${leadEmail} — ${message}; sequence continues on Instantly`,
-    );
-  }
+  // One implementation of "stop the sending", shared with the IMAP poller and
+  // the inbound-replies backfill — the three places that learn about a reply
+  // Instantly did not see. It branches on the transport and is fail-soft; the
+  // bronze row here is already committed, so throwing would 500 a qualification
+  // that did land.
+  await stopLeadSequence({
+    orgId,
+    instantlyCampaignId,
+    leadEmail,
+    reason: `manual qualification status=${status}`,
+    caller: { method: "POST", path: "/orgs/manual-qualifications" },
+  });
 }
 
 /**
