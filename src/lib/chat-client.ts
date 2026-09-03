@@ -18,7 +18,7 @@
  * customer request we can bill.
  */
 
-export type ChatProvider = "google" | "anthropic";
+export type ChatProvider = "google" | "anthropic" | "deepseek" | "zai" | "moonshot";
 export type ChatModel =
   | "flash"
   | "flash-lite"
@@ -26,7 +26,15 @@ export type ChatModel =
   | "pro"
   | "sonnet"
   | "haiku"
-  | "opus";
+  | "opus"
+  // Direct-vendor aliases, called by chat-service over the vendors' own
+  // OpenAI-compatible APIs. Text-only: `webSearch` is rejected with a 400.
+  | "deepseek-flash"
+  | "deepseek-pro"
+  | "glm-flash"
+  | "glm-pro"
+  | "kimi-flash"
+  | "kimi-pro";
 
 export interface ChatCompleteParams {
   message: string;

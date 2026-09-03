@@ -20,6 +20,7 @@ import {
 import { accountFillOrder } from "../lib/send-lead";
 import { fetchCapacityHistory } from "../lib/capacity-history";
 import { backfillEmails } from "../lib/emails-backfill";
+import { backfillInboundReplies } from "../lib/inbound-replies-backfill";
 import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
 import { syncSlowRampOff } from "../lib/sync-slow-ramp";
 import { syncLifecycleLimits } from "../lib/sync-lifecycle-limits";
@@ -956,6 +957,52 @@ router.post("/seed-placement/sync", async (_req: Request, res: Response) => {
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] seed-placement-sync run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/audit/inbound-replies-backfill
+ *
+ * Platform-scoped. Promotes inbound mail that reached bronze
+ * (`instantly_emails_raw`) and never reached silver — a webhook Instantly never
+ * delivered, a mailbox it can no longer read, a message the Unibox backfill
+ * mirrored after the fact. Reads nothing from Instantly and sends nothing.
+ *
+ * `{dryRun}` DEFAULTS TO TRUE and answers SYNCHRONOUSLY with the plan counts, so
+ * the hand-written candidate selection can be read against the database before
+ * anything is written. `{dryRun: false}` answers 202 and sweeps in the
+ * background (log `inbound-replies-backfill: done`); `{limit}` bounds a batch,
+ * live sequences first.
+ *
+ * Idempotent: a promoted candidate gains the very event the candidate query
+ * excludes, so a second run reports zero.
+ */
+router.post("/inbound-replies-backfill", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { dryRun?: unknown; limit?: unknown };
+  const dryRun = body.dryRun !== false;
+  const limit =
+    typeof body.limit === "number" && Number.isFinite(body.limit) && body.limit > 0
+      ? Math.floor(body.limit)
+      : undefined;
+
+  if (dryRun) {
+    const summary = await backfillInboundReplies({ dryRun: true, limit });
+    res.json({ dryRun: true, ...summary });
+    return;
+  }
+
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, dryRun: false, runId });
+  console.log(`[audit] inbound-replies-backfill: dispatched run=${runId}`);
+
+  (async () => {
+    const summary = await backfillInboundReplies({ dryRun: false, limit });
+    console.log(
+      `[audit] inbound-replies-backfill: done run=${runId} ${JSON.stringify(summary)}`,
+    );
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] inbound-replies-backfill run=${runId} failed: ${message}`);
   });
 });
 

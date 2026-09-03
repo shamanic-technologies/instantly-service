@@ -110,7 +110,13 @@ export type EventSource =
   | "poll_leads"
   | "inferred"
   | "manual"
-  | "self_send";
+  | "self_send"
+  // `emails_backfill` = promoted from the Unibox mirror by the inbound-replies
+  // sweep, where the reply KIND came from our own classifier reading the body.
+  // Deliberately not `poll_emails`, which reads the same table but carries
+  // Instantly's OWN verdict: the two disagree about where the judgement came
+  // from, and that is exactly what this column is for.
+  | "emails_backfill";
 
 export interface PromoteEventInput {
   eventType: string;

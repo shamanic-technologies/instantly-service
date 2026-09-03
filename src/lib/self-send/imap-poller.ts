@@ -27,9 +27,16 @@ import {
   resolveMailboxCredential,
   type MailboxCredential,
 } from "./mailbox-credentials";
-import { classifyInbound, eventTypeForInbound, type InboundHeaders } from "./inbound";
+import {
+  classifyInbound,
+  correlateSend,
+  eventTypeForInbound,
+  type CorrelatedSend,
+  type InboundHeaders,
+} from "./inbound";
+import { stopLeadSequence } from "../stop-lead-sequence";
 import { qualifyReply } from "./qualify-reply";
-import { SEND_TRANSPORT_SMTP } from "./transport";
+import { isSelfSendCampaignId, SEND_TRANSPORT_SMTP } from "./transport";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/poll" };
 
@@ -52,18 +59,53 @@ export interface PollSummary {
   /** Replies recorded and stopped, but left without a sentiment. */
   unqualified: number;
   unrelated: number;
+  /**
+   * Messages whose references reached MORE THAN ONE sequence on this mailbox.
+   * Stored in bronze, promoted to nothing — see `correlateSend`.
+   */
+  ambiguous: number;
+  /**
+   * Sequences we told the SENDER to stop, on top of our own hold cancel. Only
+   * an Instantly-transport sequence needs it, and only when Instantly did not
+   * see the reply itself.
+   */
+  sequencesStopped: number;
   accountsFailed: number;
 }
 
-interface KnownSend {
-  instantlyCampaignId: string;
-  leadEmail: string;
-  step: number;
+/** A correlated send, plus the org that owns it (needed to pause on Instantly). */
+interface KnownSend extends CorrelatedSend {
+  orgId: string | null;
 }
 
-/** Our own sends from this mailbox, keyed by the Message-Id the server accepted. */
+/**
+ * Every send that left this mailbox, keyed by the Message-Id it carried —
+ * BOTH transports.
+ *
+ * ⚠️ THE SECOND HALF IS LOAD-BEARING AND IS NOT A NICE-TO-HAVE. A mailbox on
+ * `send_transport='smtp'` holds, almost always, sequences Instantly dispatched
+ * BEFORE the flip — the transport is frozen per campaign at send time, so a
+ * mailbox rescued onto our own sender keeps draining Instantly-sent sequences
+ * for weeks. Reading only `smtp_dispatch_raw` therefore classifies every reply
+ * to those sequences as `unrelated` and touches nothing, which is precisely how
+ * a real "I would be interested" reply reached nobody: Instantly had lost its
+ * IMAP link to the mailbox (so it emitted no `reply_received`) and our own
+ * poller had no id to match against.
+ *
+ * The key is EXACT on both sides, never a heuristic. Instantly hands back the
+ * `Message-Id` of the mail it sent in its own Unibox payload, which the reconcile
+ * poll and the Unibox backfill mirror into `instantly_emails_raw` — 39,749 such
+ * ids across 65 of these mailboxes in prod at the time of writing. So the
+ * widening buys the Instantly-transport case without inventing a single
+ * inference about senders, subjects or timing.
+ *
+ * The lead email comes from the CAMPAIGN ROW, not from the payload's `lead`
+ * field: the campaign row is this service's own record of who the sequence is
+ * for, and it is the value every other silver writer uses.
+ */
 async function loadKnownSends(accountEmail: string): Promise<Map<string, KnownSend>> {
   const result = await db.execute(sql`
+    -- Our own dispatches.
     SELECT d.message_id            AS "messageId",
            d.instantly_campaign_id AS "instantlyCampaignId",
            d.lead_email            AS "leadEmail",
@@ -79,19 +121,56 @@ async function loadKnownSends(accountEmail: string): Promise<Map<string, KnownSe
                     AND x.outcome = 'sent'
                 ), 1)
                 ELSE d.step
-           END                     AS "step"
+           END                     AS "step",
+           dc.org_id               AS "orgId"
     FROM smtp_dispatch_raw d
+    LEFT JOIN instantly_campaigns dc
+      ON dc.instantly_campaign_id = d.instantly_campaign_id
     WHERE d.account_email = ${accountEmail}
       AND d.outcome = 'sent'
       AND d.message_id IS NOT NULL
+
+    UNION ALL
+
+    -- Sends Instantly made from this same mailbox, as Instantly itself recorded
+    -- them. ue_type = 1 is its outbound marker.
+    SELECT m.payload->>'message_id'  AS "messageId",
+           c.instantly_campaign_id   AS "instantlyCampaignId",
+           c.lead_email              AS "leadEmail",
+           -- Instantly's step is a 0-based "<sequence>_<step>_<variant>" string,
+           -- ours is 1-based. Verified against prod: 0_0_0 pairs with silver
+           -- step 1 (36,766 rows), 0_1_0 with 2 (31,570), 0_2_0 with 3 (30,025).
+           -- An unparseable value falls back to the campaign's last real send
+           -- rather than to a guessed 1 — the same reasoning as the step-0 case
+           -- above, since inventing a step corrupts step accounting downstream.
+           COALESCE(
+             NULLIF(split_part(m.payload->>'step', '_', 2), '')::int + 1,
+             (SELECT MAX(e.step) FROM instantly_events e
+              WHERE e.campaign_id = c.instantly_campaign_id
+                AND e.event_type = 'email_sent'),
+             1
+           )                         AS "step",
+           c.org_id                  AS "orgId"
+    FROM instantly_emails_raw m
+    JOIN instantly_campaigns c
+      ON c.instantly_campaign_id = m.instantly_campaign_id
+    WHERE m.payload->>'eaccount' = ${accountEmail}
+      AND m.payload->>'ue_type' = '1'
+      AND m.payload->>'message_id' IS NOT NULL
   `);
 
   const sends = new Map<string, KnownSend>();
   for (const row of result.rows as Record<string, unknown>[]) {
-    sends.set(String(row.messageId), {
-      instantlyCampaignId: String(row.instantlyCampaignId),
-      leadEmail: String(row.leadEmail),
+    const messageId = String(row.messageId);
+    // Our own dispatch row wins a collision: it is first-party evidence of what
+    // we put on the wire, where the Instantly row is a mirror of a third party's
+    // record. In practice they never collide — a Message-Id is unique.
+    if (sends.has(messageId)) continue;
+    sends.set(messageId, {
+      instantlyCampaignId: row.instantlyCampaignId as string,
+      leadEmail: row.leadEmail as string,
       step: Number(row.step),
+      orgId: (row.orgId as string | null) ?? null,
     });
   }
   return sends;
@@ -159,9 +238,22 @@ async function pollAccount(
         const body = `${parsed.text ?? ""}\n${parsed.html || ""}`;
         const classification = classifyInbound(headers, body, new Set(knownSends.keys()));
 
-        const send = classification.referencedMessageIds
-          .map((id) => knownSends.get(id))
-          .find((s): s is KnownSend => s !== undefined);
+        const correlation = correlateSend(
+          classification.referencedMessageIds,
+          knownSends,
+        );
+
+        // Ambiguous is NOT "pick the first". Two live sequences on one mailbox
+        // both claiming this message means we cannot say whose reply it is, and
+        // a wrong attribution both fabricates a reply on a lead AND stops the
+        // wrong sequence. Record it, say so, promote nothing.
+        if (correlation.outcome === "ambiguous") {
+          console.warn(
+            `[instantly-service] self-send-poll: AMBIGUOUS inbound on account=${accountEmail} message=${messageId} — references reach ${correlation.campaignIds.length} sequences (${correlation.campaignIds.join(", ")}); stored in bronze, nothing promoted`,
+          );
+        }
+
+        const send = correlation.outcome === "matched" ? correlation.send : undefined;
 
         // Bronze first, and for EVERY message including `unrelated`: the row is
         // both the dedup key and the record of what we chose to ignore.
@@ -193,6 +285,11 @@ async function pollAccount(
         // Re-promoting would be harmless (silver dedups too) but pointless.
         if (!row) continue;
 
+        if (correlation.outcome === "ambiguous") {
+          summary.ambiguous += 1;
+          continue;
+        }
+
         if (classification.kind === "unrelated" || !send) {
           summary.unrelated += 1;
           continue;
@@ -218,6 +315,29 @@ async function pollAccount(
 
         if (classification.kind === "reply") {
           summary.replies += 1;
+
+          // `promoteEvent` above did OUR half of the stop — the row is marked
+          // and the remaining holds are cancelled. On an Instantly-transport
+          // sequence that tells the SENDER nothing, and we only ever read this
+          // reply ourselves because Instantly could not: its IMAP link to the
+          // mailbox is broken, so its own stop-on-reply never fired and it will
+          // keep dispatching the rest of the sequence at someone who has
+          // already answered. Exactly the manual-qualification situation, and
+          // it takes the same second half.
+          //
+          // A `self:` sequence needs nothing here: `stopSelfSendSequence` is
+          // reached through `cancelRemainingProvisions` + the row status that
+          // `promoteEvent` already applied, and there is no campaign to pause.
+          if (!isSelfSendCampaignId(send.instantlyCampaignId) && send.orgId) {
+            const stopped = await stopLeadSequence({
+              orgId: send.orgId,
+              instantlyCampaignId: send.instantlyCampaignId,
+              leadEmail: send.leadEmail,
+              reason: "reply read from our own mailbox; Instantly never saw it",
+              caller: CALLER,
+            });
+            if (stopped) summary.sequencesStopped += 1;
+          }
 
           // Qualify the reply so a hot one reaches the agency inbox. This does
           // NOT decide whether to stop the sequence — `reply_received` above
@@ -293,6 +413,8 @@ export async function runPoll(options: { asOf?: Date } = {}): Promise<PollSummar
     qualified: 0,
     unqualified: 0,
     unrelated: 0,
+    ambiguous: 0,
+    sequencesStopped: 0,
     accountsFailed: 0,
   };
 
