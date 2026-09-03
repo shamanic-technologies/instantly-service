@@ -28,10 +28,20 @@ import {
   type MailboxCredential,
 } from "./mailbox-credentials";
 import { classifyInbound, eventTypeForInbound, type InboundHeaders } from "./inbound";
+import { parseInstantlySequenceStep } from "./instantly-sends";
 import { qualifyReply } from "./qualify-reply";
 import { SEND_TRANSPORT_SMTP } from "./transport";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/poll" };
+
+/**
+ * `db.execute` resolves to a node-postgres `QueryResult`, never a bare array —
+ * see the repo rule. Read through this rather than casting.
+ */
+function rowsOf(result: unknown): Record<string, unknown>[] {
+  const rows = (result as { rows?: unknown }).rows;
+  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+}
 
 /**
  * How far back each run looks.
@@ -40,6 +50,21 @@ const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/poll" };
  * a clock skew cannot open a gap. The unique index absorbs the overlap.
  */
 const POLL_WINDOW_DAYS = 3;
+
+/**
+ * The widest window a caller may ask for.
+ *
+ * A mailbox nobody has ever read holds replies far older than the routine
+ * window — and for those mailboxes the mail exists NOWHERE ELSE. Instantly
+ * cannot log in either, so its Unibox never mirrored them and no bronze backfill
+ * can reach them: the only instrument that can is this poller, pointed further
+ * back. Hence an explicit, bounded override rather than a second sweep.
+ *
+ * Bounded because the window is an IMAP fetch per mailbox, and unbounded means
+ * re-reading and re-parsing an entire inbox on every routine run if the value
+ * ever leaks into the cron. A year is past the age of the fleet.
+ */
+const MAX_POLL_WINDOW_DAYS = 365;
 
 export interface PollSummary {
   accountsPolled: number;
@@ -61,8 +86,16 @@ interface KnownSend {
   step: number;
 }
 
-/** Our own sends from this mailbox, keyed by the Message-Id the server accepted. */
-async function loadKnownSends(accountEmail: string): Promise<Map<string, KnownSend>> {
+/**
+ * Sends from this mailbox, keyed by the Message-Id that went on the wire.
+ *
+ * TWO sources, and the second one is what makes a reply on an Instantly-sent
+ * sequence correlatable at all — see `instantly-sends.ts`. Both are exact
+ * Message-Id keys; neither is an address heuristic.
+ */
+export async function loadKnownSends(accountEmail: string): Promise<Map<string, KnownSend>> {
+  const sends = new Map<string, KnownSend>();
+
   const result = await db.execute(sql`
     SELECT d.message_id            AS "messageId",
            d.instantly_campaign_id AS "instantlyCampaignId",
@@ -86,14 +119,55 @@ async function loadKnownSends(accountEmail: string): Promise<Map<string, KnownSe
       AND d.message_id IS NOT NULL
   `);
 
-  const sends = new Map<string, KnownSend>();
-  for (const row of result.rows as Record<string, unknown>[]) {
+  for (const row of rowsOf(result)) {
     sends.set(String(row.messageId), {
       instantlyCampaignId: String(row.instantlyCampaignId),
       leadEmail: String(row.leadEmail),
       step: Number(row.step),
     });
   }
+
+  // Second source: what INSTANTLY sent from this mailbox. `eaccount` is the
+  // sending mailbox on Instantly's own email object, and the lead comes from our
+  // campaign row rather than the payload — one Instantly campaign is one lead, so
+  // the join is authoritative and does not depend on a payload field that is
+  // absent on some shapes.
+  //
+  // Our own dispatch wins a collision (the loop below only fills a key we do not
+  // already hold): a message-id we put on the wire is a fact about a send we
+  // made, and `smtp_dispatch_raw` additionally resolves the step-0 manual-reply
+  // case that this mirror knows nothing about.
+  const instantlyResult = await db.execute(sql`
+    SELECT m.payload->>'message_id' AS "messageId",
+           m.instantly_campaign_id  AS "instantlyCampaignId",
+           c.lead_email             AS "leadEmail",
+           m.payload->>'step'       AS "rawStep"
+    FROM instantly_emails_raw m
+    JOIN instantly_campaigns c ON c.instantly_campaign_id = m.instantly_campaign_id
+    WHERE m.payload->>'eaccount' = ${accountEmail}
+      AND m.payload->>'ue_type' = '1'
+      AND m.payload->>'message_id' IS NOT NULL
+  `);
+
+  for (const row of rowsOf(instantlyResult)) {
+    const messageId = String(row.messageId);
+    if (sends.has(messageId)) continue;
+
+    const step = parseInstantlySequenceStep(
+      row.rawStep === null || row.rawStep === undefined ? null : String(row.rawStep),
+    );
+    // An unreadable step is dropped rather than defaulted. Correlating the reply
+    // to the wrong step would make the inference rule project `email_sent` rows
+    // for steps nobody sent.
+    if (step === null) continue;
+
+    sends.set(messageId, {
+      instantlyCampaignId: String(row.instantlyCampaignId),
+      leadEmail: String(row.leadEmail),
+      step,
+    });
+  }
+
   return sends;
 }
 
@@ -278,9 +352,25 @@ async function pollAccount(
  * logged, and the sweep moves on — the alternative is that a single bad mailbox
  * stops the fleet from noticing anyone's reply.
  */
-export async function runPoll(options: { asOf?: Date } = {}): Promise<PollSummary> {
+export async function runPoll(
+  options: { asOf?: Date; sinceDays?: number } = {},
+): Promise<PollSummary> {
   const asOf = options.asOf ?? new Date();
-  const since = new Date(asOf.getTime() - POLL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+
+  // A caller may reach further back for a one-shot catch-up on a mailbox that
+  // has just become readable — clamped, never trusted raw. Anything absent or
+  // unusable falls to the routine window; a wider-than-max ask is clamped rather
+  // than refused, since the caller's intent ("as far back as you can") is clear.
+  const windowDays = Math.min(
+    Math.max(
+      Number.isFinite(options.sinceDays) && (options.sinceDays as number) > 0
+        ? (options.sinceDays as number)
+        : POLL_WINDOW_DAYS,
+      POLL_WINDOW_DAYS,
+    ),
+    MAX_POLL_WINDOW_DAYS,
+  );
+  const since = new Date(asOf.getTime() - windowDays * 24 * 60 * 60 * 1000);
 
   const accounts = await loadSelfSendAccounts();
 
@@ -311,7 +401,9 @@ export async function runPoll(options: { asOf?: Date } = {}): Promise<PollSummar
     }
   }
 
-  console.log(`[instantly-service] self-send-poll: done ${JSON.stringify(summary)}`);
+  console.log(
+    `[instantly-service] self-send-poll: done windowDays=${windowDays} ${JSON.stringify(summary)}`,
+  );
 
   return summary;
 }
