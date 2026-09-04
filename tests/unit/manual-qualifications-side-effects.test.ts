@@ -91,7 +91,11 @@ describe("applyManualQualificationSideEffects", () => {
   it("synthesizes a `reply_received` silver event via promoteEvent (source='manual', inferred=false)", async () => {
     await applyManualQualificationSideEffects(inputFor("lead_interested"));
 
-    expect(mockPromoteEvent).toHaveBeenCalledTimes(1);
+    // Two promotions: the synthesized reply, then the kind. The kind goes
+    // through promoteEvent too, because the forward to the agency inbox and
+    // the conversation-campaign trigger both key on a positive KIND and both
+    // live inside it.
+    expect(mockPromoteEvent).toHaveBeenCalledTimes(2);
     const call = mockPromoteEvent.mock.calls[0][0];
     expect(call).toEqual(
       expect.objectContaining({
@@ -110,22 +114,60 @@ describe("applyManualQualificationSideEffects", () => {
   it("writes the RESOLVED reply kind in silver for a legacy deal-progress statement", async () => {
     await applyManualQualificationSideEffects(inputFor("lead_meeting_booked"));
 
-    expect(
-      mockDbInsertValues.mock.calls.some(
-        (c) => (c[0] as Record<string, unknown>).eventType === "lead_meeting_booked",
-      ),
-    ).toBe(false);
+    const promoted = mockPromoteEvent.mock.calls.map(
+      (c) => c[0] as Record<string, unknown>,
+    );
 
-    const leadStatusInsert = mockDbInsertValues.mock.calls.find((c) => {
-      const v = c[0] as Record<string, unknown>;
-      return v.eventType === "lead_interested";
+    expect(promoted.some((v) => v.eventType === "lead_meeting_booked")).toBe(false);
+
+    const leadStatusEvent = promoted.find((v) => v.eventType === "lead_interested");
+    expect(leadStatusEvent).toBeDefined();
+    expect(leadStatusEvent!.source).toBe("manual");
+    expect(leadStatusEvent!.inferred).toBe(false);
+    expect(leadStatusEvent!.instantlyCampaignId).toBe("inst-camp-1");
+    expect(leadStatusEvent!.leadEmail).toBe("lead@test.com");
+  });
+
+  // The bug this routing exists to prevent (#706). A manual qualification is
+  // created PRECISELY because Instantly did not detect the reply, so it is the
+  // path where a hot reply is most likely to be invisible everywhere else. Both
+  // side effects key on a positive KIND and live inside promoteEvent, so a
+  // direct insert of the kind reached neither: the human recorded the reply,
+  // the sequence stopped, and nobody was told. Measured in prod before the fix:
+  // every positive whose kind also carried a webhook forwarded, and none of the
+  // five manual-only ones did.
+  it("promotes the positive KIND itself, so the forward and the campaign trigger can fire", async () => {
+    await applyManualQualificationSideEffects(inputFor("lead_interested"));
+
+    const promotedTypes = mockPromoteEvent.mock.calls.map(
+      (c) => (c[0] as { eventType: string }).eventType,
+    );
+    expect(promotedTypes).toContain("lead_interested");
+    // Order is load-bearing: the reply stops the sequence first, then the kind
+    // says what it meant.
+    expect(promotedTypes.indexOf("reply_received")).toBeLessThan(
+      promotedTypes.indexOf("lead_interested"),
+    );
+  });
+
+  // The pin has to land AFTER the promotion, or promoteEvent's own
+  // reply_classification update overwrites the manual source back to auto.
+  it("pins the manual source after promoting, never before", async () => {
+    const order: string[] = [];
+    mockPromoteEvent.mockImplementation(async () => {
+      order.push("promote");
+      return { promoted: true, silverEventId: "ev-1" };
     });
-    expect(leadStatusInsert).toBeDefined();
-    const v = leadStatusInsert![0] as Record<string, unknown>;
-    expect(v.source).toBe("manual");
-    expect(v.inferred).toBe(false);
-    expect(v.campaignId).toBe("inst-camp-1");
-    expect(v.leadEmail).toBe("lead@test.com");
+    // The db mock's own wrapper returns the chainable shape; this only records.
+    mockDbUpdateSet.mockImplementation((v: unknown) => {
+      if ((v as Record<string, unknown>).replyClassificationSource === "manual") {
+        order.push("pin");
+      }
+    });
+
+    await applyManualQualificationSideEffects(inputFor("lead_interested"));
+
+    expect(order[order.length - 1]).toBe("pin");
   });
 
   it("pins reply_classification + source='manual' on instantly_campaigns", async () => {
@@ -238,16 +280,19 @@ describe("applyManualQualificationSideEffects", () => {
 
       expect(isSequenceStoppingQualification(status)).toBe(false);
       // No synthesized reply ⇒ the lead's provisioned holds are NOT cancelled.
-      expect(mockPromoteEvent).not.toHaveBeenCalled();
+      // Asserted on the EVENT TYPE, not on promoteEvent being untouched: the
+      // kind itself is now promoted for every status (that is what carries the
+      // forward and the campaign trigger), so the invariant that matters is
+      // that `reply_received` is never among them.
+      const promotedTypes = mockPromoteEvent.mock.calls.map(
+        (c) => (c[0] as { eventType: string }).eventType,
+      );
+      expect(promotedTypes).not.toContain("reply_received");
       // …and Instantly keeps sending, which is the point.
       expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
 
       // The qualification itself is still recorded in silver + pinned.
-      const leadStatusInsert = mockDbInsertValues.mock.calls.find((c) => {
-        const v = c[0] as Record<string, unknown>;
-        return v.eventType === status;
-      });
-      expect(leadStatusInsert).toBeDefined();
+      expect(promotedTypes).toContain(status);
       expect(mockRefreshLeadStatusCurrent).toHaveBeenCalled();
     }
   });

@@ -264,15 +264,17 @@ async function pauseSequenceOnInstantly(
  *     b. PAUSE the campaign on Instantly. (a) alone stops nothing on
  *        Instantly's side — see `pauseSequenceOnInstantly`.
  *  2. Mirror the lead-status event (`lead_interested` / `lead_not_interested`
- *     / etc.) in silver via direct insert — for EVERY status, stopping or not,
- *     because the human's qualification is a fact worth recording either way.
- *     Kept as a direct insert so we can also set
- *     `replyClassificationSource='manual'` below — going through
- *     `promoteEvent` would update `replyClassification` from the status map
- *     but not the source field.
+ *     / etc.) in silver through `promoteEvent`, for EVERY status, stopping or
+ *     not, because the human's qualification is a fact worth recording either
+ *     way. It goes through `promoteEvent` and not a direct insert because the
+ *     two side effects that key on a positive KIND live there: the forward to
+ *     the agency inbox, and the ask to campaign-service for the `conversation`
+ *     step. A direct insert reached neither.
  *  3. Set `reply_classification` to the derived positive/negative/neutral
  *     value and pin `reply_classification_source='manual'` so subsequent
- *     webhook events do not overwrite the manual choice.
+ *     webhook events do not overwrite the manual choice. This runs AFTER (2)
+ *     on purpose: `promoteEvent` sets the classification from the kind map but
+ *     never the source, so the pin has to land last.
  */
 export async function applyManualQualificationSideEffects(
   input: ApplyManualQualificationSideEffectsInput,
@@ -305,25 +307,40 @@ export async function applyManualQualificationSideEffects(
     );
   }
 
-  // 2. Mirror the lead-status event in silver (direct insert — source field is
-  //    set to 'manual' explicitly below; promoteEvent's auto-update would not
-  //    touch `reply_classification_source`).
-  await db.insert(instantlyEvents).values({
+  // 2. Mirror the lead-status event in silver, THROUGH `promoteEvent`.
+  //
+  //     ⚠️ This used to be a direct `db.insert`, and the two side effects that
+  //     key on a positive KIND live inside `promoteEvent`: the forward of the
+  //     thread to the agency inbox, and the ask to campaign-service to run the
+  //     campaign bought for the `conversation` step. `reply_received` (step 1a)
+  //     is not a positive kind, so the only event that reached `promoteEvent`
+  //     never fired either of them — and the kind event, which would have,
+  //     never got there. A manual qualification is created PRECISELY because
+  //     Instantly did not detect the reply, so this was the path where a hot
+  //     reply was most likely to be invisible everywhere else: the human
+  //     recorded it, the sequence stopped, and nobody was told. Measured in
+  //     prod: every positive whose kind also carried a webhook forwarded, and
+  //     none of the five manual-only ones did.
+  //
+  //     The original reason for the direct insert still holds — `promoteEvent`
+  //     updates `reply_classification` from the kind map but does NOT touch
+  //     `reply_classification_source` — and it is satisfied by step 3 below,
+  //     which pins BOTH columns immediately after. Order matters: promote
+  //     first, pin second, or the pin is overwritten by the promotion.
+  await promoteEvent({
     // The RESOLVED kind, not the raw statement — silver carries the new
     // vocabulary only, so no reader ever has to translate a legacy value.
     eventType: input.replyKind,
-    campaignId: input.instantlyCampaignId,
+    instantlyCampaignId: input.instantlyCampaignId,
     leadEmail: input.leadEmail,
     accountEmail: null,
     step: null,
     variant: null,
     timestamp: input.qualifiedAt,
-    rawPayload: input.rawPayload as Record<string, unknown> | null | undefined,
+    rawPayload: input.rawPayload,
     source: "manual",
     sourceRowId: input.bronzeRowId,
     inferred: false,
-    inferredFromEventId: null,
-    inferredRule: null,
   });
 
   // 3. Pin reply_classification + source='manual'. Manual wins over webhook
