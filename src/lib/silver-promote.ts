@@ -22,6 +22,7 @@ import { refreshLeadStatusCurrent } from "./status-gold";
 import { maybeStopOnClickForFunnel } from "./stop-on-click";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
 import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
+import { maybeMirrorCampaignEmails } from "./mirror-emails";
 import {
   DEAL_PROGRESS_TO_REPLY_KIND,
   REPLY_KIND_CLASSIFICATION,
@@ -659,6 +660,14 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // Fail-soft — the qualification above is the primary job and stands
       // whatever this does. No-op on any other event.
       await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
+
+      // Mirror the conversation into bronze while Instantly still holds it. A
+      // reply delivered cleanly by webhook never makes its campaign drift, so
+      // the reconcile poll's drift-triggered /emails phase never fetched its
+      // body — the common case was the one never mirrored. Cancelling the plan
+      // deletes those words permanently, so they are copied at the moment we
+      // learn they exist. Fail-soft, never throws. No-op on any other event.
+      await maybeMirrorCampaignEmails(campaign, input.eventType);
     }
   }
 
