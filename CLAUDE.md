@@ -585,6 +585,80 @@ A cold sequence exists to make someone write back, and until v0.76.0 nothing in 
 
 Guard: `tests/unit/lead-conversation.test.ts` + `tests/unit/lead-conversations-route.test.ts`.
 
+## Mirroring a reply's WORDS as they arrive — the cancellation clock
+
+Instantly's cancel dialog says it plainly: cancelling the plan, or a single
+inbox, permanently deletes every conversation those mailboxes sent and received,
+lead replies included. Silver records THAT a lead replied; the words live only in
+bronze `instantly_emails_raw`. So anything reading a thread LIVE from Instantly
+goes blank for every lead at once on cancellation day, and at that point the
+words are gone rather than merely unreachable.
+
+**⚠️ THE MIRROR HAD ITS HOLE EXACTLY AT THE COMMON CASE.** The only thing that
+fetched a reply's BODY during normal operation was phase 3 of the reconcile poll,
+which runs only for a campaign that DRIFTS on its counts. A reply delivered by
+webhook updates our event log at once, so the campaign does not drift, so its
+body was never fetched — the cleanly-delivered reply, i.e. nearly all of them,
+was the one never mirrored. Fleet before the 2026-09-04 one-shot Unibox sweep:
+359 inbound messages mirrored against 229 recorded reply events, newest mirrored
+inbound 2026-09-02 while replies kept arriving through 2026-09-04.
+
+`src/lib/mirror-emails.ts` closes it with one fail-soft side effect on the single
+ingestion choke point (`promoteEvent`), so BOTH ingestion paths — webhook and
+reconcile poll — are covered by one call.
+
+- **The trigger set is every reply KIND plus `reply_received` and `email_bounced`
+  (`MIRRORED_INBOUND_EVENT_TYPES`), NOT `reply_received` alone.** Instantly emits
+  the qualification (`lead_interested`, `lead_out_of_office`, …) as its own
+  event, so a mirror keyed on one type misses a reply whose `reply_received` we
+  never received. Side effects fire only on the FIRST promotion of each event, so
+  this costs a couple of reads per lead. Outbound-only events (`email_sent`,
+  `email_opened`, `email_link_clicked`) are deliberately absent — they carry no
+  inbound words, and mirroring per dispatched step would re-read the thread every
+  send.
+- **⚠️ It copies the WHOLE thread, never just the reply.** This is a photocopy
+  taken before the original is destroyed: we cannot go back for more later, and
+  what a prospect wrote only makes sense beside what we said. Do NOT narrow it to
+  what some consumer asks for today.
+- **A PLATFORM send (orgId null) is mirrored on the platform key**, not skipped —
+  its thread sits in the same workspace and is just as destroyed.
+- **The `self:` / `reserving:` rule applies verbatim** (`isInstantlyHeldCampaignId`):
+  a self-send sequence already has both halves in bronze, and a reservation
+  sentinel is not an Instantly id at all.
+- **Bronze only, fail-soft, no cost.** Nothing is promoted to silver (the events
+  already exist — they are what triggered this) and a throw here would become a
+  webhook 5xx that Instantly counts toward disabling the whole subscription.
+
+**`GET /orgs/conversations` READS THE MIRROR FIRST, and that is what survives the
+cancellation.** `fetchLeadConversation` no longer asks Instantly per page view
+(which would also spend quota on every render). Order: bronze mirror → if it
+holds rows, done (`source: 'mirror'`); if it is EMPTY, ask our own event log
+(`hasExchangedMailEvidence`: a real, `inferred = false`, `email_sent` /
+`reply_received` / `auto_reply_received` / `email_bounced`).
+
+- **No evidence ⇒ the sequence exchanged nothing ⇒ 200 with `messages: []`.** No
+  Instantly call.
+- **Evidence but an empty mirror ⇒ the mirror is INCOMPLETE** ⇒ one live read,
+  whose result is written to bronze so the next read is local. Once the plan is
+  cancelled that read fails ⇒ **502 `thread_unavailable`**, never an empty thread.
+- The three facts therefore stay three answers: absent (404 `campaign_not_found`),
+  unreadable (502 `thread_unavailable`), genuinely empty (200 `[]`). An empty
+  mirror is ambiguous ON ITS OWN — silver is what disambiguates it. Do NOT
+  "simplify" by returning an empty mirror as an empty conversation.
+- The response carries `source` (`mirror` | `self_send` | `provider`) so a
+  consumer can see which side answered.
+
+**⚠️ WHAT THE MIRROR DOES NOT COVER, stated because the cancellation is
+irreversible:** ATTACHMENTS (Instantly's `/emails` payload carries body text/HTML
+and headers, not files — an attached document is lost with the account); mail
+Instantly ALREADY deleted before a sweep ran (a mailbox removed from the
+workspace takes its conversations with it, and no later sweep can find them); a
+reply recorded by `source='manual'` or `poll_leads`, which never existed as an
+email in the Unibox at all (a manual qualification is created PRECISELY because
+Instantly did not see the reply); and a thread whose ONLY copy was the pre-fix
+mirror gap — the go-forward side effect protects the NEXT reply, and the
+historical set is whatever the one-shot `emails-backfill` sweep captured.
+
 ## Finding the leads worth reading — `GET /orgs/engaged-leads`
 
 `GET /orgs/conversations` returns what a prospect wrote, but only for ONE `(campaign_id, email)` pair the caller must already know. A dashboard holds a LEAD, not a campaign id, and had no way to tell which of an org's ~47k contacted leads ever engaged — so the conversation read was reachable only by someone who already knew the answer. This is the discovery half. Logic in `src/lib/engaged-leads.ts`; the route does IO dispatch only.

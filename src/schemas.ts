@@ -1372,6 +1372,11 @@ const LeadConversationSchema = z
     transport: z
       .enum(["instantly", "smtp"])
       .describe("Which pipe carried it — the caller does not need to know this to ask"),
+    source: z
+      .enum(["mirror", "self_send", "provider"])
+      .describe(
+        "Where the messages were read from. mirror: our own bronze copy of the Instantly Unibox — the normal case, and the one that survives the Instantly plan being cancelled. self_send: the sequence we dispatched ourselves. provider: read live from Instantly because our mirror held nothing for a sequence that did exchange mail.",
+      ),
     messageCount: z.number().int(),
     messages: z
       .array(ConversationMessageSchema)
