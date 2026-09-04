@@ -114,53 +114,94 @@ export interface ReplyToLeadResult {
 }
 
 export interface CampaignRow {
+  /** The stored campaign row this sequence belongs to. */
+  campaignId: string;
   instantlyCampaignId: string;
   leadEmail: string;
   accountEmail: string | null;
   sendTransport: SendTransport;
+  /** When the row was created — the order the sequences happened in. */
+  createdAt: string | null;
 }
 
 /**
- * The campaign this lead sits in, for this org.
+ * Every sequence this org holds for one lead across the given campaign rows,
+ * OLDEST FIRST.
+ *
+ * A campaign as the customer knows it is many stored rows (campaign-service
+ * keeps an ancestor per workflow change), and one prospect can sit in several of
+ * them — so reading a whole campaign's exchange means reading every row of it
+ * that holds this lead. Callers that want a single row pass a single id.
  *
  * Matched on `lower(lead_email)` — the same normalization the re-contact window
  * and the serve-side suppression use. `Joe@X.com` and `joe@x.com` are one inbox,
  * and a case-sensitive lookup would refuse to answer a prospect we did email.
+ *
+ * The ids are bound one by one rather than through `= ANY(<js array>)`: drizzle
+ * expands that into a ROW expression which trips Postgres' 1664-entry limit.
+ */
+export async function loadCampaignSequences(
+  orgId: string,
+  campaignIds: string[],
+  leadEmail: string,
+): Promise<CampaignRow[]> {
+  if (campaignIds.length === 0) return [];
+
+  const idList = sql.join(
+    campaignIds.map((id) => sql`${id}`),
+    sql`, `,
+  );
+
+  const result = await db.execute(sql`
+    SELECT
+      c.campaign_id           AS "campaignId",
+      c.instantly_campaign_id AS "instantlyCampaignId",
+      c.lead_email            AS "leadEmail",
+      c.account_email         AS "accountEmail",
+      c.send_transport        AS "sendTransport",
+      c.created_at            AS "createdAt"
+    FROM instantly_campaigns c
+    WHERE c.org_id = ${orgId}
+      AND c.campaign_id IN (${idList})
+      AND lower(c.lead_email) = lower(${leadEmail})
+    ORDER BY c.created_at ASC, c.instantly_campaign_id ASC
+  `);
+
+  return (result.rows as Record<string, unknown>[]).map((row) => ({
+    campaignId: String(row.campaignId),
+    instantlyCampaignId: String(row.instantlyCampaignId),
+    leadEmail: String(row.leadEmail),
+    accountEmail:
+      row.accountEmail === null || row.accountEmail === undefined
+        ? null
+        : String(row.accountEmail),
+    sendTransport: resolveTransportForSend(
+      row.sendTransport === null || row.sendTransport === undefined
+        ? null
+        : String(row.sendTransport),
+    ),
+    createdAt:
+      row.createdAt === null || row.createdAt === undefined
+        ? null
+        : String(row.createdAt),
+  }));
+}
+
+/**
+ * The campaign this lead sits in, for this org — the most recent row of the one
+ * campaign id asked for.
+ *
+ * Expressed through {@link loadCampaignSequences} on purpose: the reply path and
+ * the conversation read must never disagree about which sequences exist, and two
+ * spellings of that query is how they would.
  */
 export async function loadCampaign(
   orgId: string,
   campaignId: string,
   leadEmail: string,
 ): Promise<CampaignRow | null> {
-  const result = await db.execute(sql`
-    SELECT
-      c.instantly_campaign_id AS "instantlyCampaignId",
-      c.lead_email            AS "leadEmail",
-      c.account_email         AS "accountEmail",
-      c.send_transport        AS "sendTransport"
-    FROM instantly_campaigns c
-    WHERE c.org_id = ${orgId}
-      AND c.campaign_id = ${campaignId}
-      AND lower(c.lead_email) = lower(${leadEmail})
-    ORDER BY c.created_at DESC
-    LIMIT 1
-  `);
-
-  const row = (result.rows as Record<string, unknown>[])[0];
-  if (!row) return null;
-
-  return {
-    instantlyCampaignId: String(row.instantlyCampaignId),
-    leadEmail: String(row.leadEmail),
-    accountEmail: row.accountEmail === null || row.accountEmail === undefined
-      ? null
-      : String(row.accountEmail),
-    sendTransport: resolveTransportForSend(
-      row.sendTransport === null || row.sendTransport === undefined
-        ? null
-        : String(row.sendTransport),
-    ),
-  };
+  const rows = await loadCampaignSequences(orgId, [campaignId], leadEmail);
+  return rows.length > 0 ? rows[rows.length - 1] : null;
 }
 
 /**

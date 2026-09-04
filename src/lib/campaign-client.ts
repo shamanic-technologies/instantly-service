@@ -1,11 +1,18 @@
 /**
- * campaign-service client — reads the FUNNEL a campaign runs.
+ * campaign-service client — reads the FUNNEL a campaign runs, and which stored
+ * rows are ONE campaign.
  *
  * A funnel is a property of the CAMPAIGN, not of the brand: two campaigns of the
  * same brand can legitimately run different funnels, so reading this at brand
  * level answers a question nobody asked. campaign-service owns `funnel_key` and
  * is the only place it is a fact rather than an inference.
  */
+
+import {
+  familyOf,
+  identityKeyOf,
+  type CampaignIdentityRow,
+} from "./campaign-identity";
 
 const CAMPAIGN_SERVICE_URL = process.env.CAMPAIGN_SERVICE_URL;
 const CAMPAIGN_SERVICE_API_KEY = process.env.CAMPAIGN_SERVICE_API_KEY;
@@ -92,9 +99,14 @@ export function isUnrecognisedFunnelKey(funnelKey: string | null | undefined): b
 }
 
 interface CampaignRecord {
+  id?: string | null;
+  orgId?: string | null;
+  brandId?: string | null;
   brandIds?: string[] | null;
   offerId?: string | null;
   funnelKey?: string | null;
+  legKey?: string | null;
+  acquisitionChannel?: string | null;
 }
 
 /**
@@ -242,4 +254,78 @@ export async function triggerCampaignForStep(params: {
   }
 
   return (await response.json()) as StepTriggerOutcome;
+}
+
+/**
+ * Every campaign id that answers to the same campaign as `campaignId`, ascending.
+ *
+ * campaign-service keeps an ancestor row per workflow change, so a customer's
+ * one campaign is routinely dozens of stored rows. It owns the identity, so it
+ * is asked: one read for the campaign itself, one for its brand's campaigns,
+ * then the rows sharing its identity key (see `campaign-identity.ts`).
+ *
+ * ⚠️ FAILS LOUD. A caller uses this to widen a read across the whole campaign;
+ * degrading to the asked row alone would hand back a fraction of the answer
+ * looking exactly like the whole of it. Two cases are NOT failures and return
+ * `[campaignId]`: campaign-service does not know the campaign (404), and the
+ * campaign states too little to be pooled with anything — both are genuinely a
+ * campaign of one.
+ *
+ * The brand read is deliberately NOT narrowed by `featureSlug`: the feature is
+ * no part of the identity, so narrowing by the asked row's own slug could drop a
+ * sibling that states another one.
+ */
+export async function getCampaignFamily(
+  campaignId: string,
+  orgId: string,
+): Promise<string[]> {
+  const self = await fetchCampaign(campaignId, orgId);
+  if (!self) return [campaignId];
+
+  const selfRow: CampaignIdentityRow = { ...self, id: campaignId };
+  if (identityKeyOf(selfRow) === null) return [campaignId];
+
+  const brandId = selfRow.brandId ?? selfRow.brandIds?.[0];
+  // identityKeyOf already proved a brand is stated; this is the type narrowing.
+  if (!brandId) return [campaignId];
+
+  const rows = await fetchBrandCampaigns(brandId, orgId);
+  // The asked row is authoritative for its own identity — it was read directly,
+  // and the brand list is only how its siblings are found.
+  const merged = [selfRow, ...rows.filter((r) => r.id !== campaignId)];
+  return familyOf(merged, campaignId);
+}
+
+/** Every campaign campaign-service holds for one brand of this org. Fails loud. */
+async function fetchBrandCampaigns(
+  brandId: string,
+  orgId: string,
+): Promise<CampaignIdentityRow[]> {
+  if (!CAMPAIGN_SERVICE_URL || !CAMPAIGN_SERVICE_API_KEY) {
+    throw new Error("CAMPAIGN_SERVICE_URL or CAMPAIGN_SERVICE_API_KEY is not set");
+  }
+
+  const params = new URLSearchParams({ brandId });
+  const response = await fetch(`${CAMPAIGN_SERVICE_URL}/campaigns?${params}`, {
+    headers: {
+      "x-api-key": CAMPAIGN_SERVICE_API_KEY,
+      "x-org-id": orgId,
+      "x-brand-id": brandId,
+    },
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `campaign-service GET /campaigns?brandId=${brandId} failed: ${response.status} - ${body.slice(0, 200)}`,
+    );
+  }
+
+  const body = (await response.json()) as { campaigns?: CampaignIdentityRow[] };
+  if (!Array.isArray(body.campaigns)) {
+    throw new Error(
+      "campaign-service GET /campaigns returned no campaigns array",
+    );
+  }
+  return body.campaigns;
 }

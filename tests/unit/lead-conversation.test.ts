@@ -33,9 +33,16 @@ vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({
 }));
 vi.mock("../../src/lib/self-send/smtp", () => ({ dispatchMessage: vi.fn() }));
 
+const mockGetCampaignFamily = vi.fn();
+vi.mock("../../src/lib/campaign-client", () => ({
+  getCampaignFamily: (...a: unknown[]) => mockGetCampaignFamily(...a),
+}));
+
 import {
   fetchLeadConversation,
+  mergeConversationMessages,
   LeadConversationError,
+  MAX_CONVERSATION_SEQUENCES,
 } from "../../src/lib/lead-conversation";
 import type { EmailRecord } from "../../src/lib/instantly-client";
 
@@ -67,6 +74,8 @@ const INPUT = {
 
 function campaignRow(over: Record<string, unknown> = {}) {
   return {
+    campaignId: "camp-1",
+    createdAt: "2026-09-01 10:00:00",
     instantlyCampaignId: "ic-1",
     leadEmail: "alice@media.com",
     accountEmail: "amy@boostdistribute.com",
@@ -92,6 +101,8 @@ function email(over: Partial<EmailRecord>): EmailRecord {
 beforeEach(() => {
   vi.clearAllMocks();
   mockResolveKey.mockResolvedValue({ key: "api-key" });
+  // Default: the campaign is a single stored row — the pre-family behaviour.
+  mockGetCampaignFamily.mockResolvedValue(["camp-1"]);
 });
 
 describe("fetchLeadConversation — Instantly transport", () => {
@@ -252,5 +263,242 @@ describe("fetchLeadConversation — refusals", () => {
       code: "thread_unavailable",
       status: 502,
     });
+  });
+});
+
+describe("fetchLeadConversation — the whole campaign, not one stored row", () => {
+  it("merges every stored row of the campaign into ONE ordered thread", async () => {
+    // The measured shape: the first three emails sat under a SIBLING row, so
+    // reading the asked row alone placed the May reply above a July send.
+    mockGetCampaignFamily.mockResolvedValue(["camp-old", "camp-1"]);
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        campaignRow({
+          campaignId: "camp-old",
+          instantlyCampaignId: "ic-old",
+          createdAt: "2026-05-09 11:33:25",
+          accountEmail: "lourd@growthagency.forum",
+        }),
+        campaignRow({ campaignId: "camp-1", createdAt: "2026-06-26 08:17:55" }),
+      ]),
+    );
+    mockListEmails.mockImplementation((_key: string, opts: { campaignId: string }) =>
+      Promise.resolve(
+        opts.campaignId === "ic-old"
+          ? [
+              email({ id: "o1", timestamp_email: "2026-05-09T11:33:00.000Z" }),
+              email({ id: "o2", timestamp_email: "2026-05-22T11:00:00.000Z" }),
+              email({
+                id: "o3",
+                ue_type: 2,
+                timestamp_email: "2026-05-24T09:00:00.000Z",
+                body: { text: "interested" },
+              } as Partial<EmailRecord>),
+            ]
+          : [
+              email({ id: "n1", timestamp_email: "2026-07-01T10:00:00.000Z" }),
+              email({ id: "n2", timestamp_email: "2026-07-04T10:00:00.000Z" }),
+            ],
+      ),
+    );
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messageCount).toBe(5);
+    expect(conv.messages.map((m) => m.at)).toEqual([
+      "2026-05-09T11:33:00.000Z",
+      "2026-05-22T11:00:00.000Z",
+      "2026-05-24T09:00:00.000Z",
+      "2026-07-01T10:00:00.000Z",
+      "2026-07-04T10:00:00.000Z",
+    ]);
+    // The earliest OUTBOUND is the send the delivery evidence reports as first,
+    // so a consumer can place the delivery facts against a message on screen.
+    const firstOutbound = conv.messages.find((m) => m.direction === "outbound");
+    expect(firstOutbound?.at).toBe("2026-05-09T11:33:00.000Z");
+    // The reply is now BELOW the email it answered.
+    const replyIndex = conv.messages.findIndex((m) => m.direction === "inbound");
+    expect(replyIndex).toBe(2);
+    // Every message says which stored row carried it.
+    expect(conv.messages[0].campaignId).toBe("camp-old");
+    expect(conv.messages[4].campaignId).toBe("camp-1");
+    expect(conv.campaignIds).toEqual(["camp-old", "camp-1"]);
+    expect(conv.sequences.map((s) => s.messageCount)).toEqual([3, 2]);
+  });
+
+  it("mixes the two transports in one thread — the consumer cannot know which carried what", async () => {
+    mockGetCampaignFamily.mockResolvedValue(["camp-old", "camp-1"]);
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        campaignRow({
+          campaignId: "camp-old",
+          instantlyCampaignId: "self:abc",
+          sendTransport: "smtp",
+          createdAt: "2026-05-09 11:33:25",
+        }),
+        campaignRow({ campaignId: "camp-1", createdAt: "2026-06-26 08:17:55" }),
+      ]),
+    );
+    mockFetchSelfSendThread.mockResolvedValue([
+      {
+        direction: "outbound",
+        from: "amy@boostdistribute.com",
+        to: "alice@media.com",
+        date: "2026-05-09T11:33:00.000Z",
+        subject: "quick question",
+        bodyText: "worth a chat?",
+      },
+    ]);
+    mockListEmails.mockResolvedValue([
+      email({ id: "n1", timestamp_email: "2026-07-01T10:00:00.000Z" }),
+    ]);
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messageCount).toBe(2);
+    expect(conv.messages.map((m) => m.instantlyCampaignId)).toEqual([
+      "self:abc",
+      "ic-1",
+    ]);
+    expect(conv.sequences.map((s) => s.transport)).toEqual(["smtp", "instantly"]);
+  });
+
+  it("resolves the org's Instantly key ONCE for the whole family", async () => {
+    mockGetCampaignFamily.mockResolvedValue(["camp-old", "camp-1"]);
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        campaignRow({ campaignId: "camp-old", instantlyCampaignId: "ic-old" }),
+        campaignRow({ campaignId: "camp-1" }),
+      ]),
+    );
+    mockListEmails.mockResolvedValue([]);
+
+    await fetchLeadConversation(INPUT);
+
+    expect(mockResolveKey).toHaveBeenCalledTimes(1);
+    expect(mockListEmails).toHaveBeenCalledTimes(2);
+  });
+
+  it("a single-row campaign answers exactly as it did before", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([
+      email({ id: "s1", timestamp_email: "2026-09-01T10:00:00.000Z" }),
+    ]);
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.campaignId).toBe("camp-1");
+    expect(conv.campaignIds).toEqual(["camp-1"]);
+    expect(conv.instantlyCampaignId).toBe("ic-1");
+    expect(conv.transport).toBe("instantly");
+    expect(conv.accountEmail).toBe("amy@boostdistribute.com");
+    expect(conv.messageCount).toBe(1);
+  });
+
+  it("asks the DB only for the rows of THIS campaign — one query, not one per row", async () => {
+    mockGetCampaignFamily.mockResolvedValue(["camp-old", "camp-1"]);
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([]);
+
+    await fetchLeadConversation(INPUT);
+
+    expect(mockDbExecute).toHaveBeenCalledTimes(1);
+    const text = extractSqlText(mockDbExecute.mock.calls[0][0]);
+    expect(text).toContain("c.campaign_id IN (");
+    // Never `= ANY(<js array>)` — drizzle expands that into a ROW expression
+    // which trips Postgres' 1664-entry limit.
+    expect(text).not.toContain("ANY(");
+  });
+});
+
+describe("fetchLeadConversation — a source that fails is never dropped", () => {
+  it("campaign-service unreachable fails loud — it must not degrade to one row", async () => {
+    mockGetCampaignFamily.mockRejectedValue(new Error("campaign-service 503"));
+
+    const err = await fetchLeadConversation(INPUT).catch((e) => e);
+    expect(err).toBeInstanceOf(LeadConversationError);
+    expect(err.code).toBe("campaign_identity_unavailable");
+    expect(err.status).toBe(502);
+    // Nothing partial was read, let alone returned.
+    expect(mockDbExecute).not.toHaveBeenCalled();
+    expect(mockListEmails).not.toHaveBeenCalled();
+  });
+
+  it("ONE sibling row failing takes the whole read down — half a thread is worse", async () => {
+    mockGetCampaignFamily.mockResolvedValue(["camp-old", "camp-1"]);
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        campaignRow({ campaignId: "camp-old", instantlyCampaignId: "ic-old" }),
+        campaignRow({ campaignId: "camp-1" }),
+      ]),
+    );
+    mockListEmails.mockImplementation((_k: string, o: { campaignId: string }) =>
+      o.campaignId === "ic-old"
+        ? Promise.reject(new Error("Instantly 503"))
+        : Promise.resolve([email({ id: "n1" })]),
+    );
+
+    const err = await fetchLeadConversation(INPUT).catch((e) => e);
+    expect(err).toBeInstanceOf(LeadConversationError);
+    expect(err.code).toBe("thread_unavailable");
+    expect(err.status).toBe(502);
+  });
+
+  it("refuses rather than truncating when the lead sits in more rows than it fans out to", async () => {
+    const many = Array.from({ length: MAX_CONVERSATION_SEQUENCES + 1 }, (_, i) =>
+      campaignRow({ campaignId: `camp-${i}`, instantlyCampaignId: `ic-${i}` }),
+    );
+    mockGetCampaignFamily.mockResolvedValue(many.map((m) => m.campaignId));
+    mockDbExecute.mockResolvedValueOnce(pgResult(many));
+
+    const err = await fetchLeadConversation(INPUT).catch((e) => e);
+    expect(err.code).toBe("too_many_sequences");
+    expect(err.status).toBe(502);
+    expect(mockListEmails).not.toHaveBeenCalled();
+  });
+});
+
+describe("mergeConversationMessages", () => {
+  const seq = (campaignId: string, instantlyCampaignId: string) => ({
+    campaignId,
+    instantlyCampaignId,
+    leadEmail: "alice@media.com",
+    accountEmail: null,
+    sendTransport: "instantly" as const,
+    createdAt: null,
+  });
+  const msg = (date: string, bodyText = "x") => ({
+    direction: "outbound" as const,
+    from: "a@b.c",
+    to: "d@e.f",
+    date,
+    subject: "s",
+    bodyText,
+  });
+
+  it("orders by the message's own timestamp, across sequences", () => {
+    const merged = mergeConversationMessages([
+      { sequence: seq("c2", "i2"), messages: [msg("2026-07-01T00:00:00.000Z")] },
+      { sequence: seq("c1", "i1"), messages: [msg("2026-05-09T00:00:00.000Z")] },
+    ]);
+    expect(merged.map((m) => m.campaignId)).toEqual(["c1", "c2"]);
+  });
+
+  it("keeps an undated message rather than dropping it — we hold it, we cannot place it", () => {
+    const merged = mergeConversationMessages([
+      { sequence: seq("c1", "i1"), messages: [msg(""), msg("2026-05-09T00:00:00.000Z")] },
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(merged[0].at).toBe("2026-05-09T00:00:00.000Z");
+    expect(merged[1].at).toBe("");
+  });
+
+  it("breaks a tie on the order the sequences happened in, never on a fabricated time", () => {
+    const at = "2026-05-09T00:00:00.000Z";
+    const merged = mergeConversationMessages([
+      { sequence: seq("c1", "i1"), messages: [msg(at, "first")] },
+      { sequence: seq("c2", "i2"), messages: [msg(at, "second")] },
+    ]);
+    expect(merged.map((m) => m.text)).toEqual(["first", "second"]);
   });
 });
