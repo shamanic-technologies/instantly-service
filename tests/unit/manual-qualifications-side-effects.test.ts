@@ -8,6 +8,23 @@ const mockRefreshLeadStatusCurrent = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
+    // The side effects read the campaign row back to hand the forward and the
+    // sales-interest trigger the caller campaign / user / run they need.
+    select: () => ({
+      from: () => ({
+        where: () =>
+          Promise.resolve([
+            {
+              instantlyCampaignId: "inst-1",
+              campaignId: "camp-1",
+              orgId: "org-1",
+              userId: "user-1",
+              runId: "run-1",
+              brandIds: ["brand-1"],
+            },
+          ]),
+      }),
+    }),
     insert: () => ({
       values: (v: unknown) => {
         mockDbInsertValues(v);
@@ -53,6 +70,17 @@ vi.mock("../../src/lib/key-client", () => ({
 
 vi.mock("../../src/lib/instantly-client", () => ({
   updateCampaignStatus: (...args: unknown[]) => mockUpdateCampaignStatus(...args),
+}));
+
+const mockForwardPositiveReply = vi.fn();
+const mockTriggerSalesInterest = vi.fn();
+
+vi.mock("../../src/lib/forward-positive-reply", () => ({
+  maybeForwardPositiveReply: (...args: unknown[]) => mockForwardPositiveReply(...args),
+}));
+
+vi.mock("../../src/lib/trigger-sales-interest-campaign", () => ({
+  maybeTriggerSalesInterestCampaign: (...args: unknown[]) => mockTriggerSalesInterest(...args),
 }));
 
 import {
@@ -293,5 +321,84 @@ describe("applyManualQualificationSideEffects", () => {
 
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
     expect(mockRefreshLeadStatusCurrent).toHaveBeenCalled();
+  });
+});
+
+/**
+ * A manual qualification is created PRECISELY because Instantly missed the
+ * reply, so it is the case that needs the positive-reply consequences most —
+ * and until this was wired it was the one case that got neither. Step 2 inserts
+ * the reply-kind event directly (to pin `reply_classification_source='manual'`),
+ * which bypasses `promoteEvent` and with it both side effects; the
+ * `reply_received` that does go through `promoteEvent` is in neither positive
+ * set. Net effect: a human recording "this prospect is interested" reached
+ * nobody. Observed in prod on a real `lead_interested` statement whose
+ * `positive_reply_forwarded_at` stayed null.
+ */
+describe("applyManualQualificationSideEffects — a POSITIVE manual statement reaches the agency inbox", () => {
+  it("forwards the thread and asks the funded campaign to run", async () => {
+    await applyManualQualificationSideEffects({
+      bronzeRowId: "bronze-1",
+      orgId: "org-1",
+      instantlyCampaignId: "inst-1",
+      leadEmail: "lead@test.com",
+      status: "lead_interested",
+      replyKind: "lead_interested",
+      qualifiedAt: new Date("2026-09-03T10:00:00Z"),
+      rawPayload: {},
+    });
+
+    expect(mockForwardPositiveReply).toHaveBeenCalledWith(
+      expect.objectContaining({ instantlyCampaignId: "inst-1", campaignId: "camp-1" }),
+      "lead@test.com",
+      "lead_interested",
+    );
+    expect(mockTriggerSalesInterest).toHaveBeenCalledWith(
+      expect.objectContaining({ instantlyCampaignId: "inst-1", campaignId: "camp-1" }),
+      "lead@test.com",
+      "lead_interested",
+    );
+  });
+
+  it("hands them the reply KIND, not the raw legacy statement", async () => {
+    // `lead_closed` resolves to `lead_interested`; the side effects gate on the
+    // vocabulary, so passing the raw status through would silently no-op.
+    await applyManualQualificationSideEffects({
+      bronzeRowId: "bronze-1",
+      orgId: "org-1",
+      instantlyCampaignId: "inst-1",
+      leadEmail: "lead@test.com",
+      status: "lead_closed",
+      replyKind: resolveReplyKind("lead_closed"),
+      qualifiedAt: new Date("2026-09-03T10:00:00Z"),
+      rawPayload: {},
+    });
+
+    expect(mockForwardPositiveReply).toHaveBeenCalledWith(
+      expect.anything(),
+      "lead@test.com",
+      "lead_interested",
+    );
+  });
+
+  it("still calls them for a NEGATIVE kind — each one self-gates on the event type", async () => {
+    // Deliberately not gated here: both helpers already refuse a non-positive
+    // kind, and duplicating that decision would let the two definitions drift.
+    await applyManualQualificationSideEffects({
+      bronzeRowId: "bronze-1",
+      orgId: "org-1",
+      instantlyCampaignId: "inst-1",
+      leadEmail: "lead@test.com",
+      status: "lead_not_interested",
+      replyKind: "lead_not_interested",
+      qualifiedAt: new Date("2026-09-03T10:00:00Z"),
+      rawPayload: {},
+    });
+
+    expect(mockForwardPositiveReply).toHaveBeenCalledWith(
+      expect.anything(),
+      "lead@test.com",
+      "lead_not_interested",
+    );
   });
 });
