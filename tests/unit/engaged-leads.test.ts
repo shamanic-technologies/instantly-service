@@ -140,6 +140,58 @@ describe("engaged-leads — engagedAt", () => {
   });
 });
 
+describe("engaged-leads — timestamps", () => {
+  it("normalises a naive pg timestamp to ISO 8601 UTC", async () => {
+    // node-postgres hands a `timestamp` (no time zone) column back as
+    // "2026-09-03 13:21:37.397". `new Date()` reads that as LOCAL time, so a
+    // consumer in any non-UTC zone would shift the instant by its own offset —
+    // and POST /orgs/status already emits ISO for the same instants.
+    mockDbExecute.mockResolvedValue(
+      pgResult([
+        goldRow({
+          engagedAt: "2026-09-03 13:21:37.397",
+          firstRepliedAt: "2026-09-03 13:21:37.397",
+        }),
+      ]),
+    );
+
+    const [lead] = await fetchEngagedLeads({ orgId: "org-1" });
+
+    expect(lead.engagedAt).toBe("2026-09-03T13:21:37.397Z");
+    expect(lead.firstRepliedAt).toBe("2026-09-03T13:21:37.397Z");
+  });
+
+  it("does not depend on the runtime's timezone", async () => {
+    const spy = vi
+      .spyOn(Date.prototype, "getTimezoneOffset")
+      .mockReturnValue(-480); // UTC+8
+
+    mockDbExecute.mockResolvedValue(
+      pgResult([goldRow({ engagedAt: "2026-09-03 13:21:37.397" })]),
+    );
+    const [lead] = await fetchEngagedLeads({ orgId: "org-1" });
+
+    expect(lead.engagedAt).toBe("2026-09-03T13:21:37.397Z");
+    spy.mockRestore();
+  });
+
+  it("passes a Date straight through", async () => {
+    mockDbExecute.mockResolvedValue(
+      pgResult([goldRow({ engagedAt: new Date("2026-09-03T13:21:37.397Z") })]),
+    );
+    const [lead] = await fetchEngagedLeads({ orgId: "org-1" });
+    expect(lead.engagedAt).toBe("2026-09-03T13:21:37.397Z");
+  });
+
+  it("fails loud on a timestamp it cannot parse", () => {
+    // Emitting the raw string would put a value no consumer can parse into a
+    // field typed as an instant.
+    expect(() => toEngagedLead(goldRow({ engagedAt: "not a date" }) as never)).toThrow(
+      /unparseable timestamp/,
+    );
+  });
+});
+
 describe("engaged-leads — disqualified", () => {
   it("is true only for a kind that is permanent about the PERSON", async () => {
     mockDbExecute.mockResolvedValue(
