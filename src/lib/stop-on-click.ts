@@ -2,8 +2,8 @@
  * Stop-on-click for campaigns whose funnel opens on a website visit.
  *
  * When a prospect CLICKS a link in a cold email (`email_link_clicked`) AND the
- * campaign runs a funnel whose first leg is a visit (`visit_form`,
- * `visit_signup`), the lead is on the landing page — the conversion happens
+ * campaign runs a funnel whose first leg is a visit (`form_magnet`,
+ * `website_purchases`, `sales_meetings_from_website`), the lead is on the landing page — the conversion happens
  * there, so continuing the cold sequence only distracts. We PAUSE the lead's
  * Instantly campaign.
  *
@@ -18,7 +18,7 @@
  *     campaign-service migration 0042, which rewrites stated goals into stored
  *     funnels). `campaigns.funnel_key` is the fact that replaced it.
  *
- * `reply_meeting` deliberately does NOT stop: that funnel's conversion starts
+ * `sales_meetings_from_conversation` deliberately does NOT stop: its conversion starts
  * with a REPLY, so a click says nothing about whether to keep sending. A NULL
  * funnel does not stop either — campaign-service's own rule is "a funnel is a
  * fact, never a guess", and pausing a live sequence on an unknown is the wrong
@@ -44,7 +44,7 @@
 
 import { resolveInstantlyApiKey } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
-import { funnelStopsOnClick, getCampaignFunnelKey } from "./campaign-client";
+import { funnelStopsOnClick, getCampaignFunnelKey, isUnrecognisedFunnelKey } from "./campaign-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { stopSelfSendSequence } from "./self-send/stop-sequence";
 
@@ -77,6 +77,19 @@ export async function maybeStopOnClickForFunnel(
 
   try {
     const funnelKey = await getCampaignFunnelKey(campaign.campaignId, campaign.orgId);
+
+    // A funnel we do not recognise is treated as no funnel (we never guess), but it is NOT the
+    // same fact as a campaign that stated none — it is what a vocabulary rename looks like from
+    // here, and the last one took the whole fleet's stop-on-click silent for weeks with nothing in
+    // the logs to see. Say so, once per click, and the next rename shows up the day it lands.
+    if (isUnrecognisedFunnelKey(funnelKey)) {
+      console.warn(
+        `[instantly-service] stop-on-click: unrecognised funnel key "${funnelKey}" on campaign=${campaign.campaignId} ` +
+          `— treating as no funnel; if campaign-service renamed the vocabulary, funnelStopsOnClick is now blind to it`,
+      );
+      return;
+    }
+
     if (!funnelStopsOnClick(funnelKey)) return;
 
     // A sequence WE dispatch has no Instantly campaign to pause, and reconcile
