@@ -578,10 +578,10 @@ A cold sequence exists to make someone write back, and until v0.76.0 nothing in 
 - **⚠️ IT ANSWERS FOR THE WHOLE CAMPAIGN, NOT ONE STORED ROW — and that is the difference between the answer and half of it.** campaign-service mints a fresh campaign row every time the campaign's workflow changes and keeps the ancestors, so a campaign as the customer knows it is routinely dozens of rows (**46** for one production brand, 45 stopped) and a prospect emailed over months sits in several. Reading the asked row alone therefore returned a FRACTION looking exactly like the whole: `drmatt@primechiropracticdenver.com` on campaign `9bc27ed7` returned 3 messages (July) while its first three (2026-05-09, 05-22, 06-06, from a different mailbox) sat under sibling row `5e5b8bde` — so the panel placed a May reply ABOVE the July email it answered, and the dashboard shipped a stopgap (distribute.you #3886) purely to stop stating an impossible order. `fetchLeadConversation` resolves the family first (`getCampaignFamily`), loads every row of it holding this lead in ONE query, fetches each row's thread, and merges by the messages' own timestamps. Consequence the consumer depends on: **the earliest outbound message IS the send the delivery evidence reports as first**, so delivery facts can be placed against a message really on screen.
 - **The identity is campaign-service's OWN uniqueness key, never re-derived here** — `(org, brand, funnel, leg, channel)` with `coalesce(…, '')` on the nullable parts, mirroring `uniq_campaigns_org_brand_funnel_channel`. Pure resolution in `src/lib/campaign-identity.ts`; the two reads (`GET /campaigns/{id}` then `GET /campaigns?brandId=`) in `campaign-client.ts`. ⚠️ **The brand read is deliberately NOT narrowed by `featureSlug`** — the feature is no part of the identity, so narrowing by the asked row's own slug could drop a sibling stating another. ⚠️ **This is one notch FINER than features-service's `campaign-identity.ts`, which omits `legKey`** (its key predates campaign-service's leg widening): including it can only ever REFUSE to pool two rows the owner itself considers distinct — the safe direction — and today it is a no-op (1 of 705 prod rows states a leg). A row stating no brand or no channel is **unplaceable → its own family of one**, never folded onto a guess; campaign-service's own index skips exactly those rows, so pooling them would invent an identity nobody asserted.
 - **⚠️ THE FAMILY RESOLUTION FAILS LOUD (`campaign_identity_unavailable`, 502) — do NOT make it fail-soft.** features-service degrades to per-campaign families on a campaign-service outage and is right to: there it changes only how figures are GROUPED. Here it changes what the answer CONTAINS, so degrading would hand back a fraction of a conversation indistinguishable from all of it — the exact failure this read exists to remove. Likewise one sibling's thread failing takes the whole read down: half a conversation presented as the whole one is worse than saying it could not be read.
-- **Bounded per lead panel.** The DB narrows to the rows holding THIS lead before any fan-out (one query, `campaign_id IN (…)` — never `= ANY(<js array>)`, which drizzle expands into a ROW expression that trips Postgres' 1664-entry limit); threads are fetched 4 at a time; the org's Instantly key is resolved ONCE for the family. `MAX_CONVERSATION_SEQUENCES = 40` REFUSES (`too_many_sequences`, 502) rather than truncating — measured against prod, the busiest (org, lead) pair in the fleet sits in 23 rows across ALL its campaigns and 99.9% of leads sit in ≤3, so a family-scoped count can only be smaller.
-- **Additive on the wire; a single-row campaign answers as it always did.** `campaignId` / `instantlyCampaignId` / `accountEmail` / `transport` still describe the ASKED row. New: `campaignIds` (the rows drawn from, oldest first), `sequences[]` (what each carried) and per-message `campaignId` / `instantlyCampaignId`, so a reader can always say which stored row a message came from.
+- **Bounded per lead panel.** The DB narrows to the rows holding THIS lead before any fan-out (one query, `campaign_id IN (…)` — never `= ANY(<js array>)`, which drizzle expands into a ROW expression that trips Postgres' 1664-entry limit); threads are fetched 4 at a time, and each is normally one indexed read of OUR OWN mirror rather than a provider call (see the mirroring section below), so the family costs no Instantly quota. `MAX_CONVERSATION_SEQUENCES = 40` REFUSES (`too_many_sequences`, 502) rather than truncating — measured against prod, the busiest (org, lead) pair in the fleet sits in 23 rows across ALL its campaigns and 99.9% of leads sit in ≤3, so a family-scoped count can only be smaller.
+- **Additive on the wire; a single-row campaign answers as it always did.** `campaignId` / `instantlyCampaignId` / `accountEmail` / `transport` still describe the ASKED row. New: `campaignIds` (the rows drawn from, oldest first), `sequences[]` (what each row carried, including its own `source`) and per-message `campaignId` / `instantlyCampaignId`, so a reader can always say which stored row a message came from and where it was read.
 - **⚠️ SAME IDENTITY, SAME LOOKUP AS THE REPLY.** It takes the exact `(campaign_id, email)` pair `POST /orgs/replies` takes, and `loadCampaign` is now expressed THROUGH the same exported `loadCampaignSequences` — so the reply path and the conversation read can never disagree about which sequences exist. Do NOT add a second lookup: two answers to "which sequences are these" is how a worker reads one conversation and answers into another.
-- **Both transports, one response shape.** The consumer cannot know which pipe carried a given prospect (exactly as the reply endpoint cannot): Instantly's Unibox via `listEmails` + `selectThreadMessages`, or bronze via `fetchSelfSendThread`. Both already produce the SAME `ThreadMessage`, which is what makes one shape honest for both.
+- **Both transports, one response shape.** The consumer cannot know which pipe carried a given prospect (exactly as the reply endpoint cannot): our bronze mirror of Instantly's Unibox via `fetchMirroredEmailRecords` + `selectThreadMessages` (falling back to a live `listEmails` only when the mirror is incomplete), or bronze via `fetchSelfSendThread`. Both produce the SAME `ThreadMessage`, which is what makes one shape honest for both — and a family can legitimately mix them, since a campaign's rows span the move onto our own sender.
 - **⚠️ It does NOT start at the prospect's first reply, unlike the positive-reply forward.** `messagesFromFirstReply` is right for a human reading the newest part (the reply quotes the rest beneath it) and wrong here — half of what the prospect is responding to is OUR words, and a worker drafting an answer needs them.
 - **⚠️ ABSENT IS NOT EMPTY.** A pair this org holds no record of is **404 `campaign_not_found`**; an exchange that exists with nothing said is **200 with `messages: []`**; one we hold but cannot READ is **502** (`thread_unavailable`, or `campaign_identity_unavailable` when campaign-service could not say which rows the campaign is made of). Returning an empty list for either failure would claim the prospect said nothing, which is a claim we cannot make. A reader acts differently on each of the three, so they must stay apart.
 - **Org scope is in the lookup itself** (`org_id = <caller>`), so another org's campaign reads as absent, never as a thread. The response echoes the STORED lead-email casing, not the caller's — the match is `lower()` on both sides, same normalization as the re-contact window.
@@ -589,6 +589,80 @@ A cold sequence exists to make someone write back, and until v0.76.0 nothing in 
 - **Sends nothing, declares no cost** — a read of what already happened.
 
 Guard: `tests/unit/lead-conversation.test.ts` (whole-campaign merge reproducing the measured 6-send case, mixed transports, one key per family, single-row byte-parity, one-sibling-failure-fails-all, the fan-out cap, the merge ordering) + `tests/unit/campaign-identity.test.ts` + `tests/unit/campaign-family-client.test.ts` + `tests/unit/lead-conversations-route.test.ts`.
+
+## Mirroring a reply's WORDS as they arrive — the cancellation clock
+
+Instantly's cancel dialog says it plainly: cancelling the plan, or a single
+inbox, permanently deletes every conversation those mailboxes sent and received,
+lead replies included. Silver records THAT a lead replied; the words live only in
+bronze `instantly_emails_raw`. So anything reading a thread LIVE from Instantly
+goes blank for every lead at once on cancellation day, and at that point the
+words are gone rather than merely unreachable.
+
+**⚠️ THE MIRROR HAD ITS HOLE EXACTLY AT THE COMMON CASE.** The only thing that
+fetched a reply's BODY during normal operation was phase 3 of the reconcile poll,
+which runs only for a campaign that DRIFTS on its counts. A reply delivered by
+webhook updates our event log at once, so the campaign does not drift, so its
+body was never fetched — the cleanly-delivered reply, i.e. nearly all of them,
+was the one never mirrored. Fleet before the 2026-09-04 one-shot Unibox sweep:
+359 inbound messages mirrored against 229 recorded reply events, newest mirrored
+inbound 2026-09-02 while replies kept arriving through 2026-09-04.
+
+`src/lib/mirror-emails.ts` closes it with one fail-soft side effect on the single
+ingestion choke point (`promoteEvent`), so BOTH ingestion paths — webhook and
+reconcile poll — are covered by one call.
+
+- **The trigger set is every reply KIND plus `reply_received` and `email_bounced`
+  (`MIRRORED_INBOUND_EVENT_TYPES`), NOT `reply_received` alone.** Instantly emits
+  the qualification (`lead_interested`, `lead_out_of_office`, …) as its own
+  event, so a mirror keyed on one type misses a reply whose `reply_received` we
+  never received. Side effects fire only on the FIRST promotion of each event, so
+  this costs a couple of reads per lead. Outbound-only events (`email_sent`,
+  `email_opened`, `email_link_clicked`) are deliberately absent — they carry no
+  inbound words, and mirroring per dispatched step would re-read the thread every
+  send.
+- **⚠️ It copies the WHOLE thread, never just the reply.** This is a photocopy
+  taken before the original is destroyed: we cannot go back for more later, and
+  what a prospect wrote only makes sense beside what we said. Do NOT narrow it to
+  what some consumer asks for today.
+- **A PLATFORM send (orgId null) is mirrored on the platform key**, not skipped —
+  its thread sits in the same workspace and is just as destroyed.
+- **The `self:` / `reserving:` rule applies verbatim** (`isInstantlyHeldCampaignId`):
+  a self-send sequence already has both halves in bronze, and a reservation
+  sentinel is not an Instantly id at all.
+- **Bronze only, fail-soft, no cost.** Nothing is promoted to silver (the events
+  already exist — they are what triggered this) and a throw here would become a
+  webhook 5xx that Instantly counts toward disabling the whole subscription.
+
+**`GET /orgs/conversations` READS THE MIRROR FIRST, and that is what survives the
+cancellation.** `fetchLeadConversation` no longer asks Instantly per page view
+(which would also spend quota on every render). Order: bronze mirror → if it
+holds rows, done (`source: 'mirror'`); if it is EMPTY, ask our own event log
+(`hasExchangedMailEvidence`: a real, `inferred = false`, `email_sent` /
+`reply_received` / `auto_reply_received` / `email_bounced`).
+
+- **No evidence ⇒ the sequence exchanged nothing ⇒ 200 with `messages: []`.** No
+  Instantly call.
+- **Evidence but an empty mirror ⇒ the mirror is INCOMPLETE** ⇒ one live read,
+  whose result is written to bronze so the next read is local. Once the plan is
+  cancelled that read fails ⇒ **502 `thread_unavailable`**, never an empty thread.
+- The three facts therefore stay three answers: absent (404 `campaign_not_found`),
+  unreadable (502 `thread_unavailable`), genuinely empty (200 `[]`). An empty
+  mirror is ambiguous ON ITS OWN — silver is what disambiguates it. Do NOT
+  "simplify" by returning an empty mirror as an empty conversation.
+- The response carries `source` (`mirror` | `self_send` | `provider`) so a
+  consumer can see which side answered.
+
+**⚠️ WHAT THE MIRROR DOES NOT COVER, stated because the cancellation is
+irreversible:** ATTACHMENTS (Instantly's `/emails` payload carries body text/HTML
+and headers, not files — an attached document is lost with the account); mail
+Instantly ALREADY deleted before a sweep ran (a mailbox removed from the
+workspace takes its conversations with it, and no later sweep can find them); a
+reply recorded by `source='manual'` or `poll_leads`, which never existed as an
+email in the Unibox at all (a manual qualification is created PRECISELY because
+Instantly did not see the reply); and a thread whose ONLY copy was the pre-fix
+mirror gap — the go-forward side effect protects the NEXT reply, and the
+historical set is whatever the one-shot `emails-backfill` sweep captured.
 
 ## Finding the leads worth reading — `GET /orgs/engaged-leads`
 

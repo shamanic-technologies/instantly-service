@@ -1364,12 +1364,19 @@ const ConversationMessageSchema = z
   })
   .openapi("ConversationMessage");
 
+const ConversationSourceSchema = z
+  .enum(["mirror", "self_send", "provider"])
+  .describe(
+    "Where the messages were read from. mirror: our own bronze copy of the Instantly Unibox — the normal case, and the one that survives the Instantly plan being cancelled. self_send: the sequence we dispatched ourselves. provider: read live from Instantly because our mirror held nothing for a sequence that did exchange mail.",
+  );
+
 const ConversationSequenceSchema = z
   .object({
     campaignId: z.string(),
     instantlyCampaignId: z.string(),
     accountEmail: z.string().nullable(),
     transport: z.enum(["instantly", "smtp"]),
+    source: ConversationSourceSchema,
     messageCount: z.number().int(),
   })
   .openapi("ConversationSequence");
@@ -1393,6 +1400,9 @@ const LeadConversationSchema = z
     transport: z
       .enum(["instantly", "smtp"])
       .describe("The asked row's pipe — the caller does not need to know this to ask"),
+    source: ConversationSourceSchema.describe(
+      "Where the ASKED row's messages were read from; `sequences` says it per row.",
+    ),
     messageCount: z.number().int(),
     messages: z
       .array(ConversationMessageSchema)
@@ -1432,7 +1442,7 @@ registry.registerPath({
     "**The whole campaign, not one stored row.** campaign-service mints a fresh campaign row every time the campaign's workflow changes and keeps the ancestors, so a campaign as the customer knows it is routinely dozens of rows and a prospect emailed over months sits in several. The answer spans every row of the campaign that holds this lead, merged into one ordered thread — so its earliest outbound message is the send the delivery evidence reports as first. `campaignIds` names the rows it drew from and each message carries its own; a single-row campaign answers as it always did.\n\n" +
     "**Both transports.** The consumer cannot know which pipe carried a given prospect, exactly as the reply endpoint cannot. On the Instantly transport the messages come from Instantly's Unibox; on the self-send transport they are interleaved from what we dispatched and what we read back over IMAP. One response shape either way.\n\n" +
     "**Text, not HTML.** Every `text` is markup-stripped so it drops straight into a prompt. No truncation is applied here; note that a self-send inbound body is stored as the first 4000 characters of the message at ingestion time.\n\n" +
-    "**Absent is not empty.** A conversation this org has no record of is a 404 (`campaign_not_found`); a sequence that exists and has nothing exchanged yet is a 200 with an empty `messages`; a thread we hold but cannot read is a 502 (`thread_unavailable`). No path returns an empty list to stand in for a failure.\n\n" +
+    "**Absent is not empty.** A conversation this org has no record of is a 404 (`campaign_not_found`); an exchange that exists with nothing said is a 200 with an empty `messages`; one we hold but cannot read is a 502 (`thread_unavailable`, or `campaign_identity_unavailable` when campaign-service could not say which rows the campaign is made of). No path returns an empty list to stand in for a failure.\n\n" +
     "**Cost:** none. It sends nothing and declares nothing — a read of what already happened.",
   request: {
     headers: TrackingHeadersSchema,

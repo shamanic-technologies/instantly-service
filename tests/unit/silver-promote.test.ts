@@ -51,6 +51,11 @@ vi.mock("../../src/db/schema", () => ({
   },
 }));
 
+const mockMaybeMirror = vi.fn();
+vi.mock("../../src/lib/mirror-emails", () => ({
+  maybeMirrorCampaignEmails: (...args: unknown[]) => mockMaybeMirror(...args),
+}));
+
 const mockUpdateCostStatus = vi.fn();
 vi.mock("../../src/lib/runs-client", () => ({
   updateCostStatus: (...args: unknown[]) => mockUpdateCostStatus(...args),
@@ -211,6 +216,29 @@ describe("promoteFromWebhookPayload", () => {
 
     expect(mockDbUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ deliveryStatus: "replied" }),
+    );
+  });
+
+  it("mirrors the conversation on a reply — the words, not only the event", async () => {
+    // Cancelling the Instantly plan permanently deletes every conversation, and
+    // the drift-gated reconcile poll never fetched a cleanly-delivered reply's
+    // body. This is where those words get copied into our own store.
+    mockCampaign();
+    mockNewSilverRow();
+    mockProvisions();
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-1",
+      payload: {
+        event_type: "reply_received",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+      },
+    });
+
+    expect(mockMaybeMirror).toHaveBeenCalledWith(
+      expect.objectContaining({ instantlyCampaignId: "inst-camp-1" }),
+      "reply_received",
     );
   });
 
