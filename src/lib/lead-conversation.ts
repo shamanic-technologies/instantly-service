@@ -30,6 +30,20 @@
  * happily draft a reply to nobody. A thread we hold but cannot FETCH is a 502,
  * not an empty list either.
  *
+ * ⚠️ IT READS OUR OWN MIRROR FIRST, AND THAT IS WHAT MAKES IT SURVIVE THE PLAN
+ * BEING CANCELLED. Cancelling an Instantly plan permanently deletes every
+ * conversation those mailboxes carried, so a read that asks Instantly live goes
+ * blank for every lead at once on cancellation day — and the words are gone at
+ * that point, not merely unreachable. The bronze mirror (`instantly_emails_raw`,
+ * kept current by the side effect in lib/mirror-emails) is therefore the source,
+ * and it costs no Instantly quota per page view.
+ *
+ * The live provider is consulted in exactly ONE case: the mirror holds nothing
+ * for a sequence our own event log says exchanged mail. That is a mirror we know
+ * to be incomplete, it is rare, and what it fetches is stored so the next read
+ * is local. Once the plan is gone that call fails, which is a 502 — never an
+ * empty conversation.
+ *
  * Declares NO cost and sends nothing — it is a read of what already happened.
  */
 
@@ -37,7 +51,12 @@ import {
   selectThreadMessages,
   type ThreadMessage,
 } from "./forward-positive-reply";
-import { listEmails } from "./instantly-client";
+import { insertEmailsBatch } from "./bronze";
+import { listEmails, type EmailRecord } from "./instantly-client";
+import {
+  fetchMirroredEmailRecords,
+  hasExchangedMailEvidence,
+} from "./mirror-emails";
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { loadCampaign, type CampaignRow } from "./reply-to-lead";
 import { fetchSelfSendThread } from "./self-send/thread";
@@ -56,6 +75,32 @@ export class LeadConversationError extends Error {
     this.name = "LeadConversationError";
   }
 }
+
+/**
+ * Fail loud. An unreadable thread returned as an empty one would tell the caller
+ * the prospect said nothing, which is a claim we cannot make.
+ */
+function unreadable(
+  campaign: CampaignRow,
+  which: string,
+  error: unknown,
+): LeadConversationError {
+  return new LeadConversationError(
+    "thread_unavailable",
+    502,
+    `Could not read ${which} thread for ${campaign.leadEmail} on ${campaign.instantlyCampaignId}: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+  );
+}
+
+/**
+ * Where the messages came from. `mirror` = our bronze copy of the Instantly
+ * Unibox (the normal case, and the one that survives the plan being cancelled);
+ * `self_send` = the sequence we dispatched ourselves; `provider` = read live
+ * from Instantly because the mirror was incomplete.
+ */
+export type ConversationSource = "mirror" | "self_send" | "provider";
 
 /** One message of the exchange, in the order it happened. */
 export interface ConversationMessage {
@@ -86,6 +131,8 @@ export interface LeadConversation {
   accountEmail: string | null;
   /** Which pipe carried it — the caller does not need to know this to ask. */
   transport: SendTransport;
+  /** Where these messages were read from — see ConversationSource. */
+  source: ConversationSource;
   messageCount: number;
   /** Oldest first. Empty when the sequence exists but nothing has been exchanged. */
   messages: ConversationMessage[];
@@ -111,7 +158,7 @@ function toConversationMessage(m: ThreadMessage): ConversationMessage {
 }
 
 /**
- * Instantly holds the thread; ask it for the whole exchange.
+ * The Instantly-transport thread, out of our own mirror wherever possible.
  *
  * Unlike the positive-reply forward, this does NOT start at the prospect's first
  * reply. The forward is for a human who only needs the newest part of the
@@ -122,24 +169,58 @@ function toConversationMessage(m: ThreadMessage): ConversationMessage {
 async function fetchInstantlyConversation(
   campaign: CampaignRow,
   input: LeadConversationInput,
-): Promise<ThreadMessage[]> {
+): Promise<{ thread: ThreadMessage[]; source: ConversationSource }> {
+  let mirrored: EmailRecord[];
+  try {
+    mirrored = await fetchMirroredEmailRecords(campaign.instantlyCampaignId);
+  } catch (error: unknown) {
+    throw unreadable(campaign, "our mirror of the", error);
+  }
+  if (mirrored.length > 0) {
+    return { thread: selectThreadMessages(mirrored), source: "mirror" };
+  }
+
+  // An empty mirror is ambiguous on its own, and the two readings are different
+  // facts a caller must be able to tell apart: a sequence that has exchanged
+  // nothing, and one whose words we hold no copy of. Our own event log settles
+  // it — see `hasExchangedMailEvidence`.
+  let exchanged: boolean;
+  try {
+    exchanged = await hasExchangedMailEvidence(campaign.instantlyCampaignId);
+  } catch (error: unknown) {
+    throw unreadable(campaign, "our mirror of the", error);
+  }
+  if (!exchanged) return { thread: [], source: "mirror" };
+
+  // The mirror is INCOMPLETE for a sequence that did exchange mail. Ask the
+  // provider once — and store what comes back, so this costs nothing next time.
+  // After the plan is cancelled this throws, which is exactly right: an
+  // unreadable thread must never be returned as an empty one.
+  let records: EmailRecord[];
   try {
     const { key } = await resolveInstantlyApiKey(input.orgId, input.userId, CALLER);
-    const records = await listEmails(key, {
-      campaignId: campaign.instantlyCampaignId,
-    });
-    return selectThreadMessages(records);
+    records = await listEmails(key, { campaignId: campaign.instantlyCampaignId });
   } catch (error: unknown) {
-    // Fail loud. An unreadable thread returned as an empty one would tell the
-    // caller the prospect said nothing, which is a claim we cannot make.
-    throw new LeadConversationError(
-      "thread_unavailable",
-      502,
-      `Could not read the Instantly thread for ${campaign.leadEmail} on ${campaign.instantlyCampaignId}: ${
+    throw unreadable(campaign, "the Instantly", error);
+  }
+
+  // Fail-soft: failing to widen the mirror must not fail the read the caller
+  // asked for, and the next inbound event will try again.
+  await insertEmailsBatch(
+    campaign.instantlyCampaignId,
+    // The lookup is org-scoped, so this campaign belongs to the caller's org.
+    input.orgId,
+    records,
+  ).catch((error: unknown) => {
+    console.warn(
+      `[instantly-service] lead-conversation: could not mirror the thread it just read for campaign=${campaign.instantlyCampaignId}: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
-  }
+    return [];
+  });
+
+  return { thread: selectThreadMessages(records), source: "provider" };
 }
 
 /** We hold the thread; read both halves out of bronze. */
@@ -149,13 +230,7 @@ async function fetchSelfSendConversation(
   try {
     return await fetchSelfSendThread(campaign.instantlyCampaignId);
   } catch (error: unknown) {
-    throw new LeadConversationError(
-      "thread_unavailable",
-      502,
-      `Could not read the stored thread for ${campaign.leadEmail} on ${campaign.instantlyCampaignId}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    throw unreadable(campaign, "the stored", error);
   }
 }
 
@@ -182,9 +257,12 @@ export async function fetchLeadConversation(
     );
   }
 
-  const thread =
+  const { thread, source } =
     campaign.sendTransport === SEND_TRANSPORT_SMTP
-      ? await fetchSelfSendConversation(campaign)
+      ? {
+          thread: await fetchSelfSendConversation(campaign),
+          source: "self_send" as ConversationSource,
+        }
       : await fetchInstantlyConversation(campaign, input);
 
   const messages = thread.map(toConversationMessage);
@@ -197,6 +275,7 @@ export async function fetchLeadConversation(
     leadEmail: campaign.leadEmail,
     accountEmail: campaign.accountEmail,
     transport: campaign.sendTransport,
+    source,
     messageCount: messages.length,
     messages,
   };

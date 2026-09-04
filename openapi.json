@@ -1643,6 +1643,15 @@
             ],
             "description": "Which pipe carried it — the caller does not need to know this to ask"
           },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mirror",
+              "self_send",
+              "provider"
+            ],
+            "description": "Where the messages were read from. mirror: our own bronze copy of the Instantly Unibox — the normal case, and the one that survives the Instantly plan being cancelled. self_send: the sequence we dispatched ourselves. provider: read live from Instantly because our mirror held nothing for a sequence that did exchange mail."
+          },
           "messageCount": {
             "type": "integer"
           },
@@ -1660,6 +1669,7 @@
           "leadEmail",
           "accountEmail",
           "transport",
+          "source",
           "messageCount",
           "messages"
         ]
