@@ -1429,6 +1429,111 @@ registry.registerPath({
   },
 });
 
+export const EngagedLeadsQuerySchema = z
+  .object({
+    brand_id: z
+      .string()
+      .uuid()
+      .optional()
+      .describe("Only leads whose sequence carries this brand"),
+    campaign_id: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Only leads on this logical campaign"),
+    since: z
+      .string()
+      .datetime()
+      .optional()
+      .describe("Only leads whose engagement STARTED at or after this instant"),
+    limit: z.coerce
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "Cap the number of rows. Omitted, every engaged lead is returned — the population is a few hundred per org at the largest, so a silent default would hide the tail.",
+      ),
+  })
+  .openapi("EngagedLeadsQuery");
+
+const EngagedLeadSchema = z
+  .object({
+    campaignId: z
+      .string()
+      .nullable()
+      .describe("The caller's own campaign id. Null on a platform send."),
+    instantlyCampaignId: z
+      .string()
+      .describe("This service's per-lead sequence id — present even when campaignId is null"),
+    leadEmail: z.string(),
+    brandIds: z.array(z.string()),
+    engagedAt: z
+      .string()
+      .describe(
+        "When this lead FIRST showed interest — the earlier of their first reply and their first click",
+      ),
+    replied: z.boolean(),
+    clicked: z.boolean(),
+    firstRepliedAt: z.string().nullable(),
+    firstClickedAt: z.string().nullable(),
+    replyClassification: z
+      .string()
+      .nullable()
+      .describe("positive | negative | neutral. Null when no reply is qualified."),
+    replyKind: z
+      .string()
+      .nullable()
+      .describe("The finer reading of the same statement. Null when none is on record."),
+    disqualified: z
+      .boolean()
+      .describe(
+        "True only for a kind that is permanent about the PERSON (wrong person, changed job) — never for a 'not right now', which stays recyclable",
+      ),
+  })
+  .openapi("EngagedLead");
+
+export const EngagedLeadsResponseSchema = z
+  .object({
+    success: z.literal(true),
+    count: z.number().int(),
+    leads: z.array(EngagedLeadSchema).describe("Most recently engaged first"),
+  })
+  .openapi("EngagedLeadsResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/engaged-leads",
+  summary: "The org's leads that have shown interest",
+  description:
+    "List the leads worth opening a conversation on: everyone who replied without asking to stop, plus everyone who clicked a link we sent. Each row carries the exact identity `GET /orgs/conversations` takes, so a dashboard can list the panel and then read each thread.\n\n" +
+    "**Why this exists.** `GET /orgs/conversations` answers about ONE (campaign, lead) pair the caller must already know. A consumer holding a lead has no way to discover which of an org's tens of thousands of contacted leads ever engaged, nor which campaign id to ask about. This is the discovery half.\n\n" +
+    "**The gate.** `(replied AND NOT unsubscribed) OR clicked`. Any human reply counts whatever its sentiment — a negative reply is still a conversation worth reading, and a 'not right now' is recyclable pipeline. An unsubscribe request is the one answer that is explicitly a request to stop, so it is excluded. Autoresponders never appear: `auto_reply_received` and `lead_out_of_office` are distinct event types that never set `replied`.\n\n" +
+    "**⚠️ `clicked` is a click on a link WE sent**, on either transport — it is the only visit signal this service has. An anonymous website visit that never went through one of our links is invisible here.\n\n" +
+    "**No `engagementKind` scalar, deliberately.** A lead who clicked on Monday and replied on Friday has one engagement start and two signals; one enum would force a label that disagrees with its own timestamp. `engagedAt` is when interest started, the two booleans say which signals exist, and the two timestamps say when each happened.\n\n" +
+    "**Read from gold**, the same projection `POST /orgs/status` answers from — so `replyKind` and `disqualified` cannot disagree between the two surfaces.\n\n" +
+    "**Cost:** none. It sends nothing and declares nothing.",
+  request: {
+    headers: TrackingHeadersSchema,
+    query: EngagedLeadsQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "The engaged leads, most recently engaged first (possibly empty)",
+      content: { "application/json": { schema: EngagedLeadsResponseSchema } },
+    },
+    400: {
+      description: "Invalid query",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "The engaged leads could not be read",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/orgs/manual-qualifications",

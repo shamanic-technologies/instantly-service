@@ -240,6 +240,82 @@ describe("replyToLead over Instantly", () => {
       status: 502,
     });
   });
+
+  it("records the reply in bronze at step 0, like the self-send branch does", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([
+      email({ id: "inbound-1", subject: "Quick question" }),
+    ]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    await replyToLead(INPUT);
+
+    // Instantly holds this reply too — but only until the plan is cancelled,
+    // which permanently deletes every conversation those mailboxes carried.
+    expect(mockInsertValues).toHaveBeenCalledTimes(1);
+    const row = mockInsertValues.mock.calls[0][0];
+    expect(row).toMatchObject({
+      instantlyCampaignId: "ic-1",
+      leadEmail: "alice@media.com",
+      accountEmail: "amy@boostdistribute.com",
+      step: MANUAL_REPLY_STEP,
+      outcome: "sent",
+    });
+    expect(row.payload).toMatchObject({
+      kind: "manual_reply",
+      transport: "instantly",
+      subject: "Re: Quick question",
+      inReplyTo: "inbound-1",
+      instantlyEmailId: "sent-1",
+    });
+    expect(row.payload.bodyHtml).toContain("Amy Moore");
+  });
+
+  it("stores NO wire Message-Id, because Instantly does not return one", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    await replyToLead(INPUT);
+
+    // `sent-1` is Instantly's own email UUID; it appears in no mail header, so
+    // it could never match an In-Reply-To / References on the prospect's next
+    // answer. Putting it in message_id would plant a correlation key that looks
+    // usable and silently never fires — the anchor query filters
+    // `message_id IS NOT NULL`, so null keeps this row honestly out of it.
+    const row = mockInsertValues.mock.calls[0][0];
+    expect(row.messageId).toBeNull();
+    expect(row.payload.instantlyEmailId).toBe("sent-1");
+  });
+
+  it("records a refused reply too, so it is not invisible", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1" })]);
+    mockReplyToEmail.mockRejectedValue(new Error("Instantly 402"));
+
+    await expect(replyToLead(INPUT)).rejects.toMatchObject({
+      code: "reply_dispatch_failed",
+    });
+
+    const row = mockInsertValues.mock.calls[0][0];
+    expect(row).toMatchObject({ outcome: "transient", step: MANUAL_REPLY_STEP });
+    expect(row.payload.error).toContain("Instantly 402");
+    // Nothing left the building, so there is no body to keep.
+    expect(row.payload.bodyHtml).toBeUndefined();
+  });
+
+  it("does not lose the dispatch error to a bookkeeping failure", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1" })]);
+    mockReplyToEmail.mockRejectedValue(new Error("Instantly 402"));
+    mockInsertValues.mockRejectedValueOnce(new Error("db down"));
+
+    // The caller must still learn why the reply did not go out.
+    await expect(replyToLead(INPUT)).rejects.toMatchObject({
+      code: "reply_dispatch_failed",
+      status: 502,
+    });
+  });
 });
 
 describe("replyToLead lookup", () => {

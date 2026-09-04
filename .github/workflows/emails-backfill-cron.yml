@@ -1,0 +1,104 @@
+name: Unibox mirror (daily)
+
+# Mirrors the newest slice of Instantly's Unibox into bronze
+# `instantly_emails_raw`, so the words a prospect actually wrote survive.
+#
+# WHY THIS EXISTS. Silver records THAT a lead replied; the text lives only in
+# bronze. Instantly's own cancel dialog states that cancelling a plan or a single
+# inbox PERMANENTLY DELETES every conversation those mailboxes sent or received,
+# lead replies included — so the only copy we control is the one this job makes.
+# Until now the sweep was manual, and it showed: of 112,999 mirrored emails,
+# 99,454 arrived in a single hand-run on 2026-08-29 and 4 in the six days after.
+# Coverage followed whoever remembered to run it.
+#
+# WHY NO CURSOR. The sweep walks the workspace NEWEST-FIRST through one cursor,
+# and its insert conflicts on `instantly_email_id` and does nothing. So a bounded
+# run from the top is incremental by construction: everything new since yesterday
+# is on the first pages, and everything older is a no-op re-read. Persisting a
+# resume cursor would add state to solve a problem the ordering already solves —
+# and a stored cursor that drifts silently stops mirroring.
+#
+# WHY `maxPages` IS BOUNDED. `startingAfter` exists for resuming a full historical
+# sweep, which takes ~75 minutes and gets killed by any deploy (the container is
+# recreated on every merge; the first full run died three times in 70 minutes).
+# A daily catch-up must finish well inside that window. Measured volume is ~580
+# emails/day ≈ 6 pages at 100/page, so 60 pages is ~10x headroom and runs about
+# 3.5 minutes at the mandated 3.5s pacing on the `/emails` slot.
+#
+# If this job ever reports `reachedEnd: false` with a full 60 pages of NEW rows,
+# the daily volume has outgrown the cap — raise `maxPages`, do not add a cursor.
+#
+# A full historical re-mirror is still a manual job: POST the same endpoint with
+# no `maxPages` (or resume with `startingAfter` from the previous run's
+# `nextCursor`). This cron is the floor, not a replacement for that.
+#
+# Spends nothing metered — a read against a flat subscription, so no run or cost
+# is declared, same as the placement tests and the infra inventory sweep.
+#
+# Required secrets (already used by the other crons in this repo):
+#   INSTANTLY_SERVICE_URL      — production service URL
+#   INSTANTLY_SERVICE_API_KEY  — service API key for /internal/* routes
+#
+# Scheduled runs fire from the DEFAULT branch (main). Manually trigger via the
+# workflow_dispatch button on the GitHub Actions page.
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # DAILY 04:00 UTC — after the 03:00 reconcile, before the 05:00 infra sync
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "Pages to walk from the top (default 60; blank runs to the end, ~75 min)"
+        required: false
+        default: "60"
+
+jobs:
+  emails-backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: POST /internal/audit/emails-backfill
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+          MAX_PAGES: ${{ github.event.inputs.max_pages || '60' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
+            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
+            exit 1
+          fi
+
+          # Built with printf, never a language runtime: `node` exists only
+          # INSIDE the service containers, so a `$(node -e ...)` body would be an
+          # empty string here — which the endpoint would read as "no bound" and
+          # dispatch the unbounded 75-minute sweep this cap exists to avoid.
+          case "${MAX_PAGES}" in
+            ''|*[!0-9]*)
+              echo "max_pages must be a positive integer, got '${MAX_PAGES}'"
+              exit 1
+              ;;
+          esac
+          body=$(printf '{"maxPages":%s}' "${MAX_PAGES}")
+          echo "Request body: ${body}"
+
+          response_file=$(mktemp)
+          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time 60 \
+            -d "${body}" \
+            "${SERVICE_URL}/internal/audit/emails-backfill")
+
+          echo "HTTP ${status}"
+          cat "${response_file}"
+          echo
+
+          # The endpoint returns 202 and sweeps in the background. The real
+          # result — emailsStored, reachedEnd, nextCursor — lands in the service
+          # logs under `emails-backfill: done`, not in this curl's exit code.
+          if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
+            echo "emails-backfill dispatch failed with HTTP ${status}"
+            exit 1
+          fi
