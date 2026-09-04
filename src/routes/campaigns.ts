@@ -9,6 +9,7 @@ import { UpdateStatusRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
 import { reconcileAll } from "../lib/reconcile";
 import { refundStrandedHolds } from "../lib/refund-stranded-holds";
+import { backfillStopOnClick } from "../lib/stop-on-click-backfill";
 import { actualizeOrphanedSends } from "../lib/actualize-orphaned-sends";
 import { reconcileProvisionedHolds } from "../lib/reconcile-provisioned-holds";
 
@@ -165,6 +166,32 @@ router.post("/refund-stranded-holds", (req: Request, res: Response) => {
   refundStrandedHolds({ limit }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[instantly-service] refund-stranded-holds run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /campaigns/stop-on-click-backfill
+ * One-shot catch-up for the clicks stop-on-click missed while its funnel gate tested a `visit_`
+ * prefix against a vocabulary campaign-service had renamed. Re-asks the SAME question, through the
+ * SAME helper the webhook path calls, for every lead who already clicked and whose sequence is
+ * still live — a prospect who clicked through once usually will not click again, so fixing the
+ * gate alone leaves them receiving follow-ups they converted past weeks ago.
+ *
+ * Idempotent + resumable, fail-soft per lead. Optional `{ limit }` bounds the batch. Mirrors
+ * /refund-stranded-holds: 202 + background. Watch logs for `stop-on-click-backfill: done`.
+ */
+router.post("/stop-on-click-backfill", (req: Request, res: Response) => {
+  const rawLimit = (req.body as { limit?: unknown })?.limit;
+  const limit = typeof rawLimit === "number" && rawLimit > 0 ? Math.floor(rawLimit) : undefined;
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+  console.log(
+    `[instantly-service] stop-on-click-backfill: dispatched run=${runId} limit=${limit ?? "all"}`,
+  );
+  res.status(202).json({ runId, startedAt, limit: limit ?? null });
+  backfillStopOnClick({ limit }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] stop-on-click-backfill run=${runId} failed: ${message}`);
   });
 });
 

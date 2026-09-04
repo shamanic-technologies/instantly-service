@@ -11,28 +11,84 @@ const CAMPAIGN_SERVICE_URL = process.env.CAMPAIGN_SERVICE_URL;
 const CAMPAIGN_SERVICE_API_KEY = process.env.CAMPAIGN_SERVICE_API_KEY;
 
 /**
- * Funnel keys whose FIRST leg is a visit to the website.
+ * The sales-funnel vocabulary, mirroring campaign-service's `sales-funnel-vocabulary.ts`.
  *
- * The key encodes the sales funnel the campaign runs, and its prefix is the leg that
- * opens it — so `visit_*` means the conversion starts on the site. That is
- * exactly when a click matters: the prospect is on the landing page and the
- * conversion happens there, so more cold email only distracts.
- *
- * `reply_meeting` deliberately does NOT stop: its conversion starts with a
- * REPLY, so a click says nothing about whether the sequence should continue.
+ * These four ARE the funnels a campaign can state; campaign-service stores nothing else. The
+ * previous gate here tested a `visit_` PREFIX, which was true of the pre-rename spellings and is
+ * true of NONE of these — so every visit-led campaign silently stopped stopping the day the rename
+ * landed. A prefix is a guess about how a vocabulary will be spelled next; an explicit map is not,
+ * and it cannot rot the same way: adding a fifth funnel below is a type error until someone says
+ * whether a click on it means the prospect has arrived.
  */
-export const VISIT_FIRST_FUNNEL_PREFIX = "visit_";
+export const SALES_FUNNEL_KEYS = [
+  "sales_meetings_from_conversation",
+  "sales_meetings_from_website",
+  "website_purchases",
+  "form_magnet",
+] as const;
+
+export type SalesFunnelKey = (typeof SALES_FUNNEL_KEYS)[number];
+
+/**
+ * The pre-rename spelling of each funnel, as campaign rows written before campaign-service's
+ * migration 0043 still carry it. Accepted forever on the way in, never emitted — dropping an entry
+ * would silently un-stop every campaign a producer still names the old way, which is the failure
+ * this map exists to prevent. Byte-identical to campaign-service's own `LEGACY_FUNNEL_KEYS`.
+ */
+export const LEGACY_FUNNEL_KEYS: Readonly<Record<string, SalesFunnelKey>> = Object.freeze({
+  reply_meeting: "sales_meetings_from_conversation",
+  visit_meeting: "sales_meetings_from_website",
+  visit_signup: "website_purchases",
+  visit_form: "form_magnet",
+});
+
+const CANONICAL_FUNNEL_KEYS: ReadonlySet<string> = new Set(SALES_FUNNEL_KEYS);
+
+/**
+ * The canonical funnel a value names, under any spelling — null when it names none.
+ *
+ * Never guesses: a token neither catalogue lists is "no funnel", not a fifth funnel we quietly
+ * work. Mirrors campaign-service's `toFunnelKey`.
+ */
+export function toFunnelKey(value: string | null | undefined): SalesFunnelKey | null {
+  if (!value) return null;
+  if (CANONICAL_FUNNEL_KEYS.has(value)) return value as SalesFunnelKey;
+  return LEGACY_FUNNEL_KEYS[value] ?? null;
+}
+
+/**
+ * Does a click on this funnel mean the prospect has ALREADY arrived where the conversion happens?
+ *
+ * Exhaustive over the vocabulary on purpose — `Record<SalesFunnelKey, boolean>` makes a new funnel
+ * a compile error rather than a silent `false`, so the next rename cannot re-create the outage this
+ * replaces. Three of the four open on a website visit: a click puts the prospect on the landing
+ * page, so more cold email only distracts. `sales_meetings_from_conversation` opens on a REPLY, so
+ * a click says nothing about whether to keep sending.
+ */
+const FUNNEL_OPENS_ON_VISIT: Readonly<Record<SalesFunnelKey, boolean>> = Object.freeze({
+  sales_meetings_from_conversation: false,
+  sales_meetings_from_website: true,
+  website_purchases: true,
+  form_magnet: true,
+});
 
 /**
  * True when this campaign's funnel opens on a website visit.
  *
- * A NULL funnel does NOT stop. campaign-service's own rule is that "a funnel is
- * a fact, never a guess" — a campaign whose stated goal named no single funnel
- * keeps a null one, and pausing a live sequence on an unknown is the wrong
- * direction to be wrong in.
+ * A NULL funnel does NOT stop. campaign-service's own rule is that "a funnel is a fact, never a
+ * guess" — a campaign that stated none keeps a null one, and pausing a live sequence on an unknown
+ * is the wrong direction to be wrong in. An UNRECOGNISED token is the same absence, and it is the
+ * one worth being loud about: it is exactly what a vocabulary rename looks like from here, so the
+ * caller logs it rather than letting the fleet go quiet unobserved.
  */
 export function funnelStopsOnClick(funnelKey: string | null | undefined): boolean {
-  return typeof funnelKey === "string" && funnelKey.startsWith(VISIT_FIRST_FUNNEL_PREFIX);
+  const canonical = toFunnelKey(funnelKey);
+  return canonical !== null && FUNNEL_OPENS_ON_VISIT[canonical];
+}
+
+/** True for a non-empty funnel token this service's vocabulary does not know. */
+export function isUnrecognisedFunnelKey(funnelKey: string | null | undefined): boolean {
+  return typeof funnelKey === "string" && funnelKey !== "" && toFunnelKey(funnelKey) === null;
 }
 
 interface CampaignRecord {
