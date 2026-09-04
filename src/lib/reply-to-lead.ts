@@ -289,6 +289,71 @@ async function loadSelfSendAnchor(
   };
 }
 
+/**
+ * Record an Instantly-transport reply in bronze, at step 0.
+ *
+ * ⚠️ `message_id` is deliberately NULL. On the self-send branch that column
+ * holds the RFC 5322 Message-Id we put on the wire, and `loadKnownSends`
+ * correlates a prospect's next answer against it through `In-Reply-To` /
+ * `References`. Instantly returns its OWN email UUID, which appears in no mail
+ * header and could therefore never match — storing it in that column would
+ * plant a correlation key that looks usable and silently never fires. The
+ * anchor query already filters `message_id IS NOT NULL`, so a null keeps this
+ * row out of correlation while still preserving what we wrote. Instantly's id
+ * lives in the payload, where it is honestly labelled.
+ *
+ * Fail-loud on the success path: a reply we cannot record is a reply whose text
+ * exists only in Instantly, which is the exact durability gap this closes. The
+ * failure path swallows (mirroring the smtp branch) because the caller is
+ * already about to throw the real dispatch error, and losing that cause to a
+ * bookkeeping error would be worse.
+ */
+async function recordInstantlyReply(input: {
+  campaign: CampaignRow;
+  accountEmail: string;
+  subject: string;
+  bodyHtml: string;
+  inReplyTo: string;
+  outcome: "sent" | "transient";
+  instantlyEmailId: string | null;
+  error: unknown;
+}): Promise<void> {
+  const row = {
+    instantlyCampaignId: input.campaign.instantlyCampaignId,
+    leadEmail: input.campaign.leadEmail,
+    accountEmail: input.accountEmail,
+    step: MANUAL_REPLY_STEP,
+    outcome: input.outcome,
+    messageId: null,
+    responseCode:
+      (input.error as { responseCode?: number } | null)?.responseCode ?? null,
+    response: (input.error as { response?: string } | null)?.response ?? null,
+    payload: {
+      kind: "manual_reply",
+      transport: "instantly",
+      subject: input.subject,
+      ...(input.outcome === "sent" ? { bodyHtml: input.bodyHtml } : {}),
+      inReplyTo: input.inReplyTo,
+      instantlyEmailId: input.instantlyEmailId,
+      ...(input.error
+        ? {
+            error:
+              input.error instanceof Error
+                ? input.error.message
+                : String(input.error),
+          }
+        : {}),
+    },
+  };
+
+  if (input.outcome === "sent") {
+    await db.insert(smtpDispatchRaw).values(row);
+    return;
+  }
+
+  await Promise.resolve(db.insert(smtpDispatchRaw).values(row)).catch(() => {});
+}
+
 /** Instantly holds the thread; ask it to answer inside it. */
 async function replyOverInstantly(
   campaign: CampaignRow,
@@ -332,6 +397,19 @@ async function replyOverInstantly(
       bodyHtml,
     });
   } catch (error: unknown) {
+    // Recorded even though it never left: the same evidence trail the smtp
+    // branch leaves, so a refused reply is not invisible on either transport.
+    await recordInstantlyReply({
+      campaign,
+      accountEmail,
+      subject,
+      bodyHtml,
+      inReplyTo: target.emailId,
+      outcome: "transient",
+      instantlyEmailId: null,
+      error,
+    });
+
     throw new ReplyToLeadError(
       "reply_dispatch_failed",
       502,
@@ -340,6 +418,22 @@ async function replyOverInstantly(
       }`,
     );
   }
+
+  // Bronze, at step 0, exactly as the self-send branch does. Instantly holds
+  // this reply too, but only until the plan is cancelled — its own dialog says
+  // cancelling permanently deletes every conversation those mailboxes carried.
+  // Writing it here means our own words survive that, at the moment we send
+  // them rather than whenever a backfill next runs.
+  await recordInstantlyReply({
+    campaign,
+    accountEmail,
+    subject,
+    bodyHtml,
+    inReplyTo: target.emailId,
+    outcome: "sent",
+    instantlyEmailId: sent.id == null ? null : String(sent.id),
+    error: null,
+  });
 
   return {
     transport: "instantly",
