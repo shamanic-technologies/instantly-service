@@ -20,6 +20,7 @@ import manualQualificationsRoutes from "./routes/manual-qualifications";
 import leadOptOutsRoutes from "./routes/lead-optouts";
 import repliesRoutes from "./routes/replies";
 import leadConversationsRoutes from "./routes/lead-conversations";
+import engagedLeadsRoutes from "./routes/engaged-leads";
 import auditRoutes from "./routes/audit";
 import infraRoutes from "./routes/infra";
 import unsubscribeRoutes from "./routes/unsubscribe";
@@ -80,6 +81,7 @@ app.use("/orgs/manual-qualifications", serviceAuth, requireOrgId, manualQualific
 app.use("/orgs/opt-outs", serviceAuth, requireOrgId, leadOptOutsRoutes);
 app.use("/orgs/replies", serviceAuth, requireOrgId, repliesRoutes);
 app.use("/orgs/conversations", serviceAuth, requireOrgId, leadConversationsRoutes);
+app.use("/orgs/engaged-leads", serviceAuth, requireOrgId, engagedLeadsRoutes);
 app.use("/orgs", serviceAuth, requireOrgId, analyticsRoutes);
 
 const PORT = process.env.PORT || 3011;
