@@ -20,6 +20,8 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { promoteEvent } from "./silver-promote";
 import { refreshLeadStatusCurrent } from "./status-gold";
 import { stopLeadSequence } from "./stop-lead-sequence";
+import { maybeForwardPositiveReply } from "./forward-positive-reply";
+import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
 import {
   ACCEPTED_QUALIFICATION_STATUSES,
   REPLY_KINDS,
@@ -338,6 +340,39 @@ export async function applyManualQualificationSideEffects(
     .where(eq(instantlyCampaigns.instantlyCampaignId, input.instantlyCampaignId));
 
   await refreshLeadStatusCurrent(input.instantlyCampaignId, input.leadEmail);
+
+  // 4. The two consequences of a POSITIVE reply, which the webhook path gets
+  //    for free from `promoteEvent` and this one does not.
+  //
+  //    ⚠️ Step 2 above inserts the reply-kind event DIRECTLY, precisely so it
+  //    can pin `reply_classification_source='manual'` — which means it bypasses
+  //    `promoteEvent`, and with it both side effects below. The reply_received
+  //    in step 1 does go through `promoteEvent`, but that event type is in
+  //    neither positive set, so nothing fires there either. Net effect before
+  //    this block: a human recording "this prospect is interested" reached
+  //    NOBODY — no forward to the agency inbox, and no run of the campaign the
+  //    customer funded to answer a buyer. That is the exact loop both features
+  //    exist for, and a manual qualification is created precisely when Instantly
+  //    missed the reply, so it is the case that needs them most.
+  //
+  //    Both are self-gating on the event type (a negative or neutral kind is a
+  //    no-op), both are fail-soft, and the forward is exactly-once via its own
+  //    claim column — so calling them here cannot double-send when the webhook
+  //    path later observes the same reply.
+  //    The campaign row is read here rather than threaded through the input:
+  //    both side effects need the caller `campaign_id` (to resolve the funnel
+  //    and the offer) plus `user_id`/`run_id`, and the row is the authoritative
+  //    record of all three. It has just been updated above, so this is a read of
+  //    state we know is current.
+  const [campaignRow] = await db
+    .select()
+    .from(instantlyCampaigns)
+    .where(eq(instantlyCampaigns.instantlyCampaignId, input.instantlyCampaignId));
+
+  if (campaignRow) {
+    await maybeForwardPositiveReply(campaignRow, input.leadEmail, input.replyKind);
+    await maybeTriggerSalesInterestCampaign(campaignRow, input.leadEmail, input.replyKind);
+  }
 
   console.log(
     `[instantly-service] manual qualification applied: campaign=${input.instantlyCampaignId} lead=${input.leadEmail} status=${input.status} replyKind=${input.replyKind}`,
