@@ -117,10 +117,31 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
   return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
 }
 
+/**
+ * Normalise a timestamp to ISO 8601 UTC, matching what `POST /orgs/status`
+ * emits for its own `first*At` fields — a consumer reading both surfaces must
+ * not get two formats for the same instant.
+ *
+ * ⚠️ node-postgres hands a `timestamp` (no time zone) column back as a NAIVE
+ * string like `2026-09-03 13:21:37.397`, and `new Date()` reads that as LOCAL
+ * time. The columns store UTC, so a consumer in any non-UTC zone would shift
+ * the instant by its own offset. The `Z` is appended explicitly rather than
+ * left to the runtime's zone: this service's container happens to run UTC, but
+ * that is incidental and not something the output format should depend on.
+ */
 function isoOrNull(value: unknown): string | null {
   if (value == null) return null;
   if (value instanceof Date) return value.toISOString();
-  return String(value);
+
+  const raw = String(value);
+  const naive = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(raw);
+  const parsed = new Date(naive ? `${raw.replace(" ", "T")}Z` : raw);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(
+      `[instantly-service] engaged-leads: unparseable timestamp ${raw}`,
+    );
+  }
+  return parsed.toISOString();
 }
 
 /**
