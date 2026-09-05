@@ -74,6 +74,16 @@ export const instantlyCampaigns = pgTable(
     // back to NULL only if the send itself fails, so a later retry re-attempts.
     // NULL = the positive reply for this lead has never been forwarded.
     positiveReplyForwardedAt: timestamp("positive_reply_forwarded_at"),
+    // Exactly-once claim for the "ring the brand's sales rep when a sales
+    // interest lands" side effect (lib/ring-rep-on-sales-interest.ts). Set
+    // atomically BEFORE any external call is placed; a webhook retry / reconcile
+    // re-poll / re-qualification finds it non-null and rings nobody. Released
+    // back to NULL only when the call itself could not be placed, so a later
+    // positive signal re-attempts. Same shape and same reasoning as
+    // `positive_reply_forwarded_at` above -- two at-most-once side effects must
+    // not claim two different ways. NULL = the rep has never been rung about
+    // this lead.
+    salesInterestCallAt: timestamp("sales_interest_call_at"),
     // Which pipe dispatches THIS lead's sequence: 'instantly' (default) or 'smtp'
     // (our own sender). FROZEN at send time from the chosen account's policy
     // column, never re-read from the account afterwards — a sequence spans days,

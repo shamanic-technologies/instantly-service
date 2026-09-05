@@ -344,6 +344,13 @@
       "when": 1785542004000,
       "tag": "0048_scheduled_replies",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1785542005000,
+      "tag": "0049_sales_interest_call",
+      "breakpoints": true
     }
   ]
 }
