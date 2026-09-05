@@ -1205,3 +1205,56 @@ export const seedPlacementObservations = pgTable(
     index("seed_placement_observations_test_idx").on(table.testId),
   ],
 );
+
+// A reply that is waiting for the prospect's own business hours.
+//
+// Everything else this service sends already waits for the RECIPIENT's Mon-Fri
+// 08:00-17:00 window — sequence steps through `isWithinLocalSendWindow`, the
+// Instantly transport through the campaign schedule it dispatches against. The
+// one-to-one answer to a prospect who wrote back did not, so it could land at
+// 23:05 their time purely because that is when the caller ran.
+//
+// ⚠️ This is the WAITING ROOM, not a second scheduler. The hours, the days, the
+// timezone resolution and the default when we hold none all stay in
+// `sending-window.ts` / `sending-calendar.ts`, and the drain rides the SAME
+// hourly worker that sends the sequence steps.
+//
+// ⚠️ A reply is still NOT a sequence step: no `sequence_steps` row, no
+// `sequence_costs` hold, no step number — it is recorded in bronze at
+// `MANUAL_REPLY_STEP` (0) when it finally goes out, exactly as before. Only the
+// MOMENT of dispatch changed.
+export const scheduledReplies = pgTable(
+  "scheduled_replies",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id").notNull(),
+    // Required: the org's Instantly key resolves per user, and the drain runs
+    // long after the request that carried the header is gone.
+    userId: text("user_id").notNull(),
+    campaignId: text("campaign_id").notNull(),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    // Unsigned. The signature is appended at dispatch by the existing body
+    // pipeline, from the persona of the mailbox that answers.
+    bodyHtml: text("body_html").notNull(),
+    // The prospect's IANA timezone as the campaign row carried it at enqueue.
+    timezone: text("timezone"),
+    // The first instant their window opens — a LOWER BOUND, like every other
+    // date this service projects. The drain additionally holds a weekend.
+    scheduledFor: timestamp("scheduled_for").notNull(),
+    // 'pending' | 'sent' | 'failed'
+    status: text("status").default("pending").notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+    lastError: text("last_error"),
+    sentAt: timestamp("sent_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("scheduled_replies_pending_idx").on(table.status, table.scheduledFor),
+    index("scheduled_replies_campaign_lead_idx").on(
+      table.instantlyCampaignId,
+      table.leadEmail,
+    ),
+  ],
+);
