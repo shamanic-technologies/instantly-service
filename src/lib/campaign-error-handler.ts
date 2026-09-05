@@ -22,8 +22,7 @@ import { updateRun, type IdentityContext } from "./runs-client";
 import { settleHoldCost } from "./hold-settlement";
 import { sendEmail } from "./email-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
-
-const ADMIN_EMAIL = process.env.ADMIN_NOTIFICATION_EMAIL || "kevin@distribute.you";
+import { agencyInbox } from "./agency-inbox";
 
 export type CampaignErrorTerminal = "failed" | "cancelled";
 
@@ -169,7 +168,7 @@ export async function handleCampaignError(
         {
           appId: "instantly-service",
           eventType: "campaign-error",
-          recipientEmail: ADMIN_EMAIL,
+          recipientEmail: agencyInbox(),
           metadata: {
             campaignId: campaign.campaignId || "unknown",
             leadEmail: campaign.leadEmail || "unknown",
@@ -179,7 +178,7 @@ export async function handleCampaignError(
         },
         identity,
       );
-      console.log(`[campaign-error] Admin notification sent to ${ADMIN_EMAIL}`);
+      console.log(`[campaign-error] Admin notification sent to ${agencyInbox()}`);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(

@@ -29,6 +29,17 @@
  * it; on ours, both halves are in bronze and we send the SMTP reply ourselves
  * with `In-Reply-To` / `References`. Either way the prospect sees one thread.
  *
+ * ⚠️ THE AGENCY INBOX IS ON EVERY REPLY, IN CC — VISIBLE, NEVER BCC. A human
+ * has to be able to read the exchange and to be pulled INTO it, and only a CC
+ * survives a reply-all: on a BCC the prospect's answer never reaches them, so
+ * the thread silently goes back to being invisible the moment the conversation
+ * continues. The address has ONE home (`agency-inbox.ts`), shared with the
+ * positive-reply forward and the campaign-error notification.
+ *
+ * ⚠️ SEQUENCE SENDS CARRY NO CC. A visible agency address on cold outreach
+ * reads as a mail-merge to a prospect who has never spoken to us — this applies
+ * ONLY to the one-to-one answer, which is a conversation they started.
+ *
  * Declares NO cost — same reasoning as the sequence sends themselves: the
  * mailbox estate is a fixed cost we absorb rather than rebill, so a zero-priced
  * row would assert something false (see CLAUDE.md, "Sending declares NO cost").
@@ -38,6 +49,7 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../db";
 import { smtpDispatchRaw } from "../db/schema";
+import { agencyInbox } from "./agency-inbox";
 import {
   getAccount,
   listEmails,
@@ -107,6 +119,8 @@ export interface ReplyToLeadResult {
   /** The From header as the prospect sees it, persona included. */
   from: string;
   subject: string;
+  /** The agency inbox this reply was CC'd to, as the prospect sees it. */
+  cc: string;
   /** Identifier of the message we sent (Instantly's email id, or a Message-Id). */
   messageId: string;
   /** The message this one threads onto. Never null — a reply without one fails. */
@@ -354,6 +368,7 @@ async function recordInstantlyReply(input: {
   accountEmail: string;
   subject: string;
   bodyHtml: string;
+  cc: string;
   inReplyTo: string;
   outcome: "sent" | "transient";
   instantlyEmailId: string | null;
@@ -373,6 +388,7 @@ async function recordInstantlyReply(input: {
       kind: "manual_reply",
       transport: "instantly",
       subject: input.subject,
+      cc: input.cc,
       ...(input.outcome === "sent" ? { bodyHtml: input.bodyHtml } : {}),
       inReplyTo: input.inReplyTo,
       instantlyEmailId: input.instantlyEmailId,
@@ -428,6 +444,7 @@ async function replyOverInstantly(
   const account = await getAccount(key, accountEmail);
   const subject = replySubject(target.subject);
   const bodyHtml = buildReplyBodyWithSignature(input.bodyHtml, account);
+  const cc = agencyInbox();
 
   let sent: EmailRecord;
   try {
@@ -436,6 +453,9 @@ async function replyOverInstantly(
       replyToUuid: target.emailId,
       subject,
       bodyHtml,
+      // Comma-separated string, not an array — that is Instantly's contract for
+      // this field, and an array is not silently coerced into one.
+      ccAddressEmailList: cc,
     });
   } catch (error: unknown) {
     // Recorded even though it never left: the same evidence trail the smtp
@@ -445,6 +465,7 @@ async function replyOverInstantly(
       accountEmail,
       subject,
       bodyHtml,
+      cc,
       inReplyTo: target.emailId,
       outcome: "transient",
       instantlyEmailId: null,
@@ -470,6 +491,7 @@ async function replyOverInstantly(
     accountEmail,
     subject,
     bodyHtml,
+    cc,
     inReplyTo: target.emailId,
     outcome: "sent",
     instantlyEmailId: sent.id == null ? null : String(sent.id),
@@ -483,6 +505,7 @@ async function replyOverInstantly(
     accountEmail,
     from: buildFromHeader(account),
     subject,
+    cc,
     messageId: String(sent.id ?? ""),
     inReplyTo: target.emailId,
   };
@@ -528,10 +551,12 @@ async function replyOverSmtp(
   const subject = replySubject(anchor.subject);
   const html = buildReplyBodyWithSignature(input.bodyHtml, account);
   const from = buildFromHeader(account);
+  const cc = agencyInbox();
 
   const message = {
     from,
     to: campaign.leadEmail,
+    cc,
     subject,
     html,
     // No List-Unsubscribe pair: this is a one-to-one answer, not bulk mail, and
@@ -559,6 +584,7 @@ async function replyOverSmtp(
       payload: {
         kind: "manual_reply",
         subject,
+        cc,
         bodyHtml: html,
         inReplyTo: anchor.inReplyTo,
         references: anchor.references,
@@ -573,6 +599,7 @@ async function replyOverSmtp(
       accountEmail,
       from,
       subject,
+      cc,
       messageId: sent.messageId,
       inReplyTo: anchor.inReplyTo,
     };
@@ -594,6 +621,7 @@ async function replyOverSmtp(
         payload: {
           kind: "manual_reply",
           subject,
+          cc,
           inReplyTo: anchor.inReplyTo,
           error: error instanceof Error ? error.message : String(error),
         },

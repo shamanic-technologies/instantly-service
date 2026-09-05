@@ -46,9 +46,7 @@ import { sendEmail } from "./email-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { fetchSelfSendThread } from "./self-send/thread";
 import { POSITIVE_REPLY_KINDS } from "./reply-kind";
-
-/** The agency inbox that receives forwarded positive replies. */
-const AGENCY_INBOX = process.env.ADMIN_NOTIFICATION_EMAIL || "kevin@distribute.you";
+import { agencyInbox } from "./agency-inbox";
 
 /**
  * The reply kinds that mean "worth forwarding to the agency inbox". We forward
@@ -256,7 +254,7 @@ export async function sendThreadForward(
     {
       appId: "instantly-service",
       eventType: "positive-reply-forward",
-      recipientEmail: AGENCY_INBOX,
+      recipientEmail: agencyInbox(),
       metadata: {
         subject: threadSubject(messages),
         thread: renderThreadText(messages),
@@ -273,7 +271,7 @@ export async function sendThreadForward(
     },
   );
   console.log(
-    `[instantly-service] forward-positive-reply: sent thread (${messages.length} msg) for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${AGENCY_INBOX}`,
+    `[instantly-service] forward-positive-reply: sent thread (${messages.length} msg) for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${agencyInbox()}`,
   );
   return messages.length;
 }

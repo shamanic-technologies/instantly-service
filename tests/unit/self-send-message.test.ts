@@ -269,3 +269,22 @@ describe("classifyDispatchFailure", () => {
     expect(classifyDispatchFailure(null)).toBe("transient");
   });
 });
+
+describe("a sequence send carries NO cc", () => {
+  it("leaves cc absent — a visible agency address on cold outreach reads as a mail-merge", () => {
+    const message = buildMessage({
+      account: account(),
+      leadEmail: "prospect@example.com",
+      subject: "Quick question",
+      bodyHtml: "<p>Hi there</p>",
+      step: 1,
+      identity: IDENTITY,
+      unsubscribeUrl: "https://opt.test/u/payload/sig",
+      trackingOrigin: null,
+    });
+    // The agency inbox rides the one-to-one REPLY (lib/reply-to-lead), never
+    // the sequence. A prospect who has not spoken to us yet would see a
+    // stranger copied on a cold email.
+    expect(message).not.toHaveProperty("cc");
+  });
+});

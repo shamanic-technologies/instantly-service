@@ -846,6 +846,12 @@ export async function replyToEmail(
     replyToUuid: string;
     subject: string;
     bodyHtml: string;
+    /**
+     * Visible CC. Instantly wants a COMMA-SEPARATED STRING here, not an array
+     * (`cc_address_email_list` / `bcc_address_email_list` are both strings in
+     * the V2 contract) — an array is silently not a list of addresses.
+     */
+    ccAddressEmailList?: string;
   },
 ): Promise<EmailRecord> {
   return instantlyRequest<EmailRecord>(apiKey, "/emails/reply", {
@@ -855,6 +861,9 @@ export async function replyToEmail(
       reply_to_uuid: params.replyToUuid,
       subject: params.subject,
       body: { html: params.bodyHtml },
+      ...(params.ccAddressEmailList
+        ? { cc_address_email_list: params.ccAddressEmailList }
+        : {}),
     },
   });
 }

@@ -24,6 +24,8 @@ export const INSTANTLY_UNSUBSCRIBE_PLACEHOLDER = "{unsubscribe_link}";
 export interface BuiltMessage {
   from: string;
   to: string;
+  /** Visible CC. Absent on sequence sends — only a one-to-one reply carries one. */
+  cc?: string;
   subject: string;
   html: string;
   headers: Record<string, string>;
