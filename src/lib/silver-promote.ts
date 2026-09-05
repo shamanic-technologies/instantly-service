@@ -21,6 +21,7 @@ import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
 import { maybeStopOnClickForFunnel } from "./stop-on-click";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
+import { maybeEnqueueFollowupOnInterest } from "./enqueue-followup-on-interest";
 import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
 import { maybeMirrorCampaignEmails } from "./mirror-emails";
 import {
@@ -660,6 +661,12 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // Fail-soft — the qualification above is the primary job and stands
       // whatever this does. No-op on any other event.
       await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
+
+      // ...and enter that same buyer into lead-service's follow-up queue, owed an
+      // answer now. Without this the campaign above runs and finds nobody: the
+      // queue and its draining sweep both existed, and nothing had ever written a
+      // due date into them. Same gate as the trigger, fail-soft, never throws.
+      await maybeEnqueueFollowupOnInterest(campaign, input.leadEmail, input.eventType);
 
       // Mirror the conversation into bronze while Instantly still holds it. A
       // reply delivered cleanly by webhook never makes its campaign drift, so
