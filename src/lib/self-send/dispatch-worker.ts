@@ -30,6 +30,7 @@ import {
   type PendingSequence,
 } from "./dispatch";
 import { SEND_TRANSPORT_SMTP } from "./transport";
+import { dispatchScheduledReplies } from "../scheduled-replies-worker";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/dispatch" };
 
@@ -44,6 +45,17 @@ export interface DispatchSummary {
   /** Retryable; the step stays due for the next run. */
   transient: number;
   failed: number;
+  /**
+   * Answers to prospects who wrote back, held until their own business hours.
+   *
+   * Drained by the SAME run, from the SAME window, deliberately: a reply is the
+   * one message where landing at 23:05 local reads worst, and giving it its own
+   * schedule would be a second set of rules to keep in step with this one. It
+   * is NOT a sequence step — no hold, no step number, no capacity consumed.
+   */
+  repliesDue: number;
+  repliesSent: number;
+  repliesFailed: number;
 }
 
 /**
@@ -300,7 +312,27 @@ export async function runDispatch(
     senderBlocked: 0,
     transient: 0,
     failed: 0,
+    repliesDue: 0,
+    repliesSent: 0,
+    repliesFailed: 0,
   };
+
+  // Answer the prospects who are owed one FIRST. A waiting reply has already
+  // had its refusals checked and its moment chosen; a sequence step behind it
+  // has not. Fail-soft as a whole (each reply already fails loud on its own
+  // row): a queue problem here must not stop the fleet's sending for the hour.
+  try {
+    const replies = await dispatchScheduledReplies(asOf);
+    summary.repliesDue = replies.due;
+    summary.repliesSent = replies.sent;
+    summary.repliesFailed = replies.failed;
+  } catch (error) {
+    console.error(
+      `[instantly-service] self-send: scheduled-reply drain failed, sending anyway: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 
   // One credential lookup per mailbox per run, not per send: the vendor call
   // returns the whole fleet, so paying it per message would be dozens of

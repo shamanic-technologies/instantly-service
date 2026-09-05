@@ -17,7 +17,19 @@ vi.mock("../../src/db", () => ({
   },
 }));
 
-vi.mock("../../src/db/schema", () => ({ smtpDispatchRaw: { id: "id" } }));
+vi.mock("../../src/db/schema", () => ({
+  smtpDispatchRaw: { id: "id" },
+  scheduledReplies: { id: "id", scheduledFor: "scheduled_for" },
+}));
+
+// The waiting-reply drain rides the same run. It has its own tests; stubbing it
+// here keeps these assertions about SEQUENCE dispatch, and keeps the queued
+// `db.execute` reads below aligned with the reads the step path actually makes.
+const mockDispatchScheduledReplies = vi.fn();
+vi.mock("../../src/lib/scheduled-replies-worker", () => ({
+  dispatchScheduledReplies: (...args: unknown[]) =>
+    mockDispatchScheduledReplies(...args),
+}));
 
 vi.mock("../../src/lib/silver-promote", () => ({
   promoteEvent: (...args: unknown[]) => mockPromoteEvent(...args),
@@ -91,6 +103,12 @@ function primeReads(options: { hasBody?: boolean } = {}) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockDispatchScheduledReplies.mockResolvedValue({
+    pending: 0,
+    due: 0,
+    sent: 0,
+    failed: 0,
+  });
   mockInsertValues.mockReturnValue([{ id: "bronze-1" }]);
   mockPromoteEvent.mockResolvedValue({ promoted: true, silverEventId: "ev-1" });
   mockResolveCredential.mockResolvedValue({
@@ -233,5 +251,48 @@ describe("runDispatch — capacity", () => {
 
     expect(summary).toMatchObject({ sequencesRead: 1, due: 0, sent: 0 });
     expect(mockDispatchMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("runDispatch — waiting replies ride the same run", () => {
+  it("drains the queued replies and reports them in the summary", async () => {
+    primeReads();
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<m-1@x>",
+      response: "250 OK",
+      accepted: ["prospect@example.com"],
+      rejected: [],
+    });
+    mockDispatchScheduledReplies.mockResolvedValue({
+      pending: 3,
+      due: 2,
+      sent: 2,
+      failed: 0,
+    });
+
+    const summary = await runDispatch({ asOf: NOW });
+
+    // Same run, same asOf — the reply queue and the step queue read one clock.
+    expect(mockDispatchScheduledReplies).toHaveBeenCalledWith(NOW);
+    expect(summary).toMatchObject({ repliesDue: 2, repliesSent: 2, repliesFailed: 0 });
+    // And the sequence steps still went out.
+    expect(summary.sent).toBe(1);
+  });
+
+  it("keeps sending sequence steps when the reply drain fails", async () => {
+    primeReads();
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<m-1@x>",
+      response: "250 OK",
+      accepted: ["prospect@example.com"],
+      rejected: [],
+    });
+    mockDispatchScheduledReplies.mockRejectedValue(new Error("queue read failed"));
+
+    const summary = await runDispatch({ asOf: NOW });
+
+    // A queue problem must not stop the fleet's sending for the hour.
+    expect(summary.sent).toBe(1);
+    expect(summary).toMatchObject({ repliesDue: 0, repliesSent: 0 });
   });
 });

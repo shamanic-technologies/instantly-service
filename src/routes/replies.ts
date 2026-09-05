@@ -31,14 +31,28 @@ router.post("/", async (req: Request, res: Response) => {
   const { campaign_id, email, body_html } = parsed.data;
 
   try {
-    const result = await replyToLead({
+    const outcome = await replyToLead({
       orgId,
       userId,
       campaignId: campaign_id,
       leadEmail: email,
       bodyHtml: body_html,
     });
-    return res.status(200).json({ success: true, reply: result });
+
+    // Two successes, told apart by `status`. A reply produced outside the
+    // prospect's own business hours WAITS for their window to open and is sent
+    // by the same hourly worker that sends the sequence steps — the refusals
+    // above were all raised before that decision, so a scheduled reply is one
+    // we have already established can be sent.
+    if (outcome.status === "scheduled") {
+      return res
+        .status(202)
+        .json({ success: true, status: "scheduled", scheduled: outcome.scheduled });
+    }
+
+    return res
+      .status(200)
+      .json({ success: true, status: "sent", reply: outcome.reply });
   } catch (error: unknown) {
     // A named refusal the caller can branch on.
     if (error instanceof ReplyToLeadError) {
