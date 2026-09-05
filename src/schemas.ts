@@ -1269,6 +1269,11 @@ const ReplyToLeadResultSchema = z
       .describe("The mailbox that answered. Resolved by this service, never supplied by the caller."),
     from: z.string().describe("The From header as the prospect sees it, persona included"),
     subject: z.string().describe("The conversation's own subject under `Re:`"),
+    cc: z
+      .string()
+      .describe(
+        "The agency inbox this reply was CC'd to — VISIBLE to the prospect, so a reply-all reaches a human. Never a BCC.",
+      ),
     messageId: z.string().describe("Instantly's email id, or the RFC 5322 Message-Id we sent"),
     inReplyTo: z.string().describe("The prospect message this reply threads onto"),
   })
@@ -1303,6 +1308,7 @@ registry.registerPath({
     "Answer a prospect who wrote back, in the SAME email thread, from the SAME mailbox that originally contacted them, under the SAME persona they have been corresponding with.\n\n" +
     "**The sending identity is resolved here, never supplied.** Which mailbox answers comes from `instantly_campaigns.account_email` (persisted at send time), with the mailbox recorded on the inbound message as the fallback for a historical row. The display name and signature follow that account. A caller-supplied from-address would let a reply arrive from a mailbox this prospect has never heard from — the exact failure this endpoint exists to prevent.\n\n" +
     "**Threaded or nothing.** On the Instantly transport the reply goes out through `POST /emails/reply`, threaded onto the prospect's latest inbound message; on the self-send transport we dispatch it ourselves with `In-Reply-To` / `References` over the conversation we already hold in bronze. There is NO fallback to a fresh email: if the thread cannot be found the call fails with `code: \"no_reply_to_thread\"`.\n\n" +
+    "**The agency inbox is CC'd, visibly.** Every reply carries it as a CC (never a BCC) so a human can read the exchange and be pulled into it by a reply-all. Cold sequence sends carry no CC — this applies only to the one-to-one answer.\n\n" +
     "**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail, and the footer's `{unsubscribe_link}` merge variable only resolves on a campaign send.\n\n" +
     "**Cost:** none declared. The mailbox estate is a fixed cost we absorb rather than rebill, so a reply is priced exactly like the sequence sends themselves.",
   request: {

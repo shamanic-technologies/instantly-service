@@ -189,6 +189,7 @@ describe("replyToLead over Instantly", () => {
       replyToUuid: "inbound-1",
       subject: "Re: Quick question",
       bodyHtml: expect.stringContaining("Amy Moore"),
+      ccAddressEmailList: "kevin@distribute.you",
     });
     expect(result.transport).toBe("instantly");
     expect(result.accountEmail).toBe("amy@boostdistribute.com");
@@ -456,5 +457,95 @@ describe("replyToLead over the self-send transport", () => {
       status: 502,
     });
     expect(mockInsertValues.mock.calls[0][0]).toMatchObject({ outcome: "transient", step: 0 });
+  });
+});
+
+
+// ─── Agency inbox in CC ──────────────────────────────────────────────────────
+
+/**
+ * A human has to be able to read the exchange AND be pulled into it. Only a
+ * VISIBLE CC survives a reply-all — on a BCC the prospect's next answer never
+ * reaches the agency inbox, so the thread silently goes dark again the moment
+ * the conversation continues. Both transports carry it, because an inbox cannot
+ * tell which pipe a given reply happened to take.
+ */
+describe("the agency inbox rides every reply, in CC", () => {
+  it("CCs it on the Instantly transport, and never BCCs", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Hi" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    const result = await replyToLead(INPUT);
+
+    const body = mockReplyToEmail.mock.calls[0][1] as Record<string, unknown>;
+    // Instantly's contract for this field is a COMMA-SEPARATED STRING, not an
+    // array — an array is not silently coerced into one.
+    expect(body.ccAddressEmailList).toBe("kevin@distribute.you");
+    expect(typeof body.ccAddressEmailList).toBe("string");
+    expect(Object.keys(body)).not.toContain("bccAddressEmailList");
+    expect(result.cc).toBe("kevin@distribute.you");
+  });
+
+  it("CCs it on the self-send transport, and never BCCs", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow({ sendTransport: "smtp" })]))
+      .mockResolvedValueOnce(
+        pgResult([{ messageId: "<in-1@media.com>", subject: "Hi", at: "2026-09-01" }]),
+      )
+      .mockResolvedValueOnce(pgResult([{ messageId: "<in-1@media.com>" }]))
+      .mockResolvedValueOnce(pgResult([{ firstName: "Amy", lastName: "Moore" }]));
+    mockResolveCredential.mockResolvedValue({
+      address: "amy@boostdistribute.com",
+      appPassword: "pw",
+      smtpHost: "smtp.gmail.com",
+      imapHost: "imap.gmail.com",
+    });
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<out-1@boostdistribute.com>",
+      response: "250 OK",
+      accepted: ["alice@media.com"],
+      rejected: [],
+    });
+
+    const result = await replyToLead(INPUT);
+
+    const message = mockDispatchMessage.mock.calls[0][1] as Record<string, unknown>;
+    expect(message.cc).toBe("kevin@distribute.you");
+    expect(Object.keys(message)).not.toContain("bcc");
+    expect(message.headers).not.toHaveProperty("Bcc");
+    expect(result.cc).toBe("kevin@distribute.you");
+  });
+
+  it("follows ADMIN_NOTIFICATION_EMAIL — the address has ONE home, read at use", async () => {
+    const previous = process.env.ADMIN_NOTIFICATION_EMAIL;
+    process.env.ADMIN_NOTIFICATION_EMAIL = "inbox@agency.test";
+    try {
+      mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+      mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Hi" })]);
+      mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+      const result = await replyToLead(INPUT);
+
+      expect(result.cc).toBe("inbox@agency.test");
+    } finally {
+      if (previous === undefined) delete process.env.ADMIN_NOTIFICATION_EMAIL;
+      else process.env.ADMIN_NOTIFICATION_EMAIL = previous;
+    }
+  });
+
+  it("records the CC in bronze, so who was on the message stays recoverable", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Hi" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    await replyToLead(INPUT);
+
+    const row = mockInsertValues.mock.calls[0][0] as {
+      step: number;
+      payload: Record<string, unknown>;
+    };
+    expect(row.step).toBe(MANUAL_REPLY_STEP);
+    expect(row.payload.cc).toBe("kevin@distribute.you");
   });
 });
