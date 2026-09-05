@@ -1269,14 +1269,52 @@ const ReplyToLeadResultSchema = z
       .describe("The mailbox that answered. Resolved by this service, never supplied by the caller."),
     from: z.string().describe("The From header as the prospect sees it, persona included"),
     subject: z.string().describe("The conversation's own subject under `Re:`"),
+    cc: z
+      .string()
+      .describe(
+        "The agency inbox this reply was CC'd to — VISIBLE to the prospect, so a reply-all reaches a human. Never a BCC.",
+      ),
     messageId: z.string().describe("Instantly's email id, or the RFC 5322 Message-Id we sent"),
     inReplyTo: z.string().describe("The prospect message this reply threads onto"),
   })
   .openapi("ReplyToLeadResult");
 
+const ScheduledReplyResultSchema = z
+  .object({
+    transport: z.enum(["instantly", "smtp"]),
+    instantlyCampaignId: z.string(),
+    leadEmail: z.string(),
+    accountEmail: z
+      .string()
+      .describe("The mailbox that will answer. Resolved now, not at dispatch."),
+    subject: z.string(),
+    cc: z.string(),
+    timezone: z
+      .string()
+      .describe("The prospect's timezone the sending window was resolved in"),
+    scheduledFor: z
+      .string()
+      .describe(
+        "First instant the prospect's Mon-Fri 08:00-17:00 window opens, ISO 8601 UTC. A LOWER BOUND — a weekend still holds the reply to the next sending day.",
+      ),
+  })
+  .openapi("ScheduledReplyResult");
+
 const ReplyToLeadResponseSchema = z
-  .object({ success: z.literal(true), reply: ReplyToLeadResultSchema })
+  .object({
+    success: z.literal(true),
+    status: z.literal("sent"),
+    reply: ReplyToLeadResultSchema,
+  })
   .openapi("ReplyToLeadResponse");
+
+const ScheduledReplyResponseSchema = z
+  .object({
+    success: z.literal(true),
+    status: z.literal("scheduled"),
+    scheduled: ScheduledReplyResultSchema,
+  })
+  .openapi("ScheduledReplyResponse");
 
 const ReplyToLeadErrorSchema = z
   .object({
@@ -1303,7 +1341,9 @@ registry.registerPath({
     "Answer a prospect who wrote back, in the SAME email thread, from the SAME mailbox that originally contacted them, under the SAME persona they have been corresponding with.\n\n" +
     "**The sending identity is resolved here, never supplied.** Which mailbox answers comes from `instantly_campaigns.account_email` (persisted at send time), with the mailbox recorded on the inbound message as the fallback for a historical row. The display name and signature follow that account. A caller-supplied from-address would let a reply arrive from a mailbox this prospect has never heard from — the exact failure this endpoint exists to prevent.\n\n" +
     "**Threaded or nothing.** On the Instantly transport the reply goes out through `POST /emails/reply`, threaded onto the prospect's latest inbound message; on the self-send transport we dispatch it ourselves with `In-Reply-To` / `References` over the conversation we already hold in bronze. There is NO fallback to a fresh email: if the thread cannot be found the call fails with `code: \"no_reply_to_thread\"`.\n\n" +
+    "**The agency inbox is CC'd, visibly.** Every reply carries it as a CC (never a BCC) so a human can read the exchange and be pulled into it by a reply-all. Cold sequence sends carry no CC — this applies only to the one-to-one answer.\n\n" +
     "**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail, and the footer's `{unsubscribe_link}` merge variable only resolves on a campaign send.\n\n" +
+    "**The answer waits for the prospect's own business hours.** Everything else this service sends already does — a sequence step is held until the recipient's Mon-Fri 08:00-17:00 window opens in THEIR timezone. A reply produced outside it is enqueued (`202`, `status: \"scheduled\"`) and dispatched by the same hourly worker that sends the sequence steps, at the window's next opening; inside it, the reply goes out immediately (`200`, `status: \"sent\"`). Either way every refusal below is raised synchronously, before the decision. A scheduled reply is still NOT a sequence step: no hold, no step number, no capacity consumed.\n\n" +
     "**Cost:** none declared. The mailbox estate is a fixed cost we absorb rather than rebill, so a reply is priced exactly like the sequence sends themselves.",
   request: {
     headers: TrackingHeadersSchema,
@@ -1313,6 +1353,11 @@ registry.registerPath({
     200: {
       description: "The reply was sent into the lead's existing thread",
       content: { "application/json": { schema: ReplyToLeadResponseSchema } },
+    },
+    202: {
+      description:
+        "The prospect's sending window is closed, so the reply is queued and goes out when it next opens. Everything needed to send it was resolved and accepted.",
+      content: { "application/json": { schema: ScheduledReplyResponseSchema } },
     },
     400: {
       description: "Invalid body or missing x-user-id",

@@ -1488,12 +1488,19 @@
               true
             ]
           },
+          "status": {
+            "type": "string",
+            "enum": [
+              "sent"
+            ]
+          },
           "reply": {
             "$ref": "#/components/schemas/ReplyToLeadResult"
           }
         },
         "required": [
           "success",
+          "status",
           "reply"
         ]
       },
@@ -1526,6 +1533,10 @@
             "type": "string",
             "description": "The conversation's own subject under `Re:`"
           },
+          "cc": {
+            "type": "string",
+            "description": "The agency inbox this reply was CC'd to — VISIBLE to the prospect, so a reply-all reaches a human. Never a BCC."
+          },
           "messageId": {
             "type": "string",
             "description": "Instantly's email id, or the RFC 5322 Message-Id we sent"
@@ -1542,8 +1553,80 @@
           "accountEmail",
           "from",
           "subject",
+          "cc",
           "messageId",
           "inReplyTo"
+        ]
+      },
+      "ScheduledReplyResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "scheduled"
+            ]
+          },
+          "scheduled": {
+            "$ref": "#/components/schemas/ScheduledReplyResult"
+          }
+        },
+        "required": [
+          "success",
+          "status",
+          "scheduled"
+        ]
+      },
+      "ScheduledReplyResult": {
+        "type": "object",
+        "properties": {
+          "transport": {
+            "type": "string",
+            "enum": [
+              "instantly",
+              "smtp"
+            ]
+          },
+          "instantlyCampaignId": {
+            "type": "string"
+          },
+          "leadEmail": {
+            "type": "string"
+          },
+          "accountEmail": {
+            "type": "string",
+            "description": "The mailbox that will answer. Resolved now, not at dispatch."
+          },
+          "subject": {
+            "type": "string"
+          },
+          "cc": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "The prospect's timezone the sending window was resolved in"
+          },
+          "scheduledFor": {
+            "type": "string",
+            "description": "First instant the prospect's Mon-Fri 08:00-17:00 window opens, ISO 8601 UTC. A LOWER BOUND — a weekend still holds the reply to the next sending day."
+          }
+        },
+        "required": [
+          "transport",
+          "instantlyCampaignId",
+          "leadEmail",
+          "accountEmail",
+          "subject",
+          "cc",
+          "timezone",
+          "scheduledFor"
         ]
       },
       "ReplyToLeadError": {
@@ -5806,7 +5889,7 @@
     "/orgs/replies": {
       "post": {
         "summary": "Reply to a lead who replied, in their existing thread",
-        "description": "Answer a prospect who wrote back, in the SAME email thread, from the SAME mailbox that originally contacted them, under the SAME persona they have been corresponding with.\n\n**The sending identity is resolved here, never supplied.** Which mailbox answers comes from `instantly_campaigns.account_email` (persisted at send time), with the mailbox recorded on the inbound message as the fallback for a historical row. The display name and signature follow that account. A caller-supplied from-address would let a reply arrive from a mailbox this prospect has never heard from — the exact failure this endpoint exists to prevent.\n\n**Threaded or nothing.** On the Instantly transport the reply goes out through `POST /emails/reply`, threaded onto the prospect's latest inbound message; on the self-send transport we dispatch it ourselves with `In-Reply-To` / `References` over the conversation we already hold in bronze. There is NO fallback to a fresh email: if the thread cannot be found the call fails with `code: \"no_reply_to_thread\"`.\n\n**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail, and the footer's `{unsubscribe_link}` merge variable only resolves on a campaign send.\n\n**Cost:** none declared. The mailbox estate is a fixed cost we absorb rather than rebill, so a reply is priced exactly like the sequence sends themselves.",
+        "description": "Answer a prospect who wrote back, in the SAME email thread, from the SAME mailbox that originally contacted them, under the SAME persona they have been corresponding with.\n\n**The sending identity is resolved here, never supplied.** Which mailbox answers comes from `instantly_campaigns.account_email` (persisted at send time), with the mailbox recorded on the inbound message as the fallback for a historical row. The display name and signature follow that account. A caller-supplied from-address would let a reply arrive from a mailbox this prospect has never heard from — the exact failure this endpoint exists to prevent.\n\n**Threaded or nothing.** On the Instantly transport the reply goes out through `POST /emails/reply`, threaded onto the prospect's latest inbound message; on the self-send transport we dispatch it ourselves with `In-Reply-To` / `References` over the conversation we already hold in bronze. There is NO fallback to a fresh email: if the thread cannot be found the call fails with `code: \"no_reply_to_thread\"`.\n\n**The agency inbox is CC'd, visibly.** Every reply carries it as a CC (never a BCC) so a human can read the exchange and be pulled into it by a reply-all. Cold sequence sends carry no CC — this applies only to the one-to-one answer.\n\n**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail, and the footer's `{unsubscribe_link}` merge variable only resolves on a campaign send.\n\n**The answer waits for the prospect's own business hours.** Everything else this service sends already does — a sequence step is held until the recipient's Mon-Fri 08:00-17:00 window opens in THEIR timezone. A reply produced outside it is enqueued (`202`, `status: \"scheduled\"`) and dispatched by the same hourly worker that sends the sequence steps, at the window's next opening; inside it, the reply goes out immediately (`200`, `status: \"sent\"`). Either way every refusal below is raised synchronously, before the decision. A scheduled reply is still NOT a sequence step: no hold, no step number, no capacity consumed.\n\n**Cost:** none declared. The mailbox estate is a fixed cost we absorb rather than rebill, so a reply is priced exactly like the sequence sends themselves.",
         "parameters": [
           {
             "schema": {
@@ -5895,6 +5978,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReplyToLeadResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "The prospect's sending window is closed, so the reply is queued and goes out when it next opens. Everything needed to send it was resolved and accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledReplyResponse"
                 }
               }
             }

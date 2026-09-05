@@ -1,0 +1,26 @@
+-- The exactly-once claim for "ring the brand's sales rep when a sales interest
+-- lands" (src/lib/ring-rep-on-sales-interest.ts).
+--
+-- One prospect who says "yes, interested" is worth exactly one phone call. The
+-- same sales-interest signal legitimately arrives more than once -- a webhook
+-- retry, a reconcile re-poll, and a re-qualification (interested -> meeting
+-- booked -> closed) each promote a distinct positive event -- so "we already
+-- rang for this lead" cannot be inferred from the event stream. It is claimed,
+-- atomically, on this column: the first positive event sets it with
+-- `UPDATE ... WHERE sales_interest_call_at IS NULL RETURNING` and every later
+-- one finds it non-null and stops before any call is placed.
+--
+-- Released back to NULL when the call itself could not be placed, so a later
+-- positive signal re-attempts. That biases the pair against the failure nobody
+-- wants -- two calls about one reply -- while still self-healing a transient
+-- brand-service / apollo-service / twilio-service error. Identical shape and
+-- reasoning to `positive_reply_forwarded_at` (migration 0028), deliberately: two
+-- side effects that must happen at most once per lead should not claim two
+-- different ways.
+--
+-- NULL = the rep has never been rung about this lead. Every historical row stays
+-- NULL and nothing is retroactive: the side effect fires only on the FIRST
+-- promotion of an event, so it reaches replies arriving from here on. Rolling it
+-- back is `ALTER TABLE instantly_campaigns DROP COLUMN sales_interest_call_at`,
+-- after which the side effect simply cannot claim and no call is placed.
+ALTER TABLE "instantly_campaigns" ADD COLUMN IF NOT EXISTS "sales_interest_call_at" timestamp;

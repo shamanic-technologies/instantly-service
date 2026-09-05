@@ -29,6 +29,17 @@
  * it; on ours, both halves are in bronze and we send the SMTP reply ourselves
  * with `In-Reply-To` / `References`. Either way the prospect sees one thread.
  *
+ * ⚠️ THE AGENCY INBOX IS ON EVERY REPLY, IN CC — VISIBLE, NEVER BCC. A human
+ * has to be able to read the exchange and to be pulled INTO it, and only a CC
+ * survives a reply-all: on a BCC the prospect's answer never reaches them, so
+ * the thread silently goes back to being invisible the moment the conversation
+ * continues. The address has ONE home (`agency-inbox.ts`), shared with the
+ * positive-reply forward and the campaign-error notification.
+ *
+ * ⚠️ SEQUENCE SENDS CARRY NO CC. A visible agency address on cold outreach
+ * reads as a mail-merge to a prospect who has never spoken to us — this applies
+ * ONLY to the one-to-one answer, which is a conversation they started.
+ *
  * Declares NO cost — same reasoning as the sequence sends themselves: the
  * mailbox estate is a fixed cost we absorb rather than rebill, so a zero-priced
  * row would assert something false (see CLAUDE.md, "Sending declares NO cost").
@@ -38,6 +49,7 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../db";
 import { smtpDispatchRaw } from "../db/schema";
+import { agencyInbox } from "./agency-inbox";
 import {
   getAccount,
   listEmails,
@@ -47,7 +59,10 @@ import {
 } from "./instantly-client";
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { buildReplyBodyWithSignature } from "./send-lead";
-import { resolveMailboxCredential } from "./self-send/mailbox-credentials";
+import {
+  resolveMailboxCredential,
+  type MailboxCredential,
+} from "./self-send/mailbox-credentials";
 import { buildFromHeader, subjectForStep } from "./self-send/message";
 import { dispatchMessage } from "./self-send/smtp";
 import {
@@ -55,6 +70,13 @@ import {
   SEND_TRANSPORT_SMTP,
   type SendTransport,
 } from "./self-send/transport";
+import { isSendingDay } from "./sending-calendar";
+import {
+  isWithinLocalSendWindow,
+  nextLocalSendInstant,
+  resolveLeadTimezone,
+} from "./sending-window";
+import { enqueueScheduledReply } from "./scheduled-replies";
 
 const CALLER: CallerInfo = { method: "POST", path: "/orgs/replies" };
 
@@ -107,11 +129,69 @@ export interface ReplyToLeadResult {
   /** The From header as the prospect sees it, persona included. */
   from: string;
   subject: string;
+  /** The agency inbox this reply was CC'd to, as the prospect sees it. */
+  cc: string;
   /** Identifier of the message we sent (Instantly's email id, or a Message-Id). */
   messageId: string;
   /** The message this one threads onto. Never null — a reply without one fails. */
   inReplyTo: string;
 }
+
+/**
+ * A reply that has been fully resolved but not yet sent.
+ *
+ * Producing this is what keeps every named refusal SYNCHRONOUS even when the
+ * dispatch itself waits for the prospect's morning: the thread, the mailbox and
+ * the credential are all checked while the caller is still on the phone. The
+ * prepared values are deliberately DISCARDED when the reply is deferred — the
+ * drain re-resolves the anchor, because a newer inbound message may have
+ * arrived in the meantime and the answer belongs under whatever they said last.
+ */
+interface PreparedInstantlyReply {
+  transport: "instantly";
+  key: string;
+  target: { emailId: string; subject: string; eaccount: string | null };
+  accountEmail: string;
+  account: Account;
+  subject: string;
+  bodyHtml: string;
+  cc: string;
+}
+
+interface PreparedSmtpReply {
+  transport: typeof SEND_TRANSPORT_SMTP;
+  anchor: SelfSendThreadAnchor;
+  accountEmail: string;
+  credential: MailboxCredential;
+  account: Account;
+  subject: string;
+  bodyHtml: string;
+  from: string;
+  cc: string;
+}
+
+/** A reply that is waiting for the prospect's own business hours to open. */
+export interface ScheduledReplyResult {
+  transport: SendTransport;
+  instantlyCampaignId: string;
+  leadEmail: string;
+  /** The mailbox that will answer — resolved now, not at dispatch. */
+  accountEmail: string;
+  subject: string;
+  cc: string;
+  /** The prospect's timezone the window was resolved in. */
+  timezone: string;
+  /** The first instant their window opens, ISO 8601 UTC. A LOWER BOUND. */
+  scheduledFor: string;
+}
+
+/**
+ * What happened to the answer: it went out, or it is waiting for the prospect's
+ * morning. Both are successes; a refusal throws `ReplyToLeadError`.
+ */
+export type ReplyToLeadOutcome =
+  | { status: "sent"; reply: ReplyToLeadResult }
+  | { status: "scheduled"; scheduled: ScheduledReplyResult };
 
 export interface CampaignRow {
   /** The stored campaign row this sequence belongs to. */
@@ -122,6 +202,12 @@ export interface CampaignRow {
   sendTransport: SendTransport;
   /** When the row was created — the order the sequences happened in. */
   createdAt: string | null;
+  /**
+   * The prospect's IANA timezone, raw as the caller supplied it at send time
+   * (migration 0046). Null on a row written before it; the fleet default then
+   * applies, the same zone the Instantly schedule degrades to.
+   */
+  timezone: string | null;
 }
 
 /**
@@ -159,6 +245,7 @@ export async function loadCampaignSequences(
       c.lead_email            AS "leadEmail",
       c.account_email         AS "accountEmail",
       c.send_transport        AS "sendTransport",
+      c.timezone              AS "timezone",
       c.created_at            AS "createdAt"
     FROM instantly_campaigns c
     WHERE c.org_id = ${orgId}
@@ -184,6 +271,10 @@ export async function loadCampaignSequences(
       row.createdAt === null || row.createdAt === undefined
         ? null
         : String(row.createdAt),
+    timezone:
+      row.timezone === null || row.timezone === undefined
+        ? null
+        : String(row.timezone),
   }));
 }
 
@@ -354,6 +445,7 @@ async function recordInstantlyReply(input: {
   accountEmail: string;
   subject: string;
   bodyHtml: string;
+  cc: string;
   inReplyTo: string;
   outcome: "sent" | "transient";
   instantlyEmailId: string | null;
@@ -373,6 +465,7 @@ async function recordInstantlyReply(input: {
       kind: "manual_reply",
       transport: "instantly",
       subject: input.subject,
+      cc: input.cc,
       ...(input.outcome === "sent" ? { bodyHtml: input.bodyHtml } : {}),
       inReplyTo: input.inReplyTo,
       instantlyEmailId: input.instantlyEmailId,
@@ -395,11 +488,18 @@ async function recordInstantlyReply(input: {
   await Promise.resolve(db.insert(smtpDispatchRaw).values(row)).catch(() => {});
 }
 
-/** Instantly holds the thread; ask it to answer inside it. */
-async function replyOverInstantly(
+/**
+ * Instantly holds the thread — resolve everything the answer needs from it.
+ *
+ * Split from the dispatch on purpose. A reply produced outside the prospect's
+ * business hours WAITS, and a caller must still learn synchronously that there
+ * is no thread to answer into or no mailbox that can answer — deferring those
+ * refusals would turn a named 409 into a silent failure hours later.
+ */
+async function prepareInstantlyReply(
   campaign: CampaignRow,
   input: ReplyToLeadInput,
-): Promise<ReplyToLeadResult> {
+): Promise<PreparedInstantlyReply> {
   const { key } = await resolveInstantlyApiKey(input.orgId, input.userId, CALLER);
 
   const records = await listEmails(key, {
@@ -427,7 +527,25 @@ async function replyOverInstantly(
 
   const account = await getAccount(key, accountEmail);
   const subject = replySubject(target.subject);
-  const bodyHtml = buildReplyBodyWithSignature(input.bodyHtml, account);
+
+  return {
+    transport: "instantly",
+    key,
+    target,
+    accountEmail,
+    account,
+    subject,
+    bodyHtml: buildReplyBodyWithSignature(input.bodyHtml, account),
+    cc: agencyInbox(),
+  };
+}
+
+/** Send the prepared Instantly reply and record what happened. */
+async function deliverInstantlyReply(
+  campaign: CampaignRow,
+  prepared: PreparedInstantlyReply,
+): Promise<ReplyToLeadResult> {
+  const { key, target, accountEmail, account, subject, bodyHtml, cc } = prepared;
 
   let sent: EmailRecord;
   try {
@@ -436,6 +554,9 @@ async function replyOverInstantly(
       replyToUuid: target.emailId,
       subject,
       bodyHtml,
+      // Comma-separated string, not an array — that is Instantly's contract for
+      // this field, and an array is not silently coerced into one.
+      ccAddressEmailList: cc,
     });
   } catch (error: unknown) {
     // Recorded even though it never left: the same evidence trail the smtp
@@ -445,6 +566,7 @@ async function replyOverInstantly(
       accountEmail,
       subject,
       bodyHtml,
+      cc,
       inReplyTo: target.emailId,
       outcome: "transient",
       instantlyEmailId: null,
@@ -470,6 +592,7 @@ async function replyOverInstantly(
     accountEmail,
     subject,
     bodyHtml,
+    cc,
     inReplyTo: target.emailId,
     outcome: "sent",
     instantlyEmailId: sent.id == null ? null : String(sent.id),
@@ -483,16 +606,22 @@ async function replyOverInstantly(
     accountEmail,
     from: buildFromHeader(account),
     subject,
+    cc,
     messageId: String(sent.id ?? ""),
     inReplyTo: target.emailId,
   };
 }
 
-/** We hold the thread; send the reply ourselves and record what happened. */
-async function replyOverSmtp(
+/**
+ * We hold the thread — resolve everything the answer needs from bronze.
+ *
+ * Same split, same reason as the Instantly branch: the refusals stay
+ * synchronous even when the dispatch itself waits for the prospect's morning.
+ */
+async function prepareSmtpReply(
   campaign: CampaignRow,
   input: ReplyToLeadInput,
-): Promise<ReplyToLeadResult> {
+): Promise<PreparedSmtpReply> {
   const anchor = await loadSelfSendAnchor(campaign.instantlyCampaignId);
   if (!anchor) {
     throw new ReplyToLeadError(
@@ -525,15 +654,33 @@ async function replyOverSmtp(
   }
 
   const account = await loadSelfSendAccount(accountEmail);
-  const subject = replySubject(anchor.subject);
-  const html = buildReplyBodyWithSignature(input.bodyHtml, account);
-  const from = buildFromHeader(account);
+
+  return {
+    transport: SEND_TRANSPORT_SMTP,
+    anchor,
+    accountEmail,
+    credential,
+    account,
+    subject: replySubject(anchor.subject),
+    bodyHtml: buildReplyBodyWithSignature(input.bodyHtml, account),
+    from: buildFromHeader(account),
+    cc: agencyInbox(),
+  };
+}
+
+/** Send the prepared reply ourselves and record what happened. */
+async function deliverSmtpReply(
+  campaign: CampaignRow,
+  prepared: PreparedSmtpReply,
+): Promise<ReplyToLeadResult> {
+  const { anchor, accountEmail, credential, subject, bodyHtml, from, cc } = prepared;
 
   const message = {
     from,
     to: campaign.leadEmail,
+    cc,
     subject,
-    html,
+    html: bodyHtml,
     // No List-Unsubscribe pair: this is a one-to-one answer, not bulk mail, and
     // the original outreach already carried it.
     headers: {} as Record<string, string>,
@@ -559,7 +706,8 @@ async function replyOverSmtp(
       payload: {
         kind: "manual_reply",
         subject,
-        bodyHtml: html,
+        cc,
+        bodyHtml,
         inReplyTo: anchor.inReplyTo,
         references: anchor.references,
         accepted: sent.accepted,
@@ -573,6 +721,7 @@ async function replyOverSmtp(
       accountEmail,
       from,
       subject,
+      cc,
       messageId: sent.messageId,
       inReplyTo: anchor.inReplyTo,
     };
@@ -594,6 +743,7 @@ async function replyOverSmtp(
         payload: {
           kind: "manual_reply",
           subject,
+          cc,
           inReplyTo: anchor.inReplyTo,
           error: error instanceof Error ? error.message : String(error),
         },
@@ -611,12 +761,55 @@ async function replyOverSmtp(
 }
 
 /**
+ * True when the prospect can be mailed at this instant — the SAME two gates the
+ * sequence dispatch worker applies, in the same order, from the same modules.
+ *
+ * Nothing here is reply-specific: `isSendingDay` is the fleet's Mon-Fri
+ * calendar and `isWithinLocalSendWindow` is the prospect's own 08:00-17:00 in
+ * their own timezone, with the fleet default when we hold none. Do NOT add a
+ * reply-only rule to either — the queue's existing behaviour IS the answer.
+ */
+export function canSendReplyNow(
+  asOf: Date,
+  timezone: string | null | undefined,
+): boolean {
+  return isSendingDay(asOf) && isWithinLocalSendWindow(asOf, timezone);
+}
+
+export interface ReplyToLeadOptions {
+  asOf?: Date;
+  /**
+   * Whether a reply produced outside the prospect's window waits.
+   *
+   * The drain passes `false`: it has already checked the window itself and is
+   * dispatching what it selected, so re-deferring there would put a reply back
+   * in the queue it was just taken out of.
+   */
+  deferOutsideWindow?: boolean;
+}
+
+/**
  * Answer a lead who replied, in their own thread, from the mailbox that
- * contacted them. Throws `ReplyToLeadError` on every refusal.
+ * contacted them — at a sane hour in THEIR day.
+ *
+ * ⚠️ THE ANSWER WAITS FOR THE PROSPECT'S BUSINESS HOURS, exactly like every
+ * other message this service sends. A reply produced at 23:00 their time is
+ * enqueued and goes out when their window next opens, drained by the SAME
+ * hourly worker that sends the sequence steps. Nothing about the reply becomes
+ * a sequence step: it takes no `sequence_steps` row and no `sequence_costs`
+ * hold, and it is still recorded in bronze at step 0 when it goes out.
+ *
+ * Every refusal is raised BEFORE that decision, so a caller learns immediately
+ * that there is no thread, no mailbox or no credential rather than hours later.
+ *
+ * Throws `ReplyToLeadError` on every refusal.
  */
 export async function replyToLead(
   input: ReplyToLeadInput,
-): Promise<ReplyToLeadResult> {
+  options: ReplyToLeadOptions = {},
+): Promise<ReplyToLeadOutcome> {
+  const asOf = options.asOf ?? new Date();
+
   const campaign = await loadCampaign(
     input.orgId,
     input.campaignId,
@@ -630,7 +823,48 @@ export async function replyToLead(
     );
   }
 
-  return campaign.sendTransport === SEND_TRANSPORT_SMTP
-    ? replyOverSmtp(campaign, input)
-    : replyOverInstantly(campaign, input);
+  const prepared =
+    campaign.sendTransport === SEND_TRANSPORT_SMTP
+      ? await prepareSmtpReply(campaign, input)
+      : await prepareInstantlyReply(campaign, input);
+
+  if (
+    options.deferOutsideWindow !== false &&
+    !canSendReplyNow(asOf, campaign.timezone)
+  ) {
+    const timezone = resolveLeadTimezone(campaign.timezone);
+    const scheduledFor = nextLocalSendInstant(asOf, timezone);
+
+    const row = await enqueueScheduledReply({
+      orgId: input.orgId,
+      userId: input.userId,
+      campaignId: campaign.campaignId,
+      instantlyCampaignId: campaign.instantlyCampaignId,
+      leadEmail: campaign.leadEmail,
+      bodyHtml: input.bodyHtml,
+      timezone: campaign.timezone,
+      scheduledFor,
+    });
+
+    return {
+      status: "scheduled",
+      scheduled: {
+        transport: campaign.sendTransport,
+        instantlyCampaignId: campaign.instantlyCampaignId,
+        leadEmail: campaign.leadEmail,
+        accountEmail: prepared.accountEmail,
+        subject: prepared.subject,
+        cc: prepared.cc,
+        timezone,
+        scheduledFor: (row.scheduledFor ?? scheduledFor).toISOString(),
+      },
+    };
+  }
+
+  const reply =
+    prepared.transport === SEND_TRANSPORT_SMTP
+      ? await deliverSmtpReply(campaign, prepared)
+      : await deliverInstantlyReply(campaign, prepared);
+
+  return { status: "sent", reply };
 }

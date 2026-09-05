@@ -23,6 +23,7 @@ import { maybeStopOnClickForFunnel } from "./stop-on-click";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
 import { maybeEnqueueFollowupOnInterest } from "./enqueue-followup-on-interest";
 import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
+import { maybeRingRepOnSalesInterest } from "./ring-rep-on-sales-interest";
 import { maybeMirrorCampaignEmails } from "./mirror-emails";
 import {
   DEAL_PROGRESS_TO_REPLY_KIND,
@@ -675,6 +676,22 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // deletes those words permanently, so they are copied at the moment we
       // learn they exist. Fail-soft, never throws. No-op on any other event.
       await maybeMirrorCampaignEmails(campaign, input.eventType);
+
+      // ...and ring the brand's sales rep about that buyer, offering to connect
+      // them to the prospect right there. Same gate as the two above.
+      //
+      // ⚠️ DELIBERATELY NOT AWAITED. It waits, bounded, for Apollo to deliver the
+      // prospect's phone number (asynchronous by Apollo's own design), and this
+      // runs inside Instantly's webhook, which counts a slow delivery toward
+      // DISABLING the whole subscription — that has already cost this service a
+      // six-day outage once. So it is launched detached and the qualification
+      // answers immediately; it claims its own at-most-once column and swallows
+      // every failure itself. Placed AFTER the mirror on purpose: the mirror is
+      // what puts the prospect's words in bronze, and the call reads them out.
+      void maybeRingRepOnSalesInterest(campaign, input.leadEmail, input.eventType).catch(
+        (error: unknown) =>
+          console.warn("[instantly-service] ring-rep: detached run failed —", error),
+      );
     }
   }
 

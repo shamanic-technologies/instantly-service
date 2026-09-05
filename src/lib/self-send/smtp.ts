@@ -116,6 +116,7 @@ export async function dispatchMessage(
     const info = await transport.sendMail({
       from: message.from,
       to: message.to,
+      ...(message.cc ? { cc: message.cc } : {}),
       subject: message.subject,
       html: message.html,
       headers: message.headers,
@@ -124,12 +125,21 @@ export async function dispatchMessage(
     });
 
     const rejected = (info.rejected ?? []).map(String);
-    if (rejected.length > 0 || (info.accepted ?? []).length === 0) {
+    const accepted = (info.accepted ?? []).map(String);
+
+    // The PROSPECT is the recipient that decides the outcome. A message carries
+    // at most one of them, so on a sequence send this is exactly the old
+    // "nothing was accepted" test; on a one-to-one reply it additionally means
+    // a refused CC cannot report a reply the prospect DID receive as a failure,
+    // which would invite a resend and mail them twice. A rejected CC is still
+    // returned in `rejected`, so it stays visible in bronze.
+    const to = message.to.toLowerCase();
+    if (!accepted.some((address) => address.toLowerCase() === to)) {
       throw new SmtpDispatchError(
         "permanent",
         null,
         info.response ?? "",
-        `SMTP accepted no recipient for ${message.to} (rejected: ${rejected.join(", ") || "none"})`,
+        `SMTP did not accept ${message.to} (accepted: ${accepted.join(", ") || "none"}; rejected: ${rejected.join(", ") || "none"})`,
       );
     }
 

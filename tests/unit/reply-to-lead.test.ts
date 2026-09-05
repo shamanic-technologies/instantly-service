@@ -10,7 +10,10 @@ vi.mock("../../src/db", () => ({
     insert: () => ({ values: (...a: unknown[]) => mockInsertValues(...a) }),
   },
 }));
-vi.mock("../../src/db/schema", () => ({ smtpDispatchRaw: { id: "id" } }));
+vi.mock("../../src/db/schema", () => ({
+  smtpDispatchRaw: { id: "id" },
+  scheduledReplies: { id: "id", scheduledFor: "scheduled_for" },
+}));
 
 const mockListEmails = vi.fn();
 const mockGetAccount = vi.fn();
@@ -105,6 +108,26 @@ function campaignRow(over: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * A Wednesday 09:00 in `America/Chicago` — inside the fleet default window, so
+ * a reply sent at this instant goes out immediately. Pinned rather than `new
+ * Date()`: the endpoint now WAITS outside the prospect's business hours, so a
+ * test on real time would pass or schedule depending on the hour it ran at.
+ */
+const IN_WINDOW = new Date("2026-09-02T14:00:00.000Z");
+
+/** A Wednesday 23:00 local in the same zone — the window is closed. */
+const OUT_OF_WINDOW = new Date("2026-09-03T04:00:00.000Z");
+
+/** Reply at an instant the prospect can be mailed, and assert it went out. */
+async function sendNow(input = INPUT) {
+  const outcome = await replyToLead(input, { asOf: IN_WINDOW });
+  if (outcome.status !== "sent") {
+    throw new Error(`expected the reply to be sent, got "${outcome.status}"`);
+  }
+  return outcome.reply;
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   mockResolveKey.mockResolvedValue({ key: "k", keySource: "platform" });
@@ -182,13 +205,14 @@ describe("replyToLead over Instantly", () => {
     ]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
-    const result = await replyToLead(INPUT);
+    const result = await sendNow();
 
     expect(mockReplyToEmail).toHaveBeenCalledWith("k", {
       eaccount: "amy@boostdistribute.com",
       replyToUuid: "inbound-1",
       subject: "Re: Quick question",
       bodyHtml: expect.stringContaining("Amy Moore"),
+      ccAddressEmailList: "kevin@distribute.you",
     });
     expect(result.transport).toBe("instantly");
     expect(result.accountEmail).toBe("amy@boostdistribute.com");
@@ -204,7 +228,7 @@ describe("replyToLead over Instantly", () => {
     ]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
-    const result = await replyToLead(INPUT);
+    const result = await sendNow();
     expect(result.accountEmail).toBe("louis@maildistribute.com");
   });
 
@@ -212,7 +236,7 @@ describe("replyToLead over Instantly", () => {
     mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
     mockListEmails.mockResolvedValue([email({ id: "ours", ue_type: 1 })]);
 
-    await expect(replyToLead(INPUT)).rejects.toMatchObject({
+    await expect(sendNow()).rejects.toMatchObject({
       code: "no_reply_to_thread",
       status: 409,
     });
@@ -223,7 +247,7 @@ describe("replyToLead over Instantly", () => {
     mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow({ accountEmail: null })]));
     mockListEmails.mockResolvedValue([email({ id: "inbound-1", eaccount: "" })]);
 
-    await expect(replyToLead(INPUT)).rejects.toMatchObject({
+    await expect(sendNow()).rejects.toMatchObject({
       code: "sending_account_unresolved",
       status: 409,
     });
@@ -235,7 +259,7 @@ describe("replyToLead over Instantly", () => {
     mockListEmails.mockResolvedValue([email({ id: "inbound-1" })]);
     mockReplyToEmail.mockRejectedValue(new Error("Instantly 402"));
 
-    await expect(replyToLead(INPUT)).rejects.toMatchObject({
+    await expect(sendNow()).rejects.toMatchObject({
       code: "reply_dispatch_failed",
       status: 502,
     });
@@ -248,7 +272,7 @@ describe("replyToLead over Instantly", () => {
     ]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
-    await replyToLead(INPUT);
+    await sendNow();
 
     // Instantly holds this reply too — but only until the plan is cancelled,
     // which permanently deletes every conversation those mailboxes carried.
@@ -276,7 +300,7 @@ describe("replyToLead over Instantly", () => {
     mockListEmails.mockResolvedValue([email({ id: "inbound-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
-    await replyToLead(INPUT);
+    await sendNow();
 
     // `sent-1` is Instantly's own email UUID; it appears in no mail header, so
     // it could never match an In-Reply-To / References on the prospect's next
@@ -293,7 +317,7 @@ describe("replyToLead over Instantly", () => {
     mockListEmails.mockResolvedValue([email({ id: "inbound-1" })]);
     mockReplyToEmail.mockRejectedValue(new Error("Instantly 402"));
 
-    await expect(replyToLead(INPUT)).rejects.toMatchObject({
+    await expect(sendNow()).rejects.toMatchObject({
       code: "reply_dispatch_failed",
     });
 
@@ -311,7 +335,7 @@ describe("replyToLead over Instantly", () => {
     mockInsertValues.mockRejectedValueOnce(new Error("db down"));
 
     // The caller must still learn why the reply did not go out.
-    await expect(replyToLead(INPUT)).rejects.toMatchObject({
+    await expect(sendNow()).rejects.toMatchObject({
       code: "reply_dispatch_failed",
       status: 502,
     });
@@ -321,7 +345,7 @@ describe("replyToLead over Instantly", () => {
 describe("replyToLead lookup", () => {
   it("404s campaign_not_found when this org holds no campaign for the lead", async () => {
     mockDbExecute.mockResolvedValueOnce(pgResult([]));
-    await expect(replyToLead(INPUT)).rejects.toMatchObject({
+    await expect(sendNow()).rejects.toMatchObject({
       code: "campaign_not_found",
       status: 404,
     });
@@ -332,14 +356,14 @@ describe("replyToLead lookup", () => {
     mockListEmails.mockResolvedValue([email({ id: "inbound-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
-    await replyToLead(INPUT);
+    await sendNow();
     const sqlText = extractSqlText(mockDbExecute.mock.calls[0][0]);
     expect(sqlText.toLowerCase()).toContain("lower(c.lead_email)");
   });
 
   it("is a ReplyToLeadError so a caller can branch on the code", async () => {
     mockDbExecute.mockResolvedValueOnce(pgResult([]));
-    await expect(replyToLead(INPUT)).rejects.toBeInstanceOf(ReplyToLeadError);
+    await expect(sendNow()).rejects.toBeInstanceOf(ReplyToLeadError);
   });
 });
 
@@ -384,7 +408,7 @@ describe("replyToLead over the self-send transport", () => {
       rejected: [],
     });
 
-    const result = await replyToLead(INPUT);
+    const result = await sendNow();
 
     const message = mockDispatchMessage.mock.calls[0][1];
     expect(message.inReplyTo).toBe("<their-2@mail>");
@@ -407,7 +431,7 @@ describe("replyToLead over the self-send transport", () => {
       rejected: [],
     });
 
-    await replyToLead(INPUT);
+    await sendNow();
 
     expect(MANUAL_REPLY_STEP).toBe(0);
     const row = mockInsertValues.mock.calls[0][0];
@@ -425,7 +449,7 @@ describe("replyToLead over the self-send transport", () => {
     primeSelfSend();
     mockResolveCredential.mockRejectedValue(new Error("no mailbox"));
 
-    await expect(replyToLead(INPUT)).rejects.toMatchObject({
+    await expect(sendNow()).rejects.toMatchObject({
       code: "mailbox_credential_unavailable",
       status: 409,
     });
@@ -439,7 +463,7 @@ describe("replyToLead over the self-send transport", () => {
       )
       .mockResolvedValueOnce(pgResult([]));
 
-    await expect(replyToLead(INPUT)).rejects.toMatchObject({
+    await expect(sendNow()).rejects.toMatchObject({
       code: "no_reply_to_thread",
       status: 409,
     });
@@ -451,10 +475,204 @@ describe("replyToLead over the self-send transport", () => {
     mockResolveCredential.mockResolvedValue(CREDENTIAL);
     mockDispatchMessage.mockRejectedValue(new Error("550 blocked"));
 
-    await expect(replyToLead(INPUT)).rejects.toMatchObject({
+    await expect(sendNow()).rejects.toMatchObject({
       code: "reply_dispatch_failed",
       status: 502,
     });
     expect(mockInsertValues.mock.calls[0][0]).toMatchObject({ outcome: "transient", step: 0 });
+  });
+});
+
+
+// ─── Agency inbox in CC ──────────────────────────────────────────────────────
+
+/**
+ * A human has to be able to read the exchange AND be pulled into it. Only a
+ * VISIBLE CC survives a reply-all — on a BCC the prospect's next answer never
+ * reaches the agency inbox, so the thread silently goes dark again the moment
+ * the conversation continues. Both transports carry it, because an inbox cannot
+ * tell which pipe a given reply happened to take.
+ */
+describe("the agency inbox rides every reply, in CC", () => {
+  it("CCs it on the Instantly transport, and never BCCs", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Hi" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    const result = await sendNow();
+
+    const body = mockReplyToEmail.mock.calls[0][1] as Record<string, unknown>;
+    // Instantly's contract for this field is a COMMA-SEPARATED STRING, not an
+    // array — an array is not silently coerced into one.
+    expect(body.ccAddressEmailList).toBe("kevin@distribute.you");
+    expect(typeof body.ccAddressEmailList).toBe("string");
+    expect(Object.keys(body)).not.toContain("bccAddressEmailList");
+    expect(result.cc).toBe("kevin@distribute.you");
+  });
+
+  it("CCs it on the self-send transport, and never BCCs", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow({ sendTransport: "smtp" })]))
+      .mockResolvedValueOnce(
+        pgResult([{ messageId: "<in-1@media.com>", subject: "Hi", at: "2026-09-01" }]),
+      )
+      .mockResolvedValueOnce(pgResult([{ messageId: "<in-1@media.com>" }]))
+      .mockResolvedValueOnce(pgResult([{ firstName: "Amy", lastName: "Moore" }]));
+    mockResolveCredential.mockResolvedValue({
+      address: "amy@boostdistribute.com",
+      appPassword: "pw",
+      smtpHost: "smtp.gmail.com",
+      imapHost: "imap.gmail.com",
+    });
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<out-1@boostdistribute.com>",
+      response: "250 OK",
+      accepted: ["alice@media.com"],
+      rejected: [],
+    });
+
+    const result = await sendNow();
+
+    const message = mockDispatchMessage.mock.calls[0][1] as Record<string, unknown>;
+    expect(message.cc).toBe("kevin@distribute.you");
+    expect(Object.keys(message)).not.toContain("bcc");
+    expect(message.headers).not.toHaveProperty("Bcc");
+    expect(result.cc).toBe("kevin@distribute.you");
+  });
+
+  it("follows ADMIN_NOTIFICATION_EMAIL — the address has ONE home, read at use", async () => {
+    const previous = process.env.ADMIN_NOTIFICATION_EMAIL;
+    process.env.ADMIN_NOTIFICATION_EMAIL = "inbox@agency.test";
+    try {
+      mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+      mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Hi" })]);
+      mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+      const result = await sendNow();
+
+      expect(result.cc).toBe("inbox@agency.test");
+    } finally {
+      if (previous === undefined) delete process.env.ADMIN_NOTIFICATION_EMAIL;
+      else process.env.ADMIN_NOTIFICATION_EMAIL = previous;
+    }
+  });
+
+  it("records the CC in bronze, so who was on the message stays recoverable", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Hi" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    await sendNow();
+
+    const row = mockInsertValues.mock.calls[0][0] as {
+      step: number;
+      payload: Record<string, unknown>;
+    };
+    expect(row.step).toBe(MANUAL_REPLY_STEP);
+    expect(row.payload.cc).toBe("kevin@distribute.you");
+  });
+});
+
+// ─── The answer waits for the prospect's own business hours ──────────────────
+
+describe("a reply waits for the prospect's sending window", () => {
+  it("sends immediately when their window is open", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    const outcome = await replyToLead(INPUT, { asOf: IN_WINDOW });
+
+    expect(outcome.status).toBe("sent");
+    expect(mockReplyToEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT send at 23:00 in the prospect's day — it schedules the next opening", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
+    // The insert is the enqueue; it must return the stored row.
+    mockInsertValues.mockReturnValue({
+      returning: () =>
+        Promise.resolve([{ id: "sr-1", scheduledFor: new Date("2026-09-03T13:00:00.000Z") }]),
+    });
+
+    const outcome = await replyToLead(INPUT, { asOf: OUT_OF_WINDOW });
+
+    expect(outcome.status).toBe("scheduled");
+    // Nothing left the building.
+    expect(mockReplyToEmail).not.toHaveBeenCalled();
+    if (outcome.status !== "scheduled") throw new Error("unreachable");
+    // 08:00 America/Chicago the next morning = 13:00 UTC.
+    expect(outcome.scheduled.scheduledFor).toBe("2026-09-03T13:00:00.000Z");
+    expect(outcome.scheduled.timezone).toBe("America/Chicago");
+    // Resolved NOW, not deferred to dispatch — the caller learns who answers.
+    expect(outcome.scheduled.accountEmail).toBe("amy@boostdistribute.com");
+  });
+
+  it("resolves the window in the LEAD's timezone, not ours", async () => {
+    // 04:00 UTC is 23:00 in Chicago (closed) but 13:00 in Tokyo (open).
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([campaignRow({ timezone: "Asia/Tokyo" })]),
+    );
+    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    const outcome = await replyToLead(INPUT, { asOf: OUT_OF_WINDOW });
+
+    expect(outcome.status).toBe("sent");
+  });
+
+  it("raises the named refusals SYNCHRONOUSLY even when it would wait", async () => {
+    // No inbound message: the caller must learn now, not hours later.
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "ours", ue_type: 1 })]);
+
+    await expect(replyToLead(INPUT, { asOf: OUT_OF_WINDOW })).rejects.toMatchObject({
+      code: "no_reply_to_thread",
+    });
+    expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("a scheduled reply takes NO hold and NO sequence step — only the queue row", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
+    mockInsertValues.mockReturnValue({
+      returning: () => Promise.resolve([{ id: "sr-1", scheduledFor: OUT_OF_WINDOW }]),
+    });
+
+    await replyToLead(INPUT, { asOf: OUT_OF_WINDOW });
+
+    // Exactly one insert: the waiting row. No sequence_costs, no sequence_steps,
+    // and no bronze dispatch row (nothing was dispatched).
+    expect(mockInsertValues).toHaveBeenCalledTimes(1);
+    const values = mockInsertValues.mock.calls[0]![0] as Record<string, unknown>;
+    expect(values).not.toHaveProperty("step");
+    expect(values).not.toHaveProperty("costId");
+    expect(values.bodyHtml).toBe(INPUT.bodyHtml);
+  });
+
+  it("the drain does NOT re-defer what it already selected", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    const outcome = await replyToLead(INPUT, {
+      asOf: OUT_OF_WINDOW,
+      deferOutsideWindow: false,
+    });
+
+    expect(outcome.status).toBe("sent");
+  });
+
+  it("still records the reply in bronze at step 0 when it finally goes out", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    await replyToLead(INPUT, { asOf: OUT_OF_WINDOW, deferOutsideWindow: false });
+
+    const values = mockInsertValues.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(values.step).toBe(MANUAL_REPLY_STEP);
+    expect(MANUAL_REPLY_STEP).toBe(0);
   });
 });
