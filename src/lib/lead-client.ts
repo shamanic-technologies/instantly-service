@@ -81,3 +81,116 @@ export async function scheduleFollowupByEmail(params: {
 
   return (await response.json()) as ScheduledFollowup;
 }
+
+/**
+ * What this service needs to KNOW about a person before it rings a rep about
+ * them: how to name them out loud, and Apollo's id for them so a phone number
+ * can be asked for.
+ */
+export interface LeadForCall {
+  /** lead-service's `leads_campaigns` row id. */
+  id: string;
+  /** The registered address, as lead-service holds it. */
+  email: string;
+  /** Apollo's person id — the key a phone reveal is asked on. Null when unknown. */
+  apolloPersonId: string | null;
+  /** The person's name, when lead-service holds one. */
+  name: string | null;
+  /** Their company's name, when known. */
+  company: string | null;
+}
+
+/** Case-folded address equality — the same normalization the send path applies. */
+function sameAddress(a: string | null | undefined, b: string): boolean {
+  return (a ?? "").trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * The one person on this campaign holding this email address, or null.
+ *
+ * ⚠️ THE SEARCH IS A NARROWING, NOT THE MATCH. lead-service exposes no exact
+ * by-address lead READ — its only exact by-email door is the follow-up write,
+ * which answers with a person id this service cannot then look a lead up by. So
+ * the campaign-scoped free-text search narrows the population and the EXACT
+ * match is made here, case-folded, against the address lead-service returns:
+ * anything other than exactly one row matching outright resolves to null. A
+ * substring search resolving two people would otherwise ring a rep about the
+ * wrong one, and being told nothing about the right one is the far cheaper
+ * mistake. A cleaner exact read on lead-service would let this collapse to one
+ * call and one comparison; until then this is the available door, not a guess.
+ *
+ * `view=basic` is deliberate: the slim projection already carries every field
+ * needed here (`apolloPersonId`, the name, the organization) and skips the full
+ * lead graph, ~90% of which would be discarded.
+ *
+ * FAILS LOUD on a non-2xx. The caller is fail-soft and rings the rep anyway,
+ * without a number — but "lead-service was unreachable" and "this campaign holds
+ * nobody at that address" must not arrive as the same silence.
+ */
+export async function findLeadOnCampaignByEmail(params: {
+  orgId: string;
+  campaignId: string;
+  email: string;
+}): Promise<LeadForCall | null> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+
+  const query = new URLSearchParams({
+    view: "basic",
+    campaignId: params.campaignId,
+    q: params.email,
+    // The person replied, so they were served — but a read that quietly excluded
+    // a lifecycle state would report "nobody at that address" about somebody
+    // plainly there.
+    status: "all",
+    limit: "25",
+  });
+
+  const response = await fetch(`${LEAD_SERVICE_URL}/orgs/leads?${query}`, {
+    headers: {
+      "x-api-key": LEAD_SERVICE_API_KEY,
+      "x-org-id": params.orgId,
+    },
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(
+      `lead-service GET /orgs/leads failed: ${response.status} - ${detail.slice(0, 200)}`,
+    );
+  }
+
+  const body = (await response.json()) as {
+    leads?: Array<{
+      id?: string;
+      email?: string;
+      apolloPersonId?: string | null;
+      lead?: {
+        name?: string | null;
+        firstName?: string | null;
+        lastName?: string | null;
+        organization?: { name?: string | null } | null;
+      } | null;
+    }>;
+  };
+
+  const rows = Array.isArray(body.leads) ? body.leads : [];
+  const exact = rows.filter((r) => sameAddress(r.email, params.email));
+  if (exact.length !== 1) return null;
+
+  const row = exact[0];
+  const lead = row.lead ?? null;
+  const fromParts = [lead?.firstName, lead?.lastName]
+    .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+    .join(" ")
+    .trim();
+
+  return {
+    id: String(row.id ?? ""),
+    email: String(row.email ?? params.email),
+    apolloPersonId: row.apolloPersonId ?? null,
+    name: lead?.name?.trim() || fromParts || null,
+    company: lead?.organization?.name?.trim() || null,
+  };
+}
