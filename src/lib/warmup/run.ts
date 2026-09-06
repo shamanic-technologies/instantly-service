@@ -31,9 +31,14 @@ import { loadSeedCredentialResolver } from "../seed-placement/credentials";
 import { selectSeedReceivers } from "../seed-placement/seeds";
 import { dispatchMessage, SmtpDispatchError, classifyDispatchFailure } from "../self-send/smtp";
 import { buildWarmupMessage } from "./message";
-import { partnerCandidates, planWarmupPairings, warmupDayKey } from "./plan";
+import {
+  partnerCandidates,
+  planWarmupPairings,
+  warmupBudgetFor,
+  warmupDayKey,
+} from "./plan";
 
-const CALLER: CallerInfo = { method: "POST", path: "/internal/warmup/run" };
+const CALLER: CallerInfo = { method: "POST", path: "/internal/audit/warmup/run" };
 
 /** Off by default — a mesh nobody armed must send nothing. */
 export function isWarmupMeshEnabled(): boolean {
@@ -166,7 +171,7 @@ export async function runWarmupMesh(
       .filter((c): c is { email: string; imapHost: string } => c !== null),
   ).map((r) => r.email);
 
-  const pool = partnerCandidates(addresses, judges);
+  const pool = partnerCandidates(addresses, judges, mailboxLogins);
   const pairings = planWarmupPairings(pool, asOf);
 
   const summary: WarmupRunSummary = {
@@ -182,6 +187,9 @@ export async function runWarmupMesh(
 
   const room = await loadRoom(mailboxLogins, dayKey, asOf);
   const alreadySent = await loadSentEdges(dayKey);
+  // Warmup already booked per mailbox this run, so the budget bounds the SUM
+  // across a domain's aliases rather than each alias separately.
+  const sentByMailbox = new Map<string, number>();
 
   const batch = options.limit ? pairings.slice(0, options.limit) : pairings;
 
@@ -195,7 +203,11 @@ export async function runWarmupMesh(
     if (mailbox === undefined) continue;
 
     const capacity = room.get(mailbox);
-    if (!capacity || capacity.spent >= capacity.cap) {
+    // Warmup takes at most a FRACTION of the day's cap, so it can never starve
+    // outreach on the mailboxes with least room — which are exactly the ones the
+    // age ramp is protecting. See `warmupBudgetFor`.
+    const budget = warmupBudgetFor(capacity?.cap ?? 0);
+    if (!capacity || capacity.spent >= capacity.cap || (sentByMailbox.get(mailbox) ?? 0) >= budget) {
       summary.skippedNoRoom += 1;
       continue;
     }
@@ -233,6 +245,7 @@ export async function runWarmupMesh(
       });
 
       capacity.spent += 1;
+      sentByMailbox.set(mailbox, (sentByMailbox.get(mailbox) ?? 0) + 1);
       summary.sent += 1;
     } catch (error) {
       const kind =

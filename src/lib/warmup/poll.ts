@@ -43,7 +43,7 @@ import { dispatchMessage } from "../self-send/smtp";
 import { buildWarmupReply } from "./message";
 import { shouldReplyTo } from "./plan";
 
-const CALLER: CallerInfo = { method: "POST", path: "/internal/warmup/poll" };
+const CALLER: CallerInfo = { method: "POST", path: "/internal/audit/warmup/poll" };
 
 /**
  * How far back each run reads.

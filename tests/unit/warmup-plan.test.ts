@@ -6,6 +6,7 @@ import {
   shouldReplyTo,
   warmupDayKey,
   WARMUP_PARTNERS_PER_DAY,
+  warmupBudgetFor,
 } from "../../src/lib/warmup/plan";
 
 const MONDAY = new Date("2026-09-07T09:00:00Z");
@@ -143,5 +144,69 @@ describe("warmupDayKey", () => {
   it("is the UTC calendar day — the unit the daily cap uses", () => {
     expect(warmupDayKey(new Date("2026-09-07T23:59:59Z"))).toBe("2026-09-07");
     expect(warmupDayKey(new Date("2026-09-08T00:00:01Z"))).toBe("2026-09-08");
+  });
+});
+
+// ─── Warmup must never starve outreach ───────────────────────────────────────
+//
+// Measured on the first live run (2026-09-06): 402 of 784 planned edges were
+// skipped for lack of room, and the mailboxes with least room are exactly the
+// ones the age ramp is protecting. A flat partner count leaves a freshly
+// promoted mailbox (cap 5) ONE send for real prospects.
+
+describe("warmupBudgetFor", () => {
+  it("scales with the mailbox at the bottom of the ramp", () => {
+    expect(warmupBudgetFor(5)).toBe(1);
+    expect(warmupBudgetFor(10)).toBe(3);
+  });
+
+  it("never exceeds the flat partner count on a mature mailbox", () => {
+    expect(warmupBudgetFor(15)).toBe(WARMUP_PARTNERS_PER_DAY);
+    expect(warmupBudgetFor(50)).toBe(WARMUP_PARTNERS_PER_DAY);
+  });
+
+  it("always leaves at least one warmup send on a mailbox that can send at all", () => {
+    // Starving warmup entirely is the other failure: an idle mailbox that never
+    // warms is the 15.9%-inbox cohort.
+    expect(warmupBudgetFor(1)).toBe(1);
+    expect(warmupBudgetFor(3)).toBe(1);
+  });
+
+  it("is zero for a mailbox with no capacity at all", () => {
+    expect(warmupBudgetFor(0)).toBe(0);
+    expect(warmupBudgetFor(-1)).toBe(0);
+  });
+});
+
+describe("partnerCandidates — one address per REAL mailbox", () => {
+  // The pairing hands each participant a fixed number of partners, but the quota
+  // it spends belongs to the MAILBOX. Five Gandi aliases are one mailbox, so
+  // pairing per address multiplies the fan-out by the alias count: 196 addresses
+  // on 63 mailboxes produced 5.7 sends per mailbox on the first live run.
+  const LOGINS = new Map([
+    ["kevin@ga.forum", "kevin@ga.forum"],
+    ["kevinl@ga.forum", "kevin@ga.forum"],
+    ["klourd@ga.forum", "kevin@ga.forum"],
+    ["amy@saviolabsco.com", "amy@saviolabsco.com"],
+  ]);
+
+  it("collapses a domain's aliases to a single participant", () => {
+    const pool = partnerCandidates([...LOGINS.keys()], [], LOGINS);
+    expect(pool).toEqual(["amy@saviolabsco.com", "kevin@ga.forum"]);
+  });
+
+  it("picks the same alias every day, so warmup arrives from one correspondent", () => {
+    const a = partnerCandidates([...LOGINS.keys()], [], LOGINS);
+    const b = partnerCandidates([...LOGINS.keys()].reverse(), [], LOGINS);
+    expect(b).toEqual(a);
+  });
+
+  it("still excludes the judges before collapsing", () => {
+    const pool = partnerCandidates([...LOGINS.keys()], ["amy@saviolabsco.com"], LOGINS);
+    expect(pool).toEqual(["kevin@ga.forum"]);
+  });
+
+  it("behaves as before when no login map is supplied", () => {
+    expect(partnerCandidates([...LOGINS.keys()], [])).toHaveLength(4);
   });
 });

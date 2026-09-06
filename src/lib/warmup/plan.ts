@@ -37,6 +37,31 @@
 export const WARMUP_PARTNERS_PER_DAY = 4;
 
 /**
+ * The most of a mailbox's daily cap warmup may take.
+ *
+ * ⚠️ Warmup must never starve outreach, and a flat partner count does exactly
+ * that at the bottom of the ramp: a mailbox freshly promoted sits at the
+ * `RAMP_FLOOR_PER_DAY` of 5, so 4 partners would leave ONE send for real
+ * prospects. Measured on the first live run (2026-09-06): 402 of 784 planned
+ * edges were skipped for lack of room, and the mailboxes with least room are
+ * exactly the ones the ramp is protecting.
+ *
+ * The fraction makes the mesh scale with the mailbox instead — 1 send at a cap
+ * of 5, 4 at a cap of 15, and the flat maximum above that. Outreach is the job;
+ * warmup exists to protect it, not to compete with it.
+ */
+export const WARMUP_MAX_SHARE_OF_CAP = 0.3;
+
+/** Warmup sends this mailbox may make today, given the cap outreach also draws on. */
+export function warmupBudgetFor(
+  cap: number,
+  partnersPerDay: number = WARMUP_PARTNERS_PER_DAY,
+): number {
+  if (cap <= 0) return 0;
+  return Math.max(1, Math.min(partnersPerDay, Math.floor(cap * WARMUP_MAX_SHARE_OF_CAP)));
+}
+
+/**
  * Share of received warmup mail that gets an answer.
  *
  * A reply is the strongest signal in the set — it is what distinguishes a
@@ -147,13 +172,37 @@ function domainOf(email: string): string {
 export function partnerCandidates(
   credentialed: readonly string[],
   measurementReceivers: readonly string[],
+  mailboxLogins?: ReadonlyMap<string, string>,
 ): string[] {
   const judges = new Set(
     measurementReceivers.map((r) => r.trim().toLowerCase()),
   );
-  return [...new Set(credentialed.map((m) => m.trim().toLowerCase()))]
+
+  const eligible = [...new Set(credentialed.map((m) => m.trim().toLowerCase()))]
     .filter((m) => m && !judges.has(m))
     .sort();
+
+  if (!mailboxLogins) return eligible;
+
+  // ⚠️ ONE ADDRESS PER REAL MAILBOX. The pairing hands each participant a fixed
+  // number of partners, but the quota it spends belongs to the MAILBOX — and
+  // five Gandi aliases are one mailbox. Pairing per address therefore multiplies
+  // the fan-out by the alias count: measured on the first live run
+  // (2026-09-06), 196 addresses on 63 real mailboxes produced 5.7 warmup sends
+  // per mailbox rather than 4, and a 5-alias domain would have carried 20.
+  //
+  // Deterministic pick (the sorted-first address) so the participant is stable
+  // day to day: a mailbox whose warmup arrives from a different alias every
+  // morning looks like several correspondents rather than one.
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const address of eligible) {
+    const mailbox = mailboxLogins.get(address) ?? address;
+    if (seen.has(mailbox)) continue;
+    seen.add(mailbox);
+    out.push(address);
+  }
+  return out;
 }
 
 /**
