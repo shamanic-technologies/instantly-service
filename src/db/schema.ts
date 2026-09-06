@@ -1268,3 +1268,58 @@ export const scheduledReplies = pgTable(
     ),
   ],
 );
+
+// ─── Warmup mesh (bronze) ───────────────────────────────────────────────────
+//
+// Our own mailboxes keeping each other warm, replacing the pool bundled with the
+// Instantly Email Outreach subscription. Two tables for the same reason the seed
+// harness has two: keeping "what we sent" apart from "what the receiver found"
+// is what makes a vanished message representable at all.
+//
+// ⚠️ `warmupDispatches` is ALSO a capacity input — warmup mail comes out of the
+// same Gmail per-user quota as real sends, so `loadSendingAccounts` counts it.
+// Nothing here promotes to silver: a warmup email is not outreach, and minting
+// an `email_sent` for one would corrupt step accounting, queue attribution and
+// the per-brand re-contact window.
+
+export const warmupDispatches = pgTable(
+  "warmup_dispatches",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    senderEmail: text("sender_email").notNull(),
+    // The mailbox that AUTHENTICATES the send. Several aliases share one, and a
+    // day's quota belongs to this, not to the address.
+    senderMailbox: text("sender_mailbox").notNull(),
+    receiverEmail: text("receiver_email").notNull(),
+    /** UTC calendar day — the unit both the pairing and the daily cap use. */
+    dayKey: text("day_key").notNull(),
+    messageId: text("message_id").notNull(),
+    subject: text("subject"),
+    /** `sent` | `transient` | `permanent`, same classification as the self-send dispatcher. */
+    outcome: text("outcome").notNull(),
+    response: text("response"),
+    dispatchedAt: timestamp("dispatched_at").defaultNow().notNull(),
+  },
+  // Indexes are hand-written SQL in migration 0050 (unique on
+  // (sender_email, receiver_email, day_key) — which is what makes the sweep
+  // idempotent without a cursor — plus message_id and the (mailbox, day)
+  // capacity read). Do NOT drop them on a `db:generate` diff.
+);
+
+export const warmupReceipts = pgTable(
+  "warmup_receipts",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    messageId: text("message_id").notNull(),
+    receiverEmail: text("receiver_email").notNull(),
+    /** The folder it was found in, verbatim from the IMAP server. */
+    folder: text("folder").notNull(),
+    /** `inbox` | `spam` — where it LANDED, frozen before any rescue moved it. */
+    placement: text("placement").notNull(),
+    rescued: boolean("rescued").default(false).notNull(),
+    replied: boolean("replied").default(false).notNull(),
+    observedAt: timestamp("observed_at").defaultNow().notNull(),
+  },
+  // Unique on (message_id, receiver_email) in migration 0050 — first observation
+  // wins, so a re-read never overwrites where the message actually landed.
+);
