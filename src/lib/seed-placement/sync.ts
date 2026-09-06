@@ -14,7 +14,7 @@
  * silently penalises a healthy mailbox.
  */
 
-import { ImapFlow } from "imapflow";
+import { createImapClient } from "../self-send/imap-client";
 import { simpleParser, type ParsedMail } from "mailparser";
 import { sql } from "drizzle-orm";
 
@@ -100,13 +100,13 @@ async function pollReceiver(
   wanted: Map<string, PendingSeed>,
   summary: SeedPlacementSyncSummary,
 ): Promise<void> {
-  const client = new ImapFlow({
+  const client = createImapClient({
     host: credential.imapHost,
     port: GMAIL_IMAP_PORT,
     secure: true,
     auth: { user: loginFor(credential), pass: credential.appPassword },
     logger: false,
-  });
+  }, receiverEmail);
 
   await client.connect();
 

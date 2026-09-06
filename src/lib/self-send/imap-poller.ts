@@ -13,7 +13,7 @@
  * costs a few redundant reads and cannot lose anything.
  */
 
-import { ImapFlow } from "imapflow";
+import { createImapClient } from "./imap-client";
 import { simpleParser, type ParsedMail } from "mailparser";
 import { sql } from "drizzle-orm";
 
@@ -223,13 +223,13 @@ async function pollAccount(
 ): Promise<void> {
   const knownSends = await loadKnownSends(accountEmail);
 
-  const client = new ImapFlow({
+  const client = createImapClient({
     host: credential.imapHost,
     port: GMAIL_IMAP_PORT,
     secure: true,
     auth: { user: loginFor(credential), pass: credential.appPassword },
     logger: false,
-  });
+  }, accountEmail);
 
   await client.connect();
 

@@ -10,6 +10,8 @@ import {
   buildWarmupReply,
   parseWarmupMessage,
   topicFor,
+  warmupSubjectRef,
+  WARMUP_SUBJECT_TAG,
 } from "../../src/lib/warmup/message";
 
 beforeEach(() => {
@@ -66,7 +68,9 @@ describe("buildWarmupMessage", () => {
     });
 
     return buildWarmupMessage("a@x.com", "bob@y.com", "2026-09-07").then((msg) => {
-      expect(msg).toEqual({ subject: "Quick one", text: "Hi Bob, ready?" });
+      // The subject carries the filterable tag; the body is verbatim.
+      expect(msg.subject).toMatch(/^Quick one \[WRM-[A-Z0-9]+\]$/);
+      expect(msg.text).toBe("Hi Bob, ready?");
       expect(mockPlatformComplete).toHaveBeenCalledWith(
         expect.objectContaining({
           provider: "deepseek",
@@ -125,5 +129,56 @@ describe("buildWarmupReply", () => {
     const reply = await buildWarmupReply("Quick one", "body");
     expect(reply.subject).toBe("Re: Quick one");
     expect(reply.text).not.toBe("");
+  });
+});
+
+// ─── The filterable tag ──────────────────────────────────────────────────────
+//
+// Warmup is internal traffic a human should never read, but some fleet mailboxes
+// are fetched into a personal Gmail, so it lands in a real inbox. One filter has
+// to catch all of it: `subject:WRM`.
+
+describe("the warmup subject tag", () => {
+  beforeEach(() => {
+    mockPlatformComplete.mockResolvedValue({
+      content: '{"subject":"Quick one","text":"Hi Bob, ready?"}',
+    });
+  });
+
+  it("puts the constant token in every subject", async () => {
+    const msg = await buildWarmupMessage("a@x.com", "bob@y.com", "2026-09-07");
+    expect(msg.subject).toContain(WARMUP_SUBJECT_TAG);
+  });
+
+  it("tags the fallback body too — a filter with a hole is not a filter", async () => {
+    mockPlatformComplete.mockRejectedValue(new Error("down"));
+    const msg = await buildWarmupMessage("a@x.com", "bob@y.com", "2026-09-07");
+    expect(msg.subject).toContain(WARMUP_SUBJECT_TAG);
+  });
+
+  // ⚠️ A constant substring is a fingerprint, so the subject as a WHOLE must
+  // still vary. Bounded on purpose: three letters plus a per-message code.
+  it("still varies the full subject across messages", async () => {
+    const subjects = new Set(
+      await Promise.all(
+        [
+          buildWarmupMessage("a@x.com", "bob@y.com", "2026-09-07"),
+          buildWarmupMessage("a@x.com", "carol@z.com", "2026-09-07"),
+          buildWarmupMessage("a@x.com", "bob@y.com", "2026-09-08"),
+        ].map(async (p) => (await p).subject),
+      ),
+    );
+    expect(subjects.size).toBe(3);
+  });
+
+  it("keeps the ref stable for one edge on one day", () => {
+    expect(warmupSubjectRef("a@x.com", "b@y.com", "2026-09-07")).toBe(
+      warmupSubjectRef("a@x.com", "b@y.com", "2026-09-07"),
+    );
+  });
+
+  it("carries the tag into a reply, since Re: reuses the tagged subject", async () => {
+    const reply = await buildWarmupReply("Quick one [WRM-AB12]", "body");
+    expect(reply.subject).toBe("Re: Quick one [WRM-AB12]");
   });
 });

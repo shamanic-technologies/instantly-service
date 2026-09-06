@@ -957,6 +957,22 @@ Rules, in order: never tested ⇒ **always due** (waiting for a preferred weekda
 
 An account that genuinely stays unmeasured ages into `delivery_evidence_stale` within `DELIVERY_EVIDENCE_MAX_AGE_DAYS` (16) and drops out of the sending pool — the correct outcome for the legacy fleet, and the reason `klourd@pressbeat.ai` (`in_production`, head of the fill order) needed its credential loaded.
 
+## An IMAP `'error'` event is ASYNCHRONOUS, so a try/catch around the poll cannot catch it — and unhandled, it kills the process
+
+`ImapFlow` emits `'error'` on the client instance from a socket TIMER, outside any promise the caller is awaiting. An unhandled `'error'` on an EventEmitter is an uncaught exception, so a single unreachable mailbox terminates Node:
+
+```
+Error: Socket timeout
+    at TLSSocket._socketTimeout (imapflow/lib/imap-flow.js:1467:29)
+Emitted 'error' event on ImapFlow instance at:
+    at ImapFlow.emitError (imapflow/lib/imap-flow.js:663:14)
+  code: 'ETIMEOUT'
+```
+
+**Nothing about this looks like a crash.** The process exits **0**, Docker's `unless-stopped` policy restarts it, `/health` answers again within seconds, there is no OOM and no restart loop. The only tells are a `RestartCount` that keeps climbing and a long-running sweep that never logs its `done` line — which reads as "the sweep is slow", not "the service died". Cost 2026-09-06: three warmup polls killed mid-run over two hours, plus an unknown number of self-send polls before the stack was read; each restart also silently abandoned whatever dispatch sweep was in flight.
+
+**Every IMAP client MUST be built through `createImapClient` (`src/lib/self-send/imap-client.ts`), never `new ImapFlow(...)`.** It attaches an `'error'` listener that only LOGS — each caller already wraps its per-mailbox work in a try/catch that records the failure and moves on, so the awaited path still fails loudly in that caller's own summary. The listener exists purely to stop the asynchronous emit from being fatal. Three call sites: `warmup/poll.ts`, `self-send/imap-poller.ts`, `seed-placement/sync.ts`. A mail server timing out on 1 of ~200 mailboxes is ordinary; it must cost that mailbox's turn, never the sweep and never the service. Guard: `tests/unit/imap-client.test.ts`, which includes the negative control — the same emission on a client with the listener removed DOES throw.
+
 ## Warmup mesh — our own mailboxes keeping each other warm
 
 The Instantly Email Outreach subscription ($97/mo) bundles a warmup pool of tens of thousands of mailboxes that exchange mail, read it, rescue it from spam and reply. Cancelling it removes that, so the fleet does it itself. `src/lib/warmup/` — `plan.ts` pure (pairing, reply decision), `message.ts` (a generated body per email), `run.ts` (send), `poll.ts` (read, rescue, reply). Bronze tables `warmup_dispatches` + `warmup_receipts` (migration `0050`). Routes `POST /internal/audit/warmup/{run,poll}`, driven by `warmup-cron.yml` on TWO daily schedules (07:00 send, 12:00 read). Armed by `WARMUP_MESH_ENABLED=true`, **default OFF** (409, tolerated by the cron).
@@ -978,6 +994,8 @@ Those 94 accounts had warmed at 30/day through Instantly for six weeks with a me
 **⚠️ THE LLM FALLBACK IS A REAL PATH, NOT A DEGRADED ONE.** Elsewhere in this service a missing model answer means we refuse to assert (an unqualified reply leaves its sentiment unset rather than guessing). Here NOTHING is being asserted — the body carries no information any consumer reads, its only job is to be ordinary mail crossing a filter. So a chat-service outage must NOT abort the send; it would take the mesh down for the duration, which is the one thing warmup cannot afford to skip. The fallback still varies per edge so an outage does not collapse the run into one repeated body.
 
 **⚠️ WARMUP SPENDS THE SAME DAILY QUOTA AS OUTREACH, AND BOTH SIDES ENFORCE IT.** Gmail's per-user limit does not care which of our jobs put the message on the wire. So `runWarmupMesh` computes room as `capForAccount(...) − (real sends today + warmup today)` and takes what is left AFTER outreach; and `loadSendingAccounts` adds `warmup_dispatches` of the current UTC day into its `sentToday`. Miss either half and the two jobs each spend the full cap, pushing the mailbox into the `550-5.4.5` refusal the age ramp exists to respect — and it hits the LOWEST-capped mailboxes hardest, since a fresh one has least room to spare. Both counts are at the real-MAILBOX grain, per the alias rule.
+
+**⚠️ EVERY WARMUP SUBJECT CARRIES A CONSTANT `WRM` TOKEN, so a human can filter it out — and that is a DELIBERATE TRADE against the varied-body rule.** Warmup is internal traffic nobody should have to read, but some fleet mailboxes are pulled into a personal Gmail (a POP "check mail from other accounts", or one of the catch-all forwards on the Gandi domains), so it lands in a real inbox: `subject:WRM` catches all of it, replies included (a `Re:` reuses the tagged subject). A fixed substring in every subject is a fingerprint and works against the reason bodies are generated per email, so it is bounded on purpose — three letters inside a reference-looking suffix whose code varies per message, leaving the subject as a whole still never repeated. **If mesh deliverability ever looks worse than the seed harness says it should, suspect this first.** The better fix is upstream (stop pulling fleet-mailbox mail into a personal inbox) and would let the tag be deleted.
 
 **⚠️ A REPLY IS A SEND, and it is recorded in `warmup_dispatches` like any other.** Both the mesh's own budget and the outreach dispatcher read that table for the day, so a reply left unrecorded is quota spent that neither job can see — the same blind spend the per-alias fan-out produced before it was measured.
 

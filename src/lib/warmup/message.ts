@@ -23,6 +23,45 @@
 
 import { platformComplete } from "../chat-client";
 
+/**
+ * A constant, filterable token in every warmup subject.
+ *
+ * Warmup mail is internal traffic that a human should never have to read, and
+ * some fleet mailboxes are fetched into a personal Gmail (a POP "check mail from
+ * other accounts", or one of the catch-all forwards on the Gandi domains). So it
+ * lands in a real person's inbox, and they need one filter that catches all of
+ * it: `subject:WRM`.
+ *
+ * ⚠️ A CONSTANT TOKEN IS A FINGERPRINT, and this is a deliberate trade. The
+ * whole reason bodies are generated per email is that identical messages
+ * crossing a filter are the bulk signal warmup exists to avoid, and a fixed
+ * subject substring works against that. It is bounded on purpose: THREE letters,
+ * inside a reference-looking suffix whose code varies per message, so the
+ * subject as a whole is still never repeated. If deliverability on the mesh ever
+ * looks worse than the seed harness says it should, this is the first thing to
+ * suspect.
+ *
+ * The better fix is upstream — stop pulling fleet-mailbox mail into a personal
+ * inbox — and it would let this be deleted.
+ */
+export const WARMUP_SUBJECT_TAG = "WRM";
+
+/** Short per-message code, so the tagged subject still varies message to message. */
+export function warmupSubjectRef(senderEmail: string, receiverEmail: string, dayKey: string): string {
+  const s = `${dayKey}|${senderEmail}|${receiverEmail}`;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36).slice(0, 4).toUpperCase();
+}
+
+/** Append the filterable tag to a generated subject. */
+export function tagWarmupSubject(subject: string, ref: string): string {
+  return `${subject} [${WARMUP_SUBJECT_TAG}-${ref}]`;
+}
+
 /** Plain-text bodies; a warmup note between colleagues is not an HTML campaign. */
 export interface WarmupMessage {
   subject: string;
@@ -109,6 +148,7 @@ export async function buildWarmupMessage(
   dayKey: string,
 ): Promise<WarmupMessage> {
   const topic = topicFor(senderEmail, receiverEmail, dayKey);
+  const ref = warmupSubjectRef(senderEmail, receiverEmail, dayKey);
 
   try {
     const result = await platformComplete({
@@ -121,14 +161,17 @@ export async function buildWarmupMessage(
       temperature: 1,
       disableThinking: true,
     });
-    return parseWarmupMessage(result.content ?? "") ?? fallbackMessage(topic, receiverEmail);
+    const message =
+      parseWarmupMessage(result.content ?? "") ?? fallbackMessage(topic, receiverEmail);
+    return { ...message, subject: tagWarmupSubject(message.subject, ref) };
   } catch (error) {
     console.warn(
       `[warmup] message generation failed, using fallback: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
-    return fallbackMessage(topic, receiverEmail);
+    const message = fallbackMessage(topic, receiverEmail);
+    return { ...message, subject: tagWarmupSubject(message.subject, ref) };
   }
 }
 

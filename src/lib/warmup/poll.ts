@@ -27,7 +27,7 @@
  */
 
 import { sql } from "drizzle-orm";
-import { ImapFlow } from "imapflow";
+import { createImapClient } from "../self-send/imap-client";
 import { simpleParser, type ParsedMail } from "mailparser";
 
 import { db } from "../../db";
@@ -124,13 +124,13 @@ async function pollReceiver(
   pending: ReadonlyMap<string, PendingWarmup>,
   summary: WarmupPollSummary,
 ): Promise<void> {
-  const client = new ImapFlow({
+  const client = createImapClient({
     host: credential.imapHost,
     port: GMAIL_IMAP_PORT,
     secure: true,
     auth: { user: loginFor(credential), pass: credential.appPassword },
     logger: false,
-  });
+  }, receiverEmail);
 
   await client.connect();
 
