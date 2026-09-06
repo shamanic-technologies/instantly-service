@@ -31,7 +31,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
 
 import { db } from "../../db";
-import { warmupReceipts } from "../../db/schema";
+import { warmupDispatches, warmupReceipts } from "../../db/schema";
 import type { CallerInfo } from "../key-client";
 import {
   GMAIL_IMAP_PORT,
@@ -41,7 +41,7 @@ import {
 import { loadSeedCredentialResolver } from "../seed-placement/credentials";
 import { dispatchMessage } from "../self-send/smtp";
 import { buildWarmupReply } from "./message";
-import { shouldReplyTo } from "./plan";
+import { shouldReplyTo, warmupDayKey } from "./plan";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/audit/warmup/poll" };
 
@@ -120,6 +120,7 @@ async function pollReceiver(
   receiverEmail: string,
   credential: MailboxCredential,
   since: Date,
+  asOf: Date,
   pending: ReadonlyMap<string, PendingWarmup>,
   summary: WarmupPollSummary,
 ): Promise<void> {
@@ -203,7 +204,7 @@ async function pollReceiver(
               warmup.subject ?? "",
               typeof parsed.text === "string" ? parsed.text : "",
             );
-            await dispatchMessage(credential, {
+            const sent = await dispatchMessage(credential, {
               from: receiverEmail,
               to: warmup.senderEmail,
               subject: reply.subject,
@@ -212,6 +213,27 @@ async function pollReceiver(
               inReplyTo: messageId,
               references: [messageId],
             });
+
+            // ⚠️ A REPLY IS A SEND, so it comes out of the replying mailbox's
+            // daily quota like any other. Recording it here is what makes that
+            // true: both the mesh's own budget and the outreach dispatcher read
+            // `warmup_dispatches` for the day, so a reply left unrecorded is
+            // quota spent that neither job can see — the same blind spend the
+            // per-alias fan-out produced before it was measured.
+            await db
+              .insert(warmupDispatches)
+              .values({
+                senderEmail: receiverEmail,
+                senderMailbox: loginFor(credential),
+                receiverEmail: warmup.senderEmail,
+                dayKey: warmupDayKey(asOf),
+                messageId: sent.messageId,
+                subject: reply.subject,
+                outcome: "sent",
+                response: sent.response,
+              })
+              .onConflictDoNothing();
+
             replied = true;
             summary.replied += 1;
           }
@@ -267,7 +289,7 @@ export async function runWarmupPoll(
     // fleet being warmed, and the failure has to stay visible rather than read
     // as "nothing arrived".
     try {
-      await pollReceiver(receiverEmail, credential, since, pending, summary);
+      await pollReceiver(receiverEmail, credential, since, asOf, pending, summary);
       summary.accountsPolled += 1;
     } catch (error) {
       summary.accountsFailed += 1;
