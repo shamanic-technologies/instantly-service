@@ -190,7 +190,19 @@ async function loadSendingAccounts(
           AND e.event_type = 'email_sent'
           AND e.inferred = false
           AND e.timestamp >= date_trunc('day', now() AT TIME ZONE 'UTC')
-      ), 0)                                     AS "sentToday"
+      ), 0)                                     AS "sentToday",
+      -- Warmup mail comes out of the SAME Gmail per-user quota as outreach, so
+      -- it has to be counted here or the two jobs each spend the full cap and
+      -- the mailbox is pushed into the 550-5.4.5 daily-user-sending-limit
+      -- refusal the age ramp exists to respect. The mesh applies
+      -- the mirror of this rule (it takes what is left AFTER outreach).
+      COALESCE((
+        SELECT COUNT(*)
+        FROM warmup_dispatches w
+        WHERE w.sender_email = a.email
+          AND w.outcome = 'sent'
+          AND w.dispatched_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+      ), 0)                                     AS "warmupToday"
     FROM instantly_accounts a
     WHERE a.absent_since IS NULL
   `);
@@ -232,7 +244,7 @@ async function loadSendingAccounts(
       accountEmail: email,
       mailbox,
       cap: Math.min(dailyLimit, rampCap),
-      sentToday: Number(row.sentToday),
+      sentToday: Number(row.sentToday) + Number(row.warmupToday ?? 0),
     });
 
     // The real account, so the From display name and the signature agree — the
