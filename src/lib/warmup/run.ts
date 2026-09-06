@@ -34,8 +34,10 @@ import { buildWarmupMessage } from "./message";
 import {
   partnerCandidates,
   planWarmupPairings,
+  selectSilencedSenders,
   warmupBudgetFor,
   warmupDayKey,
+  type WarmupSenderHealth,
 } from "./plan";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/audit/warmup/run" };
@@ -56,6 +58,8 @@ export interface WarmupRunSummary {
   skippedNoRoom: number;
   /** Skipped because this exact edge already went out today (a re-run). */
   skippedAlreadySent: number;
+  /** Skipped because the sending mailbox's relay refuses everything it sends. */
+  skippedSilenced: number;
   sent: number;
   failed: number;
 }
@@ -134,6 +138,30 @@ async function loadRoom(
   return room;
 }
 
+/**
+ * Recent warmup outcomes per mailbox, for the sender-silencing rule.
+ *
+ * Seven days: long enough that a blacklisted mailbox is not retried daily, short
+ * enough that it IS retried without anyone clearing a flag. See
+ * {@link selectSilencedSenders}.
+ */
+async function loadSenderHealth(): Promise<WarmupSenderHealth[]> {
+  const result = await db.execute(sql`
+    SELECT sender_mailbox                                     AS "mailbox",
+           COUNT(*) FILTER (WHERE outcome = 'permanent')::int  AS "permanent",
+           COUNT(*) FILTER (WHERE outcome = 'sent')::int       AS "sent"
+    FROM warmup_dispatches
+    WHERE dispatched_at > now() - interval '7 days'
+    GROUP BY sender_mailbox
+  `);
+
+  return (result.rows as Record<string, unknown>[]).map((row) => ({
+    mailbox: String(row.mailbox),
+    permanent: Number(row.permanent),
+    sent: Number(row.sent),
+  }));
+}
+
 /** Edges already on the wire today, so a re-run is a no-op rather than a double send. */
 async function loadSentEdges(dayKey: string): Promise<Set<string>> {
   const result = await db.execute(sql`
@@ -181,12 +209,16 @@ export async function runWarmupMesh(
     planned: pairings.length,
     skippedNoRoom: 0,
     skippedAlreadySent: 0,
+    skippedSilenced: 0,
     sent: 0,
     failed: 0,
   };
 
   const room = await loadRoom(mailboxLogins, dayKey, asOf);
   const alreadySent = await loadSentEdges(dayKey);
+  // Mailboxes whose relay refuses everything: they still RECEIVE, they just stop
+  // being asked to send. See `selectSilencedSenders`.
+  const silenced = selectSilencedSenders(await loadSenderHealth());
   // Warmup already booked per mailbox this run, so the budget bounds the SUM
   // across a domain's aliases rather than each alias separately.
   const sentByMailbox = new Map<string, number>();
@@ -201,6 +233,11 @@ export async function runWarmupMesh(
 
     const mailbox = mailboxLogins.get(pairing.senderEmail);
     if (mailbox === undefined) continue;
+
+    if (silenced.has(mailbox)) {
+      summary.skippedSilenced += 1;
+      continue;
+    }
 
     const capacity = room.get(mailbox);
     // Warmup takes at most a FRACTION of the day's cap, so it can never starve

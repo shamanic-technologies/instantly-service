@@ -71,6 +71,54 @@ export function warmupBudgetFor(
  */
 export const WARMUP_REPLY_RATE = 1 / 3;
 
+/**
+ * Permanent failures within the window that silence a mailbox as a SENDER.
+ *
+ * Three, not one: mail servers refuse individual messages for ordinary reasons
+ * and a single 5xx says nothing about the mailbox. Measured 2026-09-06,
+ * `kevin@growthagency.ch` had 1 permanent failure against 5 successes (a blip)
+ * while `kevin@growthagency.cloud` had 20 against 0 — its own Gandi relay
+ * refusing every send with `550 5.7.1 Blacklisted user`.
+ */
+export const WARMUP_SILENCE_MIN_FAILURES = 3;
+
+/** One mailbox's warmup outcomes over the recent window. */
+export interface WarmupSenderHealth {
+  mailbox: string;
+  permanent: number;
+  sent: number;
+}
+
+/**
+ * Mailboxes to stop sending warmup FROM.
+ *
+ * ⚠️ A mailbox whose relay refuses everything must not be hammered daily. Left
+ * alone the mesh replans its four edges every morning, every one of them fails
+ * `550`, and we spend the day telling a provider that is already blocking us
+ * that we would like to send anyway — which is the opposite of what a warmup
+ * mesh is for.
+ *
+ * ⚠️ IT MUST STILL RECEIVE. The blacklist is on SENDING; mail addressed to it
+ * arrives normally, and being written to is itself part of looking like a live
+ * mailbox. Only the sender side is silenced.
+ *
+ * Self-healing WITHOUT extra state: the window rolls, so a silenced mailbox's
+ * failures age out and it is retried automatically. If the relay is still
+ * blocking, that day's failures silence it again — bounded cost, no flag to
+ * remember to clear. Requiring ZERO successes is what keeps a mailbox that
+ * mostly works from being silenced by a bad afternoon.
+ */
+export function selectSilencedSenders(
+  health: readonly WarmupSenderHealth[],
+  minFailures: number = WARMUP_SILENCE_MIN_FAILURES,
+): Set<string> {
+  const silenced = new Set<string>();
+  for (const row of health) {
+    if (row.sent === 0 && row.permanent >= minFailures) silenced.add(row.mailbox);
+  }
+  return silenced;
+}
+
 export interface WarmupPairing {
   senderEmail: string;
   receiverEmail: string;
