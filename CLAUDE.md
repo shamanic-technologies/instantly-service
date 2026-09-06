@@ -957,6 +957,22 @@ Rules, in order: never tested ⇒ **always due** (waiting for a preferred weekda
 
 An account that genuinely stays unmeasured ages into `delivery_evidence_stale` within `DELIVERY_EVIDENCE_MAX_AGE_DAYS` (16) and drops out of the sending pool — the correct outcome for the legacy fleet, and the reason `klourd@pressbeat.ai` (`in_production`, head of the fill order) needed its credential loaded.
 
+## An IMAP `'error'` event is ASYNCHRONOUS, so a try/catch around the poll cannot catch it — and unhandled, it kills the process
+
+`ImapFlow` emits `'error'` on the client instance from a socket TIMER, outside any promise the caller is awaiting. An unhandled `'error'` on an EventEmitter is an uncaught exception, so a single unreachable mailbox terminates Node:
+
+```
+Error: Socket timeout
+    at TLSSocket._socketTimeout (imapflow/lib/imap-flow.js:1467:29)
+Emitted 'error' event on ImapFlow instance at:
+    at ImapFlow.emitError (imapflow/lib/imap-flow.js:663:14)
+  code: 'ETIMEOUT'
+```
+
+**Nothing about this looks like a crash.** The process exits **0**, Docker's `unless-stopped` policy restarts it, `/health` answers again within seconds, there is no OOM and no restart loop. The only tells are a `RestartCount` that keeps climbing and a long-running sweep that never logs its `done` line — which reads as "the sweep is slow", not "the service died". Cost 2026-09-06: three warmup polls killed mid-run over two hours, plus an unknown number of self-send polls before the stack was read; each restart also silently abandoned whatever dispatch sweep was in flight.
+
+**Every IMAP client MUST be built through `createImapClient` (`src/lib/self-send/imap-client.ts`), never `new ImapFlow(...)`.** It attaches an `'error'` listener that only LOGS — each caller already wraps its per-mailbox work in a try/catch that records the failure and moves on, so the awaited path still fails loudly in that caller's own summary. The listener exists purely to stop the asynchronous emit from being fatal. Three call sites: `warmup/poll.ts`, `self-send/imap-poller.ts`, `seed-placement/sync.ts`. A mail server timing out on 1 of ~200 mailboxes is ordinary; it must cost that mailbox's turn, never the sweep and never the service. Guard: `tests/unit/imap-client.test.ts`, which includes the negative control — the same emission on a client with the listener removed DOES throw.
+
 ## Warmup mesh — our own mailboxes keeping each other warm
 
 The Instantly Email Outreach subscription ($97/mo) bundles a warmup pool of tens of thousands of mailboxes that exchange mail, read it, rescue it from spam and reply. Cancelling it removes that, so the fleet does it itself. `src/lib/warmup/` — `plan.ts` pure (pairing, reply decision), `message.ts` (a generated body per email), `run.ts` (send), `poll.ts` (read, rescue, reply). Bronze tables `warmup_dispatches` + `warmup_receipts` (migration `0050`). Routes `POST /internal/audit/warmup/{run,poll}`, driven by `warmup-cron.yml` on TWO daily schedules (07:00 send, 12:00 read). Armed by `WARMUP_MESH_ENABLED=true`, **default OFF** (409, tolerated by the cron).
