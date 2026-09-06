@@ -144,11 +144,16 @@ async function pollReceiver(
 
       const lock = await client.getMailboxLock(folder.path);
       try {
-        for await (const message of client.fetch({ since }, { source: true, uid: true })) {
-          if (!message.source) continue;
-
-          const parsed: ParsedMail = await simpleParser(message.source);
-          const messageId = parsed.messageId;
+        // ⚠️ FETCH THE ENVELOPE, NOT THE SOURCE. The correlation key is a
+        // Message-Id, which the envelope carries — while `source: true`
+        // downloads and `simpleParser`s the FULL BODY of every message in the
+        // window, on every mailbox. Across ~190 mailboxes with three days of
+        // ordinary mail that is minutes each and the sweep never finishes: the
+        // first armed run observed 6 of 361 messages in twenty minutes. The body
+        // is only needed for the small fraction we answer, and it is fetched
+        // then, for that message alone.
+        for await (const message of client.fetch({ since }, { envelope: true, uid: true })) {
+          const messageId = message.envelope?.messageId;
           if (!messageId) continue;
 
           summary.messagesRead += 1;
@@ -226,10 +231,21 @@ async function pollReceiver(
           // the re-read window and nothing is answered twice.
           let replied = false;
           if (shouldReplyTo(messageId)) {
-            const reply = await buildWarmupReply(
-              warmup.subject ?? "",
-              typeof parsed.text === "string" ? parsed.text : "",
-            );
+            // The body is needed ONLY here, so it is fetched for this one
+            // message rather than for every message in the window.
+            let originalText = "";
+            try {
+              const full = await client.fetchOne(String(message.uid), { source: true }, { uid: true });
+              if (full && full.source) {
+                const parsed: ParsedMail = await simpleParser(full.source);
+                originalText = typeof parsed.text === "string" ? parsed.text : "";
+              }
+            } catch {
+              // Answering without quoting is still a reply; failing to fetch the
+              // body must not cost the thread.
+            }
+
+            const reply = await buildWarmupReply(warmup.subject ?? "", originalText);
             const sent = await dispatchMessage(credential, {
               from: receiverEmail,
               to: warmup.senderEmail,
