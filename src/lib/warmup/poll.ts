@@ -55,6 +55,16 @@ const CALLER: CallerInfo = { method: "POST", path: "/internal/audit/warmup/poll"
 export const WARMUP_POLL_WINDOW_DAYS = 3;
 
 /**
+ * Mailboxes read at once.
+ *
+ * Sequential took ~2 minutes per mailbox over 164 receivers — a five-hour sweep,
+ * which a daily job cannot reliably finish before the next one starts. Unbounded
+ * would open 164 IMAP connections at once, which providers throttle and which is
+ * the shape that produces the socket timeouts this poller already has to survive.
+ */
+export const WARMUP_POLL_CONCURRENCY = 8;
+
+/**
  * Folders worth opening, and what landing there means.
  *
  * `[Gmail]/All Mail` is deliberately absent: it MIRRORS both inbox and spam, so
@@ -116,14 +126,28 @@ async function loadPendingWarmup(since: Date): Promise<Map<string, PendingWarmup
   return out;
 }
 
+/**
+ * Read one mailbox and act on the warmup messages we sent to it.
+ *
+ * ⚠️ ASK THE SERVER FOR OUR MESSAGES; DO NOT WALK ITS MAIL. We know exactly
+ * which Message-Ids we sent to this mailbox — a handful — so `SEARCH HEADER
+ * Message-ID` answers in one indexed round trip each. Iterating the window
+ * instead means the cost scales with how much ORDINARY mail the mailbox
+ * receives, which has nothing to do with our traffic: at ~2 minutes per mailbox
+ * over 164 receivers that is a five-hour sweep, and a daily job that takes five
+ * hours will not reliably finish before the next one starts. Measured on the
+ * first armed runs, in three successive shapes: full source, then envelopes,
+ * then this.
+ */
 async function pollReceiver(
   receiverEmail: string,
   credential: MailboxCredential,
-  since: Date,
   asOf: Date,
-  pending: ReadonlyMap<string, PendingWarmup>,
+  expected: readonly PendingWarmup[],
   summary: WarmupPollSummary,
 ): Promise<void> {
+  if (expected.length === 0) return;
+
   const client = createImapClient({
     host: credential.imapHost,
     port: GMAIL_IMAP_PORT,
@@ -139,32 +163,27 @@ async function pollReceiver(
     // swallowing failures — a per-folder catch would also hide an auth drop.
     const available = new Set((await client.list()).map((m) => m.path));
 
+    // Messages still to place. A message is found in exactly one folder, so it
+    // leaves this set as soon as it is handled and later folders skip it.
+    const outstanding = new Map(expected.map((w) => [w.messageId, w]));
+
     for (const folder of FOLDERS) {
+      if (outstanding.size === 0) break;
       if (!available.has(folder.path)) continue;
 
       const lock = await client.getMailboxLock(folder.path);
       try {
-        // ⚠️ FETCH THE ENVELOPE, NOT THE SOURCE. The correlation key is a
-        // Message-Id, which the envelope carries — while `source: true`
-        // downloads and `simpleParser`s the FULL BODY of every message in the
-        // window, on every mailbox. Across ~190 mailboxes with three days of
-        // ordinary mail that is minutes each and the sweep never finishes: the
-        // first armed run observed 6 of 361 messages in twenty minutes. The body
-        // is only needed for the small fraction we answer, and it is fetched
-        // then, for that message alone.
-        for await (const message of client.fetch({ since }, { envelope: true, uid: true })) {
-          const messageId = message.envelope?.messageId;
-          if (!messageId) continue;
+        for (const [messageId, warmup] of [...outstanding]) {
+          const uids = (await client.search(
+            { header: { "message-id": messageId } },
+            { uid: true },
+          )) as number[] | false;
 
+          const uid = Array.isArray(uids) ? uids[0] : undefined;
+          if (uid === undefined) continue;
+
+          outstanding.delete(messageId);
           summary.messagesRead += 1;
-
-          const warmup = pending.get(messageId);
-          // Real mailboxes also receive ordinary mail. A message that is not one
-          // of ours is not our business — and acting on it would mean moving a
-          // stranger's email between a customer's folders.
-          if (!warmup) continue;
-          if (warmup.receiverEmail !== receiverEmail) continue;
-
           summary.matched += 1;
 
           // FIRST: freeze where it landed. The rescue below changes the folder,
@@ -184,20 +203,11 @@ async function pollReceiver(
             .returning({ id: warmupReceipts.id });
 
           // ⚠️ THE RECEIPT EXISTING IS NOT THE SAME FACT AS THE MESSAGE HAVING
-          // BEEN ACTED ON, and conflating them permanently strands mail in spam.
-          //
-          // The receipt is written BEFORE the rescue on purpose (the placement
-          // must be frozen before we move anything). So a run that dies between
-          // the two — which is exactly what an unhandled IMAP socket error used
-          // to do — leaves a row saying "landed in spam" with nothing done about
-          // it, and treating the insert conflict as "already handled" means no
-          // later run ever rescues it. Observed 2026-09-06: two messages stuck
-          // at `rescued: false` across three killed sweeps.
-          //
-          // So the skip is keyed on the ACTION, not on the row: a message
-          // already in the inbox needs nothing, and one already rescued is done.
-          // Everything else is retried, which is safe because both the flag and
-          // the move are idempotent.
+          // BEEN ACTED ON. The receipt is written before the rescue on purpose,
+          // so a run that dies between the two leaves a row saying "landed in
+          // spam" with nothing done about it — and treating the conflict as
+          // "already handled" means no later run ever rescues it. The skip is
+          // keyed on the ACTION; both the flag and the move are idempotent.
           if (!inserted) {
             const [existing] = await db
               .select({
@@ -214,13 +224,11 @@ async function pollReceiver(
 
           // THEN act. Mark read first — an unread message that jumps folders is
           // not what a person doing their inbox looks like.
-          await client.messageFlagsAdd({ uid: String(message.uid) }, ["\\Seen"], {
-            uid: true,
-          });
+          await client.messageFlagsAdd({ uid: String(uid) }, ["\\Seen"], { uid: true });
 
           let rescued = false;
           if (folder.placement === "spam") {
-            await client.messageMove({ uid: String(message.uid) }, "INBOX", { uid: true });
+            await client.messageMove({ uid: String(uid) }, "INBOX", { uid: true });
             rescued = true;
             summary.rescued += 1;
           }
@@ -235,7 +243,7 @@ async function pollReceiver(
             // message rather than for every message in the window.
             let originalText = "";
             try {
-              const full = await client.fetchOne(String(message.uid), { source: true }, { uid: true });
+              const full = await client.fetchOne(String(uid), { source: true }, { uid: true });
               if (full && full.source) {
                 const parsed: ParsedMail = await simpleParser(full.source);
                 originalText = typeof parsed.text === "string" ? parsed.text : "";
@@ -257,11 +265,9 @@ async function pollReceiver(
             });
 
             // ⚠️ A REPLY IS A SEND, so it comes out of the replying mailbox's
-            // daily quota like any other. Recording it here is what makes that
-            // true: both the mesh's own budget and the outreach dispatcher read
-            // `warmup_dispatches` for the day, so a reply left unrecorded is
-            // quota spent that neither job can see — the same blind spend the
-            // per-alias fan-out produced before it was measured.
+            // daily quota like any other. Both the mesh's own budget and the
+            // outreach dispatcher read `warmup_dispatches` for the day, so a
+            // reply left unrecorded is quota neither job can see.
             await db
               .insert(warmupDispatches)
               .values({
@@ -320,28 +326,62 @@ export async function runWarmupPoll(
   };
 
   // Only mailboxes we actually sent warmup TO have anything to find, so the poll
-  // is bounded by the mesh rather than by the fleet.
-  const receivers = [...new Set([...pending.values()].map((p) => p.receiverEmail))].sort();
-
-  for (const receiverEmail of receivers) {
-    const credential = resolve(receiverEmail);
-    if (!credential) continue;
-
-    // Fail-loud PER MAILBOX: one unreachable inbox must not stop the rest of the
-    // fleet being warmed, and the failure has to stay visible rather than read
-    // as "nothing arrived".
-    try {
-      await pollReceiver(receiverEmail, credential, since, asOf, pending, summary);
-      summary.accountsPolled += 1;
-    } catch (error) {
-      summary.accountsFailed += 1;
-      console.warn(
-        `[warmup] poll: ${receiverEmail} failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
+  // is bounded by the mesh rather than by the fleet. Each receiver is handed
+  // exactly the messages addressed to it, so the mailbox is never searched for
+  // something that could not be there.
+  const byReceiver = new Map<string, PendingWarmup[]>();
+  for (const warmup of pending.values()) {
+    const list = byReceiver.get(warmup.receiverEmail);
+    if (list) list.push(warmup);
+    else byReceiver.set(warmup.receiverEmail, [warmup]);
   }
+
+  const receivers = [...byReceiver.keys()].sort();
+
+  // ⚠️ BOUNDED CONCURRENCY, not a `Promise.all` over every receiver. Each worker
+  // holds an open IMAP connection and its own SMTP dispatches, so an unbounded
+  // fan-out over ~164 mailboxes would open 164 sockets at once — which the
+  // providers throttle and which is exactly the shape that produces the socket
+  // timeouts this poller already had to be hardened against. Sequential was the
+  // other extreme and took ~5 hours.
+  let cursor = 0;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const receiverEmail = receivers[cursor++];
+      if (receiverEmail === undefined) return;
+
+      const credential = resolve(receiverEmail);
+      if (!credential) continue;
+
+      // Fail-loud PER MAILBOX: one unreachable inbox must not stop the rest of
+      // the fleet being warmed, and the failure has to stay visible rather
+      // than read as "nothing arrived".
+      try {
+        await pollReceiver(
+          receiverEmail,
+          credential,
+          asOf,
+          byReceiver.get(receiverEmail) ?? [],
+          summary,
+        );
+        summary.accountsPolled += 1;
+      } catch (error) {
+        summary.accountsFailed += 1;
+        console.warn(
+          `[warmup] poll: ${receiverEmail} failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(WARMUP_POLL_CONCURRENCY, receivers.length) }, () =>
+      worker(),
+    ),
+  );
 
   return summary;
 }
