@@ -178,8 +178,34 @@ async function pollReceiver(
             })
             .returning({ id: warmupReceipts.id });
 
-          // Already handled on an earlier run inside the overlap window.
-          if (!inserted) continue;
+          // ⚠️ THE RECEIPT EXISTING IS NOT THE SAME FACT AS THE MESSAGE HAVING
+          // BEEN ACTED ON, and conflating them permanently strands mail in spam.
+          //
+          // The receipt is written BEFORE the rescue on purpose (the placement
+          // must be frozen before we move anything). So a run that dies between
+          // the two — which is exactly what an unhandled IMAP socket error used
+          // to do — leaves a row saying "landed in spam" with nothing done about
+          // it, and treating the insert conflict as "already handled" means no
+          // later run ever rescues it. Observed 2026-09-06: two messages stuck
+          // at `rescued: false` across three killed sweeps.
+          //
+          // So the skip is keyed on the ACTION, not on the row: a message
+          // already in the inbox needs nothing, and one already rescued is done.
+          // Everything else is retried, which is safe because both the flag and
+          // the move are idempotent.
+          if (!inserted) {
+            const [existing] = await db
+              .select({
+                placement: warmupReceipts.placement,
+                rescued: warmupReceipts.rescued,
+              })
+              .from(warmupReceipts)
+              .where(
+                sql`${warmupReceipts.messageId} = ${messageId} AND ${warmupReceipts.receiverEmail} = ${receiverEmail}`,
+              );
+
+            if (!existing || existing.placement !== "spam" || existing.rescued) continue;
+          }
 
           // THEN act. Mark read first — an unread message that jumps folders is
           // not what a person doing their inbox looks like.
