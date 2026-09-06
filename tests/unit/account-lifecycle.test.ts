@@ -19,7 +19,8 @@ import {
   isInstantlyEnforced,
   DELIVERY_EVIDENCE_MAX_AGE_DAYS,
   type DeriveLifecycleInput,
-  shouldAdoptSelfSendTransport,
+  rampAnchor,
+  capForAccount,
 } from "../../src/lib/account-lifecycle";
 
 const POLICY = new Set(["distribute.you", "growthagency.dev", "arcadiaquest.org"]);
@@ -556,28 +557,97 @@ describe("account age gate — rampCapForAge / slowRampForAge", () => {
   });
 });
 
-describe("shouldAdoptSelfSendTransport", () => {
-  const base = { sendTransport: "instantly" as const, instantlyStatus: -1, selfSendCapable: true };
 
-  it("rescues a credentialed mailbox Instantly has disabled", () => {
-    expect(shouldAdoptSelfSendTransport(base)).toBe(true);
-    expect(shouldAdoptSelfSendTransport({ ...base, instantlyStatus: -3 })).toBe(true);
-    expect(shouldAdoptSelfSendTransport({ ...base, instantlyStatus: 0 })).toBe(true);
+// ─── The ramp measures from the PROMOTION, not from creation ─────────────────
+//
+// Creation age alone made the ramp a no-op for the entire legacy fleet: every
+// Gandi mailbox is months old, so "mature" was true the moment it was promoted
+// and it was handed its full cap that morning. Prod 2026-08-29: 79 accounts
+// promoted in one sweep, 70 deactivated by Instantly on relay throttles the same
+// day, 25 back below the delivery bar a week later.
+
+describe("rampAnchor", () => {
+  const CREATED = new Date("2026-05-15T00:00:00Z");
+  const PROMOTED = new Date("2026-08-29T00:00:00Z");
+
+  it("takes the promotion when it is the later of the two", () => {
+    expect(rampAnchor(CREATED, PROMOTED)).toEqual(PROMOTED);
   });
 
-  it("leaves a HEALTHY mailbox on Instantly — this is a rescue, not a migration", () => {
-    // Both arms of the per-sequence A/B need mailboxes on the instantly policy.
-    expect(shouldAdoptSelfSendTransport({ ...base, instantlyStatus: 1 })).toBe(false);
+  it("takes creation for a mailbox promoted the day it was made", () => {
+    // A brand-new account is unaffected: the two instants are days apart at
+    // most, and the later of them is still recent.
+    const sameDay = new Date("2026-05-15T09:00:00Z");
+    expect(rampAnchor(sameDay, CREATED)).toEqual(sameDay);
   });
 
-  it("leaves a mailbox we cannot authenticate alone", () => {
-    // Our own worker could not dispatch it either, so the flip would only swap
-    // one pipe that cannot send for another.
-    expect(shouldAdoptSelfSendTransport({ ...base, selfSendCapable: false })).toBe(false);
+  it("falls back to whichever side it has", () => {
+    expect(rampAnchor(CREATED, null)).toEqual(CREATED);
+    expect(rampAnchor(null, PROMOTED)).toEqual(PROMOTED);
   });
 
-  it("never re-decides a mailbox already pinned to smtp", () => {
-    // That column is the operator override and the rollback lever.
-    expect(shouldAdoptSelfSendTransport({ ...base, sendTransport: "smtp" })).toBe(false);
+  // Undatable is treated as mature everywhere else in this file; trapping such
+  // an account at the ramp floor would starve a mailbox we simply cannot date.
+  it("returns null when neither instant is known", () => {
+    expect(rampAnchor(null, undefined)).toBeNull();
+    expect(rampAnchor("not-a-date", "")).toBeNull();
+  });
+
+  it("parses strings as well as Dates", () => {
+    expect(rampAnchor("2026-05-15T00:00:00Z", "2026-08-29T00:00:00Z")).toEqual(PROMOTED);
+  });
+});
+
+describe("capForAccount — a months-old mailbox re-entering production ramps", () => {
+  const CREATED = "2026-05-15T00:00:00Z";
+
+  it("ramps a long-lived mailbox from its PROMOTION, not its creation", () => {
+    // Promoted today: day one of sending, whatever the mailbox's age.
+    const promotedToday = new Date("2026-08-29T00:00:00Z");
+    expect(
+      capForAccount(
+        { daily_limit: 50, timestamp_created: CREATED, lifecycle_updated_at: promotedToday },
+        promotedToday,
+      ),
+    ).toBe(RAMP_FLOOR_PER_DAY);
+
+    // Half-way through the ramp window it is at roughly half the cap — the
+    // gradual climb Gmail grades a sender on.
+    const halfway = new Date(promotedToday.getTime() + (MATURE_AGE_DAYS / 2) * 86_400_000);
+    expect(
+      capForAccount(
+        { daily_limit: 50, timestamp_created: CREATED, lifecycle_updated_at: promotedToday },
+        halfway,
+      ),
+    ).toBe(25);
+  });
+
+  it("returns the full cap once the ramp window has elapsed since promotion", () => {
+    const promoted = new Date("2026-08-29T00:00:00Z");
+    const after = new Date(promoted.getTime() + (MATURE_AGE_DAYS + 1) * 86_400_000);
+    expect(
+      capForAccount(
+        { daily_limit: 50, timestamp_created: CREATED, lifecycle_updated_at: promoted },
+        after,
+      ),
+    ).toBe(50);
+  });
+
+  it("still honours an operator-set daily_limit BELOW the ramped value", () => {
+    const promoted = new Date("2026-08-29T00:00:00Z");
+    const after = new Date(promoted.getTime() + (MATURE_AGE_DAYS + 1) * 86_400_000);
+    expect(
+      capForAccount(
+        { daily_limit: 12, timestamp_created: CREATED, lifecycle_updated_at: promoted },
+        after,
+      ),
+    ).toBe(12);
+  });
+
+  it("keeps the old behaviour when no promotion instant is stored", () => {
+    // Pre-migration rows: creation age is all we have, and undatable stays mature.
+    const on = new Date("2026-08-29T00:00:00Z");
+    expect(capForAccount({ daily_limit: 50, timestamp_created: CREATED }, on)).toBe(50);
+    expect(capForAccount({ daily_limit: 50 }, on)).toBe(50);
   });
 });

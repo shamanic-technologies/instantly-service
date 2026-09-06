@@ -13,7 +13,7 @@ import {
 import { selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
 import { stepRowsFromSendPayload } from "../lib/self-send/sequence-steps";
 import { findRecentBrandContact, recontactRefusal } from "../lib/recontact-window";
-import { resolveTransportForNewSequence } from "../lib/self-send/transport-split";
+import { resolveTransportForNewSequence } from "../lib/self-send/capability";
 import {
   SEND_TRANSPORT_INSTANTLY,
   SEND_TRANSPORT_SMTP,
@@ -338,7 +338,7 @@ router.post("/", async (req: Request, res: Response) => {
       // campaign row below, so every later step of this lead follows it.
       const transport = account
         ? await resolveTransportForNewSequence(
-            { email: account.email, sendTransport: account.sendTransport },
+            { email: account.email },
             { method: "POST", path: "/orgs/send" },
           )
         : SEND_TRANSPORT_INSTANTLY;

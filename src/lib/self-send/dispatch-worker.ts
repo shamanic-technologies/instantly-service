@@ -15,11 +15,15 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
 import { smtpDispatchRaw } from "../../db/schema";
-import { rampCapForAge, IN_PRODUCTION_DAILY_LIMIT } from "../account-lifecycle";
+import { rampAnchor, rampCapForAge, IN_PRODUCTION_DAILY_LIMIT } from "../account-lifecycle";
 import { promoteEvent } from "../silver-promote";
 import type { Account } from "../instantly-client";
 import type { CallerInfo } from "../key-client";
-import { resolveMailboxCredential, type MailboxCredential } from "./mailbox-credentials";
+import {
+  loadMailboxLogins,
+  resolveMailboxCredential,
+  type MailboxCredential,
+} from "./mailbox-credentials";
 import { buildMessage } from "./message";
 import { runPoll } from "./imap-poller";
 import { dispatchMessage, SmtpDispatchError } from "./smtp";
@@ -143,10 +147,33 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
  *
  * Accounts absent from this result get no capacity row at all, which
  * `selectDueSteps` reads as no room. That is deliberate: a mailbox whose limits
- * we could not establish must not be sent from.
+ * we could not establish must not be sent from — and it is now the ONLY reason
+ * an account is excluded here, which is the point of the two filters this query
+ * used to carry:
+ *
+ *   - `a.send_transport = 'smtp'` — the ACCOUNT's policy. The decision is
+ *     already frozen on the campaign row; re-reading a second column at delivery
+ *     time asked the same question twice and got a different answer. Prod
+ *     2026-09-06: 1,486 sequences the assignment step had marked `smtp` sat on
+ *     accounts whose policy column still said `instantly`, so they matched no
+ *     capacity row and were never due — 1,176 prospects who had never received
+ *     a first email, silently, with the worker reporting `due: 0` and no errors.
+ *
+ *   - `a.lifecycle_status = 'in_production'` — the lifecycle governs which
+ *     mailbox a NEW sequence is ASSIGNED to (`fetchInProductionAccounts`), not
+ *     whether an already-assigned one may finish. Re-reading it here meant every
+ *     demotion silently froze the sequences already riding that mailbox: the
+ *     50 demotions of 2026-08-29 and the 25 of 09-05 stranded 1,031 of the
+ *     sequences above. The Instantly transport has never behaved this way — it
+ *     keeps dispatching whatever our lifecycle says — so the two pipes disagreed
+ *     about the same mailbox.
+ *
+ * Capacity is emitted per ACCOUNT but spent per MAILBOX; `selectDueSteps` does
+ * the grouping. See {@link AccountCapacity.mailbox}.
  */
 async function loadSendingAccounts(
   asOf: Date,
+  mailboxLogins: ReadonlyMap<string, string>,
 ): Promise<{ capacities: AccountCapacity[]; accounts: Map<string, Account> }> {
   const result = await db.execute(sql`
     SELECT
@@ -155,6 +182,7 @@ async function loadSendingAccounts(
       a.last_name                               AS "lastName",
       a.daily_limit                             AS "dailyLimit",
       a.timestamp_created                       AS "timestampCreated",
+      a.lifecycle_updated_at                    AS "lifecycleUpdatedAt",
       COALESCE((
         SELECT COUNT(*)
         FROM instantly_events e
@@ -164,9 +192,7 @@ async function loadSendingAccounts(
           AND e.timestamp >= date_trunc('day', now() AT TIME ZONE 'UTC')
       ), 0)                                     AS "sentToday"
     FROM instantly_accounts a
-    WHERE a.send_transport = ${SEND_TRANSPORT_SMTP}
-      AND a.lifecycle_status = 'in_production'
-      AND a.absent_since IS NULL
+    WHERE a.absent_since IS NULL
   `);
 
   const capacities: AccountCapacity[] = [];
@@ -174,17 +200,37 @@ async function loadSendingAccounts(
 
   for (const row of result.rows as Record<string, unknown>[]) {
     const email = String(row.accountEmail);
+
+    // The credential is what makes a mailbox sendable at all, and it is the same
+    // positive evidence the assignment step derives the transport from. No
+    // credential ⇒ no capacity row ⇒ no room, per the invariant above.
+    const mailbox = mailboxLogins.get(email.trim().toLowerCase());
+    if (mailbox === undefined) continue;
+
     const dailyLimit = row.dailyLimit === null ? 0 : Number(row.dailyLimit);
     const created = row.timestampCreated ? new Date(row.timestampCreated as string) : null;
+    const promoted = row.lifecycleUpdatedAt
+      ? new Date(row.lifecycleUpdatedAt as string)
+      : null;
 
     // The age ramp is computed off the CONSTANT, never off the live daily_limit:
     // scaling an already-ramped value by age again halves it every sweep. `min`
     // keeps both enforcement points idempotent while still honouring an
     // operator-set limit BELOW the age cap.
-    const rampCap = rampCapForAge(created, IN_PRODUCTION_DAILY_LIMIT, asOf);
+    //
+    // It measures from the PROMOTION, not from creation — a months-old mailbox
+    // that has sent nothing for weeks is not a mature sender, and handing it its
+    // full cap the morning it is promoted is what burned 79 accounts on
+    // 2026-08-29. See `rampAnchor`.
+    const rampCap = rampCapForAge(
+      rampAnchor(created, promoted),
+      IN_PRODUCTION_DAILY_LIMIT,
+      asOf,
+    );
 
     capacities.push({
       accountEmail: email,
+      mailbox,
       cap: Math.min(dailyLimit, rampCap),
       sentToday: Number(row.sentToday),
     });
@@ -299,7 +345,15 @@ export async function runDispatch(
   }
 
   const sequences = await loadPendingSequences();
-  const { capacities, accounts } = await loadSendingAccounts(asOf);
+
+  // Read once for the whole sweep, not per mailbox: this is a key-service read
+  // plus a vendor pagination, and it answers both "may we send from here at all"
+  // and "which real mailbox does this alias spend the quota of".
+  //
+  // Fails LOUD — a sweep that cannot establish the fleet's credentials must stop,
+  // not quietly send nothing and report a clean run.
+  const mailboxLogins = await loadMailboxLogins(CALLER);
+  const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
 
   const due = selectDueSteps(sequences, capacities, asOf);
   const batch = options.limit ? due.slice(0, options.limit) : due;
