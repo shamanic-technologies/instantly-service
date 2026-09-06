@@ -7,6 +7,7 @@ import {
   warmupDayKey,
   WARMUP_PARTNERS_PER_DAY,
   warmupBudgetFor,
+  selectSilencedSenders,
 } from "../../src/lib/warmup/plan";
 
 const MONDAY = new Date("2026-09-07T09:00:00Z");
@@ -208,5 +209,50 @@ describe("partnerCandidates — one address per REAL mailbox", () => {
 
   it("behaves as before when no login map is supplied", () => {
     expect(partnerCandidates([...LOGINS.keys()], [])).toHaveLength(4);
+  });
+});
+
+// ─── A mailbox whose relay refuses everything stops sending ──────────────────
+//
+// Measured 2026-09-06: `kevin@growthagency.cloud` had 20 permanent failures and
+// 0 successes over seven days — its own Gandi relay answering
+// `550 5.7.1 Blacklisted user` to every send. Left alone the mesh replans its
+// four edges every morning and spends the day telling a provider that is
+// already blocking us that we would like to send anyway.
+
+describe("selectSilencedSenders", () => {
+  it("silences a mailbox whose every send is permanently refused", () => {
+    expect(
+      selectSilencedSenders([{ mailbox: "kevin@ga.cloud", permanent: 20, sent: 0 }]),
+    ).toEqual(new Set(["kevin@ga.cloud"]));
+  });
+
+  // A single 5xx says nothing about the mailbox — servers refuse individual
+  // messages for ordinary reasons. `kevin@growthagency.ch` had 1 against 5.
+  it("leaves a mailbox that mostly works alone", () => {
+    expect(
+      selectSilencedSenders([{ mailbox: "kevin@ga.ch", permanent: 1, sent: 5 }]),
+    ).toEqual(new Set());
+  });
+
+  it("needs more than one failure even with no successes yet", () => {
+    expect(
+      selectSilencedSenders([{ mailbox: "new@x.com", permanent: 1, sent: 0 }]),
+    ).toEqual(new Set());
+    expect(
+      selectSilencedSenders([{ mailbox: "new@x.com", permanent: 3, sent: 0 }]),
+    ).toEqual(new Set(["new@x.com"]));
+  });
+
+  // One success is enough to prove the relay is not blocking us, whatever else
+  // failed that week.
+  it("never silences a mailbox that has sent at all", () => {
+    expect(
+      selectSilencedSenders([{ mailbox: "busy@x.com", permanent: 50, sent: 1 }]),
+    ).toEqual(new Set());
+  });
+
+  it("says nothing about a mailbox with no recent warmup at all", () => {
+    expect(selectSilencedSenders([])).toEqual(new Set());
   });
 });
