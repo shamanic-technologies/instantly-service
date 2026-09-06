@@ -7,12 +7,12 @@ name: Warmup mesh cron
 #
 # TWO STEPS, TWO SEPARATE SCHEDULES.
 #
-#   1. POST /internal/warmup/run   — 07:00 UTC daily.
+#   1. POST /internal/audit/warmup/run   — 07:00 UTC daily.
 #      Every credentialed mailbox writes a short, individually generated note to
 #      a few of the others. Gated behind WARMUP_MESH_ENABLED=true; a 409 (not
 #      armed) is tolerated, so this cron is harmless while the mesh is disarmed.
 #
-#   2. POST /internal/warmup/poll  — 12:00 UTC daily.
+#   2. POST /internal/audit/warmup/poll  — 12:00 UTC daily.
 #      Reads the partner mailboxes, records where each message landed, then acts:
 #      marks it read, moves it out of spam, answers a fraction of them. THIS half
 #      is what actually warms a mailbox; the sending half alone teaches a filter
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: POST /internal/warmup/run
+      - name: POST /internal/audit/warmup/run
         # TRUE for the 07:00 cron AND for a manual workflow_dispatch (whose
         # `schedule` is empty), so a manual run does the full send-then-read pair.
         if: github.event.schedule != '0 12 * * *'
@@ -79,7 +79,7 @@ jobs:
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
             -d '{}' \
-            "${SERVICE_URL}/internal/warmup/run")
+            "${SERVICE_URL}/internal/audit/warmup/run")
 
           echo "HTTP ${http_status}"
           cat "${response_file}"
@@ -94,7 +94,7 @@ jobs:
             exit 1
           fi
 
-      - name: POST /internal/warmup/poll
+      - name: POST /internal/audit/warmup/poll
         if: github.event.schedule != '0 7 * * *'
         env:
           SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
@@ -112,7 +112,7 @@ jobs:
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
             -d '{}' \
-            "${SERVICE_URL}/internal/warmup/poll")
+            "${SERVICE_URL}/internal/audit/warmup/poll")
 
           echo "HTTP ${http_status}"
           cat "${response_file}"

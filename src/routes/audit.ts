@@ -1010,7 +1010,7 @@ router.post("/inbound-replies-backfill", async (req: Request, res: Response) => 
 
 
 /**
- * POST /internal/warmup/run
+ * POST /internal/audit/warmup/run
  *
  * Platform-scoped. Sends one day's warmup mesh: every credentialed mailbox
  * writes a short, individually generated note to a few of the others. This is
@@ -1054,7 +1054,7 @@ router.post("/warmup/run", async (req: Request, res: Response) => {
 });
 
 /**
- * POST /internal/warmup/poll
+ * POST /internal/audit/warmup/poll
  *
  * Platform-scoped. Reads the partner mailboxes, records where each warmup
  * message landed, then acts on it: marks it read, moves it out of spam, and

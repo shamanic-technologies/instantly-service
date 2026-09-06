@@ -33,7 +33,7 @@ import { dispatchMessage, SmtpDispatchError, classifyDispatchFailure } from "../
 import { buildWarmupMessage } from "./message";
 import { partnerCandidates, planWarmupPairings, warmupDayKey } from "./plan";
 
-const CALLER: CallerInfo = { method: "POST", path: "/internal/warmup/run" };
+const CALLER: CallerInfo = { method: "POST", path: "/internal/audit/warmup/run" };
 
 /** Off by default — a mesh nobody armed must send nothing. */
 export function isWarmupMeshEnabled(): boolean {

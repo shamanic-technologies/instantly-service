@@ -959,7 +959,7 @@ An account that genuinely stays unmeasured ages into `delivery_evidence_stale` w
 
 ## Warmup mesh — our own mailboxes keeping each other warm
 
-The Instantly Email Outreach subscription ($97/mo) bundles a warmup pool of tens of thousands of mailboxes that exchange mail, read it, rescue it from spam and reply. Cancelling it removes that, so the fleet does it itself. `src/lib/warmup/` — `plan.ts` pure (pairing, reply decision), `message.ts` (a generated body per email), `run.ts` (send), `poll.ts` (read, rescue, reply). Bronze tables `warmup_dispatches` + `warmup_receipts` (migration `0050`). Routes `POST /internal/warmup/{run,poll}`, driven by `warmup-cron.yml` on TWO daily schedules (07:00 send, 12:00 read). Armed by `WARMUP_MESH_ENABLED=true`, **default OFF** (409, tolerated by the cron).
+The Instantly Email Outreach subscription ($97/mo) bundles a warmup pool of tens of thousands of mailboxes that exchange mail, read it, rescue it from spam and reply. Cancelling it removes that, so the fleet does it itself. `src/lib/warmup/` — `plan.ts` pure (pairing, reply decision), `message.ts` (a generated body per email), `run.ts` (send), `poll.ts` (read, rescue, reply). Bronze tables `warmup_dispatches` + `warmup_receipts` (migration `0050`). Routes `POST /internal/audit/warmup/{run,poll}`, driven by `warmup-cron.yml` on TWO daily schedules (07:00 send, 12:00 read). Armed by `WARMUP_MESH_ENABLED=true`, **default OFF** (409, tolerated by the cron).
 
 **⚠️ WHAT THE PRODUCTION DATA SAYS WARMUP IS FOR, because it shapes every constant.** Measured 2026-09-06 on the Gandi fleet, by real volume sent over 30 days against the seed placement score:
 
