@@ -5,6 +5,7 @@ const mockInsertValues = vi.fn();
 const mockPromoteEvent = vi.fn();
 const mockDispatchMessage = vi.fn();
 const mockResolveCredential = vi.fn();
+const mockLoadMailboxLogins = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
@@ -38,6 +39,9 @@ vi.mock("../../src/lib/silver-promote", () => ({
 vi.mock("../../src/lib/self-send/mailbox-credentials", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
   resolveMailboxCredential: (...args: unknown[]) => mockResolveCredential(...args),
+  // Every account in these fixtures is credentialed and IS its own login (the
+  // Primeforge case). The alias grouping has its own tests in dispatch.test.
+  loadMailboxLogins: (...args: unknown[]) => mockLoadMailboxLogins(...args),
 }));
 
 vi.mock("../../src/lib/self-send/smtp", async (importOriginal) => ({
@@ -103,6 +107,13 @@ function primeReads(options: { hasBody?: boolean } = {}) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  // Credentialed, and each address IS its own SMTP login.
+  mockLoadMailboxLogins.mockImplementation(async () =>
+    new Map([
+      ["amy@saviolabsco.com", "amy@saviolabsco.com"],
+      ["ezekiel@plainsignalco.com", "ezekiel@plainsignalco.com"],
+    ]),
+  );
   mockDispatchScheduledReplies.mockResolvedValue({
     pending: 0,
     due: 0,

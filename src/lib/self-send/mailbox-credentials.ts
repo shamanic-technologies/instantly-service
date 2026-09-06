@@ -164,18 +164,48 @@ export async function resolveMailboxCredential(
 export async function loadCredentialedMailboxes(
   caller: CallerInfo,
 ): Promise<Set<string>> {
+  return new Set((await loadMailboxLogins(caller)).keys());
+}
+
+/**
+ * Every sending address we hold a credential for, mapped to the REAL MAILBOX it
+ * authenticates as.
+ *
+ * ⚠️ The value is the grain a provider's daily limit is enforced at, and it is
+ * NOT the key. Five Gandi aliases resolve to one login, one relay account and
+ * one reputation — the relay says so itself, refusing with
+ * `450 4.7.1 Too many mail per day for sasl <user>`, per SASL USER. Anything
+ * that budgets a day's sending has to group by the value, or it hands one
+ * mailbox five times its quota (`growthagency.forum`: three aliases in
+ * production at 50/day each against a single 50/day mailbox).
+ *
+ * For a Primeforge mailbox the address IS the login, so the map is an identity
+ * and the grouping costs nothing.
+ *
+ * ONE loader, two shapes: {@link loadCredentialedMailboxes} is this map's key
+ * set. Two loaders would drift, which is the mistake this file already carries a
+ * warning about.
+ */
+export async function loadMailboxLogins(
+  caller: CallerInfo,
+): Promise<Map<string, string>> {
   const manual = await loadManualCredentials(caller);
   const key = await resolvePlatformKey("primeforge", caller);
   const mailboxes = await listPrimeforgeRawMailboxes(key);
 
-  const addresses = new Set<string>();
-  for (const entry of manual) addresses.add(entry.address);
+  const logins = new Map<string, string>();
+
+  // Manual first, then Primeforge WITHOUT overwriting — the manual layer wins
+  // everywhere else in this file, so it wins here too.
+  for (const entry of manual) {
+    logins.set(entry.address, (entry.authUser ?? entry.address).trim().toLowerCase());
+  }
   for (const mailbox of mailboxes) {
     const address = String(mailbox.address ?? "").trim().toLowerCase();
     const appPassword = String(mailbox.appPassword ?? "").replace(/\s/g, "");
-    if (address && appPassword) addresses.add(address);
+    if (address && appPassword && !logins.has(address)) logins.set(address, address);
   }
-  return addresses;
+  return logins;
 }
 
 // ─── Manual credentials (non-Primeforge mailboxes) ──────────────────────────

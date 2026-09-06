@@ -12,6 +12,23 @@ const mockDbUpdateSet = vi.fn();
 // prior contact" in beforeEach so every pre-existing send test is unaffected.
 const mockDbExecute = vi.fn();
 
+// The transport a new sequence takes is derived from ONE fact — do we hold a
+// credential for this mailbox — so the tests state that fact directly rather
+// than a stored policy column. Empty by default, which is the "no credential ⇒
+// Instantly" case every pre-existing send test expects.
+//
+// Hoisted because `vi.mock` factories run before the module body.
+const credentialedMailboxes = vi.hoisted(() => new Set<string>());
+
+vi.mock("../../src/lib/self-send/capability", () => ({
+  isSelfSendCapable: async (email: string) =>
+    credentialedMailboxes.has(email.trim().toLowerCase()),
+  resolveTransportForNewSequence: async (account: { email: string }) =>
+    credentialedMailboxes.has(account.email.trim().toLowerCase())
+      ? "smtp"
+      : "instantly",
+}));
+
 vi.mock("../../src/db", () => ({
   db: {
     select: () => ({ from: (table: unknown) => ({ where: (...args: unknown[]) => { const result = mockDbWhere(...args); return Object.assign(result, { limit: () => result }); } }) }),
@@ -1216,6 +1233,7 @@ describe("POST /send", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     runCounter = 0;
+    credentialedMailboxes.clear();
 
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
     mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: true, balance_cents: 1000 });
@@ -1657,6 +1675,7 @@ describe("POST /send", () => {
   // lead pushed to Instantly AND picked up by our own dispatch worker, and every
   // prospect received each email TWICE from the same mailbox.
   it("does NOT create an Instantly campaign when the account is on smtp", async () => {
+    credentialedMailboxes.add("smtp@saviolabsco.com");
     mockNewCampaignFlow();
     mockFetchInProductionAccounts.mockResolvedValueOnce([
       { email: "smtp@saviolabsco.com", warmup_status: 1, status: 1, sendTransport: "smtp", infraProvider: "primeforge" },
@@ -1671,6 +1690,7 @@ describe("POST /send", () => {
   });
 
   it("stores a local self: id when the account is on smtp", async () => {
+    credentialedMailboxes.add("smtp@saviolabsco.com");
     mockNewCampaignFlow();
     mockFetchInProductionAccounts.mockResolvedValueOnce([
       { email: "smtp@saviolabsco.com", warmup_status: 1, status: 1, sendTransport: "smtp", infraProvider: "primeforge" },

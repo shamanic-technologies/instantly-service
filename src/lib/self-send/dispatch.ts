@@ -100,6 +100,23 @@ export function nextDueStep(sequence: PendingSequence, asOf: Date): DueStep | nu
 /** Room left on one mailbox today. */
 export interface AccountCapacity {
   accountEmail: string;
+  /**
+   * The REAL mailbox this sending address authenticates as — its SMTP/IMAP
+   * login, per `loginFor`.
+   *
+   * ⚠️ Load-bearing, and the reason capacity is not keyed on `accountEmail`.
+   * A Gandi domain is typically ONE mailbox carrying several aliases, and we
+   * hold a sending account per alias: 154 accounts sit on 44 real mailboxes.
+   * Keyed per address, five aliases each get their own cap and the single
+   * mailbox behind them is offered five times its quota — which is what the
+   * relay answers with `450 4.7.1 Too many mail per day for sasl <user>`,
+   * per SASL USER, not per alias. The provider's own limit is at this grain,
+   * so ours has to be too.
+   *
+   * For a Primeforge mailbox the address IS the login, so this equals
+   * `accountEmail` and the grouping is a no-op.
+   */
+  mailbox: string;
   /** `min(daily_limit, rampCapForAge)` — the same pair the Instantly path uses. */
   cap: number;
   /** Real dispatches already made today (UTC). */
@@ -141,9 +158,31 @@ export function selectDueSteps(
   // bucket on the raw nominal day on purpose.
   if (!isSendingDay(asOf)) return [];
 
-  const remaining = new Map<string, number>();
+  // Capacity is spent per REAL MAILBOX, not per sending address — several
+  // aliases share one mailbox, one relay login and one reputation, so they share
+  // one day's quota. `cap` takes the MINIMUM across the aliases (an operator who
+  // lowers one alias means it for the mailbox) while `sentToday` SUMS them (every
+  // alias's send came out of the same quota).
+  const mailboxOf = new Map<string, string>();
+  const capByMailbox = new Map<string, number>();
+  const sentByMailbox = new Map<string, number>();
+
   for (const capacity of capacities) {
-    remaining.set(capacity.accountEmail, Math.max(0, capacity.cap - capacity.sentToday));
+    mailboxOf.set(capacity.accountEmail, capacity.mailbox);
+    const knownCap = capByMailbox.get(capacity.mailbox);
+    capByMailbox.set(
+      capacity.mailbox,
+      knownCap === undefined ? capacity.cap : Math.min(knownCap, capacity.cap),
+    );
+    sentByMailbox.set(
+      capacity.mailbox,
+      (sentByMailbox.get(capacity.mailbox) ?? 0) + capacity.sentToday,
+    );
+  }
+
+  const remaining = new Map<string, number>();
+  for (const [mailbox, cap] of capByMailbox) {
+    remaining.set(mailbox, Math.max(0, cap - (sentByMailbox.get(mailbox) ?? 0)));
   }
 
   const due = sequences
@@ -171,10 +210,15 @@ export function selectDueSteps(
   const selected: DueStep[] = [];
 
   for (const step of due) {
-    const room = remaining.get(step.accountEmail) ?? 0;
+    // No capacity row ⇒ no mailbox ⇒ no room, per the invariant above. An
+    // account whose limits we could not establish must not be sent from.
+    const mailbox = mailboxOf.get(step.accountEmail);
+    if (mailbox === undefined) continue;
+
+    const room = remaining.get(mailbox) ?? 0;
     if (room <= 0) continue;
     selected.push(step);
-    remaining.set(step.accountEmail, room - 1);
+    remaining.set(mailbox, room - 1);
   }
 
   return selected;

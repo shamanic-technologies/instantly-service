@@ -304,45 +304,6 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
   return { status: "in_production", reason: "passed" };
 }
 
-/**
- * Should this mailbox be moved onto our own sender because Instantly disabled it?
- *
- * Instantly turns an account off for reasons that are facts about ITSELF, not
- * about the mailbox: its outbound IPs are listed on `xbl.spamhaus.org` (observed
- * on three separate AWS addresses), or one PROSPECT domain in the list no longer
- * resolves and it deactivates OUR sender over the resulting `450 4.1.2`. Neither
- * survives the move — our dispatcher connects to the mailbox's own provider, and
- * a dead recipient is a per-step transient there, never a mailbox verdict.
- *
- * `deriveLifecycle` already SKIPS the two Instantly-owned gates on `smtp`, so a
- * mailbox we can authenticate is one column away from sending again. This is the
- * decision to turn that column, and the three conditions are all load-bearing:
- *
- *   - the account is not ALREADY pinned (that column is the manual override and
- *     the rollback lever — never re-decide it),
- *   - Instantly reports it disabled (`status <= 0`). A healthy account stays on
- *     `instantly` so the A/B split keeps both arms populated; this is a rescue,
- *     not a migration,
- *   - and we hold a credential for it. Without one our worker cannot dispatch
- *     either, so the flip would only move the mailbox from one pipe that cannot
- *     send to another — and it would leave `in_recovery` on a lifecycle that no
- *     longer measures anything.
- *
- * Deliberately STICKY: nothing flips it back when Instantly re-enables the
- * account. The population it draws from flaps (measured: ~50% turnover in 12
- * hours, 312 deactivations against 299 reactivations in a week), so returning a
- * rescued mailbox to the pipe that keeps disabling it would re-enter that loop.
- * Reverting is `UPDATE instantly_accounts SET send_transport='instantly'`.
- */
-export function shouldAdoptSelfSendTransport(input: {
-  sendTransport: SendTransport;
-  instantlyStatus: number;
-  selfSendCapable: boolean;
-}): boolean {
-  if (input.sendTransport === SEND_TRANSPORT_SMTP) return false;
-  if (input.instantlyStatus > 0) return false;
-  return input.selfSendCapable;
-}
 
 /**
  * True ⇔ Instantly is still the pipe for this account, so its warmup and
@@ -491,13 +452,66 @@ export function rampCapForAge(
  * selector about the same account.
  */
 export function capForAccount(
-  account: { daily_limit?: number | null; timestamp_created?: string | Date | null },
+  account: {
+    daily_limit?: number | null;
+    timestamp_created?: string | Date | null;
+    /** When the account last entered its current lifecycle state — see {@link rampAnchor}. */
+    lifecycle_updated_at?: string | Date | null;
+  },
   on: Date,
 ): number {
   return Math.min(
     account.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT,
-    rampCapForAge(account.timestamp_created, IN_PRODUCTION_DAILY_LIMIT, on),
+    rampCapForAge(
+      rampAnchor(account.timestamp_created, account.lifecycle_updated_at),
+      IN_PRODUCTION_DAILY_LIMIT,
+      on,
+    ),
   );
+}
+
+/**
+ * The instant the ramp measures from: the LATER of when the mailbox was created
+ * and when it last entered its current lifecycle state.
+ *
+ * ⚠️ Creation age alone is the wrong anchor, and it cost the fleet a real
+ * incident. A mailbox months old is "mature" by that measure, so it is handed
+ * its full cap the instant it is promoted — even though it may have sent nothing
+ * for weeks while it sat in recovery. Gmail does not grade a sender on how long
+ * the mailbox has EXISTED; it grades a pattern of sending, and 0/day jumping
+ * straight to 50/day is the pattern it distrusts most.
+ *
+ * Prod 2026-08-29: 79 Gandi accounts were promoted in one sweep on a passing
+ * placement test. All were months old, so the age ramp was a no-op and every one
+ * of them went from zero to its full limit that morning. Instantly deactivated
+ * 70 accounts the same day on relay throttles, and 25 of the 79 had fallen back
+ * below the delivery bar a week later.
+ *
+ * Anchoring on the promotion makes the ramp mean what it says: a mailbox
+ * re-entering production climbs 5 → 50 over {@link MATURE_AGE_DAYS} like any
+ * other mailbox starting to send. A brand-new account is unaffected — its
+ * creation and its first promotion are days apart at most, and the later of the
+ * two is still recent.
+ *
+ * `null` (both unknown) keeps the existing meaning: undatable is treated as
+ * mature, never trapped at the floor.
+ */
+export function rampAnchor(
+  timestampCreated: string | Date | null | undefined,
+  lifecycleUpdatedAt: string | Date | null | undefined,
+): Date | null {
+  const created = toDate(timestampCreated);
+  const promoted = toDate(lifecycleUpdatedAt);
+  if (created === null) return promoted;
+  if (promoted === null) return created;
+  return promoted.getTime() > created.getTime() ? promoted : created;
+}
+
+/** Parse a timestamp, or null when absent / unparseable. */
+function toDate(value: string | Date | null | undefined): Date | null {
+  if (!value) return null;
+  const ms = value instanceof Date ? value.getTime() : Date.parse(value);
+  return Number.isNaN(ms) ? null : new Date(ms);
 }
 
 /**

@@ -137,12 +137,12 @@ describe("nextDueStep", () => {
 // ─── selectDueSteps ───────────────────────────────────────────────────────────
 
 describe("selectDueSteps", () => {
-  const capacity = (over: Partial<AccountCapacity> = {}): AccountCapacity => ({
-    accountEmail: "amy@saviolabsco.com",
-    cap: 45,
-    sentToday: 0,
-    ...over,
-  });
+  // `mailbox` defaults to the address, which is the Primeforge case (the address
+  // IS the SMTP login). A test that wants the Gandi alias case sets it apart.
+  const capacity = (over: Partial<AccountCapacity> = {}): AccountCapacity => {
+    const accountEmail = over.accountEmail ?? "amy@saviolabsco.com";
+    return { accountEmail, mailbox: accountEmail, cap: 45, sentToday: 0, ...over };
+  };
 
   it("clips to the room left on the mailbox", () => {
     const sequences = Array.from({ length: 5 }, (_, i) =>
@@ -197,6 +197,89 @@ describe("selectDueSteps", () => {
     );
 
     expect(selected.map((s) => s.instantlyCampaignId).sort()).toEqual(["a1", "b1"]);
+  });
+
+  // ── Aliases share one mailbox, so they share one day's quota ───────────────
+  //
+  // A Gandi domain is ONE real mailbox carrying several aliases, and we hold a
+  // sending account per alias: 154 accounts on 44 mailboxes in prod. Budgeting
+  // per address hands that single mailbox five times its quota, which the relay
+  // answers with `450 4.7.1 Too many mail per day for sasl <user>` — per SASL
+  // USER, not per alias. `growthagency.forum` had three aliases in production at
+  // 50/day each against one 50/day mailbox.
+
+  it("spends ONE quota across every alias of the same mailbox", () => {
+    const sequences = Array.from({ length: 6 }, (_, i) =>
+      sequence({
+        instantlyCampaignId: `camp-${i}`,
+        leadEmail: `p${i}@x.com`,
+        // Three aliases, round-robin, all on one Gandi mailbox.
+        accountEmail: ["kevin@ga.forum", "kevinl@ga.forum", "klourd@ga.forum"][i % 3],
+      }),
+    );
+
+    const selected = selectDueSteps(
+      sequences,
+      [
+        capacity({ accountEmail: "kevin@ga.forum", mailbox: "kevin@ga.forum", cap: 2 }),
+        capacity({ accountEmail: "kevinl@ga.forum", mailbox: "kevin@ga.forum", cap: 2 }),
+        capacity({ accountEmail: "klourd@ga.forum", mailbox: "kevin@ga.forum", cap: 2 }),
+      ],
+      NOW,
+    );
+
+    // Two — the mailbox's cap. Keyed per address this was six.
+    expect(selected).toHaveLength(2);
+  });
+
+  it("counts what an alias ALREADY sent against its mailbox's quota", () => {
+    const selected = selectDueSteps(
+      [sequence({ accountEmail: "kevin@ga.forum" })],
+      [
+        capacity({ accountEmail: "kevin@ga.forum", mailbox: "kevin@ga.forum", cap: 5, sentToday: 0 }),
+        // A sibling alias already spent the mailbox's whole allowance today.
+        capacity({ accountEmail: "klourd@ga.forum", mailbox: "kevin@ga.forum", cap: 5, sentToday: 5 }),
+      ],
+      NOW,
+    );
+
+    expect(selected).toEqual([]);
+  });
+
+  it("takes the LOWEST cap among a mailbox's aliases", () => {
+    const sequences = Array.from({ length: 4 }, (_, i) =>
+      sequence({ instantlyCampaignId: `c${i}`, leadEmail: `p${i}@x.com`, accountEmail: "kevin@ga.forum" }),
+    );
+
+    const selected = selectDueSteps(
+      sequences,
+      [
+        capacity({ accountEmail: "kevin@ga.forum", mailbox: "kevin@ga.forum", cap: 3 }),
+        // An operator lowered one alias; they meant it for the mailbox.
+        capacity({ accountEmail: "klourd@ga.forum", mailbox: "kevin@ga.forum", cap: 1 }),
+      ],
+      NOW,
+    );
+
+    expect(selected).toHaveLength(1);
+  });
+
+  it("leaves distinct mailboxes independent (the Primeforge case is unchanged)", () => {
+    const sequences = [
+      sequence({ instantlyCampaignId: "a", accountEmail: "amy@saviolabsco.com" }),
+      sequence({ instantlyCampaignId: "b", accountEmail: "ezekiel@plainsignalco.com" }),
+    ];
+
+    const selected = selectDueSteps(
+      sequences,
+      [
+        capacity({ accountEmail: "amy@saviolabsco.com", cap: 1 }),
+        capacity({ accountEmail: "ezekiel@plainsignalco.com", cap: 1 }),
+      ],
+      NOW,
+    );
+
+    expect(selected.map((s) => s.instantlyCampaignId).sort()).toEqual(["a", "b"]);
   });
 
   it("skips a saturated mailbox entirely", () => {
@@ -260,7 +343,12 @@ describe("classifyPermanentFailure", () => {
 // ─── Prospect-local send window ───────────────────────────────────────────────
 
 describe("selectDueSteps — the prospect's own business hours", () => {
-  const capacity = { accountEmail: "amy@saviolabsco.com", cap: 45, sentToday: 0 };
+  const capacity = {
+    accountEmail: "amy@saviolabsco.com",
+    mailbox: "amy@saviolabsco.com",
+    cap: 45,
+    sentToday: 0,
+  };
   const due = () => sequence({ provisionedSteps: [1] });
 
   // On the Instantly transport the campaign schedule holds the send until the
@@ -336,7 +424,12 @@ describe("selectDueSteps — sending calendar", () => {
   const SUNDAY = new Date("2026-08-16T15:00:00Z");
   const MONDAY = new Date("2026-08-17T15:00:00Z");
 
-  const capacity = { accountEmail: "amy@saviolabsco.com", cap: 45, sentToday: 0 };
+  const capacity = {
+    accountEmail: "amy@saviolabsco.com",
+    mailbox: "amy@saviolabsco.com",
+    cap: 45,
+    sentToday: 0,
+  };
 
   it("confirms the fixture days really are what they claim", () => {
     expect(SATURDAY.getUTCDay()).toBe(6);

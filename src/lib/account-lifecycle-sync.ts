@@ -19,6 +19,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   resolveTransportForSend,
+  SEND_TRANSPORT_INSTANTLY,
   SEND_TRANSPORT_SMTP,
   type SendTransport,
 } from "./self-send/transport";
@@ -33,10 +34,9 @@ import {
   setDailyLimit,
   type Account,
 } from "./instantly-client";
-import { isSelfSendCapable } from "./self-send/transport-split";
+import { isSelfSendCapable } from "./self-send/capability";
 import {
   deriveLifecycle,
-  shouldAdoptSelfSendTransport,
   warmupDailyForStatus,
   dailyLimitForStatus,
   emailDomain,
@@ -558,35 +558,35 @@ export async function reconcileLifecycle(
     const healthScore = Number(row.warmupScore ?? 0);
     const delivery = deliveryByEmail.get(row.email);
     const deliveryPctSnapshot = delivery?.deliveryPct ?? null;
-    // Resolved rather than passed through, so an unrecognised stored value can
-    // only ever mean Instantly — the only way onto the self-send pipe stays an
-    // explicit, reversible UPDATE.
-    let sendTransport = resolveTransportForSend(row.sendTransport);
-
-    // RESCUE: Instantly disabled this mailbox for a reason that is a fact about
-    // Instantly (its own IPs are Spamhaus-listed; a dead PROSPECT domain), not
-    // about the mailbox. If we hold a credential, move it onto our own sender —
-    // which makes `deriveLifecycle` skip both Instantly-owned gates below, so the
-    // account is graded on DELIVERY alone. See shouldAdoptSelfSendTransport.
+    // The transport is DERIVED from the one fact that decides it — do we hold a
+    // credential for this mailbox — exactly as `resolveTransportForNewSequence`
+    // derives it on the send path. Reading the stored column here instead would
+    // put a second answer beside that one, which is the bug that froze 1,486
+    // sequences: the assignment step said `smtp`, a stored column said
+    // `instantly`, and the dispatcher believed the column.
+    //
+    // This also SUBSUMES the former rescue. Instantly disables a mailbox for
+    // reasons that are facts about ITSELF (its own IPs Spamhaus-listed; a dead
+    // PROSPECT domain), not about the mailbox — so we used to detect that case
+    // and flip the column. Now a credentialed mailbox is on our own sender
+    // unconditionally, which makes `deriveLifecycle` skip both Instantly-owned
+    // gates below and grade it on DELIVERY alone. Nothing to detect.
     const instantlyStatus = Number(row.instantlyStatus ?? 0);
-    if (
-      shouldAdoptSelfSendTransport({
-        sendTransport,
-        instantlyStatus,
-        selfSendCapable:
-          sendTransport !== SEND_TRANSPORT_SMTP && instantlyStatus <= 0
-            ? await isSelfSendCapable(row.email, RECONCILE_CALLER)
-            : false,
-      })
-    ) {
+    const sendTransport = (await isSelfSendCapable(row.email, RECONCILE_CALLER))
+      ? SEND_TRANSPORT_SMTP
+      : SEND_TRANSPORT_INSTANTLY;
+
+    // The column is no longer read by any decision; it is kept truthful so the
+    // ops table shows which pipe a mailbox is actually on. One writer, derived
+    // value — never an input.
+    if (resolveTransportForSend(row.sendTransport) !== sendTransport) {
       await db
         .update(instantlyAccounts)
-        .set({ sendTransport: SEND_TRANSPORT_SMTP, updatedAt: new Date() })
+        .set({ sendTransport, updatedAt: new Date() })
         .where(sql`${instantlyAccounts.email} = ${row.email}`);
-      sendTransport = SEND_TRANSPORT_SMTP;
       adoptedSelfSend += 1;
       console.log(
-        `[account-lifecycle] ${row.email}: Instantly disabled it (status ${instantlyStatus}) → send_transport=smtp`,
+        `[account-lifecycle] ${row.email}: send_transport → ${sendTransport} (credential-derived)`,
       );
     }
 

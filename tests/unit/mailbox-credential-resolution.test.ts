@@ -31,6 +31,8 @@ import {
   MailboxCredentialError,
   resolveMailboxCredential,
   loginFor,
+  loadMailboxLogins,
+  loadCredentialedMailboxes,
 } from "../../src/lib/self-send/mailbox-credentials";
 
 const CALLER = { method: "POST", path: "/test" } as const;
@@ -161,5 +163,61 @@ describe("resolveMailboxCredential — one resolution for sending and measuring"
     await expect(
       resolveMailboxCredential("kevin@boostdistribute.com", CALLER),
     ).rejects.toThrow(/valid JSON/);
+  });
+});
+
+// ─── The alias→mailbox map, which is what a day's quota is spent against ─────
+//
+// 154 sending accounts sit on 44 real Gandi mailboxes. Budgeting per ADDRESS
+// hands one mailbox five times its quota, and the relay answers
+// `450 4.7.1 Too many mail per day for sasl <user>` — per SASL USER. So the
+// dispatcher groups capacity by this map's VALUE, never by its key.
+
+describe("loadMailboxLogins", () => {
+  const SIBLING_ALIAS = {
+    address: "klourd@marketingagency.life",
+    appPassword: "gandi-secret",
+    smtpHost: "mail.gandi.net",
+    imapHost: "mail.gandi.net",
+    authUser: "kevin@marketingagency.life",
+  };
+
+  beforeEach(() => {
+    mockResolvePlatformKey.mockImplementation(async (provider: string) =>
+      provider === MANUAL_CREDENTIALS_PROVIDER
+        ? manualKey([GANDI_ALIAS, SIBLING_ALIAS])
+        : "pf-key",
+    );
+  });
+
+  it("collapses several aliases onto the ONE mailbox they authenticate as", async () => {
+    const logins = await loadMailboxLogins(CALLER);
+
+    expect(logins.get("kevinl@marketingagency.life")).toBe("kevin@marketingagency.life");
+    expect(logins.get("klourd@marketingagency.life")).toBe("kevin@marketingagency.life");
+    // Two addresses, one mailbox — the whole point.
+    expect(new Set(logins.values()).size).toBe(2);
+  });
+
+  it("maps a Primeforge mailbox to itself — the address IS the login", async () => {
+    const logins = await loadMailboxLogins(CALLER);
+    expect(logins.get("kevin@boostdistribute.com")).toBe("kevin@boostdistribute.com");
+  });
+
+  it("keeps the manual entry when both sources carry the same address", async () => {
+    mockListPrimeforgeRawMailboxes.mockResolvedValue([
+      { address: "kevinl@marketingagency.life", appPassword: "pf-secret" },
+    ]);
+
+    const logins = await loadMailboxLogins(CALLER);
+    // Manual wins everywhere else in this module, so it wins here too — the
+    // alias must not collapse back onto itself.
+    expect(logins.get("kevinl@marketingagency.life")).toBe("kevin@marketingagency.life");
+  });
+
+  it("is the same set loadCredentialedMailboxes returns — ONE loader, two shapes", async () => {
+    const logins = await loadMailboxLogins(CALLER);
+    const addresses = await loadCredentialedMailboxes(CALLER);
+    expect(addresses).toEqual(new Set(logins.keys()));
   });
 });
