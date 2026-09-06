@@ -162,6 +162,27 @@ async function loadSenderHealth(): Promise<WarmupSenderHealth[]> {
   }));
 }
 
+/**
+ * Warmup already sent today, per REAL mailbox — the budget's running total.
+ *
+ * Grouped by mailbox rather than address for the reason everything else here is:
+ * a domain's aliases share one quota, so their warmup sums.
+ */
+async function loadWarmupSentToday(dayKey: string): Promise<Map<string, number>> {
+  const result = await db.execute(sql`
+    SELECT sender_mailbox AS "mailbox", COUNT(*)::int AS "n"
+    FROM warmup_dispatches
+    WHERE day_key = ${dayKey} AND outcome = 'sent'
+    GROUP BY sender_mailbox
+  `);
+  return new Map(
+    (result.rows as Record<string, unknown>[]).map((row) => [
+      String(row.mailbox),
+      Number(row.n),
+    ]),
+  );
+}
+
 /** Edges already on the wire today, so a re-run is a no-op rather than a double send. */
 async function loadSentEdges(dayKey: string): Promise<Set<string>> {
   const result = await db.execute(sql`
@@ -215,13 +236,18 @@ export async function runWarmupMesh(
   };
 
   const room = await loadRoom(mailboxLogins, dayKey, asOf);
+  // ⚠️ THE BUDGET COUNTS THE DAY, NOT THE RUN. Seeded from what warmup already
+  // sent today, so a second run cannot spend a second budget. In steady state
+  // the pairing is deterministic per day and a re-run plans identical edges that
+  // `alreadySent` skips — but that is an argument about the pairing, not a
+  // guarantee about the budget, and it stops holding the moment the pairing
+  // changes (as it did on 2026-09-06, when three runs with different pairing
+  // logic put 17 warmup sends on one mailbox against a budget of 4).
+  const sentByMailbox = await loadWarmupSentToday(dayKey);
   const alreadySent = await loadSentEdges(dayKey);
   // Mailboxes whose relay refuses everything: they still RECEIVE, they just stop
   // being asked to send. See `selectSilencedSenders`.
   const silenced = selectSilencedSenders(await loadSenderHealth());
-  // Warmup already booked per mailbox this run, so the budget bounds the SUM
-  // across a domain's aliases rather than each alias separately.
-  const sentByMailbox = new Map<string, number>();
 
   const batch = options.limit ? pairings.slice(0, options.limit) : pairings;
 
