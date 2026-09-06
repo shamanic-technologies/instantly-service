@@ -87,6 +87,8 @@ export interface WarmupPollSummary {
   rescued: number;
   /** Answered, creating a real thread. */
   replied: number;
+  /** A reply we could not send — costs that message, never the mailbox. */
+  repliesFailed: number;
   accountsFailed: number;
 }
 
@@ -254,36 +256,56 @@ async function pollReceiver(
             }
 
             const reply = await buildWarmupReply(warmup.subject ?? "", originalText);
-            const sent = await dispatchMessage(credential, {
-              from: receiverEmail,
-              to: warmup.senderEmail,
-              subject: reply.subject,
-              html: `<p>${reply.text.split("\n").join("<br>")}</p>`,
-              headers: {},
-              inReplyTo: messageId,
-              references: [messageId],
-            });
+
+            // ⚠️ A FAILED REPLY COSTS THIS MESSAGE, NEVER THE MAILBOX. Letting
+            // it propagate abandons every message still outstanding in this
+            // inbox — including ones already found in spam and not yet rescued.
+            // Observed 2026-09-06: all three `accountsFailed` were the same
+            // blacklisted sender domain refusing its reply, which threw out of
+            // the whole receiver.
+            let sent;
+            try {
+              sent = await dispatchMessage(credential, {
+                from: receiverEmail,
+                to: warmup.senderEmail,
+                subject: reply.subject,
+                html: `<p>${reply.text.split("\n").join("<br>")}</p>`,
+                headers: {},
+                inReplyTo: messageId,
+                references: [messageId],
+              });
+            } catch (error) {
+              summary.repliesFailed += 1;
+              console.warn(
+                `[warmup] reply ${receiverEmail} -> ${warmup.senderEmail} failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
+
+            if (sent) {
 
             // ⚠️ A REPLY IS A SEND, so it comes out of the replying mailbox's
             // daily quota like any other. Both the mesh's own budget and the
             // outreach dispatcher read `warmup_dispatches` for the day, so a
             // reply left unrecorded is quota neither job can see.
-            await db
-              .insert(warmupDispatches)
-              .values({
-                senderEmail: receiverEmail,
-                senderMailbox: loginFor(credential),
-                receiverEmail: warmup.senderEmail,
-                dayKey: warmupDayKey(asOf),
-                messageId: sent.messageId,
-                subject: reply.subject,
-                outcome: "sent",
-                response: sent.response,
-              })
-              .onConflictDoNothing();
+              await db
+                .insert(warmupDispatches)
+                .values({
+                  senderEmail: receiverEmail,
+                  senderMailbox: loginFor(credential),
+                  receiverEmail: warmup.senderEmail,
+                  dayKey: warmupDayKey(asOf),
+                  messageId: sent.messageId,
+                  subject: reply.subject,
+                  outcome: "sent",
+                  response: sent.response,
+                })
+                .onConflictDoNothing();
 
-            replied = true;
-            summary.replied += 1;
+              replied = true;
+              summary.replied += 1;
+            }
           }
 
           if (rescued || replied) {
@@ -322,6 +344,7 @@ export async function runWarmupPoll(
     matched: 0,
     rescued: 0,
     replied: 0,
+    repliesFailed: 0,
     accountsFailed: 0,
   };
 
