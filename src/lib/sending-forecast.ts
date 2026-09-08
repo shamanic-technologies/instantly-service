@@ -43,6 +43,8 @@
  * step queued) was removed for exactly this reason — do NOT reintroduce it.
  */
 
+import { rampCapForVolume, IN_PRODUCTION_DAILY_LIMIT } from "./account-lifecycle";
+import { sustainedForMailbox, type DailyVolume } from "./recent-send-volume";
 import type { Account } from "./instantly-client";
 import type { LifecycleView } from "./account-lifecycle-sync";
 
@@ -88,20 +90,58 @@ export interface CapacitySummary {
 }
 
 /**
- * Fleet capacity summary. `dailyCapacity` sums `daily_limit` over `in_production`
- * senders only (the live-send gate); a production account missing `daily_limit`
- * contributes 0 (Instantly always returns it in practice — 0 fails loud-ish as
- * "no capacity", never a fabricated number). Lifecycle is read from silver and
- * passed in as `lifecycleByEmail`; an account absent from the map (never
- * classified) is NOT in_production and contributes no capacity.
+ * Fleet capacity summary — what the fleet can REALLY send today, not what its
+ * limits would allow if every mailbox were already at full volume.
+ *
+ * ⚠️ `dailyCapacity` used to be `Σ daily_limit` over the `in_production` pool,
+ * which is the theoretical ceiling and overstated the fleet twice over:
+ *
+ *   - It ignored the RAMP. A mailbox is only offered `rampCapForVolume(what it
+ *     has been sending)`, so a quiet one carries 5/day whatever its stated limit
+ *     says. Measured 2026-09-08: the page read **2,980/day** against **1,696**
+ *     once the ramp was applied.
+ *   - It counted per ADDRESS. Several aliases share one relay login and
+ *     therefore ONE daily quota — 62 production addresses sat on 22 domains, so
+ *     the per-address sum counted the same quota up to three times. This is the
+ *     same trap the dispatcher's own capacity had, one surface along.
+ *
+ * So capacity is summed over real MAILBOXES: for each, the operator limit is the
+ * MINIMUM across its aliases (an operator lowering one means it for the mailbox)
+ * and the ramp reads the mailbox's own summed daily volume. `healthyAccountCount`
+ * deliberately stays an ACCOUNT count — it answers "how many senders passed the
+ * gate", a different question from "how much can go out".
+ *
+ * `mailboxOf` maps an address to the login it authenticates as; an address it
+ * does not know is its own mailbox, which is both the Primeforge case and the
+ * safe reading — the account is never silently dropped from the total.
  */
 export function computeCapacitySummary(
   accounts: Account[],
   lifecycleByEmail: Map<string, LifecycleView>,
+  volume: DailyVolume = new Map(),
+  mailboxOf: ReadonlyMap<string, string> = new Map(),
 ): CapacitySummary {
   const statusOf = (email: string) => lifecycleByEmail.get(email)?.status ?? null;
   const production = accounts.filter((a) => statusOf(a.email) === "in_production");
-  const dailyCapacity = production.reduce((sum, a) => sum + (a.daily_limit ?? 0), 0);
+
+  const addressesByMailbox = new Map<string, string[]>();
+  const limitByMailbox = new Map<string, number>();
+  for (const a of production) {
+    const mailbox = mailboxOf.get(a.email.trim().toLowerCase()) ?? a.email.trim().toLowerCase();
+    const group = addressesByMailbox.get(mailbox) ?? [];
+    group.push(a.email);
+    addressesByMailbox.set(mailbox, group);
+    const limit = a.daily_limit ?? 0;
+    const known = limitByMailbox.get(mailbox);
+    limitByMailbox.set(mailbox, known === undefined ? limit : Math.min(known, limit));
+  }
+
+  let dailyCapacity = 0;
+  for (const [mailbox, limit] of limitByMailbox) {
+    const sustained = sustainedForMailbox(volume, addressesByMailbox.get(mailbox) ?? []);
+    dailyCapacity += Math.min(limit, rampCapForVolume(sustained, IN_PRODUCTION_DAILY_LIMIT));
+  }
+
   const blockedDomainCount = accounts.filter(
     (a) => statusOf(a.email) === "deactivated_by_user",
   ).length;

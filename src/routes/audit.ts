@@ -1,3 +1,4 @@
+import { loadMailboxLogins } from "../lib/self-send/mailbox-credentials";
 import { fetchRecentDailyVolume, sustainedFor } from "../lib/recent-send-volume";
 import { Router, Request, Response } from "express";
 import { sql, eq } from "drizzle-orm";
@@ -192,11 +193,21 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
           method: "GET",
           path: "/internal/audit/sending-forecast",
         });
-        const [accounts, lifecycleByEmail] = await Promise.all([
+        // The ramp reads measured volume, and the quota belongs to the relay
+        // login — so the fleet total needs both, or it reports the theoretical
+        // ceiling instead of what can actually go out today.
+        const [accounts, lifecycleByEmail, volume, mailboxOf] = await Promise.all([
           listAccounts(apiKey),
           fetchLifecycleByEmail(),
+          fetchRecentDailyVolume(),
+          loadMailboxLogins({ method: "GET", path: "/internal/audit/sending-forecast" }),
         ]);
-        const capacity = computeCapacitySummary(accounts, lifecycleByEmail);
+        const capacity = computeCapacitySummary(
+          accounts,
+          lifecycleByEmail,
+          volume,
+          mailboxOf,
+        );
 
         const pendingLeads = await loadPendingLeads();
         const days = projectDailySchedule(pendingLeads, asOf);
@@ -347,7 +358,13 @@ router.get("/capacity-history", async (req: Request, res: Response) => {
   try {
     const raw = typeof req.query.days === "string" ? parseInt(req.query.days, 10) : NaN;
     const days = Number.isFinite(raw) && raw > 0 ? raw : 30;
-    const series = await fetchCapacityHistory(days);
+    // Same login map the live capacity summary uses, so the newest point of the
+    // series and the headline number cannot disagree about the same fleet.
+    const mailboxOf = await loadMailboxLogins({
+      method: "GET",
+      path: "/internal/audit/capacity-history",
+    });
+    const series = await fetchCapacityHistory(days, mailboxOf);
     res.json({ series });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);

@@ -30,6 +30,15 @@ vi.mock("../../src/lib/key-client", () => ({
   KeyServiceError,
 }));
 
+// The alias map. Capacity is summed per real MAILBOX, so the route needs it —
+// mocked at its own boundary rather than through key-service + the vendor's
+// pagination, which is not what these cases are about.
+const mockMailboxLogins = vi.fn(async () => new Map<string, string>());
+vi.mock("../../src/lib/self-send/mailbox-credentials", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  loadMailboxLogins: () => mockMailboxLogins(),
+}));
+
 import { clearStatsCache } from "../../src/lib/stats-cache";
 
 async function makeApp() {
@@ -48,6 +57,7 @@ describe("GET /internal/audit/sending-forecast", () => {
     // later test (cross-test cache hit skips the mocked DB → wrong assertions).
     clearStatsCache();
     mockResolvePlatformKey.mockResolvedValue("test-key");
+    mockMailboxLogins.mockResolvedValue(new Map());
     mockExecute.mockResolvedValue({ rows: [] });
   });
 
@@ -57,14 +67,24 @@ describe("GET /internal/audit/sending-forecast", () => {
       { email: "b@good.com", status: 1, stat_warmup_score: 100, daily_limit: 20 },
       { email: "c@distribute.you", status: 1, stat_warmup_score: 100, daily_limit: 40 },
     ]);
-    // Route reads lifecycle (Promise.all) then pending leads. Seed in that order:
-    // a + b are in_production (capacity 50); c is deactivated_by_user (blocked).
+    // Route reads lifecycle + the ramp's volume (Promise.all) then pending leads.
+    // Seed in that order: a + b are in_production, c is deactivated_by_user.
     mockExecute
       .mockResolvedValueOnce({
         rows: [
           { email: "a@good.com", status: "in_production", reason: "passed", updatedAt: "2026-07-05T00:00:00.000Z" },
           { email: "b@good.com", status: "in_production", reason: "passed", updatedAt: "2026-07-05T00:00:00.000Z" },
           { email: "c@distribute.you", status: "deactivated_by_user", reason: "brand_domain", updatedAt: "2026-07-05T00:00:00.000Z" },
+        ],
+      })
+      // Measured volume: `a` sustains 20/day so it may attempt 30, bounded by its
+      // stated 30; `b` sustains 4 so it may attempt 6, well under its stated 20.
+      .mockResolvedValueOnce({
+        rows: [
+          { accountEmail: "a@good.com", day: "2026-09-01", n: 20 },
+          { accountEmail: "a@good.com", day: "2026-09-02", n: 20 },
+          { accountEmail: "b@good.com", day: "2026-09-01", n: 4 },
+          { accountEmail: "b@good.com", day: "2026-09-02", n: 4 },
         ],
       })
       // One never-contacted lead with 2 pending steps.
@@ -79,7 +99,11 @@ describe("GET /internal/audit/sending-forecast", () => {
     const b = res.body;
     expect(typeof b.asOf).toBe("string");
     expect(Number.isNaN(Date.parse(b.asOf))).toBe(false);
-    expect(b.dailyCapacity).toBe(50); // 30 + 20 in_production only
+    // ⚠️ The RAMPED capacity, not the sum of the stated limits. `a` is at volume
+    // so its own 30 binds; `b` has been sending 4/day so it carries 6, not 20.
+    // Reporting 50 here would be the theoretical ceiling — what the fleet could
+    // send if every mailbox were already at full volume, which it is not.
+    expect(b.dailyCapacity).toBe(36);
     expect(b.healthyAccountCount).toBe(2);
     expect(b.totalAccountCount).toBe(3);
     expect(b.blockedDomainCount).toBe(1);

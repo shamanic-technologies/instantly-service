@@ -53,8 +53,10 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
  * has sent nothing; the caller reads that as 0, which the ramp floors at
  * `RAMP_FLOOR_PER_DAY`.
  */
-export async function fetchRecentDailyVolume(): Promise<DailyVolume> {
-  const since = sql.raw(`now() - interval '${RAMP_VOLUME_WINDOW_DAYS} days'`);
+export async function fetchRecentDailyVolume(
+  windowDays: number = RAMP_VOLUME_WINDOW_DAYS,
+): Promise<DailyVolume> {
+  const since = sql.raw(`now() - interval '${Math.max(1, Math.floor(windowDays))} days'`);
 
   const result = await db.execute(sql`
     WITH per_day AS (
@@ -168,4 +170,44 @@ export function sustainedForMailbox(
     for (const [day, n] of days) byDay.set(day, (byDay.get(day) ?? 0) + n);
   }
   return secondHighest(byDay.values());
+}
+
+/**
+ * The volume a set of daily totals sustained over the {@link RAMP_VOLUME_WINDOW_DAYS}
+ * days ENDING on `endDay` (inclusive) — the same statistic {@link sustainedFor}
+ * applies to today, evaluated at an arbitrary past day.
+ *
+ * Exists so the capacity-over-time series can show what each day's cap ACTUALLY
+ * was rather than the limits the accounts happened to carry. A day with fewer
+ * than two days of history behind it reads 0, which the ramp floors — the honest
+ * answer for a mailbox nobody had measured yet.
+ */
+export function sustainedOn(
+  byDay: ReadonlyMap<string, number>,
+  endDay: string,
+  windowDays: number = RAMP_VOLUME_WINDOW_DAYS,
+): number {
+  const end = Date.parse(`${endDay}T00:00:00Z`);
+  if (Number.isNaN(end)) return 0;
+  const start = end - (Math.max(1, Math.floor(windowDays)) - 1) * 86_400_000;
+  const inWindow: number[] = [];
+  for (const [day, n] of byDay) {
+    const at = Date.parse(`${day}T00:00:00Z`);
+    if (!Number.isNaN(at) && at >= start && at <= end) inWindow.push(n);
+  }
+  return secondHighest(inWindow);
+}
+
+/** Per-day totals for one real MAILBOX, summing every address that authenticates as it. */
+export function dailyTotalsForMailbox(
+  volume: DailyVolume,
+  addresses: Iterable<string>,
+): Map<string, number> {
+  const byDay = new Map<string, number>();
+  for (const address of addresses) {
+    const days = volume.get(address.trim().toLowerCase());
+    if (days === undefined) continue;
+    for (const [day, n] of days) byDay.set(day, (byDay.get(day) ?? 0) + n);
+  }
+  return byDay;
 }
