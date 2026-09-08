@@ -191,6 +191,47 @@ describe("computeCapacitySummary", () => {
     expect(s.dailyCapacity).toBe(100);
   });
 
+  it("counts a NON-production alias's volume toward its mailbox — the quota is shared", () => {
+    // ⚠️ An alias in recovery still does warmup and still gets seeded by the
+    // placement test, and every one of those messages comes out of the SAME
+    // relay quota. Leaving it out under-states what the mailbox has carried:
+    // measured 2026-09-08, this summary read 1,447/day against the
+    // capacity-over-time series' 1,501 for the same day, purely because the
+    // series counted every alias and this one counted a subset.
+    const accounts = [
+      acct({ email: "kevin@ga.forum", daily_limit: 50 }),
+      acct({ email: "klourd@ga.forum", daily_limit: 50 }), // in_recovery, warms up
+    ];
+    const lifecycle = new Map<string, LifecycleView>([
+      ["kevin@ga.forum", lc("in_production")],
+      ["klourd@ga.forum", lc("in_recovery")],
+    ]);
+    const logins = new Map(accounts.map((a) => [a.email, "kevin@ga.forum"]));
+    const volume: DailyVolume = new Map([
+      ["kevin@ga.forum", new Map([["2026-09-01", 6], ["2026-09-02", 6]])],
+      ["klourd@ga.forum", new Map([["2026-09-01", 6], ["2026-09-02", 6]])],
+    ]);
+
+    // The mailbox carried 12/day, so it may attempt 18. Counting only the
+    // production alias would have read 6/day ⇒ 9.
+    expect(computeCapacitySummary(accounts, lifecycle, volume, logins).dailyCapacity).toBe(18);
+  });
+
+  it("offers nothing at all for a mailbox with no production alias", () => {
+    // Volume is not permission: a mailbox that sends warmup but has no alias
+    // through the lifecycle gate is assigned no leads.
+    const accounts = [acct({ email: "klourd@ga.forum", daily_limit: 50 })];
+    const lifecycle = new Map<string, LifecycleView>([
+      ["klourd@ga.forum", lc("in_recovery")],
+    ]);
+    const volume: DailyVolume = new Map([
+      ["klourd@ga.forum", new Map([["2026-09-01", 30], ["2026-09-02", 30]])],
+    ]);
+    const s = computeCapacitySummary(accounts, lifecycle, volume, new Map());
+    expect(s.dailyCapacity).toBe(0);
+    expect(s.healthyAccountCount).toBe(0);
+  });
+
   it("account absent from the lifecycle map contributes no capacity and is not blocked-domain", () => {
     const s = computeCapacitySummary(
       [acct({ email: "a@good.com", daily_limit: 30 })],
