@@ -37,8 +37,16 @@ import { capForAccount } from "./account-lifecycle";
 import { dateKeyUTC } from "./sending-forecast";
 import { sequenceFootprintDays } from "./sending-window";
 
-/** All-zero capacity for an account absent from the snapshot (idle ⇒ preferred). */
-const EMPTY_CAPACITY: AccountCapacity = { sentToday: 0, byDay: {} };
+/**
+ * All-zero capacity for an account absent from the snapshot (idle ⇒ preferred).
+ *
+ * `recentSustainedDaily: 0` means the ramp floors this account at
+ * `RAMP_FLOOR_PER_DAY` rather than granting it a full cap. That is the honest
+ * reading: absent from the volume snapshot means it has sent nothing, which is
+ * exactly a cold mailbox — and erring toward the floor is the direction that
+ * cannot push a mailbox past what Gmail accepts.
+ */
+const EMPTY_CAPACITY: AccountCapacity = { sentToday: 0, recentSustainedDaily: 0, byDay: {} };
 
 /**
  * One account's committed load on a given booked day.
@@ -89,11 +97,13 @@ function fitsFootprint(
   footprint: readonly string[],
   asOf: Date,
 ): boolean {
-  return footprint.every((dayKey, i) => {
-    const on = new Date(`${dayKey}T00:00:00.000Z`);
-    const cap = capForAccount(a, i === 0 ? asOf : on);
-    return cap > 0 && loadOnDay(a, byEmail, dayKey, i === 0) < cap;
-  });
+  // ⚠️ The cap is the SAME on every footprint day, where the age ramp used to
+  // grow it hop by hop ("the mailbox is older on D+10"). Volume is a measured
+  // fact about the past, so there is no honest way to project it forward — and
+  // assuming a mailbox will have earned more room by D+10 is the optimism that
+  // over-books the head of the fill order.
+  const cap = capForAccount(a, (byEmail.get(a.email) ?? EMPTY_CAPACITY).recentSustainedDaily);
+  return footprint.every((dayKey, i) => cap > 0 && loadOnDay(a, byEmail, dayKey, i === 0) < cap);
 }
 
 /**
@@ -207,7 +217,7 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
  * Per account, per day of the incoming lead's FOOTPRINT (the days its D0 / D+3 /
  * D+10 emails will each book, resolved through the lead's own timezone window —
  * see `sending-window.ts`):
- *   cap   = min(daily_limit, rampCapForAge(timestamp_created, THAT day))
+ *   cap   = min(daily_limit, rampCapForVolume(the mailbox's sustained volume))
  *   load  = committed steps already booked on that day (+ today's real
  *           dispatches, on the first day only)
  *   pick  = the FIRST account of `accountFillOrder` with room on EVERY footprint
@@ -297,7 +307,7 @@ export function pickSequentialFillAccount<T extends FillOrderAccount>(
   let best = ordered[0];
   let bestRatio = Number.POSITIVE_INFINITY;
   for (const a of ordered) {
-    const cap = capForAccount(a, asOf);
+    const cap = capForAccount(a, (byEmail.get(a.email) ?? EMPTY_CAPACITY).recentSustainedDaily);
     const ratio =
       cap > 0
         ? loadOnDay(a, byEmail, days[0]!, true) / cap

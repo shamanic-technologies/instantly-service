@@ -7,6 +7,7 @@ import {
   warmupDayKey,
   WARMUP_PARTNERS_PER_DAY,
   warmupBudgetFor,
+  WARMUP_MAX_PER_DAY,
   selectSilencedSenders,
 } from "../../src/lib/warmup/plan";
 
@@ -176,6 +177,39 @@ describe("warmupBudgetFor", () => {
   it("is zero for a mailbox with no capacity at all", () => {
     expect(warmupBudgetFor(0)).toBe(0);
     expect(warmupBudgetFor(-1)).toBe(0);
+  });
+
+  // ─── A mailbox in recovery has no outreach to protect ──────────────────────
+  //
+  // ⚠️ The share above pins such a mailbox at 1-4 sends a day, and since the cap
+  // now ramps on measured volume that pins its CAP at the floor too — it could
+  // never build the volume that earns a bigger cap, so it could never arrive in
+  // production at a usable rate. Letting warmup fill the headroom is what makes
+  // recovery a ramp rather than a waiting room.
+
+  it("fills the mailbox's headroom when it carries no outreach", () => {
+    expect(warmupBudgetFor(5, { fillsHeadroom: true })).toBe(5);
+    expect(warmupBudgetFor(18, { fillsHeadroom: true })).toBe(18);
+  });
+
+  it(`never goes past ${WARMUP_MAX_PER_DAY}/day, however big the cap`, () => {
+    // This is mail to our OWN mailboxes, which always accept it — real volume for
+    // Gmail, weak reputation signal. Enough to establish a sending rate; not
+    // enough to make the mesh the fleet's dominant traffic.
+    expect(warmupBudgetFor(50, { fillsHeadroom: true })).toBe(WARMUP_MAX_PER_DAY);
+  });
+
+  it("subtracts real outreach, so it can never starve prospect mail", () => {
+    expect(warmupBudgetFor(30, { fillsHeadroom: true, outreachToday: 25 })).toBe(5);
+    expect(warmupBudgetFor(30, { fillsHeadroom: true, outreachToday: 30 })).toBe(0);
+    expect(warmupBudgetFor(30, { fillsHeadroom: true, outreachToday: 40 })).toBe(0);
+  });
+
+  it("keeps the modest share for a mailbox that IS doing outreach", () => {
+    // Explicitly NOT the headroom: outreach is the job, and a production mailbox
+    // handing 20 sends to the mesh before the dispatcher runs would eat into it.
+    expect(warmupBudgetFor(50, { fillsHeadroom: false })).toBe(WARMUP_PARTNERS_PER_DAY);
+    expect(warmupBudgetFor(50)).toBe(WARMUP_PARTNERS_PER_DAY);
   });
 });
 

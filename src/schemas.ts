@@ -274,7 +274,7 @@ registry.registerPath({
     "Platform-scoped ops sweep. Reads the still-provisioned cost ledger for " +
     "campaigns frozen to send_transport='smtp', picks each lead's next due step " +
     "from the shared cadence, clips to what each mailbox can still send today " +
-    "(min(daily_limit, rampCapForAge) minus real sends so far), dispatches, and " +
+    "(min(daily_limit, rampCapForVolume) minus real sends so far), dispatches, and " +
     "promotes a real `email_sent`. Idempotent: a step leaves the due set as soon " +
     "as its hold is actualized. Returns 202 and runs in the background — watch " +
     "for `self-send-dispatch: done`. 409 when SELF_SEND_DISPATCH_ENABLED is not " +

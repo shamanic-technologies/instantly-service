@@ -40,7 +40,14 @@ export interface SelectionView {
    * An account absent from the map is absent from the pool, so its rank is null.
    */
   fillRankByEmail?: Map<string, number>;
-  /** Instant the age ramp is evaluated at — explicit so tests are deterministic. */
+  /**
+   * email → the peak daily volume the ramp reads for it. The ops table must show
+   * the number the SELECTOR decides on, so it reads the same map the selector
+   * does rather than holding a second copy of the ramp — an account absent from
+   * it has sent nothing, which floors its cap exactly as it does in selection.
+   */
+  recentSustainedByEmail?: Map<string, number>;
+  /** Instant the table is rendered at — explicit so tests are deterministic. */
   asOf?: Date;
 }
 
@@ -75,7 +82,7 @@ export interface AccountHealth {
   dailyLimit: number | null;
   /**
    * The daily cap send SELECTION actually compares an account's load against:
-   * `min(dailyLimit, rampCapForAge(timestamp_created, IN_PRODUCTION_DAILY_LIMIT))`
+   * `min(dailyLimit, rampCapForVolume(recentSustainedDaily, IN_PRODUCTION_DAILY_LIMIT))`
    * at `asOf`. Equal to `dailyLimit` for a mature (or undatable) mailbox; strictly
    * lower for one under `MATURE_AGE_DAYS`, whose real per-user quota is far below
    * the fleet cap for its first weeks.
@@ -273,11 +280,11 @@ export function buildAccountHealth(
   queueBreakdownByEmail: Map<string, QueueBreakdown> = new Map(),
   selection: SelectionView = {},
 ): AccountHealth[] {
-  // The age ramp is evaluated at ONE instant for the whole table, so two rows can
-  // never be capped against different clocks. Defaulted here rather than inside
-  // the row loop, which would read a slightly different `now` per account.
+  // Defaulted here rather than inside the row loop, which would read a slightly
+  // different `now` per account.
   const asOf = selection.asOf ?? new Date();
   const fillRankByEmail = selection.fillRankByEmail ?? new Map<string, number>();
+  const recentSustainedByEmail = selection.recentSustainedByEmail ?? new Map<string, number>();
   return accounts.map((a) => {
     const lifecycle = lifecycleByEmail.get(a.email) ?? null;
     const lifecycleStatus = lifecycle?.status ?? null;
@@ -295,7 +302,7 @@ export function buildAccountHealth(
       effectiveDailyCap:
         a.daily_limit === undefined || a.daily_limit === null
           ? null
-          : capForAccount(a, asOf),
+          : capForAccount(a, recentSustainedByEmail.get(a.email) ?? 0),
       fillRank: fillRankByEmail.get(a.email) ?? null,
       warmupLimit: a.warmup?.limit ?? null,
       blocked,

@@ -26,6 +26,10 @@ function executedSqlText(callIndex: number): string {
 
 beforeEach(() => {
   mockExecute.mockReset();
+  // The capacity snapshot now makes THREE reads (sentToday, the queued-sequence
+  // loader, and the ramp's volume query). A default keeps the tests that only
+  // care about the first two from having to queue a third value.
+  mockExecute.mockResolvedValue([]);
   clearStatsCache();
 });
 
@@ -149,7 +153,7 @@ describe("fetchAccountCapacity — merge sentToday with the per-day booked map",
     const asOf = new Date("2026-08-31T14:00:00.000Z");
     const DAY = 86_400_000;
     // Array order: fetchSentTodayByAccount() first (db.execute #0), then the
-    // queued-sequence loader (db.execute #1).
+    // queued-sequence loader (#1), then the ramp's volume query (#2).
     mockExecute
       .mockResolvedValueOnce([{ account_email: "a@x.com", count: 5 }]) // sentToday
       .mockResolvedValueOnce([
@@ -196,6 +200,7 @@ describe("fetchAccountCapacity — merge sentToday with the per-day booked map",
     const cap = await fetchAccountCapacity(asOf);
     expect(cap.get("a@x.com")).toEqual({
       sentToday: 5,
+      recentSustainedDaily: 0, // nothing measured in this fixture ⇒ the ramp floors it
       byDay: {
         "2026-08-31": 2, // the never-contacted first email + the due followup
         "2026-09-03": 1, // the never-contacted sequence's step 2
@@ -204,10 +209,12 @@ describe("fetchAccountCapacity — merge sentToday with the per-day booked map",
     });
     expect(cap.get("b@x.com")).toEqual({
       sentToday: 0, // absent from sentToday ⇒ honest 0
+      recentSustainedDaily: 0,
       byDay: { "2026-08-31": 1 },
     });
     expect(cap.get("c@x.com")).toEqual({
       sentToday: 0,
+      recentSustainedDaily: 0,
       byDay: { "2026-08-31": 1 },
     });
   });
@@ -219,6 +226,33 @@ describe("fetchAccountCapacity — merge sentToday with the per-day booked map",
     expect(text).toContain("min(c.timezone)");
     expect(text).toContain("'campaign_schedule'");
     expect(text).toContain("as lead_timezone");
+  });
+});
+
+describe("fetchAccountCapacity — the volume the ramp reads", () => {
+  it("carries each account's sustained daily volume, 0 when it has sent nothing", async () => {
+    // The cap ramps on this, so the snapshot the selector reads has to hold it —
+    // otherwise selection would have to make its own DB call and the ops table
+    // and the selector could disagree about the same mailbox.
+    mockExecute
+      .mockResolvedValueOnce([]) // sentToday
+      .mockResolvedValueOnce([]) // queued rows
+      .mockResolvedValueOnce({
+        rows: [
+          // Per DAY. The figure is the SECOND-highest, so a one-day spike (the
+          // weekly seed test) cannot earn a mailbox its full cap.
+          { accountEmail: "busy@x.com", day: "2026-08-28", n: 60 },
+          { accountEmail: "busy@x.com", day: "2026-08-29", n: 31 },
+          { accountEmail: "busy@x.com", day: "2026-08-30", n: 12 },
+          { accountEmail: "QUIET@X.com", day: "2026-08-28", n: 2 },
+          { accountEmail: "QUIET@X.com", day: "2026-08-29", n: 2 },
+        ],
+      });
+
+    const cap = await fetchAccountCapacity(new Date("2026-08-31T14:00:00.000Z"));
+    expect(cap.get("busy@x.com")?.recentSustainedDaily).toBe(31);
+    // Addresses are normalised, so a mixed-case row still matches its account.
+    expect(cap.get("quiet@x.com")?.recentSustainedDaily).toBe(2);
   });
 });
 
@@ -235,7 +269,7 @@ describe("fetchAccountCapacityCached — 60s TTL cache", () => {
     expect(second.get("a@x.com")?.sentToday).toBe(4);
     // Two db.execute calls total (sent + queued), NOT four — the second cached
     // read hits the in-memory snapshot, not the DB.
-    expect(mockExecute.mock.calls.length).toBe(2);
+    expect(mockExecute.mock.calls.length).toBe(3);
   });
 
   it("re-fetches after the cache is cleared", async () => {
@@ -243,7 +277,7 @@ describe("fetchAccountCapacityCached — 60s TTL cache", () => {
     await fetchAccountCapacityCached();
     clearStatsCache();
     await fetchAccountCapacityCached();
-    expect(mockExecute.mock.calls.length).toBe(4); // 2 per uncached snapshot
+    expect(mockExecute.mock.calls.length).toBe(6); // 3 per uncached snapshot
   });
 });
 
@@ -254,10 +288,10 @@ describe("fetchAccountCapacityCached — effective-day scoping", () => {
     // same key, one snapshot. A Friday caller measures Friday — different key.
     await fetchAccountCapacityCached(new Date("2026-08-17T00:00:00.000Z"));
     await fetchAccountCapacityCached(new Date("2026-08-17T09:30:00.000Z"));
-    expect(mockExecute.mock.calls.length).toBe(2); // one uncached snapshot
+    expect(mockExecute.mock.calls.length).toBe(3); // one uncached snapshot
 
     await fetchAccountCapacityCached(new Date("2026-08-21T09:30:00.000Z"));
-    expect(mockExecute.mock.calls.length).toBe(4); // a second, separate snapshot
+    expect(mockExecute.mock.calls.length).toBe(6); // a second, separate snapshot
   });
 
   it("threads the effective day into the queued-bucket projection", async () => {
