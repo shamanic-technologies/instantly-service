@@ -56,7 +56,17 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
 export async function fetchRecentDailyVolume(
   windowDays: number = RAMP_VOLUME_WINDOW_DAYS,
 ): Promise<DailyVolume> {
-  const since = sql.raw(`now() - interval '${Math.max(1, Math.floor(windowDays))} days'`);
+  // ⚠️ Cut on the DAY boundary, not `now() - N days`. The statistic is computed
+  // over calendar days, so a rolling timestamp cutoff covers N+1 of them — it
+  // reaches back into the day N days ago and picks up a partial slice of it.
+  // Two consequences, both real: the fleet capacity summary and the
+  // capacity-over-time series disagreed by 12% about the SAME day (1,681 vs
+  // 1,501 on 2026-09-08), and a mailbox's cap drifted hour to hour as the window
+  // slid, so the same mailbox was offered different room at 08:00 and 20:00 with
+  // nothing having been sent in between. A day-aligned window makes the ramp a
+  // property of the day, which is what the quota it protects is.
+  const back = Math.max(1, Math.floor(windowDays)) - 1;
+  const since = sql.raw(`date_trunc('day', now()) - interval '${back} days'`);
 
   const result = await db.execute(sql`
     WITH per_day AS (

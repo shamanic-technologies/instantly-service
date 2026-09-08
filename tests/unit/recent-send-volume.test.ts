@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
 import {
   sustainedFor,
   sustainedForMailbox,
@@ -139,5 +141,29 @@ describe("sustainedOn — the statistic evaluated at a PAST day", () => {
 
   it("returns 0 for an unparseable day rather than throwing", () => {
     expect(sustainedOn(byDay, "not-a-day")).toBe(0);
+  });
+});
+
+// ─── The window is CALENDAR days, not a rolling timestamp ────────────────────
+//
+// ⚠️ `now() - interval '7 days'` reaches back into the day 7 days ago and picks
+// up a partial slice of it, so the window covers EIGHT calendar days while the
+// statistic is computed over days. Measured 2026-09-08: the fleet summary and
+// the capacity-over-time series disagreed by 12% about the same day (1,681 vs
+// 1,501), and a mailbox's cap drifted hour to hour as the window slid — the same
+// mailbox offered different room at 08:00 and 20:00 with nothing sent between.
+
+describe("fetchRecentDailyVolume — window bounds", () => {
+  it("cuts on the day boundary so the window is exactly N calendar days", async () => {
+    const { db } = await import("../../src/db");
+    const spy = vi.spyOn(db, "execute").mockResolvedValue({ rows: [] } as never);
+    const { fetchRecentDailyVolume } = await import("../../src/lib/recent-send-volume");
+
+    await fetchRecentDailyVolume(7);
+    const text = new PgDialect().sqlToQuery(spy.mock.calls[0]![0] as SQL).sql;
+    // 7 days ending today = today plus the 6 before it.
+    expect(text).toContain("date_trunc('day', now()) - interval '6 days'");
+    expect(text).not.toContain("now() - interval '7 days'");
+    spy.mockRestore();
   });
 });
