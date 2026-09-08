@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   sustainedFor,
   sustainedForMailbox,
+  sustainedOn,
   type DailyVolume,
 } from "../../src/lib/recent-send-volume";
 
@@ -90,5 +91,53 @@ describe("sustainedForMailbox — several aliases, one relay login, one quota", 
     expect(sustainedForMailbox(v, ["solo@primeforge.com"])).toBe(
       sustainedFor(v, "solo@primeforge.com"),
     );
+  });
+});
+
+describe("sustainedOn — the statistic evaluated at a PAST day", () => {
+  // Exists so the capacity-over-time series shows what each day's cap ACTUALLY
+  // was, rather than today's ramp painted over the whole past.
+  const byDay = new Map([
+    ["2026-09-01", 4],
+    ["2026-09-02", 9],
+    ["2026-09-03", 40], // the weekly seed-test spike
+    ["2026-09-04", 11],
+    ["2026-09-05", 12],
+  ]);
+
+  it("only sees days at or before the day asked about", () => {
+    // On 09-02 the mailbox had two days behind it: 4 and 9 ⇒ second-highest 4.
+    expect(sustainedOn(byDay, "2026-09-02")).toBe(4);
+  });
+
+  it("climbs as the mailbox accumulates history", () => {
+    expect(sustainedOn(byDay, "2026-09-03")).toBe(9);
+    expect(sustainedOn(byDay, "2026-09-05")).toBe(12);
+  });
+
+  it("still discards the single spike, exactly as the live form does", () => {
+    // 09-04's window holds 4, 9, 40, 11 — the 40 is one artificial day.
+    expect(sustainedOn(byDay, "2026-09-04")).toBe(11);
+  });
+
+  it("drops days that fall out of the window as it moves forward", () => {
+    const long = new Map([
+      ["2026-09-01", 30],
+      ["2026-09-02", 30],
+      ["2026-09-20", 5],
+      ["2026-09-21", 5],
+    ]);
+    // On 09-21 the September 1-2 days are 19 days back — outside a 7-day window.
+    expect(sustainedOn(long, "2026-09-21")).toBe(5);
+    expect(sustainedOn(long, "2026-09-02")).toBe(30);
+  });
+
+  it("reads a day with nothing behind it as 0, which the ramp floors", () => {
+    expect(sustainedOn(byDay, "2026-08-01")).toBe(0);
+    expect(sustainedOn(new Map(), "2026-09-05")).toBe(0);
+  });
+
+  it("returns 0 for an unparseable day rather than throwing", () => {
+    expect(sustainedOn(byDay, "not-a-day")).toBe(0);
   });
 });

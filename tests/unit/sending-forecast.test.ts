@@ -1,3 +1,5 @@
+import type { DailyVolume } from "../../src/lib/recent-send-volume";
+import { RAMP_FLOOR_PER_DAY } from "../../src/lib/account-lifecycle";
 import { describe, it, expect } from "vitest";
 import type { Account } from "../../src/lib/instantly-client";
 import type { LifecycleView } from "../../src/lib/account-lifecycle-sync";
@@ -31,6 +33,23 @@ function lc(status: LifecycleView["status"]): LifecycleView {
   return { status, reason: null, updatedAt: "2026-07-05T00:00:00.000Z" };
 }
 
+/**
+ * Every listed address already at volume, so the ramp is saturated and the
+ * operator limit is what binds. The ramp gets its own cases below rather than
+ * colouring every capacity assertion.
+ */
+const atVolume = (...emails: string[]): DailyVolume =>
+  new Map(
+    emails.map((e) => [
+      e,
+      // TWO days, because the statistic is the SECOND-highest.
+      new Map([
+        ["2026-09-01", 50],
+        ["2026-09-02", 50],
+      ]),
+    ]),
+  );
+
 describe("computeCapacitySummary", () => {
   it("sums daily_limit over ONLY in_production accounts; counts totals + deactivated-by-user", () => {
     const accounts: Account[] = [
@@ -49,7 +68,11 @@ describe("computeCapacitySummary", () => {
       ["e@good.com", lc("deactivated_by_user")],
       ["f@good.com", lc("deactivated_by_user")],
     ]);
-    const s = computeCapacitySummary(accounts, lifecycle);
+    const s = computeCapacitySummary(
+      accounts,
+      lifecycle,
+      atVolume("a@good.com", "b@good.com"),
+    );
     expect(s.dailyCapacity).toBe(50); // 30 + 20 only
     expect(s.healthyAccountCount).toBe(2);
     expect(s.totalAccountCount).toBe(6);
@@ -66,9 +89,106 @@ describe("computeCapacitySummary", () => {
         ["a@good.com", lc("in_production")],
         ["b@good.com", lc("in_production")],
       ]),
+      atVolume("a@good.com", "b@good.com"),
     );
     expect(s.dailyCapacity).toBe(15);
     expect(s.healthyAccountCount).toBe(2);
+  });
+
+  // ─── Capacity is what the fleet can REALLY send ────────────────────────────
+  //
+  // ⚠️ `Σ daily_limit` is the theoretical ceiling and overstated the fleet twice:
+  // it ignored the ramp, and it counted per ADDRESS when several aliases share
+  // one relay login and therefore ONE quota. Measured 2026-09-08 the page read
+  // 2,980/day against 1,696 with the ramp, and 62 production addresses sat on 22
+  // domains — so the per-address sum counted the same quota up to three times.
+
+  it("counts a mailbox ONCE however many aliases it carries", () => {
+    const accounts = [
+      acct({ email: "kevin@ga.forum", daily_limit: 50 }),
+      acct({ email: "klourd@ga.forum", daily_limit: 50 }),
+      acct({ email: "kevinl@ga.forum", daily_limit: 50 }),
+    ];
+    const lifecycle = new Map<string, LifecycleView>(
+      accounts.map((a) => [a.email, lc("in_production")]),
+    );
+    const logins = new Map(accounts.map((a) => [a.email, "kevin@ga.forum"]));
+
+    const s = computeCapacitySummary(
+      accounts,
+      lifecycle,
+      atVolume("kevin@ga.forum", "klourd@ga.forum", "kevinl@ga.forum"),
+      logins,
+    );
+    // One mailbox, one quota: 50. Per address it would have read 150.
+    expect(s.dailyCapacity).toBe(50);
+    // The ACCOUNT count is a different question and stays 3.
+    expect(s.healthyAccountCount).toBe(3);
+  });
+
+  it("takes the LOWEST operator limit across a mailbox's aliases", () => {
+    const accounts = [
+      acct({ email: "kevin@ga.forum", daily_limit: 50 }),
+      acct({ email: "klourd@ga.forum", daily_limit: 12 }),
+    ];
+    const lifecycle = new Map<string, LifecycleView>(
+      accounts.map((a) => [a.email, lc("in_production")]),
+    );
+    const logins = new Map(accounts.map((a) => [a.email, "kevin@ga.forum"]));
+    const s = computeCapacitySummary(
+      accounts,
+      lifecycle,
+      atVolume("kevin@ga.forum", "klourd@ga.forum"),
+      logins,
+    );
+    // An operator who lowered one alias meant it for the mailbox behind it.
+    expect(s.dailyCapacity).toBe(12);
+  });
+
+  it("reports the RAMPED figure, not the stated limit, for a mailbox still climbing", () => {
+    const accounts = [acct({ email: "ramping@x.com", daily_limit: 50 })];
+    const lifecycle = new Map<string, LifecycleView>([
+      ["ramping@x.com", lc("in_production")],
+    ]);
+    // Sustained 12/day ⇒ may attempt 18. Reporting 50 would claim capacity the
+    // selector will not offer.
+    const volume: DailyVolume = new Map([
+      [
+        "ramping@x.com",
+        new Map([
+          ["2026-09-01", 30],
+          ["2026-09-02", 12],
+        ]),
+      ],
+    ]);
+    expect(computeCapacitySummary(accounts, lifecycle, volume).dailyCapacity).toBe(18);
+  });
+
+  it("reports the FLOOR for a mailbox nobody has measured, never its stated limit", () => {
+    const s = computeCapacitySummary(
+      [acct({ email: "cold@x.com", daily_limit: 50 })],
+      new Map<string, LifecycleView>([["cold@x.com", lc("in_production")]]),
+    );
+    expect(s.dailyCapacity).toBe(RAMP_FLOOR_PER_DAY);
+  });
+
+  it("an address absent from the login map is its own mailbox — never dropped", () => {
+    // The Primeforge case, and the safe reading: an unknown address still
+    // contributes, rather than vanishing from the fleet total.
+    const accounts = [
+      acct({ email: "solo1@primeforge.com", daily_limit: 50 }),
+      acct({ email: "solo2@primeforge.com", daily_limit: 50 }),
+    ];
+    const lifecycle = new Map<string, LifecycleView>(
+      accounts.map((a) => [a.email, lc("in_production")]),
+    );
+    const s = computeCapacitySummary(
+      accounts,
+      lifecycle,
+      atVolume("solo1@primeforge.com", "solo2@primeforge.com"),
+      new Map(),
+    );
+    expect(s.dailyCapacity).toBe(100);
   });
 
   it("account absent from the lifecycle map contributes no capacity and is not blocked-domain", () => {
