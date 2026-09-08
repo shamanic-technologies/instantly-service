@@ -47,6 +47,7 @@
  * daily (mirrors reconcile's ordering); a warmup failure skips that account's
  * daily PATCH this run (next run heals).
  */
+import { fetchRecentDailyVolume, sustainedFor } from "./recent-send-volume";
 import {
   listAccounts,
   setWarmupDailyLimit,
@@ -59,7 +60,7 @@ import {
   warmupDailyForStatus,
   dailyLimitForStatus,
   slowRampForAge,
-  rampCapForAge,
+  rampCapForVolume,
   isInstantlyEnforced,
   IN_PRODUCTION_DAILY_LIMIT,
   type LifecycleStatus,
@@ -96,7 +97,7 @@ export interface LifecycleLimitsSyncSummary {
  *   - warmup.limit + daily_limit are enforced ONLY when the silver lifecycle is
  *     `in_production` or `in_recovery` (their targets are non-null); any other
  *     state (or unknown lifecycle) leaves both untouched. The daily_limit target
- *     is additionally capped by the AGE ramp (`rampCapForAge`), so a fresh mailbox
+ *     is additionally capped by the VOLUME ramp (`rampCapForVolume`), so a quiet mailbox
  *     is held to what Gmail will actually accept from it rather than the state's
  *     full 45/20 — this is the Instantly-side twin of the send-selection cap.
  *   - enable_slow_ramp is AGE-driven and INDEPENDENT of lifecycle state: a fresh
@@ -113,6 +114,7 @@ export function selectLifecycleLimitPatches(
   accounts: Account[],
   lifecycleByEmail: Map<string, LifecycleView>,
   asOf: Date = new Date(),
+  recentSustainedByEmail: ReadonlyMap<string, number> = new Map(),
 ): LifecycleLimitPatch[] {
   const patches: LifecycleLimitPatch[] = [];
   for (const account of accounts) {
@@ -132,18 +134,22 @@ export function selectLifecycleLimitPatches(
     if (instantlyEnforced && (status === "in_production" || status === "in_recovery")) {
       const targetWarmup = warmupDailyForStatus(status); // 0 | 30 (never null here)
       const stateDaily = dailyLimitForStatus(status); // 50 | 20 (never null here)
-      // AGE ceiling: a fresh mailbox cannot physically absorb the state's full
-      // daily_limit (Gmail's real per-user quota is far below it for the first
-      // ~4 weeks — the 550-5.4.5 trigger). The state sets the POLICY ceiling, the
-      // age ramp the PHYSICAL one; the target is whichever binds first. Always
-      // computed off IN_PRODUCTION_DAILY_LIMIT, never off the account's current
-      // daily_limit — otherwise each sweep would re-scale its own previous output.
+      // VOLUME ceiling: a mailbox cannot physically absorb the state's full
+      // daily_limit until it has been sending at that rate (Gmail's real per-user
+      // quota is far below it for a mailbox that has been quiet — the 550-5.4.5
+      // trigger). The state sets the POLICY ceiling, the ramp the PHYSICAL one;
+      // the target is whichever binds first. Always computed off
+      // IN_PRODUCTION_DAILY_LIMIT, never off the account's current daily_limit —
+      // otherwise each sweep would re-scale its own previous output.
       const targetDaily =
         stateDaily === null
           ? null
           : Math.min(
               stateDaily,
-              rampCapForAge(account.timestamp_created, IN_PRODUCTION_DAILY_LIMIT, asOf),
+              rampCapForVolume(
+                recentSustainedByEmail.get(account.email) ?? 0,
+                IN_PRODUCTION_DAILY_LIMIT,
+              ),
             );
       const currentWarmup = account.warmup?.limit;
       const currentDaily = account.daily_limit;
@@ -179,11 +185,20 @@ export async function syncLifecycleLimits(
   limit?: number,
   asOf: Date = new Date(),
 ): Promise<LifecycleLimitsSyncSummary> {
-  const [accounts, lifecycleByEmail] = await Promise.all([
+  const [accounts, lifecycleByEmail, volume] = await Promise.all([
     listAccounts(apiKey),
     fetchLifecycleByEmail(),
+    fetchRecentDailyVolume(),
   ]);
-  const patches = selectLifecycleLimitPatches(accounts, lifecycleByEmail, asOf);
+  // Per ADDRESS: this sweep enforces Instantly's own per-account daily_limit and
+  // holds no alias map, so it takes the address's own peak — which under-states
+  // an alias fleet, the safe direction.
+  const patches = selectLifecycleLimitPatches(
+    accounts,
+    lifecycleByEmail,
+    asOf,
+    new Map(accounts.filter((a) => a.email).map((a) => [a.email as string, sustainedFor(volume, a.email as string)])),
+  );
   const batch = limit && limit > 0 ? patches.slice(0, limit) : patches;
 
   let accountsPatched = 0;

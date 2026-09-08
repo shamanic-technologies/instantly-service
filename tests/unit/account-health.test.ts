@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildAccountHealth, mapProviderCode } from "../../src/lib/account-health";
 import type { Account } from "../../src/lib/instantly-client";
 import type { LifecycleView } from "../../src/lib/account-lifecycle-sync";
-import type { LifecycleStatus } from "../../src/lib/account-lifecycle";
+import { RAMP_FLOOR_PER_DAY, type LifecycleStatus } from "../../src/lib/account-lifecycle";
 
 function acc(overrides: Partial<Account> & { email: string }): Account {
   return {
@@ -38,9 +38,10 @@ describe("buildAccountHealth", () => {
       status: "active",
       warmupScore: 100,
       dailyLimit: 40,
-      // Undatable mailbox ⇒ mature ⇒ the ramp never binds, so the cap it is
-      // actually selected against is its own limit.
-      effectiveDailyCap: 40,
+      // No volume map passed ⇒ nothing measured ⇒ the ramp floors it. Erring
+      // toward the floor is the direction that cannot push a mailbox past what
+      // Gmail accepts.
+      effectiveDailyCap: RAMP_FLOOR_PER_DAY,
       // No selection view passed ⇒ not in the ranked pool ⇒ no position.
       fillRank: null,
       warmupLimit: null,
@@ -390,39 +391,44 @@ describe("buildAccountHealth — fill rank + effective cap", () => {
     expect(row.blocked).toBe(true);
   });
 
-  it("a MATURE mailbox reports its own limit as the effective cap", () => {
+  it("a mailbox already AT VOLUME reports its own limit as the effective cap", () => {
     const [row] = buildAccountHealth(
-      [
-        acc({
-          email: "mature@a.com",
-          daily_limit: 50,
-          // ~2 months old — well past MATURE_AGE_DAYS, so the ramp cannot bind.
-          timestamp_created: "2026-07-01T00:00:00.000Z",
-        }),
-      ],
+      [acc({ email: "mature@a.com", daily_limit: 50 })],
       new Map(),
       new Map(),
       new Map(),
       new Map(),
       new Map(),
       new Map(),
-      { asOf: ASOF },
+      // Sending 40/day: the ramp allows 60, so the operator limit binds.
+      { asOf: ASOF, recentSustainedByEmail: new Map([["mature@a.com", 40]]) },
     );
 
     expect(row.dailyLimit).toBe(50);
     expect(row.effectiveDailyCap).toBe(50);
   });
 
-  it("a FRESH mailbox is capped BELOW its stated limit — the number the selector uses", () => {
+  it("a RAMPING mailbox is capped BELOW its stated limit — the number the selector uses", () => {
     const [row] = buildAccountHealth(
-      [
-        acc({
-          email: "fresh@a.com",
-          daily_limit: 50,
-          // 14 days old ⇒ half the 28-day ramp ⇒ 25, not the stated 50.
-          timestamp_created: "2026-08-19T06:00:00.000Z",
-        }),
-      ],
+      [acc({ email: "fresh@a.com", daily_limit: 50 })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map(),
+      // Peaked at 12/day ⇒ may attempt 18, not the stated 50. The table has to
+      // show this, or it contradicts the selector about the same mailbox.
+      { asOf: ASOF, recentSustainedByEmail: new Map([["fresh@a.com", 12]]) },
+    );
+
+    expect(row.dailyLimit).toBe(50);
+    expect(row.effectiveDailyCap).toBe(18);
+  });
+
+  it("a mailbox with NO measured volume reports the floor, never its full limit", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "cold@a.com", daily_limit: 50 })],
       new Map(),
       new Map(),
       new Map(),
@@ -432,26 +438,19 @@ describe("buildAccountHealth — fill rank + effective cap", () => {
       { asOf: ASOF },
     );
 
-    expect(row.dailyLimit).toBe(50);
-    expect(row.effectiveDailyCap).toBe(25);
+    expect(row.effectiveDailyCap).toBe(RAMP_FLOOR_PER_DAY);
   });
 
-  it("an operator limit BELOW the age cap still wins — min, never max", () => {
+  it("an operator limit BELOW the ramped cap still wins — min, never max", () => {
     const [row] = buildAccountHealth(
-      [
-        acc({
-          email: "throttled@a.com",
-          daily_limit: 10,
-          timestamp_created: "2026-07-01T00:00:00.000Z",
-        }),
-      ],
+      [acc({ email: "throttled@a.com", daily_limit: 10 })],
       new Map(),
       new Map(),
       new Map(),
       new Map(),
       new Map(),
       new Map(),
-      { asOf: ASOF },
+      { asOf: ASOF, recentSustainedByEmail: new Map([["throttled@a.com", 40]]) },
     );
 
     expect(row.effectiveDailyCap).toBe(10);
@@ -473,10 +472,12 @@ describe("buildAccountHealth — fill rank + effective cap", () => {
     expect(row.effectiveDailyCap).toBeNull();
   });
 
-  it("callers that pass no selection view are unchanged — null rank, cap from the limit", () => {
+  it("callers that pass no selection view report a null rank and the floored cap", () => {
+    // No volume map ⇒ no measured volume ⇒ the floor, which is the honest
+    // reading and the direction that cannot push a mailbox past Gmail.
     const [row] = buildAccountHealth([acc({ email: "legacy@a.com", daily_limit: 30 })]);
 
     expect(row.fillRank).toBeNull();
-    expect(row.effectiveDailyCap).toBe(30);
+    expect(row.effectiveDailyCap).toBe(RAMP_FLOOR_PER_DAY);
   });
 });

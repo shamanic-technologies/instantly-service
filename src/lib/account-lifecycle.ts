@@ -310,7 +310,7 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
  * campaign `daily_limit` are OUR enforcement points there.
  *
  * On `smtp` they are not: Instantly does not dispatch this mailbox, our own
- * worker enforces the cap (`rampCapForAge` / `IN_PRODUCTION_DAILY_LIMIT`), and
+ * worker enforces the cap (`rampCapForVolume` / `IN_PRODUCTION_DAILY_LIMIT`), and
  * the account is frequently one Instantly has disabled — so the PATCH would
  * target a dead account and fail. That failure is not harmless: `reconcile`
  * PATCHes BEFORE it persists and skips the persist on error, so a doomed PATCH
@@ -376,7 +376,7 @@ export function emailDomain(email: string): string {
  * so pushing full campaign volume onto it day-one trips `550-5.4.5 Daily user
  * sending limit exceeded`. Age is NOT a lifecycle state (a fresh account stays
  * `in_production` if it passes health+delivery); it only (a) SCALES DOWN the daily
- * assignment cap send selection uses for it (see `rampCapForAge`) and (b) keeps
+ * assignment cap send selection uses for it (see `rampCapForVolume`) and (b) keeps
  * Instantly's slow ramp ON so its volume grows gently. 28 days = the ~4-week ramp
  * window Gmail needs to build per-user send trust.
  */
@@ -404,114 +404,86 @@ function accountAgeMs(
 export const RAMP_FLOOR_PER_DAY = 5;
 
 /**
- * The account's DAILY ASSIGNMENT CAP — how many emails send-selection is willing
- * to put on this account today. Mature (or undatable) → its full Instantly
- * `daily_limit`. Fresh → that limit scaled LINEARLY by age over the
- * {@link MATURE_AGE_DAYS} window, floored at {@link RAMP_FLOOR_PER_DAY} and never
- * above the account's own limit.
+ * How much a mailbox may grow its daily volume in one day.
  *
- * This REPLACED the former mature-before-fresh tier ordering in send selection.
- * That ordering made "fresh" a PRIORITY class (fresh took volume only as overflow,
- * once no mature account had room today) — and since the mature pool's headroom
- * exceeded fleet volume, the overflow branch never ran and every fresh account got
- * ZERO sends for weeks (prod 2026-07-29→31: 845/845 campaigns to mature accounts,
- * 5 accounts never assigned a single campaign in their life). Age is now a CAP,
- * not a priority: a fresh account always gets a proportional share, bounded by
- * what Gmail will accept from a young mailbox.
+ * A mailbox that sustained 16 sends yesterday may attempt 24 today. Gmail grades
+ * a PATTERN of sending, so the thing that must not jump is the volume — 1.5x a
+ * day takes a cold mailbox from the {@link RAMP_FLOOR_PER_DAY} floor to a full
+ * {@link IN_PRODUCTION_DAILY_LIMIT} in seven days (5 → 8 → 12 → 18 → 27 → 41 → 50),
+ * which is a climb rather than a step.
  */
-export function rampCapForAge(
-  timestampCreated: string | Date | null | undefined,
-  dailyLimit: number,
-  asOf: Date,
-): number {
-  const age = accountAgeMs(timestampCreated, asOf);
-  if (age === null || age >= MATURE_AGE_MS) return dailyLimit;
-  const ageDays = age / (24 * 60 * 60 * 1000);
-  const ramped = Math.round((dailyLimit * ageDays) / MATURE_AGE_DAYS);
-  return Math.min(dailyLimit, Math.max(RAMP_FLOOR_PER_DAY, ramped));
+export const RAMP_GROWTH_FACTOR = 1.5;
+
+/**
+ * How far back the ramp looks for the mailbox's peak daily volume.
+ *
+ * A PEAK over a window rather than yesterday alone, because the fleet does not
+ * send on weekends: reading yesterday on a Monday would see Sunday's zero and
+ * reset every mailbox to the floor once a week — the exact rewind this ramp
+ * exists to remove. Seven days spans a full sending week whatever day it is read.
+ */
+export const RAMP_VOLUME_WINDOW_DAYS = 7;
+
+/**
+ * The account's DAILY ASSIGNMENT CAP — how many emails we are willing to put on
+ * this mailbox today, derived from what it has ACTUALLY been sending.
+ *
+ * ⚠️ This replaced an AGE-based ramp, and the reason is that age was the wrong
+ * counter. The former version scaled the limit by the time since the mailbox
+ * last entered its lifecycle state — but the weekly placement test moves the
+ * delivery score, which moves the lifecycle state, which reset the counter. So
+ * the ramp was rewound every Saturday and never finished: measured in prod
+ * 2026-09-07, all 197 self-send mailboxes were anchored on a lifecycle flip, at
+ * an average apparent age of 21 days against a real age of 102, and the whole
+ * fleet sat at a cap of 5-13 while 1,208 sequences waited to send their first
+ * email — some for eight days.
+ *
+ * Volume has no such failure: it is a measured fact about the past, so no state
+ * transition can rewind it, and it is self-limiting in the direction that
+ * matters — a mailbox only earns more room by using the room it has. It also
+ * makes a mailbox in recovery ramp on its warmup and placement-test traffic
+ * instead of standing still, so it arrives in production already at volume
+ * rather than jumping there.
+ *
+ * `recentSustainedDaily` is the highest single-day total the mailbox sent over
+ * {@link RAMP_VOLUME_WINDOW_DAYS} — outreach, warmup and seed mail together,
+ * since Gmail's per-user quota does not care which of our jobs sent it.
+ */
+export function rampCapForVolume(recentSustainedDaily: number, dailyLimit: number): number {
+  const grown = Math.round(Math.max(0, recentSustainedDaily) * RAMP_GROWTH_FACTOR);
+  return Math.min(dailyLimit, Math.max(RAMP_FLOOR_PER_DAY, grown));
 }
 
 /**
  * Today's assignment cap for one account: the number send SELECTION compares an
  * account's load against on a given day.
  *
- * The age ramp is computed off the LIFECYCLE BASE (IN_PRODUCTION_DAILY_LIMIT),
- * never off the account's live `daily_limit` — lifecycle-limits-sync writes that
- * same ramped value onto Instantly, so scaling the already-scaled value would
- * compound (45 → 23 → 12 → …). Taking the MIN keeps both enforcement points
- * idempotent while still honouring a lower operator-set limit.
+ * The ramp is computed off the LIFECYCLE BASE (IN_PRODUCTION_DAILY_LIMIT), never
+ * off the account's live `daily_limit` — lifecycle-limits-sync writes the ramped
+ * value back onto Instantly, so scaling the already-scaled value would compound
+ * (50 → 25 → 13 → …). Taking the MIN keeps both enforcement points idempotent
+ * while still honouring a lower operator-set limit.
  *
- * A mature (or undatable) account keeps its full `daily_limit`; a fresh one is
- * capped by `rampCapForAge` — a young Google mailbox's real Gmail per-user quota
- * is far below 45 for its first weeks, independent of inbox placement.
+ * ⚠️ `recentSustainedDaily` is the mailbox's peak, not the address's. Several aliases
+ * share one relay login and therefore one quota, so a caller holding the alias
+ * map SUMS their volumes before calling this — see `selectDueSteps`. A caller
+ * that only knows the address passes the address's own volume, which is the
+ * conservative direction (it under-states a mailbox, never over-states it).
  *
- * It lives HERE, beside `rampCapForAge`, rather than in the send path, because
+ * It lives HERE, beside `rampCapForVolume`, rather than in the send path, because
  * the account-health ops table displays this exact number and must not hold a
  * second copy of the ramp: a table rendering `daily_limit` alone reads 50 for a
  * mailbox the selector is holding at 23, i.e. the ops view contradicting the
  * selector about the same account.
  */
 export function capForAccount(
-  account: {
-    daily_limit?: number | null;
-    timestamp_created?: string | Date | null;
-    /** When the account last entered its current lifecycle state — see {@link rampAnchor}. */
-    lifecycle_updated_at?: string | Date | null;
-  },
-  on: Date,
+  account: { daily_limit?: number | null },
+  recentSustainedDaily: number,
 ): number {
   return Math.min(
     account.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT,
-    rampCapForAge(
-      rampAnchor(account.timestamp_created, account.lifecycle_updated_at),
-      IN_PRODUCTION_DAILY_LIMIT,
-      on,
-    ),
+    rampCapForVolume(recentSustainedDaily, IN_PRODUCTION_DAILY_LIMIT),
   );
-}
-
-/**
- * The instant the ramp measures from: the LATER of when the mailbox was created
- * and when it last entered its current lifecycle state.
- *
- * ⚠️ Creation age alone is the wrong anchor, and it cost the fleet a real
- * incident. A mailbox months old is "mature" by that measure, so it is handed
- * its full cap the instant it is promoted — even though it may have sent nothing
- * for weeks while it sat in recovery. Gmail does not grade a sender on how long
- * the mailbox has EXISTED; it grades a pattern of sending, and 0/day jumping
- * straight to 50/day is the pattern it distrusts most.
- *
- * Prod 2026-08-29: 79 Gandi accounts were promoted in one sweep on a passing
- * placement test. All were months old, so the age ramp was a no-op and every one
- * of them went from zero to its full limit that morning. Instantly deactivated
- * 70 accounts the same day on relay throttles, and 25 of the 79 had fallen back
- * below the delivery bar a week later.
- *
- * Anchoring on the promotion makes the ramp mean what it says: a mailbox
- * re-entering production climbs 5 → 50 over {@link MATURE_AGE_DAYS} like any
- * other mailbox starting to send. A brand-new account is unaffected — its
- * creation and its first promotion are days apart at most, and the later of the
- * two is still recent.
- *
- * `null` (both unknown) keeps the existing meaning: undatable is treated as
- * mature, never trapped at the floor.
- */
-export function rampAnchor(
-  timestampCreated: string | Date | null | undefined,
-  lifecycleUpdatedAt: string | Date | null | undefined,
-): Date | null {
-  const created = toDate(timestampCreated);
-  const promoted = toDate(lifecycleUpdatedAt);
-  if (created === null) return promoted;
-  if (promoted === null) return created;
-  return promoted.getTime() > created.getTime() ? promoted : created;
-}
-
-/** Parse a timestamp, or null when absent / unparseable. */
-function toDate(value: string | Date | null | undefined): Date | null {
-  if (!value) return null;
-  const ms = value instanceof Date ? value.getTime() : Date.parse(value);
-  return Number.isNaN(ms) ? null : new Date(ms);
 }
 
 /**

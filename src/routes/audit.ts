@@ -1,3 +1,4 @@
+import { fetchRecentDailyVolume, sustainedFor } from "../lib/recent-send-volume";
 import { Router, Request, Response } from "express";
 import { sql, eq } from "drizzle-orm";
 import { db } from "../db";
@@ -260,6 +261,7 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       queueBreakdownByEmail,
       lifecycleByEmail,
       pool,
+      recentVolume,
     ] = await Promise.all([
       listAccounts(apiKey),
       fetchLatestPlacementByAccount(),
@@ -273,6 +275,9 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       // would be a second implementation of the selection gate, free to drift
       // from the one that actually picks the mailbox.
       fetchInProductionAccounts(null),
+      // The SAME volume map the selector caps against, so the table cannot
+      // report a cap the selector disagrees with for the same mailbox.
+      fetchRecentDailyVolume(),
     ]);
 
     // Position in the fill order, 1-based. `accountFillOrder` is the selector's
@@ -293,7 +298,13 @@ router.get("/account-health", async (_req: Request, res: Response) => {
         lifecycleByEmail,
         sentYesterdayByEmail,
         queueBreakdownByEmail,
-        { fillRankByEmail, asOf },
+        {
+          fillRankByEmail,
+          recentSustainedByEmail: new Map(
+            accounts.filter((a) => a.email).map((a) => [a.email, sustainedFor(recentVolume, a.email)]),
+          ),
+          asOf,
+        },
       ),
     });
   } catch (error: unknown) {

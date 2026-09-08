@@ -11,6 +11,14 @@ vi.mock("../../src/db/schema", () => ({
   sequenceCosts: {},
 }));
 
+// The volume the cap ramps on. Mocked at its own boundary so a test can state a
+// mailbox's measured volume without hand-writing the union query's result shape.
+const mockRecentPeaks = vi.fn(async () => new Map<string, Map<string, number>>());
+vi.mock("../../src/lib/recent-send-volume", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  fetchRecentDailyVolume: () => mockRecentPeaks(),
+}));
+
 const mockListAccounts = vi.fn();
 vi.mock("../../src/lib/instantly-client", () => ({
   listAccounts: (...args: unknown[]) => mockListAccounts(...args),
@@ -35,6 +43,7 @@ describe("GET /internal/audit/account-health", () => {
     vi.clearAllMocks();
     mockResolvePlatformKey.mockResolvedValue("test-key");
     mockExecute.mockResolvedValue({ rows: [] });
+    mockRecentPeaks.mockResolvedValue(new Map());
   });
 
   it("returns the locked shape — all scalar fields present + typed, inboxPlacement null", async () => {
@@ -214,13 +223,22 @@ describe("GET /internal/audit/account-health", () => {
     expect(byEmail["resting@gandi-dom.com"].fillRank).toBeNull();
   });
 
-  it("reports the effective cap the selector uses, below the stated limit for a fresh mailbox", async () => {
-    // 14 days before the request ⇒ half of the 28-day ramp ⇒ 25 of a stated 50.
-    const fresh = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  it("reports the effective cap the selector uses, below the stated limit while ramping", async () => {
     mockListAccounts.mockResolvedValue([
-      { email: "fresh@a.com", status: 1, stat_warmup_score: 100, daily_limit: 50, timestamp_created: fresh },
-      { email: "mature@a.com", status: 1, stat_warmup_score: 100, daily_limit: 50, timestamp_created: "2026-04-27T00:00:00.000Z" },
+      { email: "ramping@a.com", status: 1, stat_warmup_score: 100, daily_limit: 50 },
+      { email: "atvolume@a.com", status: 1, stat_warmup_score: 100, daily_limit: 50 },
+      { email: "cold@a.com", status: 1, stat_warmup_score: 100, daily_limit: 50 },
     ]);
+    // The route reads the SAME volume map the selector caps against, so the two
+    // cannot disagree about the same mailbox.
+    mockRecentPeaks.mockResolvedValue(
+      new Map([
+        // Per day; the figure is the SECOND-highest, so 12 ⇒ may attempt 18.
+        ["ramping@a.com", new Map([["2026-09-01", 30], ["2026-09-02", 12]])],
+        // Ramp allows 60 ⇒ the operator limit binds.
+        ["atvolume@a.com", new Map([["2026-09-01", 40], ["2026-09-02", 40]])],
+      ]),
+    );
 
     const app = await makeApp();
     const res = await request(app).get("/internal/audit/account-health");
@@ -229,9 +247,10 @@ describe("GET /internal/audit/account-health", () => {
     const byEmail = Object.fromEntries(
       res.body.accounts.map((r: { email: string }) => [r.email, r]),
     );
-    expect(byEmail["fresh@a.com"].dailyLimit).toBe(50);
-    expect(byEmail["fresh@a.com"].effectiveDailyCap).toBe(25);
-    // A mature mailbox reads exactly as before — the two numbers agree.
-    expect(byEmail["mature@a.com"].effectiveDailyCap).toBe(50);
+    expect(byEmail["ramping@a.com"].dailyLimit).toBe(50);
+    expect(byEmail["ramping@a.com"].effectiveDailyCap).toBe(18);
+    expect(byEmail["atvolume@a.com"].effectiveDailyCap).toBe(50);
+    // Nothing measured ⇒ the floor, never the stated limit.
+    expect(byEmail["cold@a.com"].effectiveDailyCap).toBe(5);
   });
 });

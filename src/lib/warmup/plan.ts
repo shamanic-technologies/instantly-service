@@ -37,7 +37,7 @@
 export const WARMUP_PARTNERS_PER_DAY = 4;
 
 /**
- * The most of a mailbox's daily cap warmup may take.
+ * The most of a mailbox's daily cap warmup may take WHILE OUTREACH IS USING IT.
  *
  * ⚠️ Warmup must never starve outreach, and a flat partner count does exactly
  * that at the bottom of the ramp: a mailbox freshly promoted sits at the
@@ -52,13 +52,51 @@ export const WARMUP_PARTNERS_PER_DAY = 4;
  */
 export const WARMUP_MAX_SHARE_OF_CAP = 0.3;
 
-/** Warmup sends this mailbox may make today, given the cap outreach also draws on. */
+/**
+ * The ceiling on warmup for a mailbox that is NOT doing outreach.
+ *
+ * ⚠️ A mailbox in recovery sends no outreach at all, so the share above pins it
+ * at 1-4 warmup sends a day forever — and since the cap now ramps on measured
+ * volume, that pins its CAP at the floor too. It could never build the volume
+ * that earns it a bigger cap, so it could never arrive in production at a usable
+ * rate: the weekly rewind this change removes, re-created one level down.
+ * Letting warmup fill the headroom instead is what makes recovery a ramp rather
+ * than a waiting room — Kevin's "si pas avec des vrais emails, alors avec des
+ * emails de test de plus en plus nombreux".
+ *
+ * Bounded well under the full cap on purpose. This is mail we send to our OWN
+ * mailboxes, which always accept it, so the volume is real for Gmail while the
+ * reputation signal is weak — and the mesh is ~200 boxes against Instantly's
+ * tens of thousands, so a reciprocal graph is detectable however carefully it is
+ * varied. Enough to establish a sending volume; not enough to make the mesh the
+ * fleet's dominant traffic.
+ */
+export const WARMUP_MAX_PER_DAY = 20;
+
+/**
+ * Warmup sends this mailbox may make today.
+ *
+ * Two regimes, because the thing being protected differs. A mailbox carrying
+ * outreach gets the modest share — outreach is the job. A mailbox that carries
+ * none (in recovery) has nothing to protect and everything to prove, so warmup
+ * fills the headroom up to {@link WARMUP_MAX_PER_DAY} and its volume is what
+ * lifts its cap on the next run.
+ *
+ * `outreachToday` is REAL prospect mail only; warmup already sent today is
+ * counted by the caller against this budget, not subtracted from it.
+ */
 export function warmupBudgetFor(
   cap: number,
-  partnersPerDay: number = WARMUP_PARTNERS_PER_DAY,
+  options: { fillsHeadroom?: boolean; outreachToday?: number } = {},
 ): number {
   if (cap <= 0) return 0;
-  return Math.max(1, Math.min(partnersPerDay, Math.floor(cap * WARMUP_MAX_SHARE_OF_CAP)));
+
+  if (options.fillsHeadroom === true) {
+    const headroom = cap - Math.max(0, options.outreachToday ?? 0);
+    return headroom <= 0 ? 0 : Math.min(WARMUP_MAX_PER_DAY, headroom);
+  }
+
+  return Math.max(1, Math.min(WARMUP_PARTNERS_PER_DAY, Math.floor(cap * WARMUP_MAX_SHARE_OF_CAP)));
 }
 
 /**

@@ -24,7 +24,8 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
 import { warmupDispatches } from "../../db/schema";
-import { capForAccount } from "../account-lifecycle";
+import { rampCapForVolume } from "../account-lifecycle";
+import { fetchRecentDailyVolume, sustainedForMailbox } from "../recent-send-volume";
 import type { CallerInfo } from "../key-client";
 import { loadMailboxLogins, loginFor } from "../self-send/mailbox-credentials";
 import { loadSeedCredentialResolver } from "../seed-placement/credentials";
@@ -41,6 +42,13 @@ import {
 } from "./plan";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/audit/warmup/run" };
+
+/** `db.execute` resolves a QueryResult on node-postgres, never a bare array. */
+function rowsOf(result: unknown): Record<string, unknown>[] {
+  if (Array.isArray(result)) return result as Record<string, unknown>[];
+  const rows = (result as { rows?: unknown }).rows;
+  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+}
 
 /** Off by default — a mesh nobody armed must send nothing. */
 export function isWarmupMeshEnabled(): boolean {
@@ -66,7 +74,15 @@ export interface WarmupRunSummary {
 
 interface SenderCapacity {
   cap: number;
-  spent: number;
+  /** REAL prospect mail sent today. Warmup's headroom is measured against this. */
+  outreach: number;
+  /** Warmup already dispatched today — spends the same quota, but is not outreach. */
+  warmup: number;
+  /**
+   * True when the mailbox carries no outreach (it is in recovery), so warmup may
+   * fill its headroom instead of taking a small share. See `warmupBudgetFor`.
+   */
+  fillsHeadroom: boolean;
 }
 
 /**
@@ -85,40 +101,60 @@ async function loadRoom(
     SELECT
       a.email                AS "accountEmail",
       a.daily_limit          AS "dailyLimit",
-      a.timestamp_created    AS "timestampCreated",
-      a.lifecycle_updated_at AS "lifecycleUpdatedAt",
       COALESCE((
         SELECT COUNT(*) FROM instantly_events e
         WHERE e.account_email = a.email
           AND e.event_type = 'email_sent'
           AND e.inferred = false
           AND e.timestamp >= date_trunc('day', now() AT TIME ZONE 'UTC')
-      ), 0)                  AS "sentToday"
+      ), 0)                  AS "sentToday",
+      a.lifecycle_status     AS "lifecycleStatus"
     FROM instantly_accounts a
     WHERE a.absent_since IS NULL
   `);
+  const volume = await fetchRecentDailyVolume();
 
   const room = new Map<string, SenderCapacity>();
+  const limits = new Map<
+    string,
+    { limit: number; outreach: number; fillsHeadroom: boolean }
+  >();
+  // The mailbox's peak is the highest DAILY TOTAL across its aliases; summing
+  // their individual peaks would over-state a mailbox whose aliases peaked on
+  // different days. Same reasoning as the dispatch worker.
+  const addressesByMailbox = new Map<string, string[]>();
 
-  for (const row of result.rows as Record<string, unknown>[]) {
+  for (const row of rowsOf(result)) {
     const email = String(row.accountEmail).trim().toLowerCase();
     const mailbox = mailboxLogins.get(email);
     if (mailbox === undefined) continue;
 
-    const cap = capForAccount(
-      {
-        daily_limit: row.dailyLimit === null ? 0 : Number(row.dailyLimit),
-        timestamp_created: (row.timestampCreated as string | null) ?? null,
-        lifecycle_updated_at: (row.lifecycleUpdatedAt as string | null) ?? null,
-      },
-      asOf,
-    );
+    const limit = row.dailyLimit === null ? 0 : Number(row.dailyLimit);
 
-    // Several aliases roll up to one mailbox: the lowest cap wins, their sends sum.
-    const current = room.get(mailbox);
+    // Several aliases roll up to one mailbox: the lowest operator limit wins,
+    // their sends and their measured volumes SUM. The ramp is applied to the
+    // summed volume below — per alias it would hold a five-alias mailbox to the
+    // cap earned by a fifth of its traffic.
+    const current = limits.get(mailbox);
+    (addressesByMailbox.get(mailbox) ?? addressesByMailbox.set(mailbox, []).get(mailbox)!).push(
+      email,
+    );
+    limits.set(mailbox, {
+      limit: current === undefined ? limit : Math.min(current.limit, limit),
+      outreach: (current?.outreach ?? 0) + Number(row.sentToday),
+      // A mailbox is doing outreach unless EVERY alias on it is in recovery.
+      fillsHeadroom:
+        (current?.fillsHeadroom ?? true) && row.lifecycleStatus === "in_recovery",
+    });
+  }
+
+  for (const [mailbox, entry] of limits) {
+    const peak = sustainedForMailbox(volume, addressesByMailbox.get(mailbox) ?? []);
     room.set(mailbox, {
-      cap: current === undefined ? cap : Math.min(current.cap, cap),
-      spent: (current?.spent ?? 0) + Number(row.sentToday),
+      cap: Math.min(entry.limit, rampCapForVolume(peak, entry.limit)),
+      outreach: entry.outreach,
+      warmup: 0,
+      fillsHeadroom: entry.fillsHeadroom,
     });
   }
 
@@ -129,10 +165,10 @@ async function loadRoom(
     WHERE day_key = ${dayKey} AND outcome = 'sent'
     GROUP BY sender_mailbox
   `);
-  for (const row of warm.rows as Record<string, unknown>[]) {
+  for (const row of rowsOf(warm)) {
     const mailbox = String(row.mailbox);
     const current = room.get(mailbox);
-    if (current) current.spent += Number(row.n);
+    if (current) current.warmup += Number(row.n);
   }
 
   return room;
@@ -269,8 +305,12 @@ export async function runWarmupMesh(
     // Warmup takes at most a FRACTION of the day's cap, so it can never starve
     // outreach on the mailboxes with least room — which are exactly the ones the
     // age ramp is protecting. See `warmupBudgetFor`.
-    const budget = warmupBudgetFor(capacity?.cap ?? 0);
-    if (!capacity || capacity.spent >= capacity.cap || (sentByMailbox.get(mailbox) ?? 0) >= budget) {
+    const budget = warmupBudgetFor(capacity?.cap ?? 0, {
+      fillsHeadroom: capacity?.fillsHeadroom,
+      outreachToday: capacity?.outreach,
+    });
+    const spent = capacity === undefined ? 0 : capacity.outreach + capacity.warmup;
+    if (!capacity || spent >= capacity.cap || (sentByMailbox.get(mailbox) ?? 0) >= budget) {
       summary.skippedNoRoom += 1;
       continue;
     }
@@ -307,7 +347,7 @@ export async function runWarmupMesh(
         response: result.response,
       });
 
-      capacity.spent += 1;
+      capacity.warmup += 1;
       sentByMailbox.set(mailbox, (sentByMailbox.get(mailbox) ?? 0) + 1);
       summary.sent += 1;
     } catch (error) {
