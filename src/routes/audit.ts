@@ -1,3 +1,4 @@
+import { fetchRecentDailyVolume, sustainedFor } from "../lib/recent-send-volume";
 import { Router, Request, Response } from "express";
 import { sql, eq } from "drizzle-orm";
 import { db } from "../db";
@@ -47,6 +48,8 @@ import {
   isSeedPlacementEnabled,
 } from "../lib/seed-placement/run";
 import { syncSeedPlacement } from "../lib/seed-placement/sync";
+import { isWarmupMeshEnabled, runWarmupMesh } from "../lib/warmup/run";
+import { runWarmupPoll } from "../lib/warmup/poll";
 import {
   buildReconciliation,
   isSnapshotStale,
@@ -258,6 +261,7 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       queueBreakdownByEmail,
       lifecycleByEmail,
       pool,
+      recentVolume,
     ] = await Promise.all([
       listAccounts(apiKey),
       fetchLatestPlacementByAccount(),
@@ -271,6 +275,9 @@ router.get("/account-health", async (_req: Request, res: Response) => {
       // would be a second implementation of the selection gate, free to drift
       // from the one that actually picks the mailbox.
       fetchInProductionAccounts(null),
+      // The SAME volume map the selector caps against, so the table cannot
+      // report a cap the selector disagrees with for the same mailbox.
+      fetchRecentDailyVolume(),
     ]);
 
     // Position in the fill order, 1-based. `accountFillOrder` is the selector's
@@ -291,7 +298,13 @@ router.get("/account-health", async (_req: Request, res: Response) => {
         lifecycleByEmail,
         sentYesterdayByEmail,
         queueBreakdownByEmail,
-        { fillRankByEmail, asOf },
+        {
+          fillRankByEmail,
+          recentSustainedByEmail: new Map(
+            accounts.filter((a) => a.email).map((a) => [a.email, sustainedFor(recentVolume, a.email)]),
+          ),
+          asOf,
+        },
       ),
     });
   } catch (error: unknown) {
@@ -1003,6 +1016,84 @@ router.post("/inbound-replies-backfill", async (req: Request, res: Response) => 
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] inbound-replies-backfill run=${runId} failed: ${message}`);
+  });
+});
+
+
+/**
+ * POST /internal/audit/warmup/run
+ *
+ * Platform-scoped. Sends one day's warmup mesh: every credentialed mailbox
+ * writes a short, individually generated note to a few of the others. This is
+ * the self-hosted replacement for the warmup pool bundled with the Instantly
+ * Email Outreach subscription.
+ *
+ * SENDS REAL MAIL from the fleet, so it is gated behind `WARMUP_MESH_ENABLED=true`
+ * and returns 409 when disabled. Warmup comes out of each mailbox's DAILY CAP,
+ * after real outreach — a mesh that ignored the cap would push mailboxes into
+ * the Gmail per-user limit the age ramp exists to respect.
+ *
+ * The receiving half runs on its OWN schedule (/warmup/poll) and is never
+ * chained here: both endpoints answer 202 and work in the background, so a
+ * chained poll would race the sends it is meant to read. That exact shape made
+ * the Instantly placement cron a week stale for months.
+ *
+ * Idempotent without a cursor — the pairing is deterministic per (day, mailbox)
+ * and the unique index makes a re-run inside the same day a no-op.
+ *
+ * 202 + background; watch logs for `warmup-run: done`.
+ */
+router.post("/warmup/run", async (req: Request, res: Response) => {
+  if (!isWarmupMeshEnabled()) {
+    return res.status(409).json({
+      error: "warmup mesh disabled — set WARMUP_MESH_ENABLED=true to arm",
+    });
+  }
+
+  const limit = typeof req.body?.limit === "number" ? req.body.limit : undefined;
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, runId });
+  console.log(`[audit] warmup-run: dispatched run=${runId}`);
+
+  (async () => {
+    const summary = await runWarmupMesh({ limit });
+    console.log(`[audit] warmup-run: done run=${runId} ${JSON.stringify(summary)}`);
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] warmup-run run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/audit/warmup/poll
+ *
+ * Platform-scoped. Reads the partner mailboxes, records where each warmup
+ * message landed, then acts on it: marks it read, moves it out of spam, and
+ * answers a fraction of them. THIS half is what actually warms a mailbox — the
+ * sending half alone teaches a filter almost nothing.
+ *
+ * The observation is frozen BEFORE the rescue, so a re-read never reports our
+ * own move as the delivery outcome.
+ *
+ * Not behind the kill-switch: it is bounded by the mail the mesh actually sent,
+ * so with the run disabled there is nothing to find. `{sinceDays}` widens the
+ * re-read window for a one-shot catch-up; the cron never sends it.
+ *
+ * 202 + background; watch logs for `warmup-poll: done`.
+ */
+router.post("/warmup/poll", async (req: Request, res: Response) => {
+  const sinceDays =
+    typeof req.body?.sinceDays === "number" ? req.body.sinceDays : undefined;
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, runId });
+  console.log(`[audit] warmup-poll: dispatched run=${runId}`);
+
+  (async () => {
+    const summary = await runWarmupPoll({ sinceDays });
+    console.log(`[audit] warmup-poll: done run=${runId} ${JSON.stringify(summary)}`);
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] warmup-poll run=${runId} failed: ${message}`);
   });
 });
 

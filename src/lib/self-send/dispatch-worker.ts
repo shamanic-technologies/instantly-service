@@ -15,11 +15,15 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
 import { smtpDispatchRaw } from "../../db/schema";
-import { rampCapForAge, IN_PRODUCTION_DAILY_LIMIT } from "../account-lifecycle";
+import { fetchRecentDailyVolume, sustainedForMailbox } from "../recent-send-volume";
 import { promoteEvent } from "../silver-promote";
 import type { Account } from "../instantly-client";
 import type { CallerInfo } from "../key-client";
-import { resolveMailboxCredential, type MailboxCredential } from "./mailbox-credentials";
+import {
+  loadMailboxLogins,
+  resolveMailboxCredential,
+  type MailboxCredential,
+} from "./mailbox-credentials";
 import { buildMessage } from "./message";
 import { runPoll } from "./imap-poller";
 import { dispatchMessage, SmtpDispatchError } from "./smtp";
@@ -34,9 +38,30 @@ import { dispatchScheduledReplies } from "../scheduled-replies-worker";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/dispatch" };
 
+/** `db.execute` resolves a QueryResult on node-postgres, never a bare array. */
+function rowsOf(result: unknown): Record<string, unknown>[] {
+  if (Array.isArray(result)) return result as Record<string, unknown>[];
+  const rows = (result as { rows?: unknown }).rows;
+  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+}
+
 export interface DispatchSummary {
   sequencesRead: number;
+  /** Steps this run will actually send — what is left AFTER capacity clips. */
   due: number;
+  /**
+   * Steps that were due before capacity clipped them. `dueBeforeCapacity` far
+   * above `due` means the fleet is THROTTLED, not idle — a distinction the
+   * summary could not make until now, and whose absence hid a backlog of 1,208
+   * un-started sequences behind an hourly `due: 0` for eight days.
+   */
+  dueBeforeCapacity: number;
+  /**
+   * Steps assigned to a mailbox we hold no credential for. These are not slow,
+   * they are stranded: no cap ever grows into them. Needs a credential, not
+   * patience.
+   */
+  blockedNoCapacityRow: number;
   sent: number;
   /** Permanent, about the RECIPIENT — promoted as a bounce. */
   bounced: number;
@@ -136,25 +161,48 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
 /**
  * Room left on each mailbox today.
  *
- * `cap` is the same `min(daily_limit, rampCapForAge)` the Instantly path
+ * `cap` is the same `min(daily_limit, rampCapForVolume)` the Instantly path
  * enforces, and `sentToday` counts REAL (`inferred=false`) `email_sent` events
  * in the current UTC day — the same definition the account-health table shows,
  * so the two surfaces cannot disagree about how loaded a mailbox is.
  *
  * Accounts absent from this result get no capacity row at all, which
  * `selectDueSteps` reads as no room. That is deliberate: a mailbox whose limits
- * we could not establish must not be sent from.
+ * we could not establish must not be sent from — and it is now the ONLY reason
+ * an account is excluded here, which is the point of the two filters this query
+ * used to carry:
+ *
+ *   - `a.send_transport = 'smtp'` — the ACCOUNT's policy. The decision is
+ *     already frozen on the campaign row; re-reading a second column at delivery
+ *     time asked the same question twice and got a different answer. Prod
+ *     2026-09-06: 1,486 sequences the assignment step had marked `smtp` sat on
+ *     accounts whose policy column still said `instantly`, so they matched no
+ *     capacity row and were never due — 1,176 prospects who had never received
+ *     a first email, silently, with the worker reporting `due: 0` and no errors.
+ *
+ *   - `a.lifecycle_status = 'in_production'` — the lifecycle governs which
+ *     mailbox a NEW sequence is ASSIGNED to (`fetchInProductionAccounts`), not
+ *     whether an already-assigned one may finish. Re-reading it here meant every
+ *     demotion silently froze the sequences already riding that mailbox: the
+ *     50 demotions of 2026-08-29 and the 25 of 09-05 stranded 1,031 of the
+ *     sequences above. The Instantly transport has never behaved this way — it
+ *     keeps dispatching whatever our lifecycle says — so the two pipes disagreed
+ *     about the same mailbox.
+ *
+ * Capacity is emitted per ACCOUNT but spent per MAILBOX; `selectDueSteps` does
+ * the grouping. See {@link AccountCapacity.mailbox}.
  */
 async function loadSendingAccounts(
   asOf: Date,
+  mailboxLogins: ReadonlyMap<string, string>,
 ): Promise<{ capacities: AccountCapacity[]; accounts: Map<string, Account> }> {
-  const result = await db.execute(sql`
+  const [result, volume] = await Promise.all([
+    db.execute(sql`
     SELECT
       a.email                                   AS "accountEmail",
       a.first_name                              AS "firstName",
       a.last_name                               AS "lastName",
       a.daily_limit                             AS "dailyLimit",
-      a.timestamp_created                       AS "timestampCreated",
       COALESCE((
         SELECT COUNT(*)
         FROM instantly_events e
@@ -162,31 +210,68 @@ async function loadSendingAccounts(
           AND e.event_type = 'email_sent'
           AND e.inferred = false
           AND e.timestamp >= date_trunc('day', now() AT TIME ZONE 'UTC')
-      ), 0)                                     AS "sentToday"
+      ), 0)                                     AS "sentToday",
+      -- Warmup mail comes out of the SAME Gmail per-user quota as outreach, so
+      -- it has to be counted here or the two jobs each spend the full cap and
+      -- the mailbox is pushed into the 550-5.4.5 daily-user-sending-limit
+      -- refusal the age ramp exists to respect. The mesh applies
+      -- the mirror of this rule (it takes what is left AFTER outreach).
+      COALESCE((
+        SELECT COUNT(*)
+        FROM warmup_dispatches w
+        WHERE w.sender_email = a.email
+          AND w.outcome = 'sent'
+          AND w.dispatched_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+      ), 0)                                     AS "warmupToday"
     FROM instantly_accounts a
-    WHERE a.send_transport = ${SEND_TRANSPORT_SMTP}
-      AND a.lifecycle_status = 'in_production'
-      AND a.absent_since IS NULL
-  `);
+    WHERE a.absent_since IS NULL
+  `),
+    fetchRecentDailyVolume(),
+  ]);
 
   const capacities: AccountCapacity[] = [];
   const accounts = new Map<string, Account>();
 
-  for (const row of result.rows as Record<string, unknown>[]) {
+  // The mailbox's peak is the highest DAILY TOTAL across its aliases, computed
+  // once here because this is where the alias map lives. Each alias's capacity
+  // row then carries the same mailbox figure, so `selectDueSteps` never has to
+  // combine them — summing per-alias peaks would over-state a mailbox whose
+  // aliases peaked on different days, and over-stating a quota ramp is the one
+  // direction that pushes a mailbox past what the relay accepts.
+  const addressesByMailbox = new Map<string, string[]>();
+  for (const row of rowsOf(result)) {
     const email = String(row.accountEmail);
-    const dailyLimit = row.dailyLimit === null ? 0 : Number(row.dailyLimit);
-    const created = row.timestampCreated ? new Date(row.timestampCreated as string) : null;
+    const mailbox = mailboxLogins.get(email.trim().toLowerCase());
+    if (mailbox === undefined) continue;
+    const group = addressesByMailbox.get(mailbox) ?? [];
+    group.push(email);
+    addressesByMailbox.set(mailbox, group);
+  }
+  const peakByMailbox = new Map<string, number>();
+  for (const [mailbox, addresses] of addressesByMailbox) {
+    peakByMailbox.set(mailbox, sustainedForMailbox(volume, addresses));
+  }
 
-    // The age ramp is computed off the CONSTANT, never off the live daily_limit:
-    // scaling an already-ramped value by age again halves it every sweep. `min`
-    // keeps both enforcement points idempotent while still honouring an
-    // operator-set limit BELOW the age cap.
-    const rampCap = rampCapForAge(created, IN_PRODUCTION_DAILY_LIMIT, asOf);
+  for (const row of rowsOf(result)) {
+    const email = String(row.accountEmail);
+
+    // The credential is what makes a mailbox sendable at all, and it is the same
+    // positive evidence the assignment step derives the transport from. No
+    // credential ⇒ no capacity row ⇒ no room, per the invariant above.
+    const mailbox = mailboxLogins.get(email.trim().toLowerCase());
+    if (mailbox === undefined) continue;
+
+    // The OPERATOR limit only. The ramp is applied at mailbox grain inside
+    // `selectDueSteps`, which is where the aliases are summed — see
+    // `AccountCapacity.cap`.
+    const dailyLimit = row.dailyLimit === null ? 0 : Number(row.dailyLimit);
 
     capacities.push({
       accountEmail: email,
-      cap: Math.min(dailyLimit, rampCap),
-      sentToday: Number(row.sentToday),
+      mailbox,
+      cap: dailyLimit,
+      recentSustainedDaily: peakByMailbox.get(mailbox) ?? 0,
+      sentToday: Number(row.sentToday) + Number(row.warmupToday ?? 0),
     });
 
     // The real account, so the From display name and the signature agree — the
@@ -299,14 +384,25 @@ export async function runDispatch(
   }
 
   const sequences = await loadPendingSequences();
-  const { capacities, accounts } = await loadSendingAccounts(asOf);
 
-  const due = selectDueSteps(sequences, capacities, asOf);
+  // Read once for the whole sweep, not per mailbox: this is a key-service read
+  // plus a vendor pagination, and it answers both "may we send from here at all"
+  // and "which real mailbox does this alias spend the quota of".
+  //
+  // Fails LOUD — a sweep that cannot establish the fleet's credentials must stop,
+  // not quietly send nothing and report a clean run.
+  const mailboxLogins = await loadMailboxLogins(CALLER);
+  const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
+
+  const selection = selectDueSteps(sequences, capacities, asOf);
+  const due = selection.selected;
   const batch = options.limit ? due.slice(0, options.limit) : due;
 
   const summary: DispatchSummary = {
     sequencesRead: sequences.length,
     due: due.length,
+    dueBeforeCapacity: selection.dueBeforeCapacity,
+    blockedNoCapacityRow: selection.blockedNoCapacityRow,
     sent: 0,
     bounced: 0,
     senderBlocked: 0,

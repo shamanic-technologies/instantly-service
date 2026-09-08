@@ -1,0 +1,123 @@
+name: Warmup mesh cron
+
+# The IN-HOUSE warmup mesh — the self-hosted replacement for the warmup pool
+# bundled with Instantly's $97/mo Email Outreach subscription. It spends nothing
+# beyond the message generation (chat-service's own cost): every sender and every
+# receiver is a mailbox we already own.
+#
+# TWO STEPS, TWO SEPARATE SCHEDULES.
+#
+#   1. POST /internal/audit/warmup/run   — 07:00 UTC daily.
+#      Every credentialed mailbox writes a short, individually generated note to
+#      a few of the others. Gated behind WARMUP_MESH_ENABLED=true; a 409 (not
+#      armed) is tolerated, so this cron is harmless while the mesh is disarmed.
+#
+#   2. POST /internal/audit/warmup/poll  — 12:00 UTC daily.
+#      Reads the partner mailboxes, records where each message landed, then acts:
+#      marks it read, moves it out of spam, answers a fraction of them. THIS half
+#      is what actually warms a mailbox; the sending half alone teaches a filter
+#      almost nothing.
+#
+# ⚠️ DO NOT CHAIN THE POLL ONTO THE RUN. Both endpoints answer 202 and work in
+# the background, so a chained read would race the sends it is meant to read —
+# and mail needs time to be delivered and filed anyway. That exact
+# create-then-read-in-one-run shape is what made `placement-cron.yml` ingest
+# week-old results for months. Five hours apart is generous; the poll re-reads a
+# 3-day window, so a skipped tick loses nothing.
+#
+# ⚠️ WHY 07:00, BEFORE THE SENDING DAY. Warmup comes out of each mailbox's DAILY
+# CAP, and it takes what is left AFTER real outreach. Running early looks like
+# the wrong order, and is not: the mesh reads the cap live, so an early run
+# simply sees a nearly-empty day and books its handful of sends first. Running it
+# late would instead have it find the cap already spent on the days that matter
+# most — a mailbox carrying real volume — which is precisely when its warmup
+# would be skipped. The volume is small (4 partners per mailbox) so the outreach
+# it displaces is marginal.
+#
+# ⚠️ WEEKENDS ARE NOT EXCLUDED, unlike outreach. A mailbox that goes silent for
+# two days a week is a mailbox with a weekly pattern; ordinary internal mail
+# does trickle at weekends, and the seed placement test (which runs Saturday
+# precisely because mailboxes are otherwise idle) is a separate population of
+# receivers that the mesh never writes to.
+#
+# Scheduled runs fire from the DEFAULT branch (main).
+#
+# Required secrets (already used by the other crons):
+#   INSTANTLY_SERVICE_URL       — production service URL
+#   INSTANTLY_SERVICE_API_KEY   — service API key for /internal/* routes
+#
+# Manually trigger via the workflow_dispatch button on the GitHub Actions page.
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # DAILY 07:00 UTC — send the day's mesh
+    - cron: "0 12 * * *" # DAILY 12:00 UTC — read it back, rescue and reply
+  workflow_dispatch:
+
+jobs:
+  warmup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: POST /internal/audit/warmup/run
+        # TRUE for the 07:00 cron AND for a manual workflow_dispatch (whose
+        # `schedule` is empty), so a manual run does the full send-then-read pair.
+        if: github.event.schedule != '0 12 * * *'
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
+            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
+            exit 1
+          fi
+
+          response_file=$(mktemp)
+          http_status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "${SERVICE_URL}/internal/audit/warmup/run")
+
+          echo "HTTP ${http_status}"
+          cat "${response_file}"
+          echo
+
+          # 409 = mesh not armed. Expected while WARMUP_MESH_ENABLED is unset.
+          if [ "${http_status}" = "409" ]; then
+            echo "Warmup mesh disarmed — nothing to do."
+            exit 0
+          fi
+          if [ "${http_status}" != "202" ]; then
+            exit 1
+          fi
+
+      - name: POST /internal/audit/warmup/poll
+        if: github.event.schedule != '0 7 * * *'
+        env:
+          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
+          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
+            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
+            exit 1
+          fi
+
+          response_file=$(mktemp)
+          http_status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "${SERVICE_URL}/internal/audit/warmup/poll")
+
+          echo "HTTP ${http_status}"
+          cat "${response_file}"
+          echo
+
+          if [ "${http_status}" != "202" ]; then
+            exit 1
+          fi

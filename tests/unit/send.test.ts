@@ -12,6 +12,23 @@ const mockDbUpdateSet = vi.fn();
 // prior contact" in beforeEach so every pre-existing send test is unaffected.
 const mockDbExecute = vi.fn();
 
+// The transport a new sequence takes is derived from ONE fact — do we hold a
+// credential for this mailbox — so the tests state that fact directly rather
+// than a stored policy column. Empty by default, which is the "no credential ⇒
+// Instantly" case every pre-existing send test expects.
+//
+// Hoisted because `vi.mock` factories run before the module body.
+const credentialedMailboxes = vi.hoisted(() => new Set<string>());
+
+vi.mock("../../src/lib/self-send/capability", () => ({
+  isSelfSendCapable: async (email: string) =>
+    credentialedMailboxes.has(email.trim().toLowerCase()),
+  resolveTransportForNewSequence: async (account: { email: string }) =>
+    credentialedMailboxes.has(account.email.trim().toLowerCase())
+      ? "smtp"
+      : "instantly",
+}));
+
 vi.mock("../../src/db", () => ({
   db: {
     select: () => ({ from: (table: unknown) => ({ where: (...args: unknown[]) => { const result = mockDbWhere(...args); return Object.assign(result, { limit: () => result }); } }) }),
@@ -221,13 +238,25 @@ describe("pickSequentialFillAccount", () => {
    * `sentToday`. `byDay` overrides it outright when a case needs future days.
    */
   const caps = (
-    entries: [string, { sentToday?: number; today?: number; byDay?: Record<string, number> }][],
+    entries: [
+      string,
+      {
+        sentToday?: number;
+        today?: number;
+        byDay?: Record<string, number>;
+        recentSustainedDaily?: number;
+      },
+    ][],
   ): Map<string, AccountCapacity> =>
     new Map(
       entries.map(([email, o]) => [
         email,
         {
           sentToday: o.sentToday ?? 0,
+          // Already at volume by default, so the ramp is saturated and the
+          // account's own `daily_limit` is the cap. These cases are about the
+          // fill ORDER, not about the ramp — which has its own block below.
+          recentSustainedDaily: o.recentSustainedDaily ?? 100,
           byDay: o.byDay ?? (o.today ? { [ASOF_KEY]: o.today } : {}),
         },
       ]),
@@ -670,38 +699,37 @@ describe("pickSequentialFillAccount", () => {
 
   // ── AGE: the cap is age-scaled; the ORDER is unaffected by age ────────────────
 
-  it("fills a fresh HEAD account only to its age-scaled cap, then moves on", () => {
-    // The head is 14 days old ⇒ cap 25 (half of the 50 base), NOT 45. At 25 it is
-    // full even though its Instantly daily_limit says 45 — this is what keeps a
-    // young Google mailbox under Gmail's per-user quota (550-5.4.5).
+  it("fills a RAMPING head account only to its volume-scaled cap, then moves on", () => {
+    // The head peaked at 16/day ⇒ it may attempt 24, NOT 45. At 24 it is full even
+    // though its Instantly daily_limit says 45 — this is what keeps a mailbox that
+    // has not been sending under Gmail's per-user quota (550-5.4.5).
     const accounts = [
-      acct({ email: "fresh@x.com", daily_limit: 45, timestamp_created: created(14) }),
-      acct({ email: "mature@x.com", daily_limit: 45, timestamp_created: created(1) }),
+      acct({ email: "a-ramping@x.com", daily_limit: 45 }),
+      acct({ email: "b-other@x.com", daily_limit: 45 }),
     ];
-    expect(
-      pickSequentialFillAccount(accounts, caps([["fresh@x.com", { sentToday: 24 }]]), asOf)
-        .email,
-    ).toBe("fresh@x.com");
-    expect(
-      pickSequentialFillAccount(accounts, caps([["fresh@x.com", { sentToday: 25 }]]), asOf)
-        .email,
-    ).toBe("mature@x.com");
+    const at = (sentToday: number) =>
+      caps([
+        ["a-ramping@x.com", { sentToday, recentSustainedDaily: 16 }],
+        ["b-other@x.com", { recentSustainedDaily: 100 }],
+      ]);
+    expect(pickSequentialFillAccount(accounts, at(23), asOf).email).toBe("a-ramping@x.com");
+    expect(pickSequentialFillAccount(accounts, at(24), asOf).email).toBe("b-other@x.com");
   });
 
-  it("caps a day-old HEAD account at the ramp floor, not at its daily_limit", () => {
+  it("caps a head account that has sent NOTHING at the ramp floor, not at its daily_limit", () => {
     const accounts = [
-      acct({ email: "dayold@x.com", daily_limit: 45, timestamp_created: created(1) }),
+      acct({ email: "cold@x.com", daily_limit: 45 }),
       acct({ email: "next@x.com", daily_limit: 45 }),
     ];
-    // RAMP_FLOOR_PER_DAY = 5 ⇒ full at 5 despite daily_limit 45.
-    expect(
-      pickSequentialFillAccount(accounts, caps([["dayold@x.com", { sentToday: 4 }]]), asOf)
-        .email,
-    ).toBe("dayold@x.com");
-    expect(
-      pickSequentialFillAccount(accounts, caps([["dayold@x.com", { sentToday: 5 }]]), asOf)
-        .email,
-    ).toBe("next@x.com");
+    // RAMP_FLOOR_PER_DAY = 5 ⇒ full at 5 despite daily_limit 45. It climbs from
+    // there as it uses the room, so this is a start line and not a ceiling.
+    const at = (sentToday: number) =>
+      caps([
+        ["cold@x.com", { sentToday, recentSustainedDaily: 0 }],
+        ["next@x.com", { recentSustainedDaily: 100 }],
+      ]);
+    expect(pickSequentialFillAccount(accounts, at(4), asOf).email).toBe("cold@x.com");
+    expect(pickSequentialFillAccount(accounts, at(5), asOf).email).toBe("next@x.com");
   });
 
   it("does NOT double-scale once Instantly's own daily_limit is already ramped", () => {
@@ -844,8 +872,8 @@ describe("send gate — only in_production accounts (lifecycle)", () => {
     ]);
     mockFetchAccountCapacity.mockResolvedValueOnce(
       new Map<string, AccountCapacity>([
-        ["older@good.com", { sentToday: 50, byDay: {} }],
-        ["newer@good.com", { sentToday: 2, byDay: {} }],
+        ["older@good.com", { sentToday: 50, recentSustainedDaily: 100, byDay: {} }],
+        ["newer@good.com", { sentToday: 2, recentSustainedDaily: 100, byDay: {} }],
       ]),
     );
     mockCreateCampaign.mockResolvedValue({ id: "ic", status: "draft" });
@@ -1216,6 +1244,7 @@ describe("POST /send", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     runCounter = 0;
+    credentialedMailboxes.clear();
 
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
     mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: true, balance_cents: 1000 });
@@ -1657,6 +1686,7 @@ describe("POST /send", () => {
   // lead pushed to Instantly AND picked up by our own dispatch worker, and every
   // prospect received each email TWICE from the same mailbox.
   it("does NOT create an Instantly campaign when the account is on smtp", async () => {
+    credentialedMailboxes.add("smtp@saviolabsco.com");
     mockNewCampaignFlow();
     mockFetchInProductionAccounts.mockResolvedValueOnce([
       { email: "smtp@saviolabsco.com", warmup_status: 1, status: 1, sendTransport: "smtp", infraProvider: "primeforge" },
@@ -1671,6 +1701,7 @@ describe("POST /send", () => {
   });
 
   it("stores a local self: id when the account is on smtp", async () => {
+    credentialedMailboxes.add("smtp@saviolabsco.com");
     mockNewCampaignFlow();
     mockFetchInProductionAccounts.mockResolvedValueOnce([
       { email: "smtp@saviolabsco.com", warmup_status: 1, status: 1, sendTransport: "smtp", infraProvider: "primeforge" },
@@ -2172,12 +2203,20 @@ describe("gapsFromSequence — the payload's delay is BEFORE its step, the gap i
 
 describe("sequence footprint — booking every day the lead will need the mailbox", () => {
   const caps2 = (
-    entries: [string, { sentToday?: number; byDay?: Record<string, number> }][],
+    entries: [
+      string,
+      { sentToday?: number; byDay?: Record<string, number>; recentSustainedDaily?: number },
+    ][],
   ): Map<string, AccountCapacity> =>
     new Map(
       entries.map(([email, o]) => [
         email,
-        { sentToday: o.sentToday ?? 0, byDay: o.byDay ?? {} },
+        {
+          sentToday: o.sentToday ?? 0,
+          // At volume by default — see `caps`.
+          recentSustainedDaily: o.recentSustainedDaily ?? 100,
+          byDay: o.byDay ?? {},
+        },
       ]),
     );
 
@@ -2251,28 +2290,33 @@ describe("sequence footprint — booking every day the lead will need the mailbo
     ).toBe("head@x.com");
   });
 
-  it("reads the AGE RAMP on EACH footprint day — a mailbox is older by D+10", () => {
-    // Created 2026-08-24. On 08-31 it is 7d old → ramp round(50*7/28) = 13.
-    // On 09-10 it is 17d old → ramp round(50*17/28) = 30. A load of 20 on the
-    // later day is over the FIRST day's cap but comfortably under that day's own.
-    const fresh = acct({
-      email: "fresh@x.com",
+  it("holds the SAME cap on every footprint day — volume cannot be projected forward", () => {
+    // The age ramp used to grow the cap hop by hop ("the mailbox is older by
+    // D+10"), which let the head book followups against room it had not earned.
+    // Volume is a measured fact about the PAST, so there is no honest way to
+    // assume more of it later: a load the cap rejects today is rejected on D+10.
+    const ramping = acct({
+      email: "ramping@x.com",
       daily_limit: 50,
       infraProvider: "gandi",
-      timestamp_created: "2026-08-24T00:00:00.000Z",
     });
     const fallback = mature("fallback@x.com", "primeforge");
 
-    const laterOnly = caps2([["fresh@x.com", { byDay: { "2026-09-10": 20 } }]]);
+    // Peaked at 12/day ⇒ cap 18 on every day of the footprint.
+    const overOnLaterDay = caps2([
+      ["ramping@x.com", { recentSustainedDaily: 12, byDay: { "2026-09-10": 20 } }],
+    ]);
     expect(
-      pickSequentialFillAccount([fresh, fallback], laterOnly, MONDAY, FOOTPRINT).email,
-    ).toBe("fresh@x.com");
-
-    // Pinning the cap to day zero would have rejected it: 20 >= 13.
-    const sameLoadToday = caps2([["fresh@x.com", { byDay: { "2026-08-31": 20 } }]]);
-    expect(
-      pickSequentialFillAccount([fresh, fallback], sameLoadToday, MONDAY, FOOTPRINT).email,
+      pickSequentialFillAccount([ramping, fallback], overOnLaterDay, MONDAY, FOOTPRINT).email,
     ).toBe("fallback@x.com");
+
+    // Under it on that same day, and the head keeps the lead.
+    const underOnLaterDay = caps2([
+      ["ramping@x.com", { recentSustainedDaily: 12, byDay: { "2026-09-10": 17 } }],
+    ]);
+    expect(
+      pickSequentialFillAccount([ramping, fallback], underOnLaterDay, MONDAY, FOOTPRINT).email,
+    ).toBe("ramping@x.com");
   });
 
   it("falls back to a DAY-ONE fit when nobody can carry the whole sequence", () => {

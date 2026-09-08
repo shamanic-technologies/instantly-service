@@ -11,7 +11,9 @@ import {
   RECOVERY_WARMUP_DAILY,
   IN_PRODUCTION_DAILY_LIMIT,
   RECOVERY_DAILY_LIMIT,
-  rampCapForAge,
+  rampCapForVolume,
+  RAMP_GROWTH_FACTOR,
+  IN_PRODUCTION_DAILY_LIMIT,
   RAMP_FLOOR_PER_DAY,
   slowRampForAge,
   MATURE_AGE_DAYS,
@@ -19,7 +21,7 @@ import {
   isInstantlyEnforced,
   DELIVERY_EVIDENCE_MAX_AGE_DAYS,
   type DeriveLifecycleInput,
-  shouldAdoptSelfSendTransport,
+  capForAccount,
 } from "../../src/lib/account-lifecycle";
 
 const POLICY = new Set(["distribute.you", "growthagency.dev", "arcadiaquest.org"]);
@@ -512,43 +514,50 @@ describe("emailDomain", () => {
   });
 });
 
-describe("account age gate — rampCapForAge / slowRampForAge", () => {
-  const asOf = new Date("2026-07-22T00:00:00Z");
-  const daysAgo = (n: number) =>
-    new Date(asOf.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
+describe("daily cap ramps on measured VOLUME, not on elapsed time", () => {
+  // ⚠️ The ramp used to key on how long ago the account changed lifecycle state.
+  // The weekly placement test moves the delivery score, the score moves the
+  // state, and the state reset the counter — so the ramp was rewound every
+  // Saturday and never finished. Prod 2026-09-07: 197 of 197 self-send mailboxes
+  // anchored on a flip, apparent age 21 days against a real 102, the whole fleet
+  // pinned at a cap of 5-13 while 1,208 sequences waited on a first email.
 
-  it(`rampCapForAge: at/after ${MATURE_AGE_DAYS}d the cap is the full daily_limit`, () => {
-    expect(rampCapForAge(daysAgo(MATURE_AGE_DAYS), 45, asOf)).toBe(45);
-    expect(rampCapForAge(daysAgo(MATURE_AGE_DAYS + 60), 45, asOf)).toBe(45);
+  it("a mailbox that has sent nothing starts at the floor, not at zero and not at full", () => {
+    expect(rampCapForVolume(0, 50)).toBe(RAMP_FLOOR_PER_DAY);
   });
 
-  it("rampCapForAge: a fresh account ramps LINEARLY with age", () => {
-    expect(rampCapForAge(daysAgo(14), 45, asOf)).toBe(23); // 45 * 14/28
-    expect(rampCapForAge(daysAgo(21), 45, asOf)).toBe(34); // 45 * 21/28
-    expect(rampCapForAge(daysAgo(24), 45, asOf)).toBe(39); // 45 * 24/28
+  it(`climbs ${RAMP_GROWTH_FACTOR}x a day, reaching the full limit in a week`, () => {
+    // 5 → 8 → 12 → 18 → 27 → 41 → 50. A climb rather than a step, which is what
+    // Gmail grades a sender on.
+    const climb: number[] = [];
+    let cap = rampCapForVolume(0, 50);
+    for (let day = 0; day < 7; day += 1) {
+      climb.push(cap);
+      cap = rampCapForVolume(cap, 50);
+    }
+    expect(climb).toEqual([5, 8, 12, 18, 27, 41, 50]);
   });
 
-  it(`rampCapForAge: never below the ${RAMP_FLOOR_PER_DAY}/day floor (idle ≠ ramp)`, () => {
-    expect(rampCapForAge(daysAgo(1), 45, asOf)).toBe(RAMP_FLOOR_PER_DAY);
-    expect(rampCapForAge(daysAgo(3), 45, asOf)).toBe(RAMP_FLOOR_PER_DAY); // round(4.8)=5
+  it("never exceeds the operator-set daily_limit", () => {
+    expect(rampCapForVolume(100, 20)).toBe(20);
+    expect(rampCapForVolume(40, 50)).toBe(50);
   });
 
-  it("rampCapForAge: the floor never EXCEEDS the account's own daily_limit", () => {
-    expect(rampCapForAge(daysAgo(1), 4, asOf)).toBe(4);
-    expect(rampCapForAge(daysAgo(1), 0, asOf)).toBe(0);
+  it("the floor never EXCEEDS the account's own daily_limit", () => {
+    expect(rampCapForVolume(0, 3)).toBe(3);
+    expect(rampCapForVolume(0, 0)).toBe(0);
   });
 
-  it("rampCapForAge: unknown/unparseable created date → full limit (never trap)", () => {
-    expect(rampCapForAge(null, 45, asOf)).toBe(45);
-    expect(rampCapForAge(undefined, 45, asOf)).toBe(45);
-    expect(rampCapForAge("not-a-date", 45, asOf)).toBe(45);
-  });
-
-  it("rampCapForAge: accepts a Date instance", () => {
-    expect(rampCapForAge(new Date(daysAgo(14)), 45, asOf)).toBe(23);
+  it("treats a nonsensical negative volume as zero rather than throwing", () => {
+    expect(rampCapForVolume(-5, 50)).toBe(RAMP_FLOOR_PER_DAY);
   });
 
   it("slowRampForAge: fresh → true, mature → false, unknown → null", () => {
+    // Still genuinely age-based: this is the Instantly campaign flag for a young
+    // Workspace mailbox, a different concern from our own daily cap.
+    const asOf = new Date("2026-07-22T00:00:00Z");
+    const daysAgo = (n: number) =>
+      new Date(asOf.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
     expect(slowRampForAge(daysAgo(3), asOf)).toBe(true);
     expect(slowRampForAge(daysAgo(MATURE_AGE_DAYS + 1), asOf)).toBe(false);
     expect(slowRampForAge(null, asOf)).toBeNull();
@@ -556,28 +565,36 @@ describe("account age gate — rampCapForAge / slowRampForAge", () => {
   });
 });
 
-describe("shouldAdoptSelfSendTransport", () => {
-  const base = { sendTransport: "instantly" as const, instantlyStatus: -1, selfSendCapable: true };
+// ─── No lifecycle transition can rewind the cap ──────────────────────────────
+//
+// This is the whole point of moving the ramp onto volume: a flip through
+// `in_recovery` and back — which the weekly placement test produces routinely —
+// used to reset the counter and drop the mailbox to the floor. It also removes
+// the incident the promotion anchor was introduced for (79 accounts promoted in
+// one sweep on 2026-08-29, 70 deactivated the same day): a months-old mailbox
+// that has been quiet has no volume, so it starts at the floor either way.
 
-  it("rescues a credentialed mailbox Instantly has disabled", () => {
-    expect(shouldAdoptSelfSendTransport(base)).toBe(true);
-    expect(shouldAdoptSelfSendTransport({ ...base, instantlyStatus: -3 })).toBe(true);
-    expect(shouldAdoptSelfSendTransport({ ...base, instantlyStatus: 0 })).toBe(true);
+describe("capForAccount", () => {
+  it("ignores lifecycle timestamps entirely — a flip cannot rewind the cap", () => {
+    const justFlipped = {
+      daily_limit: 50,
+      timestamp_created: "2026-05-15T00:00:00Z",
+      lifecycle_updated_at: new Date().toISOString(),
+    };
+    // A mailbox demonstrably sending 40/day keeps its cap the morning after a
+    // lifecycle flip. Under the age ramp this same account read as day-one.
+    expect(capForAccount(justFlipped, 40)).toBe(50);
   });
 
-  it("leaves a HEALTHY mailbox on Instantly — this is a rescue, not a migration", () => {
-    // Both arms of the per-sequence A/B need mailboxes on the instantly policy.
-    expect(shouldAdoptSelfSendTransport({ ...base, instantlyStatus: 1 })).toBe(false);
+  it("floors a mailbox with no measured volume rather than granting a full cap", () => {
+    expect(capForAccount({ daily_limit: 50 }, 0)).toBe(RAMP_FLOOR_PER_DAY);
   });
 
-  it("leaves a mailbox we cannot authenticate alone", () => {
-    // Our own worker could not dispatch it either, so the flip would only swap
-    // one pipe that cannot send for another.
-    expect(shouldAdoptSelfSendTransport({ ...base, selfSendCapable: false })).toBe(false);
+  it("still honours an operator-set daily_limit BELOW the ramped value", () => {
+    expect(capForAccount({ daily_limit: 12 }, 40)).toBe(12);
   });
 
-  it("never re-decides a mailbox already pinned to smtp", () => {
-    // That column is the operator override and the rollback lever.
-    expect(shouldAdoptSelfSendTransport({ ...base, sendTransport: "smtp" })).toBe(false);
+  it("falls back to the lifecycle base when no limit is stated", () => {
+    expect(capForAccount({}, 40)).toBe(IN_PRODUCTION_DAILY_LIMIT);
   });
 });

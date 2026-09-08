@@ -5,6 +5,7 @@ const mockInsertValues = vi.fn();
 const mockPromoteEvent = vi.fn();
 const mockDispatchMessage = vi.fn();
 const mockResolveCredential = vi.fn();
+const mockLoadMailboxLogins = vi.fn();
 
 vi.mock("../../src/db", () => ({
   db: {
@@ -38,6 +39,9 @@ vi.mock("../../src/lib/silver-promote", () => ({
 vi.mock("../../src/lib/self-send/mailbox-credentials", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
   resolveMailboxCredential: (...args: unknown[]) => mockResolveCredential(...args),
+  // Every account in these fixtures is credentialed and IS its own login (the
+  // Primeforge case). The alias grouping has its own tests in dispatch.test.
+  loadMailboxLogins: (...args: unknown[]) => mockLoadMailboxLogins(...args),
 }));
 
 vi.mock("../../src/lib/self-send/smtp", async (importOriginal) => ({
@@ -57,9 +61,9 @@ const { SmtpDispatchError } = await import("../../src/lib/self-send/smtp");
 const NOW = new Date("2026-08-17T15:00:00Z");
 
 /**
- * The worker issues three reads in order: pending sequences, sending accounts,
- * then step content per due step. Queueing them keeps the test honest about that
- * ordering instead of matching on SQL text.
+ * The worker issues four reads in order: pending sequences, sending accounts,
+ * the ramp's volume query, then step content per due step. Queueing them keeps
+ * the test honest about that ordering instead of matching on SQL text.
  */
 function primeReads(options: { hasBody?: boolean } = {}) {
   const { hasBody = true } = options;
@@ -90,6 +94,11 @@ function primeReads(options: { hasBody?: boolean } = {}) {
         },
       ],
     })
+    // The ramp's volume query. Already at volume, so the cap is the operator
+    // limit and these cases exercise dispatch rather than the ramp.
+    .mockResolvedValueOnce({
+      rows: [{ accountEmail: "amy@saviolabsco.com", peak: 45 }],
+    })
     .mockResolvedValueOnce({
       rows: [
         {
@@ -103,6 +112,13 @@ function primeReads(options: { hasBody?: boolean } = {}) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  // Credentialed, and each address IS its own SMTP login.
+  mockLoadMailboxLogins.mockImplementation(async () =>
+    new Map([
+      ["amy@saviolabsco.com", "amy@saviolabsco.com"],
+      ["ezekiel@plainsignalco.com", "ezekiel@plainsignalco.com"],
+    ]),
+  );
   mockDispatchScheduledReplies.mockResolvedValue({
     pending: 0,
     due: 0,
@@ -245,11 +261,20 @@ describe("runDispatch — capacity", () => {
           },
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [] }) // no sending accounts
+      .mockResolvedValueOnce({ rows: [] }); // and therefore no volume either
 
     const summary = await runDispatch({ asOf: NOW });
 
-    expect(summary).toMatchObject({ sequencesRead: 1, due: 0, sent: 0 });
+    // The step WAS due — it simply had no mailbox to leave from. Reporting only
+    // the post-clip `due: 0` is what made a stranded backlog read as an idle run.
+    expect(summary).toMatchObject({
+      sequencesRead: 1,
+      due: 0,
+      sent: 0,
+      dueBeforeCapacity: 1,
+      blockedNoCapacityRow: 1,
+    });
     expect(mockDispatchMessage).not.toHaveBeenCalled();
   });
 });

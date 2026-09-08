@@ -9,7 +9,7 @@
  *
  * Everything else the self-send scheduler needs already exists and is reused as
  * is: the queue is the set of `sequence_costs` rows still `provisioned`, the
- * cadence is `delayForGap`, the caps are `rampCapForAge` / `dailyLimitForStatus`,
+ * cadence is `delayForGap`, the caps are `rampCapForVolume` / `dailyLimitForStatus`,
  * and the account is `accountFillOrder`. No schedule table, no new accumulator.
  *
  * INDEXING (load-bearing). `step` is 1-based, matching `sequence_costs.step`, and

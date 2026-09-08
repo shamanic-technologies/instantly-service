@@ -14,6 +14,7 @@
  * IO glue only — the pure mapping (buildAccountHealth) lives in account-health.ts.
  */
 
+import { fetchRecentDailyVolume, sustainedFor } from "./recent-send-volume";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { getOrSetCachedStats } from "./stats-cache";
@@ -276,6 +277,13 @@ const ACCOUNT_CAPACITY_CACHE_KEY = "account-capacity|send-selection";
 export interface AccountCapacity extends QueueCapacity {
   /** Real (non-inferred) email_sent events observed today (UTC). */
   sentToday: number;
+  /**
+   * The highest single-day volume this address reached over the ramp window
+   * (outreach + warmup + seed) — the input the daily cap ramps on, replacing the
+   * age-based ramp a weekly lifecycle flip used to rewind. See
+   * `fetchRecentDailyVolume`.
+   */
+  recentSustainedDaily: number;
 }
 
 /**
@@ -287,17 +295,19 @@ export interface AccountCapacity extends QueueCapacity {
 export async function fetchAccountCapacity(
   asOf: Date = new Date(),
 ): Promise<Map<string, AccountCapacity>> {
-  const [sent, rows] = await Promise.all([
+  const [sent, rows, volume] = await Promise.all([
     fetchSentTodayByAccount(),
     fetchQueuedSequenceInputs(),
+    fetchRecentDailyVolume(),
   ]);
   const caps = aggregateQueueCapacity(rows, asOf);
   const out = new Map<string, AccountCapacity>();
-  const emails = new Set<string>([...sent.keys(), ...caps.keys()]);
+  const emails = new Set<string>([...sent.keys(), ...caps.keys(), ...volume.keys()]);
   for (const email of emails) {
     const c = caps.get(email);
     out.set(email, {
       sentToday: sent.get(email) ?? 0,
+      recentSustainedDaily: sustainedFor(volume, email),
       byDay: c?.byDay ?? {},
     });
   }

@@ -5,11 +5,12 @@
  * The queue is not a new table: it is the set of `sequence_costs` rows still
  * `provisioned`, which is already what the fleet forecast and the per-account
  * queue breakdown read. Cadence is the shared `delayForGap` over the delays
- * persisted in `sequence_steps`, and the caps are the same `rampCapForAge` /
+ * persisted in `sequence_steps`, and the caps are the same `rampCapForVolume` /
  * `dailyLimitForStatus` the Instantly path already enforces. This module only
  * picks; it performs no IO and sends nothing.
  */
 
+import { rampCapForVolume } from "../account-lifecycle";
 import { isSendingDay } from "../sending-calendar";
 import { delayForGap } from "../sending-forecast";
 import { isWithinLocalSendWindow } from "../sending-window";
@@ -100,8 +101,38 @@ export function nextDueStep(sequence: PendingSequence, asOf: Date): DueStep | nu
 /** Room left on one mailbox today. */
 export interface AccountCapacity {
   accountEmail: string;
-  /** `min(daily_limit, rampCapForAge)` — the same pair the Instantly path uses. */
+  /**
+   * The REAL mailbox this sending address authenticates as — its SMTP/IMAP
+   * login, per `loginFor`.
+   *
+   * ⚠️ Load-bearing, and the reason capacity is not keyed on `accountEmail`.
+   * A Gandi domain is typically ONE mailbox carrying several aliases, and we
+   * hold a sending account per alias: 154 accounts sit on 44 real mailboxes.
+   * Keyed per address, five aliases each get their own cap and the single
+   * mailbox behind them is offered five times its quota — which is what the
+   * relay answers with `450 4.7.1 Too many mail per day for sasl <user>`,
+   * per SASL USER, not per alias. The provider's own limit is at this grain,
+   * so ours has to be too.
+   *
+   * For a Primeforge mailbox the address IS the login, so this equals
+   * `accountEmail` and the grouping is a no-op.
+   */
+  mailbox: string;
+  /**
+   * The operator-set limit for this address (`daily_limit`), NOT the ramped cap.
+   *
+   * The ramp is applied at MAILBOX grain below, because it reads volume and the
+   * volume of a mailbox is the sum of its aliases'. Ramping each address first
+   * and taking the minimum would hold a five-alias mailbox sending 20/day to the
+   * cap earned by 4/day — it could never grow, which is the failure the volume
+   * ramp exists to remove, re-expressed one level down.
+   */
   cap: number;
+  /**
+   * The highest single-day volume THIS ADDRESS reached over the ramp window
+   * (outreach + warmup + seed). Summed across a mailbox's aliases below.
+   */
+  recentSustainedDaily: number;
   /** Real dispatches already made today (UTC). */
   sentToday: number;
 }
@@ -118,11 +149,33 @@ export interface AccountCapacity {
  * inventing capacity there is how a fresh mailbox gets pushed past what Gmail
  * will accept — the exact failure the age ramp exists to prevent.
  */
+export interface DueSelection {
+  /** What will actually be sent this run. */
+  selected: DueStep[];
+  /**
+   * How many steps were due BEFORE capacity clipped them.
+   *
+   * ⚠️ Reported because its absence made a throttled worker read as an idle one.
+   * The run summary carried only the post-clip count, so `due: 0` meant either
+   * "nothing to send" or "nothing had room" and no operator could tell which —
+   * which is how a fleet pinned at a cap of 5 while 1,208 first emails waited
+   * looked healthy for eight days (prod 2026-09-07).
+   */
+  dueBeforeCapacity: number;
+  /**
+   * Steps whose assigned mailbox has NO capacity row at all — we hold no
+   * credential for it, so nothing can ever dispatch them. Distinct from being
+   * throttled: no cap will grow into these, they need a credential. Silent until
+   * now, which is why ~600 sequences sat abandoned without a single log line.
+   */
+  blockedNoCapacityRow: number;
+}
+
 export function selectDueSteps(
   sequences: readonly PendingSequence[],
   capacities: readonly AccountCapacity[],
   asOf: Date,
-): DueStep[] {
+): DueSelection {
   // Nothing goes out on a weekend, matching the Mon-Fri window every campaign in
   // the fleet is created with. Two reasons this is not optional:
   //
@@ -139,11 +192,44 @@ export function selectDueSteps(
   // step's due date: `sending-calendar` is scoped to send selection, and snapping
   // due dates here would drift this module away from the ops projections, which
   // bucket on the raw nominal day on purpose.
-  if (!isSendingDay(asOf)) return [];
+  if (!isSendingDay(asOf))
+    return { selected: [], dueBeforeCapacity: 0, blockedNoCapacityRow: 0 };
+
+  // Capacity is spent per REAL MAILBOX, not per sending address — several
+  // aliases share one mailbox, one relay login and one reputation, so they share
+  // one day's quota. `cap` takes the MINIMUM across the aliases (an operator who
+  // lowers one alias means it for the mailbox) while `sentToday` SUMS them (every
+  // alias's send came out of the same quota).
+  const mailboxOf = new Map<string, string>();
+  const limitByMailbox = new Map<string, number>();
+  const peakByMailbox = new Map<string, number>();
+  const sentByMailbox = new Map<string, number>();
+
+  for (const capacity of capacities) {
+    mailboxOf.set(capacity.accountEmail, capacity.mailbox);
+    const knownLimit = limitByMailbox.get(capacity.mailbox);
+    limitByMailbox.set(
+      capacity.mailbox,
+      knownLimit === undefined ? capacity.cap : Math.min(knownLimit, capacity.cap),
+    );
+    // Volume SUMS where the operator limit takes the MINIMUM, and the asymmetry
+    // is the point: every alias's send came out of the one quota, so the mailbox
+    // has demonstrably carried their total — while an operator who lowers one
+    // alias means it for the mailbox behind it.
+    peakByMailbox.set(
+      capacity.mailbox,
+      (peakByMailbox.get(capacity.mailbox) ?? 0) + capacity.recentSustainedDaily,
+    );
+    sentByMailbox.set(
+      capacity.mailbox,
+      (sentByMailbox.get(capacity.mailbox) ?? 0) + capacity.sentToday,
+    );
+  }
 
   const remaining = new Map<string, number>();
-  for (const capacity of capacities) {
-    remaining.set(capacity.accountEmail, Math.max(0, capacity.cap - capacity.sentToday));
+  for (const [mailbox, limit] of limitByMailbox) {
+    const cap = Math.min(limit, rampCapForVolume(peakByMailbox.get(mailbox) ?? 0, limit));
+    remaining.set(mailbox, Math.max(0, cap - (sentByMailbox.get(mailbox) ?? 0)));
   }
 
   const due = sequences
@@ -169,15 +255,24 @@ export function selectDueSteps(
     );
 
   const selected: DueStep[] = [];
+  let blockedNoCapacityRow = 0;
 
   for (const step of due) {
-    const room = remaining.get(step.accountEmail) ?? 0;
+    // No capacity row ⇒ no mailbox ⇒ no room, per the invariant above. An
+    // account whose limits we could not establish must not be sent from.
+    const mailbox = mailboxOf.get(step.accountEmail);
+    if (mailbox === undefined) {
+      blockedNoCapacityRow += 1;
+      continue;
+    }
+
+    const room = remaining.get(mailbox) ?? 0;
     if (room <= 0) continue;
     selected.push(step);
-    remaining.set(step.accountEmail, room - 1);
+    remaining.set(mailbox, room - 1);
   }
 
-  return selected;
+  return { selected, dueBeforeCapacity: due.length, blockedNoCapacityRow };
 }
 
 // ─── Failure semantics ────────────────────────────────────────────────────────

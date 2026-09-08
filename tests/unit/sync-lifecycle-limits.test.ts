@@ -12,6 +12,12 @@ vi.mock("../../src/lib/instantly-client", async (importOriginal) => ({
 vi.mock("../../src/lib/account-lifecycle-sync", () => ({
   fetchLifecycleByEmail: vi.fn(),
 }));
+// The volume the cap ramps on. Mocked at its own boundary so the IO tests below
+// exercise the sweep, not the union query's SQL.
+vi.mock("../../src/lib/recent-send-volume", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  fetchRecentDailyVolume: vi.fn(),
+}));
 
 import {
   listAccounts,
@@ -20,6 +26,7 @@ import {
   setSlowRamp,
 } from "../../src/lib/instantly-client";
 import { fetchLifecycleByEmail } from "../../src/lib/account-lifecycle-sync";
+import { fetchRecentDailyVolume } from "../../src/lib/recent-send-volume";
 import {
   selectLifecycleLimitPatches,
   syncLifecycleLimits,
@@ -30,9 +37,23 @@ const mockSetWarmup = vi.mocked(setWarmupDailyLimit);
 const mockSetDaily = vi.mocked(setDailyLimit);
 const mockSetSlowRamp = vi.mocked(setSlowRamp);
 const mockFetchLifecycle = vi.mocked(fetchLifecycleByEmail);
+const mockRecentPeaks = vi.mocked(fetchRecentDailyVolume);
 
 // A fixed clock so age-based (slow-ramp) assertions are deterministic.
 const asOf = new Date("2026-07-22T00:00:00Z");
+
+/**
+ * Run the selector with every account already AT VOLUME, so the ramp is
+ * saturated and the lifecycle state's limit is what binds. The ramp gets its own
+ * cases below rather than colouring every assertion in this file.
+ */
+const patchesAtVolume = (accounts: Account[], lc: Map<string, LifecycleView>) =>
+  selectLifecycleLimitPatches(
+    accounts,
+    lc,
+    asOf,
+    new Map(accounts.map((a) => [a.email as string, 50])),
+  );
 const created = (daysOld: number) =>
   new Date(asOf.getTime() - daysOld * 24 * 60 * 60 * 1000).toISOString();
 
@@ -79,7 +100,7 @@ describe("selectLifecycleLimitPatches", () => {
       ["drift-daily@x.com", lifecycle("in_production")],
       ["drift-warmup@x.com", lifecycle("in_production")],
     ]);
-    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+    expect(patchesAtVolume(accounts, lc)).toEqual([
       { email: "drift-both@x.com", warmup: 0, daily: 50, slowRamp: null },
       { email: "drift-daily@x.com", warmup: null, daily: 50, slowRamp: null },
       { email: "drift-warmup@x.com", warmup: 0, daily: null, slowRamp: null },
@@ -93,7 +114,7 @@ describe("selectLifecycleLimitPatches", () => {
     // silently leave the whole fleet warming at its old value.
     const accounts = [acct("warming@x.com", 50, 5)];
     const lc = new Map<string, LifecycleView>([["warming@x.com", lifecycle("in_production")]]);
-    const patches = selectLifecycleLimitPatches(accounts, lc, asOf);
+    const patches = patchesAtVolume(accounts, lc);
     expect(patches).toEqual([
       { email: "warming@x.com", warmup: 0, daily: null, slowRamp: null },
     ]);
@@ -111,47 +132,58 @@ describe("selectLifecycleLimitPatches", () => {
       ["stuck-b@x.com", lifecycle("in_recovery")],
       ["ok@x.com", lifecycle("in_recovery")],
     ]);
-    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+    expect(patchesAtVolume(accounts, lc)).toEqual([
       { email: "stuck-a@x.com", warmup: 30, daily: 20, slowRamp: null },
       { email: "stuck-b@x.com", warmup: 30, daily: 20, slowRamp: null },
     ]);
   });
 
-  it("caps a FRESH account's daily_limit at its age ramp, not the state's full 50", () => {
-    // 14d old → rampCapForAge(14d, 50) = 25. Gmail's real per-user quota is far
-    // below 50 for a young mailbox, so the age ceiling binds before the state one.
-    // slow ramp pre-aligned on both so the assertion isolates the daily field.
+  it("caps a RAMPING account's daily_limit at its measured volume, not the state's full 50", () => {
+    // Peaked at 12/day ⇒ may attempt 18. Gmail's real per-user quota tracks what
+    // the mailbox has been sending, so the volume ceiling binds before the state
+    // one. Slow ramp pre-aligned on both so the assertion isolates `daily`.
     const accounts = [
-      acct("fresh@x.com", 50, 0, { timestampCreated: created(14), enableSlowRamp: true }),
-      acct("mature@x.com", 50, 0, { timestampCreated: created(90), enableSlowRamp: false }),
+      acct("ramping@x.com", 50, 0, { timestampCreated: created(90), enableSlowRamp: false }),
+      acct("atvolume@x.com", 50, 0, { timestampCreated: created(90), enableSlowRamp: false }),
     ];
     const lc = new Map<string, LifecycleView>([
-      ["fresh@x.com", lifecycle("in_production")],
-      ["mature@x.com", lifecycle("in_production")],
+      ["ramping@x.com", lifecycle("in_production")],
+      ["atvolume@x.com", lifecycle("in_production")],
     ]);
-    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
-      { email: "fresh@x.com", warmup: null, daily: 25, slowRamp: null },
-    ]);
+    expect(
+      selectLifecycleLimitPatches(
+        accounts,
+        lc,
+        asOf,
+        new Map([
+          ["ramping@x.com", 12],
+          ["atvolume@x.com", 40],
+        ]),
+      ),
+    ).toEqual([{ email: "ramping@x.com", warmup: null, daily: 18, slowRamp: null }]);
   });
 
-  it("does NOT re-scale its own output: an already-ramped fresh account is aligned", () => {
+  it("does NOT re-scale its own output: an already-ramped account is aligned", () => {
     // The ramp is computed off IN_PRODUCTION_DAILY_LIMIT, never off the account's
     // current daily_limit — otherwise each sweep would shrink it again (50→25→13…).
     const accounts = [
-      acct("fresh@x.com", 25, 0, { timestampCreated: created(14), enableSlowRamp: true }),
+      acct("ramping@x.com", 18, 0, { timestampCreated: created(90), enableSlowRamp: false }),
     ];
-    const lc = new Map<string, LifecycleView>([["fresh@x.com", lifecycle("in_production")]]);
-    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([]);
+    const lc = new Map<string, LifecycleView>([["ramping@x.com", lifecycle("in_production")]]);
+    expect(
+      selectLifecycleLimitPatches(accounts, lc, asOf, new Map([["ramping@x.com", 12]])),
+    ).toEqual([]);
   });
 
-  it("in_recovery: the age ramp binds when it is BELOW the recovery limit", () => {
-    // 1d old → ramp floor 5, under the in_recovery 20 → 5 wins.
+  it("in_recovery: the volume ramp binds when it is BELOW the recovery limit", () => {
+    // Nothing measured → the floor of 5, under the in_recovery 20 → 5 wins. The
+    // mailbox then climbs on its own warmup and placement-test traffic.
     const accounts = [
-      acct("newborn@x.com", 20, 30, { timestampCreated: created(1), enableSlowRamp: true }),
+      acct("quiet@x.com", 20, 30, { timestampCreated: created(90), enableSlowRamp: false }),
     ];
-    const lc = new Map<string, LifecycleView>([["newborn@x.com", lifecycle("in_recovery")]]);
-    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
-      { email: "newborn@x.com", warmup: null, daily: 5, slowRamp: null },
+    const lc = new Map<string, LifecycleView>([["quiet@x.com", lifecycle("in_recovery")]]);
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf, new Map())).toEqual([
+      { email: "quiet@x.com", warmup: null, daily: 5, slowRamp: null },
     ]);
   });
 
@@ -167,7 +199,7 @@ describe("selectLifecycleLimitPatches", () => {
       ["byinst@x.com", lifecycle("deactivated_by_instantly")],
       ["byuser@x.com", lifecycle("deactivated_by_user")],
     ]);
-    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+    expect(patchesAtVolume(accounts, lc)).toEqual([
       { email: "byinst@x.com", warmup: null, daily: null, slowRamp: true },
     ]);
   });
@@ -185,11 +217,9 @@ describe("selectLifecycleLimitPatches", () => {
       ["mature-on@x.com", lifecycle("in_production")],
       ["mature-off@x.com", lifecycle("in_production")],
     ]);
-    // The two 3-day-old accounts also drift on daily: their age ramp floors them
-    // at 5/day, well under the in_production 50 they currently carry.
-    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
-      { email: "fresh-off@x.com", warmup: null, daily: 5, slowRamp: true },
-      { email: "fresh-on@x.com", warmup: null, daily: 5, slowRamp: null },
+    // Every account here is at volume, so only slow ramp drifts.
+    expect(patchesAtVolume(accounts, lc)).toEqual([
+      { email: "fresh-off@x.com", warmup: null, daily: null, slowRamp: true },
       { email: "mature-on@x.com", warmup: null, daily: null, slowRamp: false },
     ]);
   });
@@ -201,7 +231,7 @@ describe("selectLifecycleLimitPatches", () => {
     const lc = new Map<string, LifecycleView>([
       ["nowarmup@x.com", lifecycle("in_production")],
     ]);
-    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+    expect(patchesAtVolume(accounts, lc)).toEqual([
       { email: "nowarmup@x.com", warmup: 0, daily: null, slowRamp: null },
     ]);
   });
@@ -218,7 +248,7 @@ describe("selectLifecycleLimitPatches", () => {
     const lc = new Map<string, LifecycleView>([
       ["self@x.com", lifecycle("in_production", "smtp")],
     ]);
-    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([]);
+    expect(patchesAtVolume(accounts, lc)).toEqual([]);
   });
 
   it("the SAME drifting account on the instantly transport IS patched", () => {
@@ -229,7 +259,7 @@ describe("selectLifecycleLimitPatches", () => {
     const lc = new Map<string, LifecycleView>([
       ["relay@x.com", lifecycle("in_production", "instantly")],
     ]);
-    expect(selectLifecycleLimitPatches(accounts, lc, asOf)).toEqual([
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf, new Map())).toEqual([
       { email: "relay@x.com", warmup: 0, daily: 5, slowRamp: true },
     ]);
   });
@@ -241,6 +271,27 @@ describe("syncLifecycleLimits", () => {
     mockSetWarmup.mockResolvedValue({} as Account);
     mockSetDaily.mockResolvedValue({} as Account);
     mockSetSlowRamp.mockResolvedValue({} as Account);
+    // Default: every mailbox already at volume, so the ramp is saturated and
+    // these cases exercise the sweep rather than the ramp.
+    // Per-day volume, from which the sweep derives each address's own peak.
+    const atVolume = (email: string): [string, Map<string, number>] => [
+      email,
+      // TWO days at 50 — the figure is the second-highest, so one day would read 0.
+      new Map([["2026-07-20", 50], ["2026-07-21", 50]]),
+    ];
+    mockRecentPeaks.mockResolvedValue(
+      new Map([
+        atVolume("both@x.com"),
+        atVolume("aligned@x.com"),
+        atVolume("daily@x.com"),
+        atVolume("a@x.com"),
+        atVolume("b@x.com"),
+        atVolume("c@x.com"),
+        atVolume("boom@x.com"),
+        atVolume("ok@x.com"),
+        // `ramp@x.com` is deliberately ABSENT: nothing measured ⇒ the floor.
+      ]),
+    );
   });
 
   it("PATCHes drifting fields (warmup/daily/slowRamp), counts field- + account-level totals", async () => {
@@ -248,7 +299,8 @@ describe("syncLifecycleLimits", () => {
       acct("both@x.com", 45, 10), // → warmup 0 + daily 50
       acct("aligned@x.com", 50, 0), // skip
       acct("daily@x.com", 40, 0), // → daily only
-      // 3 days old → slowRamp true AND daily floored to the 5/day ramp cap.
+      // 3 days old → slowRamp true (age-driven). No measured volume either, so
+      // its daily is floored to the 5/day ramp cap.
       acct("ramp@x.com", 50, 0, { enableSlowRamp: false, timestampCreated: created(3) }),
     ]);
     mockFetchLifecycle.mockResolvedValue(
@@ -260,7 +312,7 @@ describe("syncLifecycleLimits", () => {
       ]),
     );
 
-    // Pass the fixed clock — the daily target is age-driven, so a wall-clock
+    // Pass the fixed clock — slow ramp is still age-driven, so a wall-clock
     // default would make `created(3)` drift further from 3 days every day.
     const summary = await syncLifecycleLimits("key", undefined, asOf);
 

@@ -27,7 +27,7 @@ vi.mock("../../src/lib/instantly-client", () => ({
 // Default: we hold NO credential, so the rescue below never fires unless a test
 // says it does. That keeps every pre-existing case on the instantly transport.
 const mockSelfSendCapable = vi.fn(async () => false);
-vi.mock("../../src/lib/self-send/transport-split", () => ({
+vi.mock("../../src/lib/self-send/capability", () => ({
   isSelfSendCapable: (...a: unknown[]) => mockSelfSendCapable(...a),
 }));
 
@@ -382,6 +382,8 @@ describe("reconcileLifecycle", () => {
   });
 
   it("smtp: an Instantly-DISABLED account promotes, with ZERO Instantly PATCH", async () => {
+    // Credentialed — which is what puts it on our own sender.
+    mockSelfSendCapable.mockResolvedValue(true);
     // The end-to-end shape of the transport branch. Instantly disabled this
     // mailbox (-1), which on the instantly transport is a hard stop; on smtp we
     // hold the credential ourselves, so only the delivery measurement gates it.
@@ -427,6 +429,7 @@ describe("reconcileLifecycle", () => {
   });
 
   it("smtp: a mailbox BELOW the delivery bar still lands in_recovery and sends nothing", async () => {
+    mockSelfSendCapable.mockResolvedValue(true);
     // The safety half. Moving a dead mailbox onto our own pipe does not promote
     // it — it only stops excluding it for a reason that no longer applies.
     seedReads({
@@ -479,13 +482,23 @@ describe("reconcileLifecycle", () => {
   });
 });
 
-describe("reconcileLifecycle — rescuing a mailbox Instantly disabled", () => {
-  it("moves a credentialed disabled mailbox onto smtp, then grades it on DELIVERY alone", async () => {
+// ─── The transport is DERIVED, so the rescue is automatic ────────────────────
+//
+// There used to be an explicit rescue here: when Instantly disabled a mailbox
+// AND we held a credential, the sweep flipped `send_transport` so the lifecycle
+// would stop reading Instantly's opinion of it. That whole mechanism is gone —
+// a credentialed mailbox is on our own sender unconditionally, so there is
+// nothing to detect and no state to flip.
+//
+// What made the old shape necessary was a stored column deciding the transport.
+// Two answers to one question is exactly what froze 1,486 sequences in prod on
+// 2026-09-06, so the column is now a derived RECORD, never an input.
+
+describe("reconcileLifecycle — the transport follows the credential", () => {
+  it("grades a credentialed mailbox on DELIVERY alone, whatever Instantly says", async () => {
     // Instantly disabled it for a fact about ITSELF (its outbound IPs are
-    // Spamhaus-listed; a dead prospect domain). We hold the credential, so the
-    // sweep turns the one column that makes deriveLifecycle skip both
-    // Instantly-owned gates — and the mailbox is then judged only on whether its
-    // mail actually reaches an inbox.
+    // Spamhaus-listed; a dead prospect domain). We hold the credential, so both
+    // Instantly-owned gates are skipped and only the measurement counts.
     mockSelfSendCapable.mockResolvedValue(true);
     seedReads({
       accounts: [
@@ -505,25 +518,27 @@ describe("reconcileLifecycle — rescuing a mailbox Instantly disabled", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary.adoptedSelfSend).toBe(1);
     expect(summary.changed).toBe(1);
-    // The column was actually persisted — the rescue is a data change, not a
-    // per-run inference.
+    const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(event.toStatus).toBe("in_production");
+
+    // The column is brought in line with the derivation, so the ops table shows
+    // the pipe the mailbox is really on.
+    expect(summary.adoptedSelfSend).toBe(1);
     expect(mockUpdateSet).toHaveBeenCalledWith(
       expect.objectContaining({ sendTransport: "smtp" }),
     );
-    // And no Instantly PATCH: the account is dead there, and reconcile skips the
+
+    // No Instantly PATCH: the account is dead there, and reconcile skips the
     // persist on a PATCH error, so a doomed PATCH would block the flip forever.
     expect(mockSetWarmup).not.toHaveBeenCalled();
     expect(mockSetDaily).not.toHaveBeenCalled();
-    const event = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
-    expect(event.toStatus).toBe("in_production");
   });
 
-  it("leaves a disabled mailbox we hold NO credential for exactly where it was", async () => {
-    // Without a credential our own worker cannot dispatch either, so the flip
-    // would move it from one pipe that cannot send to another — and would drop
-    // the honest `deactivated_by_instantly` label for one that measures nothing.
+  it("leaves a mailbox we hold NO credential for on Instantly", async () => {
+    // The Instantly DFY pool: their Workspace, so no app password can exist.
+    // Self-sending from it is impossible, not merely undesirable — and the
+    // honest `deactivated_by_instantly` label is the one that measures anything.
     mockSelfSendCapable.mockResolvedValue(false);
     seedReads({
       accounts: [
@@ -549,9 +564,10 @@ describe("reconcileLifecycle — rescuing a mailbox Instantly disabled", () => {
     expect(event.toStatus).toBe("deactivated_by_instantly");
   });
 
-  it("never touches a HEALTHY account — the credential lookup is not even consulted", async () => {
-    // This is a rescue, not a migration. A mailbox Instantly is happy to send
-    // from stays on `instantly` so the per-sequence A/B keeps both arms fed.
+  it("moves a HEALTHY credentialed mailbox too — this is the cancellation, not a rescue", async () => {
+    // The old shape deliberately left a healthy account on Instantly so an A/B
+    // kept both arms fed. There is no experiment left to feed: everything we can
+    // authenticate is ours.
     mockSelfSendCapable.mockResolvedValue(true);
     seedReads({
       accounts: [
@@ -569,17 +585,20 @@ describe("reconcileLifecycle — rescuing a mailbox Instantly disabled", () => {
 
     const summary = await reconcileLifecycle("api-key");
 
-    expect(summary.adoptedSelfSend).toBe(0);
-    expect(mockSelfSendCapable).not.toHaveBeenCalled();
+    expect(summary.adoptedSelfSend).toBe(1);
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ sendTransport: "smtp" }),
+    );
   });
 
-  it("does not re-decide a mailbox an operator already pinned to smtp", async () => {
-    // That column is the manual override AND the rollback lever.
+  it("writes nothing when the stored column already agrees with the derivation", async () => {
+    // Idempotent: the column is a record of the derivation, so a run that
+    // changes nothing must write nothing.
     mockSelfSendCapable.mockResolvedValue(true);
     seedReads({
       accounts: [
         {
-          email: "pinned@growthagency.dev",
+          email: "settled@growthagency.dev",
           instantlyStatus: -1,
           warmupScore: 0,
           dailyLimit: 20,
@@ -587,12 +606,14 @@ describe("reconcileLifecycle — rescuing a mailbox Instantly disabled", () => {
           lifecycleStatus: "in_production",
         },
       ],
-      delivery: [{ accountEmail: "pinned@growthagency.dev", inboxCount: 29, seedTotal: 29 }],
+      delivery: [{ accountEmail: "settled@growthagency.dev", inboxCount: 29, seedTotal: 29 }],
     });
 
     const summary = await reconcileLifecycle("api-key");
 
     expect(summary.adoptedSelfSend).toBe(0);
-    expect(mockSelfSendCapable).not.toHaveBeenCalled();
+    expect(mockUpdateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ sendTransport: "smtp" }),
+    );
   });
 });
