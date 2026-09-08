@@ -124,13 +124,33 @@ export function computeCapacitySummary(
   const statusOf = (email: string) => lifecycleByEmail.get(email)?.status ?? null;
   const production = accounts.filter((a) => statusOf(a.email) === "in_production");
 
-  const addressesByMailbox = new Map<string, string[]>();
+  const mailboxFor = (email: string) => {
+    const key = email.trim().toLowerCase();
+    return mailboxOf.get(key) ?? key;
+  };
+
+  // ⚠️ The VOLUME group is every address that authenticates as the mailbox, not
+  // just the ones in production. An alias in recovery still does warmup and
+  // still gets seeded by the placement test, and every one of those messages
+  // comes out of the SAME relay quota — so leaving it out under-states what the
+  // mailbox has demonstrably carried. Measured 2026-09-08: this summary read
+  // 1,447/day against the capacity-over-time series' 1,501 for the same day,
+  // purely because the series counted every alias and this counted a subset.
+  const addressesByMailbox = new Map<string, Set<string>>();
+  const addToGroup = (email: string) => {
+    const mailbox = mailboxFor(email);
+    const group = addressesByMailbox.get(mailbox) ?? new Set<string>();
+    group.add(email.trim().toLowerCase());
+    addressesByMailbox.set(mailbox, group);
+  };
+  for (const a of accounts) addToGroup(a.email);
+  for (const address of volume.keys()) addToGroup(address);
+
+  // The LIMIT group stays production-only: it is the ceiling on what may be
+  // ASSIGNED, and a mailbox with no production alias is offered nothing at all.
   const limitByMailbox = new Map<string, number>();
   for (const a of production) {
-    const mailbox = mailboxOf.get(a.email.trim().toLowerCase()) ?? a.email.trim().toLowerCase();
-    const group = addressesByMailbox.get(mailbox) ?? [];
-    group.push(a.email);
-    addressesByMailbox.set(mailbox, group);
+    const mailbox = mailboxFor(a.email);
     const limit = a.daily_limit ?? 0;
     const known = limitByMailbox.get(mailbox);
     limitByMailbox.set(mailbox, known === undefined ? limit : Math.min(known, limit));
