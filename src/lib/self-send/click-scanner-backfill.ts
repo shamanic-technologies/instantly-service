@@ -19,10 +19,24 @@
  * Instantly campaigns, and resuming outreach at people on the strength of a
  * correction is a decision nobody made. The pauses stand.
  *
- * The candidate set is the `legacy` bronze hits marked by migration 0051 — the
- * ones the old route promoted synchronously. They are re-decided with the SAME
- * pure rule the live path uses, so the backfill and the go-forward behaviour
- * cannot drift apart. Idempotent: a decided hit leaves the candidate set.
+ * ⚠️ THE CANDIDATE SET INCLUDES HITS ALREADY DECIDED `human`, NOT ONLY THE
+ * `legacy` ONES MIGRATION 0051 MARKED. A verdict is only as good as the rule
+ * that produced it, and the rule gets sharpened: the first pass ran before
+ * `isUnreducedChromeVersion` existed and called 80 of one brand's 131 clickers
+ * human, where the tightened rule calls 18. Scoping the sweep to `legacy` would
+ * leave those 62 permanently mislabelled, because nothing else ever re-opens a
+ * decided hit. So this re-applies the CURRENT rule to everything not yet ruled
+ * a scanner, and is the instrument to reach for whenever the rule moves.
+ *
+ * A `scanner` verdict is never re-opened, deliberately and asymmetrically: this
+ * sweep can demote a click out of silver but cannot put one back (nothing here
+ * promotes), so reversing one would leave bronze claiming a human click that
+ * silver does not have. A hit wrongly called a scanner is corrected by fixing
+ * the rule and re-running the PROMOTION path against a re-opened hit, which is
+ * a deliberate act, not a side effect of a sweep.
+ *
+ * Idempotent: re-running re-decides the same hits to the same verdicts, the
+ * delete matches no row the second time, and gold is rebuilt to the same state.
  */
 
 import { sql } from "drizzle-orm";
@@ -100,7 +114,7 @@ async function loadLegacyClickHits(limit: number): Promise<LegacyClickHit[]> {
     LEFT JOIN instantly_campaigns c
       ON c.instantly_campaign_id = h.instantly_campaign_id
     WHERE h.kind = 'click'
-      AND h.classification = 'legacy'
+      AND h.classification IN ('legacy', 'human')
     ORDER BY h.received_at ASC
     LIMIT ${limit}
   `);
@@ -159,7 +173,7 @@ async function removeScannerClickEvent(
   return { clicks: deletedClicks.length, inferred: deletedInferred.length };
 }
 
-async function markLegacyHit(hitId: string, classification: string, reason: string | null) {
+async function markDecidedHit(hitId: string, classification: string, reason: string | null) {
   await db.execute(sql`
     UPDATE tracking_hits_raw
     SET classification = ${classification},
@@ -228,7 +242,7 @@ export async function backfillScannerClicks(
         const removed = await removeScannerClickEvent(hit.id);
         summary.silverEventsRemoved += removed.clicks;
         summary.inferredEventsRemoved += removed.inferred;
-        await markLegacyHit(hit.id, "scanner", verdict.reason);
+        await markDecidedHit(hit.id, "scanner", verdict.reason);
       }
     } else {
       summary.humanHits += 1;
@@ -236,7 +250,7 @@ export async function backfillScannerClicks(
       brand.humanLeads.add(leadKey);
       humanLeadKeys.add(leadKey);
       if (!dryRun) {
-        await markLegacyHit(hit.id, "human", null);
+        await markDecidedHit(hit.id, "human", null);
       }
     }
   }
