@@ -49,11 +49,10 @@ export interface ClickClassification {
  * 19 click hits and 21 opt-out hits). The rest are the ordinary HTTP clients and
  * link-preview bots that reach a tracking redirect.
  *
- * ⚠️ NOT in this list: the dominant fixed `Mozilla/5.0 (Windows NT 10.0; Win64;
- * x64) … Chrome/14x` string (213 click hits). It is also a perfectly plausible
- * human UA, so on its own it is a weak signal — those hits are caught, when they
- * are machines, by the paired opt-out fetch instead. Adding it here would
- * discard every real Windows/Chrome click in the fleet.
+ * ⚠️ NOT in this list: a plain `Mozilla/5.0 (Windows NT 10.0; Win64; x64) …
+ * Chrome/142.0.0.0` string. It is a perfectly ordinary human UA and blocking it
+ * would discard every real Windows/Chrome click in the fleet. What separates the
+ * machines wearing it is the VERSION SHAPE — see `isUnreducedChromeVersion`.
  */
 const SCANNER_USER_AGENT_PATTERNS: RegExp[] = [
   /\bTrident\/\d/i,
@@ -69,7 +68,39 @@ const SCANNER_USER_AGENT_PATTERNS: RegExp[] = [
   /preview|prefetch|fetcher|monitoring|uptime/i,
 ];
 
+/**
+ * Chrome froze its user-agent version at **110**: every real browser since then
+ * reports `Chrome/<major>.0.0.0`, minor/build/patch zeroed, whatever build it
+ * actually is (the UA-reduction rollout, chromestatus 5704553745874944 — it also
+ * covers Edge, Brave, Opera, Samsung Internet and Android WebView, which all
+ * carry the same reduced `Chrome/` token). So a user-agent claiming Chrome 110
+ * or later WITH a full build number did not come from a browser: it came from
+ * something that pinned a plausible-looking string.
+ *
+ * ⚠️ THIS IS THE SIGNAL THAT SEPARATES THE FLEET, and it is why the classifier
+ * catches what a UA blocklist could not. The four largest user-agents in prod
+ * are `Chrome/142.0.7444.175` (60 hits / 60 distinct leads), `142.0.7444.163`
+ * (40/39), `141.0.7390.0` (32/31) and `142.0.7444.162` (32/32) — one hit per
+ * lead, spread over days, i.e. a scanner fleet working through a mail queue.
+ * Without this rule 80 of one brand's 131 "clickers" survive; with it, 18 do —
+ * and what remains is the shape of real traffic (Mac, Android, Firefox, Linux,
+ * mixed versions).
+ *
+ * The `>= 110` floor is what keeps genuinely old browsers out of it: a real
+ * `Chrome/84.0.4147.89` predates the freeze and is left alone.
+ */
+const CHROME_UA_REDUCTION_MAJOR = 110;
+
+export function isUnreducedChromeVersion(userAgent: string): boolean {
+  const match = /Chrome\/(\d+)\.0\.(\d+)\.\d+/.exec(userAgent);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const build = match[2];
+  return Number.isFinite(major) && major >= CHROME_UA_REDUCTION_MAJOR && build !== "0";
+}
+
 export function isScannerUserAgent(userAgent: string): boolean {
+  if (isUnreducedChromeVersion(userAgent)) return true;
   return SCANNER_USER_AGENT_PATTERNS.some((pattern) => pattern.test(userAgent));
 }
 
