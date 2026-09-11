@@ -86,13 +86,19 @@ describe("backfillScannerClicks — dry run", () => {
     expect(mockRefreshGold).not.toHaveBeenCalled();
   });
 
-  it("only considers self-send LEGACY click hits", async () => {
+  it("re-decides hits already ruled HUMAN, not only the legacy ones", async () => {
+    // The rule gets sharpened. A verdict taken under the old rule has to be
+    // re-openable or it is permanent — 62 of one brand's clickers were called
+    // human by the first pass and are scanners under the current rule.
     mockDbExecute.mockResolvedValue(pgResult([]));
     await backfillScannerClicks();
 
     const text = sqlText(mockDbExecute.mock.calls[0][0]);
     expect(text).toContain("h.kind = 'click'");
-    expect(text).toContain("h.classification = 'legacy'");
+    expect(text).toContain("h.classification IN ('legacy', 'human')");
+    // A scanner verdict is never re-opened: nothing here promotes, so reversing
+    // one would leave bronze claiming a click silver does not have.
+    expect(text).not.toContain("'scanner'");
   });
 });
 
@@ -136,6 +142,20 @@ describe("backfillScannerClicks — commit", () => {
     expect(mockRefreshGold).not.toHaveBeenCalled();
     const markText = sqlText(mockDbExecute.mock.calls[1][0]);
     expect(markText).toContain("UPDATE tracking_hits_raw");
+  });
+
+  it("demotes a hit the tightened rule now calls a scanner, whatever it was called before", async () => {
+    const unreduced =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.7444.175 Safari/537.36";
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([hitRow({ user_agent: unreduced, has_paired_unsubscribe: false })]),
+    );
+    mockDbExecute.mockResolvedValueOnce(pgResult([{ id: "ev-click" }]));
+    mockDbExecute.mockResolvedValue(pgResult([]));
+
+    const summary = await backfillScannerClicks({ dryRun: false });
+    expect(summary).toMatchObject({ scannerHits: 1, humanHits: 0, silverEventsRemoved: 1 });
+    expect(summary.reasons.scanner_user_agent).toBe(1);
   });
 
   it("keeps a lead that also has a real click out of the demoted count", async () => {
