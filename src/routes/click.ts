@@ -7,18 +7,25 @@
  * That is what keeps this from being an open redirect, which would let anyone
  * borrow the domain to bounce victims at a phishing page and get it blacklisted.
  *
- * Unlike the opt-out, acting on GET is correct here: following a link IS the
- * action, and the only side effect is recording that it happened. A link scanner
- * that prefetches will inflate click counts slightly — the same tradeoff every
- * click-tracking redirect makes, and the scanner's hit is stored in bronze with
- * its user-agent so it stays visible.
+ * ⚠️ THIS ROUTE NO LONGER PROMOTES ANYTHING. It records the hit in bronze and
+ * redirects; a sweep decides later whether it was a person. Corporate mail
+ * security fetches every URL in an inbound message before the human sees it, and
+ * promoting those made a customer's website-visit stats mostly machines AND
+ * paused 131 leads' sequences through `stop-on-click` after a single email. The
+ * decisive signal (the same lead fetching the opt-out link seconds either side)
+ * can arrive AFTER this request, so the verdict is not available here —
+ * and promote-then-retract is no fix, because the pause is the harm.
+ *
+ * Acting on GET remains correct, unlike the opt-out: following a link IS the
+ * action, and the only side effect is recording that it happened.
  */
 
 import { Router, type Request, type Response } from "express";
 
 import { db } from "../db";
 import { trackingHitsRaw } from "../db/schema";
-import { promoteEvent } from "../lib/silver-promote";
+import { clientIpOf } from "../lib/client-ip";
+import { classifyImmediateSignals } from "../lib/self-send/click-classification";
 import {
   isRedirectableUrl,
   parseSignedClick,
@@ -40,36 +47,30 @@ router.get("/:payload/:signature", async (req: Request, res: Response) => {
     return;
   }
 
-  const [row] = await db
-    .insert(trackingHitsRaw)
-    .values({
-      kind: "click",
-      instantlyCampaignId: target.instantlyCampaignId,
-      leadEmail: target.leadEmail,
-      step: target.step,
-      method: req.method,
-      userAgent: req.get("user-agent") ?? null,
-      payload: {
-        url: target.url,
-        userAgent: req.get("user-agent") ?? null,
-        ip: req.ip ?? null,
-      },
-    })
-    .returning({ id: trackingHitsRaw.id });
+  const userAgent = req.get("user-agent") ?? null;
 
-  // Canonical silver name. Instantly's webhook says `link_clicked` and is
-  // normalized at that boundary; every reader keys on `email_link_clicked`, and
-  // this is also what `stop-on-click` fires on.
-  await promoteEvent({
-    eventType: "email_link_clicked",
+  // What THIS request gives away — a non-GET method, a non-browser user-agent.
+  // Null means undecided, never human: the sweep settles it once the pairing
+  // window has closed. Recording the verdict here rather than re-deriving it
+  // later keeps the reason attached to the evidence that produced it.
+  const immediate = classifyImmediateSignals({ method: req.method, userAgent });
+
+  await db.insert(trackingHitsRaw).values({
+    kind: "click",
     instantlyCampaignId: target.instantlyCampaignId,
     leadEmail: target.leadEmail,
-    accountEmail: null,
     step: target.step,
-    variant: null,
-    timestamp: new Date(),
-    source: "self_send",
-    sourceRowId: row.id,
+    method: req.method,
+    userAgent,
+    clientIp: clientIpOf(req),
+    classification: immediate?.verdict ?? null,
+    classificationReason: immediate?.reason ?? null,
+    payload: {
+      url: target.url,
+      userAgent,
+      ip: clientIpOf(req),
+      forwardedFor: req.get("x-forwarded-for") ?? null,
+    },
   });
 
   // 302, not 301: a permanent redirect would be cached by the browser and every

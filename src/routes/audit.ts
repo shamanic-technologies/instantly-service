@@ -23,6 +23,7 @@ import { accountFillOrder } from "../lib/send-lead";
 import { fetchCapacityHistory } from "../lib/capacity-history";
 import { backfillEmails } from "../lib/emails-backfill";
 import { backfillInboundReplies } from "../lib/inbound-replies-backfill";
+import { backfillScannerClicks } from "../lib/self-send/click-scanner-backfill";
 import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
 import { syncSlowRampOff } from "../lib/sync-slow-ramp";
 import { syncLifecycleLimits } from "../lib/sync-lifecycle-limits";
@@ -1036,6 +1037,56 @@ router.post("/inbound-replies-backfill", async (req: Request, res: Response) => 
   });
 });
 
+
+/**
+ * POST /internal/audit/click-scanner-backfill
+ *
+ * Platform-scoped. Re-decides every self-send `/c/` hit recorded before click
+ * classification shipped and removes the scanner-shaped ones from silver + gold.
+ * A corporate link scanner fetches every URL in an inbound message, so those
+ * hits were promoted as website visits and paused their leads' sequences through
+ * `stop-on-click` — one brand read 131 of 337 smtp leads as clickers (39%)
+ * against 95 of 2049 on the Instantly transport.
+ *
+ * Reads and writes NOTHING belonging to the Instantly-webhook click path, and
+ * REACTIVATES NOTHING: the pauses those clicks caused stand.
+ *
+ * `{dryRun}` DEFAULTS TO TRUE and answers SYNCHRONOUSLY with the per-brand plan,
+ * so the hand-written candidate selection can be read against the database
+ * before anything is written. `{dryRun: false}` answers 202 and sweeps in the
+ * background (log `click-scanner-backfill: done`); `{limit}` bounds a batch.
+ *
+ * Idempotent: a decided hit leaves the candidate set, so a second run reports
+ * zero.
+ */
+router.post("/click-scanner-backfill", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { dryRun?: unknown; limit?: unknown };
+  const dryRun = body.dryRun !== false;
+  const limit =
+    typeof body.limit === "number" && Number.isFinite(body.limit) && body.limit > 0
+      ? Math.floor(body.limit)
+      : undefined;
+
+  if (dryRun) {
+    const summary = await backfillScannerClicks({ dryRun: true, limit });
+    res.json(summary);
+    return;
+  }
+
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, dryRun: false, runId });
+  console.log(`[audit] click-scanner-backfill: dispatched run=${runId}`);
+
+  (async () => {
+    const summary = await backfillScannerClicks({ dryRun: false, limit });
+    console.log(
+      `[audit] click-scanner-backfill: done run=${runId} ${JSON.stringify(summary)}`,
+    );
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] click-scanner-backfill run=${runId} failed: ${message}`);
+  });
+});
 
 /**
  * POST /internal/audit/warmup/run
