@@ -14,6 +14,7 @@ import { Router, type Request, type Response } from "express";
 
 import { runDispatch } from "../lib/self-send/dispatch-worker";
 import { runPoll } from "../lib/self-send/imap-poller";
+import { promotePendingClicks } from "../lib/self-send/click-promotion";
 
 const router = Router();
 
@@ -88,6 +89,30 @@ router.post("/poll", async (req: Request, res: Response) => {
       }`,
     );
   });
+});
+
+
+/**
+ * Decide and promote the self-send clicks whose pairing window has closed.
+ *
+ * The same sweep an in-process interval runs every minute (see
+ * `click-promotion-worker.ts`); exposed for a hand-run and for verification.
+ *
+ * ⚠️ NOT gated on `SELF_SEND_DISPATCH_ENABLED`, unlike its neighbours. This is
+ * the ONLY path by which a self-send click reaches silver, so gating it would
+ * not pause a sweep, it would discard click tracking — and silently.
+ *
+ * Answers SYNCHRONOUSLY with its summary: the work is a bounded batch of local
+ * queries, with no external call and no fleet walk.
+ */
+router.post("/promote-clicks", async (req: Request, res: Response) => {
+  const limit =
+    typeof req.body?.limit === "number" && Number.isFinite(req.body.limit)
+      ? req.body.limit
+      : undefined;
+
+  const summary = await promotePendingClicks({ limit });
+  res.json(summary);
 });
 
 export default router;
