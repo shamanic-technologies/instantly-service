@@ -104,3 +104,57 @@ describe("click classification — the hold", () => {
     expect(source).not.toMatch(/sentAt|secondsSinceSend|delayMs/);
   });
 });
+
+describe("click classification — the frozen Chrome version", () => {
+  const unreduced =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.7444.175 Safari/537.36";
+
+  it("calls a modern Chrome carrying a full build number a scanner: real Chrome reports X.0.0.0", async () => {
+    const { isUnreducedChromeVersion } = await import(
+      "../../src/lib/self-send/click-classification"
+    );
+    expect(isUnreducedChromeVersion(unreduced)).toBe(true);
+    expect(classifyImmediateSignals({ method: "GET", userAgent: unreduced })).toEqual({
+      verdict: "scanner",
+      reason: SCANNER_REASONS.scannerUserAgent,
+    });
+  });
+
+  it("leaves a real reduced Chrome alone, on every platform that carries the token", async () => {
+    const { isUnreducedChromeVersion } = await import(
+      "../../src/lib/self-send/click-classification"
+    );
+    for (const ua of [
+      CHROME,
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+      // Edge reduces its Chrome token and carries its own full version after it.
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.3296.62",
+    ]) {
+      expect(isUnreducedChromeVersion(ua)).toBe(false);
+      expect(classifyImmediateSignals({ method: "GET", userAgent: ua })).toBeNull();
+    }
+  });
+
+  it("leaves a genuinely OLD Chrome alone — it predates the version freeze", async () => {
+    const { isUnreducedChromeVersion } = await import(
+      "../../src/lib/self-send/click-classification"
+    );
+    expect(
+      isUnreducedChromeVersion(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/84.0.4147.89 Safari/537.36",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not fire on a browser with no Chrome token at all", async () => {
+    const { isUnreducedChromeVersion } = await import(
+      "../../src/lib/self-send/click-classification"
+    );
+    expect(
+      isUnreducedChromeVersion(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0",
+      ),
+    ).toBe(false);
+  });
+});
