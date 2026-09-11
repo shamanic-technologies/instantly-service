@@ -645,12 +645,38 @@ export const trackingHitsRaw = pgTable(
     // and it is the evidence that the scanner (not the human) came first.
     method: text("method"),
     userAgent: text("user_agent"),
+    // The REAL client, resolved through `trust proxy` from X-Forwarded-For.
+    // `req.ip` alone reported Caddy's docker address on every hit, throwing away
+    // the one fingerprint whose ranges are stable enough to recognise a scanner.
+    clientIp: text("client_ip"),
+    // 'human' | 'scanner' | 'legacy' | NULL.
+    //
+    // ⚠️ NULL on a click means NOT YET DECIDED, and is a real state. The
+    // decisive scanner signal — the same (campaign, lead) fetching the opt-out
+    // link seconds either side of the click — can arrive AFTER the click, so the
+    // route records the hit undecided and `promotePendingClicks` decides once the
+    // pairing window has closed. Only a `human` hit ever reaches silver.
+    classification: text("classification"),
+    // Why it was called a scanner. Null on a human hit: there is no positive
+    // evidence of humanity, only the absence of every machine signal.
+    classificationReason: text("classification_reason"),
+    promotedAt: timestamp("promoted_at"),
     payload: jsonb("payload").notNull(),
     receivedAt: timestamp("received_at").defaultNow().notNull(),
   },
   (table) => [
     index("tracking_hits_raw_campaign_idx").on(table.instantlyCampaignId),
     index("tracking_hits_raw_received_at_idx").on(table.receivedAt),
+    index("tracking_hits_raw_lead_kind_idx").on(
+      table.instantlyCampaignId,
+      table.kind,
+      table.receivedAt,
+    ),
+    // NOTE: a PARTIAL index `tracking_hits_raw_pending_click_idx` on
+    // (received_at) WHERE kind='click' AND classification IS NULL exists in
+    // migration 0051 — drizzle-kit does not track partial indexes (same
+    // convention as instantly_events_one_shot_dedupe_idx). It serves the
+    // promotion sweep's candidate query. Do NOT drop it on a db:generate diff.
   ],
 );
 

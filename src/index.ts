@@ -31,6 +31,14 @@ import { requireOrgId } from "./middleware/requireOrgId";
 
 const app = express();
 
+// One reverse proxy (Caddy) sits in front of every `*.distribute.you` service.
+// Without this, `req.ip` is Caddy's own docker address on every request — which
+// is exactly what the tracking-hit rows recorded, throwing away the client IP on
+// all 771 of them. Trusting exactly ONE hop means express takes the address
+// Caddy appended to `X-Forwarded-For`, so a client forging its own header cannot
+// displace it.
+app.set("trust proxy", 1);
+
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
@@ -145,6 +153,21 @@ async function start() {
         const message = err instanceof Error ? err.message : String(err);
         console.error(
           `[instantly-service] failed to start retry-stuck worker: ${message}`,
+        );
+      });
+
+    // Decide and promote self-send clicks. The `/c/` redirect records a hit
+    // undecided — a corporate link scanner fetches every URL in a message before
+    // the human sees it, and the signal that proves it (the same lead fetching
+    // the opt-out link seconds either side) can arrive after the click. This
+    // drain is the ONLY path by which a self-send click reaches silver, so it is
+    // armed unconditionally, after the port is bound.
+    import("./lib/self-send/click-promotion-worker")
+      .then(({ startClickPromotionWorker }) => startClickPromotionWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[instantly-service] failed to start click-promotion worker: ${message}`,
         );
       });
 

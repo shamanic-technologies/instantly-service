@@ -23,6 +23,7 @@ import { Router, type Request, type Response } from "express";
 
 import { db } from "../db";
 import { trackingHitsRaw } from "../db/schema";
+import { clientIpOf } from "../lib/client-ip";
 import { promoteEvent } from "../lib/silver-promote";
 import {
   parseSignedUnsubscribe,
@@ -73,11 +74,13 @@ async function recordHit(
       leadEmail: identity.leadEmail,
       method: req.method,
       userAgent: req.get("user-agent") ?? null,
+      clientIp: clientIpOf(req),
       payload: {
         method: req.method,
         path: req.originalUrl,
         userAgent: req.get("user-agent") ?? null,
-        ip: req.ip ?? null,
+        ip: clientIpOf(req),
+        forwardedFor: req.get("x-forwarded-for") ?? null,
       },
     })
     .returning({ id: trackingHitsRaw.id });
