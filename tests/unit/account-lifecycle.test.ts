@@ -625,3 +625,29 @@ describe("rampAppliesToTransport / capForAccount", () => {
     expect(capForAccount({ daily_limit: 50 }, 0)).toBe(5);
   });
 });
+
+describe("capForAccount — a mailbox the vendor warmed", () => {
+  const PREWARMED = new Date("2026-08-13T00:00:00Z"); // 31 jours avant l'import
+
+  it("is offered its full stated limit before it has sent anything for us", () => {
+    // `recentSustainedDaily` is 0 because we have watched none of the vendor's
+    // month of warmup, not because the mailbox has been quiet. Ramping from the
+    // floor on that number makes the pre-warmed premium buy nothing.
+    expect(capForAccount({ daily_limit: 50, vendorPrewarmedAt: PREWARMED }, 0, "smtp")).toBe(50);
+  });
+
+  it("rejoins the ramp the moment ANY volume is measured", () => {
+    // The exemption is bounded by construction, not by a date: one send is
+    // enough to make our own measurement the honest one again.
+    expect(capForAccount({ daily_limit: 50, vendorPrewarmedAt: PREWARMED }, 10, "smtp")).toBe(15);
+  });
+
+  it("leaves a mailbox we did NOT buy pre-warmed at the floor", () => {
+    expect(capForAccount({ daily_limit: 50, vendorPrewarmedAt: null }, 0, "smtp")).toBe(5);
+    expect(capForAccount({ daily_limit: 50 }, 0, "smtp")).toBe(5);
+  });
+
+  it("still honours an operator-set limit below the stated ceiling", () => {
+    expect(capForAccount({ daily_limit: 20, vendorPrewarmedAt: PREWARMED }, 0, "smtp")).toBe(20);
+  });
+});

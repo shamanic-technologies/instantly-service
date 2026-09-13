@@ -365,6 +365,13 @@
       "when": 1786100000000,
       "tag": "0051_click_scanner_classification",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1786186400000,
+      "tag": "0052_vendor_prewarmed",
+      "breakpoints": true
     }
   ]
 }

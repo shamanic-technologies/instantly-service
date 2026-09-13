@@ -478,7 +478,11 @@ export function rampCapForVolume(recentSustainedDaily: number, dailyLimit: numbe
  * selector about the same account.
  */
 export function capForAccount(
-  account: { daily_limit?: number | null; sendTransport?: string | null },
+  account: {
+    daily_limit?: number | null;
+    sendTransport?: string | null;
+    vendorPrewarmedAt?: Date | string | null;
+  },
   recentSustainedDaily: number,
   sendTransport?: SendTransport,
 ): number {
@@ -493,6 +497,21 @@ export function capForAccount(
       : resolveTransportForSend(account.sendTransport));
   const stated = account.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT;
   if (!rampAppliesToTransport(transport)) return stated;
+
+  // ⚠️ A mailbox the VENDOR warmed has a sending history; we just have not
+  // watched any of it. Until it sends its first message under our dispatcher
+  // `recentSustainedDaily` is 0, and 0 here means "we have not looked", not "it
+  // has been quiet" — the same false zero that pinned the DFY mailboxes (see
+  // `rampAppliesToTransport`). Ramping from the floor on that number would make
+  // the pre-warmed premium buy nothing: the mailbox would reach full rate in the
+  // same three weeks a brand-new one takes, which is what we paid to skip.
+  //
+  // Bounded by construction rather than by a date: the exemption stops applying
+  // the moment ANY volume is measured, which is the day after its first send. It
+  // is also what the published guidance says for a mailbox of that age — a
+  // 31-day-old mailbox sits at 30-50/day in every warm-up schedule we checked.
+  if (recentSustainedDaily <= 0 && account.vendorPrewarmedAt) return stated;
+
   return Math.min(stated, rampCapForVolume(recentSustainedDaily, IN_PRODUCTION_DAILY_LIMIT));
 }
 

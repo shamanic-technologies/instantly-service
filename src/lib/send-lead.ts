@@ -92,7 +92,7 @@ export function gapsFromSequence(
  * zero would hide that.
  */
 function fitsFootprint(
-  a: Account & { sendTransport?: string | null },
+  a: Account & { sendTransport?: string | null; vendorPrewarmedAt?: Date | string | null },
   byEmail: Map<string, AccountCapacity>,
   footprint: readonly string[],
   asOf: Date,
@@ -118,6 +118,9 @@ export type FillOrderAccount = Account & {
   /** Send-transport POLICY. `capForAccount` reads it: our volume ramp governs
    *  only the mailboxes we dispatch ourselves. See `rampAppliesToTransport`. */
   sendTransport?: string | null;
+  /** Vendor's creation date when bought pre-warmed, so the ramp does not read
+   *  our import date as the mailbox's age. See `capForAccount`. */
+  vendorPrewarmedAt?: Date | string | null;
 };
 
 /**

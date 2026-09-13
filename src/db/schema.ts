@@ -200,6 +200,14 @@ export const instantlyAccounts = pgTable("instantly_accounts", {
   // send de-prioritization (fresh accounts picked last, overflow-only) + age-driven
   // slow ramp. DISTINCT from created_at below (= local row-insert time).
   timestampCreated: timestamp("timestamp_created", { withTimezone: true }),
+  // The VENDOR's own creation date for a mailbox bought pre-warmed (migration
+  // 0052). `timestamp_created` above is Instantly's, which for an imported
+  // mailbox is the day WE imported it — so both gates that read it treat a
+  // month-old pre-warmed mailbox as brand new: the placement test's age floor
+  // refuses to measure it for a week, and the volume ramp reads zero sustained
+  // volume and pins it at `RAMP_FLOOR_PER_DAY`. Neither is a fact about the
+  // mailbox. Null for everything we did not buy pre-warmed.
+  vendorPrewarmedAt: timestamp("vendor_prewarmed_at", { withTimezone: true }),
   // ── Lifecycle (auto-derived; projection of the latest lifecycle event) ────────
   // One of: in_production | in_recovery | deactivated_by_instantly |
   // deactivated_by_user. Null until the first reconcileLifecycle classifies it.
