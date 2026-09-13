@@ -60,14 +60,46 @@ export function indexRates(rates: PriceRate[]): Map<string, PriceRate> {
 }
 
 /**
+ * Vendors whose mailboxes are NOT reported by any inventory endpoint, so the
+ * count we are billed for has to come from the Instantly account mirror.
+ *
+ * Instantly DFY sells a pre-warmed domain plus its mailboxes, and those
+ * mailboxes ARE the Instantly accounts this service already mirrors — the DFY
+ * adapter deliberately emits none into `infra_mailboxes` so the fleet is not
+ * counted twice. The consequence is that `mailboxCount` is structurally 0 for
+ * DFY, so pricing it on that number silently dropped the entire $10/mailbox/
+ * month line and reported only the $15/year domain fee.
+ *
+ * This is DFY-only and cannot be generalised: for every other vendor the two
+ * counts measure different things on purpose. A legacy Gandi domain relays
+ * dozens of Instantly addresses through a single Gandi mailbox (42 vendor
+ * mailboxes against 165 Instantly accounts fleet-wide, measured 2026-09-13), so
+ * billing Gandi per Instantly account would overstate it several times over.
+ */
+const BILLED_PER_INSTANTLY_ACCOUNT = new Set(["instantly-dfy"]);
+
+/**
+ * How many mailboxes this domain is BILLED for, as opposed to how many the
+ * vendor reports. Ghost accounts are already excluded upstream (`absent_since`),
+ * so a mailbox the vendor has genuinely deprovisioned stops counting as soon as
+ * the accounts-sync notices it.
+ */
+export function billedMailboxCount(domain: InventoryDomain): number {
+  return BILLED_PER_INSTANTLY_ACCOUNT.has(domain.provider)
+    ? domain.instantlyAccountCount
+    : domain.mailboxCount;
+}
+
+/**
  * Monthly cost of one (provider, domain) row.
  *
  * A vendor-reported per-domain price is a YEARLY registration/renewal figure —
  * that is what both Mailforge and Gandi quote — so it is divided by 12. Mailbox
- * rates are already monthly and are multiplied by the mailboxes the vendor
- * reports, not by the Instantly accounts: we pay the vendor for what IT hosts,
- * and the two counts genuinely differ (the legacy Gandi domains run dozens of
- * Instantly accounts against a single Gandi mailbox).
+ * rates are already monthly and are multiplied by `billedMailboxCount`, which
+ * is the mailboxes the VENDOR reports for every vendor that reports any: we pay
+ * for what it hosts, and the two counts genuinely differ (the legacy Gandi
+ * domains relay dozens of Instantly accounts through a single Gandi mailbox).
+ * Instantly DFY is the one exception and the helper explains why.
  *
  * Returns null when nothing prices this row.
  */
@@ -95,9 +127,10 @@ export function monthlyCostForDomain(
   }
 
   const perMailbox = rates.get(`${domain.provider}|mailbox-month|`);
-  if (perMailbox && domain.mailboxCount > 0) {
+  const billedMailboxes = billedMailboxCount(domain);
+  if (perMailbox && billedMailboxes > 0) {
     parts.push({
-      cents: perMailbox.unitCents * domain.mailboxCount,
+      cents: perMailbox.unitCents * billedMailboxes,
       currency: perMailbox.currency,
       source: perMailbox.source,
     });
@@ -176,11 +209,12 @@ export function splitDomainCost(
   }
 
   const perMailbox = rates.get(`${domain.provider}|mailbox-month|`);
-  if (perMailbox && domain.mailboxCount > 0) {
+  const billedMailboxes = billedMailboxCount(domain);
+  if (perMailbox && billedMailboxes > 0) {
     // Same refusal as monthlyCostForDomain: two currencies on one domain would
     // need an FX rate, so report nothing rather than a silently wrong split.
     if (currency !== null && currency !== perMailbox.currency) return empty;
-    recurringMonthlyCents = perMailbox.unitCents * domain.mailboxCount;
+    recurringMonthlyCents = perMailbox.unitCents * billedMailboxes;
     currency = perMailbox.currency;
   }
 
@@ -288,6 +322,7 @@ export function classifyWaste(
 export interface SpendByProvider {
   provider: string;
   domainCount: number;
+  /** Mailboxes BILLED, per `billedMailboxCount` — not necessarily what the vendor lists. */
   mailboxCount: number;
   monthlyCents: number;
   currency: string;
@@ -341,7 +376,7 @@ export function summarizeSpend(
       sources: new Set<string>(),
     };
     entry.domains += 1;
-    entry.mailboxes += domain.mailboxCount;
+    entry.mailboxes += billedMailboxCount(domain);
     entry.cents += monthly.cents;
     entry.sources.add(monthly.source);
     perProvider.set(key, entry);
