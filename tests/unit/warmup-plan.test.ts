@@ -290,3 +290,41 @@ describe("selectSilencedSenders", () => {
     expect(selectSilencedSenders([])).toEqual(new Set());
   });
 });
+
+describe("planWarmupPairings — the plan is the real warmup ceiling", () => {
+  const asOf = new Date("2026-09-14T07:00:00Z");
+  const pool = Array.from({ length: 40 }, (_, i) => `u${i}@d${i}.com`);
+
+  it("gives a sender as many partners as its budget, not a flat four", () => {
+    // A flat count capped the whole mesh: the plan emits the edges, so the
+    // budget can only ever spend what the plan offered. With 4 in hand,
+    // WARMUP_MAX_PER_DAY (20) was unreachable and every mailbox sat at ~5/day.
+    const edges = planWarmupPairings(pool, asOf, (sender) =>
+      sender === pool[0] ? 20 : 4,
+    );
+    expect(edges.filter((e) => e.senderEmail === pool[0])).toHaveLength(20);
+    expect(edges.filter((e) => e.senderEmail === pool[1])).toHaveLength(4);
+  });
+
+  it("is byte-identical to the old shape when given the flat constant", () => {
+    expect(planWarmupPairings(pool, asOf, 4)).toEqual(
+      planWarmupPairings(pool, asOf, () => 4),
+    );
+  });
+
+  it("emits nothing for a sender with no budget rather than a negative slice", () => {
+    expect(planWarmupPairings(pool, asOf, () => 0)).toEqual([]);
+    expect(planWarmupPairings(pool, asOf, () => -3)).toEqual([]);
+  });
+});
+
+describe("warmupBudgetFor — the headroom regime is reachable", () => {
+  it("fills the headroom for a mailbox at the bottom of the ramp", () => {
+    expect(warmupBudgetFor(5, { fillsHeadroom: true })).toBe(5);
+    expect(warmupBudgetFor(50, { fillsHeadroom: true })).toBe(WARMUP_MAX_PER_DAY);
+  });
+
+  it("keeps the modest share for a mailbox actually carrying outreach", () => {
+    expect(warmupBudgetFor(50, { fillsHeadroom: false })).toBe(WARMUP_PARTNERS_PER_DAY);
+  });
+});

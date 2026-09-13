@@ -22,6 +22,7 @@ import {
   DELIVERY_EVIDENCE_MAX_AGE_DAYS,
   type DeriveLifecycleInput,
   capForAccount,
+  rampAppliesToTransport,
 } from "../../src/lib/account-lifecycle";
 
 const POLICY = new Set(["distribute.you", "growthagency.dev", "arcadiaquest.org"]);
@@ -596,5 +597,31 @@ describe("capForAccount", () => {
 
   it("falls back to the lifecycle base when no limit is stated", () => {
     expect(capForAccount({}, 40)).toBe(IN_PRODUCTION_DAILY_LIMIT);
+  });
+});
+
+describe("rampAppliesToTransport / capForAccount", () => {
+  it("governs the mailboxes WE dispatch — there the volume figure is complete", () => {
+    expect(rampAppliesToTransport("smtp")).toBe(true);
+    // Peaked at 12 ⇒ may attempt 18, under the stated 50.
+    expect(capForAccount({ daily_limit: 50 }, 12, "smtp")).toBe(18);
+  });
+
+  it("does NOT govern the Instantly transport — we cannot see its warmup volume", () => {
+    // `fetchRecentDailyVolume` reads our own three tables; Instantly's warmup
+    // pool is in none of them, so a mailbox it has been warming at 30/day reads
+    // ZERO. Applying the ramp to that zero pinned eleven 103-day-old mailboxes
+    // scoring 92-100% inbox at 5/day for a fortnight (measured 2026-09-13).
+    expect(rampAppliesToTransport("instantly")).toBe(false);
+    expect(capForAccount({ daily_limit: 50 }, 0, "instantly")).toBe(50);
+  });
+
+  it("still honours an operator-set limit BELOW the state ceiling on either transport", () => {
+    expect(capForAccount({ daily_limit: 30 }, 40, "instantly")).toBe(30);
+    expect(capForAccount({ daily_limit: 30 }, 40, "smtp")).toBe(30);
+  });
+
+  it("defaults to the ramped transport, so a caller that forgets it stays conservative", () => {
+    expect(capForAccount({ daily_limit: 50 }, 0)).toBe(5);
   });
 });
