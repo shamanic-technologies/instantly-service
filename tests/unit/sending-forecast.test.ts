@@ -549,3 +549,38 @@ describe("projectDailySchedule", () => {
     });
   });
 });
+
+describe("computeCapacitySummary — the ramp follows the transport", () => {
+  const lc = (status: string, sendTransport: string) =>
+    ({ status, sendTransport }) as never;
+
+  it("ramps a mailbox WE dispatch: quiet ⇒ the floor, not its stated limit", () => {
+    const summary = computeCapacitySummary(
+      [{ email: "mine@a.com", daily_limit: 50 } as never],
+      new Map([["mine@a.com", lc("in_production", "smtp")]]),
+      new Map(),
+    );
+    expect(summary.dailyCapacity).toBe(5);
+  });
+
+  it("does NOT ramp a mailbox Instantly dispatches — it would contradict the selector", () => {
+    // Measured 2026-09-13: eleven DFY mailboxes read 5/day here while the
+    // selector offered them 50. The ops table reads the selector, never a
+    // second derivation of it. See `rampAppliesToTransport`.
+    const summary = computeCapacitySummary(
+      [{ email: "dfy@a.com", daily_limit: 50 } as never],
+      new Map([["dfy@a.com", lc("in_production", "instantly")]]),
+      new Map(),
+    );
+    expect(summary.dailyCapacity).toBe(50);
+  });
+
+  it("still honours a lower operator-set limit on the un-ramped transport", () => {
+    const summary = computeCapacitySummary(
+      [{ email: "dfy@a.com", daily_limit: 20 } as never],
+      new Map([["dfy@a.com", lc("in_production", "instantly")]]),
+      new Map(),
+    );
+    expect(summary.dailyCapacity).toBe(20);
+  });
+});

@@ -43,7 +43,15 @@
  * step queued) was removed for exactly this reason — do NOT reintroduce it.
  */
 
-import { rampCapForVolume, IN_PRODUCTION_DAILY_LIMIT } from "./account-lifecycle";
+import {
+  IN_PRODUCTION_DAILY_LIMIT,
+  rampAppliesToTransport,
+  rampCapForVolume,
+} from "./account-lifecycle";
+import {
+  SEND_TRANSPORT_SMTP,
+  resolveTransportForSend,
+} from "./self-send/transport";
 import { sustainedForMailbox, type DailyVolume } from "./recent-send-volume";
 import type { Account } from "./instantly-client";
 import type { LifecycleView } from "./account-lifecycle-sync";
@@ -156,8 +164,27 @@ export function computeCapacitySummary(
     limitByMailbox.set(mailbox, known === undefined ? limit : Math.min(known, limit));
   }
 
+  // ⚠️ Which mailboxes OUR ramp governs. A mailbox is ramped here only if every
+  // production alias on it is one we dispatch — Instantly owns the throttle for
+  // its own, and our volume figure is blind to its warmup pool, so applying the
+  // ramp there reports a mailbox as offering 5/day when the selector offers 50.
+  // See `rampAppliesToTransport`; this read must never re-derive the selector's
+  // cap differently from the selector.
+  const rampedMailboxes = new Set<string>();
+  for (const a of production) {
+    const mailbox = mailboxFor(a.email);
+    const transport = resolveTransportForSend(
+      lifecycleByEmail.get(a.email)?.sendTransport ?? SEND_TRANSPORT_SMTP,
+    );
+    if (rampAppliesToTransport(transport)) rampedMailboxes.add(mailbox);
+  }
+
   let dailyCapacity = 0;
   for (const [mailbox, limit] of limitByMailbox) {
+    if (!rampedMailboxes.has(mailbox)) {
+      dailyCapacity += limit;
+      continue;
+    }
     const sustained = sustainedForMailbox(volume, addressesByMailbox.get(mailbox) ?? []);
     dailyCapacity += Math.min(limit, rampCapForVolume(sustained, IN_PRODUCTION_DAILY_LIMIT));
   }
