@@ -57,8 +57,10 @@ describe("fetchTestablePoolEmails — weekly placement-test seeding", () => {
   it("excludes accounts younger than the age floor, keeping undated ones", async () => {
     await fetchTestablePoolEmails();
     const text = sqlTextOf(mockExecute.mock.calls[0][0]);
-    expect(text).toContain("timestamp_created IS NULL");
-    expect(text).toContain("timestamp_created <= now() - make_interval(days =>");
+    // Undated stays "old enough" — the pre-backfill behaviour. It is the
+    // COALESCE that is undated now, so a mailbox with neither date still passes.
+    expect(text).toContain("COALESCE(vendor_prewarmed_at, timestamp_created) IS NULL");
+    expect(text).toContain("COALESCE(vendor_prewarmed_at, timestamp_created)\n             <= now() - make_interval(days =>");
   });
 
   it("returns the emails and drops blanks", async () => {
@@ -66,5 +68,22 @@ describe("fetchTestablePoolEmails — weekly placement-test seeding", () => {
       rows: [{ email: "a@x.com" }, { email: "" }, { email: "b@x.com" }],
     });
     expect(await fetchTestablePoolEmails()).toEqual(["a@x.com", "b@x.com"]);
+  });
+});
+
+describe("fetchTestablePoolEmails — the age floor reads the age that EXISTS", () => {
+  beforeEach(() => {
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValue({ rows: [] });
+  });
+
+  it("coalesces the vendor's date over Instantly's, so a pre-warmed mailbox is testable at once", async () => {
+    // `timestamp_created` is the day WE imported it; the vendor spent a month
+    // warming it. Without the coalesce this floor refuses to measure a mailbox
+    // whose first test IS meaningful on day one — which is what the pre-warmed
+    // premium paid for. See migration 0052.
+    await fetchTestablePoolEmails();
+    const text = sqlTextOf(mockExecute.mock.calls[0][0]);
+    expect(text).toContain("COALESCE(vendor_prewarmed_at, timestamp_created)");
   });
 });

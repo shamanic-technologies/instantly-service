@@ -335,6 +335,9 @@ export type PooledAccount = Account & {
   infraProvider: string | null;
   domainFillRank: number | null;
   sendTransport: string;
+  /** Vendor's own creation date when the mailbox was bought pre-warmed, so
+   *  `capForAccount` does not read our import date as the mailbox's age. */
+  vendorPrewarmedAt: Date | string | null;
 };
 
 export async function fetchInProductionAccounts(
@@ -351,6 +354,7 @@ export async function fetchInProductionAccounts(
            a.provider_code AS "providerCode",
            a.timestamp_created AS "timestampCreated",
            a.send_transport AS "sendTransport",
+           a.vendor_prewarmed_at AS "vendorPrewarmedAt",
            ip.provider AS "infraProvider",
            dfo.fill_rank AS "domainFillRank"
     FROM instantly_accounts a
@@ -390,6 +394,7 @@ export async function fetchInProductionAccounts(
     providerCode: number | null;
     timestampCreated: string | Date | null;
     sendTransport: string | null;
+    vendorPrewarmedAt: string | Date | null;
     infraProvider: string | null;
     domainFillRank: number | string | null;
   }>(result).map((r) => ({
@@ -416,6 +421,7 @@ export async function fetchInProductionAccounts(
     // can only ever mean Instantly — the only way onto the self-send pipe is an
     // explicit, reversible UPDATE.
     sendTransport: resolveTransportForSend(r.sendTransport),
+    vendorPrewarmedAt: r.vendorPrewarmedAt ?? null,
   }));
 }
 
@@ -442,6 +448,17 @@ export const TESTABLE_MIN_AGE_DAYS = 7;
  * `timestamp_created` (not yet backfilled) is treated as old enough — the
  * pre-backfill behaviour.
  *
+ * ⚠️ THE AGE READ IS `COALESCE(vendor_prewarmed_at, timestamp_created)`, and the
+ * coalesce is the whole point. `timestamp_created` is Instantly's creation date,
+ * which for an imported mailbox is the day WE imported it — so a mailbox the
+ * vendor spent a month warming reads as hours old and this floor refuses to
+ * measure it for a week. The floor's own reasoning ("barely warmed, so testing
+ * it measures nothing") is exactly what does NOT hold there: a month of warmup
+ * is precisely what we paid the pre-warmed premium for, and its first test is
+ * meaningful on day one. `vendor_prewarmed_at` (migration 0052) carries the age
+ * that exists; null for every mailbox not bought pre-warmed, so the floor is
+ * unchanged for the rest of the fleet.
+ *
  * ⚠️ DO NOT add an `instantly_status > 0` predicate here. It reads as an obvious
  * saving — why seed a mailbox Instantly has disabled? — and it is the wrong
  * direction: this test is the ONLY deliverability measurement those mailboxes
@@ -465,8 +482,9 @@ export async function fetchTestablePoolEmails(): Promise<string[]> {
     SELECT email FROM instantly_accounts
     WHERE lifecycle_status IN ('in_recovery', 'in_production')
       AND (
-        timestamp_created IS NULL
-        OR timestamp_created <= now() - make_interval(days => ${TESTABLE_MIN_AGE_DAYS})
+        COALESCE(vendor_prewarmed_at, timestamp_created) IS NULL
+        OR COALESCE(vendor_prewarmed_at, timestamp_created)
+             <= now() - make_interval(days => ${TESTABLE_MIN_AGE_DAYS})
       )
   `);
   return rowsOf<{ email: string }>(result)
