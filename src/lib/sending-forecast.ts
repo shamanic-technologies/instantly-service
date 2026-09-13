@@ -170,13 +170,22 @@ export function computeCapacitySummary(
   // ramp there reports a mailbox as offering 5/day when the selector offers 50.
   // See `rampAppliesToTransport`; this read must never re-derive the selector's
   // cap differently from the selector.
+  // ⚠️ A mailbox bought PRE-WARMED is exempt too, and for the same reason as the
+  // Instantly transport: until it sends its first message under our dispatcher
+  // its measured volume is 0, and that 0 means "we watched none of the vendor's
+  // month of warmup", not "it has been quiet". `capForAccount` already exempts
+  // it; applying the ramp here reported thirty 100%-inbox mailboxes at 5/day
+  // while the selector was offering them 50 (measured 2026-09-13).
   const rampedMailboxes = new Set<string>();
   for (const a of production) {
     const mailbox = mailboxFor(a.email);
-    const transport = resolveTransportForSend(
-      lifecycleByEmail.get(a.email)?.sendTransport ?? SEND_TRANSPORT_SMTP,
-    );
-    if (rampAppliesToTransport(transport)) rampedMailboxes.add(mailbox);
+    const view = lifecycleByEmail.get(a.email);
+    const transport = resolveTransportForSend(view?.sendTransport ?? SEND_TRANSPORT_SMTP);
+    const sustained = sustainedForMailbox(volume, addressesByMailbox.get(mailbox) ?? []);
+    const prewarmedAndUnmeasured = sustained <= 0 && Boolean(view?.vendorPrewarmedAt);
+    if (rampAppliesToTransport(transport) && !prewarmedAndUnmeasured) {
+      rampedMailboxes.add(mailbox);
+    }
   }
 
   let dailyCapacity = 0;

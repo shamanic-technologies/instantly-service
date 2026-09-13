@@ -551,8 +551,8 @@ describe("projectDailySchedule", () => {
 });
 
 describe("computeCapacitySummary — the ramp follows the transport", () => {
-  const lc = (status: string, sendTransport: string) =>
-    ({ status, sendTransport }) as never;
+  const lc = (status: string, sendTransport: string, vendorPrewarmedAt: Date | null = null) =>
+    ({ status, sendTransport, vendorPrewarmedAt }) as never;
 
   it("ramps a mailbox WE dispatch: quiet ⇒ the floor, not its stated limit", () => {
     const summary = computeCapacitySummary(
@@ -582,5 +582,41 @@ describe("computeCapacitySummary — the ramp follows the transport", () => {
       new Map(),
     );
     expect(summary.dailyCapacity).toBe(20);
+  });
+});
+
+describe("computeCapacitySummary — a mailbox the vendor pre-warmed", () => {
+  const lc2 = (status: string, sendTransport: string, vendorPrewarmedAt: Date | null = null) =>
+    ({ status, sendTransport, vendorPrewarmedAt }) as never;
+  const PREWARMED = new Date("2026-08-13T00:00:00Z");
+
+  it("reports its full limit before it has sent anything for us", () => {
+    // 0 measured volume means we watched none of the vendor's month of warmup.
+    // Ramping on it reported thirty 100%-inbox mailboxes at 5/day while the
+    // selector offered 50 — the ops table contradicting the selector.
+    const summary = computeCapacitySummary(
+      [{ email: "new@a.com", daily_limit: 50 } as never],
+      new Map([["new@a.com", lc2("in_production", "smtp", PREWARMED)]]),
+      new Map(),
+    );
+    expect(summary.dailyCapacity).toBe(50);
+  });
+
+  it("rejoins the ramp once volume is measured, exactly like capForAccount", () => {
+    const summary = computeCapacitySummary(
+      [{ email: "new@a.com", daily_limit: 50 } as never],
+      new Map([["new@a.com", lc2("in_production", "smtp", PREWARMED)]]),
+      new Map([["new@a.com", new Map([["2026-09-10", 10], ["2026-09-11", 10]])]]),
+    );
+    expect(summary.dailyCapacity).toBe(15);
+  });
+
+  it("still ramps a mailbox we did NOT buy pre-warmed", () => {
+    const summary = computeCapacitySummary(
+      [{ email: "own@a.com", daily_limit: 50 } as never],
+      new Map([["own@a.com", lc2("in_production", "smtp", null)]]),
+      new Map(),
+    );
+    expect(summary.dailyCapacity).toBe(5);
   });
 });

@@ -264,6 +264,13 @@ export interface LifecycleView {
    * ourselves. See `selectLifecycleLimitPatches`.
    */
   sendTransport: SendTransport;
+  /**
+   * The vendor's own creation date when the mailbox was bought pre-warmed.
+   * Carried here so the capacity read applies the same ramp exemption
+   * `capForAccount` does — an ops table that ramps what the selector does not is
+   * a second answer to one question. See `rampAppliesToTransport`.
+   */
+  vendorPrewarmedAt: Date | string | null;
 }
 
 /** Current lifecycle projection per account (for account-health + forecast). */
@@ -273,7 +280,8 @@ export async function fetchLifecycleByEmail(): Promise<Map<string, LifecycleView
            lifecycle_status AS "status",
            lifecycle_reason AS "reason",
            lifecycle_updated_at AS "updatedAt",
-           send_transport AS "sendTransport"
+           send_transport AS "sendTransport",
+           vendor_prewarmed_at AS "vendorPrewarmedAt"
     FROM instantly_accounts
   `);
   const map = new Map<string, LifecycleView>();
@@ -283,12 +291,14 @@ export async function fetchLifecycleByEmail(): Promise<Map<string, LifecycleView
     reason: string | null;
     updatedAt: string | Date | null;
     sendTransport: string | null;
+    vendorPrewarmedAt: string | Date | null;
   }>(result)) {
     map.set(r.email, {
       status: (r.status as LifecycleStatus | null) ?? null,
       reason: r.reason ?? null,
       updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
       sendTransport: resolveTransportForSend(r.sendTransport),
+      vendorPrewarmedAt: r.vendorPrewarmedAt ?? null,
     });
   }
   return map;
