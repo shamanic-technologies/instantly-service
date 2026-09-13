@@ -72,9 +72,12 @@ describe("GET /internal/audit/sending-forecast", () => {
     mockExecute
       .mockResolvedValueOnce({
         rows: [
-          { email: "a@good.com", status: "in_production", reason: "passed", updatedAt: "2026-07-05T00:00:00.000Z" },
-          { email: "b@good.com", status: "in_production", reason: "passed", updatedAt: "2026-07-05T00:00:00.000Z" },
-          { email: "c@distribute.you", status: "deactivated_by_user", reason: "brand_domain", updatedAt: "2026-07-05T00:00:00.000Z" },
+          // `sendTransport: "smtp"` is load-bearing: OUR ramp governs only the
+          // mailboxes we dispatch, so this fixture has to be on that transport
+          // for the ramp to be the thing under test. See `rampAppliesToTransport`.
+          { email: "a@good.com", status: "in_production", reason: "passed", sendTransport: "smtp", updatedAt: "2026-07-05T00:00:00.000Z" },
+          { email: "b@good.com", status: "in_production", reason: "passed", sendTransport: "smtp", updatedAt: "2026-07-05T00:00:00.000Z" },
+          { email: "c@distribute.you", status: "deactivated_by_user", reason: "brand_domain", sendTransport: "smtp", updatedAt: "2026-07-05T00:00:00.000Z" },
         ],
       })
       // Measured volume: `a` sustains 20/day so it may attempt 30, bounded by its
