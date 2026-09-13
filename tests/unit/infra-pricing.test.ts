@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  billedMailboxCount,
   classifyWaste,
   costPerEmailCents,
   indexRates,
@@ -51,6 +52,12 @@ const DFY_RATES = indexRates([
   rate({ scope: "mailbox-month", unitCents: 1000 }),
 ]);
 
+// A vendor that DOES report an inventory, so it is billed on the vendor count.
+const PRIMEFORGE_RATES = indexRates([
+  rate({ provider: "primeforge", unitCents: 1400 }),
+  rate({ provider: "primeforge", scope: "mailbox-month", unitCents: 450 }),
+]);
+
 describe("monthlyCostForDomain", () => {
   it("divides a vendor-reported yearly price by 12 and marks it api-sourced", () => {
     const cost = monthlyCostForDomain(
@@ -71,9 +78,24 @@ describe("monthlyCostForDomain", () => {
     expect(cost?.source).toBe("api");
   });
 
-  it("adds the per-mailbox monthly rate, counted on VENDOR mailboxes", () => {
+  it("adds the per-mailbox monthly rate on the VENDOR count, not the Instantly one", () => {
+    // A legacy relay domain runs many Instantly addresses through few vendor
+    // mailboxes. We pay the vendor for what IT hosts.
     const cost = monthlyCostForDomain(
-      domain({ provider: "instantly-dfy", mailboxCount: 5, instantlyAccountCount: 40 }),
+      domain({ provider: "primeforge", mailboxCount: 5, instantlyAccountCount: 40 }),
+      PRIMEFORGE_RATES,
+    );
+
+    // $14/yr → ~117¢/mo, plus 5 × $4.50/mo.
+    expect(cost).toEqual({ cents: 2367, currency: "USD", source: "rate-card" });
+  });
+
+  it("bills Instantly DFY on its ACCOUNTS — nothing else reports those mailboxes", () => {
+    // The DFY adapter emits no mailboxes into `infra_mailboxes` on purpose, so
+    // `mailboxCount` is structurally 0 and pricing on it dropped the whole
+    // $10/mailbox line: the fleet read $11.25/mo against a real ~$431.
+    const cost = monthlyCostForDomain(
+      domain({ provider: "instantly-dfy", mailboxCount: 0, instantlyAccountCount: 5 }),
       DFY_RATES,
     );
 
@@ -101,6 +123,25 @@ describe("monthlyCostForDomain", () => {
     ]);
 
     expect(monthlyCostForDomain(domain({ provider: "weird", mailboxCount: 2 }), mixed)).toBeNull();
+  });
+});
+
+describe("billedMailboxCount", () => {
+  it("takes the vendor's own count for every vendor that reports an inventory", () => {
+    for (const provider of ["gandi", "mailforge", "primeforge"]) {
+      expect(billedMailboxCount(domain({ provider, mailboxCount: 3, instantlyAccountCount: 25 }))).toBe(3);
+    }
+  });
+
+  it("takes the Instantly account count for DFY, whose mailboxes ARE those accounts", () => {
+    expect(
+      billedMailboxCount(domain({ provider: "instantly-dfy", mailboxCount: 0, instantlyAccountCount: 5 })),
+    ).toBe(5);
+  });
+
+  it("does NOT generalise to Gandi — that would bill the relay per alias", () => {
+    // Measured 2026-09-13: 42 Gandi mailboxes against 165 Instantly addresses.
+    expect(billedMailboxCount(domain({ provider: "gandi", mailboxCount: 42, instantlyAccountCount: 165 }))).toBe(42);
   });
 });
 
@@ -266,7 +307,7 @@ describe("summarizePlanSpend", () => {
 describe("splitDomainCost", () => {
   it("puts a mailbox subscription in recurring — cancelling stops it immediately", () => {
     const split = splitDomainCost(
-      domain({ provider: "instantly-dfy", mailboxCount: 5, expiresAt: new Date("2027-01-01T00:00:00Z") }),
+      domain({ provider: "instantly-dfy", instantlyAccountCount: 5, expiresAt: new Date("2027-01-01T00:00:00Z") }),
       DFY_RATES,
     );
 
@@ -298,7 +339,7 @@ describe("splitDomainCost", () => {
 
   it("reports both halves when a vendor charges for the domain AND the mailboxes", () => {
     const split = splitDomainCost(
-      domain({ provider: "instantly-dfy", mailboxCount: 5, expiresAt: new Date("2027-01-01T00:00:00Z") }),
+      domain({ provider: "instantly-dfy", instantlyAccountCount: 5, expiresAt: new Date("2027-01-01T00:00:00Z") }),
       DFY_RATES,
     );
 
@@ -308,7 +349,7 @@ describe("splitDomainCost", () => {
 
   it("saves nothing on a cancelled domain — it already bills nothing", () => {
     const split = splitDomainCost(
-      domain({ provider: "instantly-dfy", mailboxCount: 5, cancelledAt: new Date("2026-05-02T00:00:00Z") }),
+      domain({ provider: "instantly-dfy", instantlyAccountCount: 5, cancelledAt: new Date("2026-05-02T00:00:00Z") }),
       DFY_RATES,
     );
 
@@ -330,7 +371,7 @@ describe("splitDomainCost", () => {
   });
 
   it("has no renewal date when the vendor reports no expiry", () => {
-    const split = splitDomainCost(domain({ provider: "instantly-dfy", mailboxCount: 1 }), DFY_RATES);
+    const split = splitDomainCost(domain({ provider: "instantly-dfy", instantlyAccountCount: 1 }), DFY_RATES);
     expect(split.renewalCents).toBe(1500);
     expect(split.renewalAt).toBeNull();
   });

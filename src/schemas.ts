@@ -2536,7 +2536,12 @@ const InfraSpendResponseSchema = z
       z.object({
         provider: z.string(),
         domainCount: z.number().int(),
-        mailboxCount: z.number().int(),
+        mailboxCount: z
+          .number()
+          .int()
+          .describe(
+            "Mailboxes billed. For every vendor that reports an inventory this is the vendor's own count; for Instantly DFY, whose mailboxes are the Instantly accounts and are reported nowhere else, it is the live account count.",
+          ),
         monthlyCents: z.number(),
         currency: z.string(),
         source: z.string().describe("api | rate-card | mixed"),
