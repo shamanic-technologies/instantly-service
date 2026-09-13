@@ -17,7 +17,10 @@ import {
   normalizePrimeforgeDomain,
   normalizePrimeforgeMailbox,
 } from "../../src/lib/providers/primeforge-client";
-import { normalizeDfyOrder } from "../../src/lib/providers/instantly-dfy-client";
+import {
+  collapseDfyOrders,
+  normalizeDfyOrder,
+} from "../../src/lib/providers/instantly-dfy-client";
 import { parseProviderDate } from "../../src/lib/providers/types";
 
 const originalFetch = global.fetch;
@@ -294,6 +297,78 @@ describe("normalizeDfyOrder", () => {
     const row = normalizeDfyOrder({ domain: "resilientnirvana.com", timestamp_cancelled: null });
     expect(row.status).toBe("active");
     expect(row.cancelledAt).toBeNull();
+  });
+});
+
+describe("collapseDfyOrders", () => {
+  it("keeps a partially-cancelled domain ACTIVE — one live mailbox still bills and still sends", () => {
+    // Instantly splits a domain's single order row the moment ONE of its
+    // mailboxes is cancelled, and returns the cancelled half LAST. Emitted
+    // un-collapsed, that row wins the `(provider, domain)` upsert and a domain
+    // running production mailboxes reads as deprovisioned.
+    const rows = collapseDfyOrders([
+      { domain: "vibrancesense.com", timestamp_created: "2025-12-19T22:01:54Z", timestamp_cancelled: null },
+      {
+        domain: "vibrancesense.com",
+        timestamp_created: "2025-12-19T22:01:54Z",
+        timestamp_cancelled: "2026-09-13T07:36:34Z",
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("active");
+    expect(rows[0].cancelledAt).toBeNull();
+  });
+
+  it("cancels a domain only when EVERY row is cancelled, dated by the LAST one", () => {
+    const rows = collapseDfyOrders([
+      {
+        domain: "soarapexeswond.com",
+        timestamp_created: "2025-12-26T22:00:58Z",
+        timestamp_cancelled: "2026-09-13T07:28:09Z",
+      },
+      {
+        domain: "soarapexeswond.com",
+        timestamp_created: "2025-12-26T22:00:58Z",
+        timestamp_cancelled: "2026-09-13T07:28:20Z",
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("cancelled");
+    expect(rows[0].cancelledAt?.toISOString()).toBe("2026-09-13T07:28:20.000Z");
+  });
+
+  it("is byte-identical to the per-row shape when a domain has exactly one order", () => {
+    const order = {
+      domain: "StaffResonating.com",
+      timestamp_created: "2025-12-26T22:01:51Z",
+      timestamp_cancelled: null,
+    };
+
+    expect(collapseDfyOrders([order])).toEqual([normalizeDfyOrder(order)]);
+  });
+
+  it("takes the EARLIEST creation — the extra rows are splits of one order, not new purchases", () => {
+    const rows = collapseDfyOrders([
+      { domain: "veriskube.com", timestamp_created: "2026-06-11T15:54:41Z", timestamp_cancelled: null },
+      { domain: "veriskube.com", timestamp_created: "2025-12-19T22:01:54Z", timestamp_cancelled: null },
+    ]);
+
+    expect(rows[0].createdAtProvider?.toISOString()).toBe("2025-12-19T22:01:54.000Z");
+  });
+
+  it("keeps one row per domain and never merges two different domains", () => {
+    const rows = collapseDfyOrders([
+      { domain: "a.com", timestamp_cancelled: null },
+      { domain: "b.com", timestamp_cancelled: "2026-09-13T07:28:20Z" },
+      { domain: "a.com", timestamp_cancelled: "2026-09-13T07:28:20Z" },
+    ]);
+
+    expect(rows.map((row) => [row.domain, row.status])).toEqual([
+      ["a.com", "active"],
+      ["b.com", "cancelled"],
+    ]);
   });
 });
 
