@@ -125,26 +125,61 @@ export type FillOrderAccount = Account & {
 
 /**
  * The order in which infrastructure vendors are drained. Lower fills first, so
- * the LAST vendor is the one we are trying to stop sending from.
+ * the LAST tier is the one we are trying to stop sending from.
+ *
+ * ⚠️ THE ORDER IS COST ASCENDING, and that is the whole design: the waterfall
+ * saturates the cheapest tier before it touches the next, so the expensive ones
+ * go quiet and become cancellable. Ranking them any other way spreads volume
+ * evenly and nothing can ever be turned off — the failure the sequential fill
+ * exists to prevent.
+ *
+ *   0  gandi                      registration only, mailboxes included
+ *   1  mailforge                  $14/yr domain, cheapest mailbox tier
+ *   2  primeforge, own domain     $4.50/mailbox/month
+ *   3  primeforge, PRE-WARMED     $9.00/mailbox/month — double, for the month
+ *                                 of warmup the vendor did before handing it over
+ *   4  instantly-dfy              $10/mailbox/month AND tied to the $97/month
+ *                                 Email Outreach plan, which cancelling pauses
  *
  * The strings are `infra_domains.provider` verbatim — the same four values the
- * daily infra sync writes. Keeping them byte-equal is what makes re-tiering a
- * vendor a one-line change here rather than a data migration.
+ * daily infra sync writes.
  */
 export const PROVIDER_FILL_RANK: Record<string, number> = {
   gandi: 0,
   mailforge: 1,
   primeforge: 2,
-  "instantly-dfy": 3,
+  "instantly-dfy": 4,
 };
+
+/**
+ * Where a PRE-WARMED Primeforge mailbox fills: one tier behind a Primeforge
+ * mailbox on a domain we named ourselves.
+ *
+ * ⚠️ Both are `provider: 'primeforge'` in `infra_domains`, so the vendor string
+ * alone cannot separate them — but they cost twice as different things. A
+ * pre-warmed mailbox is $9/month against $4.50, the premium being the month of
+ * warmup the vendor ran before handing it over. That premium is spent once and
+ * then keeps billing every month, so it is the tier to stop feeding first among
+ * the two.
+ *
+ * `vendor_prewarmed_at` (migration 0052) is the discriminator, and it is already
+ * on the account for the ramp's sake — see `capForAccount`.
+ */
+export const PREWARMED_PROVIDER_FILL_RANK = 3;
 
 /**
  * Rank for an account whose domain has no `infra_domains` row at all. It sorts
  * LAST, for the same reason an undatable account does: we cannot honestly place
  * an unattributed account in the vendor sequence, and the tail is the position
  * that risks the least.
+ *
+ * ⚠️ Newly bought mailboxes land here until the infra sync runs, which is DAILY
+ * at 05:00 UTC — so a batch imported during the day sorts BEHIND `instantly-dfy`
+ * and receives nothing until the next morning. Measured 2026-09-13: thirty fresh
+ * 100%-inbox mailboxes sat at this rank for hours. Trigger `POST /internal/infra/sync`
+ * as part of importing a batch; it is not next-day housekeeping.
  */
-export const UNKNOWN_PROVIDER_FILL_RANK = 4;
+export const UNKNOWN_PROVIDER_FILL_RANK = 5;
 
 /**
  * Rank for a domain with no `instantly_domain_fill_order` row. Sorts LAST within
@@ -161,9 +196,17 @@ export function domainFillRankOf(rank?: number | null): number {
     : UNRANKED_DOMAIN_FILL_RANK;
 }
 
-export function providerFillRank(provider?: string | null): number {
+export function providerFillRank(
+  provider?: string | null,
+  vendorPrewarmedAt?: Date | string | null,
+): number {
   if (!provider) return UNKNOWN_PROVIDER_FILL_RANK;
-  return PROVIDER_FILL_RANK[provider] ?? UNKNOWN_PROVIDER_FILL_RANK;
+  const rank = PROVIDER_FILL_RANK[provider] ?? UNKNOWN_PROVIDER_FILL_RANK;
+  // A pre-warmed Primeforge mailbox costs double a self-named one, so it fills
+  // one tier later. Only Primeforge sells both shapes; on any other vendor the
+  // column carries no tiering meaning.
+  if (provider === "primeforge" && vendorPrewarmedAt) return PREWARMED_PROVIDER_FILL_RANK;
+  return rank;
 }
 
 /**
@@ -172,8 +215,9 @@ export function providerFillRank(provider?: string | null): number {
  * `timestamp_created` sort last within their domain; domains with no stated rank
  * sort last within their vendor; accounts with no known vendor sort last overall.
  *
- * The VENDOR key is the primary sort so the fleet drains one vendor at a time:
- * gandi → mailforge → primeforge → instantly-dfy. That is what lets us stop
+ * The VENDOR key is the primary sort so the fleet drains one tier at a time, in
+ * COST ASCENDING order: gandi → mailforge → primeforge (own domain) →
+ * primeforge (pre-warmed) → instantly-dfy. That is what lets us stop
  * feeding new sends to a vendor we are winding down — its accounts only receive
  * volume once every vendor ahead of it is at cap.
  *
@@ -203,8 +247,8 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
     return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
   };
   return [...accounts].sort((x, y) => {
-    const px = providerFillRank(x.infraProvider);
-    const py = providerFillRank(y.infraProvider);
+    const px = providerFillRank(x.infraProvider, x.vendorPrewarmedAt);
+    const py = providerFillRank(y.infraProvider, y.vendorPrewarmedAt);
     if (px !== py) return px - py;
     const dx = domainFillRankOf(x.domainFillRank);
     const dy = domainFillRankOf(y.domainFillRank);

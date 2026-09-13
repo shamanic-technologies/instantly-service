@@ -280,15 +280,60 @@ describe("pickSequentialFillAccount", () => {
 
   // ── The vendor tier (primary sort key) ───────────────────────────────────────
 
-  it("ranks the infrastructure vendors gandi < mailforge < primeforge < instantly-dfy", () => {
+  it("ranks the tiers by COST ASCENDING, so the dearest goes quiet first", () => {
+    // gandi (registration only) → mailforge ($14/yr) → primeforge own domain
+    // ($4.50/mbx/mo) → primeforge pre-warmed ($9) → instantly-dfy ($10 AND tied
+    // to the $97/mo Email Outreach plan). Draining cheapest-first is what makes
+    // the dear tiers cancellable; any other order spreads volume and nothing can
+    // ever be turned off.
     expect(providerFillRank("gandi")).toBe(0);
     expect(providerFillRank("mailforge")).toBe(1);
     expect(providerFillRank("primeforge")).toBe(2);
-    expect(providerFillRank("instantly-dfy")).toBe(3);
-    // Anything we cannot attribute sorts behind every known vendor.
+    expect(providerFillRank("instantly-dfy")).toBe(4);
+    // Anything we cannot attribute sorts behind every known tier.
     expect(providerFillRank(null)).toBe(UNKNOWN_PROVIDER_FILL_RANK);
     expect(providerFillRank(undefined)).toBe(UNKNOWN_PROVIDER_FILL_RANK);
     expect(providerFillRank("some-new-vendor")).toBe(UNKNOWN_PROVIDER_FILL_RANK);
+  });
+
+  it("splits Primeforge in two: a PRE-WARMED mailbox fills after a self-named one", () => {
+    // Both are `provider: 'primeforge'`, so the vendor string alone cannot
+    // separate them — but pre-warmed costs $9/mbx/mo against $4.50.
+    const PREWARMED = new Date("2026-08-13T00:00:00Z");
+    expect(providerFillRank("primeforge", null)).toBe(2);
+    expect(providerFillRank("primeforge", PREWARMED)).toBe(3);
+    // …and still ahead of DFY, which is dearer still.
+    expect(providerFillRank("primeforge", PREWARMED)).toBeLessThan(
+      providerFillRank("instantly-dfy"),
+    );
+  });
+
+  it("does not tier any OTHER vendor on the pre-warmed column", () => {
+    // Only Primeforge sells both shapes; elsewhere the column carries no
+    // tiering meaning and must not move the account.
+    const PREWARMED = new Date("2026-08-13T00:00:00Z");
+    expect(providerFillRank("gandi", PREWARMED)).toBe(0);
+    expect(providerFillRank("instantly-dfy", PREWARMED)).toBe(4);
+  });
+
+  it("orders a mixed fleet cheapest tier first", () => {
+    const PREWARMED = new Date("2026-08-13T00:00:00Z");
+    const accounts = [
+      acct({ email: "dfy@x.com", infraProvider: "instantly-dfy", timestamp_created: "2020-01-01T00:00:00Z" }),
+      acct({ email: "pw@x.com", infraProvider: "primeforge", vendorPrewarmedAt: PREWARMED, timestamp_created: "2020-01-01T00:00:00Z" }),
+      acct({ email: "own@x.com", infraProvider: "primeforge", timestamp_created: "2020-01-01T00:00:00Z" }),
+      acct({ email: "mf@x.com", infraProvider: "mailforge", timestamp_created: "2020-01-01T00:00:00Z" }),
+      acct({ email: "gd@x.com", infraProvider: "gandi", timestamp_created: "2020-01-01T00:00:00Z" }),
+      acct({ email: "unknown@x.com", infraProvider: null, timestamp_created: "2020-01-01T00:00:00Z" }),
+    ];
+    expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
+      "gd@x.com",
+      "mf@x.com",
+      "own@x.com",
+      "pw@x.com",
+      "dfy@x.com",
+      "unknown@x.com",
+    ]);
   });
 
   it("puts the vendor AHEAD of age: a younger gandi account beats an older primeforge one", () => {
