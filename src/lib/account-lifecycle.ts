@@ -33,6 +33,7 @@
 
 import {
   SEND_TRANSPORT_SMTP,
+  resolveTransportForSend,
   type SendTransport,
 } from "./self-send/transport";
 
@@ -477,13 +478,52 @@ export function rampCapForVolume(recentSustainedDaily: number, dailyLimit: numbe
  * selector about the same account.
  */
 export function capForAccount(
-  account: { daily_limit?: number | null },
+  account: { daily_limit?: number | null; sendTransport?: string | null },
   recentSustainedDaily: number,
+  sendTransport?: SendTransport,
 ): number {
-  return Math.min(
-    account.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT,
-    rampCapForVolume(recentSustainedDaily, IN_PRODUCTION_DAILY_LIMIT),
-  );
+  // Read off the account when the caller does not say, so a call site holding a
+  // `PooledAccount` (which carries the policy) cannot silently fall back to the
+  // wrong transport. Absent on BOTH ⇒ `smtp`, which keeps the ramp: a caller
+  // that knows neither must stay conservative, never skip the ramp by accident.
+  const transport =
+    sendTransport ??
+    (account.sendTransport === undefined || account.sendTransport === null
+      ? SEND_TRANSPORT_SMTP
+      : resolveTransportForSend(account.sendTransport));
+  const stated = account.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT;
+  if (!rampAppliesToTransport(transport)) return stated;
+  return Math.min(stated, rampCapForVolume(recentSustainedDaily, IN_PRODUCTION_DAILY_LIMIT));
+}
+
+/**
+ * Whether OUR volume ramp governs this mailbox at all.
+ *
+ * ⚠️ It does NOT on the Instantly transport, and the reason is that the ramp's
+ * input is a measurement we cannot take there. `fetchRecentDailyVolume` reads
+ * `instantly_events`, `warmup_dispatches` and `seed_placement_dispatches` — it
+ * sees Instantly's OUTREACH (the webhook writes `email_sent`) but is blind to
+ * Instantly's own WARMUP pool, which is most of what a mailbox in recovery
+ * sends. So a mailbox Instantly has been warming at 30/day reads ZERO here, and
+ * the ramp pins it at {@link RAMP_FLOOR_PER_DAY} on the strength of a number
+ * that means "we did not look", not "it has been quiet".
+ *
+ * It is also a double ramp: Instantly dispatches those mailboxes and throttles
+ * them with its own `enable_slow_ramp`, which `selectLifecycleLimitPatches`
+ * already sets by age. Stacking ours on top re-creates the compounding that
+ * `capForAccount`'s own note forbids, on a partial view of the volume.
+ *
+ * Measured 2026-09-13: eleven DFY mailboxes — 103 days old, warmup score 100,
+ * 92-100% inbox on the 08-29 placement test, the best of the fleet — sat at
+ * `daily_limit` 5 with zero Instantly warmup (production sets it to 0), zero
+ * mesh, zero seed and 2-11 outreach a week. Nothing was cold about them; our own
+ * sweep had written that 5 onto Instantly and re-wrote it every hour.
+ *
+ * The mailboxes WE dispatch keep the ramp: there the volume figure is complete,
+ * because every send our worker makes lands in one of those three tables.
+ */
+export function rampAppliesToTransport(sendTransport: SendTransport): boolean {
+  return sendTransport === SEND_TRANSPORT_SMTP;
 }
 
 /**

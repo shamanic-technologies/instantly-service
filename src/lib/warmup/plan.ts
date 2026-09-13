@@ -202,11 +202,21 @@ export function warmupDayKey(asOf: Date): string {
  * physical inbox behind an alias, which would be a self-send.
  *
  * `excluded` is the measurement receiver set — see {@link partnerCandidates}.
+ *
+ * ⚠️ `partnersPerDay` MUST be able to vary per sender, and a flat constant here
+ * silently capped the whole mesh. The plan emits at most this many edges, so it
+ * is the real ceiling on a mailbox's warmup — the budget computed later can only
+ * spend what the plan offered. With the constant at 4, `WARMUP_MAX_PER_DAY` (20)
+ * was unreachable and `warmupBudgetFor`'s headroom regime — written precisely so
+ * a mailbox with no outreach could build the volume that lifts its cap — could
+ * never take effect. Measured 2026-09-13: every mailbox in the fleet sat at ~5
+ * sends a day, recovering ones included, and their caps stayed at the ramp floor
+ * indefinitely as a result.
  */
 export function planWarmupPairings(
   mailboxes: readonly string[],
   asOf: Date,
-  partnersPerDay: number = WARMUP_PARTNERS_PER_DAY,
+  partnersPerDay: number | ((sender: string) => number) = WARMUP_PARTNERS_PER_DAY,
 ): WarmupPairing[] {
   const dayKey = warmupDayKey(asOf);
   const pool = [...new Set(mailboxes.map((m) => m.trim().toLowerCase()).filter(Boolean))].sort();
@@ -225,7 +235,7 @@ export function planWarmupPairings(
       .sort(
         (a, b) => seededRank(dayKey, sender, a) - seededRank(dayKey, sender, b),
       )
-      .slice(0, partnersPerDay);
+      .slice(0, Math.max(0, typeof partnersPerDay === "function" ? partnersPerDay(sender) : partnersPerDay));
 
     for (const receiverEmail of partners) {
       taken.add(`${sender}->${receiverEmail}`);

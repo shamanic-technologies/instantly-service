@@ -134,23 +134,12 @@ export function selectLifecycleLimitPatches(
     if (instantlyEnforced && (status === "in_production" || status === "in_recovery")) {
       const targetWarmup = warmupDailyForStatus(status); // 0 | 30 (never null here)
       const stateDaily = dailyLimitForStatus(status); // 50 | 20 (never null here)
-      // VOLUME ceiling: a mailbox cannot physically absorb the state's full
-      // daily_limit until it has been sending at that rate (Gmail's real per-user
-      // quota is far below it for a mailbox that has been quiet — the 550-5.4.5
-      // trigger). The state sets the POLICY ceiling, the ramp the PHYSICAL one;
-      // the target is whichever binds first. Always computed off
-      // IN_PRODUCTION_DAILY_LIMIT, never off the account's current daily_limit —
-      // otherwise each sweep would re-scale its own previous output.
-      const targetDaily =
-        stateDaily === null
-          ? null
-          : Math.min(
-              stateDaily,
-              rampCapForVolume(
-                recentSustainedByEmail.get(account.email) ?? 0,
-                IN_PRODUCTION_DAILY_LIMIT,
-              ),
-            );
+      // ⚠️ NO volume ramp here. Instantly is the pipe for these mailboxes, and
+      // our volume figure is blind to its warmup pool — see
+      // `rampAppliesToTransport`. Applying the ramp wrote a floor of 5 onto
+      // 103-day-old mailboxes scoring 92-100% inbox, and re-wrote it every hour.
+      // Instantly throttles its own with `enable_slow_ramp`, set by age below.
+      const targetDaily = stateDaily;
       const currentWarmup = account.warmup?.limit;
       const currentDaily = account.daily_limit;
       warmup = targetWarmup !== null && currentWarmup !== targetWarmup ? targetWarmup : null;

@@ -92,7 +92,7 @@ export function gapsFromSequence(
  * zero would hide that.
  */
 function fitsFootprint(
-  a: Account,
+  a: Account & { sendTransport?: string | null },
   byEmail: Map<string, AccountCapacity>,
   footprint: readonly string[],
   asOf: Date,
@@ -115,6 +115,9 @@ function fitsFootprint(
 export type FillOrderAccount = Account & {
   infraProvider?: string | null;
   domainFillRank?: number | null;
+  /** Send-transport POLICY. `capForAccount` reads it: our volume ramp governs
+   *  only the mailboxes we dispatch ourselves. See `rampAppliesToTransport`. */
+  sendTransport?: string | null;
 };
 
 /**
