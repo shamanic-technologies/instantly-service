@@ -27,6 +27,10 @@ import type { LifecycleStatus } from "./account-lifecycle";
 import type { LifecycleView } from "./account-lifecycle-sync";
 import type { QueueBreakdown } from "./queue-breakdown";
 import { capForAccount } from "./account-lifecycle";
+import {
+  SEND_TRANSPORT_SMTP,
+  resolveTransportForSend,
+} from "./self-send/transport";
 
 /**
  * What SEND SELECTION says about the fleet, injected into the ops row so the
@@ -302,7 +306,11 @@ export function buildAccountHealth(
       effectiveDailyCap:
         a.daily_limit === undefined || a.daily_limit === null
           ? null
-          : capForAccount(a, recentSustainedByEmail.get(a.email) ?? 0),
+          : capForAccount(
+              a,
+              recentSustainedByEmail.get(a.email) ?? 0,
+              resolveTransportForSend(lifecycle?.sendTransport ?? SEND_TRANSPORT_SMTP),
+            ),
       fillRank: fillRankByEmail.get(a.email) ?? null,
       warmupLimit: a.warmup?.limit ?? null,
       blocked,

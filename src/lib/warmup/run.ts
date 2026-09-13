@@ -33,6 +33,8 @@ import { selectSeedReceivers } from "../seed-placement/seeds";
 import { dispatchMessage, SmtpDispatchError, classifyDispatchFailure } from "../self-send/smtp";
 import { buildWarmupMessage } from "./message";
 import {
+  WARMUP_MAX_PER_DAY,
+  WARMUP_PARTNERS_PER_DAY,
   partnerCandidates,
   planWarmupPairings,
   selectSilencedSenders,
@@ -143,8 +145,15 @@ async function loadRoom(
       limit: current === undefined ? limit : Math.min(current.limit, limit),
       outreach: (current?.outreach ?? 0) + Number(row.sentToday),
       // A mailbox is doing outreach unless EVERY alias on it is in recovery.
-      fillsHeadroom:
-        (current?.fillsHeadroom ?? true) && row.lifecycleStatus === "in_recovery",
+      // ⚠️ Keyed on the CAP, not on the lifecycle state. The share regime exists
+      // to stop warmup starving outreach — a mailbox whose cap is still at the
+      // bottom of the ramp has at most a handful of outreach sends to protect,
+      // and taking 30% of that gives it ONE warmup a day, which is exactly the
+      // volume that keeps its cap at the floor. Scoped to `in_recovery` it left
+      // eleven production mailboxes frozen at 5/day for a fortnight (measured
+      // 2026-09-13): promotion sets their Instantly warmup to 0, the fill order
+      // never reaches them, so they sent nothing at all.
+      fillsHeadroom: (current?.fillsHeadroom ?? true) && limit <= WARMUP_MAX_PER_DAY,
     });
   }
 
@@ -257,7 +266,21 @@ export async function runWarmupMesh(
   ).map((r) => r.email);
 
   const pool = partnerCandidates(addresses, judges, mailboxLogins);
-  const pairings = planWarmupPairings(pool, asOf);
+
+  // Room is loaded BEFORE the plan because the plan's per-sender edge count is
+  // the day's warmup budget: the plan is the ceiling, so a flat count caps the
+  // budget rather than the other way round. The MAXIMUM for the day is used
+  // (outreach not subtracted) so the plan stays stable across re-runs within a
+  // day; the dispatch loop below applies the real remaining budget.
+  const room = await loadRoom(mailboxLogins, dayKey, asOf);
+  const plannedBudgetFor = (sender: string): number => {
+    const mailbox = mailboxLogins.get(sender);
+    const capacity = mailbox === undefined ? undefined : room.get(mailbox);
+    if (capacity === undefined) return WARMUP_PARTNERS_PER_DAY;
+    return warmupBudgetFor(capacity.cap, { fillsHeadroom: capacity.fillsHeadroom });
+  };
+
+  const pairings = planWarmupPairings(pool, asOf, plannedBudgetFor);
 
   const summary: WarmupRunSummary = {
     dayKey,
@@ -271,7 +294,6 @@ export async function runWarmupMesh(
     failed: 0,
   };
 
-  const room = await loadRoom(mailboxLogins, dayKey, asOf);
   // ⚠️ THE BUDGET COUNTS THE DAY, NOT THE RUN. Seeded from what warmup already
   // sent today, so a second run cannot spend a second budget. In steady state
   // the pairing is deterministic per day and a re-run plans identical edges that

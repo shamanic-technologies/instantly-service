@@ -138,16 +138,17 @@ describe("selectLifecycleLimitPatches", () => {
     ]);
   });
 
-  it("caps a RAMPING account's daily_limit at its measured volume, not the state's full 50", () => {
-    // Peaked at 12/day ⇒ may attempt 18. Gmail's real per-user quota tracks what
-    // the mailbox has been sending, so the volume ceiling binds before the state
-    // one. Slow ramp pre-aligned on both so the assertion isolates `daily`.
+  it("does NOT apply OUR volume ramp on the Instantly transport", () => {
+    // Instantly dispatches these mailboxes and throttles them with its own
+    // `enable_slow_ramp`. Our volume figure is blind to its warmup pool, so the
+    // ramp reads a zero that means "we did not look" and pinned 103-day-old
+    // mailboxes scoring 92-100% inbox at 5/day. See `rampAppliesToTransport`.
     const accounts = [
-      acct("ramping@x.com", 50, 0, { timestampCreated: created(90), enableSlowRamp: false }),
+      acct("quiet@x.com", 5, 0, { timestampCreated: created(90), enableSlowRamp: false }),
       acct("atvolume@x.com", 50, 0, { timestampCreated: created(90), enableSlowRamp: false }),
     ];
     const lc = new Map<string, LifecycleView>([
-      ["ramping@x.com", lifecycle("in_production")],
+      ["quiet@x.com", lifecycle("in_production")],
       ["atvolume@x.com", lifecycle("in_production")],
     ]);
     expect(
@@ -156,34 +157,34 @@ describe("selectLifecycleLimitPatches", () => {
         lc,
         asOf,
         new Map([
-          ["ramping@x.com", 12],
+          ["quiet@x.com", 0],
           ["atvolume@x.com", 40],
         ]),
       ),
-    ).toEqual([{ email: "ramping@x.com", warmup: null, daily: 18, slowRamp: null }]);
+    ).toEqual([{ email: "quiet@x.com", warmup: null, daily: 50, slowRamp: null }]);
   });
 
-  it("does NOT re-scale its own output: an already-ramped account is aligned", () => {
-    // The ramp is computed off IN_PRODUCTION_DAILY_LIMIT, never off the account's
-    // current daily_limit — otherwise each sweep would shrink it again (50→25→13…).
+  it("restores a mailbox our own sweep had previously ramped down", () => {
+    // The eleven frozen DFY mailboxes: `daily_limit` 5 written by this sweep and
+    // re-written every hour. With the ramp gone the state limit is the target.
     const accounts = [
-      acct("ramping@x.com", 18, 0, { timestampCreated: created(90), enableSlowRamp: false }),
+      acct("frozen@x.com", 5, 0, { timestampCreated: created(103), enableSlowRamp: false }),
     ];
-    const lc = new Map<string, LifecycleView>([["ramping@x.com", lifecycle("in_production")]]);
+    const lc = new Map<string, LifecycleView>([["frozen@x.com", lifecycle("in_production")]]);
     expect(
-      selectLifecycleLimitPatches(accounts, lc, asOf, new Map([["ramping@x.com", 12]])),
-    ).toEqual([]);
+      selectLifecycleLimitPatches(accounts, lc, asOf, new Map([["frozen@x.com", 1]])),
+    ).toEqual([{ email: "frozen@x.com", warmup: null, daily: 50, slowRamp: null }]);
   });
 
-  it("in_recovery: the volume ramp binds when it is BELOW the recovery limit", () => {
-    // Nothing measured → the floor of 5, under the in_recovery 20 → 5 wins. The
-    // mailbox then climbs on its own warmup and placement-test traffic.
+  it("in_recovery on the Instantly transport gets the state's 20/30, un-ramped", () => {
+    // Instantly's own warmup is what lifts a recovering mailbox there, and we
+    // cannot see that volume — so the state limit is the only honest target.
     const accounts = [
-      acct("quiet@x.com", 20, 30, { timestampCreated: created(90), enableSlowRamp: false }),
+      acct("quiet@x.com", 5, 30, { timestampCreated: created(90), enableSlowRamp: false }),
     ];
     const lc = new Map<string, LifecycleView>([["quiet@x.com", lifecycle("in_recovery")]]);
     expect(selectLifecycleLimitPatches(accounts, lc, asOf, new Map())).toEqual([
-      { email: "quiet@x.com", warmup: null, daily: 5, slowRamp: null },
+      { email: "quiet@x.com", warmup: null, daily: 20, slowRamp: null },
     ]);
   });
 
@@ -260,7 +261,7 @@ describe("selectLifecycleLimitPatches", () => {
       ["relay@x.com", lifecycle("in_production", "instantly")],
     ]);
     expect(selectLifecycleLimitPatches(accounts, lc, asOf, new Map())).toEqual([
-      { email: "relay@x.com", warmup: 0, daily: 5, slowRamp: true },
+      { email: "relay@x.com", warmup: 0, daily: 50, slowRamp: true },
     ]);
   });
 });
@@ -299,8 +300,8 @@ describe("syncLifecycleLimits", () => {
       acct("both@x.com", 45, 10), // → warmup 0 + daily 50
       acct("aligned@x.com", 50, 0), // skip
       acct("daily@x.com", 40, 0), // → daily only
-      // 3 days old → slowRamp true (age-driven). No measured volume either, so
-      // its daily is floored to the 5/day ramp cap.
+      // 3 days old → slowRamp true (age-driven). Its daily is already the state's
+      // 50 and OUR ramp no longer touches the Instantly transport, so no daily patch.
       acct("ramp@x.com", 50, 0, { enableSlowRamp: false, timestampCreated: created(3) }),
     ]);
     mockFetchLifecycle.mockResolvedValue(
@@ -319,14 +320,14 @@ describe("syncLifecycleLimits", () => {
     expect(mockSetWarmup).toHaveBeenCalledWith("key", "both@x.com", 0);
     expect(mockSetDaily).toHaveBeenCalledWith("key", "both@x.com", 50);
     expect(mockSetDaily).toHaveBeenCalledWith("key", "daily@x.com", 50);
-    expect(mockSetDaily).toHaveBeenCalledWith("key", "ramp@x.com", 5);
+    expect(mockSetDaily).not.toHaveBeenCalledWith("key", "ramp@x.com", 5);
     expect(mockSetSlowRamp).toHaveBeenCalledTimes(1);
     expect(mockSetSlowRamp).toHaveBeenCalledWith("key", "ramp@x.com", true);
     expect(summary).toEqual({
       accountsRead: 4,
       accountsPatched: 3,
       warmupPatched: 1,
-      dailyPatched: 3,
+      dailyPatched: 2,
       slowRampPatched: 1,
       failed: 0,
     });
