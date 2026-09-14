@@ -18,6 +18,7 @@ import {
   slowRampForAge,
   MATURE_AGE_DAYS,
   isDeliveryEvidenceFresh,
+  isDeliveryUnmeasurable,
   isInstantlyEnforced,
   DELIVERY_EVIDENCE_MAX_AGE_DAYS,
   type DeriveLifecycleInput,
@@ -198,6 +199,14 @@ describe("deriveLifecycle — delivery evidence expires", () => {
   const daysAgo = (n: number) =>
     new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
 
+  // ⚠️ EVERY CASE HERE IS PINNED TO `smtp`, AND THAT IS THE POINT, NOT BOILERPLATE.
+  // Expiry only binds on a mailbox something can still re-measure, and the seed
+  // harness reads a mailbox over IMAP — so it reaches exactly the credentialed
+  // (`smtp`) fleet. The `instantly` default this fixture used to carry is the
+  // UNCREDENTIALED case, which the sibling describe below covers.
+  const measurable = (overrides: Partial<DeriveLifecycleInput> = {}) =>
+    input({ sendTransport: "smtp", ...overrides });
+
   it("DELIVERY_EVIDENCE_MAX_AGE_DAYS is 16 — two missed Saturdays", () => {
     expect(DELIVERY_EVIDENCE_MAX_AGE_DAYS).toBe(16);
   });
@@ -205,7 +214,7 @@ describe("deriveLifecycle — delivery evidence expires", () => {
   it("a passing test older than the cap demotes, even from in_production", () => {
     expect(
       deriveLifecycle(
-        input({ deliveryTestedAt: daysAgo(17), currentStatus: "in_production" }),
+        measurable({ deliveryTestedAt: daysAgo(17), currentStatus: "in_production" }),
       ),
     ).toEqual({ status: "in_recovery", reason: "delivery_evidence_stale" });
   });
@@ -213,7 +222,7 @@ describe("deriveLifecycle — delivery evidence expires", () => {
   it("exactly at the cap still counts as evidence", () => {
     expect(
       deriveLifecycle(
-        input({ deliveryTestedAt: daysAgo(16), currentStatus: "in_production" }),
+        measurable({ deliveryTestedAt: daysAgo(16), currentStatus: "in_production" }),
       ),
     ).toEqual({ status: "in_production", reason: "passed" });
   });
@@ -224,7 +233,7 @@ describe("deriveLifecycle — delivery evidence expires", () => {
     // A tighter cap would demote the whole fleet every Sunday morning.
     expect(
       deriveLifecycle(
-        input({ deliveryTestedAt: daysAgo(10), currentStatus: "in_production" }),
+        measurable({ deliveryTestedAt: daysAgo(10), currentStatus: "in_production" }),
       ),
     ).toEqual({ status: "in_production", reason: "passed" });
   });
@@ -232,7 +241,7 @@ describe("deriveLifecycle — delivery evidence expires", () => {
   it("a FAILING test is delivery_below_bar regardless of age (not stale)", () => {
     expect(
       deriveLifecycle(
-        input({
+        measurable({
           deliveryAtBar: false,
           deliveryTestedAt: daysAgo(40),
           currentStatus: "in_production",
@@ -244,13 +253,112 @@ describe("deriveLifecycle — delivery evidence expires", () => {
   it("never tested → delivery_below_bar, not delivery_evidence_stale", () => {
     expect(
       deriveLifecycle(
-        input({
+        measurable({
           deliveryAtBar: null,
           deliveryTestedAt: null,
           currentStatus: "in_production",
         }),
       ),
     ).toEqual({ status: "in_recovery", reason: "delivery_below_bar" });
+  });
+});
+
+// The Instantly Inbox Placement subscription is cancelled — `POST
+// /api/v2/inbox-placement-tests` answers 402 — and the in-house seed harness
+// needs an IMAP credential, which is the exact thing an `instantly`-transport
+// account does not have. So for that fleet NOTHING can refresh the evidence, and
+// expiring it retires 22 healthy mailboxes permanently instead of protecting
+// anyone. Measured in prod 2026-09-14: the 42 `send_transport='instantly'`
+// accounts are exactly the 42 `instantly-dfy` ones, with zero rows across all
+// five `seed:` tests, and their last measurement (2026-08-29) scored 91.5-99%.
+describe("deriveLifecycle — evidence nothing can refresh does not expire", () => {
+  const daysAgo = (n: number) =>
+    new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
+
+  /** Uncredentialed ⇒ outside both instruments. The fixture default. */
+  const unmeasurable = (overrides: Partial<DeriveLifecycleInput> = {}) =>
+    deriveLifecycle(input({ sendTransport: "instantly", ...overrides }));
+
+  it("a passing test long past the cap KEEPS an uncredentialed mailbox in production", () => {
+    expect(
+      unmeasurable({ deliveryTestedAt: daysAgo(40), currentStatus: "in_production" }),
+    ).toEqual({ status: "in_production", reason: "delivery_unmeasurable" });
+  });
+
+  it("it re-ADMITS one already demoted for staleness — the 22 frozen DFY mailboxes", () => {
+    // They were demoted at 16 days and sit in_recovery at daily_limit 20; the
+    // point of the change is that they come BACK, not merely that they stop
+    // falling out.
+    expect(
+      unmeasurable({ deliveryTestedAt: daysAgo(17), currentStatus: "in_recovery" }),
+    ).toEqual({ status: "in_production", reason: "delivery_unmeasurable" });
+  });
+
+  it("the reason is NOT `passed` — the ops table must not read it as fresh evidence", () => {
+    // `passed` asserts a current measurement. This mailbox is riding a frozen
+    // one, and `inboxPlacement.testedAt` is served beside it to say how old.
+    expect(unmeasurable({ deliveryTestedAt: daysAgo(40) }).reason).toBe(
+      "delivery_unmeasurable",
+    );
+    expect(unmeasurable({ deliveryTestedAt: FRESH_TEST }).reason).toBe("passed");
+  });
+
+  it("NEGATIVE CONTROL — the same staleness on a credentialed mailbox still demotes", () => {
+    // Without this the suite cannot tell "the exemption works" from "expiry is
+    // broken for everyone".
+    expect(
+      deriveLifecycle(
+        input({
+          sendTransport: "smtp",
+          deliveryTestedAt: daysAgo(40),
+          currentStatus: "in_production",
+        }),
+      ),
+    ).toEqual({ status: "in_recovery", reason: "delivery_evidence_stale" });
+  });
+
+  it("a FAILING measurement is still held out, however old — the 18 cancelled DFY mailboxes", () => {
+    // The bar is tested BEFORE freshness, so this never reaches the exemption.
+    // Those 18 sit on spam-scoring domains whose mailboxes were deleted at the
+    // vendor; promoting them would pin new sequences to mailboxes that cannot
+    // dispatch. This is the ordering guard — if it goes red, the branch moved.
+    expect(
+      unmeasurable({
+        deliveryAtBar: false,
+        deliveryTestedAt: daysAgo(40),
+        currentStatus: "in_recovery",
+      }),
+    ).toEqual({ status: "in_recovery", reason: "delivery_below_bar" });
+  });
+
+  it("a NEVER-tested uncredentialed mailbox is NOT promoted — absence is not a frozen pass", () => {
+    expect(
+      unmeasurable({ deliveryAtBar: null, deliveryTestedAt: null }),
+    ).toEqual({ status: "in_recovery", reason: "delivery_below_bar" });
+  });
+
+  it("Instantly disabling the account still wins — that gate is earlier", () => {
+    expect(
+      unmeasurable({ instantlyStatus: -1, deliveryTestedAt: daysAgo(40) }),
+    ).toEqual({
+      status: "deactivated_by_instantly",
+      reason: "deactivated_by_instantly",
+    });
+  });
+
+  it("a brand domain still wins — it is the first gate of all", () => {
+    expect(
+      unmeasurable({ domain: "distribute.you", deliveryTestedAt: daysAgo(40) }),
+    ).toEqual({ status: "deactivated_by_user", reason: "brand_domain" });
+  });
+});
+
+describe("isDeliveryUnmeasurable — keyed on the credential, via the transport", () => {
+  it("true for instantly (no credential), false for smtp (we hold one)", () => {
+    // Not a correlated proxy: holding a credential is the single fact that
+    // decides the transport, so this restates it rather than guessing at it.
+    expect(isDeliveryUnmeasurable("instantly")).toBe(true);
+    expect(isDeliveryUnmeasurable("smtp")).toBe(false);
   });
 });
 
