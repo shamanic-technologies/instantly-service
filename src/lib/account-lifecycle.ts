@@ -482,9 +482,11 @@ export function capForAccount(
     daily_limit?: number | null;
     sendTransport?: string | null;
     vendorPrewarmedAt?: Date | string | null;
+    timestamp_created?: string | Date | null;
   },
   recentSustainedDaily: number,
   sendTransport?: SendTransport,
+  asOf: Date = new Date(),
 ): number {
   // Read off the account when the caller does not say, so a call site holding a
   // `PooledAccount` (which carries the policy) cannot silently fall back to the
@@ -498,21 +500,56 @@ export function capForAccount(
   const stated = account.daily_limit ?? IN_PRODUCTION_DAILY_LIMIT;
   if (!rampAppliesToTransport(transport)) return stated;
 
-  // ⚠️ A mailbox the VENDOR warmed has a sending history; we just have not
-  // watched any of it. Until it sends its first message under our dispatcher
-  // `recentSustainedDaily` is 0, and 0 here means "we have not looked", not "it
-  // has been quiet" — the same false zero that pinned the DFY mailboxes (see
-  // `rampAppliesToTransport`). Ramping from the floor on that number would make
-  // the pre-warmed premium buy nothing: the mailbox would reach full rate in the
-  // same three weeks a brand-new one takes, which is what we paid to skip.
-  //
-  // Bounded by construction rather than by a date: the exemption stops applying
-  // the moment ANY volume is measured, which is the day after its first send. It
-  // is also what the published guidance says for a mailbox of that age — a
-  // 31-day-old mailbox sits at 30-50/day in every warm-up schedule we checked.
-  if (recentSustainedDaily <= 0 && account.vendorPrewarmedAt) return stated;
+  if (isPrewarmedExempt(account, asOf)) return stated;
 
   return Math.min(stated, rampCapForVolume(recentSustainedDaily, IN_PRODUCTION_DAILY_LIMIT));
+}
+
+/**
+ * Whether a mailbox the VENDOR warmed is still exempt from our volume ramp.
+ *
+ * ⚠️ THE BOUND IS HOW LONG **WE** HAVE BEEN WATCHING, NOT WHETHER IT HAS SENT.
+ * The exemption exists because a pre-warmed mailbox has a real sending history
+ * that our own instruments cannot see: `fetchRecentDailyVolume` reads three of
+ * OUR tables, so a mailbox the vendor ran for a month reads 0 and the ramp pins
+ * it at {@link RAMP_FLOOR_PER_DAY} on a number that means "we have not looked".
+ *
+ * The first form of this bound was `recentSustainedDaily <= 0` — "exempt until
+ * any volume is measured" — and it expired on day TWO. The statistic is the
+ * SECOND-highest day of the window, so with two days of data it takes the
+ * SMALLER one: a mailbox that sent its first single email yesterday reads
+ * `sustained = 1`, `rampCapForVolume(1)` floors at 5, and the pre-warmed premium
+ * bought exactly one day at full rate. Measured in prod 2026-09-14 on
+ * `raquel@acutezoneco.com`: 14 seed+warmup sends on 09-13, ONE outreach send on
+ * 09-14, cap 5 against a stated 50.
+ *
+ * So the condition now says what it always meant: exempt while we have not
+ * watched the mailbox long enough for a 0 (or a 1) to be a fact about IT rather
+ * than about us. After {@link MATURE_AGE_DAYS} the ramp governs like everything
+ * else, and there is no cliff for a mailbox actually used — one running at 50/day
+ * reads `sustained ≈ 50` by then, so `rampCapForVolume` returns 50 anyway. A
+ * mailbox we left quiet for a month DOES drop to the floor, and that is honest:
+ * by then we really did look.
+ *
+ * ⚠️ THE AGE READ IS `timestamp_created` (Instantly's account-creation date =
+ * the day WE imported it), NOT `COALESCE(vendor_prewarmed_at, timestamp_created)`.
+ * The testable-age floor in `account-lifecycle-sync` coalesces because it asks
+ * "has this mailbox warmed enough to be worth measuring", which the vendor's
+ * month answers. This asks the opposite question — "how long have WE been
+ * measuring it" — and the vendor's date answers nothing about that. Do NOT
+ * "consistency-fix" the two into one read.
+ *
+ * An undatable account stays EXEMPT: with no import date we cannot claim the
+ * watching period has elapsed, and `vendorPrewarmedAt` is positive evidence
+ * while a missing timestamp is merely absent information.
+ */
+export function isPrewarmedExempt(
+  account: { vendorPrewarmedAt?: Date | string | null; timestamp_created?: string | Date | null },
+  asOf: Date,
+): boolean {
+  if (!account.vendorPrewarmedAt) return false;
+  const watched = accountAgeMs(account.timestamp_created, asOf);
+  return watched === null || watched < MATURE_AGE_MS;
 }
 
 /**

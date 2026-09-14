@@ -208,6 +208,7 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
           lifecycleByEmail,
           volume,
           mailboxOf,
+          asOf,
         );
 
         const pendingLeads = await loadPendingLeads();
