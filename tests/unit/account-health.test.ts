@@ -18,8 +18,9 @@ function lifecycle(
   status: LifecycleStatus,
   reason: string | null = null,
   updatedAt: string | null = "2026-07-05T00:00:00.000Z",
+  extra: Partial<LifecycleView> = {},
 ): LifecycleView {
-  return { status, reason, updatedAt };
+  return { status, reason, updatedAt, ...extra } as LifecycleView;
 }
 
 describe("buildAccountHealth", () => {
@@ -470,6 +471,81 @@ describe("buildAccountHealth — fill rank + effective cap", () => {
 
     expect(row.dailyLimit).toBeNull();
     expect(row.effectiveDailyCap).toBeNull();
+  });
+
+  it("EXEMPTS a pre-warmed mailbox — the silver flag must reach the selector's function", () => {
+    // The defect this test exists for: `vendorPrewarmedAt` is a SILVER column,
+    // so the raw Instantly account passed to `capForAccount` never carried it
+    // and the exemption silently never fired on this table. It read as correct
+    // because the function IS the selector's — the bug was in the argument.
+    // Measured in prod 2026-09-14: raquel@acutezoneco.com reported 5 against a
+    // stated 50 while the selector offered 50.
+    const [row] = buildAccountHealth(
+      [
+        acc({
+          email: "prewarmed@a.com",
+          daily_limit: 50,
+          timestamp_created: "2026-09-13T11:26:21Z",
+        }),
+      ],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([
+        [
+          "prewarmed@a.com",
+          lifecycle("in_production", "passed", null, {
+            sendTransport: "smtp",
+            vendorPrewarmedAt: new Date("2026-08-13T00:00:00Z"),
+          }),
+        ],
+      ]),
+      new Map(),
+      new Map(),
+      // One measured send yesterday — the reading that used to floor it at 5.
+      { asOf: new Date("2026-09-14T06:00:00Z"), recentSustainedByEmail: new Map([["prewarmed@a.com", 1]]) },
+    );
+
+    expect(row.dailyLimit).toBe(50);
+    expect(row.effectiveDailyCap).toBe(50);
+  });
+
+  it("still ramps a mailbox we did NOT buy pre-warmed, on the same inputs", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "own@a.com", daily_limit: 50, timestamp_created: "2026-09-13T11:26:21Z" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([["own@a.com", lifecycle("in_production", "passed", null, { sendTransport: "smtp" })]]),
+      new Map(),
+      new Map(),
+      { asOf: new Date("2026-09-14T06:00:00Z"), recentSustainedByEmail: new Map([["own@a.com", 1]]) },
+    );
+
+    expect(row.effectiveDailyCap).toBe(RAMP_FLOOR_PER_DAY);
+  });
+
+  it("rejoins the ramp once we have watched the pre-warmed mailbox long enough", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "prewarmed@a.com", daily_limit: 50, timestamp_created: "2026-09-13T11:26:21Z" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([
+        [
+          "prewarmed@a.com",
+          lifecycle("in_production", "passed", null, {
+            sendTransport: "smtp",
+            vendorPrewarmedAt: new Date("2026-08-13T00:00:00Z"),
+          }),
+        ],
+      ]),
+      new Map(),
+      new Map(),
+      { asOf: new Date("2026-10-23T06:00:00Z"), recentSustainedByEmail: new Map([["prewarmed@a.com", 1]]) },
+    );
+
+    expect(row.effectiveDailyCap).toBe(RAMP_FLOOR_PER_DAY);
   });
 
   it("callers that pass no selection view report a null rank and the floored cap", () => {
