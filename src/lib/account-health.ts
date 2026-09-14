@@ -303,13 +303,24 @@ export function buildAccountHealth(
       dailyLimit: a.daily_limit ?? null,
       // Null stays null: an account with no stated limit has no cap to report, and
       // `capForAccount`'s own fallback to the lifecycle base would invent one.
+      //
+      // ⚠️ `vendorPrewarmedAt` MUST be merged in from the lifecycle view. It is a
+      // SILVER column, so the raw Instantly account carries no such field and the
+      // pre-warmed ramp exemption silently never fired here — this table reported
+      // thirty 100%-inbox mailboxes at 5/day while the selector offered them 50,
+      // which is the ops view contradicting the selector about the same account.
+      // It read as correct because `capForAccount` IS the selector's function; the
+      // defect was in what we handed it. `timestamp_created` needs no merge (the
+      // Instantly account carries it), and `asOf` is passed so the row is dated by
+      // the same clock as the fill rank beside it.
       effectiveDailyCap:
         a.daily_limit === undefined || a.daily_limit === null
           ? null
           : capForAccount(
-              a,
+              { ...a, vendorPrewarmedAt: lifecycle?.vendorPrewarmedAt ?? null },
               recentSustainedByEmail.get(a.email) ?? 0,
               resolveTransportForSend(lifecycle?.sendTransport ?? SEND_TRANSPORT_SMTP),
+              asOf,
             ),
       fillRank: fillRankByEmail.get(a.email) ?? null,
       warmupLimit: a.warmup?.limit ?? null,
