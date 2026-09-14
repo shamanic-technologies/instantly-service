@@ -22,6 +22,7 @@ import {
   DELIVERY_EVIDENCE_MAX_AGE_DAYS,
   type DeriveLifecycleInput,
   capForAccount,
+  isPrewarmedExempt,
   rampAppliesToTransport,
 } from "../../src/lib/account-lifecycle";
 
@@ -627,27 +628,76 @@ describe("rampAppliesToTransport / capForAccount", () => {
 });
 
 describe("capForAccount — a mailbox the vendor warmed", () => {
-  const PREWARMED = new Date("2026-08-13T00:00:00Z"); // 31 jours avant l'import
+  const PREWARMED = new Date("2026-08-13T00:00:00Z"); // le vendeur l'a chauffée un mois
+  const IMPORTED = "2026-09-13T11:26:21Z"; // le jour où NOUS l'avons reprise
+  const DAY_AFTER_IMPORT = new Date("2026-09-14T08:00:00Z");
+  const LONG_AFTER_IMPORT = new Date("2026-10-23T08:00:00Z"); // J+40
+
+  const prewarmed = (extra: Record<string, unknown> = {}) => ({
+    daily_limit: 50,
+    vendorPrewarmedAt: PREWARMED,
+    timestamp_created: IMPORTED,
+    ...extra,
+  });
 
   it("is offered its full stated limit before it has sent anything for us", () => {
     // `recentSustainedDaily` is 0 because we have watched none of the vendor's
-    // month of warmup, not because the mailbox has been quiet. Ramping from the
-    // floor on that number makes the pre-warmed premium buy nothing.
-    expect(capForAccount({ daily_limit: 50, vendorPrewarmedAt: PREWARMED }, 0, "smtp")).toBe(50);
+    // month of warmup — not because the mailbox has been quiet.
+    expect(capForAccount(prewarmed(), 0, "smtp", DAY_AFTER_IMPORT)).toBe(50);
   });
 
-  it("rejoins the ramp the moment ANY volume is measured", () => {
-    // The exemption is bounded by construction, not by a date: one send is
-    // enough to make our own measurement the honest one again.
-    expect(capForAccount({ daily_limit: 50, vendorPrewarmedAt: PREWARMED }, 10, "smtp")).toBe(15);
+  it("KEEPS the full limit once it starts sending — the exemption is not spent on day one", () => {
+    // The regression this test exists for. The statistic is the SECOND-highest
+    // day of the window, so a mailbox with two days of history takes the SMALLER
+    // one: one outreach email yesterday reads `sustained = 1` and the old
+    // "exempt while volume is 0" form floored it at 5. Measured in prod
+    // 2026-09-14 on raquel@acutezoneco.com — 14 seed+warmup sends on 09-13, ONE
+    // outreach send on 09-14, cap 5 against a stated 50.
+    expect(capForAccount(prewarmed(), 1, "smtp", DAY_AFTER_IMPORT)).toBe(50);
+    expect(capForAccount(prewarmed(), 14, "smtp", DAY_AFTER_IMPORT)).toBe(50);
+  });
+
+  it("rejoins the ramp once we have watched it for the maturity window", () => {
+    // Past MATURE_AGE_DAYS a low reading is a fact about the MAILBOX rather than
+    // about us, so the ramp governs it like any other.
+    expect(capForAccount(prewarmed(), 1, "smtp", LONG_AFTER_IMPORT)).toBe(RAMP_FLOOR_PER_DAY);
+  });
+
+  it("has no cliff at the end of the window for a mailbox actually used", () => {
+    // One running at 30/day reads sustained 30 by then, so the ramp returns 45 —
+    // it does not fall off the exemption onto the floor.
+    expect(capForAccount(prewarmed(), 30, "smtp", LONG_AFTER_IMPORT)).toBe(45);
+    expect(capForAccount(prewarmed(), 50, "smtp", LONG_AFTER_IMPORT)).toBe(50);
+  });
+
+  it("stays exempt when we cannot date our own import", () => {
+    // A missing import date carries no claim that the watching period elapsed,
+    // while `vendorPrewarmedAt` is positive evidence. Never trap an undatable
+    // account at the floor on absent information.
+    expect(
+      capForAccount(prewarmed({ timestamp_created: null }), 1, "smtp", LONG_AFTER_IMPORT),
+    ).toBe(50);
   });
 
   it("leaves a mailbox we did NOT buy pre-warmed at the floor", () => {
     expect(capForAccount({ daily_limit: 50, vendorPrewarmedAt: null }, 0, "smtp")).toBe(5);
     expect(capForAccount({ daily_limit: 50 }, 0, "smtp")).toBe(5);
+    // Byte-identical to the pre-exemption behaviour for a measured mailbox.
+    expect(capForAccount({ daily_limit: 50, timestamp_created: IMPORTED }, 1, "smtp")).toBe(5);
   });
 
   it("still honours an operator-set limit below the stated ceiling", () => {
-    expect(capForAccount({ daily_limit: 20, vendorPrewarmedAt: PREWARMED }, 0, "smtp")).toBe(20);
+    expect(capForAccount(prewarmed({ daily_limit: 20 }), 0, "smtp", DAY_AFTER_IMPORT)).toBe(20);
+    expect(capForAccount(prewarmed({ daily_limit: 20 }), 1, "smtp", DAY_AFTER_IMPORT)).toBe(20);
+  });
+
+  it("reads OUR import date, never the vendor's warm date", () => {
+    // The two answer different questions and the vendor date is a month older,
+    // so coalescing them would expire the exemption a month early. See
+    // `isPrewarmedExempt`.
+    expect(isPrewarmedExempt({ vendorPrewarmedAt: PREWARMED, timestamp_created: IMPORTED }, DAY_AFTER_IMPORT)).toBe(true);
+    expect(isPrewarmedExempt({ vendorPrewarmedAt: PREWARMED, timestamp_created: IMPORTED }, LONG_AFTER_IMPORT)).toBe(false);
+    // Coalescing onto the vendor date would have returned false here.
+    expect(isPrewarmedExempt({ vendorPrewarmedAt: PREWARMED, timestamp_created: PREWARMED }, DAY_AFTER_IMPORT)).toBe(false);
   });
 });

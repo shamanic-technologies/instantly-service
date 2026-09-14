@@ -86,10 +86,10 @@ export function gapsFromSequence(
  * The days one incoming lead would book on a mailbox, and whether that mailbox
  * has room on every one of them.
  *
- * The cap is re-read PER DAY: a mailbox is older on D+10 than on D0, so its age
- * ramp is higher there — a fresh account that cannot take the first email today
- * may comfortably carry the followup a week later, and pinning the cap to day
- * zero would hide that.
+ * The cap is the SAME on every footprint day — see the note in the body. It used
+ * to be re-read per day on the reasoning that a mailbox is older on D+10, back
+ * when the ramp was keyed on age; it is keyed on MEASURED VOLUME now, which is a
+ * fact about the past that cannot honestly be projected forward.
  */
 function fitsFootprint(
   a: Account & { sendTransport?: string | null; vendorPrewarmedAt?: Date | string | null },
@@ -102,7 +102,12 @@ function fitsFootprint(
   // fact about the past, so there is no honest way to project it forward — and
   // assuming a mailbox will have earned more room by D+10 is the optimism that
   // over-books the head of the fill order.
-  const cap = capForAccount(a, (byEmail.get(a.email) ?? EMPTY_CAPACITY).recentSustainedDaily);
+  const cap = capForAccount(
+    a,
+    (byEmail.get(a.email) ?? EMPTY_CAPACITY).recentSustainedDaily,
+    undefined,
+    asOf,
+  );
   return footprint.every((dayKey, i) => cap > 0 && loadOnDay(a, byEmail, dayKey, i === 0) < cap);
 }
 
@@ -357,7 +362,12 @@ export function pickSequentialFillAccount<T extends FillOrderAccount>(
   let best = ordered[0];
   let bestRatio = Number.POSITIVE_INFINITY;
   for (const a of ordered) {
-    const cap = capForAccount(a, (byEmail.get(a.email) ?? EMPTY_CAPACITY).recentSustainedDaily);
+    const cap = capForAccount(
+      a,
+      (byEmail.get(a.email) ?? EMPTY_CAPACITY).recentSustainedDaily,
+      undefined,
+      asOf,
+    );
     const ratio =
       cap > 0
         ? loadOnDay(a, byEmail, days[0]!, true) / cap
