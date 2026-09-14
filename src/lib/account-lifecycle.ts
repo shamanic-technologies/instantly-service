@@ -11,7 +11,8 @@
  *   instantlyStatus <= 0        [instantly only]    → deactivated_by_instantly
  *   healthScore < BAR           [instantly only]
  *     **and not already in prod**                   → in_recovery
- *   delivery below BAR, or its evidence stale       → in_recovery
+ *   delivery below BAR                              → in_recovery
+ *   its evidence stale, and refreshable             → in_recovery
  *   otherwise                                       → in_production
  *
  * The two `[instantly only]` gates read signals Instantly OWNS, and they are
@@ -28,7 +29,9 @@
  *   Delivery UNKNOWN (never tested) is passed as `null` and treated as below bar,
  *   so an untested account defaults to in_recovery. Since delivery is the only
  *   demotion path, its evidence also expires — see
- *   {@link DELIVERY_EVIDENCE_MAX_AGE_DAYS}.
+ *   {@link DELIVERY_EVIDENCE_MAX_AGE_DAYS} — except on a mailbox no instrument
+ *   we still own can ever re-measure, where expiry would retire it permanently
+ *   rather than protect anyone. See {@link isDeliveryUnmeasurable}.
  */
 
 import {
@@ -55,6 +58,7 @@ export type LifecycleReason =
   | "health_below_bar"
   | "delivery_below_bar"
   | "delivery_evidence_stale"
+  | "delivery_unmeasurable"
   | "passed"
   | "reactivated";
 
@@ -209,6 +213,44 @@ export function isDeliveryEvidenceFresh(
 }
 
 /**
+ * True ⇔ NOTHING can ever refresh this account's delivery evidence, so letting
+ * it expire excludes the mailbox permanently rather than protecting anyone.
+ *
+ * The fleet has exactly two deliverability instruments and this account is
+ * outside both:
+ *
+ *  - the in-house SEED HARNESS reads a mailbox over IMAP, so it needs a
+ *    credential. An account on the `instantly` transport is, by construction,
+ *    an account we hold NO credential for — that single fact is what decides
+ *    the transport in the first place (see `self-send/capability.ts`), so this
+ *    is an exact restatement of it, not a correlated guess. Measured in prod
+ *    2026-09-14: the 42 `send_transport='instantly'` accounts are EXACTLY the
+ *    42 on `infra_domains.provider='instantly-dfy'`, and they hold zero rows
+ *    across all five `seed:` tests.
+ *  - Instantly's paid INBOX PLACEMENT test measured them weekly until
+ *    2026-08-29. That subscription is cancelled: `POST
+ *    /api/v2/inbox-placement-tests` answers `402 "You have reached the limit of
+ *    free inbox placement tests"`, and `PLACEMENT_TESTS_ENABLED=false` on the
+ *    box, so the Saturday cron 409s and does nothing.
+ *
+ * ⚠️ IT IS SELF-DISARMING, AND THAT IS WHY IT IS NOT A FLAG. The caller only
+ * consults it once the evidence has ALREADY gone stale. Re-arm the paid
+ * subscription and the weekly test refreshes these accounts again, so
+ * `isDeliveryEvidenceFresh` stays true and this branch is never reached — there
+ * is no switch to remember to turn off.
+ *
+ * ⚠️ IT DOES NOT TOUCH THE BAR. `deriveLifecycle` tests `deliveryAtBar` BEFORE
+ * freshness, so an account whose last measurement FAILED is already held out
+ * and never reaches this predicate. That ordering is what keeps the 18 DFY
+ * mailboxes cancelled on 2026-09-13 (all `delivery_below_bar`, on spam-scoring
+ * domains) from being promoted back onto sequences pinned to deleted mailboxes.
+ * Do NOT move this check above the bar.
+ */
+export function isDeliveryUnmeasurable(sendTransport: SendTransport): boolean {
+  return sendTransport !== SEND_TRANSPORT_SMTP;
+}
+
+/**
  * Pure lifecycle derivation. First match wins (order is load-bearing — a domain
  * in the policy is deactivated_by_user even if Instantly-disabled or under-warmed).
  *
@@ -298,9 +340,20 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
   if (deliveryAtBar !== true) {
     return { status: "in_recovery", reason: "delivery_below_bar" };
   }
-  // A passing result we can no longer vouch for is not a pass.
+  // A passing result we can no longer vouch for is not a pass — UNLESS no
+  // instrument we still own could ever refresh it. Expiring evidence protects
+  // against a measurement that silently STOPPED; for a mailbox nothing can
+  // measure at all it protects nobody and simply retires the mailbox for good.
+  // See `isDeliveryUnmeasurable` for why this cannot re-admit a FAILING one.
   if (!isDeliveryEvidenceFresh(deliveryTestedAt, asOf)) {
-    return { status: "in_recovery", reason: "delivery_evidence_stale" };
+    if (!isDeliveryUnmeasurable(sendTransport)) {
+      return { status: "in_recovery", reason: "delivery_evidence_stale" };
+    }
+    // Deliberately a DIFFERENT reason from `passed`: the ops table renders it
+    // verbatim, so nobody reads a mailbox frozen on an old measurement as one
+    // carrying fresh evidence. The measurement's own date is served beside it
+    // as `inboxPlacement.testedAt`.
+    return { status: "in_production", reason: "delivery_unmeasurable" };
   }
   return { status: "in_production", reason: "passed" };
 }

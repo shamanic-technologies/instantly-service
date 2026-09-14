@@ -913,6 +913,28 @@ A large queue of overdue steps reads as a bug and is not one. The fleet is delib
 
 Cost 2026-09-13 (18 DFY mailboxes on 4 spam-scoring domains cancelled): 8 sequences (22 un-sent steps, 6 of them never-contacted leads already paid for) were left pinned to deleted mailboxes. The first recommendation was to pause them AND to re-arm `retry-stuck` so the 6 would be redispatched; the owner correctly cut the second half.
 
+## ⚠️ La preuve de délivrabilité n'expire QUE si quelque chose peut la rafraîchir — sinon l'expiration retire la boîte définitivement
+
+`DELIVERY_EVIDENCE_MAX_AGE_DAYS` (16) existe pour un scénario précis, écrit dans son propre commentaire : *« un résultat passant mais ancien épinglerait un compte en production pour toujours si le cron de placement s'arrêtait silencieusement de produire »*. C'est un garde-fou contre une mesure qui S'ARRÊTE. Il ne dit rien du cas où **plus aucun instrument n'existe** — et là il ne protège personne, il retire la boîte pour de bon.
+
+La flotte a exactement deux instruments, et le pool DFY est en dehors des deux :
+
+- **Le harness seed** lit une boîte en IMAP, donc il lui faut un credential. Un compte sur le transport `instantly` est, **par construction**, un compte dont on n'a pas le mot de passe — c'est ce seul fait qui décide du transport (`self-send/capability.ts`). Ce n'est donc pas un proxy corrélé, c'est la même chose dite autrement. Mesuré 2026-09-14 : les 42 comptes `send_transport='instantly'` sont **exactement** les 42 sur `infra_domains.provider='instantly-dfy'`, et ils ont **zéro** ligne dans les cinq tests `seed:`.
+- **Le test payant Instantly** les mesurait chaque semaine jusqu'au 2026-08-29. L'abonnement Inbox Placement est annulé : `POST /api/v2/inbox-placement-tests` répond `402 "You have reached the limit of free inbox placement tests"`, et `PLACEMENT_TESTS_ENABLED=false` sur la box, donc le cron du samedi 409 et ne fait rien.
+
+Le 2026-09-14 à 13:44 UTC les 22 comptes DFY restants sont donc tombés en `in_recovery` / `delivery_evidence_stale`, seize jours pile après leur dernière mesure — qui les donnait à **91,5-99 % d'inbox**. `in_production` 83 → 61, ~1 100 envois/jour perdus, et le sweep horaire a rabattu leur `daily_limit` de 50 à 20. Rien n'était cassé : personne ne pouvait plus regarder.
+
+**`isDeliveryUnmeasurable(sendTransport)`** exempte ces comptes de l'expiration. Quatre propriétés, toutes portantes :
+
+- **⚠️ ELLE NE TOUCHE PAS À LA BARRE.** `deriveLifecycle` teste `deliveryAtBar` **AVANT** la fraîcheur, donc un compte dont la dernière mesure a ÉCHOUÉ est déjà retenu et n'atteint jamais cette branche. C'est cet ordre qui empêche les **18** mailboxes DFY annulées le 2026-09-13 (toutes `delivery_below_bar`, sur des domaines qui scoraient en spam) d'être repromues sur des séquences épinglées à des mailboxes supprimées chez le vendeur — exactement le cas que la section [A dispatch BACKLOG drains itself](#a-dispatch-backlog-drains-itself--the-thing-that-never-drains-is-a-sequence-pinned-to-a-mailbox-that-no-longer-exists) décrit. **Ne PAS remonter ce test au-dessus de la barre.** Un test le garde.
+- **⚠️ ELLE SE DÉSARME TOUTE SEULE, et c'est pourquoi ce n'est pas un flag.** Elle n'est consultée qu'une fois la preuve DÉJÀ périmée. Ré-arme l'abonnement payant et le test hebdomadaire rafraîchit ces comptes : `isDeliveryEvidenceFresh` reste vrai, la branche n'est jamais atteinte. Rien à penser à éteindre plus tard.
+- **La raison est `delivery_unmeasurable`, jamais `passed`.** `passed` affirme une mesure COURANTE ; ces boîtes roulent sur une mesure gelée. Le tableau ops rend `lifecycleReason` verbatim (le dashboard le lit en `z.string().nullable()`, sans enum ni switch — la nouvelle valeur est purement additive), et la date de la mesure est servie à côté dans `inboxPlacement.testedAt`. Une absence de mesure (`deliveryAtBar: null`) reste `delivery_below_bar` : ne jamais promouvoir une boîte jamais testée, l'absence n'est pas un succès gelé.
+- **Pas de migration** — `lifecycle_reason` est une colonne `text` sans contrainte.
+
+**Le coût, assumé et non enterré : ces 22 boîtes ne seront plus jamais re-mesurées.** Si leur délivrabilité se dégrade, aucun instrument ne le verra ; il ne reste que les bounces. C'est le prix de garder un tier à ~246 $/mois sans les 47 $/mois du test payant, et elles sont au rang 5 de l'ordre de remplissage (dernières servies), donc elles ne prennent du trafic que quand tout le reste est plein. **Si on veut récupérer la mesure, la seule voie est un credential IMAP par boîte DFY** (le harness seed marche alors sans changement de code) — pas une barre plus basse, pas un retour du 47 $/mois.
+
+Gardes : le describe « evidence nothing can refresh does not expire » dans `tests/unit/account-lifecycle.test.ts` — dont le CONTRÔLE NÉGATIF (la même péremption sur `smtp` démote toujours), sans lequel la suite ne distingue pas « l'exemption marche » de « l'expiration est cassée pour tout le monde ».
+
 ## Account lifecycle — auto-driven per-account state (B/S/G)
 
 The manual "rest an account" blacklist is GONE (endpoint `POST /internal/audit/account-blacklist`, `src/lib/account-blacklist.ts`, the `instantly_accounts.manually_blacklisted` columns, the `classifyAccountBlock`/`filterHealthyAccounts`/`isBlockedDomain` send-lead helpers, the `BLOCKED_DOMAINS` constant, and the old `AccountBlockReason` enum all deleted). It is REPLACED by a locally-stored, **auto-derived per-account lifecycle** with 4 states. Pure derivation in `src/lib/account-lifecycle.ts` (`deriveLifecycle`, unit-tested `tests/unit/account-lifecycle.test.ts`); IO glue in `src/lib/account-lifecycle-sync.ts` (`reconcileLifecycle`, unit-tested `tests/unit/account-lifecycle-reconcile.test.ts`).
