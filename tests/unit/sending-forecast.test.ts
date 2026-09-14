@@ -1,5 +1,5 @@
 import type { DailyVolume } from "../../src/lib/recent-send-volume";
-import { RAMP_FLOOR_PER_DAY } from "../../src/lib/account-lifecycle";
+import { RAMP_FLOOR_PER_DAY, capForAccount } from "../../src/lib/account-lifecycle";
 import { describe, it, expect } from "vitest";
 import type { Account } from "../../src/lib/instantly-client";
 import type { LifecycleView } from "../../src/lib/account-lifecycle-sync";
@@ -589,33 +589,105 @@ describe("computeCapacitySummary — a mailbox the vendor pre-warmed", () => {
   const lc2 = (status: string, sendTransport: string, vendorPrewarmedAt: Date | null = null) =>
     ({ status, sendTransport, vendorPrewarmedAt }) as never;
   const PREWARMED = new Date("2026-08-13T00:00:00Z");
+  const IMPORTED = "2026-09-13T11:26:21Z";
+  const DAY_AFTER_IMPORT = new Date("2026-09-14T08:00:00Z");
+  const LONG_AFTER_IMPORT = new Date("2026-10-23T08:00:00Z");
+
+  const acct = (email: string, extra: Record<string, unknown> = {}) =>
+    ({ email, daily_limit: 50, timestamp_created: IMPORTED, ...extra }) as never;
 
   it("reports its full limit before it has sent anything for us", () => {
     // 0 measured volume means we watched none of the vendor's month of warmup.
     // Ramping on it reported thirty 100%-inbox mailboxes at 5/day while the
     // selector offered 50 — the ops table contradicting the selector.
     const summary = computeCapacitySummary(
-      [{ email: "new@a.com", daily_limit: 50 } as never],
+      [acct("new@a.com")],
       new Map([["new@a.com", lc2("in_production", "smtp", PREWARMED)]]),
       new Map(),
+      new Map(),
+      DAY_AFTER_IMPORT,
     );
     expect(summary.dailyCapacity).toBe(50);
   });
 
-  it("rejoins the ramp once volume is measured, exactly like capForAccount", () => {
+  it("KEEPS the full limit once it starts sending — no cliff on day two", () => {
+    // The second-highest day of a two-day history is the SMALLER one, so a
+    // mailbox that sent 14 seed+warmup on day one and 1 outreach on day two
+    // reads sustained 1 and the old form floored it at 5.
     const summary = computeCapacitySummary(
-      [{ email: "new@a.com", daily_limit: 50 } as never],
+      [acct("new@a.com")],
       new Map([["new@a.com", lc2("in_production", "smtp", PREWARMED)]]),
-      new Map([["new@a.com", new Map([["2026-09-10", 10], ["2026-09-11", 10]])]]),
+      new Map([["new@a.com", new Map([["2026-09-13", 14], ["2026-09-14", 1]])]]),
+      new Map(),
+      DAY_AFTER_IMPORT,
     );
+    expect(summary.dailyCapacity).toBe(50);
+  });
+
+  it("rejoins the ramp once we have watched it for the maturity window", () => {
+    const summary = computeCapacitySummary(
+      [acct("new@a.com")],
+      new Map([["new@a.com", lc2("in_production", "smtp", PREWARMED)]]),
+      new Map([["new@a.com", new Map([["2026-10-20", 10], ["2026-10-21", 10]])]]),
+      new Map(),
+      LONG_AFTER_IMPORT,
+    );
+    expect(summary.dailyCapacity).toBe(15);
+  });
+
+  it("agrees with capForAccount for the same account — one rule, two readers", () => {
+    // These two surfaces derive the same quantity; a disagreement is the staff
+    // Audit page contradicting the selector about one mailbox. Subtract them.
+    const account = acct("new@a.com");
+    const volume = new Map([["new@a.com", new Map([["2026-09-13", 14], ["2026-09-14", 1]])]]);
+    for (const asOf of [DAY_AFTER_IMPORT, LONG_AFTER_IMPORT]) {
+      const summary = computeCapacitySummary(
+        [account],
+        new Map([["new@a.com", lc2("in_production", "smtp", PREWARMED)]]),
+        volume,
+        new Map(),
+        asOf,
+      );
+      const selector = capForAccount(
+        { daily_limit: 50, vendorPrewarmedAt: PREWARMED, timestamp_created: IMPORTED },
+        1,
+        "smtp",
+        asOf,
+      );
+      expect(summary.dailyCapacity).toBe(selector);
+    }
+  });
+
+  it("takes an alias group's OLDEST import, so a newer sibling cannot extend the exemption", () => {
+    // One relay login, two aliases: the mailbox has been ours since the older
+    // one arrived, whatever date the second carries.
+    const summary = computeCapacitySummary(
+      [
+        acct("old@a.com", { timestamp_created: "2026-08-01T00:00:00Z" }),
+        acct("new@a.com", { timestamp_created: "2026-10-20T00:00:00Z" }),
+      ],
+      new Map([
+        ["old@a.com", lc2("in_production", "smtp", PREWARMED)],
+        ["new@a.com", lc2("in_production", "smtp", PREWARMED)],
+      ]),
+      new Map([["old@a.com", new Map([["2026-10-20", 10], ["2026-10-21", 10]])]]),
+      new Map([
+        ["old@a.com", "relay@a.com"],
+        ["new@a.com", "relay@a.com"],
+      ]),
+      LONG_AFTER_IMPORT,
+    );
+    // Watched since 08-01 ⇒ past the window ⇒ ramped on the mailbox's own volume.
     expect(summary.dailyCapacity).toBe(15);
   });
 
   it("still ramps a mailbox we did NOT buy pre-warmed", () => {
     const summary = computeCapacitySummary(
-      [{ email: "own@a.com", daily_limit: 50 } as never],
+      [acct("own@a.com")],
       new Map([["own@a.com", lc2("in_production", "smtp", null)]]),
       new Map(),
+      new Map(),
+      DAY_AFTER_IMPORT,
     );
     expect(summary.dailyCapacity).toBe(5);
   });

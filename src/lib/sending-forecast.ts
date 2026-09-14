@@ -45,6 +45,7 @@
 
 import {
   IN_PRODUCTION_DAILY_LIMIT,
+  isPrewarmedExempt,
   rampAppliesToTransport,
   rampCapForVolume,
 } from "./account-lifecycle";
@@ -123,11 +124,37 @@ export interface CapacitySummary {
  * does not know is its own mailbox, which is both the Primeforge case and the
  * safe reading — the account is never silently dropped from the total.
  */
+/**
+ * Is `candidate` an EARLIER import date than `current`? Used to pick a mailbox's
+ * oldest alias import, so an alias group's pre-warmed exemption lifts at the
+ * earliest honest moment rather than being extended by a newer sibling.
+ *
+ * An unparseable / absent date loses to any real one: it carries no claim about
+ * when we started watching, so it must not win the comparison and hide a date
+ * that does.
+ */
+function olderImport(
+  candidate: string | Date | null | undefined,
+  current: string | Date | null | undefined,
+): boolean {
+  const ms = (v: string | Date | null | undefined): number | null => {
+    if (!v) return null;
+    const t = v instanceof Date ? v.getTime() : Date.parse(v);
+    return Number.isNaN(t) ? null : t;
+  };
+  const c = ms(candidate);
+  const k = ms(current);
+  if (c === null) return false;
+  if (k === null) return true;
+  return c < k;
+}
+
 export function computeCapacitySummary(
   accounts: Account[],
   lifecycleByEmail: Map<string, LifecycleView>,
   volume: DailyVolume = new Map(),
   mailboxOf: ReadonlyMap<string, string> = new Map(),
+  asOf: Date = new Date(),
 ): CapacitySummary {
   const statusOf = (email: string) => lifecycleByEmail.get(email)?.status ?? null;
   const production = accounts.filter((a) => statusOf(a.email) === "in_production");
@@ -171,19 +198,36 @@ export function computeCapacitySummary(
   // See `rampAppliesToTransport`; this read must never re-derive the selector's
   // cap differently from the selector.
   // ⚠️ A mailbox bought PRE-WARMED is exempt too, and for the same reason as the
-  // Instantly transport: until it sends its first message under our dispatcher
-  // its measured volume is 0, and that 0 means "we watched none of the vendor's
-  // month of warmup", not "it has been quiet". `capForAccount` already exempts
-  // it; applying the ramp here reported thirty 100%-inbox mailboxes at 5/day
-  // while the selector was offering them 50 (measured 2026-09-13).
+  // Instantly transport: our own volume figure cannot see the month the vendor
+  // warmed it, so a low reading is a fact about us and not about the mailbox.
+  // The rule is `isPrewarmedExempt` — imported by the CALLER OF RECORD rather
+  // than re-derived here, because this read and the selector must never disagree
+  // about the same account. They did: the first form of the exemption expired on
+  // the mailbox's second day, and it was duplicated in both places, so ONE fix
+  // would have left the Audit page contradicting the selector. An ALIAS group
+  // takes its OLDEST import date (the exemption lifts at the earliest honest
+  // moment); on Primeforge, where the address IS the mailbox, that is a no-op.
   const rampedMailboxes = new Set<string>();
+  const oldestImportByMailbox = new Map<string, Date | string | null | undefined>();
+  for (const a of production) {
+    const mailbox = mailboxFor(a.email);
+    const current = oldestImportByMailbox.get(mailbox);
+    if (!oldestImportByMailbox.has(mailbox) || olderImport(a.timestamp_created, current)) {
+      oldestImportByMailbox.set(mailbox, a.timestamp_created);
+    }
+  }
   for (const a of production) {
     const mailbox = mailboxFor(a.email);
     const view = lifecycleByEmail.get(a.email);
     const transport = resolveTransportForSend(view?.sendTransport ?? SEND_TRANSPORT_SMTP);
-    const sustained = sustainedForMailbox(volume, addressesByMailbox.get(mailbox) ?? []);
-    const prewarmedAndUnmeasured = sustained <= 0 && Boolean(view?.vendorPrewarmedAt);
-    if (rampAppliesToTransport(transport) && !prewarmedAndUnmeasured) {
+    const exempt = isPrewarmedExempt(
+      {
+        vendorPrewarmedAt: view?.vendorPrewarmedAt ?? null,
+        timestamp_created: oldestImportByMailbox.get(mailbox) ?? null,
+      },
+      asOf,
+    );
+    if (rampAppliesToTransport(transport) && !exempt) {
       rampedMailboxes.add(mailbox);
     }
   }
