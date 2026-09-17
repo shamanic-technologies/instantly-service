@@ -71,6 +71,14 @@ vi.mock("../../src/db/schema", () => ({
 // Mock key-client
 const mockResolveInstantlyApiKey = vi.fn();
 
+const mockFindStandingOptOut = vi.fn();
+// Passthrough: `optOutRefusal` stays real, so the refusal body the route returns
+// is the one the module actually builds — not a fixture agreeing with itself.
+vi.mock("../../src/lib/lead-optouts", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  findStandingOptOut: (...a: unknown[]) => mockFindStandingOptOut(...a),
+}));
+
 vi.mock("../../src/lib/key-client", () => ({
   resolveInstantlyApiKey: (...args: unknown[]) => mockResolveInstantlyApiKey(...args),
   KeyServiceError: class KeyServiceError extends Error {
@@ -1291,6 +1299,7 @@ describe("POST /send", () => {
     runCounter = 0;
     credentialedMailboxes.clear();
 
+    mockFindStandingOptOut.mockResolvedValue(null);
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
     mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: true, balance_cents: 1000 });
     // Re-contact-window lookup: no prior email to this person for this brand.
@@ -2439,6 +2448,7 @@ describe("POST /send — per-brand re-contact window", () => {
     vi.clearAllMocks();
     runCounter = 0;
 
+    mockFindStandingOptOut.mockResolvedValue(null);
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
     mockDbExecute.mockResolvedValue({ rows: [] });
     mockCreateRun.mockImplementation(() => {
@@ -2534,6 +2544,115 @@ describe("POST /send — per-brand re-contact window", () => {
 
   it("fails loud when the lookup errors — never waves the send through", async () => {
     mockDbExecute.mockRejectedValue(new Error("connection terminated"));
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(500);
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("POST /send — a person who asked us to stop", () => {
+  const STANDING = {
+    id: "optout-1",
+    orgId: "org-1",
+    email: "chad@clinic.com",
+    channel: "email_reply" as const,
+    statedBy: "reply-classifier",
+    notes: "Please remove me from your email list.",
+    statedAt: new Date("2026-08-01T10:00:00.000Z"),
+    withdrawnAt: null,
+    withdrawnBy: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFindStandingOptOut.mockResolvedValue(null);
+    mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
+    mockDbExecute.mockResolvedValue({ rows: [] });
+    mockCreateRun.mockResolvedValue({ id: "step-run-1" });
+    mockAddLeads.mockResolvedValue({ added: 1 });
+    mockListAccounts.mockResolvedValue([
+      acct({ email: "sender@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+    ]);
+    mockUpdateCampaign.mockResolvedValue({ id: "inst-camp-new", email_list: [], bcc_list: [], not_sending_status: null, status: "active" });
+    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-new", status: "draft" });
+    mockGetCampaign.mockResolvedValue({ email_list: ["sender@example.com"], not_sending_status: null });
+    mockUpdateCampaignStatus.mockResolvedValue({});
+    mockDbWhere.mockResolvedValue([]);
+    mockDbReturning.mockResolvedValue([{ id: "row-1" }]);
+  });
+
+  it("refuses — 409, no Instantly campaign, no run, no cost, no reservation", async () => {
+    // Without this gate a recorded opt-out stopped the campaigns that existed
+    // that day and nothing else, so the three-month re-contact window would
+    // lapse and we would email them again.
+    mockFindStandingOptOut.mockResolvedValue(STANDING);
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("lead_opted_out");
+    expect(res.body.channel).toBe("email_reply");
+    expect(res.body.statedAt).toBe("2026-08-01T10:00:00.000Z");
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(mockAddLeads).not.toHaveBeenCalled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("asks ORG-wide, not per brand — they asked US to stop", async () => {
+    mockFindStandingOptOut.mockResolvedValue(STANDING);
+
+    const app = await createSendApp();
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    // (orgId, email) — no brand narrows it, so a sibling brand of the same org
+    // cannot keep writing to somebody who opted out.
+    const [orgArg, emailArg] = mockFindStandingOptOut.mock.calls[0];
+    expect(orgArg).toBe(identityHeadersObj["x-org-id"]);
+    expect(emailArg).toBe(validBody.to);
+  });
+
+  it("is checked BEFORE the re-contact window — one expires, the other never does", async () => {
+    // Both would refuse here. The opt-out must win, because its body is the one
+    // that tells the caller not to come back at all.
+    mockFindStandingOptOut.mockResolvedValue(STANDING);
+    mockDbExecute.mockResolvedValue({
+      rows: [{ brand_id: "brand-1", last_emailed_at: new Date().toISOString() }],
+    });
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.body.code).toBe("lead_opted_out");
+  });
+
+  it("is distinguishable from the other two 409s on this route", async () => {
+    mockFindStandingOptOut.mockResolvedValue(STANDING);
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.body.code).not.toBe("recent_brand_contact");
+    expect(res.body.code).not.toBe("lead_id_conflict");
+  });
+
+  it("lets a lead with NO standing opt-out through", async () => {
+    mockFindStandingOptOut.mockResolvedValue(null);
+    mockNewCampaignFlow();
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+  });
+
+  it("FAILS LOUD when the lookup errors — never waves the send through", async () => {
+    mockFindStandingOptOut.mockRejectedValue(new Error("db down"));
 
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);

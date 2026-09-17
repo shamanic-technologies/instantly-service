@@ -38,6 +38,7 @@ import {
 import { stopLeadSequence } from "../stop-lead-sequence";
 import { parseInstantlySequenceStep } from "./instantly-sends";
 import { qualifyReply } from "./qualify-reply";
+import { OPT_OUT_REPLY_KIND, recordOptOutFromReply } from "../reply-opt-out";
 import { isSelfSendCampaignId, SEND_TRANSPORT_SMTP } from "./transport";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/poll" };
@@ -107,6 +108,12 @@ export interface PollSummary {
   qualified: number;
   /** Replies recorded and stopped, but left without a sentiment. */
   unqualified: number;
+  /**
+   * Replies that ASKED us to stop, turned into a recorded opt-out. Person-level:
+   * one of these stops every campaign this org holds for the address, not just
+   * the sequence the reply arrived on.
+   */
+  optOutsRecorded: number;
   unrelated: number;
   /**
    * Messages whose references reached MORE THAN ONE sequence on this mailbox.
@@ -390,7 +397,8 @@ async function pollAccount(
           // unlabelled. Promoting a guessed sentiment would be worse — a
           // fabricated "neutral" on a hot reply reads as a real judgement.
           try {
-            const qualification = await qualifyReply(parsed.text ?? "");
+            const replyText = parsed.text ?? "";
+            const qualification = await qualifyReply(replyText);
             if (qualification) {
               await promoteEvent({
                 eventType: qualification,
@@ -404,6 +412,31 @@ async function pollAccount(
                 sourceRowId: row.id,
               });
               summary.qualified += 1;
+
+              // They asked us to stop. The kind event above records WHAT they
+              // said; this records the CONSENT, which is a different fact with
+              // a different scope — it applies to every campaign this org holds
+              // for the address, not just this sequence, and it is withdrawable.
+              // The classification is passed through, so no second model call is
+              // paid to answer a question already answered.
+              if (qualification === OPT_OUT_REPLY_KIND && send.orgId) {
+                const optOut = await recordOptOutFromReply({
+                  campaign: {
+                    instantlyCampaignId: send.instantlyCampaignId,
+                    leadEmail: send.leadEmail,
+                    orgId: send.orgId,
+                  },
+                  replyText,
+                  qualification,
+                  evidence: {
+                    source: "self_send_reply",
+                    instantlyCampaignId: send.instantlyCampaignId,
+                    messageId: parsed.messageId ?? null,
+                    imapMessageRowId: row.id,
+                  },
+                });
+                if (optOut.recorded) summary.optOutsRecorded += 1;
+              }
             } else {
               console.warn(
                 `[instantly-service] self-send-poll: no usable qualification for campaign=${send.instantlyCampaignId} — reply recorded and sequence stopped, sentiment left unset`,
@@ -485,6 +518,7 @@ export async function runPoll(
     bounces: 0,
     qualified: 0,
     unqualified: 0,
+    optOutsRecorded: 0,
     unrelated: 0,
     ambiguous: 0,
     sequencesStopped: 0,

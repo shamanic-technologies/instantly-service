@@ -66,6 +66,18 @@ export const POSITIVE_REPLY_KINDS = [
  *                            offer, and it is permanent for this lead: no
  *                            follow-up and no later re-approach can reach the
  *                            role at this company through them.
+ *  - `lead_opt_out_requested` — they asked us to STOP. Not a judgement about
+ *                            the offer at all: a consent statement, and the one
+ *                            reply kind that carries a legal obligation. It is
+ *                            what a person writes instead of clicking the
+ *                            unsubscribe link, which is how it usually happens.
+ *
+ * ⚠️ `lead_opt_out_requested` is NOT `lead_not_interested`, and the difference
+ * is the whole reason it exists. Measured in prod 2026-09-17: SEVEN leads had
+ * written an explicit removal request ("Please remove me from your email
+ * list", "take me off of your email list") and every one of them was filed as
+ * `lead_not_interested` — i.e. as the RECYCLABLE bucket, re-contactable in
+ * three months. They are not recyclable; they asked us to stop.
  *
  * The last two are DISQUALIFYING (permanent, about the person); the first is
  * not (temporary, about the moment). Collapsing a job change into
@@ -79,6 +91,7 @@ export const NEGATIVE_REPLY_KINDS = [
   "lead_not_interested",
   "lead_wrong_person",
   "lead_changed_job",
+  "lead_opt_out_requested",
 ] as const;
 
 
@@ -208,6 +221,7 @@ export const REPLY_KIND_CLASSIFICATION: Record<ReplyKind, "positive" | "negative
   lead_not_interested: "negative",
   lead_wrong_person: "negative",
   lead_changed_job: "negative",
+  lead_opt_out_requested: "negative",
   lead_neutral: "neutral",
   lead_out_of_office: "neutral",
   auto_reply_received: "neutral",
@@ -244,9 +258,12 @@ export function isSequenceStoppingReplyKind(kind: ReplyKind): boolean {
  * a disqualification is exactly the conflation that turns a "no" bucket into a
  * dumping ground and quietly loses recyclable pipeline.
  *
- * `lead_wrong_person` and `lead_changed_job` are the opposite: each states an
- * objective fact about this contact that no later re-approach can change, so
- * the lead is permanently out.
+ * `lead_wrong_person`, `lead_changed_job` and `lead_opt_out_requested` are the
+ * opposite: each states an objective fact about this contact that no later
+ * re-approach can change, so the lead is permanently out. The last one is the
+ * strongest of the three — the other two say we cannot reach the role through
+ * this person, it says they told us to stop, which is a legal obligation and
+ * not a targeting problem.
  *
  * NOTE this is a strictly FINER reading of the same statements — it does NOT
  * change what `REPLY_KIND_CLASSIFICATION` says. All three kinds stay `negative`
@@ -255,6 +272,7 @@ export function isSequenceStoppingReplyKind(kind: ReplyKind): boolean {
 export const DISQUALIFYING_REPLY_KINDS = new Set<ReplyKind>([
   "lead_wrong_person",
   "lead_changed_job",
+  "lead_opt_out_requested",
 ]);
 
 /**
