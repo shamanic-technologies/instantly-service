@@ -35,6 +35,7 @@ describe("the reply-kind vocabulary", () => {
       "lead_not_interested",
       "lead_wrong_person",
       "lead_changed_job",
+      "lead_opt_out_requested",
     ]);
     expect(isReplyKind("lead_changed_job")).toBe(true);
     expect(REPLY_KIND_CLASSIFICATION.lead_changed_job).toBe("negative");
@@ -91,6 +92,7 @@ describe("the reply-kind vocabulary", () => {
       lead_not_interested: "negative",
       lead_wrong_person: "negative",
       lead_changed_job: "negative",
+      lead_opt_out_requested: "negative",
       lead_neutral: "neutral",
       lead_out_of_office: "neutral",
       auto_reply_received: "neutral",

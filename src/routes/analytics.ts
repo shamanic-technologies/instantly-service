@@ -499,6 +499,20 @@ const BRAND_LATERAL_JOIN = sql`CROSS JOIN LATERAL unnest(c.brand_ids) AS brand_i
  * positive-reply totals at model/brand level stay frozen. Gold must instead
  * count each lead's CURRENT sentiment (latest event, manual winning ties).
  */
+/**
+ * ⚠️ `lead_opt_out_requested` IS DELIBERATELY ABSENT, and adding it would
+ * DOUBLE-COUNT. A reply that asks us to stop produces TWO events: the kind
+ * itself, and the `lead_unsubscribed` the recorded opt-out promotes. The second
+ * one is already counted here as `repliesDetail.unsubscribe` and already sums
+ * into `repliesNegative` — so listing the kind as an 11th sentiment would count
+ * the same reply twice in the same bucket, and would need a new REQUIRED field
+ * on the published `email-domain-contract` RepliesDetail to carry it.
+ *
+ * The finer fact is not lost: `instantly_lead_status_current.reply_kind` reads
+ * the whole `REPLY_KINDS` vocabulary, so `POST /orgs/status` reports the kind
+ * and `disqualified: true` for these leads. Do NOT "restore the lockstep" with
+ * `REPLY_KINDS` — this list is a count-bucket set, not the vocabulary.
+ */
 export const SENTIMENT_EVENT_TYPES = [
   "lead_interested",
   "lead_referral",
