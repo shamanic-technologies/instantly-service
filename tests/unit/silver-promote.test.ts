@@ -52,8 +52,17 @@ vi.mock("../../src/db/schema", () => ({
 }));
 
 const mockMaybeMirror = vi.fn();
-vi.mock("../../src/lib/mirror-emails", () => ({
+// Passthrough: `maybeRecordOptOutFromReply` reads this module's PURE exports
+// (`MIRRORED_INBOUND_EVENT_TYPES`, `isInstantlyHeldCampaignId`), so a
+// full-replacement mock would strip them and every promote would throw.
+vi.mock("../../src/lib/mirror-emails", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
   maybeMirrorCampaignEmails: (...args: unknown[]) => mockMaybeMirror(...args),
+}));
+
+const mockMaybeRecordOptOut = vi.fn();
+vi.mock("../../src/lib/reply-opt-out", () => ({
+  maybeRecordOptOutFromReply: (...args: unknown[]) => mockMaybeRecordOptOut(...args),
 }));
 
 const mockUpdateCostStatus = vi.fn();
@@ -239,6 +248,40 @@ describe("promoteFromWebhookPayload", () => {
     expect(mockMaybeMirror).toHaveBeenCalledWith(
       expect.objectContaining({ instantlyCampaignId: "inst-camp-1" }),
       "reply_received",
+    );
+  });
+
+  it("then READS the reply for an opt-out request, after the mirror", async () => {
+    // A prospect who writes "please remove me from your list" is classified by
+    // Instantly as `lead_not_interested` — accurate as a sentiment, wrong as a
+    // consent fact, because this repo treats that kind as RECYCLABLE. Seven such
+    // leads sat re-contactable in prod, one on a still-active campaign.
+    mockCampaign();
+    mockNewSilverRow();
+    mockProvisions();
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-1",
+      payload: {
+        event_type: "reply_received",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+      },
+    });
+
+    expect(mockMaybeRecordOptOut).toHaveBeenCalledWith(
+      expect.objectContaining({
+        instantlyCampaignId: "inst-camp-1",
+        leadEmail: "lead@test.com",
+      }),
+      "reply_received",
+    );
+
+    // ORDER IS LOAD-BEARING: the mirror is what puts the words in bronze, and
+    // the opt-out read is what reads them out. Reversed, it judges a thread that
+    // does not yet contain the reply.
+    expect(mockMaybeMirror.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMaybeRecordOptOut.mock.invocationCallOrder[0],
     );
   });
 

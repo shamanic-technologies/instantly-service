@@ -25,6 +25,7 @@ import { maybeEnqueueFollowupOnInterest } from "./enqueue-followup-on-interest";
 import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
 import { maybeRingRepOnSalesInterest } from "./ring-rep-on-sales-interest";
 import { maybeMirrorCampaignEmails } from "./mirror-emails";
+import { maybeRecordOptOutFromReply } from "./reply-opt-out";
 import {
   DEAL_PROGRESS_TO_REPLY_KIND,
   REPLY_KIND_CLASSIFICATION,
@@ -676,6 +677,22 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // deletes those words permanently, so they are copied at the moment we
       // learn they exist. Fail-soft, never throws. No-op on any other event.
       await maybeMirrorCampaignEmails(campaign, input.eventType);
+
+      // ...then read what they wrote. A prospect who asks to STOP in the body of
+      // a reply ("please remove me from your list") is classified by Instantly as
+      // `lead_not_interested` — right as a sentiment, wrong as a consent fact,
+      // because this repo treats that kind as RECYCLABLE. Seven such leads were
+      // filed re-contactable in prod, one of them on a still-active campaign.
+      // Runs AFTER the mirror on purpose: the mirror is what puts the words in
+      // bronze, and this reads them out. Fail-soft, never throws.
+      await maybeRecordOptOutFromReply(
+        {
+          instantlyCampaignId: campaign.instantlyCampaignId,
+          leadEmail: input.leadEmail,
+          orgId: campaign.orgId,
+        },
+        input.eventType,
+      );
 
       // ...and ring the brand's sales rep about that buyer, offering to connect
       // them to the prospect right there. Same gate as the two above.
