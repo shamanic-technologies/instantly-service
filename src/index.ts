@@ -171,6 +171,19 @@ async function start() {
         );
       });
 
+    // Send the self-send steps that have come due. An in-process interval, NOT
+    // a cron: `self-send-cron.yml` declares hourly and GitHub Actions delivered
+    // 6.2 runs a day, leaving leads hours past due and the fleet queue growing.
+    // Armed after the port is bound; every scheduling rule stays in the sweep.
+    import("./lib/self-send/dispatch-scheduler")
+      .then(({ startSelfSendDispatchWorker }) => startSelfSendDispatchWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[instantly-service] failed to start self-send dispatch worker: ${message}`,
+        );
+      });
+
     // Seed the account lifecycle shortly after boot (fire-and-forget, AFTER the
     // port is bound — snapshot + reconcile is O(fleet size) paginated Instantly
     // calls, must never block listen). Idempotent: a subsequent boot finds the

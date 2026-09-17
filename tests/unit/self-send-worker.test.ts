@@ -61,9 +61,14 @@ const { SmtpDispatchError } = await import("../../src/lib/self-send/smtp");
 const NOW = new Date("2026-08-17T15:00:00Z");
 
 /**
- * The worker issues four reads in order: pending sequences, sending accounts,
- * the ramp's volume query, then step content per due step. Queueing them keeps
- * the test honest about that ordering instead of matching on SQL text.
+ * The worker issues five reads in order: pending sequences, sending accounts,
+ * the ramp's volume query, the waiting-reply probe, then step content per due
+ * step. Queueing them keeps the test honest about that ordering instead of
+ * matching on SQL text.
+ *
+ * The fourth is the probe that decides whether this run is worth reading the
+ * mailboxes for — it runs on EVERY sweep, before the poll, and its answer is
+ * "there is a step to send OR a reply owed".
  */
 function primeReads(options: { hasBody?: boolean } = {}) {
   const { hasBody = true } = options;
@@ -99,6 +104,9 @@ function primeReads(options: { hasBody?: boolean } = {}) {
     .mockResolvedValueOnce({
       rows: [{ accountEmail: "amy@saviolabsco.com", peak: 45 }],
     })
+    // The waiting-reply probe. Nothing owed; the step above is what makes this
+    // run have work.
+    .mockResolvedValueOnce({ rows: [] })
     .mockResolvedValueOnce({
       rows: [
         {
@@ -262,7 +270,8 @@ describe("runDispatch — capacity", () => {
         ],
       })
       .mockResolvedValueOnce({ rows: [] }) // no sending accounts
-      .mockResolvedValueOnce({ rows: [] }); // and therefore no volume either
+      .mockResolvedValueOnce({ rows: [] }) // and therefore no volume either
+      .mockResolvedValueOnce({ rows: [] }); // no reply owed either
 
     const summary = await runDispatch({ asOf: NOW });
 
