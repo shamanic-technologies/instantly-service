@@ -17,11 +17,18 @@ const mockUpdateSet = vi.fn();
 /** Every `where(...)` condition the module builds, so the tests can read them. */
 const whereConditions: unknown[] = [];
 
+/** Every `limit(n)` the module applies — empty when it asked for everything. */
+const limitCalls: number[] = [];
+
 function chain(pop: () => unknown) {
   const c: Record<string, unknown> = {};
-  for (const m of ["from", "leftJoin", "orderBy", "limit", "returning"]) {
+  for (const m of ["from", "leftJoin", "orderBy", "returning"]) {
     c[m] = () => c;
   }
+  c.limit = (n: number) => {
+    limitCalls.push(n);
+    return c;
+  };
   c.where = (cond: unknown) => {
     whereConditions.push(cond);
     return c;
@@ -111,6 +118,7 @@ import {
   recordLeadOptOut,
   withdrawLeadOptOut,
 } from "../../src/lib/lead-optouts";
+import { LeadOptOutListQuerySchema } from "../../src/schemas";
 
 const ORG = "org-1";
 const LEAD = "alice@media.com";
@@ -452,5 +460,59 @@ describe("optOutRefusal", () => {
     expect(body.details).toContain("does not expire");
     expect(body.details).toContain("nothing was billed");
     expect(body.details).toContain("org-wide");
+  });
+});
+
+
+// ─── The consent log is read WHOLE ───────────────────────────────────────────
+//
+// human-service gates every serve on this list and refuses to serve ANYONE when
+// it cannot trust the set is complete — a truncated page is indistinguishable
+// from a complete shorter one. So the old `?? 200` default with a 500 ceiling
+// was not a paging convenience, it was a fleet outage waiting for the first org
+// to cross 500. Opt-outs never expire, so that was a certainty, not a risk.
+
+describe("listLeadOptOuts is unbounded unless a caller asks otherwise", () => {
+  beforeEach(() => {
+    limitCalls.length = 0;
+    selectResults = [[]];
+  });
+
+  it("applies NO limit when the caller passes none", async () => {
+    await listLeadOptOuts({ orgId: ORG });
+    expect(limitCalls).toEqual([]);
+  });
+
+  it("applies NO limit on the standing-only read either — that is the gate's read", async () => {
+    await listLeadOptOuts({ orgId: ORG, standingOnly: true });
+    expect(limitCalls).toEqual([]);
+  });
+
+  it("honours an EXPLICIT limit, because deliberate paging is still allowed", async () => {
+    await listLeadOptOuts({ orgId: ORG, limit: 50 });
+    expect(limitCalls).toEqual([50]);
+  });
+
+  it("does not reinstate a default under any other option", async () => {
+    await listLeadOptOuts({ orgId: ORG, leadEmail: LEAD, standingOnly: true });
+    expect(limitCalls).toEqual([]);
+  });
+});
+
+describe("the list query schema", () => {
+  it("has NO ceiling — a cap is what turns a big org into a refused serve", () => {
+    // 10_000 is far past the old 500 and must parse.
+    const parsed = LeadOptOutListQuerySchema.safeParse({ limit: "10000" });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("still refuses a nonsense limit", () => {
+    expect(LeadOptOutListQuerySchema.safeParse({ limit: "0" }).success).toBe(false);
+  });
+
+  it("treats an absent limit as absent, never as a number", () => {
+    const parsed = LeadOptOutListQuerySchema.safeParse({});
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.limit).toBeUndefined();
   });
 });
