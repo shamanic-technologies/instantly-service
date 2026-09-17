@@ -486,11 +486,28 @@ export const TESTABLE_MIN_AGE_DAYS = 7;
  * The asymmetry that settles it: a wasted seed costs a slice of a flat monthly
  * subscription, while an unmeasurable mailbox can never leave `in_recovery`.
  * Prefer measuring.
+ *
+ * ⚠️ `deactivated_by_user` IS IN THE POOL, AND THAT IS NOT A CONTRADICTION —
+ * MEASURING A MAILBOX IS NOT SENDING FROM IT. The send pool is
+ * {@link fetchInProductionAccounts} (`lifecycle_status = 'in_production'`), and
+ * rule 1 of `deriveLifecycle` pins a domain in `instantly_domain_policy` to
+ * `deactivated_by_user` on FIRST MATCH, so a brand domain can never be promoted
+ * however well it scores. Adding it here therefore changes exactly one thing:
+ * we find out where its mail lands.
+ *
+ * Without it a brand domain is invisible to every instrument we own. Measured
+ * 2026-09-17: `distribute.you` had FOUR placement tests, all of them between
+ * 2026-06-29 and 2026-07-02, reporting **0 inbox out of 102 Gmail seeds** (102
+ * spam) against 106/108 on Outlook — the shared-IP Gandi-relay signature. Ten
+ * weeks later that was still the only measurement in existence, so "is the
+ * brand domain's deliverability bad?" could not be answered at all, in either
+ * direction. A brand domain sends the mail a human writes; it deserves an
+ * instrument as much as a cold one does.
  */
 export async function fetchTestablePoolEmails(): Promise<string[]> {
   const result = await db.execute(sql`
     SELECT email FROM instantly_accounts
-    WHERE lifecycle_status IN ('in_recovery', 'in_production')
+    WHERE lifecycle_status IN ('in_recovery', 'in_production', 'deactivated_by_user')
       AND (
         COALESCE(vendor_prewarmed_at, timestamp_created) IS NULL
         OR COALESCE(vendor_prewarmed_at, timestamp_created)

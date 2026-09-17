@@ -11,6 +11,7 @@ vi.mock("../../src/lib/instantly-client", () => ({
 }));
 
 import {
+  fetchInProductionAccounts,
   fetchTestablePoolEmails,
   TESTABLE_MIN_AGE_DAYS,
 } from "../../src/lib/account-lifecycle-sync";
@@ -39,7 +40,23 @@ describe("fetchTestablePoolEmails — weekly placement-test seeding", () => {
   it("seeds in_recovery AND in_production — in_recovery is what breaks the bootstrap deadlock", async () => {
     await fetchTestablePoolEmails();
     const text = sqlTextOf(mockExecute.mock.calls[0][0]);
-    expect(text).toContain("lifecycle_status IN ('in_recovery', 'in_production')");
+    expect(text).toContain("'in_recovery', 'in_production'");
+  });
+
+  it("ALSO seeds deactivated_by_user — a brand domain still sends mail a human wrote", async () => {
+    // `distribute.you` had FOUR tests, all in a 4-day window ten weeks earlier,
+    // reporting 0 inbox out of 102 Gmail seeds. Nothing could refresh that, so
+    // the domain was neither provably bad nor provably fine. Measuring it is
+    // not promoting it — see the send-pool guard below.
+    await fetchTestablePoolEmails();
+    const text = sqlTextOf(mockExecute.mock.calls[0][0]);
+    expect(text).toContain("'deactivated_by_user'");
+  });
+
+  it("does NOT filter on absent_since — an unlisted mailbox is the one most at risk of going unmeasured", async () => {
+    await fetchTestablePoolEmails();
+    const text = sqlTextOf(mockExecute.mock.calls[0][0]);
+    expect(text).not.toContain("absent_since");
   });
 
   it("does NOT filter on instantly_status — this test is the only measurement those mailboxes get", async () => {
@@ -85,5 +102,24 @@ describe("fetchTestablePoolEmails — the age floor reads the age that EXISTS", 
     await fetchTestablePoolEmails();
     const text = sqlTextOf(mockExecute.mock.calls[0][0]);
     expect(text).toContain("COALESCE(vendor_prewarmed_at, timestamp_created)");
+  });
+});
+
+describe("measuring a brand domain does NOT make it sendable", () => {
+  beforeEach(() => {
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValue({ rows: [] });
+  });
+
+  // The whole safety of widening the measurement pool rests on these two pools
+  // being different reads. If the send pool ever grows a second accepted
+  // lifecycle value, a brand domain starts receiving cold sequences — which is
+  // exactly what `instantly_domain_policy` exists to prevent.
+  it("the send pool admits in_production and NOTHING else", async () => {
+    await fetchInProductionAccounts(null);
+    const text = sqlTextOf(mockExecute.mock.calls[0][0]);
+    expect(text).toContain("a.lifecycle_status = 'in_production'");
+    expect(text).not.toContain("deactivated_by_user");
+    expect(text).not.toContain("in_recovery");
   });
 });
