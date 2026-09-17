@@ -54,6 +54,7 @@ import { resolveInstantlyApiKey } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { stopSelfSendSequence } from "./self-send/stop-sequence";
+import { normalizeLeadEmail } from "./recontact-window";
 
 /**
  * How the person told us. Required on every record, and deliberately a closed
@@ -140,7 +141,13 @@ export async function findStandingOptOut(
     .where(
       and(
         eq(instantlyLeadOptoutsRaw.orgId, orgId),
-        eq(instantlyLeadOptoutsRaw.leadEmail, leadEmail),
+        // ⚠️ CASE-INSENSITIVE, the same normalization the re-contact window and
+        // the serve path apply. `Joe@X.com` and `joe@x.com` are one inbox, and
+        // an exact match let a standing opt-out go unseen under the other
+        // casing — which fails in the direction that emails somebody who asked
+        // us to stop. The row keeps the casing the person used; only the
+        // comparison is normalized.
+        sql`lower(${instantlyLeadOptoutsRaw.leadEmail}) = ${normalizeLeadEmail(leadEmail)}`,
         isNull(instantlyLeadOptoutWithdrawals.id),
       ),
     )
@@ -166,7 +173,10 @@ async function findOrgCampaignsForLead(orgId: string, leadEmail: string) {
     .where(
       and(
         eq(instantlyCampaigns.orgId, orgId),
-        eq(instantlyCampaigns.leadEmail, leadEmail),
+        // Same normalization as the standing lookup — an opt-out that stopped
+        // only the campaigns whose stored casing happened to match would leave
+        // the rest sending.
+        sql`lower(${instantlyCampaigns.leadEmail}) = ${normalizeLeadEmail(leadEmail)}`,
         sql`${instantlyCampaigns.instantlyCampaignId} NOT LIKE 'reserving:%'`,
       ),
     );
@@ -374,7 +384,7 @@ export async function withdrawLeadOptOut(
         eq(instantlyEvents.sourceRowId, standing.id),
         eq(instantlyEvents.source, "manual"),
         eq(instantlyEvents.eventType, "lead_unsubscribed"),
-        eq(instantlyEvents.leadEmail, standing.email),
+        sql`lower(${instantlyEvents.leadEmail}) = ${normalizeLeadEmail(standing.email)}`,
         isNull(instantlyEvents.withdrawnAt),
       ),
     )
@@ -419,7 +429,9 @@ export async function listLeadOptOuts(
 ): Promise<LeadOptOutRow[]> {
   const conditions = [eq(instantlyLeadOptoutsRaw.orgId, input.orgId)];
   if (input.leadEmail) {
-    conditions.push(eq(instantlyLeadOptoutsRaw.leadEmail, input.leadEmail));
+    conditions.push(
+      sql`lower(${instantlyLeadOptoutsRaw.leadEmail}) = ${normalizeLeadEmail(input.leadEmail)}`,
+    );
   }
   if (input.standingOnly) {
     conditions.push(isNull(instantlyLeadOptoutWithdrawals.id));
@@ -449,4 +461,40 @@ export async function listLeadOptOuts(
       row.w?.withdrawnAt ? { withdrawnAt: row.w.withdrawnAt, withdrawnBy: row.w.withdrawnBy! } : null,
     ),
   );
+}
+
+
+/**
+ * Machine-readable refusal code when a send is refused for a standing opt-out.
+ *
+ * Distinguishable from this route's other refusals: the re-contact window
+ * (`recent_brand_contact` — a timing rule that expires) and the identity
+ * conflict (`lead_id_conflict`). A caller must be able to tell "come back in
+ * three months" from "never contact this person again".
+ */
+export const OPT_OUT_REFUSAL_CODE = "lead_opted_out";
+
+/**
+ * The refusal body for a send to somebody who asked us to stop.
+ *
+ * ⚠️ ORG-SCOPED, NOT BRAND-SCOPED, and that is stricter on purpose. They asked
+ * US to stop; the org is the sender, and the consent record has always been
+ * keyed on (org, person). Honouring it for one brand while another brand of the
+ * same org keeps writing is exactly the outcome the law cares about.
+ *
+ * ⚠️ IT NEVER EXPIRES. The re-contact window beside it is a three-month timing
+ * rule that lapses; this one does not, because nothing about the passage of
+ * time withdraws a consent statement. Only an explicit withdrawal does.
+ */
+export function optOutRefusal(leadEmail: string, optOut: LeadOptOutRow) {
+  return {
+    error: "Lead has opted out",
+    code: OPT_OUT_REFUSAL_CODE,
+    details:
+      `${leadEmail} asked to stop being contacted (recorded ${optOut.statedAt.toISOString()} ` +
+      `via ${optOut.channel}). The opt-out is org-wide and does not expire. ` +
+      `No email was sent and nothing was billed.`,
+    channel: optOut.channel,
+    statedAt: optOut.statedAt.toISOString(),
+  };
 }

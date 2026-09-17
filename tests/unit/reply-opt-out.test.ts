@@ -45,7 +45,10 @@ import {
   SEQUENCE_STOPPING_REPLY_KINDS,
   isDisqualifyingReplyKind,
 } from "../../src/lib/reply-kind";
-import { QUALIFICATION_EVENT_TYPES } from "../../src/lib/self-send/qualify-reply";
+import {
+  QUALIFICATION_EVENT_TYPES,
+  SYSTEM_PROMPT,
+} from "../../src/lib/self-send/qualify-reply";
 import { SENTIMENT_EVENT_TYPES } from "../../src/routes/analytics";
 
 const CAMPAIGN = {
@@ -304,5 +307,47 @@ describe("the IMAP poller's call site", () => {
     );
     expect(call).toContain("qualification,");
     expect(call).toContain("replyText,");
+  });
+});
+
+// ─── The line between a decline and a request to stop ────────────────────────
+//
+// The classifier is a model, so its verdict cannot be asserted in a unit test.
+// What CAN be pinned is the rule it is given — and these six examples are the
+// rule, taken from replies this fleet actually received. A prompt edit that
+// drops them fails here rather than silently re-filing opt-outs as declines.
+
+describe("declining vs asking to stop", () => {
+  const OPT_OUT_EXAMPLES = [
+    "Stop",
+    "Unsubscribe",
+    // A misspelling is still the request, and it is the single strongest
+    // argument against a keyword pre-filter on this path.
+    "unsusbsribe",
+    "No interest, please stop sending emails.",
+  ];
+
+  const DECLINE_EXAMPLES = ["Not for us, thanks.", "No interest"];
+
+  it("gives the model every opt-out example verbatim", () => {
+    for (const example of OPT_OUT_EXAMPLES) {
+      expect(SYSTEM_PROMPT).toContain(`"${example}" -> lead_opt_out_requested`);
+    }
+  });
+
+  it("gives it the declines too — 'no interest' alone is NOT a request to stop", () => {
+    for (const example of DECLINE_EXAMPLES) {
+      expect(SYSTEM_PROMPT).toContain(`"${example}" -> lead_not_interested`);
+    }
+  });
+
+  it("states that a decline carrying a removal request is an opt-out", () => {
+    // "No interest, please stop sending emails." is an opt-out on its SECOND
+    // clause. Reading only the first is how all seven prod cases were misfiled.
+    expect(SYSTEM_PROMPT).toContain("even if it also declines the offer");
+  });
+
+  it("tells it to ignore OUR unsubscribe footer quoted back at it", () => {
+    expect(SYSTEM_PROMPT).toContain("That is OUR footer");
   });
 });

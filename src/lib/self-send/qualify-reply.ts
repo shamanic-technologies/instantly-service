@@ -45,7 +45,7 @@ export const QUALIFICATION_EVENT_TYPES = [
 
 export type QualificationEventType = (typeof QUALIFICATION_EVENT_TYPES)[number];
 
-const SYSTEM_PROMPT = `You classify a single reply to a cold outreach email.
+export const SYSTEM_PROMPT = `You classify a single reply to a cold outreach email.
 
 Answer with JSON only: {"classification": "<one of the labels>"}
 
@@ -66,7 +66,15 @@ not treat a question about how you got their address as interest.
 
 The reply may quote our own email beneath it, and every email we send ends with
 the words "Don't want to hear from me again? unsubscribe". That is OUR footer,
-not their request — only a removal request THEY wrote is lead_opt_out_requested.`;
+not their request — only a removal request THEY wrote is lead_opt_out_requested.
+
+Worked examples, from real replies:
+- "Stop" -> lead_opt_out_requested
+- "Unsubscribe" -> lead_opt_out_requested
+- "unsusbsribe" -> lead_opt_out_requested (a misspelling is still the request)
+- "No interest, please stop sending emails." -> lead_opt_out_requested (the second clause asks to stop; the first alone would not)
+- "Not for us, thanks." -> lead_not_interested (a decline, with no request to be removed)
+- "No interest" -> lead_not_interested (declining is not asking to be taken off the list)`;
 
 /** Strip quoted history so the model judges what THEY wrote, not our own email. */
 export function stripQuotedHistory(text: string): string {

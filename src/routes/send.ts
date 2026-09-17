@@ -13,6 +13,7 @@ import {
 import { selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
 import { stepRowsFromSendPayload } from "../lib/self-send/sequence-steps";
 import { findRecentBrandContact, recontactRefusal } from "../lib/recontact-window";
+import { findStandingOptOut, optOutRefusal } from "../lib/lead-optouts";
 import { resolveTransportForNewSequence } from "../lib/self-send/capability";
 import {
   SEND_TRANSPORT_INSTANTLY,
@@ -181,6 +182,37 @@ router.post("/", async (req: Request, res: Response) => {
             details: `Email ${body.to} already exists with lead_id ${conflict.leadId}, received ${body.leadId}`,
           });
         }
+      }
+
+      // 3a-bis. OPT-OUT — refuse outright if this person asked this org to stop.
+      //
+      //     Checked BEFORE the re-contact window because the two say different
+      //     things and this one is stronger: the window is a three-month timing
+      //     rule that LAPSES, an opt-out never does. Without this gate a
+      //     recorded opt-out stopped the campaigns that existed that day and
+      //     nothing else — so once the window expired we would email the person
+      //     again, which is the outcome the record exists to prevent.
+      //
+      //     ORG-scoped, like the record itself: they asked US to stop, and
+      //     honouring it for one brand while a sibling brand keeps writing is
+      //     exactly what the law cares about. Placed with the other pre-flight
+      //     gates, so a refused send creates no reservation, no Instantly
+      //     campaign, no run and no `sequence_costs` row. Fail loud — a DB
+      //     error propagates rather than waving the send through.
+      const standingOptOut = await findStandingOptOut(orgId, body.to);
+      if (standingOptOut) {
+        const refusal = optOutRefusal(body.to, standingOptOut);
+        console.warn(`[send] Refused — ${refusal.details}`);
+        traceEvent(
+          res.locals.runId as string,
+          {
+            service: "instantly-service",
+            event: "send-refused-opted-out",
+            detail: `to=${body.to}, channel=${standingOptOut.channel}, statedAt=${standingOptOut.statedAt.toISOString()}`,
+          },
+          req.headers,
+        ).catch(() => {});
+        return res.status(409).json(refusal);
       }
 
       // 3b. RE-CONTACT WINDOW — refuse a prospect this service already emailed
