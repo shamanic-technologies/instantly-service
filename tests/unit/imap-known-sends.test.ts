@@ -6,6 +6,18 @@ vi.mock("../../src/db", () => ({
 }));
 vi.mock("../../src/lib/silver-promote", () => ({ promoteEvent: vi.fn() }));
 vi.mock("../../src/lib/self-send/qualify-reply", () => ({ qualifyReply: vi.fn() }));
+// The poll groups its accounts by real mailbox login before reading any of them,
+// so the credential map is on the path of every run — including one with no
+// accounts at all. Mocked partially: the rest of the module (the IMAP port, the
+// per-mailbox resolution) is the real thing.
+const mockMailboxLogins = vi.fn(async () => new Map<string, string>());
+const mockResolveCredential = vi.fn();
+vi.mock("../../src/lib/self-send/mailbox-credentials", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadMailboxLogins: (...a: unknown[]) => mockMailboxLogins(...(a as [])),
+  resolveMailboxCredential: (...a: unknown[]) =>
+    mockResolveCredential(...(a as [string])),
+}));
 
 import { loadKnownSends } from "../../src/lib/self-send/imap-poller";
 
@@ -138,5 +150,56 @@ describe("runPoll window", () => {
     await expect(runPoll({ sinceDays: Number.NaN })).resolves.toMatchObject({
       accountsPolled: 0,
     });
+  });
+});
+
+describe("runPoll fan-out", () => {
+  it("reads distinct mailboxes in parallel and a mailbox's aliases in sequence", async () => {
+    // ⚠️ The unit is the SASL login, not the sending address. A Gandi domain is
+    // one mailbox behind several aliases, so a flat fan-out over accounts would
+    // open several simultaneous sessions as the SAME user — which is what a
+    // relay refuses. Sequentially over 249 accounts this poll measured 45-80
+    // MINUTES in production, and it sits on the critical path of every send.
+    const { runPoll } = await import("../../src/lib/self-send/imap-poller");
+
+    mockDbExecute.mockResolvedValue(
+      pgResult([
+        { email: "kevin@molthost.org" },
+        { email: "klourd@molthost.org" },
+        { email: "amy@saviolabsco.com" },
+      ]),
+    );
+    mockMailboxLogins.mockResolvedValue(
+      new Map([
+        ["kevin@molthost.org", "kevin@molthost.org"],
+        ["klourd@molthost.org", "kevin@molthost.org"],
+        ["amy@saviolabsco.com", "amy@saviolabsco.com"],
+      ]),
+    );
+
+    const live = new Map<string, number>();
+    const peak = new Map<string, number>();
+    mockResolveCredential.mockImplementation(async (address: string) => {
+      const login = address.endsWith("@molthost.org")
+        ? "kevin@molthost.org"
+        : address;
+      const now = (live.get(login) ?? 0) + 1;
+      live.set(login, now);
+      peak.set(login, Math.max(peak.get(login) ?? 0, now));
+      await new Promise((r) => setTimeout(r, 5));
+      live.set(login, (live.get(login) ?? 1) - 1);
+      // Refusing here keeps the test about the SCHEDULING: each account is
+      // counted as failed, never as read, and the sweep continues.
+      throw new Error("no IMAP in a unit test");
+    });
+
+    const summary = await runPoll();
+
+    expect(summary.accountsFailed).toBe(3);
+    // Never two sessions as one login...
+    expect(peak.get("kevin@molthost.org")).toBe(1);
+    // ...and the two mailboxes genuinely overlapped rather than queueing.
+    expect(peak.get("amy@saviolabsco.com")).toBe(1);
+    expect(mockResolveCredential).toHaveBeenCalledTimes(3);
   });
 });

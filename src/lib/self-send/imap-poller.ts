@@ -23,6 +23,7 @@ import { promoteEvent } from "../silver-promote";
 import type { CallerInfo } from "../key-client";
 import {
   GMAIL_IMAP_PORT,
+  loadMailboxLogins,
   loginFor,
   resolveMailboxCredential,
   type MailboxCredential,
@@ -72,6 +73,29 @@ const POLL_WINDOW_DAYS = 3;
  * ever leaks into the cron. A year is past the age of the fleet.
  */
 const MAX_POLL_WINDOW_DAYS = 365;
+
+/**
+ * How many REAL MAILBOXES are read at once.
+ *
+ * ⚠️ The unit is the mailbox login, NOT the sending address, and that is the
+ * whole reason this is not a flat `Promise.all` over accounts. A Gandi domain is
+ * one mailbox carrying several aliases and we hold an account per alias, so a
+ * naive fan-out opens several simultaneous IMAP sessions AS THE SAME SASL USER —
+ * which is exactly what a relay answers with a connection-limit refusal. Aliases
+ * of one mailbox are therefore read sequentially, and only distinct mailboxes
+ * run in parallel.
+ *
+ * Why it matters at all: this poll is on the critical path of every send. The
+ * dispatch run reads the mailboxes BEFORE it selects what to send, so the poll's
+ * wall-clock IS part of the delay between a step coming due and the email going
+ * out. Sequentially over 249 accounts it measured 45-80 MINUTES in production
+ * (2026-09-16), which put a floor under the cadence no scheduler could lift.
+ *
+ * 8 mirrors the warmup mesh's own poller, which reads the same fleet the same
+ * way. Bounded rather than unbounded because ~200 simultaneous IMAP sessions is
+ * the shape providers throttle.
+ */
+const POLL_MAILBOX_CONCURRENCY = 8;
 
 export interface PollSummary {
   accountsPolled: number;
@@ -437,6 +461,22 @@ export async function runPoll(
 
   const accounts = await loadSelfSendAccounts();
 
+  // Group the sending addresses by the REAL mailbox they authenticate as, so the
+  // fan-out below never opens two sessions for one login. Fails LOUD: a poll
+  // that cannot establish the fleet's credentials cannot read any mailbox
+  // anyway — `resolveMailboxCredential` reads the same sources one line later.
+  const logins = await loadMailboxLogins(CALLER);
+  const byMailbox = new Map<string, string[]>();
+  for (const accountEmail of accounts) {
+    // An address the login map does not know is its own mailbox — the same
+    // reading the capacity loader takes, and the safe one: it is polled on its
+    // own rather than silently dropped.
+    const mailbox = logins.get(accountEmail.trim().toLowerCase()) ?? accountEmail.trim().toLowerCase();
+    const group = byMailbox.get(mailbox) ?? [];
+    group.push(accountEmail);
+    byMailbox.set(mailbox, group);
+  }
+
   const summary: PollSummary = {
     accountsPolled: 0,
     messagesRead: 0,
@@ -451,20 +491,42 @@ export async function runPoll(
     accountsFailed: 0,
   };
 
-  for (const accountEmail of accounts) {
-    try {
-      const credential = await resolveMailboxCredential(accountEmail, CALLER);
-      await pollAccount(accountEmail, credential, since, summary);
-      summary.accountsPolled += 1;
-    } catch (error) {
-      console.error(
-        `[instantly-service] self-send-poll: account=${accountEmail} failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      summary.accountsFailed += 1;
+  const groups = [...byMailbox.values()];
+  let cursor = 0;
+
+  // Fail-loud PER ACCOUNT, exactly as before: one unreachable mailbox costs its
+  // own turn and never the sweep. The summary counters are incremented
+  // synchronously, so the concurrent workers cannot interleave inside one
+  // increment.
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      const group = groups[index];
+      if (group === undefined) return;
+
+      for (const accountEmail of group) {
+        try {
+          const credential = await resolveMailboxCredential(accountEmail, CALLER);
+          await pollAccount(accountEmail, credential, since, summary);
+          summary.accountsPolled += 1;
+        } catch (error) {
+          console.error(
+            `[instantly-service] self-send-poll: account=${accountEmail} failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          summary.accountsFailed += 1;
+        }
+      }
     }
-  }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(POLL_MAILBOX_CONCURRENCY, groups.length) }, () =>
+      worker(),
+    ),
+  );
 
   console.log(
     `[instantly-service] self-send-poll: done windowDays=${windowDays} ${JSON.stringify(summary)}`,
