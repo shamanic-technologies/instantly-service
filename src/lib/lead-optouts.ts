@@ -415,6 +415,13 @@ export interface ListLeadOptOutsInput {
   leadEmail?: string;
   /** Return only records that still STAND. Default false — the audit is the point. */
   standingOnly?: boolean;
+  /**
+   * ⚠️ OMIT IT TO GET EVERYTHING. There is no default and no ceiling, and that
+   * is deliberate: this list is read by a consent GATE, and a truncated page is
+   * indistinguishable from a complete shorter one. A caller that cannot tell
+   * them apart can only refuse — so a silent cap here turns into an outage over
+   * there the day an org crosses it.
+   */
   limit?: number;
 }
 
@@ -423,6 +430,13 @@ export interface ListLeadOptOutsInput {
  * carry `withdrawnAt` / `withdrawnBy`: hiding them would destroy the audit, and
  * a consumer rendering one as a current opt-out is showing something nobody
  * stands behind.
+ *
+ * ⚠️ UNBOUNDED BY DEFAULT. human-service gates every serve on this read and
+ * refuses to serve anyone when it cannot trust the set is complete — so the old
+ * `?? 200` default with a 500 ceiling meant the first org to cross 500 standing
+ * opt-outs would have stopped being served at all. Opt-outs never expire, so
+ * that was a certainty rather than a risk. The set is small and monotonic (30
+ * across 7 orgs on 2026-09-17); a caller who genuinely wants a page asks for one.
  */
 export async function listLeadOptOuts(
   input: ListLeadOptOutsInput,
@@ -437,7 +451,7 @@ export async function listLeadOptOuts(
     conditions.push(isNull(instantlyLeadOptoutWithdrawals.id));
   }
 
-  const rows = await db
+  const query = db
     .select({
       o: instantlyLeadOptoutsRaw,
       w: {
@@ -452,8 +466,12 @@ export async function listLeadOptOuts(
       eq(instantlyLeadOptoutWithdrawals.optoutId, instantlyLeadOptoutsRaw.id),
     )
     .where(and(...conditions))
-    .orderBy(desc(instantlyLeadOptoutsRaw.statedAt))
-    .limit(input.limit ?? 200);
+    .orderBy(desc(instantlyLeadOptoutsRaw.statedAt));
+
+  // Applied ONLY when the caller asked for it. `?? 200` used to sit here, and a
+  // consumer reading the whole consent log had no way to know it had been given
+  // a slice — see the interface note.
+  const rows = await (input.limit ? query.limit(input.limit) : query);
 
   return rows.map((row) =>
     toRow(

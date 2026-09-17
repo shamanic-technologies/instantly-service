@@ -1804,9 +1804,12 @@ export const LeadOptOutListQuerySchema = z.object({
     .coerce.number()
     .int()
     .min(1)
-    .max(500)
     .optional()
-    .describe("Max rows to return (default 200, max 500)"),
+    .describe(
+      "Max rows to return. OMIT IT TO GET EVERY MATCHING ROW — there is no default and no ceiling. " +
+        "This list is read by a consent GATE, and a truncated page is indistinguishable from a " +
+        "complete shorter one, so a caller that cannot tell them apart can only refuse to serve.",
+    ),
 });
 
 const LeadOptOutRowSchema = z.object({
