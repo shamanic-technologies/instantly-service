@@ -20,6 +20,11 @@ import { platformComplete } from "../chat-client";
  * (`REPLY_KINDS` in lib/reply-kind, projected by `REPLY_CLASSIFICATION_MAP`).
  * Emitting a name outside this set would write an event no reader maps.
  *
+ * `lead_opt_out_requested` is the one label with a consequence beyond a stat:
+ * the caller turns it into a recorded opt-out, which stops every campaign this
+ * org holds for the address. That is why the prompt spends a paragraph telling
+ * the model to ignore our own unsubscribe footer quoted back at it.
+ *
  * Deal progress is absent by construction: a closed deal, or a meeting sitting
  * on a calendar, is an outcome someone records in the lead-outcomes service —
  * never something a reply's text can honestly support. `lead_meeting_requested`
@@ -33,6 +38,7 @@ export const QUALIFICATION_EVENT_TYPES = [
   "lead_not_interested",
   "lead_wrong_person",
   "lead_changed_job",
+  "lead_opt_out_requested",
   "lead_out_of_office",
   "lead_neutral",
 ] as const;
@@ -48,14 +54,19 @@ Labels, and what each one means:
 - lead_referral — they are not the buyer themselves, but it is relevant to their company and they point you at the right person
 - lead_info_requested — they want to know more: they ask a question about the offer without committing
 - lead_meeting_requested — they propose or accept a specific time, or share a booking link
-- lead_not_interested — they decline, say it is not relevant, or ask to stop
+- lead_not_interested — they decline or say it is not relevant, WITHOUT asking to be removed
+- lead_opt_out_requested — they ask to be taken off the list: "unsubscribe", "remove me", "take me off your list", "stop emailing me", "do not contact me again". Pick this over lead_not_interested whenever the reply contains a removal request, even if it also declines the offer
 - lead_wrong_person — they are not the right contact and hand you nothing: no name, no relevance
 - lead_changed_job — they say they have left the role or the company, so the role we wrote to is no longer theirs
 - lead_out_of_office — they are away and will return; the message says nothing about the offer
 - lead_neutral — anything else, including a bare acknowledgement or an unclear reply
 
 Judge only what the reply says. Do not infer enthusiasm from politeness, and do
-not treat a question about how you got their address as interest.`;
+not treat a question about how you got their address as interest.
+
+The reply may quote our own email beneath it, and every email we send ends with
+the words "Don't want to hear from me again? unsubscribe". That is OUR footer,
+not their request — only a removal request THEY wrote is lead_opt_out_requested.`;
 
 /** Strip quoted history so the model judges what THEY wrote, not our own email. */
 export function stripQuotedHistory(text: string): string {

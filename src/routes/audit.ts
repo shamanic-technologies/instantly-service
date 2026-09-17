@@ -23,6 +23,7 @@ import { accountFillOrder } from "../lib/send-lead";
 import { fetchCapacityHistory } from "../lib/capacity-history";
 import { backfillEmails } from "../lib/emails-backfill";
 import { backfillInboundReplies } from "../lib/inbound-replies-backfill";
+import { backfillReplyOptOuts } from "../lib/reply-optout-backfill";
 import { backfillScannerClicks } from "../lib/self-send/click-scanner-backfill";
 import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
 import { syncSlowRampOff } from "../lib/sync-slow-ramp";
@@ -1035,6 +1036,57 @@ router.post("/inbound-replies-backfill", async (req: Request, res: Response) => 
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] inbound-replies-backfill run=${runId} failed: ${message}`);
+  });
+});
+
+
+/**
+ * POST /internal/audit/reply-optout-backfill
+ *
+ * Platform-scoped. Re-reads the mirrored Unibox and records the opt-outs sitting
+ * in replies that were filed as sentiment. A prospect who writes "please remove
+ * me from your list" is classified by Instantly as `lead_not_interested`, which
+ * this repo documents as the RECYCLABLE bucket — so they were marked
+ * re-contactable in three months. Measured in prod 2026-09-17: seven such leads,
+ * none carrying `lead_unsubscribed`, one still on an ACTIVE campaign.
+ *
+ * Reads nothing from Instantly and sends nothing.
+ *
+ * `{dryRun}` DEFAULTS TO TRUE and answers SYNCHRONOUSLY, naming the leads it
+ * would opt out — the plan a human needs is "who asked to stop", which a
+ * candidate count cannot give, so a dry run classifies and records nothing.
+ * `{dryRun: false}` answers 202 and sweeps in the background (log
+ * `reply-optout-backfill: done`); `{limit}` bounds a batch, live sequences first.
+ *
+ * Idempotent: a recorded opt-out leaves the candidate set, so a second run
+ * reports zero.
+ */
+router.post("/reply-optout-backfill", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { dryRun?: unknown; limit?: unknown };
+  const dryRun = body.dryRun !== false;
+  const limit =
+    typeof body.limit === "number" && Number.isFinite(body.limit) && body.limit > 0
+      ? Math.floor(body.limit)
+      : undefined;
+
+  if (dryRun) {
+    const summary = await backfillReplyOptOuts({ dryRun: true, limit });
+    res.json({ dryRun: true, ...summary });
+    return;
+  }
+
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, dryRun: false, runId });
+  console.log(`[audit] reply-optout-backfill: dispatched run=${runId}`);
+
+  (async () => {
+    const summary = await backfillReplyOptOuts({ dryRun: false, limit });
+    console.log(
+      `[audit] reply-optout-backfill: done run=${runId} ${JSON.stringify(summary)}`,
+    );
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] reply-optout-backfill run=${runId} failed: ${message}`);
   });
 });
 

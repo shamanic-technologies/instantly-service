@@ -6,10 +6,20 @@
  * person — and until now none of that could be recorded, so the only way into
  * the opted-out state was a link nobody had clicked.
  *
- * What this is NOT: an inference. Nothing here derives an opt-out from a reply,
- * a bounce, a sentiment or a silence. A row exists because a named staff member
- * stated that a named person asked to stop, through a named channel — and those
- * three facts stay recoverable forever, because this is a consent record.
+ * What this is NOT: an inference. Nothing here derives an opt-out from a MOOD or
+ * from a SILENCE — not from a negative sentiment, not from a bounce, not from a
+ * lead going quiet. A row exists because somebody STATED that a named person
+ * asked to stop, through a named channel, and who said it and when stay
+ * recoverable forever, because this is a consent record.
+ *
+ * ⚠️ "Somebody" is usually a staff member and is NOT always one. A prospect who
+ * writes "please remove me from your list" has stated it themselves, in words,
+ * and `lib/reply-opt-out` records that with `statedBy: "reply-classifier"` and
+ * their sentence on the row. That is not the inference this paragraph bans — it
+ * is the opposite end of the evidence scale: a sentence the person wrote is
+ * stronger than a staff member's recollection of a phone call, which this module
+ * accepts without argument. What stays banned is deriving consent from anything
+ * they did NOT say.
  *
  * Three properties are load-bearing:
  *
