@@ -1055,6 +1055,13 @@ router.post("/inbound-replies-backfill", async (req: Request, res: Response) => 
  * `{dryRun}` DEFAULTS TO TRUE and answers SYNCHRONOUSLY, naming the leads it
  * would opt out — the plan a human needs is "who asked to stop", which a
  * candidate count cannot give, so a dry run classifies and records nothing.
+ *
+ * ⚠️ PASS `{limit}` ON A DRY RUN. Classification costs ~0.8s per candidate
+ * (measured in prod), so an unbounded dry run over the full backlog (~365
+ * candidates, ~5 min) exceeds undici's 300s header timeout and the CLIENT gives
+ * up — the sweep itself finishes, but it is read-only so there is no
+ * destination to read the plan out of afterwards. The commit path is 202 +
+ * background and is unaffected.
  * `{dryRun: false}` answers 202 and sweeps in the background (log
  * `reply-optout-backfill: done`); `{limit}` bounds a batch, live sequences first.
  *

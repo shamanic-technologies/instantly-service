@@ -14,11 +14,18 @@ let updateResults: unknown[] = [];
 const mockInsertValues = vi.fn();
 const mockUpdateSet = vi.fn();
 
+/** Every `where(...)` condition the module builds, so the tests can read them. */
+const whereConditions: unknown[] = [];
+
 function chain(pop: () => unknown) {
   const c: Record<string, unknown> = {};
-  for (const m of ["from", "leftJoin", "where", "orderBy", "limit", "returning"]) {
+  for (const m of ["from", "leftJoin", "orderBy", "limit", "returning"]) {
     c[m] = () => c;
   }
+  c.where = (cond: unknown) => {
+    whereConditions.push(cond);
+    return c;
+  };
   (c as any).then = (resolve: (v: unknown) => void, reject: (e: unknown) => void) =>
     Promise.resolve(pop()).then(resolve, reject);
   return c;
@@ -96,8 +103,11 @@ vi.mock("../../src/lib/self-send/stop-sequence", () => ({
 
 import {
   OPT_OUT_CHANNELS,
+  OPT_OUT_REFUSAL_CODE,
+  findStandingOptOut,
   isOptOutChannel,
   listLeadOptOuts,
+  optOutRefusal,
   recordLeadOptOut,
   withdrawLeadOptOut,
 } from "../../src/lib/lead-optouts";
@@ -362,5 +372,85 @@ describe("listLeadOptOuts", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({ id: "optout-1", withdrawnAt, withdrawnBy: "user-2" });
     expect(rows[1]).toMatchObject({ id: "optout-2", withdrawnAt: null, withdrawnBy: null });
+  });
+});
+
+
+// ─── Identity ────────────────────────────────────────────────────────────────
+
+describe("the address is matched case-insensitively", () => {
+  /** Recursively pull SQL text out of a drizzle condition object. */
+  function sqlTextOf(obj: unknown): string {
+    if (typeof obj === "string") return obj;
+    if (obj == null) return "";
+    if (Array.isArray(obj)) return obj.map(sqlTextOf).join("");
+    if (typeof obj === "object") {
+      const o = obj as Record<string, unknown>;
+      if (Array.isArray(o.value)) return o.value.join("");
+      if (Array.isArray(o.queryChunks)) return sqlTextOf(o.queryChunks);
+      return Object.values(o).map(sqlTextOf).join("");
+    }
+    return "";
+  }
+
+  beforeEach(() => {
+    whereConditions.length = 0;
+  });
+
+  it("finds a standing opt-out whatever casing the caller passes", async () => {
+    // `Joe@X.com` and `joe@x.com` are one inbox. An exact match left a standing
+    // opt-out invisible under the other casing — which fails in the direction
+    // that emails somebody who asked us to stop.
+    selectResults = [[]];
+    await findStandingOptOut("org-1", "Chad@Clinic.COM");
+
+    const text = whereConditions.map(sqlTextOf).join(" ");
+    expect(text).toContain("lower(");
+    // The bound value is already normalized, so the index on lower(...) is usable.
+    expect(JSON.stringify(whereConditions)).toContain("chad@clinic.com");
+  });
+
+  it("stops EVERY campaign for the person, not only the matching-casing ones", async () => {
+    selectResults = [[], []];
+    insertResults = [[{ id: "o-1", orgId: "org-1", leadEmail: "Chad@Clinic.COM", channel: "email_reply", statedBy: "reply-classifier", notes: null, statedAt: new Date() }]];
+
+    await recordLeadOptOut({
+      orgId: "org-1",
+      leadEmail: "Chad@Clinic.COM",
+      channel: "email_reply",
+      statedBy: "reply-classifier",
+      payload: {},
+    });
+
+    const text = whereConditions.map(sqlTextOf).join(" ");
+    expect(text).toContain("lower(");
+  });
+});
+
+describe("optOutRefusal", () => {
+  const standing = {
+    id: "o-1",
+    orgId: "org-1",
+    email: "chad@clinic.com",
+    channel: "email_reply" as const,
+    statedBy: "reply-classifier",
+    notes: null,
+    statedAt: new Date("2026-08-01T10:00:00.000Z"),
+    withdrawnAt: null,
+    withdrawnBy: null,
+  };
+
+  it("carries its own code, distinct from the expiring re-contact window", () => {
+    const body = optOutRefusal("chad@clinic.com", standing);
+    expect(body.code).toBe(OPT_OUT_REFUSAL_CODE);
+    expect(body.code).toBe("lead_opted_out");
+    expect(body.code).not.toBe("recent_brand_contact");
+  });
+
+  it("says out loud that it does not expire and that nothing was billed", () => {
+    const body = optOutRefusal("chad@clinic.com", standing);
+    expect(body.details).toContain("does not expire");
+    expect(body.details).toContain("nothing was billed");
+    expect(body.details).toContain("org-wide");
   });
 });
