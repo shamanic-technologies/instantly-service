@@ -93,6 +93,28 @@ interface SenderCapacity {
  * Keyed on the real mailbox rather than the sending address, for the reason the
  * dispatcher documents: aliases share one login, one relay account and one
  * quota, and the relay enforces it per SASL user.
+ *
+ * ⚠️ NO `absent_since IS NULL` FILTER — A MAILBOX INSTANTLY NO LONGER LISTS IS
+ * NOT A MAILBOX THAT STOPPED EXISTING, and the credential map is already the
+ * gate. `absent_since` records one fact only: the account left the Instantly
+ * workspace. The mailbox itself is still at Gandi or at Google, and we still
+ * hold its password — which is POSITIVE evidence it exists and that we can
+ * authenticate as it, the same evidence `self-send/capability.ts` uses to
+ * decide the transport. Filtering on Instantly's listing therefore asked the
+ * vendor a question the credential had already answered.
+ *
+ * It failed SILENTLY and in the one direction nobody checks, because the pool
+ * and the room are two different reads: `partnerCandidates` draws on the
+ * credential map, so an absent mailbox keeps being chosen as a RECEIVER, while
+ * this query dropped it so it could never be a SENDER. Nothing errors, the mesh
+ * summary looks healthy, and the mailbox quietly accumulates inbound warmup it
+ * never answers with any of its own — which is not warmup at all, since
+ * receiving mail does nothing for a SENDER's reputation. Measured 2026-09-17:
+ * `kevin@distribute.you` (removed from the workspace on 2026-08-02, credential
+ * present the whole time) had **67 warmup messages received and 0 sent**.
+ *
+ * The line below is what keeps a genuine ghost out: an account absent from
+ * Instantly AND absent from the credential map gets no room either way.
  */
 async function loadRoom(
   mailboxLogins: ReadonlyMap<string, string>,
@@ -112,7 +134,6 @@ async function loadRoom(
       ), 0)                  AS "sentToday",
       a.lifecycle_status     AS "lifecycleStatus"
     FROM instantly_accounts a
-    WHERE a.absent_since IS NULL
   `);
   const volume = await fetchRecentDailyVolume();
 
