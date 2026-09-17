@@ -24,6 +24,10 @@ import {
   resolveMailboxCredential,
   type MailboxCredential,
 } from "./mailbox-credentials";
+import {
+  loadPendingScheduledReplies,
+  selectDueScheduledReplies,
+} from "../scheduled-replies";
 import { buildMessage } from "./message";
 import { runPoll } from "./imap-poller";
 import { dispatchMessage, SmtpDispatchError } from "./smtp";
@@ -81,6 +85,24 @@ export interface DispatchSummary {
   repliesDue: number;
   repliesSent: number;
   repliesFailed: number;
+  /**
+   * Whether this run read the mailboxes.
+   *
+   * False when the run found nothing it could send and returned without the
+   * poll — see the probe in `runDispatch`. It is NOT a relaxation of the
+   * read-before-send ordering: a run that sends anything always polls first.
+   */
+  polled: boolean;
+  /**
+   * True when another sweep was already running and this one did nothing.
+   *
+   * ⚠️ Load-bearing rather than cosmetic. Three things trigger this sweep — the
+   * in-process interval, the cron's `POST /internal/self-send/dispatch`, and a
+   * hand-run — and two concurrent ones would read the SAME still-`provisioned`
+   * ledger and both select the same step, which is how one prospect gets two
+   * copies of the same email. The mutex is what makes the extra trigger free.
+   */
+  skippedConcurrent: boolean;
 }
 
 /**
@@ -357,8 +379,61 @@ async function recordDispatch(values: {
  * continues — a single dead recipient domain must not stop the fleet's sending
  * for the day. Nothing is swallowed; every outcome lands in bronze.
  */
+/**
+ * At most ONE sweep at a time, across every trigger.
+ *
+ * Module-level rather than per-caller precisely because the callers are plural:
+ * the in-process interval, the cron POST and a manual POST all land here, and a
+ * guard held by any one of them would not see the others. The queue is the set
+ * of `provisioned` holds, and a hold only leaves that set once its `email_sent`
+ * has been promoted — so two overlapping sweeps genuinely select the same step
+ * and genuinely send it twice.
+ */
+let dispatchInFlight = false;
+
+/** Exposed for tests only; never call this from application code. */
+export function __resetDispatchInFlight(): void {
+  dispatchInFlight = false;
+}
+
+function emptySummary(): DispatchSummary {
+  return {
+    sequencesRead: 0,
+    due: 0,
+    dueBeforeCapacity: 0,
+    blockedNoCapacityRow: 0,
+    sent: 0,
+    bounced: 0,
+    senderBlocked: 0,
+    transient: 0,
+    failed: 0,
+    repliesDue: 0,
+    repliesSent: 0,
+    repliesFailed: 0,
+    polled: false,
+    skippedConcurrent: false,
+  };
+}
+
 export async function runDispatch(
   options: { limit?: number; asOf?: Date; pollFirst?: boolean } = {},
+): Promise<DispatchSummary> {
+  if (dispatchInFlight) {
+    console.log(
+      "[instantly-service] self-send-dispatch: skipped, a sweep is already running",
+    );
+    return { ...emptySummary(), skippedConcurrent: true };
+  }
+  dispatchInFlight = true;
+  try {
+    return await runDispatchExclusive(options);
+  } finally {
+    dispatchInFlight = false;
+  }
+}
+
+async function runDispatchExclusive(
+  options: { limit?: number; asOf?: Date; pollFirst?: boolean },
 ): Promise<DispatchSummary> {
   const asOf = options.asOf ?? new Date();
 
@@ -373,6 +448,65 @@ export async function runDispatch(
   // rather than real. A poll failure is logged and does not block the send — the
   // worst case is one extra email to someone who replied within the window,
   // which is the same latency the webhook path already carries.
+  // Read once for the whole sweep, not per mailbox: this is a key-service read
+  // plus a vendor pagination, and it answers both "may we send from here at all"
+  // and "which real mailbox does this alias spend the quota of".
+  //
+  // Fails LOUD — a sweep that cannot establish the fleet's credentials must stop,
+  // not quietly send nothing and report a clean run.
+  const mailboxLogins = await loadMailboxLogins(CALLER);
+
+  const plan = async () => {
+    const sequences = await loadPendingSequences();
+    const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
+    return { sequences, accounts, selection: selectDueSteps(sequences, capacities, asOf) };
+  };
+
+  // ── Probe ────────────────────────────────────────────────────────────────
+  //
+  // Is there anything this run could possibly send? Two local queries and a pure
+  // selection answer it, and the answer decides whether we pay for the mailbox
+  // read at all.
+  //
+  // ⚠️ This is what makes a short interval affordable, and it is NOT a weakening
+  // of the read-before-send ordering: a run that sends anything still polls
+  // first, in this same run, before the selection it acts on. What is skipped is
+  // the poll on a run that was going to send NOTHING — a weekend, a fleet at its
+  // daily cap, an hour when every prospect's local window is shut. Without it, a
+  // 10-minute interval would read 249 mailboxes around the clock to discover
+  // there was nothing to do.
+  let current = await plan();
+  const waitingReplies = selectDueScheduledReplies(
+    await loadPendingScheduledReplies(),
+    asOf,
+  );
+  const hasWork = current.selection.selected.length > 0 || waitingReplies.length > 0;
+
+  if (!hasWork) {
+    const idle: DispatchSummary = {
+      ...emptySummary(),
+      sequencesRead: current.sequences.length,
+      dueBeforeCapacity: current.selection.dueBeforeCapacity,
+      blockedNoCapacityRow: current.selection.blockedNoCapacityRow,
+    };
+    console.log(
+      `[instantly-service] self-send-dispatch: done ${JSON.stringify(idle)}`,
+    );
+    return idle;
+  }
+
+  // Read the mailboxes BEFORE deciding what to send, in the same run and
+  // awaited. A prospect who replied since the last sweep has their sequence
+  // stopped by the poll, so they are already out of the queue by the time we
+  // select — we never email someone who has already answered.
+  //
+  // This has to happen HERE rather than as an earlier cron step: both endpoints
+  // answer 202 and work in the background, so a separate poll step would still
+  // be running while dispatch selected, and the ordering would be hoped-for
+  // rather than real. A poll failure is logged and does not block the send — the
+  // worst case is one extra email to someone who replied within the window,
+  // which is the same latency the webhook path already carries.
+  let polled = false;
   if (options.pollFirst) {
     await runPoll({ asOf }).catch((error) => {
       console.error(
@@ -381,36 +515,26 @@ export async function runDispatch(
         }`,
       );
     });
+    polled = true;
+
+    // Re-select against what the poll just learned. The probe above is only a
+    // "is this run worth waking for" read; the selection we ACT on is taken
+    // after the mailboxes have been read, so a sequence the poll stopped is
+    // already gone from it.
+    current = await plan();
   }
 
-  const sequences = await loadPendingSequences();
-
-  // Read once for the whole sweep, not per mailbox: this is a key-service read
-  // plus a vendor pagination, and it answers both "may we send from here at all"
-  // and "which real mailbox does this alias spend the quota of".
-  //
-  // Fails LOUD — a sweep that cannot establish the fleet's credentials must stop,
-  // not quietly send nothing and report a clean run.
-  const mailboxLogins = await loadMailboxLogins(CALLER);
-  const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
-
-  const selection = selectDueSteps(sequences, capacities, asOf);
+  const { sequences, accounts, selection } = current;
   const due = selection.selected;
   const batch = options.limit ? due.slice(0, options.limit) : due;
 
   const summary: DispatchSummary = {
+    ...emptySummary(),
     sequencesRead: sequences.length,
     due: due.length,
     dueBeforeCapacity: selection.dueBeforeCapacity,
     blockedNoCapacityRow: selection.blockedNoCapacityRow,
-    sent: 0,
-    bounced: 0,
-    senderBlocked: 0,
-    transient: 0,
-    failed: 0,
-    repliesDue: 0,
-    repliesSent: 0,
-    repliesFailed: 0,
+    polled,
   };
 
   // Answer the prospects who are owed one FIRST. A waiting reply has already

@@ -10,11 +10,19 @@ name: Self-send (hourly)
 # running while dispatch selected, and the ordering would be hoped-for rather
 # than real. /internal/self-send/poll stays available for a manual read.
 #
-# Hourly rather than daily because a step's due moment is a timestamp, not a
-# date: a lead contacted at 09:00 with a 2-day gap comes due at 09:00 two days
-# later, and a daily sweep would hold it until whenever that sweep runs. Hourly
-# keeps the delay between "due" and "sent" under an hour, which is well inside
-# the noise of the nominal cadence itself.
+# ⚠️ THIS CRON IS A BACKSTOP, NOT THE SCHEDULER. The sweep is driven by an
+# in-process interval armed at boot (`src/lib/self-send/dispatch-scheduler.ts`),
+# because this file's hourly declaration was never honoured: measured over 16.1
+# days GitHub Actions fired it 100 times — 6.2 runs a day against 24 declared —
+# with gaps of 2.5h to 5.7h, and scheduled workflows are skipped under load
+# rather than queued, so nothing catches up afterwards. Prod 2026-09-17: five
+# runs in 24h, no dispatch attempt fleet-wide in the 6h after the last, and
+# 10,775 provisioned holds waiting.
+#
+# It stays armed anyway because it costs nothing: every trigger lands in
+# `runDispatch`, whose mutex refuses a second concurrent sweep, so an overlapping
+# tick returns `skippedConcurrent` and sends nothing. What it buys is a trigger
+# that survives a container in which the interval failed to arm.
 #
 # Safe to run this often. The sweep is idempotent — a step leaves the due set the
 # moment its cost hold stops being `provisioned`, which happens as part of
