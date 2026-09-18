@@ -9,6 +9,7 @@
 import { Router, Request, Response } from "express";
 import { syncMailboxes } from "../lib/mailboxes-sync";
 import { syncMessages } from "../lib/messages-sync";
+import { syncDomainDns } from "../lib/domain-dns-sync";
 
 const router = Router();
 
@@ -53,6 +54,24 @@ router.post("/messages-sync", async (req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[instantly-service] messages-sync failed: ${message}`);
     res.status(500).json({ error: "messages-sync failed", detail: message });
+  }
+});
+
+/**
+ * POST /internal/ops/dns-sync
+ *
+ * Photographs SPF / DMARC / DKIM (probed selectors) / MX for every domain we
+ * own or send from into `domain_dns_raw` (append-only). Also runs at the end
+ * of every `POST /internal/infra/sync`. Synchronous — ~100 domains at 8 wide.
+ */
+router.post("/dns-sync", async (_req: Request, res: Response) => {
+  try {
+    const summary = await syncDomainDns();
+    res.json(summary);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] dns-sync failed: ${message}`);
+    res.status(500).json({ error: "dns-sync failed", detail: message });
   }
 });
 
