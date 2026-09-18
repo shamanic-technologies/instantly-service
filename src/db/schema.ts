@@ -1227,6 +1227,30 @@ export const infraMailboxes = pgTable(
   ],
 );
 
+/**
+ * Bronze: an append-only daily photograph of what each domain we own or send
+ * from publishes in DNS — SPF, DMARC, the DKIM selectors we can find, MX
+ * (migration 0055). `values` empty = the name answered with no data; `error`
+ * = the lookup itself failed. A DKIM row exists only for a selector that
+ * answered. Read via `summarizeDns` (latest rows per domain). See CLAUDE.md
+ * "Unified ops model".
+ */
+export const domainDnsRaw = pgTable(
+  "domain_dns_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    domain: text("domain").notNull(),
+    /** spf | dmarc | dkim | mx */
+    recordType: text("record_type").notNull(),
+    selector: text("selector"),
+    name: text("name").notNull(),
+    values: jsonb("values").notNull().$type<string[]>(),
+    error: text("error"),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("domain_dns_raw_domain_fetched_idx").on(table.domain, table.fetchedAt)],
+);
+
 // Silver/config: what a vendor charges US. Deliberately SEPARATE from
 // costs-service, which prices what we RE-BILL the customer — neither replaces
 // the other, and the difference between them is the real margin per email.
