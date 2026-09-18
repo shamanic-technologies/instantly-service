@@ -3788,6 +3788,153 @@
           "domainsWithErrors"
         ]
       },
+      "LifecycleRules": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "nullable": true
+        }
+      },
+      "OpsDomainsResponse": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "type": "string"
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": {
+                "nullable": true
+              }
+            }
+          }
+        },
+        "required": [
+          "asOf",
+          "domains"
+        ]
+      },
+      "OpsMailboxesResponse": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "type": "string"
+          },
+          "mailboxes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": {
+                "nullable": true
+              }
+            }
+          }
+        },
+        "required": [
+          "asOf",
+          "mailboxes"
+        ]
+      },
+      "OpsAddressesResponse": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "type": "string"
+          },
+          "accounts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": {
+                "nullable": true
+              }
+            }
+          }
+        },
+        "required": [
+          "asOf",
+          "accounts"
+        ]
+      },
+      "OpsInfraResponse": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "nullable": true
+        }
+      },
+      "OpsThreadsResponse": {
+        "type": "object",
+        "properties": {
+          "threads": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": {
+                "nullable": true
+              }
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "threads",
+          "nextCursor"
+        ]
+      },
+      "OpsMessagesResponse": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": {
+                "nullable": true
+              }
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "messages",
+          "nextCursor"
+        ]
+      },
+      "OpsMessageBody": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "nullable": true
+          },
+          "html": {
+            "type": "string",
+            "nullable": true
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "html",
+          "source"
+        ]
+      },
       "InfraDomainsResponse": {
         "type": "object",
         "properties": {
@@ -7699,6 +7846,481 @@
           },
           "401": {
             "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/lifecycle-rules": {
+      "get": {
+        "summary": "The lifecycle rules as data — bars, limits per state, ramp, placement cadence, warmup",
+        "description": "Platform-scoped. Serves the constants `deriveLifecycle` and its siblings decide on (health entry bar, delivery bar, evidence max age, per-state campaign/warmup limits, ramp floor/growth/window, placement cadence, warmup budget) plus the rule order, so a dashboard renders what in_production / in_recovery MEAN from the decision's own inputs and cannot drift from them.",
+        "responses": {
+          "200": {
+            "description": "Rules",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LifecycleRules"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/domains": {
+      "get": {
+        "summary": "One row per (provider, domain): purchase/renewal, DNS, delivery, addresses, mailboxes, volume, cost",
+        "description": "Platform-scoped, cached 60s. The `/internal/infra/domains` row plus: `dns` (latest SPF / DMARC / DKIM selectors found / MX photograph, with per-record errors), `delivery` (Σinbox/Σseeds pooled across the domain's addresses' latest placement tests), `addresses` (total + by lifecycle), `mailboxes` (real logins), `volume30d` (outreach / warmup / seed / replies / bounces + bounce rate per mille from `messages`), and `cost.paidToDate` — an ESTIMATE (`source: 'estimate'`, rate × months since the registration started) because no vendor exposes an invoice API.",
+        "responses": {
+          "200": {
+            "description": "Domains",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsDomainsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/mailboxes": {
+      "get": {
+        "summary": "One row per REAL mailbox: vendor, pool, subscription, dates, aliases, cap + ramp projection, volume, delivery, cost",
+        "description": "Platform-scoped, cached 60s. From `mailboxes` (migration 0053): provider, pool type (google-workspace / gandi-relay / mailforge-relay / dfy-google), subscription (standard / prewarmed / dfy), credential source, vendor creation / prewarm / import dates, absence; its addresses with lifecycle and transport; `sustainedDaily` + `effectiveDailyCap` (the selector's own `capForAccount`, minimum across aliases) + `rampProjection` (the cap trajectory to the ceiling if the room is used) + `warmupBudgetToday`; `delivery` pooled across aliases with `evidenceExpiresAt`; `volume7d` / `volume30d` by typology; `cost` from the mailbox-month rate with a labelled paid-to-date estimate.",
+        "responses": {
+          "200": {
+            "description": "Mailboxes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsMailboxesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/addresses": {
+      "get": {
+        "summary": "Every account-health row, plus mailbox, transport, evidence expiry, next seed test, ramp projection, 7-day volume, lifecycle history",
+        "description": "Platform-scoped, cached 60s. A SUPERSET of `GET /internal/audit/account-health` — the same rows from the same assembly (`loadAccountHealth`), so the two cannot disagree — with `mailboxLogin`, `sendTransport`, `evidenceExpiresAt` (testedAt + 16 days), `nextSeedTest` (the seed cadence re-applied: due / reason / expected day), `rampProjection`, `volume7d` by typology, and the last 10 lifecycle transitions.",
+        "responses": {
+          "200": {
+            "description": "Addresses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsAddressesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/infra": {
+      "get": {
+        "summary": "The sending infrastructure: fleet totals and one rollup per pool (capacity, lifecycle counts, queue, volume, placement) plus the manual exclusions",
+        "description": "Platform-scoped, cached 60s. `fleet` carries the SAME `dailyCapacity` / `healthyAccountCount` / `totalAccountCount` / `blockedDomainCount` as `/internal/audit/sending-forecast` (same `computeCapacitySummary` over the same inputs) plus queued steps and accounts by lifecycle. `pools` splits the fleet by `mailboxes.pool_type` — google-workspace, gandi-relay, mailforge-relay, dfy-google, unknown — each with mailboxes, addresses, by-lifecycle, ramped daily capacity, in-production count, queued steps, 7-day volume by typology and the mean of latest inbox percentages. `exclusions` lists `instantly_domain_policy` (brand domains pulled from cold) and `instantly_account_feature_policy` (per-feature reservations).",
+        "responses": {
+          "200": {
+            "description": "Infra",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsInfraResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/threads": {
+      "get": {
+        "summary": "Threads over `messages`, newest activity first — the inbox list",
+        "description": "Platform-scoped. One row per `thread_id` (a sequence for outreach and its replies; the message itself for warmup and seeds): kind and subject of the root, account, real mailbox, counterparty, transport, message / inbound / outbound counts, first and last activity, and — for a sequence — the lead's delivery status, reply classification and reply kind from silver/gold. `limit` is REQUIRED (no silent default); `hasInbound=true|false` filters threads with / without an answer. Cursor pagination on (lastAt, threadId).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "description": "REQUIRED. Page size — there is no default; a caller states how much it wants."
+            },
+            "required": true,
+            "description": "REQUIRED. Page size — there is no default; a caller states how much it wants.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque, from the previous page's `nextCursor`"
+            },
+            "required": false,
+            "description": "Opaque, from the previous page's `nextCursor`",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "outreach | manual_reply | warmup | warmup_reply | seed | reply | auto_reply | bounce"
+            },
+            "required": false,
+            "description": "outreach | manual_reply | warmup | warmup_reply | seed | reply | auto_reply | bounce",
+            "name": "kind",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "in",
+                "out"
+              ]
+            },
+            "required": false,
+            "name": "direction",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Sending address"
+            },
+            "required": false,
+            "description": "Sending address",
+            "name": "account",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Real mailbox login"
+            },
+            "required": false,
+            "description": "Real mailbox login",
+            "name": "mailbox",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Sending domain"
+            },
+            "required": false,
+            "description": "Sending domain",
+            "name": "domain",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Substring match on the other party"
+            },
+            "required": false,
+            "description": "Substring match on the other party",
+            "name": "counterparty",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "orgId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The caller campaign id"
+            },
+            "required": false,
+            "description": "The caller campaign id",
+            "name": "campaignId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "ISO timestamp, inclusive"
+            },
+            "required": false,
+            "description": "ISO timestamp, inclusive",
+            "name": "since",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "ISO timestamp, exclusive"
+            },
+            "required": false,
+            "description": "ISO timestamp, exclusive",
+            "name": "until",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "inbox | spam | missing (warmup + seed)"
+            },
+            "required": false,
+            "description": "inbox | spam | missing (warmup + seed)",
+            "name": "placement",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "hasInbound",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Threads page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsThreadsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad filter"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/messages": {
+      "get": {
+        "summary": "Messages, newest first — every email of every typology, with the same filters as threads plus `threadId`",
+        "description": "Platform-scoped. One row per `messages` row. `limit` is REQUIRED. The body is not inline — read it from `GET /internal/ops/messages/{id}/body`, which goes back to the bronze row the message came from.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "description": "REQUIRED. Page size — there is no default; a caller states how much it wants."
+            },
+            "required": true,
+            "description": "REQUIRED. Page size — there is no default; a caller states how much it wants.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque, from the previous page's `nextCursor`"
+            },
+            "required": false,
+            "description": "Opaque, from the previous page's `nextCursor`",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "outreach | manual_reply | warmup | warmup_reply | seed | reply | auto_reply | bounce"
+            },
+            "required": false,
+            "description": "outreach | manual_reply | warmup | warmup_reply | seed | reply | auto_reply | bounce",
+            "name": "kind",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "in",
+                "out"
+              ]
+            },
+            "required": false,
+            "name": "direction",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Sending address"
+            },
+            "required": false,
+            "description": "Sending address",
+            "name": "account",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Real mailbox login"
+            },
+            "required": false,
+            "description": "Real mailbox login",
+            "name": "mailbox",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Sending domain"
+            },
+            "required": false,
+            "description": "Sending domain",
+            "name": "domain",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Substring match on the other party"
+            },
+            "required": false,
+            "description": "Substring match on the other party",
+            "name": "counterparty",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "orgId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The caller campaign id"
+            },
+            "required": false,
+            "description": "The caller campaign id",
+            "name": "campaignId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "ISO timestamp, inclusive"
+            },
+            "required": false,
+            "description": "ISO timestamp, inclusive",
+            "name": "since",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "ISO timestamp, exclusive"
+            },
+            "required": false,
+            "description": "ISO timestamp, exclusive",
+            "name": "until",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "inbox | spam | missing (warmup + seed)"
+            },
+            "required": false,
+            "description": "inbox | spam | missing (warmup + seed)",
+            "name": "placement",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "threadId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Messages page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsMessagesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad filter"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/messages/{id}/body": {
+      "get": {
+        "summary": "The body of one message, read from its bronze source",
+        "description": "Platform-scoped. Instantly mail: `body.text` / `body.html` from the Unibox mirror; our own dispatch: the sequence step's HTML (or the reply's); IMAP inbound: the stored text snippet (first 4000 characters). Warmup and seed bodies are generated per send and not stored beside the dispatch, so both read null with `source` naming the table.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsMessageBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Unknown message"
           }
         }
       }
