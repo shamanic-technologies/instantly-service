@@ -2451,6 +2451,36 @@ registry.registerPath({
   },
 });
 
+const MailboxSyncSummarySchema = z
+  .object({
+    mailboxes: z.number().int().describe("Real mailboxes (SASL logins) upserted"),
+    addresses: z.number().int().describe("Instantly addresses linked to a mailbox"),
+    addressesWithoutCredential: z
+      .number()
+      .int()
+      .describe("Addresses the credential map does not know — each is its own mailbox"),
+    vendorOnlyMailboxes: z
+      .number()
+      .int()
+      .describe("Vendor mailboxes carrying no Instantly address (paid, unused)"),
+  })
+  .openapi("MailboxSyncSummary");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/ops/mailboxes-sync",
+  summary: "Re-derive and persist the address → real-mailbox grouping",
+  description:
+    "Platform-scoped (no org). A MAILBOX is the login a provider enforces quota, reputation and credential at; a sending ADDRESS is what a prospect sees (on Gandi one mailbox carries several aliases). Reads the credential map (manual key + Primeforge), `infra_mailboxes`, `infra_domains` and `instantly_accounts`, derives one row per real mailbox (provider, pool type, subscription, credential source, vendor/import/prewarm dates, absence) and upserts `mailboxes` + `instantly_accounts.mailbox_login`. A PROJECTION for reads — the transport decision and the dispatch grain still come from the live credential map. Also runs at the end of every `POST /internal/infra/sync`. Synchronous; spends nothing metered.",
+  responses: {
+    200: {
+      description: "Sync summary",
+      content: { "application/json": { schema: MailboxSyncSummarySchema } },
+    },
+    401: { description: "Unauthorized" },
+  },
+});
+
 const InfraDomainRowSchema = z
   .object({
     domain: z.string(),

@@ -3703,6 +3703,33 @@
           "runId"
         ]
       },
+      "MailboxSyncSummary": {
+        "type": "object",
+        "properties": {
+          "mailboxes": {
+            "type": "integer",
+            "description": "Real mailboxes (SASL logins) upserted"
+          },
+          "addresses": {
+            "type": "integer",
+            "description": "Instantly addresses linked to a mailbox"
+          },
+          "addressesWithoutCredential": {
+            "type": "integer",
+            "description": "Addresses the credential map does not know — each is its own mailbox"
+          },
+          "vendorOnlyMailboxes": {
+            "type": "integer",
+            "description": "Vendor mailboxes carrying no Instantly address (paid, unused)"
+          }
+        },
+        "required": [
+          "mailboxes",
+          "addresses",
+          "addressesWithoutCredential",
+          "vendorOnlyMailboxes"
+        ]
+      },
       "InfraDomainsResponse": {
         "type": "object",
         "properties": {
@@ -7533,6 +7560,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/InfraSyncAccepted"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/mailboxes-sync": {
+      "post": {
+        "summary": "Re-derive and persist the address → real-mailbox grouping",
+        "description": "Platform-scoped (no org). A MAILBOX is the login a provider enforces quota, reputation and credential at; a sending ADDRESS is what a prospect sees (on Gandi one mailbox carries several aliases). Reads the credential map (manual key + Primeforge), `infra_mailboxes`, `infra_domains` and `instantly_accounts`, derives one row per real mailbox (provider, pool type, subscription, credential source, vendor/import/prewarm dates, absence) and upserts `mailboxes` + `instantly_accounts.mailbox_login`. A PROJECTION for reads — the transport decision and the dispatch grain still come from the live credential map. Also runs at the end of every `POST /internal/infra/sync`. Synchronous; spends nothing metered.",
+        "responses": {
+          "200": {
+            "description": "Sync summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailboxSyncSummary"
                 }
               }
             }
