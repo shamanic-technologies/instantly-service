@@ -1,5 +1,5 @@
 import { loadMailboxLogins } from "../lib/self-send/mailbox-credentials";
-import { fetchRecentDailyVolume, sustainedFor } from "../lib/recent-send-volume";
+import { fetchRecentDailyVolume } from "../lib/recent-send-volume";
 import { Router, Request, Response } from "express";
 import { sql, eq } from "drizzle-orm";
 import { db } from "../db";
@@ -12,14 +12,12 @@ import {
   projectDailySchedule,
   type PendingLead,
 } from "../lib/sending-forecast";
-import { buildAccountHealth } from "../lib/account-health";
+import { loadAccountHealth } from "../lib/ops/account-health-read";
 import {
   snapshotAccounts,
   reconcileLifecycle,
   fetchLifecycleByEmail,
-  fetchInProductionAccounts,
 } from "../lib/account-lifecycle-sync";
-import { accountFillOrder } from "../lib/send-lead";
 import { fetchCapacityHistory } from "../lib/capacity-history";
 import { backfillEmails } from "../lib/emails-backfill";
 import { backfillInboundReplies } from "../lib/inbound-replies-backfill";
@@ -33,16 +31,9 @@ import {
   isReactivateAccountsEnabled,
 } from "../lib/reactivate-accounts";
 import {
-  fetchSentTodayByAccount,
-  fetchSentYesterdayByAccount,
-  fetchQueueSizeByAccount,
-  fetchQueueBreakdownByAccount,
-} from "../lib/account-sending-stats";
-import {
   syncPlacement,
   ensurePlacementSchedule,
   runOneTimeFleetPlacementTest,
-  fetchLatestPlacementByAccount,
   fetchPlacementHistory,
   isPlacementSchedulingEnabled,
 } from "../lib/placement-sync";
@@ -256,71 +247,13 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
  */
 router.get("/account-health", async (_req: Request, res: Response) => {
   try {
-    const asOf = new Date();
-
-    const apiKey = await resolvePlatformInstantlyApiKey({
+    // The assembly lives in ops/account-health-read.ts so the ops `addresses`
+    // read serves the SAME rows — two copies would drift about one account.
+    const read = await loadAccountHealth({
       method: "GET",
       path: "/internal/audit/account-health",
     });
-    // Account list (Instantly) + latest placement, sent-today, and queue-size
-    // per account (our silver + cost holds) run independently — parallelize.
-    // Placement/sent/queue are best-effort per contract (null/0 when absent); a
-    // live account list is required (fail loud).
-    const [
-      accounts,
-      placementByEmail,
-      sentTodayByEmail,
-      sentYesterdayByEmail,
-      queueSizeByEmail,
-      queueBreakdownByEmail,
-      lifecycleByEmail,
-      pool,
-      recentVolume,
-    ] = await Promise.all([
-      listAccounts(apiKey),
-      fetchLatestPlacementByAccount(),
-      fetchSentTodayByAccount(),
-      fetchSentYesterdayByAccount(),
-      fetchQueueSizeByAccount(),
-      fetchQueueBreakdownByAccount(asOf),
-      fetchLifecycleByEmail(),
-      // The selector's OWN pool read, slug-less — i.e. exactly the set an
-      // unreserved send draws from. Ranking a set we assembled here instead
-      // would be a second implementation of the selection gate, free to drift
-      // from the one that actually picks the mailbox.
-      fetchInProductionAccounts(null),
-      // The SAME volume map the selector caps against, so the table cannot
-      // report a cap the selector disagrees with for the same mailbox.
-      fetchRecentDailyVolume(),
-    ]);
-
-    // Position in the fill order, 1-based. `accountFillOrder` is the selector's
-    // own comparator, so rank 1 is by construction the mailbox a new sequence is
-    // offered first. An account outside the pool is simply absent from the map
-    // and reports a null rank — never a fabricated position.
-    const fillRankByEmail = new Map<string, number>(
-      accountFillOrder(pool).map((a, i) => [a.email, i + 1]),
-    );
-
-    res.json({
-      asOf: asOf.toISOString(),
-      accounts: buildAccountHealth(
-        accounts,
-        placementByEmail,
-        sentTodayByEmail,
-        queueSizeByEmail,
-        lifecycleByEmail,
-        sentYesterdayByEmail,
-        queueBreakdownByEmail,
-        {
-          fillRankByEmail,
-          recentSustainedByEmail: new Map(
-            accounts.filter((a) => a.email).map((a) => [a.email, sustainedFor(recentVolume, a.email)]),
-          ),
-          asOf,
-        },
-      ),
-    });
+    res.json({ asOf: read.asOf.toISOString(), accounts: read.accounts });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] account-health failed: ${message}`);

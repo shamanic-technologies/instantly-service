@@ -2538,6 +2538,106 @@ registry.registerPath({
   },
 });
 
+// ─── Unified ops model — gold reads (/internal/ops/*) ────────────────────────
+//
+// These are staff reads over the unified model (mailboxes / messages / DNS +
+// the existing silver). Deep shapes are described at the top level and left
+// open below it: the rows are assembled from silver and pure projections, and
+// a closed schema here would be a second declaration of what those already say.
+
+const OpsObject = z.object({}).passthrough();
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/lifecycle-rules",
+  summary: "The lifecycle rules as data — bars, limits per state, ramp, placement cadence, warmup",
+  description:
+    "Platform-scoped. Serves the constants `deriveLifecycle` and its siblings decide on (health entry bar, delivery bar, evidence max age, per-state campaign/warmup limits, ramp floor/growth/window, placement cadence, warmup budget) plus the rule order, so a dashboard renders what in_production / in_recovery MEAN from the decision's own inputs and cannot drift from them.",
+  responses: { 200: { description: "Rules", content: { "application/json": { schema: OpsObject.openapi("LifecycleRules") } } }, 401: { description: "Unauthorized" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/domains",
+  summary: "One row per (provider, domain): purchase/renewal, DNS, delivery, addresses, mailboxes, volume, cost",
+  description:
+    "Platform-scoped, cached 60s. The `/internal/infra/domains` row plus: `dns` (latest SPF / DMARC / DKIM selectors found / MX photograph, with per-record errors), `delivery` (Σinbox/Σseeds pooled across the domain's addresses' latest placement tests), `addresses` (total + by lifecycle), `mailboxes` (real logins), `volume30d` (outreach / warmup / seed / replies / bounces + bounce rate per mille from `messages`), and `cost.paidToDate` — an ESTIMATE (`source: 'estimate'`, rate × months since the registration started) because no vendor exposes an invoice API.",
+  responses: { 200: { description: "Domains", content: { "application/json": { schema: z.object({ asOf: z.string(), domains: z.array(OpsObject) }).openapi("OpsDomainsResponse") } } }, 401: { description: "Unauthorized" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/mailboxes",
+  summary: "One row per REAL mailbox: vendor, pool, subscription, dates, aliases, cap + ramp projection, volume, delivery, cost",
+  description:
+    "Platform-scoped, cached 60s. From `mailboxes` (migration 0053): provider, pool type (google-workspace / gandi-relay / mailforge-relay / dfy-google), subscription (standard / prewarmed / dfy), credential source, vendor creation / prewarm / import dates, absence; its addresses with lifecycle and transport; `sustainedDaily` + `effectiveDailyCap` (the selector's own `capForAccount`, minimum across aliases) + `rampProjection` (the cap trajectory to the ceiling if the room is used) + `warmupBudgetToday`; `delivery` pooled across aliases with `evidenceExpiresAt`; `volume7d` / `volume30d` by typology; `cost` from the mailbox-month rate with a labelled paid-to-date estimate.",
+  responses: { 200: { description: "Mailboxes", content: { "application/json": { schema: z.object({ asOf: z.string(), mailboxes: z.array(OpsObject) }).openapi("OpsMailboxesResponse") } } }, 401: { description: "Unauthorized" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/addresses",
+  summary: "Every account-health row, plus mailbox, transport, evidence expiry, next seed test, ramp projection, 7-day volume, lifecycle history",
+  description:
+    "Platform-scoped, cached 60s. A SUPERSET of `GET /internal/audit/account-health` — the same rows from the same assembly (`loadAccountHealth`), so the two cannot disagree — with `mailboxLogin`, `sendTransport`, `evidenceExpiresAt` (testedAt + 16 days), `nextSeedTest` (the seed cadence re-applied: due / reason / expected day), `rampProjection`, `volume7d` by typology, and the last 10 lifecycle transitions.",
+  responses: { 200: { description: "Addresses", content: { "application/json": { schema: z.object({ asOf: z.string(), accounts: z.array(OpsObject) }).openapi("OpsAddressesResponse") } } }, 401: { description: "Unauthorized" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/infra",
+  summary: "The sending infrastructure: fleet totals and one rollup per pool (capacity, lifecycle counts, queue, volume, placement) plus the manual exclusions",
+  description:
+    "Platform-scoped, cached 60s. `fleet` carries the SAME `dailyCapacity` / `healthyAccountCount` / `totalAccountCount` / `blockedDomainCount` as `/internal/audit/sending-forecast` (same `computeCapacitySummary` over the same inputs) plus queued steps and accounts by lifecycle. `pools` splits the fleet by `mailboxes.pool_type` — google-workspace, gandi-relay, mailforge-relay, dfy-google, unknown — each with mailboxes, addresses, by-lifecycle, ramped daily capacity, in-production count, queued steps, 7-day volume by typology and the mean of latest inbox percentages. `exclusions` lists `instantly_domain_policy` (brand domains pulled from cold) and `instantly_account_feature_policy` (per-feature reservations).",
+  responses: { 200: { description: "Infra", content: { "application/json": { schema: OpsObject.openapi("OpsInfraResponse") } } }, 401: { description: "Unauthorized" } },
+});
+
+const OpsListQuery = z.object({
+  limit: z.number().int().min(1).max(500).describe("REQUIRED. Page size — there is no default; a caller states how much it wants."),
+  cursor: z.string().optional().describe("Opaque, from the previous page's `nextCursor`"),
+  kind: z.string().optional().describe("outreach | manual_reply | warmup | warmup_reply | seed | reply | auto_reply | bounce"),
+  direction: z.enum(["in", "out"]).optional(),
+  account: z.string().optional().describe("Sending address"),
+  mailbox: z.string().optional().describe("Real mailbox login"),
+  domain: z.string().optional().describe("Sending domain"),
+  counterparty: z.string().optional().describe("Substring match on the other party"),
+  orgId: z.string().optional(),
+  campaignId: z.string().optional().describe("The caller campaign id"),
+  since: z.string().optional().describe("ISO timestamp, inclusive"),
+  until: z.string().optional().describe("ISO timestamp, exclusive"),
+  placement: z.string().optional().describe("inbox | spam | missing (warmup + seed)"),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/threads",
+  summary: "Threads over `messages`, newest activity first — the inbox list",
+  description:
+    "Platform-scoped. One row per `thread_id` (a sequence for outreach and its replies; the message itself for warmup and seeds): kind and subject of the root, account, real mailbox, counterparty, transport, message / inbound / outbound counts, first and last activity, and — for a sequence — the lead's delivery status, reply classification and reply kind from silver/gold. `limit` is REQUIRED (no silent default); `hasInbound=true|false` filters threads with / without an answer. Cursor pagination on (lastAt, threadId).",
+  request: { query: OpsListQuery.extend({ hasInbound: z.enum(["true", "false"]).optional() }) },
+  responses: { 200: { description: "Threads page", content: { "application/json": { schema: z.object({ threads: z.array(OpsObject), nextCursor: z.string().nullable() }).openapi("OpsThreadsResponse") } } }, 400: { description: "Bad filter" }, 401: { description: "Unauthorized" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/messages",
+  summary: "Messages, newest first — every email of every typology, with the same filters as threads plus `threadId`",
+  description:
+    "Platform-scoped. One row per `messages` row. `limit` is REQUIRED. The body is not inline — read it from `GET /internal/ops/messages/{id}/body`, which goes back to the bronze row the message came from.",
+  request: { query: OpsListQuery.extend({ threadId: z.string().optional() }) },
+  responses: { 200: { description: "Messages page", content: { "application/json": { schema: z.object({ messages: z.array(OpsObject), nextCursor: z.string().nullable() }).openapi("OpsMessagesResponse") } } }, 400: { description: "Bad filter" }, 401: { description: "Unauthorized" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/messages/{id}/body",
+  summary: "The body of one message, read from its bronze source",
+  description:
+    "Platform-scoped. Instantly mail: `body.text` / `body.html` from the Unibox mirror; our own dispatch: the sequence step's HTML (or the reply's); IMAP inbound: the stored text snippet (first 4000 characters). Warmup and seed bodies are generated per send and not stored beside the dispatch, so both read null with `source` naming the table.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: { description: "Body", content: { "application/json": { schema: z.object({ text: z.string().nullable(), html: z.string().nullable(), source: z.string() }).openapi("OpsMessageBody") } } }, 404: { description: "Unknown message" }, 401: { description: "Unauthorized" } },
+});
+
 const InfraDomainRowSchema = z
   .object({
     domain: z.string(),
