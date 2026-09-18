@@ -270,6 +270,60 @@ export const mailboxes = pgTable(
   (table) => [index("mailboxes_domain_idx").on(table.domain)],
 );
 
+/**
+ * Silver: ONE row per email, every typology, whichever pipe carried it
+ * (migration 0054). A PROJECTION of seven bronze sources keyed on the bronze
+ * row (`source_table`, `source_row_id`), refreshed by `syncMessages` on an
+ * in-process interval. Bronze keeps the body; state facts stay in
+ * `instantly_events`, joined through (instantly_campaign_id, step).
+ * See CLAUDE.md "Unified ops model".
+ */
+export const messages = pgTable(
+  "messages",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    sourceTable: text("source_table").notNull(),
+    sourceRowId: text("source_row_id").notNull(),
+    /** RFC 5322 Message-Id when the source carries one. */
+    messageId: text("message_id"),
+    /** out | in */
+    direction: text("direction").notNull(),
+    /** outreach | manual_reply | warmup | warmup_reply | seed | reply | auto_reply | bounce | unrelated */
+    kind: text("kind").notNull(),
+    /** instantly | smtp */
+    transport: text("transport").notNull(),
+    accountEmail: text("account_email").notNull(),
+    mailboxLogin: text("mailbox_login"),
+    counterparty: text("counterparty"),
+    subject: text("subject"),
+    instantlyCampaignId: text("instantly_campaign_id"),
+    step: integer("step"),
+    /** The sequence for outreach; the message's own id for warmup and seeds. */
+    threadId: text("thread_id").notNull(),
+    /** A seed test id or a warmup day key — what the message was FOR. */
+    contextRef: text("context_ref"),
+    orgId: text("org_id"),
+    campaignId: text("campaign_id"),
+    /** sent | permanent | transient | received */
+    outcome: text("outcome").notNull(),
+    /** inbox | spam | missing — where a warmup or seed landed; null until observed. */
+    placement: text("placement"),
+    spfPass: boolean("spf_pass"),
+    dkimPass: boolean("dkim_pass"),
+    dmarcPass: boolean("dmarc_pass"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("messages_source_idx").on(table.sourceTable, table.sourceRowId),
+    index("messages_account_occurred_idx").on(table.accountEmail, table.occurredAt),
+    index("messages_mailbox_occurred_idx").on(table.mailboxLogin, table.occurredAt),
+    index("messages_thread_idx").on(table.threadId),
+    index("messages_message_id_idx").on(table.messageId),
+    index("messages_kind_occurred_idx").on(table.kind, table.occurredAt),
+  ],
+);
+
 // Bronze: periodic full snapshot of Instantly GET /accounts (append-only, never
 // mutated). One row per (account, fetch) — gives health / daily_limit HISTORY,
 // the raw material for the capacity-over-time reconstruction.

@@ -8,6 +8,7 @@
 
 import { Router, Request, Response } from "express";
 import { syncMailboxes } from "../lib/mailboxes-sync";
+import { syncMessages } from "../lib/messages-sync";
 
 const router = Router();
 
@@ -27,6 +28,31 @@ router.post("/mailboxes-sync", async (_req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[instantly-service] mailboxes-sync failed: ${message}`);
     res.status(500).json({ error: "mailboxes-sync failed", detail: message });
+  }
+});
+
+/**
+ * POST /internal/ops/messages-sync
+ *
+ * Re-reads a window of every message source (`sinceDays`, default 3) and
+ * upserts the `messages` projection. Also runs on an in-process interval.
+ * A large `sinceDays` is the backfill; the unique source index makes any
+ * overlap a no-op.
+ */
+router.post("/messages-sync", async (req: Request, res: Response) => {
+  const raw = (req.body ?? {}) as { sinceDays?: unknown };
+  const sinceDays = raw.sinceDays === undefined ? undefined : Number(raw.sinceDays);
+  if (sinceDays !== undefined && (!Number.isFinite(sinceDays) || sinceDays < 1)) {
+    res.status(400).json({ error: "sinceDays must be a number >= 1" });
+    return;
+  }
+  try {
+    const summary = await syncMessages({ sinceDays });
+    res.json(summary);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] messages-sync failed: ${message}`);
+    res.status(500).json({ error: "messages-sync failed", detail: message });
   }
 });
 
