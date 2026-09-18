@@ -2518,6 +2518,26 @@ registry.registerPath({
   },
 });
 
+const DnsSyncSummarySchema = z
+  .object({
+    domains: z.number().int(),
+    records: z.number().int(),
+    domainsWithErrors: z.number().int().describe("Domains where a lookup errored — recorded with the error, never skipped"),
+  })
+  .openapi("DnsSyncSummary");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/ops/dns-sync",
+  summary: "Photograph SPF / DMARC / DKIM / MX for every domain we own or send from",
+  description:
+    "Platform-scoped (no org). Resolves the SPF TXT, the `_dmarc` TXT, a probed list of DKIM selectors (Google Workspace, Gandi, common defaults — a selector is a name only the signer knows, so an empty DKIM result means none found among the probed selectors, never no DKIM) and MX for every live `infra_domains` domain plus every domain an Instantly account sends from, and appends the answers to `domain_dns_raw`. A lookup that errors is recorded with its code, not skipped. Also runs at the end of every `POST /internal/infra/sync`. Synchronous; spends nothing metered.",
+  responses: {
+    200: { description: "Sync summary", content: { "application/json": { schema: DnsSyncSummarySchema } } },
+    401: { description: "Unauthorized" },
+  },
+});
+
 const InfraDomainRowSchema = z
   .object({
     domain: z.string(),
