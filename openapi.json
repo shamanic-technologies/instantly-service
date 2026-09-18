@@ -3730,6 +3730,44 @@
           "vendorOnlyMailboxes"
         ]
       },
+      "MessagesSyncSummary": {
+        "type": "object",
+        "properties": {
+          "windowDays": {
+            "type": "integer"
+          },
+          "read": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Rows read per bronze source"
+          },
+          "upserted": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer",
+            "description": "Source rows with no usable account or timestamp"
+          }
+        },
+        "required": [
+          "windowDays",
+          "read",
+          "upserted",
+          "skipped"
+        ]
+      },
+      "MessagesSyncRequest": {
+        "type": "object",
+        "properties": {
+          "sinceDays": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Re-read window in days on each source's own write timestamp (default 3). Large = backfill."
+          }
+        }
+      },
       "InfraDomainsResponse": {
         "type": "object",
         "properties": {
@@ -7584,6 +7622,39 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/messages-sync": {
+      "post": {
+        "summary": "Project every email (outreach, reply, warmup, seed) into one `messages` row each",
+        "description": "Platform-scoped (no org). Re-reads a window of the seven bronze message sources — Instantly's Unibox mirror, our own SMTP dispatches, IMAP inbound, warmup dispatches (+ receipts), seed placement dispatches (+ observations) — maps each row to one `messages` row (direction, kind, transport, account, real mailbox, counterparty, subject, sequence + step, thread, outcome, placement, auth verdict, timestamp) and upserts keyed on the bronze row. Bronze keeps the body; state facts stay in `instantly_events`. Also runs on a 10-minute in-process interval. Idempotent: the unique (source_table, source_row_id) index makes any overlap a no-op, so there is no cursor to drift. Synchronous; spends nothing metered.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessagesSyncRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sync summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagesSyncSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "sinceDays invalid"
           },
           "401": {
             "description": "Unauthorized"

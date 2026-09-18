@@ -379,6 +379,13 @@
       "when": 1786272800000,
       "tag": "0053_mailboxes",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1786359200000,
+      "tag": "0054_messages",
+      "breakpoints": true
     }
   ]
 }
