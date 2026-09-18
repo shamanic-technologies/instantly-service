@@ -189,21 +189,48 @@ export async function loadCredentialedMailboxes(
 export async function loadMailboxLogins(
   caller: CallerInfo,
 ): Promise<Map<string, string>> {
+  const entries = await loadMailboxLoginEntries(caller);
+  return new Map([...entries].map(([address, e]) => [address, e.login]));
+}
+
+/** Which source holds a mailbox's password. */
+export type CredentialSource = "manual" | "primeforge";
+
+export interface MailboxLoginEntry {
+  /** The real mailbox (SASL login) this address authenticates as. */
+  login: string;
+  source: CredentialSource;
+}
+
+/**
+ * The same map as {@link loadMailboxLogins}, carrying WHERE each credential came
+ * from. The mailbox sync persists that provenance; the dispatch path does not
+ * care and reads the narrower shape. One loader, three shapes — a fourth loader
+ * would drift.
+ */
+export async function loadMailboxLoginEntries(
+  caller: CallerInfo,
+): Promise<Map<string, MailboxLoginEntry>> {
   const manual = await loadManualCredentials(caller);
   const key = await resolvePlatformKey("primeforge", caller);
   const mailboxes = await listPrimeforgeRawMailboxes(key);
 
-  const logins = new Map<string, string>();
+  const logins = new Map<string, MailboxLoginEntry>();
 
   // Manual first, then Primeforge WITHOUT overwriting — the manual layer wins
   // everywhere else in this file, so it wins here too.
   for (const entry of manual) {
-    logins.set(entry.address, (entry.authUser ?? entry.address).trim().toLowerCase());
+    logins.set(entry.address, {
+      login: (entry.authUser ?? entry.address).trim().toLowerCase(),
+      source: "manual",
+    });
   }
   for (const mailbox of mailboxes) {
     const address = String(mailbox.address ?? "").trim().toLowerCase();
     const appPassword = String(mailbox.appPassword ?? "").replace(/\s/g, "");
-    if (address && appPassword && !logins.has(address)) logins.set(address, address);
+    if (address && appPassword && !logins.has(address)) {
+      logins.set(address, { login: address, source: "primeforge" });
+    }
   }
   return logins;
 }

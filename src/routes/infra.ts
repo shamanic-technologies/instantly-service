@@ -9,6 +9,7 @@
 
 import { Router, Request, Response } from "express";
 import { syncProviderInfra } from "../lib/infra-sync";
+import { syncMailboxes } from "../lib/mailboxes-sync";
 import { loadEffectiveRates, loadInventoryDomains } from "../lib/infra-gold";
 import {
   classifyWaste,
@@ -46,6 +47,10 @@ router.post("/sync", async (_req: Request, res: Response) => {
       path: "/internal/infra/sync",
     });
     console.log(`[infra] infra-sync: done run=${runId} ${JSON.stringify(summary)}`);
+    // The mailbox grouping reads what this sync just wrote, so it runs AFTER it,
+    // awaited — not as a sibling cron that would race the writes it depends on.
+    const mailboxSummary = await syncMailboxes({ method: "POST", path: "/internal/infra/sync" });
+    console.log(`[infra] mailboxes-sync: done run=${runId} ${JSON.stringify(mailboxSummary)}`);
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[infra] infra-sync run=${runId} failed: ${message}`);

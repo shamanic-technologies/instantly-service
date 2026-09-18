@@ -228,9 +228,47 @@ export const instantlyAccounts = pgTable("instantly_accounts", {
   // send time, so flipping this never disturbs sequences already in flight, and
   // flipping it back is the rollback. See src/lib/self-send/transport.ts.
   sendTransport: text("send_transport").notNull().default("instantly"),
+  /**
+   * The REAL mailbox this address authenticates as (migration 0053), written
+   * by the mailbox sync. Null until the first sync. A projection for reads —
+   * the dispatch grain still comes from the live credential map.
+   */
+  mailboxLogin: text("mailbox_login"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+/**
+ * Silver: one row per REAL mailbox (migration 0053).
+ *
+ * The login a provider enforces quota, reputation and credential at — the grain
+ * every day-budget already groups by in memory. Persisted so the ops reads can
+ * join to it. A PROJECTION refreshed by `syncMailboxes`; never an input to the
+ * transport decision (that stays the credential we actually hold) nor to the
+ * dispatch grain (the live login map). See CLAUDE.md "Mailbox pivot".
+ */
+export const mailboxes = pgTable(
+  "mailboxes",
+  {
+    login: text("login").primaryKey(),
+    domain: text("domain").notNull(),
+    /** gandi | mailforge | primeforge | instantly-dfy, from infra_domains; null when no vendor reports the domain. */
+    provider: text("provider"),
+    /** google-workspace | gandi-relay | mailforge-relay | dfy-google; null when the provider is unknown. */
+    poolType: text("pool_type"),
+    /** standard | prewarmed | dfy; null when the provider is unknown. */
+    subscription: text("subscription"),
+    /** manual | primeforge | none — which source holds this mailbox's password. */
+    credentialSource: text("credential_source").notNull(),
+    vendorCreatedAt: timestamp("vendor_created_at", { withTimezone: true }),
+    vendorPrewarmedAt: timestamp("vendor_prewarmed_at", { withTimezone: true }),
+    /** Earliest Instantly import across the mailbox's addresses. */
+    importedAt: timestamp("imported_at", { withTimezone: true }),
+    absentSince: timestamp("absent_since", { withTimezone: true }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("mailboxes_domain_idx").on(table.domain)],
+);
 
 // Bronze: periodic full snapshot of Instantly GET /accounts (append-only, never
 // mutated). One row per (account, fetch) — gives health / daily_limit HISTORY,
