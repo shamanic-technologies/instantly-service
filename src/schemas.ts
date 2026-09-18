@@ -2481,6 +2481,43 @@ registry.registerPath({
   },
 });
 
+const MessagesSyncRequestSchema = z
+  .object({
+    sinceDays: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("Re-read window in days on each source's own write timestamp (default 3). Large = backfill."),
+  })
+  .openapi("MessagesSyncRequest");
+
+const MessagesSyncSummarySchema = z
+  .object({
+    windowDays: z.number().int(),
+    read: z.record(z.string(), z.number().int()).describe("Rows read per bronze source"),
+    upserted: z.number().int(),
+    skipped: z.number().int().describe("Source rows with no usable account or timestamp"),
+  })
+  .openapi("MessagesSyncSummary");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/ops/messages-sync",
+  summary: "Project every email (outreach, reply, warmup, seed) into one `messages` row each",
+  description:
+    "Platform-scoped (no org). Re-reads a window of the seven bronze message sources — Instantly's Unibox mirror, our own SMTP dispatches, IMAP inbound, warmup dispatches (+ receipts), seed placement dispatches (+ observations) — maps each row to one `messages` row (direction, kind, transport, account, real mailbox, counterparty, subject, sequence + step, thread, outcome, placement, auth verdict, timestamp) and upserts keyed on the bronze row. Bronze keeps the body; state facts stay in `instantly_events`. Also runs on a 10-minute in-process interval. Idempotent: the unique (source_table, source_row_id) index makes any overlap a no-op, so there is no cursor to drift. Synchronous; spends nothing metered.",
+  request: { body: { content: { "application/json": { schema: MessagesSyncRequestSchema } } } },
+  responses: {
+    200: {
+      description: "Sync summary",
+      content: { "application/json": { schema: MessagesSyncSummarySchema } },
+    },
+    400: { description: "sinceDays invalid" },
+    401: { description: "Unauthorized" },
+  },
+});
+
 const InfraDomainRowSchema = z
   .object({
     domain: z.string(),

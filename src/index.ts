@@ -164,6 +164,16 @@ async function start() {
     // the opt-out link seconds either side) can arrive after the click. This
     // drain is the ONLY path by which a self-send click reaches silver, so it is
     // armed unconditionally, after the port is bound.
+    // Keep the `messages` projection (one row per email, every typology) fresh
+    // for the ops reads. State is the unique source index, so a deploy mid-tick
+    // loses nothing; a 10-minute in-process interval, never a cron.
+    import("./lib/messages-sync-worker")
+      .then(({ startMessagesSyncWorker }) => startMessagesSyncWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start messages-sync worker: ${message}`);
+      });
+
     import("./lib/self-send/click-promotion-worker")
       .then(({ startClickPromotionWorker }) => startClickPromotionWorker())
       .catch((err: unknown) => {
