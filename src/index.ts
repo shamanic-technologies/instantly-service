@@ -23,6 +23,7 @@ import leadConversationsRoutes from "./routes/lead-conversations";
 import engagedLeadsRoutes from "./routes/engaged-leads";
 import auditRoutes from "./routes/audit";
 import infraRoutes from "./routes/infra";
+import opsRoutes from "./routes/ops";
 import unsubscribeRoutes from "./routes/unsubscribe";
 import selfSendRoutes from "./routes/self-send";
 import clickRoutes from "./routes/click";
@@ -77,6 +78,7 @@ app.use("/internal/accounts", serviceAuth, accountsRoutes);    // list all accou
 app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 app.use("/internal/audit", serviceAuth, auditRoutes);          // staff sending forecast (capacity vs scheduled volume)
 app.use("/internal/infra", serviceAuth, infraRoutes);          // provider inventory sync (Gandi / Mailforge / Primeforge / DFY)
+app.use("/internal/ops", serviceAuth, opsRoutes);            // unified model: mailbox sync (PR 1), gold reads later
 app.use("/internal/self-send", serviceAuth, selfSendRoutes);   // dispatch sweep for the smtp transport
 
 // ─── Org-scoped routes (x-api-key + x-org-id required, rest optional) ───────

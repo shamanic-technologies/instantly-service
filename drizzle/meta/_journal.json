@@ -372,6 +372,13 @@
       "when": 1786186400000,
       "tag": "0052_vendor_prewarmed",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1786272800000,
+      "tag": "0053_mailboxes",
+      "breakpoints": true
     }
   ]
 }
