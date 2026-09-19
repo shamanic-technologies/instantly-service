@@ -169,12 +169,27 @@ export interface DueSelection {
    * now, which is why ~600 sequences sat abandoned without a single log line.
    */
   blockedNoCapacityRow: number;
+  /**
+   * Steps whose mailbox the relay has been refusing — see `sender-health.ts`.
+   *
+   * ⚠️ Deliberately NOT folded into `blockedNoCapacityRow`. That one means "we
+   * hold no credential"; this one means "we hold one and it is being refused",
+   * and the two need opposite responses (get a credential vs fix or retire the
+   * mailbox). Reporting a silenced mailbox as uncredentialed sends whoever
+   * reads the summary looking for something that is already there.
+   */
+  skippedSilenced: number;
 }
 
 export function selectDueSteps(
   sequences: readonly PendingSequence[],
   capacities: readonly AccountCapacity[],
   asOf: Date,
+  /**
+   * Real mailboxes (SASL logins) to skip this run. Empty by default, so the
+   * caller that has not loaded the health read behaves exactly as before.
+   */
+  silencedMailboxes: ReadonlySet<string> = new Set(),
 ): DueSelection {
   // Nothing goes out on a weekend, matching the Mon-Fri window every campaign in
   // the fleet is created with. Two reasons this is not optional:
@@ -193,7 +208,12 @@ export function selectDueSteps(
   // due dates here would drift this module away from the ops projections, which
   // bucket on the raw nominal day on purpose.
   if (!isSendingDay(asOf))
-    return { selected: [], dueBeforeCapacity: 0, blockedNoCapacityRow: 0 };
+    return {
+      selected: [],
+      dueBeforeCapacity: 0,
+      blockedNoCapacityRow: 0,
+      skippedSilenced: 0,
+    };
 
   // Capacity is spent per REAL MAILBOX, not per sending address — several
   // aliases share one mailbox, one relay login and one reputation, so they share
@@ -256,6 +276,7 @@ export function selectDueSteps(
 
   const selected: DueStep[] = [];
   let blockedNoCapacityRow = 0;
+  let skippedSilenced = 0;
 
   for (const step of due) {
     // No capacity row ⇒ no mailbox ⇒ no room, per the invariant above. An
@@ -266,13 +287,27 @@ export function selectDueSteps(
       continue;
     }
 
+    // The relay is refusing this mailbox and has accepted nothing from it. Its
+    // steps stay provisioned and overdue — which means they sort FIRST on every
+    // run, so without this they consume the run ahead of every mailbox that
+    // works. Counted, never silently dropped.
+    if (silencedMailboxes.has(mailbox)) {
+      skippedSilenced += 1;
+      continue;
+    }
+
     const room = remaining.get(mailbox) ?? 0;
     if (room <= 0) continue;
     selected.push(step);
     remaining.set(mailbox, room - 1);
   }
 
-  return { selected, dueBeforeCapacity: due.length, blockedNoCapacityRow };
+  return {
+    selected,
+    dueBeforeCapacity: due.length,
+    blockedNoCapacityRow,
+    skippedSilenced,
+  };
 }
 
 // ─── Failure semantics ────────────────────────────────────────────────────────

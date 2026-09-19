@@ -89,6 +89,17 @@ const ACCOUNT_ROW = {
   sentToday: 0,
 };
 
+/**
+ * The sender-health read: sends, then permanent failures, over 7 days.
+ *
+ * Once per SWEEP (not per plan cycle) and before the probe — a run whose only
+ * due steps sit on a mailbox the relay refuses must not pay for a 200-mailbox
+ * poll to then send nothing.
+ */
+function primeSenderHealth() {
+  mockExecute.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+}
+
 /** One plan cycle: sequences, accounts, the ramp's volume read. */
 function primePlan(sequences: unknown[], accounts: unknown[]) {
   mockExecute
@@ -149,6 +160,7 @@ describe("runDispatch — one sweep at a time", () => {
     expect(second.sent).toBe(0);
     expect(second.polled).toBe(false);
 
+    primeSenderHealth();
     primePlan([], []);
     primeReplyProbe();
     release?.();
@@ -156,10 +168,12 @@ describe("runDispatch — one sweep at a time", () => {
   });
 
   it("is available again once the previous sweep has finished", async () => {
+    primeSenderHealth();
     primePlan([], []);
     primeReplyProbe();
     await runDispatch({ asOf: NOW });
 
+    primeSenderHealth();
     primePlan([], []);
     primeReplyProbe();
     const second = await runDispatch({ asOf: NOW });
@@ -172,6 +186,7 @@ describe("runDispatch — the probe that decides whether to read the mailboxes",
     // A fleet at its daily cap. This is the common tick: without the probe a
     // ten-minute interval would read every mailbox around the clock to discover
     // there was nothing to do.
+    primeSenderHealth();
     primePlan([SEQUENCE_ROW], [{ ...ACCOUNT_ROW, sentToday: 45 }]);
     primeReplyProbe();
 
@@ -192,6 +207,7 @@ describe("runDispatch — the probe that decides whether to read the mailboxes",
       return { accountsPolled: 1 };
     });
 
+    primeSenderHealth();
     primePlan([SEQUENCE_ROW], [ACCOUNT_ROW]); // probe
     primeReplyProbe();
     primePlan([SEQUENCE_ROW], [ACCOUNT_ROW]); // re-selection, after the poll
@@ -208,6 +224,7 @@ describe("runDispatch — the probe that decides whether to read the mailboxes",
   it("drops a step the poll stopped, because the selection is re-taken afterwards", async () => {
     // The whole point of reading first: a prospect who answered since the last
     // sweep is out of the queue before we pick what to send.
+    primeSenderHealth();
     primePlan([SEQUENCE_ROW], [ACCOUNT_ROW]); // probe: one step due
     primeReplyProbe();
     primePlan([], [ACCOUNT_ROW]); // after the poll: the reply stopped it
@@ -220,6 +237,7 @@ describe("runDispatch — the probe that decides whether to read the mailboxes",
   });
 
   it("polls for a waiting reply even when no sequence step is due", async () => {
+    primeSenderHealth();
     primePlan([], [ACCOUNT_ROW]);
     mockExecute.mockResolvedValueOnce({
       rows: [

@@ -607,6 +607,11 @@ describe("selectDueSteps — a throttled run is distinguishable from an idle one
   it("reports zeros on a weekend rather than a count nothing will act on", () => {
     const SATURDAY = new Date("2026-08-15T15:00:00Z");
     const out = selectDueSteps(leads(9, "amy@saviolabsco.com"), [], SATURDAY);
-    expect(out).toEqual({ selected: [], dueBeforeCapacity: 0, blockedNoCapacityRow: 0 });
+    expect(out).toEqual({
+      selected: [],
+      dueBeforeCapacity: 0,
+      blockedNoCapacityRow: 0,
+      skippedSilenced: 0,
+    });
   });
 });

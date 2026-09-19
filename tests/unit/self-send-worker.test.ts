@@ -74,6 +74,12 @@ function primeReads(options: { hasBody?: boolean } = {}) {
   const { hasBody = true } = options;
 
   mockExecute
+    // Which mailboxes the relay has been refusing: sends, then permanent
+    // failures, both over 7 days. Read ONCE per sweep, before the probe, so a
+    // run whose only due steps sit on a dead mailbox does not pay for a
+    // 200-mailbox poll to then send nothing.
+    .mockResolvedValueOnce({ rows: [] })
+    .mockResolvedValueOnce({ rows: [] })
     .mockResolvedValueOnce({
       rows: [
         {
@@ -256,6 +262,9 @@ describe("runDispatch — failure routing", () => {
 describe("runDispatch — capacity", () => {
   it("sends nothing when no eligible sending account is returned", async () => {
     mockExecute
+      // The sender-health read, as in primeReads.
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
         rows: [
           {

@@ -156,8 +156,10 @@ describe("GET /stats", () => {
     mockExecute.mockResolvedValueOnce({ rows: [makeSentimentRow()] }); // latest-sentiment query
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { step: 1, sent: 10, opened: 8, clicked: 0, bounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
-        { step: 2, sent: 10, opened: 5, clicked: 0, bounced: 0, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+        // `delivered` is a column the step query returns now, not `sent −
+        // bounced` — a bounce can belong to a send outside this bucket.
+        { step: 1, sent: 10, delivered: 9, opened: 8, clicked: 0, bounced: 1, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
+        { step: 2, sent: 10, delivered: 10, opened: 5, clicked: 0, bounced: 0, rdInterested: 1, rdMeetingBooked: 0, rdClosed: 0, rdNotInterested: 0, rdWrongPerson: 0, rdUnsubscribe: 0, rdNeutral: 0, rdAutoReply: 0, rdOutOfOffice: 0 },
       ],
     });
 
@@ -168,7 +170,7 @@ describe("GET /stats", () => {
     expect(response.status).toBe(200);
     expect(response.body.emailStats.stepStats).toHaveLength(2);
     expect(response.body.emailStats.stepStats[0].step).toBe(1);
-    expect(response.body.emailStats.stepStats[0].delivered).toBe(9); // 10 - 1
+    expect(response.body.emailStats.stepStats[0].delivered).toBe(9);
   });
 
   it("should exclude internal emails from stats query", async () => {
