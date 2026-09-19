@@ -141,7 +141,11 @@ export async function recordOptOutFromReply(
   const qualification =
     input.qualification !== undefined
       ? input.qualification
-      : await qualifyReply(input.replyText);
+      : await qualifyReply(input.replyText, {
+          instantlyCampaignId: campaign.instantlyCampaignId,
+          leadEmail: campaign.leadEmail,
+          source: "reply_opt_out",
+        });
 
   if (qualification === null) return { recorded: false, reason: "unqualified" };
   if (qualification !== OPT_OUT_REPLY_KIND) return { recorded: false, reason: "not_an_opt_out" };

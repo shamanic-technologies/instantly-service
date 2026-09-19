@@ -14,6 +14,7 @@
  */
 
 import { platformComplete } from "../chat-client";
+import type { ShadowJudgmentContext } from "../shadow-judgment";
 
 /**
  * The only outputs we accept, and they are exactly the reply-kind vocabulary
@@ -75,6 +76,64 @@ Worked examples, from real replies:
 - "No interest, please stop sending emails." -> lead_opt_out_requested (the second clause asks to stop; the first alone would not)
 - "Not for us, thanks." -> lead_not_interested (a decline, with no request to be removed)
 - "No interest" -> lead_not_interested (declining is not asking to be taken off the list)`;
+
+/**
+ * The SAME question, expressed as a typed CHOICE question for the judgment
+ * engine (`buildReplyKindQuestion` in lib/shadow-judgment).
+ *
+ * ⚠️ DERIVED FROM THE VOCABULARY ABOVE, NOT A SECOND ONE. Every key is a member
+ * of `QUALIFICATION_EVENT_TYPES` and every description is lifted VERBATIM from
+ * the sentence `SYSTEM_PROMPT` already gives that label. Two engines answering
+ * two subtly different questions cannot disagree meaningfully — a divergence
+ * would measure the wording, not the judgement — so the criteria and the prompt
+ * are pinned to each other by test, and the prompt itself is NOT touched (a
+ * reworded prompt would move the stored classification, which must stay
+ * byte-identical).
+ *
+ * Deal progress is absent here for the same reason it is absent from the
+ * vocabulary: a closed deal or a booked meeting is an outcome someone records,
+ * never something a reply's text can support.
+ */
+export const REPLY_KIND_CRITERIA: Record<
+  QualificationEventType,
+  string | { what: string; examples?: string[] }
+> = {
+  lead_interested:
+    "they are personally interested and say so, without asking a question or proposing a time",
+  lead_referral:
+    "they are not the buyer themselves, but it is relevant to their company and they point you at the right person",
+  lead_info_requested:
+    "they want to know more: they ask a question about the offer without committing",
+  lead_meeting_requested:
+    "they propose or accept a specific time, or share a booking link",
+  lead_not_interested: {
+    what: "they decline or say it is not relevant, WITHOUT asking to be removed",
+    examples: ["Not for us, thanks.", "No interest"],
+  },
+  lead_opt_out_requested: {
+    what: `they ask to be taken off the list: "unsubscribe", "remove me", "take me off your list", "stop emailing me", "do not contact me again". Pick this over lead_not_interested whenever the reply contains a removal request, even if it also declines the offer`,
+    examples: ["Stop", "Unsubscribe", "unsusbsribe", "No interest, please stop sending emails."],
+  },
+  lead_wrong_person:
+    "they are not the right contact and hand you nothing: no name, no relevance",
+  lead_changed_job:
+    "they say they have left the role or the company, so the role we wrote to is no longer theirs",
+  lead_out_of_office:
+    "they are away and will return; the message says nothing about the offer",
+  lead_neutral: "anything else, including a bare acknowledgement or an unclear reply",
+};
+
+/**
+ * The judging rules, verbatim from `SYSTEM_PROMPT`'s own two paragraphs. The
+ * footer paragraph is load-bearing and not boilerplate: every email we send ends
+ * with our own unsubscribe line, which the reply quotes back, so an engine that
+ * has not been told reads OUR words as THEIR removal request.
+ */
+export const REPLY_KIND_JUDGMENT_INSTRUCTIONS = `Classify a single reply to a cold outreach email.
+
+Judge only what the reply says. Do not infer enthusiasm from politeness, and do not treat a question about how you got their address as interest.
+
+The reply may quote our own email beneath it, and every email we send ends with the words "Don't want to hear from me again? unsubscribe". That is OUR footer, not their request — only a removal request THEY wrote is lead_opt_out_requested.`;
 
 /** Strip quoted history so the model judges what THEY wrote, not our own email. */
 export function stripQuotedHistory(text: string): string {
@@ -145,6 +204,7 @@ export function parseQualification(result: {
  */
 export async function qualifyReply(
   replyText: string,
+  context?: ShadowJudgmentContext,
 ): Promise<QualificationEventType | null> {
   const message = stripQuotedHistory(replyText).slice(0, 4000);
   if (!message) return null;
@@ -159,5 +219,25 @@ export async function qualifyReply(
     disableThinking: true,
   });
 
-  return parseQualification(result);
+  const classification = parseQualification(result);
+
+  // Ask the calibrated judgment engine the SAME question and record what both
+  // said, so the disagreement rate and the confidence distribution can be
+  // measured on real replies. It decides NOTHING — `classification` below is
+  // returned unchanged whatever the judgment says, and unchanged when it fails.
+  //
+  // DETACHED, never awaited: one caller runs inside Instantly's webhook, where a
+  // slow delivery counts toward disabling the whole subscription. Imported
+  // dynamically so the measurement module can import this vocabulary without a
+  // load-time cycle.
+  void import("../shadow-judgment")
+    .then((m) => m.shadowJudgeReply({ ...context, replyText: message, llmClassification: classification }))
+    .catch((error: unknown) => {
+      console.error(
+        "[instantly-service] shadow-judgment: could not be launched — the stored classification is unaffected:",
+        error,
+      );
+    });
+
+  return classification;
 }

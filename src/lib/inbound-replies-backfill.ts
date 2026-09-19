@@ -190,7 +190,11 @@ export async function promoteCandidate(
 ): Promise<{ kind: "auto" | "reply" | "unclassifiable"; stopped: boolean }> {
   const kind = looksLikeAutoresponderSubject(candidate.subject)
     ? "lead_out_of_office"
-    : await qualifyReply(candidate.body.slice(0, BODY_LIMIT));
+    : await qualifyReply(candidate.body.slice(0, BODY_LIMIT), {
+        instantlyCampaignId: candidate.instantlyCampaignId,
+        leadEmail: candidate.leadEmail,
+        source: "inbound_replies_backfill",
+      });
 
   if (kind === null) {
     console.warn(

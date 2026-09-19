@@ -5,6 +5,7 @@ import {
   jsonb,
   boolean,
   integer,
+  doublePrecision,
   uniqueIndex,
   index,
   primaryKey,
@@ -1472,4 +1473,53 @@ export const warmupReceipts = pgTable(
   },
   // Unique on (message_id, receiver_email) in migration 0050 — first observation
   // wins, so a re-read never overwrites where the message actually landed.
+);
+
+/**
+ * Measurement (migration 0056): what BOTH engines said about the same inbound
+ * reply, plus how confident the judgment engine was.
+ *
+ * The reply classification is FROZEN at write time, and a frozen wrong one stays
+ * wrong forever with nobody able to see it. The LLM returns a label and nothing
+ * else, so a reply it hesitated over is indistinguishable from one it was
+ * certain about — which is exactly why we cannot decline to freeze today: we are
+ * never told there was anything to decline. chat-service's judgment route
+ * answers the same typed question with a full probability distribution and a
+ * confidence, so this table records the pair.
+ *
+ * ⚠️ NOTHING READS THIS TO DECIDE ANYTHING, and adding such a reader is a
+ * separate decision, not a follow-up chore. The stored classification, the
+ * forward to the agency inbox, the opt-out recording and every statistic are
+ * byte-identical to what the LLM alone produced. This is the evidence a later
+ * change would rest on (refuse to freeze a hesitant classification and route it
+ * to an unknown state) — it is not that change.
+ *
+ * `llmClassification` null = the existing engine returned nothing usable.
+ * `judgment*` null WITH `error` set = the judgment engine failed, and the row
+ * exists so that failure is countable rather than silent. `agreed` is null
+ * whenever either side is absent — an absence is not a disagreement, and
+ * scoring it as one would inflate the very number this table measures.
+ */
+export const replyClassificationShadow = pgTable(
+  "reply_classification_shadow",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    instantlyCampaignId: text("instantly_campaign_id"),
+    leadEmail: text("lead_email"),
+    /** Which caller classified this reply: imap_poller | reply_opt_out | inbound_replies_backfill | reply_optout_backfill | unattributed */
+    source: text("source").notNull(),
+    llmClassification: text("llm_classification"),
+    judgmentClassification: text("judgment_classification"),
+    judgmentConfidence: doublePrecision("judgment_confidence"),
+    judgmentProbabilities: jsonb("judgment_probabilities").$type<Record<string, number>>(),
+    judgmentModel: text("judgment_model"),
+    judgmentInputTokens: integer("judgment_input_tokens"),
+    agreed: boolean("agreed"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("reply_classification_shadow_created_idx").on(table.createdAt),
+    index("reply_classification_shadow_agreed_idx").on(table.agreed),
+  ],
 );

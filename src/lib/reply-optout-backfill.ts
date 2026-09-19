@@ -146,7 +146,11 @@ export async function backfillReplyOptOuts(
         // A dry run still CLASSIFIES — the plan a human reads before committing
         // is "which leads asked to stop", and a candidate count cannot answer it.
         // It simply records nothing.
-        const qualification = await qualifyReply(inbound.text);
+        const qualification = await qualifyReply(inbound.text, {
+          instantlyCampaignId: candidate.instantlyCampaignId,
+          leadEmail: candidate.leadEmail,
+          source: "reply_optout_backfill",
+        });
         if (qualification === null) summary.unqualified += 1;
         else if (qualification === OPT_OUT_REPLY_KIND) {
           summary.optOuts += 1;
