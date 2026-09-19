@@ -37,6 +37,11 @@ import {
   type AccountCapacity,
   type PendingSequence,
 } from "./dispatch";
+import {
+  selectSilencedSmtpSenders,
+  type SmtpFailureRow,
+  type SmtpSenderHealth,
+} from "./sender-health";
 import { SEND_TRANSPORT_SMTP } from "./transport";
 import { dispatchScheduledReplies } from "../scheduled-replies-worker";
 
@@ -66,6 +71,14 @@ export interface DispatchSummary {
    * patience.
    */
   blockedNoCapacityRow: number;
+  /**
+   * Steps whose mailbox the relay has been refusing, skipped this run.
+   *
+   * Distinct from `blockedNoCapacityRow`: there we hold no credential, here we
+   * hold one and it is being refused. A non-zero value that persists means a
+   * mailbox needs fixing or retiring — see `sender-health.ts`.
+   */
+  skippedSilenced: number;
   sent: number;
   /** Permanent, about the RECIPIENT — promoted as a bounce. */
   bounced: number;
@@ -214,6 +227,74 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
  * Capacity is emitted per ACCOUNT but spent per MAILBOX; `selectDueSteps` does
  * the grouping. See {@link AccountCapacity.mailbox}.
  */
+/**
+ * Each real mailbox's recent dispatch record, for the silence rule.
+ *
+ * Two grouped queries rather than one scan of the rows: the failures collapse
+ * to a handful of DISTINCT `(response, response_code)` pairs per mailbox (4,210
+ * prod failures over three days were ONE message), so the classification runs
+ * over a few rows instead of thousands.
+ *
+ * Grouped by real MAILBOX, not by address: aliases share one relay login, so a
+ * refusal of one is a refusal of all of them. An address the login map does not
+ * know is its own mailbox — the same reading every other consumer takes.
+ */
+async function loadSmtpSenderHealth(
+  mailboxLogins: ReadonlyMap<string, string>,
+): Promise<SmtpSenderHealth[]> {
+  const [sentResult, failureResult] = await Promise.all([
+    db.execute(sql`
+      SELECT account_email AS "accountEmail", COUNT(*)::int AS "n"
+      FROM smtp_dispatch_raw
+      WHERE dispatched_at > now() - interval '7 days'
+        AND outcome = 'sent'
+      GROUP BY 1
+    `),
+    db.execute(sql`
+      SELECT account_email AS "accountEmail",
+             response      AS "response",
+             response_code AS "responseCode",
+             COUNT(*)::int AS "n"
+      FROM smtp_dispatch_raw
+      WHERE dispatched_at > now() - interval '7 days'
+        AND outcome = 'permanent'
+      GROUP BY 1, 2, 3
+    `),
+  ]);
+
+  const mailboxOf = (accountEmail: string): string =>
+    mailboxLogins.get(accountEmail.trim().toLowerCase()) ??
+    accountEmail.trim().toLowerCase();
+
+  const health = new Map<string, SmtpSenderHealth & { failures: SmtpFailureRow[] }>();
+  const at = (accountEmail: string) => {
+    const mailbox = mailboxOf(accountEmail);
+    const existing = health.get(mailbox);
+    if (existing) return existing;
+    const fresh = { mailbox, sent: 0, failures: [] as SmtpFailureRow[] };
+    health.set(mailbox, fresh);
+    return fresh;
+  };
+
+  for (const row of rowsOf(sentResult)) {
+    at(String(row.accountEmail)).sent += Number(row.n ?? 0);
+  }
+  for (const row of rowsOf(failureResult)) {
+    at(String(row.accountEmail)).failures.push({
+      response: row.response === null || row.response === undefined
+        ? ""
+        : String(row.response),
+      responseCode:
+        row.responseCode === null || row.responseCode === undefined
+          ? null
+          : Number(row.responseCode),
+      count: Number(row.n ?? 0),
+    });
+  }
+
+  return [...health.values()];
+}
+
 async function loadSendingAccounts(
   asOf: Date,
   mailboxLogins: ReadonlyMap<string, string>,
@@ -402,6 +483,7 @@ function emptySummary(): DispatchSummary {
     due: 0,
     dueBeforeCapacity: 0,
     blockedNoCapacityRow: 0,
+    skippedSilenced: 0,
     sent: 0,
     bounced: 0,
     senderBlocked: 0,
@@ -456,10 +538,26 @@ async function runDispatchExclusive(
   // not quietly send nothing and report a clean run.
   const mailboxLogins = await loadMailboxLogins(CALLER);
 
+  // Which mailboxes the relay has been refusing outright. Read ONCE for the
+  // sweep — it is two grouped queries over a 7-day window, and the answer is a
+  // property of the fleet, not of a step.
+  const silencedMailboxes = selectSilencedSmtpSenders(
+    await loadSmtpSenderHealth(mailboxLogins),
+  );
+  if (silencedMailboxes.size > 0) {
+    console.warn(
+      `[instantly-service] self-send-dispatch: ${silencedMailboxes.size} mailbox(es) silenced — the relay refuses them and has accepted nothing in 7 days: ${[...silencedMailboxes].join(", ")}`,
+    );
+  }
+
   const plan = async () => {
     const sequences = await loadPendingSequences();
     const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
-    return { sequences, accounts, selection: selectDueSteps(sequences, capacities, asOf) };
+    return {
+      sequences,
+      accounts,
+      selection: selectDueSteps(sequences, capacities, asOf, silencedMailboxes),
+    };
   };
 
   // ── Probe ────────────────────────────────────────────────────────────────
@@ -488,6 +586,7 @@ async function runDispatchExclusive(
       sequencesRead: current.sequences.length,
       dueBeforeCapacity: current.selection.dueBeforeCapacity,
       blockedNoCapacityRow: current.selection.blockedNoCapacityRow,
+      skippedSilenced: current.selection.skippedSilenced,
     };
     console.log(
       `[instantly-service] self-send-dispatch: done ${JSON.stringify(idle)}`,
@@ -534,6 +633,7 @@ async function runDispatchExclusive(
     due: due.length,
     dueBeforeCapacity: selection.dueBeforeCapacity,
     blockedNoCapacityRow: selection.blockedNoCapacityRow,
+    skippedSilenced: selection.skippedSilenced,
     polled,
   };
 

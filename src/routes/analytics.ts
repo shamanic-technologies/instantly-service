@@ -417,6 +417,55 @@ export async function queryGroupedCampaignAggregates(
   );
 }
 
+/**
+ * Did the step this row belongs to bounce? Did this lead bounce at all?
+ *
+ * ⚠️ `delivered` IS NOT `sent − bounced`, and treating it as one is how a
+ * customer's chart came to read `delivered: -2`.
+ *
+ * `delivered` is a PREDICATE over recipients — "sent AND NOT bounced", as
+ * `status.ts` has always spelled it — while the subtraction is a difference of
+ * two counts bucketed INDEPENDENTLY. A bounce is asynchronous, so it routinely
+ * lands in a different bucket than the send it is about: measured over 90 days
+ * of production, 491 of 2,425 bounces (20.2%) did. In a bucket with no sends
+ * the difference goes negative (prod 2026-09-12: sent 0, bounced 2, shown as
+ * −2); in every other bucket it silently subtracts yesterday's bounces from
+ * today's deliveries.
+ *
+ * A `Math.max(0, …)` would hide the negative and leave the 20% in place, on a
+ * number a customer reads. So the count is taken here instead: sends in THIS
+ * bucket whose own step never bounced. Attribution follows the send, which is
+ * the event the bucket is about.
+ *
+ * Two grains because the two stats have two grains, and keeping them apart is
+ * what leaves the existing semantics untouched: an EMAIL is delivered when its
+ * own step did not bounce, a RECIPIENT when they have no bounce at all (which
+ * is exactly what `rsSent − rsBounced` meant whenever both sat in one bucket).
+ *
+ * The subqueries carry no bind, so interpolating them several times in one
+ * statement is safe — unlike `groupCol`, whose re-emission broke this file
+ * twice.
+ */
+const BOUNCED_STEP = sql`EXISTS (
+          SELECT 1 FROM instantly_events b
+          WHERE b.campaign_id = e.campaign_id
+            AND b.lead_email = e.lead_email
+            AND b.step = e.step
+            AND b.event_type = 'email_bounced'
+        )`;
+
+const BOUNCED_LEAD = sql`EXISTS (
+          SELECT 1 FROM instantly_events b
+          WHERE b.campaign_id = e.campaign_id
+            AND b.lead_email = e.lead_email
+            AND b.event_type = 'email_bounced'
+        )`;
+
+/** The two `delivered` counts, for a SELECT list using the esX / rsX names. */
+const DELIVERED_AGGREGATES = sql`
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent' AND NOT ${BOUNCED_STEP}), 0)::int AS "esDelivered",
+        COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_sent' AND NOT ${BOUNCED_LEAD}), 0)::int AS "rsDelivered"`;
+
 const GROUP_BY_COLUMNS: Record<string, string> = {
   brandId: "brand_id",
   campaignId: "c.campaign_id",
@@ -768,6 +817,7 @@ export async function queryGroupedStats(
       SELECT
         e.group_key AS "groupKey",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
+        ${DELIVERED_AGGREGATES},
         COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
         COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
@@ -786,6 +836,7 @@ export async function queryGroupedStats(
       SELECT
         ${groupCol} AS "groupKey",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
+        ${DELIVERED_AGGREGATES},
         COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
         COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
@@ -839,13 +890,18 @@ export async function queryGroupedStats(
     const rsBounced = row?.rsBounced ?? 0;
     const esSent = row?.esSent ?? 0;
     const esBounced = row?.esBounced ?? 0;
+    // Counted in SQL, attributed to the SEND — see DELIVERED_AGGREGATES. A
+    // synthesized aggregate-only group (below) carries no events at all, hence
+    // the zero.
+    const rsDelivered = row?.rsDelivered ?? 0;
+    const esDelivered = row?.esDelivered ?? 0;
     const aggregates = aggregatesMap.get(key) ?? ZERO_CAMPAIGN_AGGREGATES;
     return {
       key,
       recipientStats: {
         contacted: aggregates.contacted,
         sent: rsSent,
-        delivered: rsSent - rsBounced,
+        delivered: rsDelivered,
         opened: row?.rsOpened ?? 0,
         bounced: rsBounced,
         clicked: row?.rsClicked ?? 0,
@@ -856,7 +912,7 @@ export async function queryGroupedStats(
       },
       emailStats: {
         sent: esSent,
-        delivered: esSent - esBounced,
+        delivered: esDelivered,
         opened: row?.esOpened ?? 0,
         clicked: row?.esClicked ?? 0,
         bounced: esBounced,
@@ -898,6 +954,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
     db.execute(sql`
       SELECT
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
+        ${DELIVERED_AGGREGATES},
         COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
         COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "esClicked",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "esBounced",
@@ -951,11 +1008,13 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
   const rsBounced = row.rsBounced ?? 0;
   const esSent = row.esSent ?? 0;
   const esBounced = row.esBounced ?? 0;
+  const rsDelivered = row.rsDelivered ?? 0;
+  const esDelivered = row.esDelivered ?? 0;
   return {
     recipientStats: {
       contacted: aggregates.contacted,
       sent: rsSent,
-      delivered: rsSent - rsBounced,
+      delivered: rsDelivered,
       opened: row.rsOpened ?? 0,
       bounced: rsBounced,
       clicked: row.rsClicked ?? 0,
@@ -966,7 +1025,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
     },
     emailStats: {
       sent: esSent,
-      delivered: esSent - esBounced,
+      delivered: esDelivered,
       opened: row.esOpened ?? 0,
       clicked: row.esClicked ?? 0,
       bounced: esBounced,
@@ -1029,6 +1088,7 @@ export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
       SELECT
         e.step,
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "sent",
+        COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent' AND NOT ${BOUNCED_STEP}), 0)::int AS "delivered",
         COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "opened",
         COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'email_link_clicked'), 0)::int AS "clicked",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_bounced'), 0)::int AS "bounced",
@@ -1067,7 +1127,7 @@ export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
     return {
       step: sr.step,
       sent,
-      delivered: sent - bounced,
+      delivered: sr.delivered ?? 0,
       opened: sr.opened ?? 0,
       bounced,
       clicked: sr.clicked ?? 0,
