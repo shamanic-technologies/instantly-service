@@ -228,6 +228,20 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
  * the grouping. See {@link AccountCapacity.mailbox}.
  */
 /**
+ * node-postgres hands a `timestamp` column back as a naive string, which
+ * `new Date()` reads as LOCAL time. The container runs UTC so the two agree
+ * today, but the comparison below decides whether a mailbox keeps sending —
+ * it must not depend on that.
+ */
+function toDate(value: unknown): Date | null {
+  if (value instanceof Date) return value;
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const iso = value.includes("T") ? value : value.replace(" ", "T");
+  const parsed = new Date(/[Zz]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
  * Each real mailbox's recent dispatch record, for the silence rule.
  *
  * Two grouped queries rather than one scan of the rows: the failures collapse
@@ -244,17 +258,19 @@ async function loadSmtpSenderHealth(
 ): Promise<SmtpSenderHealth[]> {
   const [sentResult, failureResult] = await Promise.all([
     db.execute(sql`
-      SELECT account_email AS "accountEmail", COUNT(*)::int AS "n"
+      SELECT account_email        AS "accountEmail",
+             MAX(dispatched_at)   AS "lastSuccessAt"
       FROM smtp_dispatch_raw
       WHERE dispatched_at > now() - interval '7 days'
         AND outcome = 'sent'
       GROUP BY 1
     `),
     db.execute(sql`
-      SELECT account_email AS "accountEmail",
-             response      AS "response",
-             response_code AS "responseCode",
-             COUNT(*)::int AS "n"
+      SELECT account_email        AS "accountEmail",
+             response             AS "response",
+             response_code        AS "responseCode",
+             COUNT(*)::int        AS "n",
+             MIN(dispatched_at)   AS "firstAt"
       FROM smtp_dispatch_raw
       WHERE dispatched_at > now() - interval '7 days'
         AND outcome = 'permanent'
@@ -266,20 +282,43 @@ async function loadSmtpSenderHealth(
     mailboxLogins.get(accountEmail.trim().toLowerCase()) ??
     accountEmail.trim().toLowerCase();
 
-  const health = new Map<string, SmtpSenderHealth & { failures: SmtpFailureRow[] }>();
+  const health = new Map<
+    string,
+    { mailbox: string; lastSuccessAt: Date | null; failures: SmtpFailureRow[] }
+  >();
   const at = (accountEmail: string) => {
     const mailbox = mailboxOf(accountEmail);
     const existing = health.get(mailbox);
     if (existing) return existing;
-    const fresh = { mailbox, sent: 0, failures: [] as SmtpFailureRow[] };
+    const fresh = {
+      mailbox,
+      lastSuccessAt: null as Date | null,
+      failures: [] as SmtpFailureRow[],
+    };
     health.set(mailbox, fresh);
     return fresh;
   };
 
   for (const row of rowsOf(sentResult)) {
-    at(String(row.accountEmail)).sent += Number(row.n ?? 0);
+    const entry = at(String(row.accountEmail));
+    const at_ = toDate(row.lastSuccessAt);
+    // An alias group takes the LATEST success across its aliases: they share one
+    // relay login, so any of them getting through means the login works.
+    if (at_ !== null && (entry.lastSuccessAt === null || at_ > entry.lastSuccessAt)) {
+      entry.lastSuccessAt = at_;
+    }
   }
   for (const row of rowsOf(failureResult)) {
+    const firstAt = toDate(row.firstAt);
+    // A refusal we cannot date cannot be compared against a success, and
+    // treating it as "now" would silence on a stale failure. Skip it loudly
+    // rather than guess — the count is what drives the threshold anyway.
+    if (firstAt === null) {
+      console.warn(
+        `[instantly-service] self-send-dispatch: undatable permanent failure for ${String(row.accountEmail)}, not counted toward silencing`,
+      );
+      continue;
+    }
     at(String(row.accountEmail)).failures.push({
       response: row.response === null || row.response === undefined
         ? ""
@@ -289,6 +328,7 @@ async function loadSmtpSenderHealth(
           ? null
           : Number(row.responseCode),
       count: Number(row.n ?? 0),
+      firstAt,
     });
   }
 
