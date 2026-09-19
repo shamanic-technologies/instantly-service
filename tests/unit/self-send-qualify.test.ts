@@ -1,8 +1,16 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const mockPlatformComplete = vi.fn();
 vi.mock("../../src/lib/chat-client", () => ({
   platformComplete: (...a: unknown[]) => mockPlatformComplete(...a),
+  platformJudgment: vi.fn(),
+}));
+
+// The shadow measurement runs BESIDE the classifier and decides nothing. Mocked
+// here so these tests assert what `qualifyReply` RETURNS, independently of it.
+const mockShadowJudgeReply = vi.fn();
+vi.mock("../../src/lib/shadow-judgment", () => ({
+  shadowJudgeReply: (...a: unknown[]) => mockShadowJudgeReply(...a),
 }));
 
 import {
@@ -17,6 +25,18 @@ import { qualifyReply } from "../../src/lib/self-send/qualify-reply";
 beforeEach(() => {
   vi.resetAllMocks();
 });
+
+/**
+ * The shadow measurement is launched DETACHED through a dynamic import, so it
+ * lands a few ticks after `qualifyReply` has already returned. Drain those ticks
+ * before asserting on it — and after every test, so one test's detached call
+ * cannot be read as the next test's.
+ */
+async function drainDetached(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+}
+
+afterEach(drainDetached);
 
 describe("qualifyReply", () => {
   // The cheapest model in the catalogue that does a short closed-set pick
@@ -163,5 +183,69 @@ describe("parseQualification", () => {
 
   it("refuses a label outside the accepted set even when well-formed", () => {
     expect(parseQualification({ json: { classification: "lead_closed" } })).toBeNull();
+  });
+});
+
+describe("the shadow judgment runs beside the classifier and decides nothing", () => {
+  // The whole contract of the measurement: whatever the judgment engine says —
+  // including nothing at all — the stored classification is what the LLM said.
+  it("returns the LLM's label unchanged, and hands the shadow the same text", async () => {
+    mockPlatformComplete.mockResolvedValue({
+      content: "",
+      json: { classification: "lead_not_interested" },
+      tokensInput: 1,
+      tokensOutput: 1,
+      model: "deepseek-flash",
+    });
+
+    const label = await qualifyReply("Not for us, thanks.\n\n> our quoted email", {
+      instantlyCampaignId: "self:abc",
+      leadEmail: "joe@x.com",
+      source: "imap_poller",
+    });
+
+    expect(label).toBe("lead_not_interested");
+    await drainDetached();
+
+    expect(mockShadowJudgeReply).toHaveBeenCalledWith({
+      instantlyCampaignId: "self:abc",
+      leadEmail: "joe@x.com",
+      source: "imap_poller",
+      // The SAME text the LLM judged: quoted history already stripped.
+      replyText: "Not for us, thanks.",
+      llmClassification: "lead_not_interested",
+    });
+  });
+
+  it("records the absence too, so an unusable classification is still countable", async () => {
+    mockPlatformComplete.mockResolvedValue({
+      content: "not json at all",
+      tokensInput: 1,
+      tokensOutput: 1,
+      model: "deepseek-flash",
+    });
+
+    expect(await qualifyReply("hello")).toBeNull();
+    await drainDetached();
+
+    expect(mockShadowJudgeReply).toHaveBeenCalledWith(
+      expect.objectContaining({ llmClassification: null }),
+    );
+  });
+
+  // Never awaited: one caller runs inside Instantly's webhook, where a slow
+  // delivery counts toward disabling the whole subscription.
+  it("does NOT wait for the shadow before returning", async () => {
+    mockPlatformComplete.mockResolvedValue({
+      content: "",
+      json: { classification: "lead_interested" },
+      tokensInput: 1,
+      tokensOutput: 1,
+      model: "deepseek-flash",
+    });
+    // A shadow that never settles must not hold the classification up.
+    mockShadowJudgeReply.mockImplementation(() => new Promise(() => {}));
+
+    expect(await qualifyReply("interested!")).toBe("lead_interested");
   });
 });
