@@ -60,8 +60,8 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
  *  (see makeSentimentRow). */
 function makeStatsRow(overrides: Partial<Record<string, number>> = {}) {
   return {
-    esSent: 0, esOpened: 0, esClicked: 0, esBounced: 0, esUnsubscribed: 0,
-    rsSent: 0, rsOpened: 0, rsClicked: 0, rsBounced: 0, rsUnsubscribed: 0,
+    esSent: 0, esDelivered: 0, esOpened: 0, esClicked: 0, esBounced: 0, esUnsubscribed: 0,
+    rsSent: 0, rsDelivered: 0, rsOpened: 0, rsClicked: 0, rsBounced: 0, rsUnsubscribed: 0,
     rdUnsubscribe: 0,
     ...overrides,
   };
@@ -140,8 +140,11 @@ describe("GET /stats", () => {
   it("should return recipientStats and emailStats when no filters provided", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
-        esSent: 100, esOpened: 55, esClicked: 5, esBounced: 5,
-        rsSent: 90, rsOpened: 50, rsClicked: 4, rsBounced: 3,
+        // `delivered` is now a column the query returns, not a subtraction the
+        // route performs — a bounce can land in a different bucket than its
+        // send, so the two counts are no longer each other's complement.
+        esSent: 100, esDelivered: 95, esOpened: 55, esClicked: 5, esBounced: 5,
+        rsSent: 90, rsDelivered: 87, rsOpened: 50, rsClicked: 4, rsBounced: 3,
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 120 }] });
@@ -157,14 +160,14 @@ describe("GET /stats", () => {
     expect(response.status).toBe(200);
     expect(response.body.recipientStats.contacted).toBe(120);
     expect(response.body.recipientStats.sent).toBe(90);
-    expect(response.body.recipientStats.delivered).toBe(87); // 90 - 3
+    expect(response.body.recipientStats.delivered).toBe(87);
     expect(response.body.recipientStats.opened).toBe(50);
     expect(response.body.recipientStats.bounced).toBe(3);
     expect(response.body.recipientStats.clicked).toBe(4);
     expect(response.body.recipientStats.repliesPositive).toBe(3);
     expect(response.body.recipientStats.repliesDetail.interested).toBe(3);
     expect(response.body.emailStats.sent).toBe(100);
-    expect(response.body.emailStats.delivered).toBe(95); // 100 - 5
+    expect(response.body.emailStats.delivered).toBe(95);
     expect(response.body.emailStats.opened).toBe(55);
     expect(response.body.emailStats.clicked).toBe(5);
     expect(response.body.emailStats.bounced).toBe(5);
@@ -265,8 +268,8 @@ describe("GET /stats", () => {
   it("should include per-step stats in emailStats when step data exists", async () => {
     mockExecute.mockResolvedValueOnce({
       rows: [makeStatsRow({
-        esSent: 30, esOpened: 16, esClicked: 1, esBounced: 2,
-        rsSent: 10, rsOpened: 8, rsClicked: 1, rsBounced: 1,
+        esSent: 30, esDelivered: 28, esOpened: 16, esClicked: 1, esBounced: 2,
+        rsSent: 10, rsDelivered: 9, rsOpened: 8, rsClicked: 1, rsBounced: 1,
       })],
     });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 10 }] });
@@ -275,9 +278,9 @@ describe("GET /stats", () => {
     // step email-metrics query (sentiment columns no longer read here)
     mockExecute.mockResolvedValueOnce({
       rows: [
-        { step: 1, sent: 10, opened: 8, clicked: 3, bounced: 1, rdUnsubscribe: 0 },
-        { step: 2, sent: 10, opened: 5, clicked: 1, bounced: 1, rdUnsubscribe: 0 },
-        { step: 3, sent: 10, opened: 2, clicked: 0, bounced: 0, rdUnsubscribe: 0 },
+        { step: 1, sent: 10, delivered: 9, opened: 8, clicked: 3, bounced: 1, rdUnsubscribe: 0 },
+        { step: 2, sent: 10, delivered: 9, opened: 5, clicked: 1, bounced: 1, rdUnsubscribe: 0 },
+        { step: 3, sent: 10, delivered: 10, opened: 2, clicked: 0, bounced: 0, rdUnsubscribe: 0 },
       ],
     });
     // queryStepSentiment: current sentiment attributed to each lead's last step
@@ -886,11 +889,13 @@ describe("GET /stats", () => {
         {
           groupKey: "2026-06-17",
           esSent: 8,
+          esDelivered: 7,
           esOpened: 4,
           esClicked: 2,
           esBounced: 1,
           esUnsubscribed: 0,
           rsSent: 6,
+          rsDelivered: 5,
           rsOpened: 3,
           rsClicked: 2,
           rsBounced: 1,
@@ -1427,5 +1432,127 @@ describe("GET /stats caching (DIS perf)", () => {
       .set({ ...identityHeadersObj, "x-org-id": "other-org" });
     // Different org → different cache key → DB hit again.
     expect(mockExecute.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+  });
+});
+
+/**
+ * `delivered` belongs to the day the EMAIL WENT OUT.
+ *
+ * It used to be `sent − bounced`, each counted independently inside the bucket.
+ * A bounce arrives asynchronously, so it routinely lands in a LATER bucket than
+ * its send: measured over 90 days of production, 491 of 2,425 bounces (20.2%)
+ * did. In a bucket with no sends that subtraction goes NEGATIVE — a real
+ * customer's chart read `delivered: -2` on 2026-09-12 — and in every other
+ * bucket it silently under-reports by yesterday's bounces.
+ *
+ * ⚠️ A `Math.max(0, …)` would hide the negative and leave the 20% in place, on
+ * a figure a customer is shown. So the count comes from SQL instead: sends in
+ * this bucket whose step never bounced.
+ */
+describe("delivered is attributed to the send, not to the bounce", () => {
+  beforeEach(() => {
+    clearStatsCache();
+    mockExecute.mockReset();
+  });
+
+  it("asks SQL for it rather than subtracting two independently-bucketed counts", async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+    const app = await createStatsApp();
+    await request(app).get("/stats?groupBy=day&timezone=UTC").set(identityHeadersObj);
+
+    const eventsSql = extractSqlText(mockExecute.mock.calls[0][0]);
+    // Counted as "sends in this bucket whose own step never bounced", so it
+    // can never exceed the sends actually in the bucket.
+    expect(eventsSql).toContain('AS "esDelivered"');
+    expect(eventsSql).toContain('AS "rsDelivered"');
+    expect(eventsSql).toContain("b.campaign_id = e.campaign_id");
+    expect(eventsSql).toContain("b.event_type = 'email_bounced'");
+    // The EMAIL grain keys on the step, the RECIPIENT grain on the lead — the
+    // asymmetry is what leaves the existing recipient semantics untouched.
+    expect(eventsSql).toContain("b.step = e.step");
+  });
+
+  it("reports 0, never a negative, on a day that only carries bounces", async () => {
+    // The shape that produced `delivered: -2` in production: a Saturday with no
+    // sends, carrying two bounces from Friday's mail.
+    mockExecute
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            groupKey: "2026-09-12",
+            esSent: 0,
+            esDelivered: 0,
+            esBounced: 2,
+            esOpened: 0,
+            esClicked: 0,
+            esUnsubscribed: 0,
+            rsSent: 0,
+            rsDelivered: 0,
+            rsBounced: 2,
+            rsOpened: 0,
+            rsClicked: 0,
+            rsUnsubscribed: 0,
+            rdUnsubscribe: 0,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+    const res = await request(app)
+      .get("/stats?groupBy=day&timezone=UTC")
+      .set(identityHeadersObj);
+
+    expect(res.status).toBe(200);
+    expect(res.body.groups[0].recipientStats.delivered).toBe(0);
+    expect(res.body.groups[0].emailStats.delivered).toBe(0);
+    expect(res.body.groups[0].recipientStats.bounced).toBe(2);
+  });
+
+  it("does not subtract a LATER day's bounce from a day that delivered", async () => {
+    // 100 sent on Thursday; 2 of them bounce on Friday. Thursday delivered 98,
+    // and Friday — which sent nothing — delivered 0.
+    mockExecute
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            groupKey: "2026-09-17",
+            esSent: 100,
+            esDelivered: 98,
+            esBounced: 0,
+            esOpened: 0,
+            esClicked: 0,
+            esUnsubscribed: 0,
+            rsSent: 100,
+            rsDelivered: 98,
+            rsBounced: 0,
+            rsOpened: 0,
+            rsClicked: 0,
+            rsUnsubscribed: 0,
+            rdUnsubscribe: 0,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const app = await createStatsApp();
+    const res = await request(app)
+      .get("/stats?groupBy=day&timezone=UTC")
+      .set(identityHeadersObj);
+
+    expect(res.body.groups[0].recipientStats.delivered).toBe(98);
+    expect(res.body.groups[0].emailStats.delivered).toBe(98);
+  });
+
+  it("carries the same column into the per-step breakdown", async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+    const app = await createStatsApp();
+    await request(app).get("/stats?campaignId=c1").set(identityHeadersObj);
+
+    const allSql = mockExecute.mock.calls.map((c) => extractSqlText(c[0])).join("\n---\n");
+    expect(allSql).toContain('AS "delivered"');
+    expect(allSql).toContain("b.step = e.step");
   });
 });

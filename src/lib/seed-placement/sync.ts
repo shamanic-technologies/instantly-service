@@ -128,10 +128,17 @@ async function pollReceiver(
 
       const lock = await client.getMailboxLock(folder);
       try {
-        for await (const message of client.fetch({ since }, { source: true })) {
-          if (!message.source) continue;
+        // ⚠️ HEADERS, NOT SOURCE. Everything this sweep reads is a header —
+        // the `Message-Id` that identifies the seed and the
+        // `Authentication-Results` that carries SPF/DKIM/DMARC. `source: true`
+        // downloads and MIME-parses the FULL BODY of every message in the
+        // window of every folder of every receiver, which is the cost that made
+        // the sibling self-send poller take ~54 minutes a run. A seed's body is
+        // one we WROTE; there is nothing in it to learn.
+        for await (const message of client.fetch({ since }, { headers: true })) {
+          if (!message.headers) continue;
 
-          const parsed: ParsedMail = await simpleParser(message.source);
+          const parsed: ParsedMail = await simpleParser(message.headers);
           const messageId = parsed.messageId;
           if (!messageId) continue;
 

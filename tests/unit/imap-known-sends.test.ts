@@ -1,11 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockDbExecute = vi.fn();
+/** Bronze rows the poll wrote, in order — the record of what it chose to keep. */
+const mockInserted: Array<Record<string, unknown>> = [];
 vi.mock("../../src/db", () => ({
-  db: { execute: (...a: unknown[]) => mockDbExecute(...a) },
+  db: {
+    execute: (...a: unknown[]) => mockDbExecute(...a),
+    insert: () => ({
+      values: (v: Record<string, unknown>) => {
+        mockInserted.push(v);
+        return {
+          onConflictDoNothing: () => ({
+            returning: async () => [{ id: `row-${mockInserted.length}` }],
+          }),
+        };
+      },
+    }),
+  },
 }));
 vi.mock("../../src/lib/silver-promote", () => ({ promoteEvent: vi.fn() }));
-vi.mock("../../src/lib/self-send/qualify-reply", () => ({ qualifyReply: vi.fn() }));
+const qualifyReplyMock = vi.fn(async () => null);
+vi.mock("../../src/lib/self-send/qualify-reply", () => ({
+  qualifyReply: (...a: unknown[]) => qualifyReplyMock(...(a as [])),
+}));
 // The poll groups its accounts by real mailbox login before reading any of them,
 // so the credential map is on the path of every run — including one with no
 // accounts at all. Mocked partially: the rest of the module (the IMAP port, the
@@ -201,5 +218,146 @@ describe("runPoll fan-out", () => {
     // ...and the two mailboxes genuinely overlapped rather than queueing.
     expect(peak.get("amy@saviolabsco.com")).toBe(1);
     expect(mockResolveCredential).toHaveBeenCalledTimes(3);
+  });
+});
+
+/**
+ * ⚠️ THE POLL FETCHES HEADERS, NOT SOURCE.
+ *
+ * `source: true` on the window fetch downloads and MIME-parses the FULL BODY of
+ * every message in it, on every mailbox, on every run — measured 2026-09-18,
+ * 67,098 messages across 214 mailboxes, 314 bodies per mailbox, of which 80,697
+ * of 80,891 over three days were ordinary mail we ignore. One sweep then took
+ * ~54 minutes of every hour, and because it is awaited INSIDE `runDispatch`
+ * (holding the mutex) the dispatcher's 10-minute interval was really one run an
+ * hour: sends arrived in hourly bursts with dead hours between them.
+ *
+ * Only a DSN (whose quoted headers name the bounced message) and a message that
+ * correlates to one of our sends earn a body.
+ */
+describe("runPoll body fetching", () => {
+  function imapStub(messages: Array<{ uid: number; headers: string }>) {
+    const fetchCalls: unknown[] = [];
+    const fetchOneCalls: number[] = [];
+    return {
+      client: {
+        connect: async () => {},
+        getMailboxLock: async () => ({ release: () => {} }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        fetch: (_range: unknown, query: any) => {
+          fetchCalls.push(query);
+          return (async function* () {
+            for (const m of messages) {
+              yield { uid: m.uid, headers: Buffer.from(m.headers) };
+            }
+          })();
+        },
+        fetchOne: async (uid: string) => {
+          fetchOneCalls.push(Number(uid));
+          return { source: Buffer.from("Subject: x\r\n\r\nbody text") };
+        },
+        logout: async () => {},
+      },
+      fetchCalls,
+      fetchOneCalls,
+    };
+  }
+
+  async function poll(
+    messages: Array<{ uid: number; headers: string }>,
+    knownSends: Array<Record<string, unknown>> = [],
+  ) {
+    vi.resetModules();
+    const stub = imapStub(messages);
+    vi.doMock("../../src/lib/self-send/imap-client", () => ({
+      createImapClient: () => stub.client,
+    }));
+    const { runPoll } = await import("../../src/lib/self-send/imap-poller");
+
+    // account list, then the two loadKnownSends reads, then everything else.
+    mockDbExecute.mockResolvedValueOnce(pgResult([{ email: "kevin@live.com" }]));
+    mockDbExecute.mockResolvedValueOnce(pgResult(knownSends));
+    mockDbExecute.mockResolvedValue(pgResult([]));
+    mockMailboxLogins.mockResolvedValue(new Map([["kevin@live.com", "kevin@live.com"]]));
+    mockResolveCredential.mockResolvedValue({
+      address: "kevin@live.com",
+      appPassword: "pw",
+      smtpHost: "smtp.gmail.com",
+      imapHost: "imap.gmail.com",
+    });
+
+    mockInserted.length = 0;
+    const summary = await runPoll();
+    return { summary, inserted: mockInserted, ...stub };
+  }
+
+  it("asks the server for headers, never for the whole message", async () => {
+    const { fetchCalls } = await poll([
+      { uid: 1, headers: "Message-ID: <a@x.com>\r\nFrom: someone@x.com\r\nSubject: hi\r\n" },
+    ]);
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]).toMatchObject({ headers: true, uid: true });
+    expect(fetchCalls[0]).not.toHaveProperty("source");
+  });
+
+  it("never downloads the body of a message that is not ours", async () => {
+    // A newsletter: real mail, on a real mailbox, referencing nothing we sent.
+    const { summary, fetchOneCalls, inserted } = await poll([
+      { uid: 1, headers: "Message-ID: <news@substack.com>\r\nFrom: a@substack.com\r\n" },
+      { uid: 2, headers: "Message-ID: <alert@github.com>\r\nFrom: b@github.com\r\n" },
+    ]);
+
+    expect(summary.messagesRead).toBe(2);
+    expect(summary.unrelated).toBe(2);
+    expect(fetchOneCalls).toEqual([]);
+    // The row still exists — it is the dedup key and the record of what we
+    // ignored. Only the snippet is absent, and `null` says so rather than
+    // claiming we read an empty body.
+    expect(inserted).toHaveLength(2);
+    for (const row of inserted) {
+      expect((row.payload as { textSnippet: unknown }).textSnippet).toBeNull();
+    }
+  });
+
+  it("DOES download the body of a reply to one of our sends", async () => {
+    // The negative control above only proves the poll can decline to fetch. This
+    // is the half that proves it still fetches when the words matter — without
+    // it, code that never fetched at all would pass the suite.
+    qualifyReplyMock.mockResolvedValue(null);
+    const { summary, fetchOneCalls, inserted } = await poll(
+      [
+        {
+          uid: 42,
+          headers:
+            "Message-ID: <their-reply@prospect.com>\r\nFrom: p@prospect.com\r\nIn-Reply-To: <ours@live.com>\r\n",
+        },
+      ],
+      [
+        {
+          messageId: "<ours@live.com>",
+          instantlyCampaignId: "self:abc",
+          leadEmail: "p@prospect.com",
+          step: 1,
+          orgId: null,
+        },
+      ],
+    );
+
+    expect(summary.replies).toBe(1);
+    expect(fetchOneCalls).toEqual([42]);
+    expect((inserted[0]!.payload as { textSnippet: unknown }).textSnippet).toBe("body text");
+  });
+
+  it("downloads a DSN's body, because that is where the bounced id is quoted", async () => {
+    const { fetchOneCalls } = await poll([
+      {
+        uid: 7,
+        headers:
+          "Message-ID: <dsn@x.com>\r\nFrom: MAILER-DAEMON@x.com\r\nContent-Type: multipart/report; report-type=delivery-status\r\n",
+      },
+    ]);
+
+    expect(fetchOneCalls).toEqual([7]);
   });
 });

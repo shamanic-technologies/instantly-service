@@ -32,6 +32,7 @@ import {
   classifyInbound,
   correlateSend,
   eventTypeForInbound,
+  isDeliveryStatusNotification,
   type CorrelatedSend,
   type InboundHeaders,
 } from "./inbound";
@@ -246,6 +247,39 @@ function normalizeHeaders(headers: Map<string, unknown>): InboundHeaders {
   return out;
 }
 
+/**
+ * Download one message in full, because this one is worth its bytes.
+ *
+ * ⚠️ THE POLL FETCHES HEADERS, NOT SOURCE — and this is the deliberate
+ * exception. `source: true` on the window fetch downloads and MIME-parses the
+ * FULL BODY of every message in it, on every mailbox, on every run: measured
+ * 2026-09-18, 67,098 messages across 214 mailboxes, 314 bodies per mailbox.
+ * That made one sweep take ~54 minutes of every hour, and because the sweep is
+ * awaited INSIDE `runDispatch` (it holds the mutex), the dispatcher's declared
+ * 10-minute interval was really about one run an hour — sends arrived in hourly
+ * bursts with dead hours between them.
+ *
+ * Only two kinds of message earn a body: a DSN (whose quoted headers name the
+ * message it bounced) and one that correlates to a send of ours (whose words we
+ * store and classify). Everything else is ordinary mail on a real mailbox.
+ *
+ * The same reasoning is already written into `warmup/poll.ts`; it was never
+ * carried across to this poller, which kept the original `source: true` from
+ * the day it shipped.
+ */
+async function fetchMessageSource(
+  client: ReturnType<typeof createImapClient>,
+  uid: number,
+  fallback: ParsedMail,
+): Promise<ParsedMail> {
+  const full = await client.fetchOne(String(uid), { source: true }, { uid: true });
+  // A message expunged between the two passes returns nothing. The headers we
+  // already hold are a truthful, smaller record of it — fabricating a body, or
+  // throwing away a message we have correlated, would both be worse.
+  if (!full || !full.source) return fallback;
+  return simpleParser(full.source);
+}
+
 async function pollAccount(
   accountEmail: string,
   credential: MailboxCredential,
@@ -267,24 +301,48 @@ async function pollAccount(
   try {
     const lock = await client.getMailboxLock("INBOX");
     try {
-      for await (const message of client.fetch({ since }, { envelope: true, source: true })) {
-        // The server can return a fetch row without a body (a race with an
+      // PASS 1 — HEADERS ONLY. See `readInboundHeaders` for why the body is not
+      // fetched here. The rows are collected before any of them is acted on so
+      // the header fetch is one continuous server-side scan, rather than a scan
+      // interleaved with per-message body fetches and database writes.
+      const candidates: Array<{ uid: number; head: ParsedMail; messageId: string }> = [];
+      for await (const message of client.fetch(
+        { since },
+        { uid: true, envelope: true, headers: true },
+      )) {
+        // The server can return a fetch row without headers (a race with an
         // expunge, a partial response). Nothing to classify, so skip rather than
         // parse an empty buffer into an empty message.
-        if (!message.source) continue;
+        if (!message.headers) continue;
 
-        const parsed: ParsedMail = await simpleParser(message.source);
-        const messageId = parsed.messageId;
+        const head: ParsedMail = await simpleParser(message.headers);
+        const messageId = head.messageId;
 
         // No Message-Id means nothing to dedup on, so a re-read would insert it
         // again every run. Skipping is the honest choice — and a message with no
         // Message-Id cannot thread onto one of our sends anyway.
         if (!messageId) continue;
 
+        candidates.push({ uid: message.uid, head, messageId });
+      }
+
+      for (const candidate of candidates) {
+        const { uid, messageId } = candidate;
         summary.messagesRead += 1;
 
-        const headers = normalizeHeaders(parsed.headers as Map<string, unknown>);
-        const body = `${parsed.text ?? ""}\n${parsed.html || ""}`;
+        const headers = normalizeHeaders(candidate.head.headers as Map<string, unknown>);
+
+        // PASS 2, first reason to pay for a body: a DSN names the message it
+        // bounced in its QUOTED HEADERS, inside the body. `classifyInbound`
+        // reads `body` on that branch and on no other — the reply / auto-reply /
+        // unrelated split is decided entirely by headers.
+        let parsed = candidate.head;
+        let body = "";
+        if (isDeliveryStatusNotification(headers)) {
+          parsed = await fetchMessageSource(client, uid, parsed);
+          body = `${parsed.text ?? ""}\n${parsed.html || ""}`;
+        }
+
         const classification = classifyInbound(headers, body, new Set(knownSends.keys()));
 
         const correlation = correlateSend(
@@ -304,6 +362,18 @@ async function pollAccount(
 
         const send = correlation.outcome === "matched" ? correlation.send : undefined;
 
+        // PASS 2, second reason: a message that CONCERNS us keeps its words.
+        // `unrelated` does not — measured 2026-09-18, 80,697 of the 80,891
+        // messages read in a three-day window were ordinary mail on real
+        // mailboxes, and downloading their bodies is the whole cost of the
+        // sweep. Their bronze row still exists (the dedup key and the record of
+        // what we ignored); only the snippet is absent, and `null` says so
+        // rather than claiming an empty body.
+        const keepsWords = classification.kind !== "unrelated";
+        if (keepsWords && parsed === candidate.head) {
+          parsed = await fetchMessageSource(client, uid, parsed);
+        }
+
         // Bronze first, and for EVERY message including `unrelated`: the row is
         // both the dedup key and the record of what we chose to ignore.
         const [row] = await db
@@ -321,7 +391,7 @@ async function pollAccount(
               subject: parsed.subject ?? null,
               from: parsed.from?.text ?? null,
               referencedMessageIds: classification.referencedMessageIds,
-              textSnippet: (parsed.text ?? "").slice(0, 4000),
+              textSnippet: keepsWords ? (parsed.text ?? "").slice(0, 4000) : null,
             },
             receivedAt: parsed.date ?? null,
           })
