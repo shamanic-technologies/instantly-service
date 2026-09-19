@@ -97,3 +97,77 @@ export async function platformComplete(
 
   return (await response.json()) as ChatCompleteResult;
 }
+
+/**
+ * A typed JUDGMENT, as opposed to a completion.
+ *
+ * chat-service's judgment route answers a typed question about a piece of text
+ * and returns the answer WITH its full probability distribution and a
+ * confidence — never prose. That distribution is the whole point: a completion
+ * that hesitated between two labels looks exactly like one it was certain
+ * about, so nothing downstream can decline to act on a shaky answer.
+ *
+ * Shapes below are conformed to the DEPLOYED contract
+ * (`POST /internal/platform-judgments`, read off the container's own
+ * `openapi.json`), not to a spec. The route is org-less — service auth only, no
+ * `x-org-id` / `x-user-id` / `x-run-id`, because a cron has none of them and a
+ * fabricated run id is rejected by runs-service as a non-existent parent.
+ *
+ * Billing is chat-service's, on a platform run, against the vendor's reported
+ * INPUT-token count; output is free at this vendor, so nothing declares one.
+ * This service declares no cost of its own here, same as for completions.
+ */
+
+/** The `choice` question shape: pick one named option. */
+export interface JudgmentChoiceQuestion {
+  type: "choice";
+  instructions: string;
+  /** Option name → a plain description, or `{ what, examples }` when the plain form reads ambiguously. */
+  criteria: Record<string, string | { what: string; examples?: string[] }>;
+}
+
+export interface JudgmentChoiceAnswer {
+  type: "choice";
+  /** The highest-probability option. */
+  choice: string;
+  /** 0..1, derived from how concentrated the distribution is. */
+  confidence: number;
+  /** Probability per option. Sums to 1. */
+  probabilities: Record<string, number>;
+}
+
+export interface JudgmentsResult {
+  model: string;
+  answers: Record<string, JudgmentChoiceAnswer>;
+  usage: { inputTokens: number; outputTokens: number };
+}
+
+/**
+ * Ask one or more typed questions about a piece of text, platform-billed.
+ *
+ * Throws on any non-2xx, carrying the status and the body — callers on a
+ * measurement path swallow it LOUDLY, and the body is what distinguishes a
+ * vendor error (429, 502) from a bug of ours (400 naming the bad field).
+ */
+export async function platformJudgment(params: {
+  state: string;
+  questions: Record<string, JudgmentChoiceQuestion>;
+}): Promise<JudgmentsResult> {
+  const response = await fetch(`${baseUrl()}/internal/platform-judgments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey(),
+    },
+    body: JSON.stringify({ state: params.state, questions: params.questions }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(
+      `[instantly-service] chat-service POST /internal/platform-judgments returned ${response.status}: ${text.slice(0, 300)}`,
+    );
+  }
+
+  return (await response.json()) as JudgmentsResult;
+}

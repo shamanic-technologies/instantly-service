@@ -398,7 +398,11 @@ async function pollAccount(
           // fabricated "neutral" on a hot reply reads as a real judgement.
           try {
             const replyText = parsed.text ?? "";
-            const qualification = await qualifyReply(replyText);
+            const qualification = await qualifyReply(replyText, {
+              instantlyCampaignId: send.instantlyCampaignId,
+              leadEmail: send.leadEmail,
+              source: "imap_poller",
+            });
             if (qualification) {
               await promoteEvent({
                 eventType: qualification,
