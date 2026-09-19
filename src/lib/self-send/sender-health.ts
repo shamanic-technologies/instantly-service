@@ -21,10 +21,25 @@
  * `Recipient address rejected: Domain not found`). So the failures are re-read
  * through `classifyPermanentFailure` and only the `sender` ones count.
  *
+ * ⚠️ THE SUCCESSES MUST BE MORE RECENT THAN THE FAILURES, not merely absent
+ * from the window — "zero successes in 7 days" is a guard that CANNOT FIRE on
+ * the incident it was written for. A mailbox is normally working right up to
+ * the moment it is deprovisioned, so the window holds both its last good sends
+ * AND the failures that follow them, and a `sent > 0` test reads that as a
+ * healthy mailbox having a bad patch. Measured on the two Mailforge mailboxes
+ * above: last success **2026-09-14 13:22**, first refusal **2026-09-16 17:01**,
+ * and **zero** successes after it — yet 16 and 11 sends sat in the window, so
+ * the first version of this rule would have stayed inert until 09-22, six more
+ * days of burning the dispatcher on a mailbox that no longer existed.
+ *
+ * So the comparison is against the FIRST sender-side failure: a mailbox that
+ * has sent nothing since the refusals started is refusing now, whatever it did
+ * on Monday. That still keeps a mailbox that mostly works from being silenced
+ * by a bad afternoon — its next success lands after the failures and clears it.
+ *
  * Self-healing with no state to clear: the window rolls, so a silenced mailbox
  * is retried automatically and re-silenced the same day if the relay still
- * refuses. Requiring ZERO successes is what keeps a mailbox that mostly works
- * from being silenced by a bad afternoon.
+ * refuses.
  */
 
 import { classifyPermanentFailure } from "./dispatch";
@@ -32,18 +47,21 @@ import { classifyPermanentFailure } from "./dispatch";
 /** Consecutive-ish sender-side refusals, with no success, before we stop. */
 export const SMTP_SILENCE_MIN_FAILURES = 3;
 
-/** One distinct refusal this mailbox received, and how often. */
+/** One distinct refusal this mailbox received, how often, and since when. */
 export interface SmtpFailureRow {
   response: string;
   responseCode: number | null;
   count: number;
+  /** When this refusal was FIRST seen in the window. */
+  firstAt: Date;
 }
 
 /** One real mailbox's recent dispatch record. */
 export interface SmtpSenderHealth {
   /** The SASL login, not the sending address — aliases share one relay quota. */
   mailbox: string;
-  sent: number;
+  /** Its most recent accepted send in the window, null if it sent nothing. */
+  lastSuccessAt: Date | null;
   failures: readonly SmtpFailureRow[];
 }
 
@@ -54,16 +72,26 @@ export function selectSilencedSmtpSenders(
   const silenced = new Set<string>();
 
   for (const row of health) {
-    if (row.sent > 0) continue;
-
     let senderSide = 0;
+    let firstSenderFailureAt: Date | null = null;
+
     for (const failure of row.failures) {
-      if (classifyPermanentFailure(failure.response, failure.responseCode) === "sender") {
-        senderSide += failure.count;
+      if (classifyPermanentFailure(failure.response, failure.responseCode) !== "sender") {
+        continue;
+      }
+      senderSide += failure.count;
+      if (firstSenderFailureAt === null || failure.firstAt < firstSenderFailureAt) {
+        firstSenderFailureAt = failure.firstAt;
       }
     }
 
-    if (senderSide >= minFailures) silenced.add(row.mailbox);
+    if (senderSide < minFailures || firstSenderFailureAt === null) continue;
+
+    // A send accepted AFTER the refusals began means the relay is talking to us
+    // again — whatever happened before does not describe the mailbox now.
+    if (row.lastSuccessAt !== null && row.lastSuccessAt >= firstSenderFailureAt) continue;
+
+    silenced.add(row.mailbox);
   }
 
   return silenced;

@@ -105,18 +105,63 @@ describe("a mailbox whose relay refuses everything stops being tried", () => {
  * unreachable is that mistake, automated.
  */
 describe("selectSilencedSmtpSenders", () => {
-  it("silences on repeated sender-side refusals with no successes", () => {
+  const AUTH_FAIL = "535 5.7.8 Error: authentication failed";
+  const D = (iso: string) => new Date(iso);
+
+  it("silences on repeated sender-side refusals with nothing sent since", () => {
     expect(
       selectSilencedSmtpSenders([
         {
           mailbox: "dead@gone.com",
-          sent: 0,
+          lastSuccessAt: null,
           failures: [
-            { response: "535 5.7.8 Error: authentication failed", responseCode: 535, count: 4210 },
+            { response: AUTH_FAIL, responseCode: 535, count: 4210, firstAt: D("2026-09-16T17:01:00Z") },
           ],
         },
       ]),
     ).toEqual(new Set(["dead@gone.com"]));
+  });
+
+  /**
+   * ⚠️ THE REGRESSION THIS RULE EXISTS FOR.
+   *
+   * A mailbox works right up to the moment it is deprovisioned, so the 7-day
+   * window holds its last good sends AND the refusals that follow. A plain
+   * `sent === 0` test reads that as a healthy mailbox having a bad patch and
+   * CANNOT FIRE until a week after the last success. Measured on the two
+   * Mailforge mailboxes that caused this: last success 2026-09-14 13:22, first
+   * refusal 2026-09-16 17:01, zero sends after it — 16 and 11 successes sat in
+   * the window, so the first version of the rule would have stayed inert until
+   * 09-22, six more days of burn.
+   */
+  it("silences a mailbox that worked EARLIER in the window but not since", () => {
+    expect(
+      selectSilencedSmtpSenders([
+        {
+          mailbox: "deprovisioned@gone.com",
+          lastSuccessAt: D("2026-09-14T13:22:32Z"),
+          failures: [
+            { response: AUTH_FAIL, responseCode: 535, count: 2153, firstAt: D("2026-09-16T17:01:47Z") },
+          ],
+        },
+      ]),
+    ).toEqual(new Set(["deprovisioned@gone.com"]));
+  });
+
+  it("does NOT silence a mailbox that got through AFTER the refusals started", () => {
+    // The bad afternoon the zero-successes clause was protecting: the relay is
+    // talking to us again, so what happened before does not describe it now.
+    expect(
+      selectSilencedSmtpSenders([
+        {
+          mailbox: "recovered@live.com",
+          lastSuccessAt: D("2026-09-18T09:00:00Z"),
+          failures: [
+            { response: AUTH_FAIL, responseCode: 535, count: 9, firstAt: D("2026-09-17T22:00:00Z") },
+          ],
+        },
+      ]),
+    ).toEqual(new Set());
   });
 
   it("does NOT silence a mailbox refused over dead PROSPECT addresses", () => {
@@ -124,27 +169,14 @@ describe("selectSilencedSmtpSenders", () => {
       selectSilencedSmtpSenders([
         {
           mailbox: "fine@live.com",
-          sent: 0,
+          lastSuccessAt: null,
           failures: [
             {
               response: "550 5.1.1 <a@dead.example>: Recipient address rejected: User unknown",
               responseCode: 550,
               count: 40,
+              firstAt: D("2026-09-16T00:00:00Z"),
             },
-          ],
-        },
-      ]),
-    ).toEqual(new Set());
-  });
-
-  it("does NOT silence a mailbox that is also sending", () => {
-    expect(
-      selectSilencedSmtpSenders([
-        {
-          mailbox: "busy@live.com",
-          sent: 31,
-          failures: [
-            { response: "535 5.7.8 authentication failed", responseCode: 535, count: 9 },
           ],
         },
       ]),
@@ -156,9 +188,9 @@ describe("selectSilencedSmtpSenders", () => {
       selectSilencedSmtpSenders([
         {
           mailbox: "blip@live.com",
-          sent: 0,
+          lastSuccessAt: null,
           failures: [
-            { response: "535 5.7.8 authentication failed", responseCode: 535, count: 2 },
+            { response: AUTH_FAIL, responseCode: 535, count: 2, firstAt: D("2026-09-18T00:00:00Z") },
           ],
         },
       ]),
@@ -170,16 +202,39 @@ describe("selectSilencedSmtpSenders", () => {
       selectSilencedSmtpSenders([
         {
           mailbox: "capped@live.com",
-          sent: 0,
+          lastSuccessAt: null,
           failures: [
             {
               response: "550-5.4.5 Daily user sending limit exceeded",
               responseCode: 550,
               count: 12,
+              firstAt: D("2026-09-18T00:00:00Z"),
             },
           ],
         },
       ]),
     ).toEqual(new Set(["capped@live.com"]));
+  });
+
+  it("compares against the EARLIEST sender-side refusal, ignoring recipient ones", () => {
+    // A recipient bounce on Monday must not become the anchor a Wednesday
+    // success is measured against.
+    expect(
+      selectSilencedSmtpSenders([
+        {
+          mailbox: "mixed@live.com",
+          lastSuccessAt: D("2026-09-17T12:00:00Z"),
+          failures: [
+            {
+              response: "550 5.1.1 Recipient address rejected",
+              responseCode: 550,
+              count: 5,
+              firstAt: D("2026-09-15T00:00:00Z"),
+            },
+            { response: AUTH_FAIL, responseCode: 535, count: 20, firstAt: D("2026-09-18T00:00:00Z") },
+          ],
+        },
+      ]),
+    ).toEqual(new Set(["mixed@live.com"]));
   });
 });
