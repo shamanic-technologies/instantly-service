@@ -50,6 +50,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { smtpDispatchRaw } from "../db/schema";
 import { agencyInbox } from "./agency-inbox";
+import { salesRepCopyList } from "./sales-rep-copy";
 import {
   getAccount,
   listEmails,
@@ -79,6 +80,33 @@ import {
 import { enqueueScheduledReply } from "./scheduled-replies";
 
 const CALLER: CallerInfo = { method: "POST", path: "/orgs/replies" };
+
+/**
+ * The visible copy on a one-to-one reply: the agency inbox, plus the brand's
+ * sales rep when it stated one.
+ *
+ * The rep JOINS the agency inbox and never replaces it — a human on our side
+ * still has to be able to read the exchange and be pulled into it. Both
+ * transports take the list as one comma-separated string, which is what
+ * Instantly's reply API expects and what nodemailer accepts, so the two halves
+ * cannot drift into two spellings of one list.
+ *
+ * Deduplicated case-insensitively: on a brand whose rep IS the agency address,
+ * naming it twice would put the same mailbox on the header twice.
+ */
+export function replyCcList(agency: string, salesRepCopy: string[]): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const address of [agency, ...salesRepCopy]) {
+    const trimmed = address.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out.join(",");
+}
 
 /**
  * The `step` a manual reply is recorded under in `smtp_dispatch_raw`.
@@ -208,6 +236,16 @@ export interface CampaignRow {
    * applies, the same zone the Instantly schedule degrades to.
    */
   timezone: string | null;
+  /**
+   * The brand this sequence was sent for — what the CC list is resolved from.
+   *
+   * Read off the row rather than off the inbound `x-brand-id` header for the
+   * same reason the sending identity is: which brand this conversation belongs
+   * to is a fact about what already happened, not a caller's argument. Null on
+   * a platform send and on a row written before brand tagging, and both mean
+   * the reply goes out exactly as it did before the rep existed.
+   */
+  brandId: string | null;
 }
 
 /**
@@ -246,6 +284,7 @@ export async function loadCampaignSequences(
       c.account_email         AS "accountEmail",
       c.send_transport        AS "sendTransport",
       c.timezone              AS "timezone",
+      c.brand_ids[1]          AS "brandId",
       c.created_at            AS "createdAt"
     FROM instantly_campaigns c
     WHERE c.org_id = ${orgId}
@@ -275,6 +314,10 @@ export async function loadCampaignSequences(
       row.timezone === null || row.timezone === undefined
         ? null
         : String(row.timezone),
+    brandId:
+      row.brandId === null || row.brandId === undefined
+        ? null
+        : String(row.brandId),
   }));
 }
 
@@ -500,6 +543,7 @@ async function prepareInstantlyReply(
   campaign: CampaignRow,
   input: ReplyToLeadInput,
 ): Promise<PreparedInstantlyReply> {
+  const salesRepCopy = await salesRepCopyList(campaign.brandId, input.orgId);
   const { key } = await resolveInstantlyApiKey(input.orgId, input.userId, CALLER);
 
   const records = await listEmails(key, {
@@ -536,7 +580,7 @@ async function prepareInstantlyReply(
     account,
     subject,
     bodyHtml: buildReplyBodyWithSignature(input.bodyHtml, account),
-    cc: agencyInbox(),
+    cc: replyCcList(agencyInbox(), salesRepCopy),
   };
 }
 
@@ -622,6 +666,7 @@ async function prepareSmtpReply(
   campaign: CampaignRow,
   input: ReplyToLeadInput,
 ): Promise<PreparedSmtpReply> {
+  const salesRepCopy = await salesRepCopyList(campaign.brandId, input.orgId);
   const anchor = await loadSelfSendAnchor(campaign.instantlyCampaignId);
   if (!anchor) {
     throw new ReplyToLeadError(
@@ -664,7 +709,7 @@ async function prepareSmtpReply(
     subject: replySubject(anchor.subject),
     bodyHtml: buildReplyBodyWithSignature(input.bodyHtml, account),
     from: buildFromHeader(account),
-    cc: agencyInbox(),
+    cc: replyCcList(agencyInbox(), salesRepCopy),
   };
 }
 
