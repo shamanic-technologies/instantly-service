@@ -35,34 +35,54 @@ function stubFetch(response: {
   return mock;
 }
 
-describe("getSalesRepPhone", () => {
-  it("reads the deployed per-brand path with the org identity", async () => {
-    const fetchMock = stubFetch({ json: { salesRepPhone: "+15559990000" } });
-    const { getSalesRepPhone } = await import("../../src/lib/brand-client");
+describe("getSalesRep", () => {
+  it("reads the deployed per-brand rep path with the org identity", async () => {
+    const fetchMock = stubFetch({
+      json: { salesRepEmail: "rep@client.com", salesRepPhone: "+15559990000" },
+    });
+    const { getSalesRep } = await import("../../src/lib/brand-client");
 
-    await expect(getSalesRepPhone("brand-1", "org-1")).resolves.toBe("+15559990000");
+    await expect(getSalesRep("brand-1", "org-1")).resolves.toEqual({
+      email: "rep@client.com",
+      phone: "+15559990000",
+    });
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://brand.example/orgs/brands/brand-1/sales-rep-phone");
+    expect(url).toBe("https://brand.example/orgs/brands/brand-1/sales-rep");
     expect(init.headers["x-org-id"]).toBe("org-1");
     expect(init.headers["x-api-key"]).toBe("brand-key");
   });
 
-  it("nobody-to-ring is null, not an error — including a brand this org cannot see", async () => {
-    stubFetch({ json: { salesRepPhone: null } });
-    const { getSalesRepPhone } = await import("../../src/lib/brand-client");
-    await expect(getSalesRepPhone("brand-1", "org-1")).resolves.toBeNull();
+  it("a rep stated before the email existed reads phone-only, not an error", async () => {
+    stubFetch({ json: { salesRepEmail: null, salesRepPhone: "+15559990000" } });
+    const { getSalesRep } = await import("../../src/lib/brand-client");
+    await expect(getSalesRep("brand-1", "org-1")).resolves.toEqual({
+      email: null,
+      phone: "+15559990000",
+    });
+  });
+
+  it("nobody-to-reach is nulls, not an error — including a brand this org cannot see", async () => {
+    stubFetch({ json: { salesRepEmail: null, salesRepPhone: null } });
+    const { getSalesRep } = await import("../../src/lib/brand-client");
+    await expect(getSalesRep("brand-1", "org-1")).resolves.toEqual({
+      email: null,
+      phone: null,
+    });
 
     vi.resetModules();
     stubFetch({ ok: false, status: 404, text: "not found" });
     const again = await import("../../src/lib/brand-client");
-    await expect(again.getSalesRepPhone("brand-1", "org-1")).resolves.toBeNull();
+    await expect(again.getSalesRep("brand-1", "org-1")).resolves.toEqual({
+      email: null,
+      phone: null,
+    });
   });
 
-  it("FAILS LOUD on anything else — an unreachable brand-service is not 'no number'", async () => {
+  it("FAILS LOUD on anything else — an unreachable brand-service is not 'nobody to reach'", async () => {
     stubFetch({ ok: false, status: 500, text: "boom" });
-    const { getSalesRepPhone } = await import("../../src/lib/brand-client");
-    await expect(getSalesRepPhone("brand-1", "org-1")).rejects.toThrow(/500/);
+    const { getSalesRep } = await import("../../src/lib/brand-client");
+    await expect(getSalesRep("brand-1", "org-1")).rejects.toThrow(/500/);
   });
 });
 

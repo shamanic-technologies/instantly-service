@@ -86,7 +86,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db";
 import { instantlyCampaigns } from "../db/schema";
-import { getSalesRepPhone } from "./brand-client";
+import { getSalesRep } from "./brand-client";
 import {
   readPhoneReveal,
   requestPhoneReveal,
@@ -400,9 +400,12 @@ export async function maybeRingRepOnSalesInterest(
   const brandId = campaign.brandIds?.[0];
   if (!brandId) return;
 
+  // The whole rep, in one read. The forward that fired seconds ago copied this
+  // same person by email; reading the two facts together is what stops the two
+  // side effects naming different people for one brand on one conversation.
   let salesRepPhone: string | null;
   try {
-    salesRepPhone = await getSalesRepPhone(brandId, campaign.orgId);
+    salesRepPhone = (await getSalesRep(brandId, campaign.orgId)).phone;
   } catch (error: unknown) {
     console.warn(
       `[instantly-service] ring-rep: could not read the number to ring for brand=${brandId} ` +

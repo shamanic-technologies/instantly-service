@@ -47,6 +47,7 @@ import { isSelfSendCampaignId } from "./self-send/transport";
 import { fetchSelfSendThread } from "./self-send/thread";
 import { POSITIVE_REPLY_KINDS } from "./reply-kind";
 import { agencyInbox } from "./agency-inbox";
+import { salesRepCopyList } from "./sales-rep-copy";
 
 /**
  * The reply kinds that mean "worth forwarding to the agency inbox". We forward
@@ -250,11 +251,23 @@ export async function sendThreadForward(
         return messagesFromFirstReply(selectThreadMessages(records));
       })();
 
+  // The client's own rep is copied on the thread their prospect just wrote,
+  // seconds before their phone rings. VISIBLY, never blind: a blind-copied rep
+  // receives a message addressed to the agency, which reads as mis-sent, and a
+  // reply-all from them would reach nobody on our side.
+  //
+  // Resolved HERE from the campaign's own brand, never handed in by a caller —
+  // the same reasoning that makes the one-to-one reply resolve its sending
+  // identity rather than accept one. A brand that stated no rep, or a rep with
+  // no email, sends exactly what it sent before this existed.
+  const ccEmails = await salesRepCopyList(campaign.brandIds?.[0], campaign.orgId);
+
   await sendEmail(
     {
       appId: "instantly-service",
       eventType: "positive-reply-forward",
       recipientEmail: agencyInbox(),
+      ...(ccEmails.length > 0 ? { ccEmails } : {}),
       metadata: {
         subject: threadSubject(messages),
         thread: renderThreadText(messages),
@@ -271,7 +284,7 @@ export async function sendThreadForward(
     },
   );
   console.log(
-    `[instantly-service] forward-positive-reply: sent thread (${messages.length} msg) for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${agencyInbox()}`,
+    `[instantly-service] forward-positive-reply: sent thread (${messages.length} msg) for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${agencyInbox()}${ccEmails.length > 0 ? ` cc=${ccEmails.join(",")}` : ""}`,
   );
   return messages.length;
 }
