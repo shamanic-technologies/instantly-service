@@ -52,6 +52,8 @@ export type ShadowJudgmentSource =
   | "reply_opt_out"
   | "inbound_replies_backfill"
   | "reply_optout_backfill"
+  // A reply Instantly never gave a verdict on, classified by the fallback sweep.
+  | "qualification_fallback"
   | "unattributed";
 
 export interface ShadowJudgmentContext {
