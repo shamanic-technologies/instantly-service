@@ -30,6 +30,36 @@ export interface CallReply {
   company?: string;
   /** What they actually wrote. */
   message: string;
+  /**
+   * Who they are, spelled out, so the call can restate the identity in full
+   * before asking the rep to commit to a live conversation. Every field is
+   * OPTIONAL and an absent one is OMITTED rather than sent empty — twilio-service
+   * says less instead of saying nothing twice, and a spoken "undefined" is worse
+   * than a shorter sentence.
+   */
+  firstName?: string;
+  lastName?: string;
+  title?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+}
+
+/**
+ * One earlier message of the same thread, offered to the rep on request.
+ *
+ * NEWEST-FIRST, and entry 0 is the email the reply answers — the walk goes
+ * BACKWARDS from the reply, one keypress at a time, which is the order a human
+ * reconstructs a conversation in. `direction` is what lets the call say "you
+ * wrote" rather than "they wrote"; getting it wrong attributes our own words to
+ * the prospect.
+ *
+ * `text` is already stripped of signatures, opt-out footers and quoted history
+ * and is already capped in number — it is read aloud verbatim.
+ */
+export interface PriorMessage {
+  direction: "outbound" | "inbound";
+  text: string;
 }
 
 export interface PlaceCallParams {
@@ -39,6 +69,12 @@ export interface PlaceCallParams {
   /** Number to ring, E.164 — the brand's sales rep. */
   to: string;
   reply: CallReply;
+  /**
+   * The rest of the thread, newest-first, EXCLUDING the reply already carried in
+   * `reply.message`. Omit it and the call offers no context walk, exactly as
+   * before this existed.
+   */
+  priorMessages?: PriorMessage[];
   /** Brand whose campaign was replied to, spoken in the opener. */
   brandName?: string;
   /**

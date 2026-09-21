@@ -62,6 +62,10 @@ const {
   buildCallReply,
   isRevealSettled,
   revealPhoneWithinBudget,
+  cleanForSpeech,
+  stripSpokenSignature,
+  buildPriorMessages,
+  MAX_PRIOR_MESSAGES,
   PHONE_REVEAL_WAIT_MS,
   REPLY_TEXT_UNAVAILABLE,
 } = await import("../../src/lib/ring-rep-on-sales-interest");
@@ -303,6 +307,106 @@ describe("the call", () => {
   });
 });
 
+describe("the context walk", () => {
+  it("hands over the emails BEFORE the reply, newest-first", async () => {
+    mockFetchMirrored.mockResolvedValue([
+      {
+        ue_type: 1,
+        timestamp_email: "2026-09-01T09:00:00.000Z",
+        from_address_email: "amy@sender.com",
+        to_address_email_list: "prospect@example.com",
+        subject: "Hello",
+        body: { text: "first touch" },
+      },
+      {
+        ue_type: 1,
+        timestamp_email: "2026-09-04T09:00:00.000Z",
+        from_address_email: "amy@sender.com",
+        to_address_email_list: "prospect@example.com",
+        subject: "Re: Hello",
+        body: { text: "second touch\n--\nAmy Moore" },
+      },
+      {
+        ue_type: 2,
+        timestamp_email: "2026-09-05T09:00:00.000Z",
+        from_address_email: "prospect@example.com",
+        to_address_email_list: "amy@sender.com",
+        subject: "Re: Hello",
+        body: { text: "Yes, interested.\n\n> second touch" },
+      },
+    ]);
+
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+
+    const body = mockPlaceCall.mock.calls[0][0];
+    expect(body.priorMessages).toEqual([
+      { direction: "outbound", text: "second touch" },
+      { direction: "outbound", text: "first touch" },
+    ]);
+    // The reply itself is cleaned too — the rep should not hear our own email
+    // quoted back at them on a billed minute.
+    expect(body.reply.message).toBe("Yes, interested.");
+  });
+
+  it("omits the key entirely when the thread is only the reply", async () => {
+    mockFetchMirrored.mockResolvedValue([
+      {
+        ue_type: 2,
+        timestamp_email: "2026-09-05T09:00:00.000Z",
+        from_address_email: "prospect@example.com",
+        to_address_email_list: "amy@sender.com",
+        subject: "Re: Hello",
+        body: { text: "Yes, interested." },
+      },
+    ]);
+
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+
+    const body = mockPlaceCall.mock.calls[0][0];
+    expect("priorMessages" in body).toBe(false);
+  });
+
+  it("still rings, with no walk, when the thread cannot be read", async () => {
+    mockFetchMirrored.mockRejectedValue(new Error("mirror unreachable"));
+
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+
+    const body = mockPlaceCall.mock.calls[0][0];
+    expect(body.reply.message).toBe(REPLY_TEXT_UNAVAILABLE);
+    expect("priorMessages" in body).toBe(false);
+  });
+
+  it("reads the thread ONCE — the reply and its context cannot disagree", async () => {
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockFetchMirrored).toHaveBeenCalledTimes(1);
+  });
+
+  it("speaks the identity lead-service holds", async () => {
+    mockFindLead.mockResolvedValue({
+      ...LEAD,
+      name: "Colleen Morley",
+      company: "Spine & Sports Injury Center",
+      firstName: "Colleen",
+      lastName: "Morley",
+      title: "Doctor of Chiropractic",
+      city: "Boston",
+      state: "Massachusetts",
+      country: "United States",
+    });
+
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+
+    expect(mockPlaceCall.mock.calls[0][0].reply).toMatchObject({
+      firstName: "Colleen",
+      lastName: "Morley",
+      title: "Doctor of Chiropractic",
+      city: "Boston",
+      state: "Massachusetts",
+      country: "United States",
+    });
+  });
+});
+
 describe("at most once per lead", () => {
   it("claims BEFORE any external call, and a replay rings nobody", async () => {
     claimed.rows = [];
@@ -423,5 +527,170 @@ describe("pure helpers", () => {
       name: "Dana Reid",
       message: "hi",
     });
+  });
+});
+
+// ── What the call is given to say ───────────────────────────────────────────────
+
+/** A stored outbound body, as it looks AFTER htmlToText has run over it. */
+const SENT_BODY = [
+  "Hi Colleen,",
+  "",
+  "We help chiropractic clinics fill their calendar.",
+  "--",
+  "Amy Moore",
+  "Distribute.you | Marketing Agency",
+  "",
+  " ",
+  "Don't want to hear from me again? unsubscribe",
+].join("\n");
+
+function msg(
+  direction: "outbound" | "inbound",
+  bodyText: string,
+  date = "2026-09-01T09:00:00.000Z",
+) {
+  return { direction, from: "a@b.com", to: "c@d.com", date, subject: "s", bodyText };
+}
+
+describe("cleanForSpeech — our own words are not read back at the rep", () => {
+  it("cuts the signature and the opt-out footer under it", () => {
+    const out = cleanForSpeech(SENT_BODY);
+    expect(out).toBe(
+      "Hi Colleen,\n\nWe help chiropractic clinics fill their calendar.",
+    );
+    expect(out).not.toContain("Amy Moore");
+    expect(out).not.toContain("unsubscribe");
+  });
+
+  it("does NOT lean on stripAccountSignature: htmlToText leaves ONE newline before the marker", async () => {
+    // The wire form is <p>--</p>, which htmlToText collapses to a single "\n--\n".
+    // stripAccountSignature only matches "\n\n--\n", so it would strip nothing
+    // here — this asserts the plain-text cut is the one doing the work.
+    const { stripAccountSignature } = await import("../../src/lib/send-lead");
+    const single = "body\n--\nAmy Moore";
+    expect(stripAccountSignature(single)).toBe(single);
+    expect(stripSpokenSignature(single)).toBe("body");
+  });
+
+  it("cuts quoted history in both client spellings", () => {
+    expect(cleanForSpeech("Yes, interested.\n\n> our pitch")).toBe("Yes, interested.");
+    expect(
+      cleanForSpeech("Sounds good.\n\nOn Mon, Amy Moore wrote:\nour pitch"),
+    ).toBe("Sounds good.");
+  });
+
+  it("leaves a body carrying neither marker exactly as it is", () => {
+    expect(cleanForSpeech("Send me pricing please.")).toBe("Send me pricing please.");
+  });
+});
+
+describe("buildPriorMessages — the walk back through the thread", () => {
+  it("returns what came BEFORE the reply, newest-first, cleaned", () => {
+    const out = buildPriorMessages([
+      msg("outbound", "first touch", "2026-09-01T09:00:00.000Z"),
+      msg("outbound", SENT_BODY, "2026-09-04T09:00:00.000Z"),
+      msg("inbound", "Yes, interested.", "2026-09-05T09:00:00.000Z"),
+    ]);
+
+    expect(out).toEqual([
+      {
+        direction: "outbound",
+        text: "Hi Colleen,\n\nWe help chiropractic clinics fill their calendar.",
+      },
+      { direction: "outbound", text: "first touch" },
+    ]);
+  });
+
+  it("EXCLUDES anything after the reply — that is what happened next, not context", () => {
+    const out = buildPriorMessages([
+      msg("outbound", "the pitch", "2026-09-01T09:00:00.000Z"),
+      msg("inbound", "Yes, interested.", "2026-09-05T09:00:00.000Z"),
+      msg("outbound", "our answer", "2026-09-06T09:00:00.000Z"),
+    ]);
+    expect(out.map((m) => m.text)).toEqual(["the pitch"]);
+  });
+
+  it("offers the whole thread when no reply could be read", () => {
+    const out = buildPriorMessages([
+      msg("outbound", "one", "2026-09-01T09:00:00.000Z"),
+      msg("outbound", "two", "2026-09-02T09:00:00.000Z"),
+    ]);
+    expect(out.map((m) => m.text)).toEqual(["two", "one"]);
+  });
+
+  it("caps the walk so a rep is not put on a keypress treadmill", () => {
+    const thread = Array.from({ length: MAX_PRIOR_MESSAGES + 4 }, (_, i) =>
+      msg("outbound", `body ${i}`, `2026-09-0${(i % 9) + 1}T09:00:00.000Z`),
+    );
+    thread.push(msg("inbound", "Yes.", "2026-09-30T09:00:00.000Z"));
+    expect(buildPriorMessages(thread)).toHaveLength(MAX_PRIOR_MESSAGES);
+  });
+
+  it("DROPS a body-less entry rather than speaking an empty pause", () => {
+    const out = buildPriorMessages([
+      msg("outbound", "(no body)", "2026-09-01T09:00:00.000Z"),
+      msg("outbound", "   ", "2026-09-02T09:00:00.000Z"),
+      msg("outbound", "real words", "2026-09-03T09:00:00.000Z"),
+      msg("inbound", "Yes.", "2026-09-04T09:00:00.000Z"),
+    ]);
+    expect(out.map((m) => m.text)).toEqual(["real words"]);
+  });
+
+  it("keeps an inbound that is not the latest, labelled as theirs", () => {
+    const out = buildPriorMessages([
+      msg("outbound", "pitch", "2026-09-01T09:00:00.000Z"),
+      msg("inbound", "who is this?", "2026-09-02T09:00:00.000Z"),
+      msg("outbound", "context", "2026-09-03T09:00:00.000Z"),
+      msg("inbound", "Yes, interested.", "2026-09-04T09:00:00.000Z"),
+    ]);
+    expect(out).toEqual([
+      { direction: "outbound", text: "context" },
+      { direction: "inbound", text: "who is this?" },
+      { direction: "outbound", text: "pitch" },
+    ]);
+  });
+});
+
+describe("buildCallReply — identity, spelled out", () => {
+  it("carries every field lead-service holds", () => {
+    expect(
+      buildCallReply(
+        "drmorley@spineandsports.org",
+        {
+          ...LEAD,
+          name: "Colleen Morley",
+          company: "Spine & Sports Injury Center",
+          firstName: "Colleen",
+          lastName: "Morley",
+          title: "Doctor of Chiropractic",
+          city: "Boston",
+          state: "Massachusetts",
+          country: "United States",
+        },
+        "Yes, interested.",
+      ),
+    ).toEqual({
+      name: "Colleen Morley",
+      company: "Spine & Sports Injury Center",
+      firstName: "Colleen",
+      lastName: "Morley",
+      title: "Doctor of Chiropractic",
+      city: "Boston",
+      state: "Massachusetts",
+      country: "United States",
+      message: "Yes, interested.",
+    });
+  });
+
+  it("OMITS an absent field rather than sending it empty", () => {
+    const reply = buildCallReply(
+      "prospect@example.com",
+      { ...LEAD, company: null, firstName: null, lastName: "", title: null } as never,
+      "Yes.",
+    );
+    expect(reply).toEqual({ name: "Dana Reid", message: "Yes." });
+    expect("firstName" in reply).toBe(false);
+    expect("company" in reply).toBe(false);
   });
 });
