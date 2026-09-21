@@ -174,6 +174,20 @@ async function start() {
         console.error(`[instantly-service] failed to start messages-sync worker: ${message}`);
       });
 
+    // Qualify the replies Instantly never gave a verdict on. Every side effect
+    // this service runs on a reply gates on the reply KIND, so a missing verdict
+    // leaves a buyer unanswered and an opt-out unrecorded with nothing logged.
+    // An in-process interval, never a cron — the same slip that made the hourly
+    // dispatch cron deliver 6.2 runs a day would apply here.
+    import("./lib/reply-qualification-worker")
+      .then(({ startReplyQualificationWorker }) => startReplyQualificationWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[instantly-service] failed to start qualification-fallback worker: ${message}`,
+        );
+      });
+
     import("./lib/self-send/click-promotion-worker")
       .then(({ startClickPromotionWorker }) => startClickPromotionWorker())
       .catch((err: unknown) => {
