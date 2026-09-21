@@ -71,7 +71,11 @@ import {
 } from "./mirror-emails";
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { loadCampaignSequences, type CampaignRow } from "./reply-to-lead";
-import { fetchSelfSendThread } from "./self-send/thread";
+import {
+  fetchOwnDispatchedMessages,
+  fetchSelfSendThread,
+  type OwnDispatchedMessage,
+} from "./self-send/thread";
 import { SEND_TRANSPORT_SMTP, type SendTransport } from "./self-send/transport";
 
 const CALLER: CallerInfo = { method: "GET", path: "/orgs/conversations" };
@@ -273,6 +277,18 @@ async function fetchInstantlyConversation(
   campaign: CampaignRow,
   input: LeadConversationInput,
 ): Promise<{ thread: ThreadMessage[]; source: ConversationSource }> {
+  // What WE answered, which no provider told us about. `POST /orgs/replies`
+  // records it in bronze on this transport too, and Instantly's mirror only
+  // learns of it when the prospect writes back and the thread is re-mirrored —
+  // so between the two it exists nowhere a reader looks. Fetched FIRST because
+  // it is also evidence the sequence exchanged mail (see below).
+  let own: OwnDispatchedMessage[];
+  try {
+    own = await fetchOwnDispatchedMessages(campaign.instantlyCampaignId);
+  } catch (error: unknown) {
+    throw unreadable(campaign, "our record of the", error);
+  }
+
   let mirrored: EmailRecord[];
   try {
     mirrored = await fetchMirroredEmailRecords(campaign.instantlyCampaignId);
@@ -280,7 +296,10 @@ async function fetchInstantlyConversation(
     throw unreadable(campaign, "our mirror of the", error);
   }
   if (mirrored.length > 0) {
-    return { thread: selectThreadMessages(mirrored), source: "mirror" };
+    return {
+      thread: withOwnReplies(selectThreadMessages(mirrored), mirrored, own),
+      source: "mirror",
+    };
   }
 
   // An empty mirror is ambiguous on its own, and the two readings are different
@@ -293,7 +312,13 @@ async function fetchInstantlyConversation(
   } catch (error: unknown) {
     throw unreadable(campaign, "our mirror of the", error);
   }
-  if (!exchanged) return { thread: [], source: "mirror" };
+  // An answer we dispatched is itself proof the sequence exchanged mail, so a
+  // reply sent on a sequence whose events we somehow hold none of is still a
+  // conversation and must not read as an empty one.
+  if (!exchanged && own.length === 0) return { thread: [], source: "mirror" };
+  if (!exchanged) {
+    return { thread: withOwnReplies([], [], own), source: "mirror" };
+  }
 
   // The mirror is INCOMPLETE for a sequence that did exchange mail. Ask the
   // provider once — and store what comes back, so this costs nothing next time.
@@ -323,7 +348,46 @@ async function fetchInstantlyConversation(
     return [];
   });
 
-  return { thread: selectThreadMessages(records), source: "provider" };
+  return {
+    thread: withOwnReplies(selectThreadMessages(records), records, own),
+    source: "provider",
+  };
+}
+
+/**
+ * Fold the answers we dispatched into a thread read from the provider's copy.
+ *
+ * ⚠️ DEDUP ON THE PROVIDER'S OWN ID, never on time or on the body. Once the
+ * prospect writes back, the re-mirrored thread contains our answer as well
+ * (Instantly returns it as `ue_type: 3`, manual-sent), and rendering both
+ * copies would show the customer the same message twice. A message the
+ * provider already carries is therefore DROPPED from our side: the provider's
+ * copy is the one that was actually delivered, so it wins.
+ *
+ * A message with no provider id was never given to a provider (the self-send
+ * transport), so nothing can duplicate it and it always survives.
+ */
+function withOwnReplies(
+  thread: ThreadMessage[],
+  records: EmailRecord[],
+  own: OwnDispatchedMessage[],
+): ThreadMessage[] {
+  if (own.length === 0) return thread;
+  const alreadyRendered = new Set(records.map((r) => r.id));
+  const missing = own
+    .filter((o) => o.instantlyEmailId === null || !alreadyRendered.has(o.instantlyEmailId))
+    .map((o) => o.message);
+  if (missing.length === 0) return thread;
+
+  // Oldest first, the order every reader of this shape already relies on. An
+  // undatable message sorts last rather than being dropped — we know we sent it.
+  return [...thread, ...missing].sort((a, b) => {
+    const at = Date.parse(a.date);
+    const bt = Date.parse(b.date);
+    if (Number.isNaN(at) !== Number.isNaN(bt)) return Number.isNaN(at) ? 1 : -1;
+    if (Number.isNaN(at)) return 0;
+    return at - bt;
+  });
 }
 
 /** We hold the thread; read both halves out of bronze. */

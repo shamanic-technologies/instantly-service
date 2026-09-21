@@ -29,8 +29,10 @@ vi.mock("../../src/lib/bronze", () => ({
 }));
 
 const mockFetchSelfSendThread = vi.fn();
+const mockFetchOwnDispatched = vi.fn();
 vi.mock("../../src/lib/self-send/thread", () => ({
   fetchSelfSendThread: (...a: unknown[]) => mockFetchSelfSendThread(...a),
+  fetchOwnDispatchedMessages: (...a: unknown[]) => mockFetchOwnDispatched(...a),
 }));
 
 vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({
@@ -125,6 +127,9 @@ beforeEach(() => {
   mockInsertEmailsBatch.mockResolvedValue([]);
   // Default: the campaign is a single stored row — the pre-family behaviour.
   mockGetCampaignFamily.mockResolvedValue(["camp-1"]);
+  // Default: we answered nothing ourselves, so every pre-existing case reads
+  // exactly the provider's copy and nothing else.
+  mockFetchOwnDispatched.mockResolvedValue([]);
 });
 
 describe("fetchLeadConversation — Instantly transport", () => {
@@ -606,5 +611,129 @@ describe("mergeConversationMessages", () => {
       { sequence: seq("c2", "i2"), messages: [msg(at, "second")] },
     ]);
     expect(merged.map((m) => m.text)).toEqual(["first", "second"]);
+  });
+});
+
+/**
+ * The answer WE dispatched is part of the conversation.
+ *
+ * `POST /orgs/replies` records a manual reply in `smtp_dispatch_raw` on the
+ * Instantly transport too, and Instantly's mirror only learns of it when the
+ * prospect writes back. Between the two it existed nowhere a reader looks: the
+ * customer's timeline showed no answer, and the worker drafting the next
+ * follow-up would have re-drafted a first reply to somebody already answered.
+ */
+describe("fetchLeadConversation — the answer we dispatched ourselves", () => {
+  const OUTBOUND = email({
+    id: "e1",
+    ue_type: 1,
+    from_address_email: "amy@boostdistribute.com",
+    to_address_email_list: "alice@media.com",
+    subject: "quick question",
+    timestamp_email: "2026-09-01T10:00:00.000Z",
+    body: { html: "<p>worth a chat?</p>" },
+  } as Partial<EmailRecord>);
+  const INBOUND = email({
+    id: "e2",
+    ue_type: 2,
+    from_address_email: "alice@media.com",
+    to_address_email_list: "amy@boostdistribute.com",
+    subject: "Re: quick question",
+    timestamp_email: "2026-09-02T09:00:00.000Z",
+    body: { text: "Interested — tell me more." },
+  } as Partial<EmailRecord>);
+
+  /** What `fetchOwnDispatchedMessages` returns for one answer we sent. */
+  function ourAnswer(over: Record<string, unknown> = {}) {
+    return {
+      instantlyEmailId: "prov-9",
+      message: {
+        direction: "outbound",
+        from: "amy@boostdistribute.com",
+        to: "alice@media.com",
+        date: "2026-09-02T09:30:00.000Z",
+        subject: "Re: quick question",
+        bodyText: "Glad to hear it. What does your calendar look like?",
+      },
+      ...over,
+    };
+  }
+
+  it("renders it in the thread, in time order, when the mirror does not have it yet", async () => {
+    queueDb([campaignRow()], [mirrorRow(OUTBOUND), mirrorRow(INBOUND)]);
+    mockFetchOwnDispatched.mockResolvedValue([ourAnswer()]);
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messageCount).toBe(3);
+    expect(conv.messages.map((m) => m.direction)).toEqual([
+      "outbound",
+      "inbound",
+      "outbound",
+    ]);
+    expect(conv.messages[2].text).toContain("What does your calendar look like?");
+    expect(conv.messages[2].at).toBe("2026-09-02T09:30:00.000Z");
+  });
+
+  it("does NOT duplicate it once the provider's own copy carries it", async () => {
+    // The prospect wrote back, the thread was re-mirrored, and Instantly now
+    // returns our answer too — as ue_type 3, manual-sent, under the SAME id.
+    const PROVIDER_COPY = email({
+      id: "prov-9",
+      ue_type: 3,
+      from_address_email: "amy@boostdistribute.com",
+      to_address_email_list: "alice@media.com",
+      subject: "Re: quick question",
+      timestamp_email: "2026-09-02T09:30:00.000Z",
+      body: { text: "Glad to hear it. What does your calendar look like?" },
+    } as Partial<EmailRecord>);
+    queueDb(
+      [campaignRow()],
+      [mirrorRow(OUTBOUND), mirrorRow(INBOUND), mirrorRow(PROVIDER_COPY)],
+    );
+    mockFetchOwnDispatched.mockResolvedValue([ourAnswer()]);
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messageCount).toBe(3);
+    const answers = conv.messages.filter((m) =>
+      m.text.includes("What does your calendar look like?"),
+    );
+    expect(answers).toHaveLength(1);
+  });
+
+  it("keeps a message no provider ever carried — nothing can duplicate it", async () => {
+    queueDb([campaignRow()], [mirrorRow(OUTBOUND)]);
+    mockFetchOwnDispatched.mockResolvedValue([
+      ourAnswer({ instantlyEmailId: null }),
+    ]);
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messageCount).toBe(2);
+    expect(conv.messages[1].text).toContain("What does your calendar look like?");
+  });
+
+  it("is a conversation even when the mirror is empty and no event was recorded", async () => {
+    // Empty mirror + no exchanged-mail evidence used to read as "they never
+    // wrote back". An answer we dispatched is itself proof otherwise.
+    queueDb([campaignRow()], [], []);
+    mockFetchOwnDispatched.mockResolvedValue([ourAnswer()]);
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messageCount).toBe(1);
+    expect(conv.messages[0].direction).toBe("outbound");
+    // The provider was never asked: there is no evidence a thread exists there.
+    expect(mockListEmails).not.toHaveBeenCalled();
+  });
+
+  it("fails loud when our own record cannot be read — never a short thread", async () => {
+    queueDb([campaignRow()], [mirrorRow(OUTBOUND), mirrorRow(INBOUND)]);
+    mockFetchOwnDispatched.mockRejectedValue(new Error("pool exhausted"));
+
+    await expect(fetchLeadConversation(INPUT)).rejects.toBeInstanceOf(
+      LeadConversationError,
+    );
   });
 });

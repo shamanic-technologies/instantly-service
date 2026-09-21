@@ -835,6 +835,24 @@ Guard: `tests/unit/engaged-leads.test.ts` + `tests/unit/engaged-leads-route.test
 - **The body is built with `printf`, never a language runtime.** `node` exists only INSIDE the service containers, so a `$(node -e ...)` body would be an empty string in a GitHub runner — which the endpoint reads as "no bound" and dispatches the unbounded sweep the cap exists to avoid. The step also refuses a non-integer `max_pages` rather than sending it.
 - Spends nothing metered (a read against a flat subscription), same as the placement tests and the infra sweep.
 
+## An answer WE dispatched is part of the conversation — the mirror alone cannot see it
+
+`POST /orgs/replies` records every reply in bronze `smtp_dispatch_raw` at `MANUAL_REPLY_STEP` (0) on BOTH transports. `GET /orgs/conversations` read only the Instantly MIRROR on the `instantly` transport, and the mirror is filled by `maybeMirrorCampaignEmails`, which fires on an INBOUND event. So between answering a prospect and that prospect writing back, our own answer existed **nowhere any reader looks** — not in the customer's timeline, not in the thread a worker reads before drafting the next follow-up.
+
+Both consequences are real, and the second is the expensive one:
+
+- **The customer's lead timeline showed no answer.** distribute.you's `lead-conversation.ts` builds that timeline FROM this endpoint, so the page rendered "their reply" followed by "follow-up due in 3 days" with nothing in between — a surface stating that an action happened and not showing it. (Silver is NOT the fix: a reply we wrote is deliberately not an `email_sent` step event, and minting one would corrupt step accounting, per-account queue attribution and the re-contact window. Widening this read is what makes the timeline honest without touching the ledger.)
+- **The follow-up worker would have re-drafted a FIRST reply to somebody already answered.** The `ai-meeting-booking` DAG reads this endpoint to compose its prompt; a two-message thread tells the model nobody has responded yet.
+
+`fetchOwnDispatchedMessages` (`src/lib/self-send/thread.ts`) is therefore read on the Instantly branch too, and folded in by `withOwnReplies` (`lead-conversation.ts`).
+
+- **⚠️ DEDUP ON THE PROVIDER'S OWN ID, never on time and never on the body.** Once the prospect writes back, the re-mirrored thread carries our answer as well — Instantly returns it as `ue_type: 3` (manual-sent), which `selectThreadMessages` already includes — so without a key the customer sees the same message twice. `smtp_dispatch_raw.payload->>'instantlyEmailId'` is the exact id Instantly assigned, compared against `EmailRecord.id`. A message with NO provider id was never handed to a provider (the self-send transport), so nothing can duplicate it and it always survives. The provider's copy WINS a collision: it is the one that was actually delivered.
+- **⚠️ `smtp_dispatch_raw` IS NOT SELF-SEND-ONLY any more, which is why the outbound read lives in its own exported function** rather than inside `fetchSelfSendThread`. Do NOT re-inline it, and do NOT write a second row→`ThreadMessage` mapper: `toThreadMessage` is shared so the two readers cannot drift about what a stored message looks like.
+- **An answer we dispatched is itself evidence the sequence exchanged mail.** The empty-mirror branch used to return `[]` whenever `hasExchangedMailEvidence` was false; a reply we sent on a sequence whose events we somehow hold none of is still a conversation, so it is no longer returned as an empty one.
+- **Fail loud.** A failure reading our own record raises the same `LeadConversationError` the mirror does. A short thread presented as the whole one is the precise failure this read exists to remove.
+
+Guard: the "the answer we dispatched ourselves" tests in `tests/unit/lead-conversation.test.ts` (rendered in time order, NOT duplicated once the provider carries it, kept when no provider id exists, a conversation even with an empty mirror and no event, fail-loud).
+
 ## Answering a lead on the Instantly transport — the reply is recorded locally too
 
 `POST /orgs/replies` writes a bronze `smtp_dispatch_raw` row at `step = 0` (`MANUAL_REPLY_STEP`) on **both** transports. The self-send branch always did; the Instantly branch returned without persisting anything, so a reply we sent existed **only** in Instantly — the one place a cancellation deletes. Both outcomes are recorded: `outcome='sent'` with the body, `outcome='transient'` with the error, mirroring the self-send evidence trail so a refused reply is not invisible on either pipe.
