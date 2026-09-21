@@ -196,6 +196,13 @@ describe("findLeadOnCampaignByEmail", () => {
       apolloPersonId: "apollo-1",
       name: "Dana Reid",
       company: "Acme",
+      // Absent on this row: null, never guessed from another field.
+      firstName: null,
+      lastName: null,
+      title: null,
+      city: null,
+      state: null,
+      country: null,
     });
 
     const url = new URL(fetchMock.mock.calls[0][0]);
@@ -204,6 +211,45 @@ describe("findLeadOnCampaignByEmail", () => {
     expect(url.searchParams.get("campaignId")).toBe("camp-1");
     expect(url.searchParams.get("q")).toBe("prospect@example.com");
     expect(url.searchParams.get("status")).toBe("all");
+  });
+
+  it("reads the identity the ?view=basic projection already carries", async () => {
+    stubFetch({
+      json: {
+        leads: [
+          {
+            ...ROW,
+            lead: {
+              name: "Colleen Morley",
+              firstName: "  Colleen ",
+              lastName: "Morley",
+              currentTitle: "Doctor of Chiropractic",
+              city: "Boston",
+              state: "Massachusetts",
+              country: "United States",
+              organization: { name: "Spine & Sports Injury Center" },
+            },
+          },
+        ],
+      },
+    });
+    const { findLeadOnCampaignByEmail } = await import("../../src/lib/lead-client");
+
+    const out = await findLeadOnCampaignByEmail({
+      orgId: "org-1",
+      campaignId: "camp-1",
+      email: "prospect@example.com",
+    });
+
+    expect(out).toMatchObject({
+      firstName: "Colleen",
+      lastName: "Morley",
+      title: "Doctor of Chiropractic",
+      city: "Boston",
+      state: "Massachusetts",
+      country: "United States",
+      company: "Spine & Sports Injury Center",
+    });
   });
 
   it("refuses rather than guesses: a substring search matching two people resolves to nobody", async () => {

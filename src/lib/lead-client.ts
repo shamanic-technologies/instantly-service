@@ -98,6 +98,21 @@ export interface LeadForCall {
   name: string | null;
   /** Their company's name, when known. */
   company: string | null;
+  /**
+   * Who they are, spelled out. Every one of these already rides the `?view=basic`
+   * projection lead-service serves — they are read here because a call that
+   * restates a prospect's identity before asking the rep to commit to a live
+   * conversation needs more than a display name. Null when lead-service holds
+   * nothing; NEVER derived from another field, because a guessed first name is
+   * spoken aloud to a customer.
+   */
+  firstName: string | null;
+  lastName: string | null;
+  /** Their job title at the current employer (`currentTitle` on the wire). */
+  title: string | null;
+  city: string | null;
+  state: string | null;
+  country: string | null;
 }
 
 /** Case-folded address equality — the same normalization the send path applies. */
@@ -170,6 +185,10 @@ export async function findLeadOnCampaignByEmail(params: {
         name?: string | null;
         firstName?: string | null;
         lastName?: string | null;
+        currentTitle?: string | null;
+        city?: string | null;
+        state?: string | null;
+        country?: string | null;
         organization?: { name?: string | null } | null;
       } | null;
     }>;
@@ -192,5 +211,11 @@ export async function findLeadOnCampaignByEmail(params: {
     apolloPersonId: row.apolloPersonId ?? null,
     name: lead?.name?.trim() || fromParts || null,
     company: lead?.organization?.name?.trim() || null,
+    firstName: lead?.firstName?.trim() || null,
+    lastName: lead?.lastName?.trim() || null,
+    title: lead?.currentTitle?.trim() || null,
+    city: lead?.city?.trim() || null,
+    state: lead?.state?.trim() || null,
+    country: lead?.country?.trim() || null,
   };
 }

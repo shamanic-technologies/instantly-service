@@ -34,6 +34,24 @@
  * positive-reply forward's claim; two at-most-once side effects should not claim
  * two different ways.
  *
+ * ── WHAT THE CALL HAS TO SAY WITH ────────────────────────────────────────────────
+ *
+ * A rep deciding whether to take a live call needs two things this used to
+ * withhold. WHO the person is — spelled out: first name, last name, title,
+ * company, city, state, country, every one of which already rode the
+ * `?view=basic` projection lead-service serves and was being thrown away here.
+ * And WHAT THEY ARE ANSWERING — the reply alone is half a conversation, so the
+ * rest of the thread is handed over newest-first, entry 0 being the email the
+ * reply responds to, for the call to walk back through one keypress at a time.
+ *
+ * Both are gathered from what is already in hand: the lead read that was already
+ * being made, and the thread that was already being fetched for the reply's own
+ * words. Neither adds a call.
+ *
+ * Everything spoken is CLEANED first — quoted history and our own signature plus
+ * its opt-out footer are cut. Those are our words, not theirs, and reading them
+ * back at a rep costs billed minutes to say nothing.
+ *
  * ── THE NINETY SECONDS ──────────────────────────────────────────────────────────
  *
  * Apollo's phone reveal is asynchronous: it answers WITHOUT the number and
@@ -76,10 +94,11 @@ import {
   type RevealIdentity,
 } from "./apollo-client";
 import { findLeadOnCampaignByEmail, type LeadForCall } from "./lead-client";
-import { placeCall, type CallReply } from "./twilio-client";
+import { placeCall, type CallReply, type PriorMessage } from "./twilio-client";
 import { isSalesInterestQualification } from "./trigger-sales-interest-campaign";
 import { fetchMirroredEmailRecords } from "./mirror-emails";
 import { selectThreadMessages, type ThreadMessage } from "./forward-positive-reply";
+import { stripQuotedHistory } from "./self-send/qualify-reply";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { fetchSelfSendThread } from "./self-send/thread";
 
@@ -135,6 +154,102 @@ export function connectNumberFor(reveal: PhoneReveal | null): string | null {
   return number ? number : null;
 }
 
+/**
+ * How many earlier emails the call offers to walk back through.
+ *
+ * A cold sequence is three steps, so in practice the walk is one or two hops and
+ * this never binds. It exists because a thread that has been going back and
+ * forth for weeks would otherwise put a rep on a keypress treadmill while the
+ * prospect waits — and every started minute of the call is billed.
+ */
+export const MAX_PRIOR_MESSAGES = 5;
+
+/**
+ * A line carrying nothing but the RFC 3676 signature delimiter.
+ *
+ * ⚠️ This is NOT `stripAccountSignature` and must not be replaced by it. That
+ * function owns the WIRE form (`<p>--</p>`, `<br>--<br>`) and is protected by two
+ * production incidents; by the time a body reaches here it has been through
+ * `htmlToText`, which collapses `</p><p>` to a SINGLE newline — so the plain
+ * marker that function looks for (`\n\n--\n`) does not match and it would
+ * silently strip nothing. What survives the conversion is a line that is exactly
+ * `--`, which is what this matches.
+ */
+const SPOKEN_SIGNATURE_LINE = /^[ \t]*--[ \t]*$/;
+
+/** Cut a plain-text body at the signature delimiter, and everything below it. */
+export function stripSpokenSignature(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (SPOKEN_SIGNATURE_LINE.test(line)) break;
+    kept.push(line);
+  }
+  return kept.join("\n").trim();
+}
+
+/**
+ * What a human should hear, out of a stored body.
+ *
+ * Two cuts, both of them things WE put there and neither of them worth a second
+ * of a billed call: the quoted history a client staples under a reply (which is
+ * our own previous email read back at the rep), and our signature block with the
+ * opt-out footer under it ("Don't want to hear from me again? unsubscribe" is a
+ * strange thing to read to your own sales rep). Both are truncate-at-first-marker
+ * cuts, so applying them in either order gives the same answer.
+ *
+ * A body carrying neither marker comes back unchanged — nothing is invented and
+ * nothing is summarised.
+ */
+export function cleanForSpeech(text: string): string {
+  return stripSpokenSignature(stripQuotedHistory(text)).trim();
+}
+
+/** True when a thread entry carries words rather than a placeholder. */
+function hasWords(message: ThreadMessage): boolean {
+  const text = message.bodyText?.trim();
+  return Boolean(text) && text !== "(no body)";
+}
+
+/**
+ * The rest of the conversation, newest-first, for the rep to walk back through.
+ *
+ * ⚠️ IT STOPS AT THE PROSPECT'S REPLY, and that boundary is the point. Entry 0 is
+ * the email the reply ANSWERS, and each keypress goes one hop further back —
+ * which is how a person reconstructs a conversation. Anything AFTER that reply
+ * (an answer we have already sent) is excluded: it is not context for the reply,
+ * it is what happened next, and reading it in this order would be confusing.
+ *
+ * With no inbound at all the whole thread is offered. That case means we could
+ * not read what they wrote (the call says so in words), so our own last emails
+ * are the only context there is, and withholding them would leave the rep with
+ * nothing.
+ *
+ * Every entry is cleaned and a body-less one is DROPPED rather than spoken as an
+ * empty pause.
+ */
+export function buildPriorMessages(messages: ThreadMessage[]): PriorMessage[] {
+  let lastInbound = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].direction === "inbound" && hasWords(messages[i])) {
+      lastInbound = i;
+      break;
+    }
+  }
+
+  const earlier = lastInbound >= 0 ? messages.slice(0, lastInbound) : messages.slice();
+
+  const walked: PriorMessage[] = [];
+  for (let i = earlier.length - 1; i >= 0 && walked.length < MAX_PRIOR_MESSAGES; i--) {
+    const message = earlier[i];
+    if (!hasWords(message)) continue;
+    const text = cleanForSpeech(message.bodyText);
+    if (!text) continue;
+    walked.push({ direction: message.direction, text });
+  }
+  return walked;
+}
+
 /** What the prospect last wrote, out of the thread, or null when we hold none. */
 export function latestInboundText(messages: ThreadMessage[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -156,7 +271,15 @@ export function spokenName(leadEmail: string, lead: LeadForCall | null): string 
   return name && name.length > 0 ? name : leadEmail;
 }
 
-/** Assemble what the call says about the reply. */
+/**
+ * Assemble what the call says about the reply.
+ *
+ * ⚠️ AN ABSENT FIELD IS OMITTED, NEVER SENT EMPTY. The call reads these aloud to
+ * build a sentence, so a blank string becomes a gap a human hears as a fault —
+ * and a placeholder ("unknown", "N/A") asserts we looked and found nothing when
+ * the truth is usually that lead-service never held it. Saying less is the
+ * honest shape.
+ */
 export function buildCallReply(
   leadEmail: string,
   lead: LeadForCall | null,
@@ -166,8 +289,24 @@ export function buildCallReply(
     name: spokenName(leadEmail, lead),
     message: message?.trim() || REPLY_TEXT_UNAVAILABLE,
   };
-  const company = lead?.company?.trim();
+  const said = (value: string | null | undefined): string | undefined =>
+    value?.trim() || undefined;
+
+  const company = said(lead?.company);
   if (company) reply.company = company;
+  const firstName = said(lead?.firstName);
+  if (firstName) reply.firstName = firstName;
+  const lastName = said(lead?.lastName);
+  if (lastName) reply.lastName = lastName;
+  const title = said(lead?.title);
+  if (title) reply.title = title;
+  const city = said(lead?.city);
+  if (city) reply.city = city;
+  const state = said(lead?.state);
+  if (state) reply.state = state;
+  const country = said(lead?.country);
+  if (country) reply.country = country;
+
   return reply;
 }
 
@@ -225,14 +364,19 @@ async function releaseCall(instantlyCampaignId: string): Promise<void> {
     .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
 }
 
-/** The prospect's own words, from whichever side of the transport holds them. */
-async function readReplyText(campaign: RingRepCampaign): Promise<string | null> {
-  const messages = isSelfSendCampaignId(campaign.instantlyCampaignId)
+/**
+ * The conversation, from whichever side of the transport holds it.
+ *
+ * Read ONCE and returned whole: the reply the call is about and the emails it
+ * answers come out of the same thread, and fetching it twice would let the two
+ * halves of one call disagree about the same exchange.
+ */
+async function readThread(campaign: RingRepCampaign): Promise<ThreadMessage[]> {
+  return isSelfSendCampaignId(campaign.instantlyCampaignId)
     ? await fetchSelfSendThread(campaign.instantlyCampaignId)
     : selectThreadMessages(
         await fetchMirroredEmailRecords(campaign.instantlyCampaignId),
       );
-  return latestInboundText(messages);
 }
 
 /**
@@ -331,12 +475,19 @@ export async function maybeRingRepOnSalesInterest(
       }
     }
 
+    // The reply and the emails it answers, out of ONE read of the thread. A
+    // failure here costs the words, never the call: the rep is still told a
+    // buyer is interested, and the call says the reply could not be read.
     let replyText: string | null = null;
+    let priorMessages: PriorMessage[] = [];
     try {
-      replyText = await readReplyText(campaign);
+      const thread = await readThread(campaign);
+      const latest = latestInboundText(thread);
+      replyText = latest ? cleanForSpeech(latest) || null : null;
+      priorMessages = buildPriorMessages(thread);
     } catch (error: unknown) {
       console.warn(
-        `[instantly-service] ring-rep: could not read the reply text for campaign=${campaign.instantlyCampaignId} ` +
+        `[instantly-service] ring-rep: could not read the thread for campaign=${campaign.instantlyCampaignId} ` +
           `lead=${leadEmail} — ${describe(error)}; the call states the words are unavailable`,
       );
     }
@@ -349,6 +500,7 @@ export async function maybeRingRepOnSalesInterest(
       userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
       to: salesRepPhone,
       reply: buildCallReply(leadEmail, lead, replyText),
+      ...(priorMessages.length > 0 ? { priorMessages } : {}),
       ...(connectTo ? { connectTo } : {}),
       ...(campaign.runId ? { parentRunId: campaign.runId } : {}),
       brandId,
@@ -358,6 +510,7 @@ export async function maybeRingRepOnSalesInterest(
     console.log(
       `[instantly-service] ring-rep: called ${salesRepPhone} about campaign=${campaign.instantlyCampaignId} ` +
         `lead=${leadEmail} callId=${placed.callId} connectOffered=${placed.connectOffered} ` +
+        `priorMessages=${priorMessages.length} ` +
         `reveal=${reveal?.status ?? "not-requested"}${reveal?.doNotCall ? " (do-not-call)" : ""}`,
     );
   } catch (error: unknown) {
