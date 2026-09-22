@@ -117,9 +117,16 @@ describe("mapSmtpDispatch — our own dispatcher", () => {
     expect(mapSmtpDispatch({ ...base, outcome: "weird" })!.outcome).toBe("transient");
   });
 
-  it("MANUAL_REPLY_STEP mirrors reply-to-lead.ts", () => {
-    const src = readFileSync("src/lib/reply-to-lead.ts", "utf8");
+  it("MANUAL_REPLY_STEP mirrors its one declaration", () => {
+    // The constant moved into its own module so the human-takeover gate could
+    // read it without importing `reply-to-lead`, which imports the gate. This
+    // pins the declaration at its new home AND that `reply-to-lead` still
+    // re-exports it, so every existing importer keeps working.
+    const src = readFileSync("src/lib/manual-reply-step.ts", "utf8");
     expect(src).toContain(`export const MANUAL_REPLY_STEP = ${MANUAL_REPLY_STEP};`);
+
+    const replyToLead = readFileSync("src/lib/reply-to-lead.ts", "utf8");
+    expect(replyToLead).toContain("export { MANUAL_REPLY_STEP };");
   });
 });
 

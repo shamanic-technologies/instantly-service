@@ -1248,12 +1248,19 @@ export const ReplyToLeadBodySchema = z
       .describe(
         "The answer, HTML. Signed by this service with the sending account's persona — do NOT include a signature.",
       ),
+    sent_by: z
+      .enum(["human", "automation"])
+      .optional()
+      .describe(
+        "Who asked for this answer to be sent. It decides ONE thing: whether the human-takeover gate applies. An `automation` reply is refused (409 `human_took_over`) once a person has answered the thread since the prospect last wrote; a `human` reply is never gated. Absent resolves to `automation` — the automated responder is the only caller today, so the gate is live without waiting on it, and a human surface declares `human` explicitly.",
+      ),
   })
   .openapi("ReplyToLeadBody", {
     example: {
       campaign_id: "c1a2b3c4-0000-0000-0000-000000000001",
       email: "alice@media.com",
       body_html: "<p>Great — how does Thursday 3pm look?</p>",
+      sent_by: "automation",
     },
   });
 
@@ -1325,10 +1332,11 @@ const ReplyToLeadErrorSchema = z
         "no_reply_to_thread",
         "sending_account_unresolved",
         "mailbox_credential_unavailable",
+        "human_took_over",
         "reply_dispatch_failed",
       ])
       .describe(
-        "campaign_not_found: no campaign in this org for the given email. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. reply_dispatch_failed: the transport refused the send.",
+        "campaign_not_found: no campaign in this org for the given email. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. human_took_over: a person already answered this thread since the prospect last wrote, so an automated reply is refused. reply_dispatch_failed: the transport refused the send.",
       ),
   })
   .openapi("ReplyToLeadError");
@@ -1344,6 +1352,7 @@ registry.registerPath({
     "**The agency inbox is CC'd, visibly.** Every reply carries it as a CC (never a BCC) so a human can read the exchange and be pulled into it by a reply-all. Cold sequence sends carry no CC — this applies only to the one-to-one answer.\n\n" +
     "**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail, and the footer's `{unsubscribe_link}` merge variable only resolves on a campaign send.\n\n" +
     "**The answer waits for the prospect's own business hours.** Everything else this service sends already does — a sequence step is held until the recipient's Mon-Fri 08:00-17:00 window opens in THEIR timezone. A reply produced outside it is enqueued (`202`, `status: \"scheduled\"`) and dispatched by the same hourly worker that sends the sequence steps, at the window's next opening; inside it, the reply goes out immediately (`200`, `status: \"sent\"`). Either way every refusal below is raised synchronously, before the decision. A scheduled reply is still NOT a sequence step: no hold, no step number, no capacity consumed.\n\n" +
+    "**A human takeover stops the automated responder.** When `sent_by` is `automation` (the default), the reply is refused with `409 human_took_over` if a PERSON has answered this thread since the prospect last wrote — read from what actually went out, both from this service and from Instantly's own inbox. A `human` reply is never gated. Nothing is prepared or sent on a refusal.\n\n" +
     "**Cost:** none declared. The mailbox estate is a fixed cost we absorb rather than rebill, so a reply is priced exactly like the sequence sends themselves.",
   request: {
     headers: TrackingHeadersSchema,
@@ -1370,12 +1379,101 @@ registry.registerPath({
     },
     409: {
       description:
-        "The reply cannot be threaded or attributed: `no_reply_to_thread`, `sending_account_unresolved`, or `mailbox_credential_unavailable`. Nothing was sent.",
+        "Refused, nothing sent: `no_reply_to_thread`, `sending_account_unresolved`, `mailbox_credential_unavailable`, or `human_took_over` (a person already answered this thread).",
       content: { "application/json": { schema: ReplyToLeadErrorSchema } },
     },
     502: {
       description: "The transport refused the send (`reply_dispatch_failed`)",
       content: { "application/json": { schema: ReplyToLeadErrorSchema } },
+    },
+  },
+});
+
+export const EscalateReplyBodySchema = z
+  .object({
+    campaign_id: z
+      .string()
+      .min(1)
+      .describe("Logical campaign id — the same key POST /orgs/replies takes"),
+    email: z.string().email().describe("The lead who asked something we cannot answer"),
+    question: z
+      .string()
+      .min(1)
+      .describe(
+        "What they asked, in their own words. Required — it is the whole content of the notification, and lead-service refuses a stop with no reason.",
+      ),
+  })
+  .openapi("EscalateReplyBody", {
+    example: {
+      campaign_id: "c1a2b3c4-0000-0000-0000-000000000001",
+      email: "alice@media.com",
+      question: "What does it cost for 5 seats, and can you send two references?",
+    },
+  });
+
+const EscalateReplyResultSchema = z
+  .object({
+    instantlyCampaignId: z.string(),
+    leadEmail: z.string(),
+    threadMessages: z
+      .number()
+      .int()
+      .describe("How many messages of the exchange went to the agency inbox"),
+    followupsStopped: z
+      .boolean()
+      .describe(
+        "Whether the follow-up ladder was emptied. False when lead-service holds no row for this person on this campaign — a real state, not a failure; the human was still told.",
+      ),
+  })
+  .openapi("EscalateReplyResult");
+
+const EscalateReplyResponseSchema = z
+  .object({ success: z.literal(true), escalation: EscalateReplyResultSchema })
+  .openapi("EscalateReplyResponse");
+
+const EscalateReplyErrorSchema = z
+  .object({
+    error: z.string(),
+    code: z
+      .enum(["campaign_not_found", "question_required"])
+      .describe(
+        "campaign_not_found: no campaign in this org for the given email. question_required: the question was empty, and an escalation with nothing to answer is not actionable.",
+      ),
+  })
+  .openapi("EscalateReplyError");
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/replies/escalate",
+  summary: "Hand a thread to a human and stop the automated follow-ups",
+  description:
+    "The automated responder cannot answer what this prospect asked. Sends the prospect NOTHING, forwards the exchange to the agency inbox naming the unanswered question, and empties the lead's follow-up schedule so the ladder stops insisting.\n\n" +
+    "**The decision is the caller's, not this service's.** Whether a question is answerable is a judgement about the draft and can only be made where the draft is made. This endpoint owns the two halves the drafter does not have: the mailbox and thread to forward, and the campaign identity that names the lead row whose schedule stops. There is no content heuristic here.\n\n" +
+    "**Not permanent.** A stop is not a tombstone: if the prospect writes again they are re-enqueued and qualification re-decides. A new message is a new decision.\n\n" +
+    "**Order is forward-then-stop.** A failure between the two leaves a human informed on a thread still scheduled, which is visible and undoable; the reverse would stop the ladder silently and the prospect would never hear from anyone.\n\n" +
+    "**Cost:** none declared. Nothing is sent to the prospect, and the notification is transactional-email-service's own send.",
+  request: {
+    headers: TrackingHeadersSchema,
+    body: { content: { "application/json": { schema: EscalateReplyBodySchema } } },
+  },
+  responses: {
+    200: {
+      description: "A human was told and the follow-up ladder was stopped",
+      content: { "application/json": { schema: EscalateReplyResponseSchema } },
+    },
+    400: {
+      description: "Invalid body, empty question, or missing x-user-id",
+      content: { "application/json": { schema: EscalateReplyErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    404: {
+      description: "No campaign in this org for the given email",
+      content: { "application/json": { schema: EscalateReplyErrorSchema } },
+    },
+    500: {
+      description:
+        "The notification could not be sent. Nothing was stopped — an escalation that told nobody is worse than none, so it fails loud.",
+      content: { "application/json": { schema: ErrorSchema } },
     },
   },
 });

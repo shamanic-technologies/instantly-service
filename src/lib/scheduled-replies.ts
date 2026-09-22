@@ -26,6 +26,7 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
+import { resolveReplySender, type ReplySender } from "./human-takeover";
 import { scheduledReplies } from "../db/schema";
 import { isSendingDay } from "./sending-calendar";
 import { isWithinLocalSendWindow } from "./sending-window";
@@ -39,6 +40,8 @@ export interface ScheduledReply {
   instantlyCampaignId: string;
   leadEmail: string;
   bodyHtml: string;
+  /** Who asked for it — replayed by the drain so the takeover gate reads true. */
+  sentBy: ReplySender;
   /** The prospect's IANA timezone, or null when we hold none. */
   timezone: string | null;
   scheduledFor: Date;
@@ -99,6 +102,7 @@ export interface EnqueueScheduledReplyInput {
   instantlyCampaignId: string;
   leadEmail: string;
   bodyHtml: string;
+  sentBy: ReplySender;
   timezone: string | null;
   /** The first instant the prospect's window opens. A LOWER BOUND. */
   scheduledFor: Date;
@@ -122,6 +126,7 @@ export async function enqueueScheduledReply(
       instantlyCampaignId: input.instantlyCampaignId,
       leadEmail: input.leadEmail,
       bodyHtml: input.bodyHtml,
+      sentBy: input.sentBy,
       timezone: input.timezone,
       scheduledFor: input.scheduledFor,
     })
@@ -150,6 +155,7 @@ export async function loadPendingScheduledReplies(): Promise<ScheduledReply[]> {
       r.instantly_campaign_id AS "instantlyCampaignId",
       r.lead_email            AS "leadEmail",
       r.body_html             AS "bodyHtml",
+      r.sent_by               AS "sentBy",
       r.timezone              AS "timezone",
       r.scheduled_for         AS "scheduledFor",
       r.attempts              AS "attempts"
@@ -167,6 +173,13 @@ export async function loadPendingScheduledReplies(): Promise<ScheduledReply[]> {
     instantlyCampaignId: String(row.instantlyCampaignId),
     leadEmail: String(row.leadEmail),
     bodyHtml: String(row.bodyHtml),
+    // A row enqueued before the column existed carries null, and resolves to
+    // the same default an undeclared caller gets.
+    sentBy: resolveReplySender(
+      row.sentBy === "human" || row.sentBy === "automation"
+        ? (row.sentBy as ReplySender)
+        : null,
+    ),
     timezone:
       row.timezone === null || row.timezone === undefined
         ? null

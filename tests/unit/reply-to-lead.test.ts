@@ -96,6 +96,12 @@ const INPUT = {
   campaignId: "camp-1",
   leadEmail: "Alice@Media.com",
   bodyHtml: "<p>Thursday works.</p>",
+  // These cases exercise the reply MECHANICS, which are orthogonal to the
+  // human-takeover gate — so they declare `human` and the gate never runs,
+  // keeping each test's queued db.execute responses where they were. The gate
+  // has its own describe at the end of this file, and the automated default is
+  // covered there end to end.
+  sentBy: "human" as const,
 };
 
 function campaignRow(over: Record<string, unknown> = {}) {
@@ -674,5 +680,130 @@ describe("a reply waits for the prospect's sending window", () => {
     const values = mockInsertValues.mock.calls.at(-1)![0] as Record<string, unknown>;
     expect(values.step).toBe(MANUAL_REPLY_STEP);
     expect(MANUAL_REPLY_STEP).toBe(0);
+  });
+});
+
+// ─── The human-takeover gate ─────────────────────────────────────────────────
+
+describe("a human took over, so the automated responder stops", () => {
+  /**
+   * The db.execute queue an `automation` reply consumes, in order:
+   *   1. loadCampaign
+   *   2. findHumanTakeover   ← the gate
+   *   3. onward (prepare, on the self-send transport)
+   */
+  function queueAutomationReply(takeover: Record<string, unknown>[]) {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow()]))
+      .mockResolvedValueOnce(pgResult(takeover));
+  }
+
+  const AUTOMATED = { ...INPUT, sentBy: "automation" as const };
+
+  it("refuses an automated reply once a person has answered", async () => {
+    queueAutomationReply([
+      { at: "2026-09-04T17:51:31.000Z", source: "instantly_unibox" },
+    ]);
+
+    await expect(replyToLead(AUTOMATED, { asOf: IN_WINDOW })).rejects.toMatchObject({
+      code: "human_took_over",
+      status: 409,
+    });
+  });
+
+  it("sends NOTHING and prepares NOTHING on a refusal", async () => {
+    // The gate runs before anything is prepared, so a refused reply resolves no
+    // credential, makes no Instantly read and writes no bronze row — the same
+    // placement as the opt-out and re-contact gates on POST /orgs/send.
+    queueAutomationReply([{ at: "2026-09-04T17:51:31.000Z", source: "dispatched" }]);
+
+    await expect(replyToLead(AUTOMATED, { asOf: IN_WINDOW })).rejects.toThrow();
+
+    expect(mockListEmails).not.toHaveBeenCalled();
+    expect(mockReplyToEmail).not.toHaveBeenCalled();
+    expect(mockResolveCredential).not.toHaveBeenCalled();
+    expect(mockDispatchMessage).not.toHaveBeenCalled();
+    expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("names WHEN a person answered and WHERE we learned it", async () => {
+    // A bare refusal sends whoever reads it hunting. The message carries the
+    // timestamp and the source so the thread can be found.
+    queueAutomationReply([
+      { at: "2026-09-04T17:51:31.000Z", source: "instantly_unibox" },
+    ]);
+
+    await expect(replyToLead(AUTOMATED, { asOf: IN_WINDOW })).rejects.toThrow(
+      /2026-09-04T17:51:31.000Z.*instantly_unibox/,
+    );
+  });
+
+  it("sends an automated reply when the only answers since are ours", async () => {
+    queueAutomationReply([]);
+    mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    const outcome = await replyToLead(AUTOMATED, { asOf: IN_WINDOW });
+
+    expect(outcome.status).toBe("sent");
+    expect(mockReplyToEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("NEVER gates a person answering their own thread", async () => {
+    // The whole point is to stop the machine writing over a human. Refusing the
+    // human instead would be the one way to be wrong that nobody can work
+    // around — so the gate is not even consulted, and the queue proves it: only
+    // loadCampaign is answered before the reply goes out.
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    const outcome = await replyToLead(
+      { ...INPUT, sentBy: "human" },
+      { asOf: IN_WINDOW },
+    );
+
+    expect(outcome.status).toBe("sent");
+    expect(mockDbExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("freezes who sent it onto the bronze row", async () => {
+    // Persist-at-write: the caller knows, and nothing downstream can re-derive
+    // it. Without this the next gate reads its own dispatches as human answers.
+    queueAutomationReply([]);
+    mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    await replyToLead(AUTOMATED, { asOf: IN_WINDOW });
+
+    const row = mockInsertValues.mock.calls[0][0] as {
+      payload: { sentBy?: string; kind?: string };
+    };
+    expect(row.payload.kind).toBe("manual_reply");
+    expect(row.payload.sentBy).toBe("automation");
+  });
+
+  it("remembers who asked when the answer has to wait for their morning", async () => {
+    // ⚠️ LOAD-BEARING. The drain replays the row through this same function, so
+    // a human reply deferred overnight would come back carrying the automation
+    // default and be refused by a gate that does not apply to it.
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
+    mockInsertValues.mockReturnValue({
+      returning: () =>
+        Promise.resolve([
+          { id: "sr-1", scheduledFor: new Date("2026-09-03T13:00:00.000Z") },
+        ]),
+    });
+
+    const outcome = await replyToLead(
+      { ...INPUT, sentBy: "human" },
+      { asOf: OUT_OF_WINDOW },
+    );
+
+    expect(outcome.status).toBe("scheduled");
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ sentBy: "human" }),
+    );
   });
 });

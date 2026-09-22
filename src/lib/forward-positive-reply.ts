@@ -226,9 +226,22 @@ export function messagesFromFirstReply(messages: ThreadMessage[]): ThreadMessage
  * Returns the message count. Throws on any failure (the caller decides whether
  * to swallow it).
  */
+export interface ThreadForwardTemplate {
+  /**
+   * The transactional-email template to render. Defaults to the positive-reply
+   * forward; the escalation path names its own, because "your prospect said
+   * something good" and "the responder could not answer this" are different
+   * things to walk into an inbox.
+   */
+  eventType?: string;
+  /** Extra template variables, merged over `subject` / `thread`. */
+  metadata?: Record<string, string>;
+}
+
 export async function sendThreadForward(
   campaign: ForwardPositiveReplyCampaign,
   leadEmail: string,
+  template: ThreadForwardTemplate = {},
 ): Promise<number> {
   if (!campaign.orgId) {
     throw new Error("forward-thread requires an org-scoped campaign (orgId is null)");
@@ -265,12 +278,13 @@ export async function sendThreadForward(
   await sendEmail(
     {
       appId: "instantly-service",
-      eventType: "positive-reply-forward",
+      eventType: template.eventType ?? "positive-reply-forward",
       recipientEmail: agencyInbox(),
       ...(ccEmails.length > 0 ? { ccEmails } : {}),
       metadata: {
         subject: threadSubject(messages),
         thread: renderThreadText(messages),
+        ...(template.metadata ?? {}),
       },
     },
     {
@@ -284,7 +298,7 @@ export async function sendThreadForward(
     },
   );
   console.log(
-    `[instantly-service] forward-positive-reply: sent thread (${messages.length} msg) for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${agencyInbox()}${ccEmails.length > 0 ? ` cc=${ccEmails.join(",")}` : ""}`,
+    `[instantly-service] ${template.eventType ?? "forward-positive-reply"}: sent thread (${messages.length} msg) for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${agencyInbox()}${ccEmails.length > 0 ? ` cc=${ccEmails.join(",")}` : ""}`,
   );
   return messages.length;
 }
