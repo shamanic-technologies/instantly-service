@@ -120,12 +120,12 @@ describe("fetchInProductionAccounts — infra vendor attribution", () => {
     expect(sqlText).toContain("infraProvider");
   });
 
-  it("reads each account's DOMAIN fill rank, coercing it to a number", async () => {
+  it("reads each domain's ACQUISITION date from the same infra lateral, null stays null", async () => {
     mockExecute.mockReset();
     mockExecute.mockResolvedValueOnce({
       rows: [
         {
-          email: "a@ranked.com",
+          email: "a@dated.com",
           firstName: null,
           lastName: null,
           instantlyStatus: 1,
@@ -134,14 +134,12 @@ describe("fetchInProductionAccounts — infra vendor attribution", () => {
           providerCode: 2,
           timestampCreated: null,
           infraProvider: "primeforge",
-          // node-postgres hands a numeric-typed column back as TEXT; "10" sorts
-          // before "2" as a string, which would silently invert the order.
-          domainFillRank: "10",
+          domainAcquiredAt: "2026-06-29T10:00:00.000Z",
         },
         {
-          // No row in instantly_domain_fill_order → null, which sorts LAST
-          // within the vendor. Never fabricated as 0.
-          email: "b@unranked.com",
+          // No infra_domains row, or one with no vendor date → null, which sorts
+          // LAST within the vendor. Never fabricated as an epoch.
+          email: "b@undated.com",
           firstName: null,
           lastName: null,
           instantlyStatus: 1,
@@ -150,21 +148,28 @@ describe("fetchInProductionAccounts — infra vendor attribution", () => {
           providerCode: 2,
           timestampCreated: null,
           infraProvider: "primeforge",
-          domainFillRank: null,
+          domainAcquiredAt: null,
         },
       ],
     });
 
     const accounts = await fetchInProductionAccounts(null);
 
-    expect(accounts.map((a) => [a.email, a.domainFillRank])).toEqual([
-      ["a@ranked.com", 10],
-      ["b@unranked.com", null],
+    expect(accounts.map((a) => [a.email, a.domainAcquiredAt])).toEqual([
+      ["a@dated.com", "2026-06-29T10:00:00.000Z"],
+      ["b@undated.com", null],
     ]);
 
+    // Derived from the inventory the daily infra sync writes — the hand-posed
+    // `instantly_domain_fill_order` table is gone (migration 0058) and must not
+    // come back. The date rides the SAME lateral that resolves the provider, so
+    // it costs no extra join, and it is the domain's EARLIEST vendor date: a
+    // domain two vendors report is one purchase.
     const sqlText = JSON.stringify(mockExecute.mock.calls[0][0]);
-    expect(sqlText).toContain("instantly_domain_fill_order");
-    expect(sqlText).toContain("domainFillRank");
+    expect(sqlText).toContain("created_at_provider");
+    expect(sqlText).toContain("domainAcquiredAt");
+    expect(sqlText).toContain("min(e.created_at_provider)");
+    expect(sqlText).not.toContain("instantly_domain_fill_order");
   });
 });
 

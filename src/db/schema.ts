@@ -381,25 +381,13 @@ export const instantlyDomainPolicy = pgTable("instantly_domain_policy", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// Silver/config: per-DOMAIN position in the send fill order, WITHIN a vendor.
-// The fill order is vendor -> this rank -> account age -> email, so a domain
-// placed at the tail receives no NEW sequences while any domain ahead of it has
-// room. That is what lets a whole domain go quiet and become cancellable: the
-// vendor tier alone cannot do it, because a vendor's mailboxes are provisioned
-// in batches that INTERLEAVE domains (Primeforge creates them alphabetically by
-// first name), so an age-ordered fleet drains every domain of a vendor at once.
-//
-// Lives in the DB (NOT a code constant) so re-ordering a domain is an UPDATE,
-// never a deploy. A domain with no row sorts LAST within its vendor — same
-// reasoning as an unattributed vendor: we cannot honestly place it, and the tail
-// risks the least. Deleting every row restores the previous (age-only) order
-// exactly, which is the rollback.
-export const instantlyDomainFillOrder = pgTable("instantly_domain_fill_order", {
-  domain: text("domain").primaryKey(),
-  fillRank: integer("fill_rank").notNull(),
-  note: text("note"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+// NOTE: `instantly_domain_fill_order` was DROPPED in migration 0058. It held the
+// per-domain position in the send fill order as hand-posed integers, seeded once
+// on 2026-08-29 from each domain's queued step count and never recomputed — so
+// within a month it encoded the OPPOSITE of the order its own seed note
+// described. The key is now DERIVED from `infra_domains.created_at_provider`
+// (the domain's acquisition date), which the daily infra sync already writes.
+// See `domainFillKeyOf` in send-lead.ts. Do NOT reintroduce a stated rank.
 
 // Silver/config: per-feature account RESERVATION (carve-out list). An account
 // listed here is reserved EXCLUSIVELY to its `feature_slug` — the live-send pool
