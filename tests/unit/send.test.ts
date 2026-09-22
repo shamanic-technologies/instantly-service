@@ -209,9 +209,9 @@ const validBody = {
 function acct(
   overrides: Partial<Account> & {
     infraProvider?: string | null;
-    domainFillRank?: number | null;
+    domainAcquiredAt?: Date | string | null;
   } = {},
-): Account & { infraProvider?: string | null; domainFillRank?: number | null } {
+): Account & { infraProvider?: string | null; domainAcquiredAt?: Date | string | null } {
   return { email: "a@test.com", warmup_status: 1, status: 1, ...overrides };
 }
 
@@ -510,18 +510,17 @@ describe("pickSequentialFillAccount", () => {
     ]);
   });
 
-  // ── The DOMAIN rank, within a vendor ────────────────────────────────────────
+  // ── The DOMAIN key, within a vendor ─────────────────────────────────────────
 
-  it("ranks by DOMAIN before age, so a whole domain can be pushed to the tail", () => {
-    // The reason this key exists: PrimeForge provisions a vendor's mailboxes in
-    // batches ordered alphabetically by first name, so several domains interleave
-    // through one batch. Ordered by age alone, no domain is ever contiguous and
-    // none can go quiet. Here `tail.com` is the OLDEST domain and still sorts last.
+  it("fills the OLDER domain first, whatever the ages of its accounts", () => {
+    // The key is the DOMAIN's acquisition date, derived from infra_domains —
+    // never a hand-posed rank. Here `tail.com` holds the OLDEST accounts and
+    // still sorts last, because we bought the domain itself later.
     const accounts = [
-      acct({ email: "a@tail.com", infraProvider: "primeforge", domainFillRank: 9, timestamp_created: created(400) }),
-      acct({ email: "b@head.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(10) }),
-      acct({ email: "c@tail.com", infraProvider: "primeforge", domainFillRank: 9, timestamp_created: created(390) }),
-      acct({ email: "d@head.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(5) }),
+      acct({ email: "a@tail.com", infraProvider: "primeforge", domainAcquiredAt: created(30), timestamp_created: created(400) }),
+      acct({ email: "b@head.com", infraProvider: "primeforge", domainAcquiredAt: created(90), timestamp_created: created(10) }),
+      acct({ email: "c@tail.com", infraProvider: "primeforge", domainAcquiredAt: created(30), timestamp_created: created(390) }),
+      acct({ email: "d@head.com", infraProvider: "primeforge", domainAcquiredAt: created(90), timestamp_created: created(5) }),
     ];
     expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
       "b@head.com",
@@ -532,14 +531,15 @@ describe("pickSequentialFillAccount", () => {
   });
 
   it("keeps a domain's mailboxes CONTIGUOUS even when another domain interleaves by age", () => {
-    // Exactly the production shape: one batch created seconds apart, alternating
-    // between two domains. Age alone shuffles them together; the domain rank
-    // groups each domain so the second one can drain and be cancelled.
+    // Exactly the production shape: one vendor batch created seconds apart,
+    // alternating between two domains. Account age alone shuffles them together;
+    // the domain key groups each domain so the second one can drain and be
+    // cancelled.
     const accounts = [
-      acct({ email: "alexander@keep.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(50) }),
-      acct({ email: "bailey@drop.com", infraProvider: "primeforge", domainFillRank: 1, timestamp_created: created(49) }),
-      acct({ email: "clara@keep.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(48) }),
-      acct({ email: "emily@drop.com", infraProvider: "primeforge", domainFillRank: 1, timestamp_created: created(47) }),
+      acct({ email: "alexander@keep.com", infraProvider: "primeforge", domainAcquiredAt: created(90), timestamp_created: created(50) }),
+      acct({ email: "bailey@drop.com", infraProvider: "primeforge", domainAcquiredAt: created(60), timestamp_created: created(49) }),
+      acct({ email: "clara@keep.com", infraProvider: "primeforge", domainAcquiredAt: created(90), timestamp_created: created(48) }),
+      acct({ email: "emily@drop.com", infraProvider: "primeforge", domainAcquiredAt: created(60), timestamp_created: created(47) }),
     ];
     expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
       "alexander@keep.com",
@@ -549,60 +549,88 @@ describe("pickSequentialFillAccount", () => {
     ]);
   });
 
-  it("sorts an UNRANKED domain last within its vendor, never first", () => {
-    // Nobody stated where this domain belongs, so it takes the position that
-    // risks the least — the tail — exactly like an unattributed vendor. Note it
-    // lands behind rank 9 even though it is the oldest account here.
+  it("keeps two domains bought in the SAME instant contiguous, via the domain name", () => {
+    // A vendor batch can report one acquisition timestamp for several domains.
+    // Without the name tie-break the two interleave by account age and NEITHER
+    // is contiguous — the one property this key exists to provide.
+    const same = created(60);
     const accounts = [
-      acct({ email: "unranked@x.com", infraProvider: "primeforge", timestamp_created: created(999) }),
-      acct({ email: "ranked-late@y.com", infraProvider: "primeforge", domainFillRank: 9, timestamp_created: created(1) }),
-      acct({ email: "ranked-first@z.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(1) }),
+      acct({ email: "a@bbb.com", infraProvider: "primeforge", domainAcquiredAt: same, timestamp_created: created(50) }),
+      acct({ email: "b@aaa.com", infraProvider: "primeforge", domainAcquiredAt: same, timestamp_created: created(49) }),
+      acct({ email: "c@bbb.com", infraProvider: "primeforge", domainAcquiredAt: same, timestamp_created: created(48) }),
+      acct({ email: "d@aaa.com", infraProvider: "primeforge", domainAcquiredAt: same, timestamp_created: created(47) }),
     ];
     expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
-      "ranked-first@z.com",
-      "ranked-late@y.com",
-      "unranked@x.com",
+      "b@aaa.com",
+      "d@aaa.com",
+      "a@bbb.com",
+      "c@bbb.com",
     ]);
   });
 
-  it("keeps the VENDOR primary — a rank-0 domain still sorts after every gandi account", () => {
-    // The domain rank orders WITHIN a vendor. It must never let a cheaper vendor
+  it("sorts an UNDATABLE domain last within its vendor, never first", () => {
+    // No infra_domains row (or a row with no vendor date) — nobody can place it
+    // honestly, so it takes the position that risks the least, exactly like an
+    // unattributed vendor. Note it lands behind the NEWEST dated domain even
+    // though it holds the oldest account here.
+    const accounts = [
+      acct({ email: "undated@x.com", infraProvider: "primeforge", timestamp_created: created(999) }),
+      acct({ email: "newest@y.com", infraProvider: "primeforge", domainAcquiredAt: created(5), timestamp_created: created(1) }),
+      acct({ email: "oldest@z.com", infraProvider: "primeforge", domainAcquiredAt: created(300), timestamp_created: created(1) }),
+    ];
+    expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
+      "oldest@z.com",
+      "newest@y.com",
+      "undated@x.com",
+    ]);
+  });
+
+  it("keeps the VENDOR primary — the oldest primeforge domain still sorts after every gandi account", () => {
+    // The domain key orders WITHIN a vendor. It must never let a cheaper vendor
     // be skipped, or the whole point of the vendor tier is lost.
     const accounts = [
-      acct({ email: "rank0@primeforge.com", infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(400) }),
-      acct({ email: "rank9@gandi.com", infraProvider: "gandi", domainFillRank: 9, timestamp_created: created(1) }),
-      acct({ email: "unranked@gandi.com", infraProvider: "gandi", timestamp_created: created(1) }),
+      acct({ email: "old@primeforge.com", infraProvider: "primeforge", domainAcquiredAt: created(900), timestamp_created: created(400) }),
+      acct({ email: "new@gandi.com", infraProvider: "gandi", domainAcquiredAt: created(5), timestamp_created: created(1) }),
+      acct({ email: "undated@gandi.com", infraProvider: "gandi", timestamp_created: created(1) }),
     ];
     expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
-      "rank9@gandi.com",
-      "unranked@gandi.com",
-      "rank0@primeforge.com",
+      "new@gandi.com",
+      "undated@gandi.com",
+      "old@primeforge.com",
     ]);
   });
 
-  it("is byte-identical to the age order when NO domain is ranked", () => {
-    // The rollback is `DELETE FROM instantly_domain_fill_order`; this pins that
-    // an empty table restores the previous behaviour exactly.
+  it("reproduces the production order: maildistribute fills before leansignalio", () => {
+    // The shape that motivated dropping `instantly_domain_fill_order`: the table
+    // had `maildistribute.com` at rank 9, BEHIND the 2026-07-07 batch, on the
+    // strength of a queued-step count taken six weeks earlier. Derived from the
+    // acquisition date it sits with its own 2026-06-29 siblings, where it
+    // belongs, and nobody has to remember to recompute anything.
+    const jun29 = "2026-06-29T00:00:00.000Z";
+    const jul07 = "2026-07-07T00:00:00.000Z";
     const accounts = [
-      acct({ email: "young@x.com", infraProvider: "primeforge", timestamp_created: created(10) }),
-      acct({ email: "old@y.com", infraProvider: "primeforge", timestamp_created: created(90) }),
-      acct({ email: "mid@z.com", infraProvider: "primeforge", timestamp_created: created(50) }),
+      acct({ email: "allie@leansignalio.com", infraProvider: "primeforge", domainAcquiredAt: jul07, timestamp_created: jul07 }),
+      acct({ email: "emily@fuseconnectio.com", infraProvider: "primeforge", domainAcquiredAt: jul07, timestamp_created: jul07 }),
+      acct({ email: "k.lourd@maildistribute.com", infraProvider: "primeforge", domainAcquiredAt: jun29, timestamp_created: jun29 }),
+      acct({ email: "k.lourd@boostdistribute.com", infraProvider: "primeforge", domainAcquiredAt: jun29, timestamp_created: jun29 }),
     ];
     expect(accountFillOrder(accounts).map((a) => a.email)).toEqual([
-      "old@y.com",
-      "mid@z.com",
-      "young@x.com",
+      "k.lourd@boostdistribute.com",
+      "k.lourd@maildistribute.com",
+      "emily@fuseconnectio.com",
+      "allie@leansignalio.com",
     ]);
   });
 
   it("cascades to the NEXT domain when the head domain is full, not to the oldest account", () => {
     // The waterfall one level down: `head.com` is saturated, so a new sequence
-    // goes to rank 1 — not to `tail.com`, which is older but ranked last and is
-    // the domain we are trying to let go quiet so it can be cancelled.
+    // goes to the next domain by acquisition date — not to `tail.com`, which
+    // holds the oldest account but was bought last and is the domain we are
+    // letting go quiet so it can be cancelled.
     const accounts = [
-      acct({ email: "a@head.com", daily_limit: 45, infraProvider: "primeforge", domainFillRank: 0, timestamp_created: created(10) }),
-      acct({ email: "b@middle.com", daily_limit: 45, infraProvider: "primeforge", domainFillRank: 1, timestamp_created: created(20) }),
-      acct({ email: "c@tail.com", daily_limit: 45, infraProvider: "primeforge", domainFillRank: 9, timestamp_created: created(400) }),
+      acct({ email: "a@head.com", daily_limit: 45, infraProvider: "primeforge", domainAcquiredAt: created(300), timestamp_created: created(10) }),
+      acct({ email: "b@middle.com", daily_limit: 45, infraProvider: "primeforge", domainAcquiredAt: created(200), timestamp_created: created(20) }),
+      acct({ email: "c@tail.com", daily_limit: 45, infraProvider: "primeforge", domainAcquiredAt: created(30), timestamp_created: created(400) }),
     ];
     const byEmail = caps([
       ["a@head.com", { sentToday: 45 }],

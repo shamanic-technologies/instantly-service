@@ -328,12 +328,16 @@ export async function fetchLifecycleByEmail(): Promise<Map<string, LifecycleView
  * vendors resolves deterministically to the one that fills earliest; a domain
  * with no inventory row at all yields null, which sorts LAST rather than first.
  *
- * `domainFillRank` is the SECOND key of that order: the domain's position within
- * its vendor, read from `instantly_domain_fill_order`. It is what lets a whole
- * domain go quiet — the vendor tier drains a vendor at a time, but a vendor's
- * mailboxes interleave domains, so without this key every domain of a vendor
- * stays mildly busy and none can be cancelled. Null (no row) sorts LAST within
- * the vendor, same reasoning as a null provider.
+ * `domainAcquiredAt` is the SECOND key of that order: when we bought the domain
+ * from that vendor (`infra_domains.created_at_provider`, earliest across the
+ * vendors reporting it). It is what lets a whole domain go quiet — the vendor
+ * tier drains a vendor at a time, but a vendor's mailboxes interleave domains,
+ * so without this key every domain of a vendor stays mildly busy and none can be
+ * cancelled. Null (no row, or a row with no vendor date) sorts LAST within the
+ * vendor, same reasoning as a null provider. It comes from the SAME lateral that
+ * resolves the provider, so it costs no extra join — and it replaced the
+ * hand-posed `instantly_domain_fill_order` table, which nobody recomputed. See
+ * `domainFillKeyOf`.
  */
 /**
  * `sendTransport` is the account's send-transport POLICY ('instantly' | 'smtp').
@@ -343,7 +347,7 @@ export async function fetchLifecycleByEmail(): Promise<Map<string, LifecycleView
  */
 export type PooledAccount = Account & {
   infraProvider: string | null;
-  domainFillRank: number | null;
+  domainAcquiredAt: Date | string | null;
   sendTransport: string;
   /** Vendor's own creation date when the mailbox was bought pre-warmed, so
    *  `capForAccount` does not read our import date as the mailbox's age. */
@@ -366,11 +370,18 @@ export async function fetchInProductionAccounts(
            a.send_transport AS "sendTransport",
            a.vendor_prewarmed_at AS "vendorPrewarmedAt",
            ip.provider AS "infraProvider",
-           dfo.fill_rank AS "domainFillRank"
+           ip.acquired_at AS "domainAcquiredAt"
     FROM instantly_accounts a
     LEFT JOIN instantly_account_feature_policy p ON p.account_email = a.email
     LEFT JOIN LATERAL (
-      SELECT d.provider
+      SELECT d.provider,
+             -- The whole domain's acquisition date, not this row's: a domain
+             -- reported by two vendors is ONE purchase, so the earliest date is
+             -- when it entered the fleet and is what keeps its mailboxes
+             -- contiguous in the fill order.
+             (SELECT min(e.created_at_provider)
+                FROM infra_domains e
+               WHERE e.domain = d.domain) AS acquired_at
       FROM infra_domains d
       WHERE d.domain = split_part(a.email, '@', 2)
       ORDER BY CASE d.provider
@@ -383,8 +394,6 @@ export async function fetchInProductionAccounts(
                d.provider
       LIMIT 1
     ) ip ON TRUE
-    LEFT JOIN instantly_domain_fill_order dfo
-      ON dfo.domain = split_part(a.email, '@', 2)
     WHERE a.lifecycle_status = 'in_production'
       AND CASE
             WHEN ${slug}::text IN (
@@ -406,7 +415,7 @@ export async function fetchInProductionAccounts(
     sendTransport: string | null;
     vendorPrewarmedAt: string | Date | null;
     infraProvider: string | null;
-    domainFillRank: number | string | null;
+    domainAcquiredAt: string | Date | null;
   }>(result).map((r) => ({
     email: r.email,
     warmup_status: 0,
@@ -421,12 +430,7 @@ export async function fetchInProductionAccounts(
       ? new Date(r.timestampCreated).toISOString()
       : undefined,
     infraProvider: r.infraProvider,
-    // node-postgres returns an int column as a JS number, but a `numeric`-typed
-    // one as text; coerce so the sort compares numbers, never strings ("10" < "2").
-    domainFillRank:
-      r.domainFillRank === null || r.domainFillRank === undefined
-        ? null
-        : Number(r.domainFillRank),
+    domainAcquiredAt: r.domainAcquiredAt ?? null,
     // Resolved rather than passed through, so an unrecognised or missing value
     // can only ever mean Instantly — the only way onto the self-send pipe is an
     // explicit, reversible UPDATE.

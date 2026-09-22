@@ -1,0 +1,11 @@
+-- The per-domain fill order is now DERIVED from `infra_domains.created_at_provider`
+-- (the date we acquired the domain from its vendor), not stated by hand.
+--
+-- The table held 14 rows of integers seeded once on 2026-08-29 from each domain's
+-- queued step count, and nothing ever recomputed them. A month later the order it
+-- encoded was the inverse of the one its own seed note described: `maildistribute.com`
+-- sat at the tail as "drains first, cancel first" while carrying 348 queued steps and
+-- 467 real sends a week, more than any other domain of its tier.
+--
+-- No backfill: the derivation reads a column the daily infra sync already writes.
+DROP TABLE IF EXISTS "instantly_domain_fill_order";

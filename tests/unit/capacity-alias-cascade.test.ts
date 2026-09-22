@@ -25,22 +25,22 @@ describe("alias cascade — a mailbox's cap is offered ONCE, not once per alias"
   const ASOF_KEY = "2026-09-22";
   const LOGIN = "eric@salesmolt.com";
 
-  const account = (email: string, domainFillRank: number): FillOrderAccount => ({
+  const account = (email: string, domainAcquiredAt: string): FillOrderAccount => ({
     email,
     warmup_status: 1,
     status: 1,
     daily_limit: 50,
     infraProvider: "gandi",
-    domainFillRank,
+    domainAcquiredAt,
     sendTransport: "smtp",
     // Already at volume, so the ramp is saturated and `daily_limit` is the cap —
     // these cases are about the alias grouping, not about the ramp.
     timestamp_created: "2026-01-01T00:00:00.000Z",
   });
 
-  const ALIAS_A = account("kevinl@salesmolt.com", 0);
-  const ALIAS_B = account("klourd@salesmolt.com", 0);
-  const NEXT_DOMAIN = account("kevin@othermolt.com", 1);
+  const ALIAS_A = account("kevinl@salesmolt.com", "2026-01-28T00:00:00.000Z");
+  const ALIAS_B = account("klourd@salesmolt.com", "2026-01-28T00:00:00.000Z");
+  const NEXT_DOMAIN = account("kevin@othermolt.com", "2026-03-01T00:00:00.000Z");
   const accounts = [ALIAS_A, ALIAS_B, NEXT_DOMAIN];
 
   /** The snapshot as `fetchAccountCapacity` builds it, for a given alias map. */

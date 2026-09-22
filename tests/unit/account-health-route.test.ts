@@ -205,7 +205,7 @@ describe("GET /internal/audit/account-health", () => {
             dailyLimit: 50,
             timestampCreated: "2026-08-01T00:00:00.000Z",
             infraProvider: "primeforge",
-            domainFillRank: null,
+            domainAcquiredAt: null,
           },
           {
             email: "head@gandi-dom.com",
@@ -213,7 +213,7 @@ describe("GET /internal/audit/account-health", () => {
             dailyLimit: 50,
             timestampCreated: "2026-04-27T00:00:00.000Z",
             infraProvider: "gandi",
-            domainFillRank: null,
+            domainAcquiredAt: null,
           },
         ],
       });

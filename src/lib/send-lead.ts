@@ -119,7 +119,7 @@ function fitsFootprint(
  */
 export type FillOrderAccount = Account & {
   infraProvider?: string | null;
-  domainFillRank?: number | null;
+  domainAcquiredAt?: Date | string | null;
   /** Send-transport POLICY. `capForAccount` reads it: our volume ramp governs
    *  only the mailboxes we dispatch ourselves. See `rampAppliesToTransport`. */
   sendTransport?: string | null;
@@ -187,18 +187,44 @@ export const PREWARMED_PROVIDER_FILL_RANK = 3;
 export const UNKNOWN_PROVIDER_FILL_RANK = 5;
 
 /**
- * Rank for a domain with no `instantly_domain_fill_order` row. Sorts LAST within
- * its vendor, for the same reason an unattributed vendor does: nobody has stated
- * where this domain belongs, and the tail is the position that risks the least.
- * `Number.POSITIVE_INFINITY` rather than a magic integer, so a real rank can be
- * any number an operator likes without colliding with "unranked".
+ * Key for a domain we cannot date — no `infra_domains` row, or a row with no
+ * `created_at_provider`. Sorts LAST within its vendor, for the same reason an
+ * unattributed vendor does: nobody can honestly place it, and the tail is the
+ * position that risks the least.
  */
-export const UNRANKED_DOMAIN_FILL_RANK = Number.POSITIVE_INFINITY;
+export const UNDATED_DOMAIN_FILL_KEY = Number.POSITIVE_INFINITY;
 
-export function domainFillRankOf(rank?: number | null): number {
-  return typeof rank === "number" && Number.isFinite(rank)
-    ? rank
-    : UNRANKED_DOMAIN_FILL_RANK;
+/**
+ * When we acquired the domain from its vendor, as epoch milliseconds — the
+ * SECOND key of the fill order, after the vendor tier.
+ *
+ * ⚠️ THIS IS DERIVED, NEVER STATED. It replaced `instantly_domain_fill_order`,
+ * a 14-row table of hand-posed integers seeded once from each domain's queued
+ * step count and never refreshed — so within a month the order it encoded was
+ * the opposite of the one its own seed note described, and `maildistribute.com`
+ * (meant to drain first and be cancelled first) had become the busiest domain
+ * of its tier while sitting at the tail. A rank nobody recomputes is a rank
+ * nobody can trust. Do NOT reintroduce an operator-stated column here.
+ *
+ * Why the ACQUISITION DATE and not the cost: within a vendor tier every domain
+ * costs the same per mailbox ($4.50/month on Primeforge, $14/year of domain),
+ * and `infra_domains.price_cents` is NULL for Primeforge and Instantly-DFY
+ * entirely — so a cost ranking ties 14 of 14 domains in the tier that matters
+ * and the real order collapses onto the alphabet. Measured 2026-09-22. The
+ * acquisition date has real spread (three distinct Primeforge batches, hours
+ * apart within each), it never moves, and it carries the right meaning: the
+ * newest batch is the marginal purchase, so it is the one that should go quiet
+ * and be returned.
+ */
+export function domainFillKeyOf(acquiredAt?: Date | string | null): number {
+  if (!acquiredAt) return UNDATED_DOMAIN_FILL_KEY;
+  const t = acquiredAt instanceof Date ? acquiredAt.getTime() : Date.parse(acquiredAt);
+  return Number.isNaN(t) ? UNDATED_DOMAIN_FILL_KEY : t;
+}
+
+/** The domain an account sends from — the grain the fill order groups on. */
+export function fillOrderDomain(email: string): string {
+  return email.split("@")[1]?.toLowerCase() ?? "";
 }
 
 export function providerFillRank(
@@ -215,10 +241,12 @@ export function providerFillRank(
 }
 
 /**
- * The fleet's fixed fill ORDER: vendor first, then the account's DOMAIN rank,
- * then oldest account, then `email` as the final tie-break. Accounts with no
- * `timestamp_created` sort last within their domain; domains with no stated rank
- * sort last within their vendor; accounts with no known vendor sort last overall.
+ * The fleet's fixed fill ORDER: vendor first, then the DOMAIN's acquisition date,
+ * then the domain NAME, then oldest account, then `email` as the final tie-break.
+ * Accounts with no `timestamp_created` sort last within their domain; domains we
+ * cannot date sort last within their vendor; accounts with no known vendor sort
+ * last overall. Every key is DERIVED from an attribute the daily infra sync or
+ * the account snapshot already writes — nothing here is hand-posed.
  *
  * The VENDOR key is the primary sort so the fleet drains one tier at a time, in
  * COST ASCENDING order: gandi → mailforge → primeforge (own domain) →
@@ -229,11 +257,16 @@ export function providerFillRank(
  * The DOMAIN key exists because the vendor key alone cannot make a domain go
  * quiet. A vendor's mailboxes are provisioned in batches that INTERLEAVE domains
  * (Primeforge creates them alphabetically by first name, so five domains alternate
- * through one batch), and a domain can even straddle two batches — so an
- * age-ordered vendor drains every one of its domains at once and not a single one
- * can ever be cancelled. Ranking by domain groups a domain's mailboxes together and
- * puts the whole group where an operator decided, which is a row in
- * `instantly_domain_fill_order`, never a timestamp we happen to have.
+ * through one batch), and a domain can even straddle two batches — so ordering a
+ * vendor by ACCOUNT age drains every one of its domains at once and not a single
+ * one can ever be cancelled. Keying on the DOMAIN's own acquisition date groups a
+ * domain's mailboxes into one contiguous block and puts the newest batch — the
+ * marginal purchase — at the tail. See `domainFillKeyOf` for why it is the
+ * acquisition date and not a cost or a stated rank.
+ *
+ * The domain NAME breaks a tie between two domains bought in the same instant.
+ * Without it the two would interleave by account age and neither would be
+ * contiguous, which is the one property this key exists to provide.
  *
  * Within a domain the order is unchanged and stable by construction — an account
  * created later can never move ahead of an older one, so adding mailboxes
@@ -255,9 +288,12 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
     const px = providerFillRank(x.infraProvider, x.vendorPrewarmedAt);
     const py = providerFillRank(y.infraProvider, y.vendorPrewarmedAt);
     if (px !== py) return px - py;
-    const dx = domainFillRankOf(x.domainFillRank);
-    const dy = domainFillRankOf(y.domainFillRank);
+    const dx = domainFillKeyOf(x.domainAcquiredAt);
+    const dy = domainFillKeyOf(y.domainAcquiredAt);
     if (dx !== dy) return dx - dy;
+    const nx = fillOrderDomain(x.email);
+    const ny = fillOrderDomain(y.email);
+    if (nx !== ny) return nx.localeCompare(ny);
     const ax = age(x);
     const ay = age(y);
     if (ax !== ay) return ax - ay;
