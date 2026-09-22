@@ -8,7 +8,17 @@ vi.mock("../../src/db", () => ({
   db: { execute: (...args: unknown[]) => mockExecute(...args) },
 }));
 
+// The capacity snapshot resolves the alias map so its figures land at real-mailbox
+// grain. Default: nobody shares a login, which is the 1:1 world every pre-existing
+// case in this file assumes — so their expectations are unchanged by construction.
+const mockLoadMailboxLogins = vi.fn(async () => new Map<string, string>());
+vi.mock("../../src/lib/self-send/mailbox-credentials", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  loadMailboxLogins: (...args: unknown[]) => mockLoadMailboxLogins(...args),
+}));
+
 import {
+  aggregateCapacityByMailbox,
   fetchQueueSizeByAccount,
   fetchSentYesterdayByAccount,
   fetchQueueBreakdownByAccount,
@@ -26,6 +36,8 @@ function executedSqlText(callIndex: number): string {
 
 beforeEach(() => {
   mockExecute.mockReset();
+  mockLoadMailboxLogins.mockReset();
+  mockLoadMailboxLogins.mockResolvedValue(new Map<string, string>());
   // The capacity snapshot now makes THREE reads (sentToday, the queued-sequence
   // loader, and the ramp's volume query). A default keeps the tests that only
   // care about the first two from having to queue a third value.
@@ -253,6 +265,151 @@ describe("fetchAccountCapacity — the volume the ramp reads", () => {
     expect(cap.get("busy@x.com")?.recentSustainedDaily).toBe(31);
     // Addresses are normalised, so a mixed-case row still matches its account.
     expect(cap.get("quiet@x.com")?.recentSustainedDaily).toBe(2);
+  });
+});
+
+describe("aggregateCapacityByMailbox — the quota belongs to the LOGIN, not the address", () => {
+  const vol = (rows: [string, string, number][]) => {
+    const v = new Map<string, Map<string, number>>();
+    for (const [email, day, n] of rows) {
+      const days = v.get(email) ?? new Map<string, number>();
+      days.set(day, n);
+      v.set(email, days);
+    }
+    return v;
+  };
+
+  // `eric@salesmolt.com` is a REAL prod mailbox: one Gandi login, five aliases,
+  // two of them `in_production` at 50/day. Read per address the fleet offered it
+  // 100/day against ~50, and `accountFillOrder` sorts a domain's aliases
+  // adjacent, so the waterfall walked from one straight onto the other.
+  const ALIAS_A = "kevinl@salesmolt.com";
+  const ALIAS_B = "klourd@salesmolt.com";
+  const LOGIN = "eric@salesmolt.com";
+  const aliasMap = new Map([
+    [ALIAS_A, LOGIN],
+    [ALIAS_B, LOGIN],
+  ]);
+
+  it("hands both aliases their MAILBOX's sentToday, not their own", () => {
+    const out = aggregateCapacityByMailbox(
+      [ALIAS_A, ALIAS_B],
+      new Map([
+        [ALIAS_A, 30],
+        [ALIAS_B, 12],
+      ]),
+      new Map(),
+      vol([]),
+      aliasMap,
+    );
+    // 42 came out of ONE relay quota, so that is what each alias has spent.
+    expect(out.get(ALIAS_A)?.sentToday).toBe(42);
+    expect(out.get(ALIAS_B)?.sentToday).toBe(42);
+  });
+
+  it("merges the booked-work map across aliases, per day", () => {
+    const out = aggregateCapacityByMailbox(
+      [ALIAS_A, ALIAS_B],
+      new Map(),
+      new Map([
+        [ALIAS_A, { byDay: { "2026-09-22": 8, "2026-09-25": 3 } }],
+        [ALIAS_B, { byDay: { "2026-09-22": 5 } }],
+      ]),
+      vol([]),
+      aliasMap,
+    );
+    expect(out.get(ALIAS_A)?.byDay).toEqual({ "2026-09-22": 13, "2026-09-25": 3 });
+    expect(out.get(ALIAS_B)?.byDay).toEqual({ "2026-09-22": 13, "2026-09-25": 3 });
+  });
+
+  it("ramps on the mailbox's DAILY TOTALS, never on the sum of per-alias figures", () => {
+    // Each alias alone sustains 4 (its second-highest day). Summing those would
+    // read 8; the mailbox actually sustained 12 and 9, so the honest figure is 9.
+    // Per-day-first is the direction that cannot OVER-state a relay quota.
+    const out = aggregateCapacityByMailbox(
+      [ALIAS_A, ALIAS_B],
+      new Map(),
+      new Map(),
+      vol([
+        [ALIAS_A, "2026-09-18", 8],
+        [ALIAS_A, "2026-09-19", 4],
+        [ALIAS_B, "2026-09-18", 4],
+        [ALIAS_B, "2026-09-19", 5],
+      ]),
+      aliasMap,
+    );
+    expect(out.get(ALIAS_A)?.recentSustainedDaily).toBe(9);
+    expect(out.get(ALIAS_B)?.recentSustainedDaily).toBe(9);
+  });
+
+  it("treats an address the login map does not know as its OWN mailbox", () => {
+    // Primeforge / Instantly-DFY: the address IS the login, so the grouping is a
+    // no-op and these accounts select byte-identically to before this change.
+    const out = aggregateCapacityByMailbox(
+      ["solo@primeforge.com", "other@primeforge.com"],
+      new Map([
+        ["solo@primeforge.com", 30],
+        ["other@primeforge.com", 12],
+      ]),
+      new Map([["solo@primeforge.com", { byDay: { "2026-09-22": 4 } }]]),
+      vol([
+        ["solo@primeforge.com", "2026-09-18", 40],
+        ["solo@primeforge.com", "2026-09-19", 20],
+      ]),
+      new Map(),
+    );
+    expect(out.get("solo@primeforge.com")).toEqual({
+      sentToday: 30,
+      recentSustainedDaily: 20,
+      byDay: { "2026-09-22": 4 },
+    });
+    expect(out.get("other@primeforge.com")).toEqual({
+      sentToday: 12,
+      recentSustainedDaily: 0,
+      byDay: {},
+    });
+  });
+
+  it("matches the login map on the normalised address", () => {
+    const out = aggregateCapacityByMailbox(
+      ["KevinL@Salesmolt.com", ALIAS_B],
+      new Map([["KevinL@Salesmolt.com", 30]]),
+      new Map(),
+      vol([]),
+      aliasMap,
+    );
+    expect(out.get(ALIAS_B)?.sentToday).toBe(30);
+  });
+});
+
+describe("fetchAccountCapacity — folds the snapshot to mailbox grain", () => {
+  it("reads the alias map and applies it to the three fleet reads", async () => {
+    mockLoadMailboxLogins.mockResolvedValue(
+      new Map([
+        ["a@salesmolt.com", "eric@salesmolt.com"],
+        ["b@salesmolt.com", "eric@salesmolt.com"],
+      ]),
+    );
+    mockExecute
+      .mockResolvedValueOnce([
+        { account_email: "a@salesmolt.com", count: 30 },
+        { account_email: "b@salesmolt.com", count: 12 },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ rows: [] });
+
+    const cap = await fetchAccountCapacity(new Date("2026-09-22T14:00:00.000Z"));
+    expect(cap.get("a@salesmolt.com")?.sentToday).toBe(42);
+    expect(cap.get("b@salesmolt.com")?.sentToday).toBe(42);
+  });
+
+  it("fails loud when the alias map cannot be read", async () => {
+    // A snapshot we cannot build must not degrade into one that claims every
+    // mailbox is its own — that is the over-booking this change removes.
+    mockLoadMailboxLogins.mockRejectedValue(new Error("key-service unavailable"));
+    await expect(
+      fetchAccountCapacity(new Date("2026-09-22T14:00:00.000Z")),
+    ).rejects.toThrow("key-service unavailable");
   });
 });
 

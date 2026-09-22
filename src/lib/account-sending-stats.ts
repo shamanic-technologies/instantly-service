@@ -14,7 +14,12 @@
  * IO glue only — the pure mapping (buildAccountHealth) lives in account-health.ts.
  */
 
-import { fetchRecentDailyVolume, sustainedFor } from "./recent-send-volume";
+import {
+  fetchRecentDailyVolume,
+  sustainedForMailbox,
+  type DailyVolume,
+} from "./recent-send-volume";
+import { loadMailboxLogins } from "./self-send/mailbox-credentials";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { getOrSetCachedStats } from "./stats-cache";
@@ -273,45 +278,116 @@ const ACCOUNT_CAPACITY_CACHE_KEY = "account-capacity|send-selection";
  * (`sentToday`) with the per-day booked-work map (`byDay`), keyed by sending
  * account. Absent from every source ⇒ all zeros
  * (never sent, nothing queued) ⇒ the account counts as having full room today.
+ *
+ * ⚠️ EVERY FIGURE HERE IS AT REAL-MAILBOX GRAIN, AND THE MAP IS STILL KEYED BY
+ * ADDRESS — each of a mailbox's aliases carries the SAME totals. A Gandi domain
+ * is ONE relay login behind several aliases (measured 2026-09-22: 171 Instantly
+ * accounts on 48 mailboxes), and the quota belongs to the login, so a per-address
+ * reading offers one mailbox its cap once per alias. Prod carried exactly that:
+ * `kevinl@salesmolt.com` and `klourd@salesmolt.com` are both `in_production` at
+ * 50/day on the single login `eric@salesmolt.com`, i.e. 100 offered against ~50
+ * real — and `accountFillOrder` sorts a domain's aliases ADJACENT, so the
+ * waterfall saturated one and walked straight onto its sibling.
+ *
+ * Nothing over-sent: the self-send dispatcher re-clips at mailbox grain
+ * (`dispatch-worker.ts`), so the surplus became BACKLOG on the head of the fill
+ * order — which is precisely the silent over-booking `fitsFootprint` exists to
+ * prevent. Aggregating here rather than in the selector mirrors what the
+ * dispatcher already does with its own capacity rows: the alias carries the
+ * mailbox's figure, so `pickSequentialFillAccount` never has to combine them.
  */
 export interface AccountCapacity extends QueueCapacity {
-  /** Real (non-inferred) email_sent events observed today (UTC). */
+  /**
+   * Real (non-inferred) email_sent events observed today (UTC), SUMMED across
+   * every alias of this address's mailbox — each of them spent the same quota.
+   */
   sentToday: number;
   /**
-   * The highest single-day volume this address reached over the ramp window
+   * The highest single-day volume this MAILBOX reached over the ramp window
    * (outreach + warmup + seed) — the input the daily cap ramps on, replacing the
    * age-based ramp a weekly lifecycle flip used to rewind. See
-   * `fetchRecentDailyVolume`.
+   * `fetchRecentDailyVolume` and `sustainedForMailbox`.
    */
   recentSustainedDaily: number;
 }
 
+/** Address form used to key the credential map and the volume map. */
+function normalizeAddress(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 /**
- * Build the per-account capacity map from the two fleet-wide reads (email_sent-
- * today scan + the queued-sequence loader). Pure aggregation (aggregateQueue
- * Capacity) does the projection; this only reads + merges sentToday. `asOf`
- * drives the today/tomorrow projection (defaults to now).
+ * Fold the three per-ADDRESS reads into one per-MAILBOX figure, then hand every
+ * alias of a mailbox the same row.
+ *
+ * ⚠️ An address the login map does not know IS ITS OWN MAILBOX, never dropped.
+ * That is the Primeforge / Instantly-DFY reading — there the address IS the login,
+ * so the grouping is a no-op and those accounts select byte-identically to before.
+ * It is also the safe reading for an address we simply hold no credential for:
+ * silently folding it onto somebody else's quota, or omitting it from the
+ * snapshot, would both be worse than treating it as the standalone mailbox it
+ * almost certainly is.
+ *
+ * Summing cannot double-count: a queued sequence and an `email_sent` event are
+ * each attributed to exactly ONE sending address.
+ */
+export function aggregateCapacityByMailbox(
+  emails: Iterable<string>,
+  sentToday: ReadonlyMap<string, number>,
+  caps: ReadonlyMap<string, QueueCapacity>,
+  volume: DailyVolume,
+  mailboxOf: ReadonlyMap<string, string>,
+): Map<string, AccountCapacity> {
+  const addressesByMailbox = new Map<string, string[]>();
+  for (const email of emails) {
+    const mailbox = mailboxOf.get(normalizeAddress(email)) ?? normalizeAddress(email);
+    const group = addressesByMailbox.get(mailbox) ?? [];
+    group.push(email);
+    addressesByMailbox.set(mailbox, group);
+  }
+
+  const out = new Map<string, AccountCapacity>();
+  for (const addresses of addressesByMailbox.values()) {
+    let sent = 0;
+    const byDay: Record<string, number> = {};
+    for (const address of addresses) {
+      sent += sentToday.get(address) ?? 0;
+      for (const [day, n] of Object.entries(caps.get(address)?.byDay ?? {})) {
+        byDay[day] = (byDay[day] ?? 0) + n;
+      }
+    }
+    const recentSustainedDaily = sustainedForMailbox(volume, addresses);
+    for (const address of addresses) {
+      out.set(address, { sentToday: sent, recentSustainedDaily, byDay });
+    }
+  }
+  return out;
+}
+
+/**
+ * Build the per-account capacity map from the fleet-wide reads (email_sent-today
+ * scan + the queued-sequence loader + the ramp volume), folded to mailbox grain
+ * by the credential map. Pure aggregation does the projection and the folding;
+ * this only reads. `asOf` drives the today/tomorrow projection (defaults to now).
+ *
+ * The credential read adds no NEW dependency to the send path —
+ * `resolveTransportForNewSequence` already calls key-service on every send, and
+ * this whole snapshot sits behind the same 60s cache. Fail-loud is deliberate
+ * and unchanged: a snapshot we cannot build must not degrade into one that
+ * claims every mailbox is its own.
  */
 export async function fetchAccountCapacity(
   asOf: Date = new Date(),
 ): Promise<Map<string, AccountCapacity>> {
-  const [sent, rows, volume] = await Promise.all([
+  const [sent, rows, volume, mailboxOf] = await Promise.all([
     fetchSentTodayByAccount(),
     fetchQueuedSequenceInputs(),
     fetchRecentDailyVolume(),
+    loadMailboxLogins({ method: "POST", path: "/orgs/send" }),
   ]);
   const caps = aggregateQueueCapacity(rows, asOf);
-  const out = new Map<string, AccountCapacity>();
   const emails = new Set<string>([...sent.keys(), ...caps.keys(), ...volume.keys()]);
-  for (const email of emails) {
-    const c = caps.get(email);
-    out.set(email, {
-      sentToday: sent.get(email) ?? 0,
-      recentSustainedDaily: sustainedFor(volume, email),
-      byDay: c?.byDay ?? {},
-    });
-  }
-  return out;
+  return aggregateCapacityByMailbox(emails, sent, caps, volume, mailboxOf);
 }
 
 /**
