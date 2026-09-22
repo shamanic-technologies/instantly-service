@@ -1398,6 +1398,12 @@ export const scheduledReplies = pgTable(
     // Unsigned. The signature is appended at dispatch by the existing body
     // pipeline, from the persona of the mailbox that answers.
     bodyHtml: text("body_html").notNull(),
+    // Who asked for this answer: 'human' | 'automation'. Replayed by the drain,
+    // which sends the row through the same path an immediate reply takes — so
+    // without it a human reply deferred to the prospect's morning would come
+    // back as an automated one and be refused by the takeover gate. Null on a
+    // row enqueued before the column existed; those resolve to the default.
+    sentBy: text("sent_by"),
     // The prospect's IANA timezone as the campaign row carried it at enqueue.
     timezone: text("timezone"),
     // The first instant their window opens — a LOWER BOUND, like every other

@@ -78,6 +78,11 @@ import {
   resolveLeadTimezone,
 } from "./sending-window";
 import { enqueueScheduledReply } from "./scheduled-replies";
+import { MANUAL_REPLY_STEP } from "./manual-reply-step";
+import {
+  findHumanTakeover,
+  type ReplySender,
+} from "./human-takeover";
 
 const CALLER: CallerInfo = { method: "POST", path: "/orgs/replies" };
 
@@ -109,17 +114,11 @@ export function replyCcList(agency: string, salesRepCopy: string[]): string {
 }
 
 /**
- * The `step` a manual reply is recorded under in `smtp_dispatch_raw`.
- *
- * Sequence steps are 1-based everywhere in this repo (`sequence_costs.step`,
- * `sequence_steps.step`), so 0 is unambiguously "not a step of the sequence".
- * The row still has to exist: it is what lets the IMAP poller correlate the
- * prospect's answer to OUR answer back to this lead, and what keeps the
- * forwarded thread complete. It is deliberately NOT a `sequence_steps` row and
- * carries no hold — a reply is not a scheduled step and must never enter the
- * dispatch queue.
+ * The `step` a manual reply is recorded under — defined in its own module so the
+ * human-takeover gate can read it without importing this one. Re-exported here
+ * because every existing importer takes it from this module.
  */
-export const MANUAL_REPLY_STEP = 0;
+export { MANUAL_REPLY_STEP };
 
 /** A refusal a caller can act on, rather than a bare 500. */
 export class ReplyToLeadError extends Error {
@@ -129,6 +128,7 @@ export class ReplyToLeadError extends Error {
       | "no_reply_to_thread"
       | "sending_account_unresolved"
       | "mailbox_credential_unavailable"
+      | "human_took_over"
       | "reply_dispatch_failed",
     public readonly status: number,
     message: string,
@@ -146,6 +146,16 @@ export interface ReplyToLeadInput {
   leadEmail: string;
   /** The answer itself, HTML. Signed here; never signed by the caller. */
   bodyHtml: string;
+  /**
+   * Who asked for this to be sent — a person, or the automated responder.
+   *
+   * It decides ONE thing: whether the human-takeover gate applies. An
+   * `automation` reply is refused once a person has answered the thread; a
+   * `human` one never is. Frozen onto the bronze row so a later gate can read
+   * who wrote what. Absent on the wire resolves to `automation`, see
+   * `DEFAULT_REPLY_SENDER`.
+   */
+  sentBy: ReplySender;
 }
 
 export interface ReplyToLeadResult {
@@ -177,6 +187,7 @@ export interface ReplyToLeadResult {
  */
 interface PreparedInstantlyReply {
   transport: "instantly";
+  sentBy: ReplySender;
   key: string;
   target: { emailId: string; subject: string; eaccount: string | null };
   accountEmail: string;
@@ -188,6 +199,7 @@ interface PreparedInstantlyReply {
 
 interface PreparedSmtpReply {
   transport: typeof SEND_TRANSPORT_SMTP;
+  sentBy: ReplySender;
   anchor: SelfSendThreadAnchor;
   accountEmail: string;
   credential: MailboxCredential;
@@ -485,6 +497,7 @@ async function loadSelfSendAnchor(
  */
 async function recordInstantlyReply(input: {
   campaign: CampaignRow;
+  sentBy: ReplySender;
   accountEmail: string;
   subject: string;
   bodyHtml: string;
@@ -506,6 +519,7 @@ async function recordInstantlyReply(input: {
     response: (input.error as { response?: string } | null)?.response ?? null,
     payload: {
       kind: "manual_reply",
+      sentBy: input.sentBy,
       transport: "instantly",
       subject: input.subject,
       cc: input.cc,
@@ -574,6 +588,7 @@ async function prepareInstantlyReply(
 
   return {
     transport: "instantly",
+    sentBy: input.sentBy,
     key,
     target,
     accountEmail,
@@ -589,7 +604,8 @@ async function deliverInstantlyReply(
   campaign: CampaignRow,
   prepared: PreparedInstantlyReply,
 ): Promise<ReplyToLeadResult> {
-  const { key, target, accountEmail, account, subject, bodyHtml, cc } = prepared;
+  const { sentBy, key, target, accountEmail, account, subject, bodyHtml, cc } =
+    prepared;
 
   let sent: EmailRecord;
   try {
@@ -607,6 +623,7 @@ async function deliverInstantlyReply(
     // branch leaves, so a refused reply is not invisible on either transport.
     await recordInstantlyReply({
       campaign,
+      sentBy,
       accountEmail,
       subject,
       bodyHtml,
@@ -633,6 +650,7 @@ async function deliverInstantlyReply(
   // them rather than whenever a backfill next runs.
   await recordInstantlyReply({
     campaign,
+    sentBy,
     accountEmail,
     subject,
     bodyHtml,
@@ -702,6 +720,7 @@ async function prepareSmtpReply(
 
   return {
     transport: SEND_TRANSPORT_SMTP,
+    sentBy: input.sentBy,
     anchor,
     accountEmail,
     credential,
@@ -718,7 +737,8 @@ async function deliverSmtpReply(
   campaign: CampaignRow,
   prepared: PreparedSmtpReply,
 ): Promise<ReplyToLeadResult> {
-  const { anchor, accountEmail, credential, subject, bodyHtml, from, cc } = prepared;
+  const { sentBy, anchor, accountEmail, credential, subject, bodyHtml, from, cc } =
+    prepared;
 
   const message = {
     from,
@@ -750,6 +770,7 @@ async function deliverSmtpReply(
       response: sent.response,
       payload: {
         kind: "manual_reply",
+        sentBy,
         subject,
         cc,
         bodyHtml,
@@ -787,6 +808,7 @@ async function deliverSmtpReply(
         response: (error as { response?: string } | null)?.response ?? null,
         payload: {
           kind: "manual_reply",
+          sentBy,
           subject,
           cc,
           inReplyTo: anchor.inReplyTo,
@@ -868,6 +890,26 @@ export async function replyToLead(
     );
   }
 
+  // ⚠️ THE TAKEOVER GATE RUNS BEFORE ANYTHING IS PREPARED. A refused reply
+  // resolves no credential, makes no Instantly read and writes no bronze row —
+  // the same placement, for the same reason, as the opt-out and re-contact
+  // gates on `POST /orgs/send`.
+  //
+  // Only an `automation` reply is gated. A person answering their own thread is
+  // never refused, whatever else is on it: the whole point of the gate is to
+  // stop the machine writing over them, and refusing them instead would be the
+  // one way to be wrong that nobody could work around.
+  if (input.sentBy === "automation") {
+    const takeover = await findHumanTakeover(campaign.instantlyCampaignId);
+    if (takeover) {
+      throw new ReplyToLeadError(
+        "human_took_over",
+        409,
+        `A person answered ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} at ${takeover.at} (${takeover.source}), after their last message — the automated responder does not write over a human conversation`,
+      );
+    }
+  }
+
   const prepared =
     campaign.sendTransport === SEND_TRANSPORT_SMTP
       ? await prepareSmtpReply(campaign, input)
@@ -887,6 +929,11 @@ export async function replyToLead(
       instantlyCampaignId: campaign.instantlyCampaignId,
       leadEmail: campaign.leadEmail,
       bodyHtml: input.bodyHtml,
+      // ⚠️ LOAD-BEARING. The drain replays this row through `replyToLead`, so a
+      // human reply deferred to the prospect's morning would come back as an
+      // `automation` one under the default and be refused by a gate that does
+      // not apply to it.
+      sentBy: input.sentBy,
       timezone: campaign.timezone,
       scheduledFor,
     });

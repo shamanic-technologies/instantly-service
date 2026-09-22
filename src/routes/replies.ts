@@ -12,7 +12,9 @@
  */
 import { Router, Request, Response } from "express";
 
-import { ReplyToLeadBodySchema } from "../schemas";
+import { EscalateReplyBodySchema, ReplyToLeadBodySchema } from "../schemas";
+import { escalateReply, EscalateReplyError } from "../lib/escalate-reply";
+import { resolveReplySender } from "../lib/human-takeover";
 import { replyToLead, ReplyToLeadError } from "../lib/reply-to-lead";
 
 const router = Router();
@@ -28,7 +30,7 @@ router.post("/", async (req: Request, res: Response) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.message });
   }
-  const { campaign_id, email, body_html } = parsed.data;
+  const { campaign_id, email, body_html, sent_by } = parsed.data;
 
   try {
     const outcome = await replyToLead({
@@ -37,6 +39,10 @@ router.post("/", async (req: Request, res: Response) => {
       campaignId: campaign_id,
       leadEmail: email,
       bodyHtml: body_html,
+      // Absent on the wire means the automated responder: it is the only caller
+      // today, so the takeover gate is live without waiting on anyone to
+      // declare. See `DEFAULT_REPLY_SENDER`.
+      sentBy: resolveReplySender(sent_by),
     });
 
     // Two successes, told apart by `status`. A reply produced outside the
@@ -67,6 +73,52 @@ router.post("/", async (req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(
       `[instantly-service] reply-to-lead: failed for campaign=${campaign_id} lead=${email}: ${message}`,
+    );
+    return res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * `POST /orgs/replies/escalate` — the responder gives this one to a human.
+ *
+ * Mounted on the same router as the reply itself, deliberately: they are the two
+ * things a drafting worker can do with a thread, and a caller that holds the
+ * campaign and the address for one holds them for the other.
+ */
+router.post("/escalate", async (req: Request, res: Response) => {
+  const orgId = res.locals.orgId as string;
+  const userId = res.locals.userId as string | undefined;
+  if (!userId) {
+    return res.status(400).json({ error: "x-user-id header is required" });
+  }
+
+  const parsed = EscalateReplyBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.message });
+  }
+  const { campaign_id, email, question } = parsed.data;
+
+  try {
+    const escalation = await escalateReply({
+      orgId,
+      userId,
+      campaignId: campaign_id,
+      leadEmail: email,
+      question,
+    });
+    return res.status(200).json({ success: true, escalation });
+  } catch (error: unknown) {
+    if (error instanceof EscalateReplyError) {
+      return res
+        .status(error.status)
+        .json({ error: error.message, code: error.code });
+    }
+    // Fail loud, and deliberately NOT partially: an escalation that could not
+    // reach a human must not report success, because the ladder it would have
+    // stopped is the only thing still talking to the prospect.
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[instantly-service] reply-escalation: failed for campaign=${campaign_id} lead=${email}: ${message}`,
     );
     return res.status(500).json({ error: message });
   }

@@ -68,6 +68,7 @@ export async function dispatchScheduledReplies(
           campaignId: reply.campaignId,
           leadEmail: reply.leadEmail,
           bodyHtml: reply.bodyHtml,
+          sentBy: reply.sentBy,
         },
         { asOf, deferOutsideWindow: false },
       );
