@@ -28,7 +28,10 @@ vi.mock("../../src/db", () => ({
 }));
 
 vi.mock("../../src/lib/brand-client", () => ({
-  getSalesRepPhone: (...a: unknown[]) => mockGetSalesRepPhone(...a),
+  getSalesRep: async (...a: unknown[]) => ({
+    email: null,
+    phone: await mockGetSalesRepPhone(...a),
+  }),
 }));
 
 vi.mock("../../src/lib/lead-client", async (importOriginal) => ({

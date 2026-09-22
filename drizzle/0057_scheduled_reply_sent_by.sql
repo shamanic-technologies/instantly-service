@@ -1,0 +1,11 @@
+-- Who asked for a waiting answer to be sent.
+--
+-- The drain replays a scheduled reply through the same `replyToLead` path an
+-- immediate one takes, so without this column a HUMAN reply deferred to the
+-- prospect's morning comes back carrying the `automation` default and is
+-- refused by the human-takeover gate, which does not apply to it.
+--
+-- Nullable on purpose and NOT backfilled: a row enqueued before this existed
+-- was necessarily the automated responder's (it was the only caller of
+-- `POST /orgs/replies` in the fleet), which is exactly what a null resolves to.
+ALTER TABLE "scheduled_replies" ADD COLUMN IF NOT EXISTS "sent_by" text;

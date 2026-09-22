@@ -26,6 +26,19 @@ interface SendEmailParams {
   appId: string;
   eventType: string;
   recipientEmail: string;
+  /**
+   * VISIBLE-copy recipients, delivered as provider-level Cc.
+   *
+   * Blind copy is the wrong instrument for a person outside the agency: they
+   * would receive a message addressed to somebody else, which reads as
+   * mis-sent, and their reply-all would reach nobody on our side, so the thread
+   * would go silently private the moment they answered.
+   *
+   * transactional-email-service adds nothing to this list. Omit it and the
+   * outbound provider payload carries no `cc` key at all — byte for byte the
+   * request this service made before the field existed.
+   */
+  ccEmails?: string[];
   metadata?: Record<string, string>;
 }
 

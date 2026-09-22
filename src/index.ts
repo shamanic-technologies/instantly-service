@@ -129,6 +129,23 @@ async function deployEmailTemplates(): Promise<void> {
             htmlBody:
               '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{thread}}</pre>',
           },
+          {
+            // Reply escalation: the automated responder hit a question it
+            // cannot answer, so it sent the prospect nothing and handed the
+            // thread over. The question leads, because that is the thing a
+            // human has to act on; the conversation follows it verbatim, in the
+            // same <pre> the positive-reply forward uses, so the whole mail
+            // stays forwardable to the client as-is.
+            name: "reply-escalation",
+            subject: "Needs you: {{leadEmail}} asked something we cannot answer",
+            htmlBody: [
+              "<p>The automated responder stopped on this thread and sent nothing.</p>",
+              "<p><strong>What they asked:</strong></p>",
+              '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{question}}</pre>',
+              "<p>&nbsp;</p>",
+              '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{thread}}</pre>',
+            ].join("\n"),
+          },
         ],
       },
       { orgId: "system", userId: "system", runId: "system" },

@@ -219,3 +219,55 @@ export async function findLeadOnCampaignByEmail(params: {
     country: lead?.country?.trim() || null,
   };
 }
+
+/**
+ * Empty a person's follow-up schedule, with a reason.
+ *
+ * ⚠️ NOBODY IN THE FLEET HAD EVER CALLED THIS. lead-service's queue documents
+ * three stops — opted out, meeting booked, and "they answered again, the
+ * observer of that reply says so" — and only the first two were ever posted by
+ * anything. So the third was a documented behaviour that did not exist, and a
+ * thread a human took over stayed claimable forever.
+ *
+ * ⚠️ A STOP IS NOT A TOMBSTONE, by lead-service's own model: a later `scheduled`
+ * re-enters the person. That is exactly right here — if the prospect writes
+ * again, the reply side effects re-enqueue them and qualification re-decides. Do
+ * NOT reach for something more permanent.
+ *
+ * `reason` is REQUIRED by the producer and must be non-empty (it 400s
+ * `reason_required` otherwise) — a schedule emptied for a reason nobody recorded
+ * is not auditable later.
+ *
+ * FAILS LOUD, same as its sibling above. The caller decides whether a failure to
+ * stop the ladder should fail the whole escalation.
+ */
+export async function stopFollowups(params: {
+  orgId: string;
+  /** lead-service's `leads_campaigns` row id — from `findLeadOnCampaignByEmail`. */
+  leadRowId: string;
+  reason: string;
+}): Promise<void> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+
+  const response = await fetch(
+    `${LEAD_SERVICE_URL}/orgs/leads/${encodeURIComponent(params.leadRowId)}/followups`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": LEAD_SERVICE_API_KEY,
+        "x-org-id": params.orgId,
+      },
+      body: JSON.stringify({ kind: "stopped", reason: params.reason }),
+    },
+  );
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(
+      `lead-service POST /orgs/leads/{id}/followups failed: ${response.status} - ${detail.slice(0, 200)}`,
+    );
+  }
+}
