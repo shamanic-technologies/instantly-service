@@ -47,6 +47,34 @@ import { QUALIFICATION_EVENT_TYPES, qualifyReply } from "./self-send/qualify-rep
  */
 export const QUALIFICATION_GRACE_MS = 15 * 60 * 1000;
 
+/**
+ * How far back a sweep will reach, and therefore how old a reply can be when
+ * its kind first fires the side effects.
+ *
+ * ⚠️ THE FLOOR IS AS LOAD-BEARING AS THE GRACE PERIOD ABOVE, and it protects a
+ * different thing: the grace period stops us speaking too early, this stops us
+ * speaking too late. Promoting the kind rings the brand's rep, asks
+ * campaign-service to run the funded leg, and enters the person into the
+ * follow-up queue — all of which say "this buyer is waiting right now". Fired on
+ * a two-month-old conversation, every one of those is false.
+ *
+ * It is not hypothetical. The first sweep to run in production, 2026-09-21
+ * 15:21 UTC, drained a backlog oldest-first: a `lead_info_requested` on a reply
+ * from **2026-07-08** whose campaign had been `completed` for weeks. That is a
+ * POSITIVE kind, so the rep's phone was asked to ring about a July conversation;
+ * it only stayed silent because that particular brand had no rep number
+ * configured. The next one will not be so lucky.
+ *
+ * The floor also bounds an otherwise unbounded retry. A candidate we can never
+ * read — no body in the mirror, and none recoverable — is not removed from the
+ * set by anything, so it is re-mirrored (one Instantly `/emails` call) and
+ * re-selected on EVERY tick, forever. Ageing out is what ends that.
+ *
+ * Seven days: comfortably longer than any observed Instantly delay (the worst
+ * measured was hours), and short enough that nothing we act on is stale.
+ */
+export const QUALIFICATION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** How many replies one sweep classifies. Bounds the model spend per tick. */
 export const QUALIFICATION_FALLBACK_BATCH = 20;
 
@@ -88,6 +116,7 @@ export async function selectUnqualifiedReplies(
   asOf: Date = new Date(),
 ): Promise<UnqualifiedReply[]> {
   const cutoff = new Date(asOf.getTime() - QUALIFICATION_GRACE_MS).toISOString();
+  const floor = new Date(asOf.getTime() - QUALIFICATION_MAX_AGE_MS).toISOString();
   const kinds = sql.join(
     QUALIFICATION_EVENT_TYPES.map((k) => sql`${k}`),
     sql`, `,
@@ -111,11 +140,14 @@ export async function selectUnqualifiedReplies(
     WHERE c.instantly_campaign_id NOT LIKE 'self:%'
       AND c.instantly_campaign_id NOT LIKE 'reserving:%'
       AND r.replied_at < ${cutoff}
+      AND r.replied_at >= ${floor}
       AND NOT EXISTS (
         SELECT 1 FROM instantly_events q
         WHERE q.campaign_id = c.instantly_campaign_id
           AND q.event_type IN (${kinds})
       )
+    -- Oldest first WITHIN the window: the longest-waiting buyer is answered
+    -- first, and the floor above is what keeps "oldest" from meaning "stale".
     ORDER BY r.replied_at ASC
     LIMIT ${limit}
   `);
