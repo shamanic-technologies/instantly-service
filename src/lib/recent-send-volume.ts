@@ -183,6 +183,38 @@ export function sustainedForMailbox(
 }
 
 /**
+ * Each address's MAILBOX figure, keyed by address — the shape a caller wants when
+ * it holds a list of sending addresses and must hand each one the quota reading
+ * the relay login actually enforces.
+ *
+ * ⚠️ An address the login map does not know IS ITS OWN MAILBOX. That is the
+ * Primeforge / Instantly-DFY case (the address IS the login, so the grouping is a
+ * no-op), and it is the safe reading for an address we hold no credential for:
+ * folding it onto somebody else's quota would be a guess, and dropping it would
+ * silently remove it from whatever the caller is about to compute.
+ */
+export function sustainedByMailboxForAccounts(
+  addresses: Iterable<string>,
+  volume: DailyVolume,
+  mailboxOf: ReadonlyMap<string, string>,
+): Map<string, number> {
+  const byMailbox = new Map<string, string[]>();
+  for (const address of addresses) {
+    const key = address.trim().toLowerCase();
+    const mailbox = mailboxOf.get(key) ?? key;
+    const group = byMailbox.get(mailbox) ?? [];
+    group.push(address);
+    byMailbox.set(mailbox, group);
+  }
+  const out = new Map<string, number>();
+  for (const group of byMailbox.values()) {
+    const sustained = sustainedForMailbox(volume, group);
+    for (const address of group) out.set(address, sustained);
+  }
+  return out;
+}
+
+/**
  * The volume a set of daily totals sustained over the {@link RAMP_VOLUME_WINDOW_DAYS}
  * days ENDING on `endDay` (inclusive) — the same statistic {@link sustainedFor}
  * applies to today, evaluated at an arbitrary past day.

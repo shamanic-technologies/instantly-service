@@ -23,7 +23,12 @@ import {
   fetchQueueBreakdownByAccount,
 } from "../account-sending-stats";
 import { fetchLatestPlacementByAccount } from "../placement-sync";
-import { fetchRecentDailyVolume, sustainedFor, type DailyVolume } from "../recent-send-volume";
+import {
+  fetchRecentDailyVolume,
+  sustainedByMailboxForAccounts,
+  type DailyVolume,
+} from "../recent-send-volume";
+import { loadMailboxLogins } from "../self-send/mailbox-credentials";
 
 export interface AccountHealthRead {
   asOf: Date;
@@ -53,6 +58,7 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
     lifecycleByEmail,
     pool,
     recentVolume,
+    mailboxOf,
   ] = await Promise.all([
     listAccounts(apiKey),
     fetchLatestPlacementByAccount(),
@@ -69,6 +75,12 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
     // The SAME volume map the selector caps against, so the table cannot
     // report a cap the selector disagrees with for the same mailbox.
     fetchRecentDailyVolume(),
+    // … and the SAME alias map, for the same reason. The selector reads volume
+    // at real-MAILBOX grain (see `aggregateCapacityByMailbox`), so reading it
+    // per ADDRESS here would render 50 for a mailbox the selector is holding
+    // lower — the ops view contradicting the selector about the same account,
+    // which is the exact failure the `vendorPrewarmedAt` note below records.
+    loadMailboxLogins({ method: "GET", path: "/internal/audit/account-health" }),
   ]);
 
   // Position in the fill order, 1-based. `accountFillOrder` is the selector's
@@ -89,8 +101,10 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
     queueBreakdownByEmail,
     {
       fillRankByEmail,
-      recentSustainedByEmail: new Map(
-        accounts.filter((a) => a.email).map((a) => [a.email, sustainedFor(recentVolume, a.email)]),
+      recentSustainedByEmail: sustainedByMailboxForAccounts(
+        accounts.filter((a) => a.email).map((a) => a.email),
+        recentVolume,
+        mailboxOf,
       ),
       asOf,
     },

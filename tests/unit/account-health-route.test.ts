@@ -19,6 +19,15 @@ vi.mock("../../src/lib/recent-send-volume", async (importOriginal) => ({
   fetchRecentDailyVolume: () => mockRecentPeaks(),
 }));
 
+// The alias map. The cap the table renders is read at real-MAILBOX grain, the same
+// grain the selector caps against, so a Gandi login's aliases cannot be shown a
+// cap each. Default: nobody shares a login (the 1:1 world these cases assume).
+const mockLoadMailboxLogins = vi.fn(async () => new Map<string, string>());
+vi.mock("../../src/lib/self-send/mailbox-credentials", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  loadMailboxLogins: (...args: unknown[]) => mockLoadMailboxLogins(...args),
+}));
+
 const mockListAccounts = vi.fn();
 vi.mock("../../src/lib/instantly-client", () => ({
   listAccounts: (...args: unknown[]) => mockListAccounts(...args),
@@ -252,5 +261,42 @@ describe("GET /internal/audit/account-health", () => {
     expect(byEmail["atvolume@a.com"].effectiveDailyCap).toBe(50);
     // Nothing measured ⇒ the floor, never the stated limit.
     expect(byEmail["cold@a.com"].effectiveDailyCap).toBe(5);
+  });
+
+  it("reads the ramp at real-MAILBOX grain, so aliases of one login agree", async () => {
+    // A Gandi domain is ONE relay login behind several aliases. The selector caps
+    // on what the LOGIN sustained, so reading per address here would render a cap
+    // the selector disagrees with — the same class of defect the vendorPrewarmedAt
+    // note in account-health.ts records, with the argument wrong rather than the
+    // function.
+    mockListAccounts.mockResolvedValue([
+      { email: "a@salesmolt.com", status: 1, stat_warmup_score: 100, daily_limit: 50 },
+      { email: "b@salesmolt.com", status: 1, stat_warmup_score: 100, daily_limit: 50 },
+    ]);
+    mockLoadMailboxLogins.mockResolvedValue(
+      new Map([
+        ["a@salesmolt.com", "eric@salesmolt.com"],
+        ["b@salesmolt.com", "eric@salesmolt.com"],
+      ]),
+    );
+    // Per alias the second-highest day is 4 each → a cap of 6. Per MAILBOX the
+    // daily totals are 12 and 9 → second-highest 9 → a cap of 14. The login is what
+    // the relay meters, so 14 is the honest reading and both rows must show it.
+    mockRecentPeaks.mockResolvedValue(
+      new Map([
+        ["a@salesmolt.com", new Map([["2026-09-18", 8], ["2026-09-19", 4]])],
+        ["b@salesmolt.com", new Map([["2026-09-18", 4], ["2026-09-19", 5]])],
+      ]),
+    );
+
+    const app = await makeApp();
+    const res = await request(app).get("/internal/audit/account-health");
+
+    expect(res.status).toBe(200);
+    const byEmail = Object.fromEntries(
+      res.body.accounts.map((r: { email: string }) => [r.email, r]),
+    );
+    expect(byEmail["a@salesmolt.com"].effectiveDailyCap).toBe(14);
+    expect(byEmail["b@salesmolt.com"].effectiveDailyCap).toBe(14);
   });
 });
