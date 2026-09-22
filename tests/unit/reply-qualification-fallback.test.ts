@@ -32,6 +32,7 @@ vi.mock("../../src/lib/self-send/qualify-reply", async () => {
 
 import {
   QUALIFICATION_GRACE_MS,
+  QUALIFICATION_MAX_AGE_MS,
   qualifyOneReply,
   runReplyQualificationFallback,
   selectUnqualifiedReplies,
@@ -121,6 +122,29 @@ describe("selectUnqualifiedReplies — which replies are still waiting", () => {
     expect(bound).toContain(
       new Date(asOf.getTime() - QUALIFICATION_GRACE_MS).toISOString(),
     );
+  });
+
+  it("will not reach back past the age floor — an old reply must not ring a phone", async () => {
+    mockDbExecute.mockResolvedValue(pgResult([]));
+    const asOf = new Date("2026-09-21T15:00:00.000Z");
+
+    await selectUnqualifiedReplies(10, asOf);
+
+    // Promoting a kind rings the rep, runs the funded campaign and files a
+    // follow-up debt — all of which claim the buyer is waiting NOW. The first
+    // production sweep drained a July reply into a POSITIVE kind and only
+    // stayed silent because that brand had no rep number.
+    const bound = JSON.stringify(mockDbExecute.mock.calls[0]);
+    expect(bound).toContain(
+      new Date(asOf.getTime() - QUALIFICATION_MAX_AGE_MS).toISOString(),
+    );
+  });
+
+  it("bounds the window at BOTH ends, so the floor is older than the grace cutoff", () => {
+    // The two constants only make sense as a pair: too young is Instantly's
+    // turn to answer, too old is nobody's. A floor shorter than the grace
+    // period would select nothing at all.
+    expect(QUALIFICATION_MAX_AGE_MS).toBeGreaterThan(QUALIFICATION_GRACE_MS);
   });
 
   it("drops a row whose reply timestamp cannot be read rather than dating it now", async () => {
