@@ -23,6 +23,8 @@
  * silent one would be indistinguishable from a working one.
  */
 
+import { deleteCachedStatsWhere } from "./stats-cache";
+
 /** Producer ceiling on one call. */
 export const EVIDENCE_CHANGED_MAX_EMAILS = 1000;
 
@@ -75,6 +77,37 @@ export async function notifyEvidenceChanged(orgId: string, emails: string[]): Pr
 }
 
 /**
+ * Drop this org's cached `POST /orgs/status` answers that mention any of
+ * `emails`. Returns how many were dropped.
+ *
+ * ⚠️ LOAD-BEARING FOR THE ANNOUNCEMENT TO MEAN ANYTHING. lead-service asks
+ * about a lead the moment it is served — BEFORE this service has taken it —
+ * and that answer (`contacted: false`) sits in the 60s status cache. Announcing
+ * the change and then serving lead-service's re-read from that cache would hand
+ * back the very answer the announcement says is stale. The key is built by
+ * `statsCacheKey("orgs-status", {orgId, brandId, campaignId, emails})` in
+ * routes/status.ts; emails are compared case-insensitively.
+ */
+export function invalidateOrgStatusCache(orgId: string, emails: ReadonlyArray<string>): number {
+  const wanted = new Set(normalizeEvidenceEmails(emails));
+  if (wanted.size === 0) return 0;
+  return deleteCachedStatsWhere((key) => {
+    const [prefix, query] = key.split("|", 2);
+    if (prefix !== "orgs-status" || query === undefined) return false;
+    let keyOrg: string | undefined;
+    let keyEmails: string[] = [];
+    for (const part of query.split("&")) {
+      const eq = part.indexOf("=");
+      const name = part.slice(0, eq);
+      const value = part.slice(eq + 1);
+      if (name === "orgId") keyOrg = value;
+      else if (name === "emails") keyEmails = value.split(",");
+    }
+    return keyOrg === orgId && keyEmails.some((e) => wanted.has(e.trim().toLowerCase()));
+  });
+}
+
+/**
  * Announce that `emails` changed for `orgId`. Never throws.
  *
  * A null org (a platform send) has no customer Leads page to refresh, so it is
@@ -88,6 +121,9 @@ export async function announceEvidenceChanged(
 ): Promise<void> {
   const normalized = normalizeEvidenceEmails(emails);
   if (!orgId || normalized.length === 0) return;
+
+  // Before the POST: lead-service may re-read the instant it hears about it.
+  invalidateOrgStatusCache(orgId, normalized);
 
   try {
     await notifyEvidenceChanged(orgId, normalized);

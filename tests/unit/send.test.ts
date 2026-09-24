@@ -132,6 +132,11 @@ vi.mock("../../src/lib/billing-client", () => ({
   authorizeCreditSpend: (...args: unknown[]) => mockAuthorizeCreditSpend(...args),
 }));
 
+const mockAnnounceEvidenceChanged = vi.fn();
+vi.mock("../../src/lib/evidence-changed", () => ({
+  announceEvidenceChanged: (...args: unknown[]) => mockAnnounceEvidenceChanged(...args),
+}));
+
 vi.mock("../../src/lib/status-gold", () => ({
   refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
 }));
@@ -1451,6 +1456,37 @@ describe("POST /send", () => {
       "inst-camp-new",
       validBody.to,
     );
+  });
+
+  it("tells lead-service the lead is now contacted, AFTER the gold row exists", async () => {
+    mockNewCampaignFlow();
+    mockAnnounceEvidenceChanged.mockReset();
+    mockAnnounceEvidenceChanged.mockResolvedValue(undefined);
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockAnnounceEvidenceChanged).toHaveBeenCalledWith(
+      identityHeadersObj["x-org-id"],
+      [validBody.to],
+      "contacted",
+    );
+    const refreshOrder = mockRefreshLeadStatusCurrent.mock.invocationCallOrder[0];
+    const announceOrder = mockAnnounceEvidenceChanged.mock.invocationCallOrder[0];
+    expect(announceOrder).toBeGreaterThan(refreshOrder);
+  });
+
+  it("a stuck announcement never holds the send (detached freshness hint)", async () => {
+    mockNewCampaignFlow();
+    mockAnnounceEvidenceChanged.mockReset();
+    mockAnnounceEvidenceChanged.mockReturnValue(new Promise(() => {}));
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockAnnounceEvidenceChanged).toHaveBeenCalledTimes(1);
   });
 
   it("should return 500 when the in_production pool is empty", async () => {
