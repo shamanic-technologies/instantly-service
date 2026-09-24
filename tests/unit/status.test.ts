@@ -19,7 +19,7 @@ vi.mock("../../src/db/schema", () => ({
 async function createStatusApp() {
   const statusRouter = (await import("../../src/routes/status")).default;
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: "10mb" })); // same as src/index.ts
   app.use(statusRouter);
   return app;
 }
@@ -941,5 +941,55 @@ describe("POST /status — queued with us vs lost", () => {
     const app = await createStatusApp();
     const res2 = await request(app).post("/").send({ brandId: "b1", items: [{ email: "a@b.com" }] });
     expect(res2.body.results[0].brand).toMatchObject({ finished: true });
+  });
+});
+
+describe("POST /status — batch size never overflows the Postgres bind limit", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearStatsCache();
+  });
+
+  // Prod 2026-09-24: ~17.6k-address requests expanded to one bind per address per
+  // use (4N+2 binds in the brand query) and wrapped the protocol's 16-bit parameter
+  // count → `bind message has N parameter formats but 0 parameters` → 500.
+  it.each([
+    ["brand", { brandId: "b8f0e2a1-1234-4abc-9def-000000000001" }],
+    ["campaign", { campaignId: "f7b1b610-4fa1-4b54-8fec-f7be124dc32b" }],
+    ["global", {}],
+  ])("%s mode binds a constant number of parameters for 20,000 addresses", async (_mode, scope) => {
+    const { PgDialect } = await import("drizzle-orm/pg-core");
+    const dialect = new PgDialect();
+    const emails = Array.from({ length: 20_000 }, (_, i) => `lead${i}@example.com`);
+    mockExecute.mockResolvedValue({ rows: [] });
+
+    const app = await createStatusApp();
+    const res = await request(app)
+      .post("/")
+      .send({ ...scope, items: emails.map((email) => ({ email })) });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toHaveLength(20_000);
+    for (const call of mockExecute.mock.calls) {
+      const { params } = dialect.sqlToQuery(call[0] as never);
+      expect(params.length).toBeLessThan(20);
+      // the whole list travels as ONE text[] bind
+      const lists = params.filter((p) => Array.isArray(p)) as string[][];
+      expect(lists.length).toBeGreaterThan(0);
+      for (const l of lists) expect(l).toHaveLength(20_000);
+    }
+  });
+
+  it("logs the driver's real error, not just 'Failed query'", async () => {
+    const cause = Object.assign(new Error("bind message has 4838 parameter formats but 0 parameters"), { code: "08P01" });
+    mockExecute.mockRejectedValue(Object.assign(new Error("Failed query: SELECT ..."), { cause }));
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({ items: [{ email: "a@b.com" }] });
+
+    expect(res.status).toBe(500);
+    expect(spy.mock.calls.map((c) => String(c[0])).join("\n")).toContain("08P01 bind message has 4838");
+    spy.mockRestore();
   });
 });
