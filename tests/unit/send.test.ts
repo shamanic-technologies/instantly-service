@@ -1086,9 +1086,9 @@ describe("buildEmailBodyWithSignature", () => {
     expect(result).toBe(
       `Hello<p>--</p><p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>${UNSUBSCRIBE_FOOTER_HTML}`,
     );
-    // The brand line stays plain text; the ONLY anchor is the unsubscribe link.
-    expect((result.match(/<a /g) ?? []).length).toBe(1);
-    expect(result).toContain('href="{unsubscribe_link}"');
+    // The brand line stays plain text, and the opt-out line carries no link.
+    expect((result.match(/<a /g) ?? []).length).toBe(0);
+    expect(result).not.toContain("{unsubscribe_link}");
   });
 
   it("uses the same Distribute.you brand line regardless of sending account domain", () => {
@@ -1096,9 +1096,10 @@ describe("buildEmailBodyWithSignature", () => {
     const b = buildEmailBodyWithSignature("Hello", acct({ email: "x@unknownbrand.io" }));
     expect(a).toContain("Distribute.you | Marketing Agency");
     expect(b).toContain("Distribute.you | Marketing Agency");
-    // Only the unsubscribe anchor — the brand line is never auto-linkified.
-    expect((a.match(/<a /g) ?? []).length).toBe(1);
-    expect((b.match(/<a /g) ?? []).length).toBe(1);
+    // No anchor at all — the brand line is never auto-linkified and the opt-out
+    // line is link-free.
+    expect((a.match(/<a /g) ?? []).length).toBe(0);
+    expect((b.match(/<a /g) ?? []).length).toBe(0);
   });
 
   it("signs with the account's OWN name so From-name and signature agree (multi-persona)", () => {
@@ -1187,15 +1188,18 @@ describe("buildEmailBodyWithSignature", () => {
     expect(twice).toBe(once);
   });
 
-  it("appends a visible unsubscribe footer with Instantly's {unsubscribe_link} merge var below the signature", () => {
+  // Measured 2026-09-24: a visible unsubscribe LINK in this footer was the Gmail
+  // spam trigger (20 of 36 in spam with it, 0 of 36 without, same senders and
+  // receivers). The opt-out survives as a reply instruction + the List-Unsubscribe
+  // header. This test is the guard against the link coming back.
+  it("appends a LINK-FREE opt-out line below the signature", () => {
     const result = buildEmailBodyWithSignature("<p>Hi</p>", acct({ email: "kevinl@growthagency.dev" }));
-    // Single-brace merge var — resolved per-lead by Instantly at send time.
-    expect(result).toContain('href="{unsubscribe_link}"');
-    expect(result).not.toContain("{{unsubscribe_link}}");
-    expect(result).toContain(">unsubscribe</a>");
-    expect(result).toContain("Don't want to hear from me again?");
+    expect(result).not.toContain("<a ");
+    expect(result).not.toContain("href=");
+    expect(result).not.toContain("unsubscribe_link");
+    expect(result).toContain('Reply "stop" and I won\'t email you again.');
     // Footer comes AFTER the signature block.
-    expect(result.indexOf("Distribute.you")).toBeLessThan(result.indexOf("unsubscribe</a>"));
+    expect(result.indexOf("Distribute.you")).toBeLessThan(result.indexOf('Reply "stop"'));
   });
 
   it("separates the signature from the unsubscribe footer with a blank-line spacer paragraph", () => {
@@ -1204,12 +1208,12 @@ describe("buildEmailBodyWithSignature", () => {
     expect(result).toContain("Distribute.you | Marketing Agency</p><p>&nbsp;</p>");
   });
 
-  it("idempotent WITH the unsubscribe footer: a re-sent body keeps exactly one footer", () => {
+  it("idempotent WITH the opt-out footer: a re-sent body keeps exactly one footer", () => {
     const account = acct({ email: "kevinl@growthagency.dev", signature: "" });
     const once = buildEmailBodyWithSignature("<p>Hi</p>", account);
     const twice = buildEmailBodyWithSignature(once, account);
     expect(twice).toBe(once);
-    expect((twice.match(/unsubscribe<\/a>/g) ?? []).length).toBe(1);
+    expect((twice.match(/Reply "stop"/g) ?? []).length).toBe(1);
     expect((twice.match(/&nbsp;/g) ?? []).length).toBe(1);
   });
 
