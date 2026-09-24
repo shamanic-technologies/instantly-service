@@ -121,9 +121,12 @@ export function monthlyCostForDomain(
   domain: InventoryDomain,
   rates: Map<string, PriceRate>,
 ): MoneyAmount | null {
-  // A cancelled or deprovisioned domain still shows up in the inventory, but we
-  // have stopped paying for it — reporting its old rate would inflate spend.
-  if (domain.cancelledAt) return null;
+  // A cancelled domain, or one the vendor stopped reporting (lapsed, transferred
+  // away), still shows up in the inventory, but we have stopped paying for it —
+  // reporting its old rate would inflate spend. `summarizeSpend` already skips
+  // absent rows; pricing them here made the domain reads' total disagree with
+  // /spend by exactly those rows (outcaged.com, 2026-09-24).
+  if (domain.cancelledAt || domain.absentSince) return null;
 
   const parts: MoneyAmount[] = [];
 
@@ -204,8 +207,9 @@ export function splitDomainCost(
     currency: null,
   };
 
-  // A cancelled domain bills nothing, so there is nothing to save by deleting it.
-  if (domain.cancelledAt) return empty;
+  // A cancelled or vendor-absent domain bills nothing, so there is nothing to
+  // save by deleting it.
+  if (domain.cancelledAt || domain.absentSince) return empty;
 
   let currency: string | null = null;
   let renewalCents: number | null = null;
