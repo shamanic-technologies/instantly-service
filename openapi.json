@@ -186,6 +186,44 @@
                 "runId"
               ]
             }
+          },
+          "duplicate": {
+            "type": "boolean",
+            "description": "True when this lead is already claimed for this campaign; nothing was sent by this call."
+          },
+          "held": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "in_flight",
+                  "queued",
+                  "finished"
+                ],
+                "description": "`in_flight`: a concurrent send is creating the sequence right now. `queued`: we hold the sequence and will send its remaining steps — the lead is NOT lost, do not re-serve it. `finished`: nothing left to send (every step sent, or the sequence stopped)."
+              },
+              "awaitingFirstEmail": {
+                "type": "boolean",
+                "description": "True while the sequence's FIRST email has not gone out yet."
+              },
+              "queuedSince": {
+                "type": "string",
+                "nullable": true,
+                "description": "When the held sequence was handed to us (ISO 8601)."
+              },
+              "remainingSteps": {
+                "type": "integer",
+                "description": "Steps still scheduled and not yet sent."
+              }
+            },
+            "required": [
+              "state",
+              "awaitingFirstEmail",
+              "queuedSince",
+              "remainingSteps"
+            ],
+            "description": "Present on a duplicate: what we hold for this lead, so a caller can tell queued from lost."
           }
         },
         "required": [
@@ -2618,6 +2656,19 @@
                       "disqualified": {
                         "type": "boolean",
                         "description": "True iff this person is PERMANENTLY out: they are not the right contact (`lead_wrong_person`) or they have left the role (`lead_changed_job`). A prospect who simply declines today (`lead_not_interested`) is NOT disqualified — the lead stays recyclable. Strictly a function of `replyKind`, so the two fields never disagree; false whenever no kind is on record, because an absence is not a disqualification."
+                      },
+                      "queued": {
+                        "type": "boolean",
+                        "description": "True iff we still HOLD this lead in our own send queue: an active sequence with at least one step scheduled and not yet sent (not stopped, not cancelled). A queued lead is NOT lost — it will be sent, and a repeat `POST /orgs/send` for it returns `duplicate: true` without sending. `contacted: true, sent: false` alone cannot tell queued from lost; this can. False when nothing is held."
+                      },
+                      "queuedSince": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "When the earliest still-held sequence in this scope was handed to us (ISO 8601). Null when `queued` is false."
+                      },
+                      "awaitingFirstEmail": {
+                        "type": "boolean",
+                        "description": "True iff a held sequence in this scope has not sent its FIRST email yet (`queued` and nothing sent on it). The first email of such a sequence goes out in the prospect's next business-hours window on any production mailbox with room."
                       }
                     },
                     "required": [
@@ -2632,7 +2683,10 @@
                       "unsubscribed",
                       "lastDeliveredAt",
                       "replyKind",
-                      "disqualified"
+                      "disqualified",
+                      "queued",
+                      "queuedSince",
+                      "awaitingFirstEmail"
                     ]
                   },
                   "description": "Per-campaign breakdown — present only when brandId is provided without campaignId"
@@ -2759,6 +2813,19 @@
                     "disqualified": {
                       "type": "boolean",
                       "description": "True iff this person is PERMANENTLY out: they are not the right contact (`lead_wrong_person`) or they have left the role (`lead_changed_job`). A prospect who simply declines today (`lead_not_interested`) is NOT disqualified — the lead stays recyclable. Strictly a function of `replyKind`, so the two fields never disagree; false whenever no kind is on record, because an absence is not a disqualification."
+                    },
+                    "queued": {
+                      "type": "boolean",
+                      "description": "True iff we still HOLD this lead in our own send queue: an active sequence with at least one step scheduled and not yet sent (not stopped, not cancelled). A queued lead is NOT lost — it will be sent, and a repeat `POST /orgs/send` for it returns `duplicate: true` without sending. `contacted: true, sent: false` alone cannot tell queued from lost; this can. False when nothing is held."
+                    },
+                    "queuedSince": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "When the earliest still-held sequence in this scope was handed to us (ISO 8601). Null when `queued` is false."
+                    },
+                    "awaitingFirstEmail": {
+                      "type": "boolean",
+                      "description": "True iff a held sequence in this scope has not sent its FIRST email yet (`queued` and nothing sent on it). The first email of such a sequence goes out in the prospect's next business-hours window on any production mailbox with room."
                     }
                   },
                   "required": [
@@ -2773,7 +2840,10 @@
                     "unsubscribed",
                     "lastDeliveredAt",
                     "replyKind",
-                    "disqualified"
+                    "disqualified",
+                    "queued",
+                    "queuedSince",
+                    "awaitingFirstEmail"
                   ],
                   "description": "Aggregated brand status (most advanced across campaigns) — present only when brandId is provided without campaignId"
                 },
@@ -2899,6 +2969,19 @@
                     "disqualified": {
                       "type": "boolean",
                       "description": "True iff this person is PERMANENTLY out: they are not the right contact (`lead_wrong_person`) or they have left the role (`lead_changed_job`). A prospect who simply declines today (`lead_not_interested`) is NOT disqualified — the lead stays recyclable. Strictly a function of `replyKind`, so the two fields never disagree; false whenever no kind is on record, because an absence is not a disqualification."
+                    },
+                    "queued": {
+                      "type": "boolean",
+                      "description": "True iff we still HOLD this lead in our own send queue: an active sequence with at least one step scheduled and not yet sent (not stopped, not cancelled). A queued lead is NOT lost — it will be sent, and a repeat `POST /orgs/send` for it returns `duplicate: true` without sending. `contacted: true, sent: false` alone cannot tell queued from lost; this can. False when nothing is held."
+                    },
+                    "queuedSince": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "When the earliest still-held sequence in this scope was handed to us (ISO 8601). Null when `queued` is false."
+                    },
+                    "awaitingFirstEmail": {
+                      "type": "boolean",
+                      "description": "True iff a held sequence in this scope has not sent its FIRST email yet (`queued` and nothing sent on it). The first email of such a sequence goes out in the prospect's next business-hours window on any production mailbox with room."
                     }
                   },
                   "required": [
@@ -2913,7 +2996,10 @@
                     "unsubscribed",
                     "lastDeliveredAt",
                     "replyKind",
-                    "disqualified"
+                    "disqualified",
+                    "queued",
+                    "queuedSince",
+                    "awaitingFirstEmail"
                   ],
                   "description": "Campaign-scoped status — present only when campaignId is provided"
                 },

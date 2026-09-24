@@ -36,6 +36,19 @@ export interface PendingSequence {
    * schedule degrades to, so both transports treat such a lead identically.
    */
   timezone?: string | null;
+  /**
+   * When the lead was handed to us — the campaign row's `created_at`. The FIRST
+   * email of a sequence came due at this instant, not "now".
+   *
+   * ⚠️ Load-bearing for the ordering. When this was absent a never-sent first
+   * email was stamped `dueAt = asOf`, i.e. the LEAST overdue thing in every run,
+   * so on a mailbox short of room every overdue followup sorted ahead of it,
+   * forever. Prod 2026-09-24: 678 first emails never sent, the oldest handed to
+   * us on 2026-08-30, parked on mailboxes that spent their whole cap on
+   * followups each day. Optional so a caller that has not loaded it keeps the
+   * old behaviour.
+   */
+  queuedAt?: Date | null;
 }
 
 export interface DueStep {
@@ -45,6 +58,13 @@ export interface DueStep {
   step: number;
   /** When this step became due. Earlier = more overdue = sent first. */
   dueAt: Date;
+  /**
+   * Set when this is a FIRST email moved off the mailbox it was assigned to,
+   * because that mailbox could not send it this run — see {@link selectDueSteps}.
+   * `accountEmail` is then the NEW sender; this is the one it was parked on.
+   * The worker persists the move (and its reason) before sending.
+   */
+  rehomedFrom?: string;
 }
 
 /**
@@ -64,14 +84,17 @@ export function nextDueStep(sequence: PendingSequence, asOf: Date): DueStep | nu
 
   const step = pending[0]!;
 
-  // Never sent: the first email is due now.
+  // Never sent: the first email came due the moment the lead was handed to us.
+  // Clamped to `asOf` so a clock skew can never date it in the future.
   if (sequence.lastSentAt === null || sequence.lastSentStep === null) {
+    const queuedAt = sequence.queuedAt ?? null;
     return {
       instantlyCampaignId: sequence.instantlyCampaignId,
       leadEmail: sequence.leadEmail,
       accountEmail: sequence.accountEmail,
       step,
-      dueAt: asOf,
+      dueAt:
+        queuedAt !== null && queuedAt.getTime() < asOf.getTime() ? queuedAt : asOf,
     };
   }
 
@@ -135,6 +158,13 @@ export interface AccountCapacity {
   recentSustainedDaily: number;
   /** Real dispatches already made today (UTC). */
   sentToday: number;
+  /**
+   * Whether this address may take over a FIRST email another mailbox cannot
+   * send — true only for an address in production (the same gate that decides
+   * where a NEW sequence is assigned). Absent ⇒ false, so a caller that has not
+   * loaded the lifecycle never moves anything.
+   */
+  adoptsFirstEmails?: boolean;
 }
 
 /**
@@ -179,6 +209,12 @@ export interface DueSelection {
    * reads the summary looking for something that is already there.
    */
   skippedSilenced: number;
+  /**
+   * First emails moved this run from a mailbox that could not send them (no
+   * room left today, silenced by the relay, or no credential) onto a production
+   * mailbox with room. Each one is in `selected` with `rehomedFrom` set.
+   */
+  rehomed: number;
 }
 
 export function selectDueSteps(
@@ -213,6 +249,7 @@ export function selectDueSteps(
       dueBeforeCapacity: 0,
       blockedNoCapacityRow: 0,
       skippedSilenced: 0,
+      rehomed: 0,
     };
 
   // Capacity is spent per REAL MAILBOX, not per sending address — several
@@ -221,12 +258,21 @@ export function selectDueSteps(
   // lowers one alias means it for the mailbox) while `sentToday` SUMS them (every
   // alias's send came out of the same quota).
   const mailboxOf = new Map<string, string>();
+  // The address a mailbox would send an adopted first email FROM — its first
+  // production alias, alphabetically, so a run is reproducible.
+  const adopterAddressByMailbox = new Map<string, string>();
   const limitByMailbox = new Map<string, number>();
   const peakByMailbox = new Map<string, number>();
   const sentByMailbox = new Map<string, number>();
 
   for (const capacity of capacities) {
     mailboxOf.set(capacity.accountEmail, capacity.mailbox);
+    if (capacity.adoptsFirstEmails === true) {
+      const known = adopterAddressByMailbox.get(capacity.mailbox);
+      if (known === undefined || capacity.accountEmail < known) {
+        adopterAddressByMailbox.set(capacity.mailbox, capacity.accountEmail);
+      }
+    }
     const knownLimit = limitByMailbox.get(capacity.mailbox);
     limitByMailbox.set(
       capacity.mailbox,
@@ -252,6 +298,10 @@ export function selectDueSteps(
     remaining.set(mailbox, Math.max(0, cap - (sentByMailbox.get(mailbox) ?? 0)));
   }
 
+  const sequenceByCampaign = new Map(
+    sequences.map((sequence) => [sequence.instantlyCampaignId, sequence]),
+  );
+
   const due = sequences
     // A step due by cadence still waits for its prospect's business hours. The
     // Instantly transport gets this from the campaign schedule it dispatches
@@ -275,8 +325,15 @@ export function selectDueSteps(
     );
 
   const selected: DueStep[] = [];
+  // First emails whose own mailbox cannot send them this run, in due order.
+  const stranded: DueStep[] = [];
   let blockedNoCapacityRow = 0;
   let skippedSilenced = 0;
+
+  const isFirstEmail = (step: DueStep): boolean => {
+    const sequence = sequenceByCampaign.get(step.instantlyCampaignId);
+    return sequence !== undefined && sequence.lastSentStep === null;
+  };
 
   for (const step of due) {
     // No capacity row ⇒ no mailbox ⇒ no room, per the invariant above. An
@@ -284,6 +341,7 @@ export function selectDueSteps(
     const mailbox = mailboxOf.get(step.accountEmail);
     if (mailbox === undefined) {
       blockedNoCapacityRow += 1;
+      if (isFirstEmail(step)) stranded.push(step);
       continue;
     }
 
@@ -293,13 +351,57 @@ export function selectDueSteps(
     // works. Counted, never silently dropped.
     if (silencedMailboxes.has(mailbox)) {
       skippedSilenced += 1;
+      if (isFirstEmail(step)) stranded.push(step);
       continue;
     }
 
     const room = remaining.get(mailbox) ?? 0;
-    if (room <= 0) continue;
+    if (room <= 0) {
+      if (isFirstEmail(step)) stranded.push(step);
+      continue;
+    }
     selected.push(step);
     remaining.set(mailbox, room - 1);
+  }
+
+  // ── Second pass: move stranded FIRST emails to a production mailbox with room.
+  //
+  // A sequence is pinned to its mailbox for its whole life because its followups
+  // must thread from the same sender — but until the first email goes out there
+  // is no thread, so the pin protects nothing and only strands the lead. Prod
+  // 2026-09-24: 678 first emails waiting, some since 2026-08-30, on recovering
+  // Gandi mailboxes capped at 20/day and carrying 100+ sequences each, while the
+  // production fleet had ~3,700 unused sends a day. Waiting for room that
+  // arrives at 20/day is not a queue, it is a loss the customer cannot see.
+  //
+  // A FOLLOWUP is never moved: its prospect has already heard from one mailbox.
+  // Only a production mailbox that is not silenced adopts — the same gate the
+  // assignment of a NEW sequence applies — and only with room left AFTER its own
+  // due steps were served, so moving a lead never delays a sequence already
+  // riding the target. Most room first, then mailbox name, for determinism.
+  let rehomed = 0;
+  for (const step of stranded) {
+    let target: string | null = null;
+    let targetRoom = 0;
+    for (const mailbox of adopterAddressByMailbox.keys()) {
+      if (silencedMailboxes.has(mailbox)) continue;
+      if (mailbox === mailboxOf.get(step.accountEmail)) continue;
+      const room = remaining.get(mailbox) ?? 0;
+      if (room <= 0) continue;
+      if (target === null || room > targetRoom || (room === targetRoom && mailbox < target)) {
+        target = mailbox;
+        targetRoom = room;
+      }
+    }
+    // Nobody has room left: the rest stay where they are, counted as due.
+    if (target === null) break;
+    selected.push({
+      ...step,
+      accountEmail: adopterAddressByMailbox.get(target)!,
+      rehomedFrom: step.accountEmail,
+    });
+    remaining.set(target, targetRoom - 1);
+    rehomed += 1;
   }
 
   return {
@@ -307,6 +409,7 @@ export function selectDueSteps(
     dueBeforeCapacity: due.length,
     blockedNoCapacityRow,
     skippedSilenced,
+    rehomed,
   };
 }
 

@@ -29,6 +29,7 @@ import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { SendRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
 import { refreshLeadStatusCurrent } from "../lib/status-gold";
+import { readHeldLead, type HeldLead } from "../lib/held-lead";
 
 /** Extract tracking headers from res.locals (set by requireOrgId middleware) */
 function getTracking(res: Response): TrackingHeaders {
@@ -327,12 +328,35 @@ router.post("/", async (req: Request, res: Response) => {
         // Lost the claim — already processed, or a fresh concurrent peer is
         // mid-flight. Idempotent success: no Instantly campaign created here,
         // no cost declared. Same 200 shape as the historical early-return.
-        console.log(`[send] Duplicate send for campaign ${campaignId ?? "none"}/${body.to} — claim already held, returning idempotent 200`);
+        //
+        // The answer carries WHAT we hold, so a caller can tell a lead still
+        // queued with us from a lost one. A failed lookup omits it rather than
+        // failing the duplicate — the claim is held either way, and a 500 here
+        // would read as a transport failure and invite yet another retry.
+        let held: HeldLead | null = null;
+        try {
+          held = await readHeldLead(
+            {
+              campaignId,
+              runId: (res.locals.runId as string | undefined) ?? null,
+              leadEmail: body.to,
+            },
+            RESERVATION_PREFIX,
+          );
+        } catch (error) {
+          console.error(
+            `[send] held-lead lookup failed for ${campaignId ?? "none"}/${body.to}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+        console.log(`[send] Duplicate send for campaign ${campaignId ?? "none"}/${body.to} — claim already held (${held?.state ?? "unknown"}), returning idempotent 200`);
         return res.status(200).json({
           success: true,
           campaignId,
           added: 0,
           duplicate: true,
+          ...(held ? { held } : {}),
         });
       }
 

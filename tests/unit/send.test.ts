@@ -1617,6 +1617,54 @@ describe("POST /send", () => {
     expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" }));
   });
 
+  it("a duplicate says what we HOLD, so a caller can tell queued-with-us from lost", async () => {
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]);
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([]);
+    const flatten = (q: unknown): string => {
+      if (typeof q === "string") return q;
+      if (q && typeof q === "object") {
+        const o = q as { queryChunks?: unknown[]; value?: unknown };
+        if (Array.isArray(o.queryChunks)) return o.queryChunks.map(flatten).join("");
+        if (Array.isArray(o.value)) return o.value.map(flatten).join("");
+      }
+      return "";
+    };
+    const previous = mockDbExecute.getMockImplementation();
+    mockDbExecute.mockImplementation(async (q: unknown) =>
+      flatten(q).includes('"provisionedSteps"')
+        ? {
+            rows: [
+              {
+                instantlyCampaignId: "self:b0e78882",
+                status: "active",
+                createdAt: "2026-09-11 00:17:05.828667",
+                provisionedSteps: 3,
+                sentSteps: 0,
+              },
+            ],
+          }
+        : previous
+          ? previous(q)
+          : { rows: [] },
+    );
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.duplicate).toBe(true);
+    expect(res.body.held).toEqual({
+      state: "queued",
+      awaitingFirstEmail: true,
+      queuedSince: "2026-09-11T00:17:05.828Z",
+      remainingSteps: 3,
+    });
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    mockDbExecute.mockImplementation(previous ?? (async () => ({ rows: [] })));
+  });
+
   it("should skip Instantly API call and step runs when same lead already processed for campaign", async () => {
     mockDbWhere.mockReset();
     mockDbWhere.mockResolvedValueOnce([]); // lead_id conflict check
