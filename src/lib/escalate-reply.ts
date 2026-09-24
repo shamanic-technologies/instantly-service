@@ -128,7 +128,12 @@ export async function escalateReply(
   const threadMessages = await sendThreadForward(
     {
       instantlyCampaignId: campaign.instantlyCampaignId,
-      campaignId: campaign.campaignId,
+      // The notification is a child of the CALLER's run, and runs-service 409s a
+      // child whose campaign differs from its parent's. The caller is the
+      // responder campaign; the lead's row belongs to the outreach campaign that
+      // first wrote to them — two different ids for the same thread. The parent
+      // run already carries the right attribution, so none is restated here.
+      campaignId: null,
       orgId: input.orgId,
       userId: input.userId,
       runId: input.runId,

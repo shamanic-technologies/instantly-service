@@ -111,12 +111,38 @@ export async function deployTemplates(
   });
 }
 
+interface SendEmailResponse {
+  results?: Array<{ email: string; sent: boolean; reason?: string }>;
+}
+
+/**
+ * Send one transactional email. THROWS unless every recipient was sent.
+ *
+ * ⚠️ transactional-email-service answers **2xx** even when it sent nothing: a
+ * per-recipient failure (its run could not be created, the provider refused)
+ * comes back as `{results: [{sent: false, reason}]}`. Reading only the status
+ * code reported those as delivered — an escalation told its caller the agency
+ * inbox had been notified, stopped the follow-up ladder, and nobody was told.
+ *
+ * A `duplicate` is the one non-send that is NOT a failure: the same dedup key
+ * was already delivered, so the recipient has the message.
+ */
 export async function sendEmail(
   params: SendEmailParams,
   identity: EmailIdentityContext,
 ): Promise<void> {
-  await emailServiceRequest("/send", identity, {
+  const response = await emailServiceRequest<SendEmailResponse>("/send", identity, {
     method: "POST",
     body: params,
   });
+  const failed = (response?.results ?? []).filter(
+    (r) => !r.sent && r.reason !== "duplicate",
+  );
+  if (failed.length > 0) {
+    throw new Error(
+      `transactional-email-service POST /send did not send ${params.eventType}: ${failed
+        .map((r) => `${r.email}: ${r.reason ?? "unknown reason"}`)
+        .join("; ")}`,
+    );
+  }
 }
