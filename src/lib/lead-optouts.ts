@@ -50,6 +50,7 @@ import {
 } from "../db/schema";
 import { promoteEvent } from "./silver-promote";
 import { refreshLeadStatusCurrent } from "./status-gold";
+import { announceEvidenceChanged } from "./evidence-changed";
 import { resolveInstantlyApiKey } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
@@ -316,6 +317,10 @@ export async function recordLeadOptOut(
     `[instantly-service] opt-out recorded: org=${input.orgId} lead=${input.leadEmail} channel=${input.channel} campaigns=${campaigns.length} stopped=${stopped}`,
   );
 
+  // A person (or the reply classifier) just stated this — the Leads page must
+  // reflect it on the next read, not after lead-service's 5-minute bound.
+  await announceEvidenceChanged(input.orgId, [input.leadEmail], "optout_recorded");
+
   return {
     recorded: true,
     optOut: toRow(inserted),
@@ -398,6 +403,8 @@ export async function withdrawLeadOptOut(
   console.log(
     `[instantly-service] opt-out withdrawn: org=${input.orgId} lead=${standing.email} campaigns=${campaignIds.size}`,
   );
+
+  await announceEvidenceChanged(standing.orgId, [standing.email], "optout_withdrawn");
 
   return {
     withdrawn: true,
