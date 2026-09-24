@@ -79,6 +79,20 @@ export function indexRates(rates: PriceRate[]): Map<string, PriceRate> {
 const BILLED_PER_INSTANTLY_ACCOUNT = new Set(["instantly-dfy"]);
 
 /**
+ * Whether a vendor's inventory endpoint reports the mailboxes it hosts at all.
+ *
+ * The SAME fact `billedMailboxCount` keys on, stated from the reader's side:
+ * for a vendor in `BILLED_PER_INSTANTLY_ACCOUNT` the inventory mailbox count is
+ * structurally 0 because nothing is ever emitted, so a 0 there means "never
+ * reported", not "hosts none". A consumer comparing the vendor count against
+ * our own must not read that 0 as a disagreement. For every other vendor a 0 is
+ * a real reading (Mailforge's unpaid domains genuinely host nothing).
+ */
+export function vendorReportsMailboxes(provider: string): boolean {
+  return !BILLED_PER_INSTANTLY_ACCOUNT.has(provider);
+}
+
+/**
  * How many mailboxes this domain is BILLED for, as opposed to how many the
  * vendor reports. Ghost accounts are already excluded upstream (`absent_since`),
  * so a mailbox the vendor has genuinely deprovisioned stops counting as soon as
