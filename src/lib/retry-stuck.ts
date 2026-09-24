@@ -69,6 +69,7 @@ import {
 import { settleHoldCost } from "./hold-settlement";
 import { handleCampaignError } from "./campaign-error-handler";
 import { deleteLeadStatusCurrent, refreshLeadStatusCurrent } from "./status-gold";
+import { announceEvidenceChanged } from "./evidence-changed";
 
 /** Age (hours) a row must reach before retry-stuck picks it up. */
 export const STUCK_AGE_HOURS = 72;
@@ -625,6 +626,9 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
 
     await deleteLeadStatusCurrent(row.instantlyCampaignId, row.leadEmail);
     await refreshLeadStatusCurrent(result.value.instantlyCampaignId, row.leadEmail);
+    // The gold row moved to a new Instantly campaign (new first-contacted
+    // date); lead-service's read model must hear about it. Freshness hint only.
+    void announceEvidenceChanged(row.orgId, [row.leadEmail], "redispatched");
 
     console.log(
       `[instantly-service] retry-stuck: re-sent row=${row.id} ` +

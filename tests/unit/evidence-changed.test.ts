@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   announceEvidenceChanged,
   normalizeEvidenceEmails,
+  invalidateOrgStatusCache,
   notifyEvidenceChanged,
 } from "../../src/lib/evidence-changed";
+import { clearStatsCache, getCachedStats, setCachedStats, statsCacheKey } from "../../src/lib/stats-cache";
 
 const mockFetch = vi.fn();
 
@@ -70,5 +72,35 @@ describe("evidence-changed — tells lead-service which addresses moved", () => 
     await announceEvidenceChanged(null, ["a@b.com"], "event:email_sent");
     await announceEvidenceChanged("org-1", ["", null], "event:email_sent");
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("evidence-changed — drops the stale /orgs/status answer it announces", () => {
+  const key = (orgId: string, emails: string[]) =>
+    statsCacheKey("orgs-status", { orgId, brandId: "b1", campaignId: "", emails: emails.sort().join(",") });
+
+  beforeEach(() => clearStatsCache());
+
+  it("drops this org's status entries mentioning the address (case-insensitive), keeps the rest", () => {
+    const hit = key("org-1", ["Joe@X.com", "other@x.com"]);
+    const otherLead = key("org-1", ["other@x.com"]);
+    const otherOrg = key("org-2", ["joe@x.com"]);
+    const statsKey = statsCacheKey("orgs-stats", { orgId: "org-1", leadEmail: "joe@x.com" });
+    for (const k of [hit, otherLead, otherOrg, statsKey]) setCachedStats(k, { cached: true });
+
+    expect(invalidateOrgStatusCache("org-1", ["joe@x.com"])).toBe(1);
+    expect(getCachedStats(hit)).toBeUndefined();
+    expect(getCachedStats(otherLead)).toEqual({ cached: true });
+    expect(getCachedStats(otherOrg)).toEqual({ cached: true });
+    expect(getCachedStats(statsKey)).toEqual({ cached: true });
+  });
+
+  it("announcing invalidates BEFORE posting, even when the post fails", async () => {
+    const hit = key("org-1", ["joe@x.com"]);
+    setCachedStats(hit, { contacted: false });
+    mockFetch.mockRejectedValue(new Error("down"));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await announceEvidenceChanged("org-1", ["JOE@x.com"], "contacted");
+    expect(getCachedStats(hit)).toBeUndefined();
   });
 });

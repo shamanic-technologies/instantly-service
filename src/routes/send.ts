@@ -29,6 +29,7 @@ import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { SendRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
 import { refreshLeadStatusCurrent } from "../lib/status-gold";
+import { announceEvidenceChanged } from "../lib/evidence-changed";
 import { readHeldLead, type HeldLead } from "../lib/held-lead";
 
 /** Extract tracking headers from res.locals (set by requireOrgId middleware) */
@@ -541,6 +542,12 @@ router.post("/", async (req: Request, res: Response) => {
       }
 
       await refreshLeadStatusCurrent(sendResult.value.instantlyCampaignId, body.to);
+
+      // The gold row just written is what makes this lead read `contacted` —
+      // tell lead-service now, or its change feed waits up to five minutes for
+      // its own reconcile. A freshness hint: detached (never holds the send),
+      // never throws, logs its own failure.
+      void announceEvidenceChanged(orgId, [body.to], "contacted");
 
       // Save lead to DB
       const [createdLead] = await db
