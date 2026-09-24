@@ -234,8 +234,16 @@ router.get("/spend", async (_req: Request, res: Response) => {
         loadLatestEurUsd(),
       ]);
 
-      const summary = summarizeSpend(domains, indexRates(rates));
-      const usdParts = summary.monthlyByCurrency.map(({ currency, cents }) => toUsdCents(cents, currency, fx));
+      const indexed = indexRates(rates);
+      const summary = summarizeSpend(domains, indexed);
+      // Converted PER DOMAIN and then summed — the exact figures the domain reads
+      // serve as `usd` — rather than converting each currency's total once.
+      // Rounding per row vs once per total differs by a few cents, and the page
+      // sums the rows, so this total must be built the same way to agree with it.
+      const usdParts = domains
+        .map((domain) => monthlyCostForDomain(domain, indexed))
+        .filter((m): m is NonNullable<typeof m> => m !== null)
+        .map((m) => toUsdCents(m.cents, m.currency, fx));
       const monthlyTotalUsdCents = usdParts.some((c) => c === null)
         ? null
         : usdParts.reduce<number>((sum, c) => sum + (c ?? 0), 0);

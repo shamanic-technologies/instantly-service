@@ -219,6 +219,27 @@ describe("infra gold reads", () => {
     expect(res.body.monthlyByCurrency).toHaveLength(2);
   });
 
+  it("GET /spend's USD total is the sum of the per-domain USD figures the domain reads serve", async () => {
+    // Two EUR domains whose per-row conversions each round UP: converting the
+    // EUR total once would land a cent below the sum of the rows.
+    const eur = (domain: string) =>
+      inventoryDomain({ domain, provider: "gandi", priceCents: 3838, priceCurrency: "EUR" });
+    mockLoadDomains.mockResolvedValue([eur("a.dev"), eur("b.dev")]);
+
+    const app = await makeApp();
+    const spend = await request(app).get("/internal/infra/spend");
+    clearStatsCache();
+    const domains = await request(app).get("/internal/infra/domains");
+
+    const rowSum = domains.body.domains.reduce(
+      (s: number, d: { usd: { monthlyCostCents: number } }) => s + d.usd.monthlyCostCents,
+      0,
+    );
+    // 320 EUR cents × 1.149 = 367.68 → 368 per row; once on 640 it would be 735.
+    expect(rowSum).toBe(736);
+    expect(spend.body.monthlyTotalUsdCents).toBe(rowSum);
+  });
+
   it("GET /spend has no USD total when a EUR amount cannot be converted", async () => {
     mockLoadFx.mockResolvedValue(null);
     mockLoadDomains.mockResolvedValue([
