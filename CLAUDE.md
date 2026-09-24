@@ -230,6 +230,14 @@ Guard: the "per-brand re-contact window" tests in `tests/unit/send.test.ts` (ref
 - **Nothing in this service reads `lead_id`** (checked 2026-09-24 — schema + index only), so the re-key changes no decision; it keeps our record agreeing with the identity owner.
 - Guard: the "Lead identity" tests in `tests/unit/send.test.ts` (sends + re-keys, no re-key when nothing differs, a repointed lead already held on the campaign is a 200 duplicate).
 
+## The status read says when we are FINISHED with a lead, not only when we still hold it
+
+`POST /status` serves `queued` (we still hold the sequence and will send it) AND `finished` (we hold the `(campaign, email)` claim and are DONE with it: the sequence ended, was stopped or was cancelled, nothing left to send). A lead in `finished` can never be emailed again in that scope: `POST /orgs/send` answers any repeat as `200 duplicate` with `held.state: "finished"`. `finishedSubquery` in `src/routes/status.ts` is the same predicate `classifyHeldRow` uses (a real row, not a `reserving:` sentinel, and not active-with-a-provisioned-step), so the status read and the duplicate answer cannot disagree.
+
+- **Why it exists:** `contacted: true, sent: false, queued: false` could not separate "we finished without sending" from "lost before it reached us". lead-service's retry pool read the pair as lost and re-served such leads every run, each re-send a duplicate that sent nothing (campaign 3922c8e1, 2026-09-24: one lead handed out 104 times). lead-service now closes a lead on `finished: true` (sales-lead-service#568).
+- **Never true while `queued` is.** Brand scope is `finished` only when EVERY campaign of the brand is. An empty scope (nothing held) is `false`.
+- Guard: the "queued with us vs lost" block in `tests/unit/status.test.ts`.
+
 ## Send idempotency — reserve BEFORE the external Instantly call (DIS-148)
 
 `POST /orgs/send` is idempotent under retry/concurrency for `(campaignId, leadEmail)`: a retried or concurrent send creates **at most one** Instantly campaign, and the loser returns **200 duplicate** (`{success:true, added:0, duplicate:true}`), NEVER a fatal 409. Trigger for the original bug: when instantly-service is slow, email-gateway's 10s `AbortSignal.timeout` fires and it retries — the abort only cancels the caller's wait, so the retry races the original. Both used to pass a read-only dedup check, both called Instantly (each picking the next sender in rotation → two real campaigns), and the loser's insert hit the unique index → fatal 409 → email-gateway mapped it 502 → Windmill flow failed.
