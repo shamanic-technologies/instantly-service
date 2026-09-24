@@ -111,8 +111,26 @@ function buildScopedStatus(row: AggRow | undefined) {
     : emptyScoped();
 }
 
-function sqlIn(values: string[]) {
-  return sql.join(values.map((v) => sql`${v}`), sql`, `);
+/**
+ * The request's address list bound as ONE `text[]` parameter, for
+ * `lead_email = ANY(<emailArray>)`.
+ *
+ * ⚠️ NEVER expand the list into one bind per address (`IN ($1, $2, …)`). The
+ * brand query uses the list four times, so a per-address bind costs 4N+2
+ * parameters, and the Postgres wire protocol counts parameters in a 16-bit
+ * field: past 65,535 the count wraps and Postgres rejects the statement with
+ * `bind message has N parameter formats but 0 parameters`. Prod 2026-09-24:
+ * requests of ~17.6k addresses (~70,850 binds) 500'd brand status reads for
+ * hours.
+ *
+ * ⚠️ And NOT `IN (SELECT jsonb_array_elements_text($1))` either: the planner
+ * estimates a set-returning function at 100 rows, picks nested loops, and
+ * re-expands the list per row — measured on prod at 17.6k addresses: 129s,
+ * against 1.1s for `= ANY(text[])`, which Postgres hashes. `sql.param` keeps the
+ * array a single bind (drizzle would otherwise expand a raw array into a list).
+ */
+function emailArray(values: string[]) {
+  return sql`${sql.param([...new Set(values)])}::text[]`;
 }
 
 /**
@@ -133,7 +151,7 @@ function sentCountSubquery(emails: string[]) {
     SELECT e.campaign_id, e.lead_email, COUNT(DISTINCT e.step) AS cnt
     FROM instantly_events e
     WHERE e.event_type = 'email_sent'
-      AND e.lead_email IN (${sqlIn(emails)})
+      AND e.lead_email = ANY(${emailArray(emails)})
     GROUP BY e.campaign_id, e.lead_email
   `;
 }
@@ -155,7 +173,7 @@ function queuedSubquery(emails: string[]) {
   return sql`
     SELECT c.instantly_campaign_id, c.lead_email, c.created_at
     FROM instantly_campaigns c
-    WHERE c.lead_email IN (${sqlIn(emails)})
+    WHERE c.lead_email = ANY(${emailArray(emails)})
       AND c.status = 'active'
       AND EXISTS (
         SELECT 1 FROM sequence_costs sc
@@ -182,7 +200,7 @@ function finishedSubquery(emails: string[]) {
   return sql`
     SELECT c.instantly_campaign_id, c.lead_email
     FROM instantly_campaigns c
-    WHERE c.lead_email IN (${sqlIn(emails)})
+    WHERE c.lead_email = ANY(${emailArray(emails)})
       AND c.instantly_campaign_id NOT LIKE 'reserving:%'
       AND NOT (
         c.status = 'active'
@@ -234,7 +252,7 @@ function scopedQueryByEmail(orgId: string, filterClause: ReturnType<typeof sql>,
     LEFT JOIN (${finishedSubquery(emails)}) f
       ON f.instantly_campaign_id = s.instantly_campaign_id AND f.lead_email = s.lead_email
     WHERE s.org_id = ${orgId}
-      AND s.lead_email IN (${sqlIn(emails)})
+      AND s.lead_email = ANY(${emailArray(emails)})
       AND ${filterClause}
     GROUP BY s.lead_email
   `);
@@ -279,7 +297,7 @@ function brandBreakdownQuery(orgId: string, brandId: string, emails: string[]) {
     LEFT JOIN (${finishedSubquery(emails)}) f
       ON f.instantly_campaign_id = s.instantly_campaign_id AND f.lead_email = s.lead_email
     WHERE s.org_id = ${orgId}
-      AND s.lead_email IN (${sqlIn(emails)})
+      AND s.lead_email = ANY(${emailArray(emails)})
       AND ${brandId} = ANY(s.brand_ids)
     GROUP BY s.lead_email, s.campaign_id
   `);
@@ -423,7 +441,7 @@ router.post("/", async (req: Request, res: Response) => {
         CAST(NULL AS timestamp) AS "lastDeliveredAt"
       FROM instantly_lead_status_current s
       WHERE s.org_id = ${orgId}
-        AND s.lead_email IN (${sqlIn(emails)})
+        AND s.lead_email = ANY(${emailArray(emails)})
       GROUP BY s.lead_email
     `);
 
@@ -500,7 +518,13 @@ router.post("/", async (req: Request, res: Response) => {
 
     res.json(payload);
   } catch (error: any) {
-    console.error(`[instantly-service] Failed to get status: ${error.message}`);
+    // drizzle wraps the driver error as "Failed query: <sql>" and keeps the real
+    // Postgres error on `cause` — log that, or the reason is invisible.
+    const cause = error?.cause;
+    console.error(
+      `[instantly-service] Failed to get status (${emails.length} emails, org ${orgId}, brand ${brandId ?? "-"}, campaign ${campaignId ?? "-"}): ` +
+        (cause ? `${cause.code ?? ""} ${cause.message ?? cause}`.trim() : String(error?.message ?? error).split("\n")[0]),
+    );
     res.status(500).json({ error: "Failed to get delivery status" });
   }
 });
