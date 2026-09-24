@@ -487,30 +487,37 @@ export function buildDefaultSignature(account: Account): string {
 const SIG_SEPARATOR_HTML = "<p>--</p>";
 
 /**
- * Unsubscribe footer appended BELOW the signature on every sent email.
+ * Opt-out line appended BELOW the signature on every sent email.
  *
- * `{unsubscribe_link}` is Instantly's server-side merge variable (SINGLE braces
- * — the `{{...}}` mustache form does NOT resolve): it renders per-lead at send
- * into a functional opt-out URL. This is a SECOND, VISIBLE opt-out path that
- * complements the RFC-8058 `List-Unsubscribe` header set on the campaign
- * (`insert_unsubscribe_header: true`), which powers the mailbox-native
- * (Gmail/Apple/Outlook) one-click unsubscribe button.
+ * ⚠️ IT CARRIES NO LINK, AND THAT IS MEASURED, NOT A STYLE CHOICE. The previous
+ * footer ended on a visible `unsubscribe` anchor (to `{unsubscribe_link}` on the
+ * Instantly transport, to our own opt-out route on the self-send one), and a
+ * controlled placement test on 2026-09-24 isolated it as the Gmail spam trigger:
+ * same senders, same receivers, same body, same minute —
+ *   visible link + List-Unsubscribe header .... 15 of 48 in spam
+ *   visible link alone ........................ 20 of 36 in spam
+ *   List-Unsubscribe header alone .............. 0 of 36 in spam
+ *   no footer at all ............................ 0 of 50 in spam
+ * The link was the only difference. Do NOT put an anchor back in this line.
  *
- * A `<p>&nbsp;</p>` spacer paragraph separates it from the signature with a
- * blank-line gap. Rendered small / grey / italic via inline CSS; Instantly's
- * HTML sanitizer MAY strip the `style` attribute on PATCH round-trip (validate
- * the rendered result on a live send), but the anchor + text survive regardless
- * because they are tag-wrapped.
+ * The opt-out itself is unchanged in substance, it just stops being a link:
+ *   - the RFC 8058 `List-Unsubscribe` + `List-Unsubscribe-Post` pair still ships
+ *     on every email (`insert_unsubscribe_header: true` on Instantly, set by
+ *     `buildMessage` on self-send) and drives the mailbox-native one-click
+ *     button — the test above shows it costs nothing;
+ *   - a reply of "stop" is recognised by the reply opt-out classifier (it is
+ *     one of that prompt's pinned worked examples) and recorded as a consent
+ *     statement, and ANY human reply already stops the sequence.
  *
- * Appended as part of the signature block (after the `<p>--</p>` marker) so
- * `stripAccountSignature` removes it together with the signature on re-send —
- * idempotency (`f(f(x)) === f(x)`) is preserved.
+ * A `<p>&nbsp;</p>` spacer separates it from the signature. Appended as part of
+ * the signature block (after the `<p>--</p>` marker) so `stripAccountSignature`
+ * removes it together with the signature on re-send — idempotency
+ * (`f(f(x)) === f(x)`) is preserved, and a body stored with the OLD linked footer
+ * loses it on the next build.
  */
 export const UNSUBSCRIBE_FOOTER_HTML =
   "<p>&nbsp;</p>" +
-  '<p style="font-size:12px;color:#999999;font-style:italic">' +
-  "Don't want to hear from me again? " +
-  '<a href="{unsubscribe_link}" style="color:#999999">unsubscribe</a></p>';
+  '<p>Not relevant? Reply "stop" and I won\'t email you again.</p>';
 
 /**
  * Inject the selected account's signature into the email body.
@@ -533,7 +540,7 @@ export const UNSUBSCRIBE_FOOTER_HTML =
  * own controlled HTML and is appended verbatim — its brand domain must render
  * as plain text, NOT a clickable `<a>` link.
  *
- * The `UNSUBSCRIBE_FOOTER_HTML` block (visible opt-out via `{unsubscribe_link}`)
+ * The `UNSUBSCRIBE_FOOTER_HTML` line (a link-free opt-out, see its docstring)
  * is appended below the signature, INSIDE the strip-and-reappend region, so
  * idempotency holds — a re-sent body never stacks the footer.
  */
@@ -560,11 +567,9 @@ export function buildEmailBodyWithSignature(body: string, account: Account): str
  * documents.
  *
  * The ONE difference is deliberate: `UNSUBSCRIBE_FOOTER_HTML` is NOT appended.
- * That footer carries `{unsubscribe_link}`, Instantly's SERVER-SIDE merge
- * variable, which only resolves on a campaign send — on a one-to-one reply it
- * would ship to the prospect verbatim as a dead link. And a reply to someone who
- * just answered us is not bulk mail: an opt-out footer under a personal answer
- * reads as a mail-merge, which is the opposite of what a threaded reply is for.
+ * A reply to someone who just answered us is not bulk mail: an opt-out line under
+ * a personal answer reads as a mail-merge, which is the opposite of what a
+ * threaded reply is for.
  * The RFC 8058 `List-Unsubscribe` header on the original outreach is untouched.
  */
 export function buildReplyBodyWithSignature(body: string, account: Account): string {

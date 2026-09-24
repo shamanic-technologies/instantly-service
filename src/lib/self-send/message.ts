@@ -3,14 +3,15 @@
  *
  * The body pipeline is deliberately the EXISTING one — `buildEmailBodyWithSignature`
  * from send-lead.ts — so a self-sent email and an Instantly-sent email are
- * byte-identical apart from the opt-out link. Reimplementing the signature here
+ * byte-identical. Reimplementing the signature here
  * would fork the idempotent strip-then-append logic that two separate production
  * incidents (stacked signatures, a body reduced to a stray anchor) exist to
  * protect, and the two copies would drift on the next change to either.
  *
- * The one substitution: `{unsubscribe_link}` is Instantly's server-side merge
- * variable, so we resolve it to our own signed URL. Nothing else in the body is
- * templated.
+ * The opt-out URL no longer appears in the body at all (the footer is a
+ * link-free line, see `UNSUBSCRIBE_FOOTER_HTML`); it ships only in the RFC 8058
+ * `List-Unsubscribe` header. `resolveUnsubscribePlaceholder` is kept so a body
+ * that still carries Instantly's `{unsubscribe_link}` never ships it verbatim.
  */
 
 import type { Account } from "../instantly-client";
