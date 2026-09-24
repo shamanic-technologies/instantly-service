@@ -379,6 +379,23 @@ const SendResponseSchema = z
     leadId: z.string().nullable().optional(),
     added: z.number(),
     stepRuns: z.array(StepRunSchema).optional(),
+    duplicate: z
+      .boolean()
+      .optional()
+      .describe("True when this lead is already claimed for this campaign; nothing was sent by this call."),
+    held: z
+      .object({
+        state: z
+          .enum(["in_flight", "queued", "finished"])
+          .describe(
+            "`in_flight`: a concurrent send is creating the sequence right now. `queued`: we hold the sequence and will send its remaining steps — the lead is NOT lost, do not re-serve it. `finished`: nothing left to send (every step sent, or the sequence stopped).",
+          ),
+        awaitingFirstEmail: z.boolean().describe("True while the sequence's FIRST email has not gone out yet."),
+        queuedSince: z.string().nullable().describe("When the held sequence was handed to us (ISO 8601)."),
+        remainingSteps: z.number().int().describe("Steps still scheduled and not yet sent."),
+      })
+      .optional()
+      .describe("Present on a duplicate: what we hold for this lead, so a caller can tell queued from lost."),
   })
   .openapi("SendResponse");
 
@@ -1055,6 +1072,22 @@ const ScopedStatusSchema = StatusScopeSchema.extend({
     .boolean()
     .describe(
       "True iff this person is PERMANENTLY out: they are not the right contact (`lead_wrong_person`) or they have left the role (`lead_changed_job`). A prospect who simply declines today (`lead_not_interested`) is NOT disqualified — the lead stays recyclable. Strictly a function of `replyKind`, so the two fields never disagree; false whenever no kind is on record, because an absence is not a disqualification.",
+    ),
+  queued: z
+    .boolean()
+    .describe(
+      "True iff we still HOLD this lead in our own send queue: an active sequence with at least one step scheduled and not yet sent (not stopped, not cancelled). A queued lead is NOT lost — it will be sent, and a repeat `POST /orgs/send` for it returns `duplicate: true` without sending. `contacted: true, sent: false` alone cannot tell queued from lost; this can. False when nothing is held.",
+    ),
+  queuedSince: z
+    .string()
+    .nullable()
+    .describe(
+      "When the earliest still-held sequence in this scope was handed to us (ISO 8601). Null when `queued` is false.",
+    ),
+  awaitingFirstEmail: z
+    .boolean()
+    .describe(
+      "True iff a held sequence in this scope has not sent its FIRST email yet (`queued` and nothing sent on it). The first email of such a sequence goes out in the prospect's next business-hours window on any production mailbox with room.",
     ),
 });
 
