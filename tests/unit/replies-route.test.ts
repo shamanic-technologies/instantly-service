@@ -43,6 +43,7 @@ function app() {
     (req, res, next) => {
       res.locals.orgId = "org-1";
       res.locals.userId = "user-1";
+      if (req.headers["x-no-run"] !== "1") res.locals.runId = "run-1";
       next();
     },
     repliesRoutes,
@@ -125,8 +126,19 @@ describe("POST /orgs/replies/escalate", () => {
       },
     });
     expect(mockEscalateReply).toHaveBeenCalledWith(
-      expect.objectContaining({ question: "How much?", orgId: "org-1" }),
+      expect.objectContaining({ question: "How much?", orgId: "org-1", runId: "run-1" }),
     );
+  });
+
+  it("refuses an escalation carrying no run, before touching anything", async () => {
+    const res = await request(app())
+      .post("/orgs/replies/escalate")
+      .set("x-no-run", "1")
+      .send({ campaign_id: "camp-1", email: "alice@media.com", question: "How much?" })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/x-run-id/);
+    expect(mockEscalateReply).not.toHaveBeenCalled();
   });
 
   it("refuses an escalation with nothing to answer", async () => {

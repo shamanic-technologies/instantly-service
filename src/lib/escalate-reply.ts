@@ -51,6 +51,15 @@ export class EscalateReplyError extends Error {
 export interface EscalateReplyInput {
   orgId: string;
   userId: string;
+  /**
+   * The caller's run, forwarded as `x-run-id` on the agency-inbox send.
+   *
+   * Required: transactional-email-service refuses a send without it
+   * (`400 Missing required headers: x-org-id, x-user-id, and x-run-id`), so an
+   * escalation carrying none can never reach a human. The notification is billed
+   * to the same identity the caller sent — org-billed, never a platform run.
+   */
+  runId: string;
   /** Logical campaign id — the same key the reply route takes. */
   campaignId: string;
   leadEmail: string;
@@ -122,7 +131,7 @@ export async function escalateReply(
       campaignId: campaign.campaignId,
       orgId: input.orgId,
       userId: input.userId,
-      runId: null,
+      runId: input.runId,
       brandIds: campaign.brandId ? [campaign.brandId] : null,
     },
     campaign.leadEmail,
