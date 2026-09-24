@@ -406,7 +406,7 @@ const SendResponseSchema = z
 const SendRefusalSchema = z
   .object({
     error: z.string(),
-    code: z.enum(["recent_brand_contact", "lead_id_conflict"]),
+    code: z.enum(["recent_brand_contact", "lead_opted_out"]),
     details: z.string(),
     brandId: z.string().optional().describe("recent_brand_contact only — the brand already contacted"),
     lastEmailedAt: z
@@ -447,7 +447,9 @@ registry.registerPath({
         "Refused, not a transport failure — no email was sent and nothing was billed. " +
         "`code: \"recent_brand_contact\"` = the recipient was already emailed for one of " +
         "this send's brands inside the 3-month re-contact window. " +
-        "`code: \"lead_id_conflict\"` = the email already exists under a different lead_id.",
+        "`code: \"lead_opted_out\"` = the recipient asked this org to stop. " +
+        "A different lead_id for an address already on file is NOT refused: the email is the " +
+        "identity and the stored rows are re-keyed onto the caller's lead_id.",
       content: { "application/json": { schema: SendRefusalSchema } },
     },
     500: {
