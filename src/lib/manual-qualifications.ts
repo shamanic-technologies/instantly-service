@@ -19,6 +19,7 @@ import {
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { promoteEvent } from "./silver-promote";
 import { refreshLeadStatusCurrent } from "./status-gold";
+import { announceEvidenceChanged } from "./evidence-changed";
 import { stopLeadSequence } from "./stop-lead-sequence";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
 import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
@@ -374,6 +375,11 @@ export async function applyManualQualificationSideEffects(
     await maybeTriggerSalesInterestCampaign(campaignRow, input.leadEmail, input.replyKind);
   }
 
+  // The person expects the Leads page to move NOW, not in five minutes — tell
+  // lead-service which address changed. Awaited (bounded) so the next read sees
+  // it; never throws, a failure is logged loudly.
+  await announceEvidenceChanged(input.orgId, [input.leadEmail], "manual_qualification");
+
   console.log(
     `[instantly-service] manual qualification applied: campaign=${input.instantlyCampaignId} lead=${input.leadEmail} status=${input.status} replyKind=${input.replyKind}`,
   );
@@ -494,6 +500,12 @@ export async function withdrawManualQualification(
     leadEmail: standing.leadEmail,
     withdrawnAt: withdrawal.withdrawnAt,
   });
+
+  await announceEvidenceChanged(
+    standing.orgId,
+    [standing.leadEmail],
+    "manual_qualification_withdrawn",
+  );
 
   return {
     withdrawn: true,

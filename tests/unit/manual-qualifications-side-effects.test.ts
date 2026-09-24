@@ -83,6 +83,11 @@ vi.mock("../../src/lib/trigger-sales-interest-campaign", () => ({
   maybeTriggerSalesInterestCampaign: (...args: unknown[]) => mockTriggerSalesInterest(...args),
 }));
 
+const mockAnnounce = vi.fn();
+vi.mock("../../src/lib/evidence-changed", () => ({
+  announceEvidenceChanged: (...args: unknown[]) => mockAnnounce(...args),
+}));
+
 import {
   applyManualQualificationSideEffects,
   isSequenceStoppingQualification,
@@ -114,6 +119,11 @@ describe("applyManualQualificationSideEffects", () => {
     ...baseInput,
     status,
     replyKind: resolveReplyKind(status),
+  });
+
+  it("tells lead-service the address changed, so the Leads page moves on the next read", async () => {
+    await applyManualQualificationSideEffects(inputFor("lead_interested"));
+    expect(mockAnnounce).toHaveBeenCalledWith("org-1", ["lead@test.com"], "manual_qualification");
   });
 
   it("synthesizes a `reply_received` silver event via promoteEvent (source='manual', inferred=false)", async () => {

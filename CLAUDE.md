@@ -231,6 +231,15 @@ Guard: the "per-brand re-contact window" tests in `tests/unit/send.test.ts` (ref
 - **Nothing in this service reads `lead_id`** (checked 2026-09-24 — schema + index only), so the re-key changes no decision; it keeps our record agreeing with the identity owner.
 - Guard: the "Lead identity" tests in `tests/unit/send.test.ts` (sends + re-keys, no re-key when nothing differs, a repointed lead already held on the campaign is a 200 duplicate).
 
+## Telling lead-service an address's evidence changed — the Leads page moves on the next read
+
+lead-service serves the customer's Leads page from a read model that holds each address's delivery evidence for at most 5 minutes. Fine for what a provider observes; not fine for what a PERSON just did. `src/lib/evidence-changed.ts` POSTs lead-service's locked contract `POST /orgs/leads/evidence-changed` (`x-org-id`, `{emails}` 1..1000, 202, idempotent) at the moment the evidence changes.
+
+- **Awaited (3s bound) at the four human write points:** `applyManualQualificationSideEffects`, `withdrawManualQualification`, `recordLeadOptOut` (also covers the reply-classifier opt-out) and `withdrawLeadOptOut`. A no-op (standing statement) announces nothing.
+- **Detached in `promoteEvent`** for every REAL (`inferred=false`) promoted event with an org — shortens the bound for provider-observed changes too. Detached because it runs inside Instantly's webhook.
+- **`announceEvidenceChanged` NEVER throws and never rolls back** — the statement is the fact, the notification a freshness hint. Every failure is `console.warn`ed naming org, reason and addresses (`evidence-changed NOT delivered`); a null org (platform send) is a silent no-op. Double announcements (manual path + its own `promoteEvent`) are harmless by contract.
+- Reuses `LEAD_SERVICE_URL` + `LEAD_SERVICE_API_KEY`, read at use. Guard: `tests/unit/evidence-changed.test.ts` + the announce cases in `lead-optouts.test.ts` / `manual-qualifications-side-effects.test.ts`.
+
 ## The status read says when we are FINISHED with a lead, not only when we still hold it
 
 `POST /status` serves `queued` (we still hold the sequence and will send it) AND `finished` (we hold the `(campaign, email)` claim and are DONE with it: the sequence ended, was stopped or was cancelled, nothing left to send). A lead in `finished` can never be emailed again in that scope: `POST /orgs/send` answers any repeat as `200 duplicate` with `held.state: "finished"`. `finishedSubquery` in `src/routes/status.ts` is the same predicate `classifyHeldRow` uses (a real row, not a `reserving:` sentinel, and not active-with-a-provisioned-step), so the status read and the duplicate answer cannot disagree.
