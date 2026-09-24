@@ -33,6 +33,7 @@ const CAMPAIGN = {
 const INPUT = {
   orgId: "org-1",
   userId: "user-1",
+  runId: "run-1",
   campaignId: "camp-1",
   leadEmail: "Alice@Media.com",
   question: "What does it cost for 5 seats?",
@@ -47,6 +48,17 @@ beforeEach(() => {
 });
 
 describe("handing a thread to a human", () => {
+  it("forwards the caller's run identity on the agency-inbox send", async () => {
+    await escalateReply(INPUT);
+
+    const [campaign] = mockSendThreadForward.mock.calls[0];
+    expect(campaign).toMatchObject({
+      orgId: "org-1",
+      userId: "user-1",
+      runId: "run-1",
+    });
+  });
+
   it("tells a person AND stops the ladder", async () => {
     const result = await escalateReply(INPUT);
 

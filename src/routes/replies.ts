@@ -91,6 +91,13 @@ router.post("/escalate", async (req: Request, res: Response) => {
   if (!userId) {
     return res.status(400).json({ error: "x-user-id header is required" });
   }
+  // The agency-inbox send needs a run: transactional-email-service 400s without
+  // one, so an escalation missing it could never reach a human. Refused here,
+  // named, rather than as an opaque 500 after the thread was already read.
+  const runId = res.locals.runId as string | undefined;
+  if (!runId) {
+    return res.status(400).json({ error: "x-run-id header is required" });
+  }
 
   const parsed = EscalateReplyBodySchema.safeParse(req.body);
   if (!parsed.success) {
@@ -102,6 +109,7 @@ router.post("/escalate", async (req: Request, res: Response) => {
     const escalation = await escalateReply({
       orgId,
       userId,
+      runId,
       campaignId: campaign_id,
       leadEmail: email,
       question,
