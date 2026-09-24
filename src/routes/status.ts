@@ -47,6 +47,8 @@ interface AggRow {
   queued: boolean | null;
   queuedSince: string | null;
   awaitingFirstEmail: boolean | null;
+  // Are we FINISHED with this lead in this scope? See `finishedSubquery`.
+  finished: boolean | null;
 }
 
 function extractRows(result: unknown): AggRow[] {
@@ -69,7 +71,7 @@ function disqualifiedFrom(replyKind: string | null): boolean {
 }
 
 function emptyScoped() {
-  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, replyKind: null, disqualified: false, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null, queued: false, queuedSince: null, awaitingFirstEmail: false };
+  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, replyKind: null, disqualified: false, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null, queued: false, queuedSince: null, awaitingFirstEmail: false, finished: false };
 }
 
 function formatTimestamp(val: string | null | undefined): string | null {
@@ -104,6 +106,7 @@ function buildScopedStatus(row: AggRow | undefined) {
         queued: row.queued === true,
         queuedSince: formatTimestamp(row.queuedSince),
         awaitingFirstEmail: row.awaitingFirstEmail === true,
+        finished: row.finished === true,
       }
     : emptyScoped();
 }
@@ -162,6 +165,36 @@ function queuedSubquery(emails: string[]) {
   `;
 }
 
+/**
+ * The claims we hold for these recipients and are DONE with: a real campaign row (not a
+ * `reserving:` sentinel a peer is still creating) that is no longer queued — its sequence
+ * ended, was stopped or was cancelled. `POST /orgs/send` answers any further send for the
+ * same (campaign, email) as a duplicate that sends nothing (`held.state = "finished"`), so
+ * a lead in this state can never be emailed again in this scope, whatever its age.
+ *
+ * ⚠️ Exists because `contacted: true, sent: false, queued: false` could not separate "we
+ * finished with it without sending" from "lost before it reached us", and lead-service's
+ * retry pool read the pair as lost and re-served the lead every run — each re-send a
+ * duplicate, each one burning a run slot (campaign 3922c8e1, 2026-09-24: one lead handed
+ * out 104 times, zero emails). A finished claim is not lost: it is closed.
+ */
+function finishedSubquery(emails: string[]) {
+  return sql`
+    SELECT c.instantly_campaign_id, c.lead_email
+    FROM instantly_campaigns c
+    WHERE c.lead_email IN (${sqlIn(emails)})
+      AND c.instantly_campaign_id NOT LIKE 'reserving:%'
+      AND NOT (
+        c.status = 'active'
+        AND EXISTS (
+          SELECT 1 FROM sequence_costs sc
+          WHERE sc.instantly_campaign_id = c.instantly_campaign_id
+            AND sc.status = 'provisioned'
+        )
+      )
+  `;
+}
+
 /** Scoped query grouped by email only — used for campaign mode */
 function scopedQueryByEmail(orgId: string, filterClause: ReturnType<typeof sql>, emails: string[]) {
   return db.execute(sql`
@@ -191,12 +224,15 @@ function scopedQueryByEmail(orgId: string, filterClause: ReturnType<typeof sql>,
       MIN(s.first_unsubscribed_at) AS "firstUnsubscribedAt",
       BOOL_OR(q.instantly_campaign_id IS NOT NULL) AS "queued",
       MIN(q.created_at) AS "queuedSince",
-      BOOL_OR(q.instantly_campaign_id IS NOT NULL AND NOT s.sent) AS "awaitingFirstEmail"
+      BOOL_OR(q.instantly_campaign_id IS NOT NULL AND NOT s.sent) AS "awaitingFirstEmail",
+      (BOOL_OR(f.instantly_campaign_id IS NOT NULL) AND NOT BOOL_OR(q.instantly_campaign_id IS NOT NULL)) AS "finished"
     FROM instantly_lead_status_current s
     LEFT JOIN (${sentCountSubquery(emails)}) sc
       ON sc.campaign_id = s.instantly_campaign_id AND sc.lead_email = s.lead_email
     LEFT JOIN (${queuedSubquery(emails)}) q
       ON q.instantly_campaign_id = s.instantly_campaign_id AND q.lead_email = s.lead_email
+    LEFT JOIN (${finishedSubquery(emails)}) f
+      ON f.instantly_campaign_id = s.instantly_campaign_id AND f.lead_email = s.lead_email
     WHERE s.org_id = ${orgId}
       AND s.lead_email IN (${sqlIn(emails)})
       AND ${filterClause}
@@ -233,12 +269,15 @@ function brandBreakdownQuery(orgId: string, brandId: string, emails: string[]) {
       MIN(s.first_unsubscribed_at) AS "firstUnsubscribedAt",
       BOOL_OR(q.instantly_campaign_id IS NOT NULL) AS "queued",
       MIN(q.created_at) AS "queuedSince",
-      BOOL_OR(q.instantly_campaign_id IS NOT NULL AND NOT s.sent) AS "awaitingFirstEmail"
+      BOOL_OR(q.instantly_campaign_id IS NOT NULL AND NOT s.sent) AS "awaitingFirstEmail",
+      (BOOL_OR(f.instantly_campaign_id IS NOT NULL) AND NOT BOOL_OR(q.instantly_campaign_id IS NOT NULL)) AS "finished"
     FROM instantly_lead_status_current s
     LEFT JOIN (${sentCountSubquery(emails)}) sc
       ON sc.campaign_id = s.instantly_campaign_id AND sc.lead_email = s.lead_email
     LEFT JOIN (${queuedSubquery(emails)}) q
       ON q.instantly_campaign_id = s.instantly_campaign_id AND q.lead_email = s.lead_email
+    LEFT JOIN (${finishedSubquery(emails)}) f
+      ON f.instantly_campaign_id = s.instantly_campaign_id AND f.lead_email = s.lead_email
     WHERE s.org_id = ${orgId}
       AND s.lead_email IN (${sqlIn(emails)})
       AND ${brandId} = ANY(s.brand_ids)
@@ -324,6 +363,9 @@ function aggregateBrandStatus(rows: AggRow[]) {
     queued: rows.some((r) => r.queued === true),
     queuedSince: minAt((r) => r.queuedSince),
     awaitingFirstEmail: rows.some((r) => r.awaitingFirstEmail === true),
+    // Brand scope is finished only when EVERY campaign of the brand is: one campaign still
+    // able to send means the brand is not done with this person.
+    finished: rows.every((r) => r.finished === true),
   };
 }
 

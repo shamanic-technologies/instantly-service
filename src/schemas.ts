@@ -1091,6 +1091,11 @@ const ScopedStatusSchema = StatusScopeSchema.extend({
     .describe(
       "True iff a held sequence in this scope has not sent its FIRST email yet (`queued` and nothing sent on it). The first email of such a sequence goes out in the prospect's next business-hours window on any production mailbox with room.",
     ),
+  finished: z
+    .boolean()
+    .describe(
+      "True iff we hold this lead's claim in this scope and are DONE with it: the sequence ended, was stopped or was cancelled, and nothing is left to send. A repeat `POST /orgs/send` for the same (campaign, email) returns `duplicate: true` with `held.state: \"finished\"` and sends nothing, so re-serving the lead can never produce an email here — whatever its age. Never true while `queued` is true. Brand scope: true only when every campaign of the brand is finished with the lead. False when nothing is held.",
+    ),
 });
 
 const StatusResultSchema = z.object({
