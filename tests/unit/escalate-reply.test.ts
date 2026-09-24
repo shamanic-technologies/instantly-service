@@ -56,6 +56,9 @@ describe("handing a thread to a human", () => {
       orgId: "org-1",
       userId: "user-1",
       runId: "run-1",
+      // The caller's run owns the attribution; restating the lead row's own
+      // campaign made runs-service 409 the child and nothing was sent.
+      campaignId: null,
     });
   });
 
