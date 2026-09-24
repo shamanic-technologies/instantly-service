@@ -2536,6 +2536,28 @@ const InfraSyncAcceptedSchema = z
 
 registry.registerPath({
   method: "post",
+  path: "/internal/infra/fx-sync",
+  summary: "Fetch and record today's ECB EUR → USD reference rate",
+  description:
+    "Platform-scoped. One request to the European Central Bank's daily reference rates; the rate is stored per reference day (append-only, idempotent — a second run the same day inserts nothing). Also runs at the end of every `/internal/infra/sync`. Synchronous, so a hand-run right after a deploy answers with the rate stored. 502 when the ECB cannot be read — never a fallback rate.",
+  responses: {
+    200: {
+      description: "Rate recorded (or already on record)",
+      content: {
+        "application/json": {
+          schema: z
+            .object({ asOf: z.string(), eurUsd: z.number(), inserted: z.number().int() })
+            .openapi("FxSyncResponse"),
+        },
+      },
+    },
+    401: { description: "Unauthorized" },
+    502: { description: "ECB unreadable", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/internal/infra/sync",
   summary: "Poll every infrastructure provider → bronze + silver inventory",
   description:
@@ -2659,7 +2681,7 @@ registry.registerPath({
   path: "/internal/ops/domains",
   summary: "One row per (provider, domain): purchase/renewal, DNS, delivery, addresses, mailboxes, volume, cost",
   description:
-    "Platform-scoped, cached 60s. The `/internal/infra/domains` row plus: `dns` (latest SPF / DMARC / DKIM selectors found / MX photograph, with per-record errors), `delivery` (Σinbox/Σseeds pooled across the domain's addresses' latest placement tests), `addresses` (total + by lifecycle), `mailboxes` (real logins), `volume30d` (outreach / warmup / seed / replies / bounces + bounce rate per mille from `messages`), and `cost.paidToDate` — an ESTIMATE (`source: 'estimate'`, rate × months since the registration started) because no vendor exposes an invoice API.",
+    "Platform-scoped, cached 60s. The `/internal/infra/domains` row plus: `dns` (latest SPF / DMARC / DKIM selectors found / MX photograph, with per-record errors), `delivery` (Σinbox/Σseeds pooled across the domain's addresses' latest placement tests), `addresses` (total + by lifecycle), `mailboxes` (real logins), `volume30d` (outreach / warmup / seed / replies / bounces + bounce rate per mille from `messages`), and `cost.paidToDate` — an ESTIMATE (`source: 'estimate'`, rate × months since the registration started) because no vendor exposes an invoice API Plus `fx` (the ECB EUR → USD rate on record, null when none) and `cost.usd` (monthly / per-email / recurring / renewal / paid-to-date in USD at that rate, null wherever it cannot be stated), and `vendorReportsMailboxes` (false for a vendor whose inventory never reports mailboxes, so its `vendorMailboxes: 0` means 'not reported').",
   responses: { 200: { description: "Domains", content: { "application/json": { schema: z.object({ asOf: z.string(), domains: z.array(OpsObject) }).openapi("OpsDomainsResponse") } } }, 401: { description: "Unauthorized" } },
 });
 
@@ -2736,6 +2758,18 @@ registry.registerPath({
   responses: { 200: { description: "Body", content: { "application/json": { schema: z.object({ text: z.string().nullable(), html: z.string().nullable(), source: z.string() }).openapi("OpsMessageBody") } } }, 404: { description: "Unknown message" }, 401: { description: "Unauthorized" } },
 });
 
+const FxRateSchema = z
+  .object({
+    base: z.literal("EUR"),
+    quote: z.literal("USD"),
+    rate: z.number().describe("USD per 1 EUR"),
+    asOf: z.string().describe("The ECB reference day (YYYY-MM-DD) the rate is for"),
+    source: z.string().describe("ecb-eurofxref-daily"),
+  })
+  .nullable()
+  .describe("The EUR → USD rate every `usd` figure was converted at. Null when none is on record — then every `usd` figure is null too; there is no fallback rate.")
+  .openapi("FxRate");
+
 const InfraDomainRowSchema = z
   .object({
     domain: z.string(),
@@ -2748,6 +2782,9 @@ const InfraDomainRowSchema = z
     cancelledAt: z.string().nullable(),
     absentSince: z.string().nullable().describe("Set when the vendor stopped reporting the domain; the row is kept, never deleted"),
     vendorMailboxes: z.number().int().describe("Mailboxes the VENDOR hosts — routinely differs from the Instantly account count on relayed domains"),
+    vendorReportsMailboxes: z
+      .boolean()
+      .describe("False when this vendor's inventory never reports mailboxes (Instantly DFY): vendorMailboxes is then structurally 0 and means 'not reported', not 'hosts none'"),
     instantlyAccounts: z.number().int().describe("Live Instantly sending accounts on this domain (ghosts excluded)"),
     inProductionAccounts: z.number().int(),
     sentLast30d: z.number().int().describe("Real (non-inferred) dispatches over the trailing 30 days"),
@@ -2764,11 +2801,19 @@ const InfraDomainRowSchema = z
       .nullable()
       .describe("The YEARLY registration, already paid until renewalAt; deleting today avoids it then, it refunds nothing now"),
     renewalAt: z.string().nullable().describe("When that renewal falls due"),
+    usd: z
+      .object({
+        monthlyCostCents: z.number().nullable(),
+        costPerEmailCents: z.number().nullable(),
+        recurringMonthlyCents: z.number().nullable(),
+        renewalCents: z.number().nullable(),
+      })
+      .describe("The same amounts in USD at the response's `fx`. Null wherever the native amount is null, its currency is unknown, or no rate is on record"),
   })
   .openapi("InfraDomainRow");
 
 const InfraDomainsResponseSchema = z
-  .object({ asOf: z.string(), domains: z.array(InfraDomainRowSchema) })
+  .object({ asOf: z.string(), fx: FxRateSchema, domains: z.array(InfraDomainRowSchema) })
   .openapi("InfraDomainsResponse");
 
 registry.registerPath({
@@ -2836,6 +2881,11 @@ const InfraSpendResponseSchema = z
       }),
     ),
     monthlyByCurrency: z.array(z.object({ currency: z.string(), cents: z.number() })),
+    fx: FxRateSchema,
+    monthlyTotalUsdCents: z
+      .number()
+      .nullable()
+      .describe("monthlyByCurrency stated as one USD figure at `fx`. Null when any currency cannot be converted (no rate on record)"),
     unpricedProviders: z
       .array(z.string())
       .describe("Vendors whose domains we hold and cannot price at all — their cost is MISSING from the totals, not estimated into them"),

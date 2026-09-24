@@ -14,6 +14,19 @@ vi.mock("../../src/lib/infra-gold", () => ({
   loadEffectiveRates: (...args: unknown[]) => mockLoadRates(...args),
 }));
 
+const mockLoadFx = vi.fn();
+const mockSyncFx = vi.fn();
+vi.mock("../../src/lib/fx-rates", async () => {
+  const actual = await vi.importActual<typeof import("../../src/lib/fx-rates")>("../../src/lib/fx-rates");
+  return {
+    ...actual,
+    loadLatestEurUsd: (...args: unknown[]) => mockLoadFx(...args),
+    syncFxRates: (...args: unknown[]) => mockSyncFx(...args),
+  };
+});
+
+const FX = { base: "EUR", quote: "USD", rate: 1.149, asOf: "2026-09-21", source: "ecb-eurofxref-daily" };
+
 import { clearStatsCache } from "../../src/lib/stats-cache";
 
 function inventoryDomain(overrides: Record<string, unknown> = {}) {
@@ -125,6 +138,99 @@ describe("infra gold reads", () => {
     clearStatsCache();
     vi.spyOn(console, "error").mockImplementation(() => {});
     mockLoadRates.mockResolvedValue(DFY_RATE_ROWS);
+    mockLoadFx.mockResolvedValue(FX);
+  });
+
+  it("GET /domains states every amount in USD at the named ECB rate", async () => {
+    mockLoadDomains.mockResolvedValue([
+      inventoryDomain(),
+      inventoryDomain({
+        domain: "growthagency.dev",
+        provider: "gandi",
+        priceCents: 3838,
+        priceCurrency: "EUR",
+        mailboxCount: 1,
+        sentLast30d: 64,
+      }),
+    ]);
+
+    const app = await makeApp();
+    const res = await request(app).get("/internal/infra/domains");
+
+    expect(res.body.fx).toEqual(FX);
+    const [dfy, gandi] = res.body.domains;
+    // USD passes through untouched.
+    expect(dfy.usd.monthlyCostCents).toBe(5125);
+    expect(dfy.usd.costPerEmailCents).toBe(51.25);
+    // €38.38/yr → 320 EUR cents/mo × 1.149 = 367.68 → 368; the native figure is kept beside it.
+    expect(gandi.monthlyCostCents).toBe(320);
+    expect(gandi.currency).toBe("EUR");
+    expect(gandi.usd.monthlyCostCents).toBe(368);
+    expect(gandi.usd.renewalCents).toBe(4410);
+    // Per-email is derived from the USD monthly, so its fractional cents survive.
+    expect(gandi.usd.costPerEmailCents).toBe(5.75);
+  });
+
+  it("GET /domains never guesses a rate: no rate on record → every EUR amount has no USD figure", async () => {
+    mockLoadFx.mockResolvedValue(null);
+    mockLoadDomains.mockResolvedValue([
+      inventoryDomain({ domain: "growthagency.dev", provider: "gandi", priceCents: 3838, priceCurrency: "EUR" }),
+    ]);
+
+    const app = await makeApp();
+    const res = await request(app).get("/internal/infra/domains");
+
+    expect(res.body.fx).toBeNull();
+    expect(res.body.domains[0].monthlyCostCents).toBe(320);
+    expect(res.body.domains[0].usd.monthlyCostCents).toBeNull();
+    expect(res.body.domains[0].usd.renewalCents).toBeNull();
+  });
+
+  it("GET /domains says whether the vendor reports mailboxes at all, so a DFY 0 is not a mismatch", async () => {
+    mockLoadDomains.mockResolvedValue([
+      inventoryDomain({ mailboxCount: 0 }),
+      inventoryDomain({ domain: "heydistribute.com", provider: "mailforge", mailboxCount: 0 }),
+      inventoryDomain({ domain: "growthagency.dev", provider: "gandi", mailboxCount: 1 }),
+    ]);
+
+    const app = await makeApp();
+    const res = await request(app).get("/internal/infra/domains");
+
+    const [dfy, mailforge, gandi] = res.body.domains;
+    expect(dfy.vendorMailboxes).toBe(0);
+    expect(dfy.vendorReportsMailboxes).toBe(false);
+    // Mailforge DOES report mailboxes: its 0 is a real reading (an unpaid domain hosting nothing).
+    expect(mailforge.vendorReportsMailboxes).toBe(true);
+    expect(gandi.vendorReportsMailboxes).toBe(true);
+  });
+
+  it("GET /spend states one USD total at the named rate, beside the per-currency totals", async () => {
+    mockLoadDomains.mockResolvedValue([
+      inventoryDomain(),
+      inventoryDomain({ domain: "growthagency.dev", provider: "gandi", priceCents: 3838, priceCurrency: "EUR" }),
+    ]);
+
+    const app = await makeApp();
+    const res = await request(app).get("/internal/infra/spend");
+
+    expect(res.body.fx).toEqual(FX);
+    // $51.25 + (320 EUR cents × 1.149 → 368) = 5493
+    expect(res.body.monthlyTotalUsdCents).toBe(5493);
+    expect(res.body.monthlyByCurrency).toHaveLength(2);
+  });
+
+  it("GET /spend has no USD total when a EUR amount cannot be converted", async () => {
+    mockLoadFx.mockResolvedValue(null);
+    mockLoadDomains.mockResolvedValue([
+      inventoryDomain(),
+      inventoryDomain({ domain: "growthagency.dev", provider: "gandi", priceCents: 3838, priceCurrency: "EUR" }),
+    ]);
+
+    const app = await makeApp();
+    const res = await request(app).get("/internal/infra/spend");
+
+    expect(res.body.fx).toBeNull();
+    expect(res.body.monthlyTotalUsdCents).toBeNull();
   });
 
   it("GET /domains reports the cost, its provenance, and the cost per email", async () => {
@@ -226,5 +332,32 @@ describe("infra gold reads", () => {
     const app = await makeApp();
     expect((await request(app).get("/internal/infra/spend")).status).toBe(500);
     expect((await request(app).get("/internal/infra/spend")).status).toBe(200);
+  });
+});
+
+describe("POST /internal/infra/fx-sync", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("answers with the rate it recorded", async () => {
+    mockSyncFx.mockResolvedValue({ asOf: "2026-09-21", eurUsd: 1.149, inserted: 1 });
+
+    const app = await makeApp();
+    const res = await request(app).post("/internal/infra/fx-sync");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ asOf: "2026-09-21", eurUsd: 1.149, inserted: 1 });
+  });
+
+  it("502s with the cause when the ECB cannot be read — never a fallback rate", async () => {
+    mockSyncFx.mockRejectedValue(new Error("ECB reference rates answered 503"));
+
+    const app = await makeApp();
+    const res = await request(app).post("/internal/infra/fx-sync");
+
+    expect(res.status).toBe(502);
+    expect(res.body.detail).toContain("503");
   });
 });
