@@ -88,6 +88,25 @@ export async function getOrSetCachedStats<T>(
   return pending;
 }
 
+/**
+ * Drop every cached entry (and in-flight loader) whose key matches. Returns how
+ * many keys were dropped. Used when a write makes a cached answer wrong before
+ * its TTL runs out — see `invalidateOrgStatusCache` in evidence-changed.ts.
+ */
+export function deleteCachedStatsWhere(predicate: (key: string) => boolean): number {
+  let dropped = 0;
+  for (const key of [...store.keys()]) {
+    if (predicate(key)) {
+      store.delete(key);
+      dropped += 1;
+    }
+  }
+  for (const key of [...inFlight.keys()]) {
+    if (predicate(key)) inFlight.delete(key);
+  }
+  return dropped;
+}
+
 /** Drop all cached entries. Used by tests for isolation. */
 export function clearStatsCache(): void {
   store.clear();

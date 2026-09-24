@@ -22,6 +22,7 @@ import { updateRun, type IdentityContext } from "./runs-client";
 import { settleHoldCost } from "./hold-settlement";
 import { sendEmail } from "./email-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
+import { announceEvidenceChanged } from "./evidence-changed";
 import { agencyInbox } from "./agency-inbox";
 
 export type CampaignErrorTerminal = "failed" | "cancelled";
@@ -99,6 +100,8 @@ export async function handleCampaignError(
 
   if (campaign.leadEmail) {
     await refreshLeadStatusCurrent(instantlyCampaignId, campaign.leadEmail);
+    // `cancelled` just flipped on the gold row. Freshness hint only.
+    void announceEvidenceChanged(campaign.orgId, [campaign.leadEmail], "campaign_error");
   }
 
   // 3. Cancel all remaining provisioned costs

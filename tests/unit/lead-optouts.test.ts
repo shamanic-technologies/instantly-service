@@ -103,6 +103,11 @@ vi.mock("../../src/lib/instantly-client", () => ({
   updateCampaignStatus: (...a: unknown[]) => mockUpdateCampaignStatus(...a),
 }));
 
+const mockAnnounce = vi.fn();
+vi.mock("../../src/lib/evidence-changed", () => ({
+  announceEvidenceChanged: (...a: unknown[]) => mockAnnounce(...a),
+}));
+
 const mockStopSelfSend = vi.fn();
 vi.mock("../../src/lib/self-send/stop-sequence", () => ({
   stopSelfSendSequence: (...a: unknown[]) => mockStopSelfSend(...a),
@@ -514,5 +519,28 @@ describe("the list query schema", () => {
     const parsed = LeadOptOutListQuerySchema.safeParse({});
     expect(parsed.success).toBe(true);
     if (parsed.success) expect(parsed.data.limit).toBeUndefined();
+  });
+});
+
+describe("the Leads page moves on the next read — lead-service is told", () => {
+  it("recording an opt-out announces the address for the org", async () => {
+    selectResults = [[], [instantlyCampaign("inst-1")]];
+    insertResults = [[OPTOUT_ROW]];
+    await recordLeadOptOut({ orgId: ORG, leadEmail: LEAD, channel: "sms", statedBy: "user-1", payload: {} });
+    expect(mockAnnounce).toHaveBeenCalledWith(ORG, [LEAD], "optout_recorded");
+  });
+
+  it("a standing (no-op) record announces nothing", async () => {
+    selectResults = [[{ o: OPTOUT_ROW }]];
+    await recordLeadOptOut({ orgId: ORG, leadEmail: LEAD, channel: "sms", statedBy: "user-1", payload: {} });
+    expect(mockAnnounce).not.toHaveBeenCalled();
+  });
+
+  it("withdrawing announces the address too", async () => {
+    selectResults = [[{ o: OPTOUT_ROW }]];
+    insertResults = [[{ withdrawnAt: new Date(), withdrawnBy: "user-2" }]];
+    updateResults = [[{ campaignId: "inst-1" }]];
+    await withdrawLeadOptOut({ orgId: ORG, leadEmail: LEAD, withdrawnBy: "user-2" });
+    expect(mockAnnounce).toHaveBeenCalledWith(ORG, [LEAD], "optout_withdrawn");
   });
 });

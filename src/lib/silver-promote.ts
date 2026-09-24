@@ -19,6 +19,7 @@ import { isRunGoneError, type IdentityContext } from "./runs-client";
 import { settleHoldCost } from "./hold-settlement";
 import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
+import { announceEvidenceChanged } from "./evidence-changed";
 import { maybeStopOnClickForFunnel } from "./stop-on-click";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
 import { maybeEnqueueFollowupOnInterest } from "./enqueue-followup-on-interest";
@@ -714,6 +715,15 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
 
   if (input.leadEmail) {
     await refreshLeadStatusCurrent(input.instantlyCampaignId, input.leadEmail);
+
+    // A REAL observation changed this address's delivery evidence — shorten
+    // lead-service's 5-minute read-model bound for it too. DETACHED: this runs
+    // inside Instantly's webhook, which counts a slow delivery toward disabling
+    // the whole subscription. Inferred rows are projections of an event that
+    // already announced itself. Never throws; a failure is logged loudly.
+    if (!input.inferred) {
+      void announceEvidenceChanged(campaign.orgId, [input.leadEmail], `event:${input.eventType}`);
+    }
   }
 
   // Run inference on the freshly-promoted event. Inferred trigger events
