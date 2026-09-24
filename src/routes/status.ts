@@ -43,6 +43,10 @@ interface AggRow {
   firstRepliedAt: string | null;
   firstBouncedAt: string | null;
   firstUnsubscribedAt: string | null;
+  // Is this lead still held in OUR send queue? See `queuedSubquery`.
+  queued: boolean | null;
+  queuedSince: string | null;
+  awaitingFirstEmail: boolean | null;
 }
 
 function extractRows(result: unknown): AggRow[] {
@@ -65,7 +69,7 @@ function disqualifiedFrom(replyKind: string | null): boolean {
 }
 
 function emptyScoped() {
-  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, replyKind: null, disqualified: false, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null };
+  return { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, replyKind: null, disqualified: false, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null, queued: false, queuedSince: null, awaitingFirstEmail: false };
 }
 
 function formatTimestamp(val: string | null | undefined): string | null {
@@ -97,6 +101,9 @@ function buildScopedStatus(row: AggRow | undefined) {
         firstRepliedAt: formatTimestamp(row.firstRepliedAt),
         firstBouncedAt: formatTimestamp(row.firstBouncedAt),
         firstUnsubscribedAt: formatTimestamp(row.firstUnsubscribedAt),
+        queued: row.queued === true,
+        queuedSince: formatTimestamp(row.queuedSince),
+        awaitingFirstEmail: row.awaitingFirstEmail === true,
       }
     : emptyScoped();
 }
@@ -128,6 +135,33 @@ function sentCountSubquery(emails: string[]) {
   `;
 }
 
+/**
+ * The sequences we still HOLD for these recipients: an active campaign row with
+ * at least one step still `provisioned` — i.e. scheduled with us and not yet
+ * sent, not stopped, not cancelled. That set is exactly the send queue every
+ * ops surface and the dispatcher read, so "queued" here means the same thing it
+ * means to the thing that will send it.
+ *
+ * ⚠️ Exists because `contacted: true, sent: false` could not separate "still in
+ * our queue" from "lost", and a consumer that inferred "lost" from the age of
+ * that pair re-served held leads every hour (prod 2026-09-24: 1,643 send
+ * attempts in 24h over 145 people on one campaign, 53 real sends). A queued lead
+ * is not lost: it WILL be sent, and re-serving it only buys a duplicate claim.
+ */
+function queuedSubquery(emails: string[]) {
+  return sql`
+    SELECT c.instantly_campaign_id, c.lead_email, c.created_at
+    FROM instantly_campaigns c
+    WHERE c.lead_email IN (${sqlIn(emails)})
+      AND c.status = 'active'
+      AND EXISTS (
+        SELECT 1 FROM sequence_costs sc
+        WHERE sc.instantly_campaign_id = c.instantly_campaign_id
+          AND sc.status = 'provisioned'
+      )
+  `;
+}
+
 /** Scoped query grouped by email only — used for campaign mode */
 function scopedQueryByEmail(orgId: string, filterClause: ReturnType<typeof sql>, emails: string[]) {
   return db.execute(sql`
@@ -154,10 +188,15 @@ function scopedQueryByEmail(orgId: string, filterClause: ReturnType<typeof sql>,
       MIN(s.first_clicked_at) AS "firstClickedAt",
       MIN(s.first_replied_at) AS "firstRepliedAt",
       MIN(s.first_bounced_at) AS "firstBouncedAt",
-      MIN(s.first_unsubscribed_at) AS "firstUnsubscribedAt"
+      MIN(s.first_unsubscribed_at) AS "firstUnsubscribedAt",
+      BOOL_OR(q.instantly_campaign_id IS NOT NULL) AS "queued",
+      MIN(q.created_at) AS "queuedSince",
+      BOOL_OR(q.instantly_campaign_id IS NOT NULL AND NOT s.sent) AS "awaitingFirstEmail"
     FROM instantly_lead_status_current s
     LEFT JOIN (${sentCountSubquery(emails)}) sc
       ON sc.campaign_id = s.instantly_campaign_id AND sc.lead_email = s.lead_email
+    LEFT JOIN (${queuedSubquery(emails)}) q
+      ON q.instantly_campaign_id = s.instantly_campaign_id AND q.lead_email = s.lead_email
     WHERE s.org_id = ${orgId}
       AND s.lead_email IN (${sqlIn(emails)})
       AND ${filterClause}
@@ -191,10 +230,15 @@ function brandBreakdownQuery(orgId: string, brandId: string, emails: string[]) {
       MIN(s.first_clicked_at) AS "firstClickedAt",
       MIN(s.first_replied_at) AS "firstRepliedAt",
       MIN(s.first_bounced_at) AS "firstBouncedAt",
-      MIN(s.first_unsubscribed_at) AS "firstUnsubscribedAt"
+      MIN(s.first_unsubscribed_at) AS "firstUnsubscribedAt",
+      BOOL_OR(q.instantly_campaign_id IS NOT NULL) AS "queued",
+      MIN(q.created_at) AS "queuedSince",
+      BOOL_OR(q.instantly_campaign_id IS NOT NULL AND NOT s.sent) AS "awaitingFirstEmail"
     FROM instantly_lead_status_current s
     LEFT JOIN (${sentCountSubquery(emails)}) sc
       ON sc.campaign_id = s.instantly_campaign_id AND sc.lead_email = s.lead_email
+    LEFT JOIN (${queuedSubquery(emails)}) q
+      ON q.instantly_campaign_id = s.instantly_campaign_id AND q.lead_email = s.lead_email
     WHERE s.org_id = ${orgId}
       AND s.lead_email IN (${sqlIn(emails)})
       AND ${brandId} = ANY(s.brand_ids)
@@ -277,6 +321,9 @@ function aggregateBrandStatus(rows: AggRow[]) {
     firstRepliedAt: minAt((r) => r.firstRepliedAt),
     firstBouncedAt: minAt((r) => r.firstBouncedAt),
     firstUnsubscribedAt: minAt((r) => r.firstUnsubscribedAt),
+    queued: rows.some((r) => r.queued === true),
+    queuedSince: minAt((r) => r.queuedSince),
+    awaitingFirstEmail: rows.some((r) => r.awaitingFirstEmail === true),
   };
 }
 

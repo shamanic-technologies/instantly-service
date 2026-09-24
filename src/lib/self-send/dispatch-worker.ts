@@ -79,6 +79,12 @@ export interface DispatchSummary {
    * mailbox needs fixing or retiring — see `sender-health.ts`.
    */
   skippedSilenced: number;
+  /**
+   * First emails moved off a mailbox that could not send them onto a production
+   * mailbox with room — see `selectDueSteps`. Each move is persisted, with its
+   * reason, on the campaign row before the email goes out.
+   */
+  rehomed: number;
   sent: number;
   /** Permanent, about the RECIPIENT — promoted as a bounce. */
   bounced: number;
@@ -145,7 +151,8 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
         ) AS provisioned_steps,
         MAX(sc.step) FILTER (WHERE sc.status = 'actual') AS last_sent_step,
         MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at,
-        MIN(c.timezone) AS timezone
+        MIN(c.timezone) AS timezone,
+        MIN(c.created_at) AS queued_at
       FROM sequence_costs sc
       JOIN instantly_campaigns c
         ON c.instantly_campaign_id = sc.instantly_campaign_id
@@ -164,6 +171,7 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
       p.last_sent_step        AS "lastSentStep",
       p.last_sent_at          AS "lastSentAt",
       p.timezone              AS "timezone",
+      p.queued_at             AS "queuedAt",
       (
         SELECT COALESCE(jsonb_agg(s.delay_days ORDER BY s.step), '[]'::jsonb)
         FROM sequence_steps s
@@ -190,6 +198,8 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
     // migration 0046; the fleet default then applies, which is the same zone the
     // Instantly schedule degrades to.
     timezone: row.timezone === null || row.timezone === undefined ? null : String(row.timezone),
+    // When the lead was handed to us: what a never-sent first email is due from.
+    queuedAt: toDate(row.queuedAt),
   }));
 }
 
@@ -346,6 +356,7 @@ async function loadSendingAccounts(
       a.first_name                              AS "firstName",
       a.last_name                               AS "lastName",
       a.daily_limit                             AS "dailyLimit",
+      a.lifecycle_status                        AS "lifecycleStatus",
       COALESCE((
         SELECT COUNT(*)
         FROM instantly_events e
@@ -415,6 +426,9 @@ async function loadSendingAccounts(
       cap: dailyLimit,
       recentSustainedDaily: peakByMailbox.get(mailbox) ?? 0,
       sentToday: Number(row.sentToday) + Number(row.warmupToday ?? 0),
+      // Same gate as the assignment of a NEW sequence: only a production mailbox
+      // may take over a first email another mailbox cannot send.
+      adoptsFirstEmails: row.lifecycleStatus === "in_production",
     });
 
     // The real account, so the From display name and the signature agree — the
@@ -430,6 +444,50 @@ async function loadSendingAccounts(
   }
 
   return { capacities, accounts };
+}
+
+/**
+ * Move a never-sent sequence to another mailbox, recording why.
+ *
+ * Returns false (and moves nothing) when the row no longer sits on `from` or
+ * any email of the sequence has already gone out — both mean a thread may now
+ * exist, and a thread must stay on one sender.
+ */
+async function rehomeFirstEmail(
+  instantlyCampaignId: string,
+  from: string,
+  to: string,
+  asOf: Date,
+): Promise<boolean> {
+  const entry = JSON.stringify({
+    from,
+    to,
+    at: asOf.toISOString(),
+    reason: "first_email_stranded",
+  });
+  const result = await db.execute(sql`
+    UPDATE instantly_campaigns c
+    SET account_email = ${to},
+        metadata = jsonb_set(
+          COALESCE(c.metadata, '{}'::jsonb),
+          '{rehomed}',
+          COALESCE(c.metadata->'rehomed', '[]'::jsonb) || jsonb_build_array(${entry}::jsonb)
+        ),
+        updated_at = now()
+    WHERE c.instantly_campaign_id = ${instantlyCampaignId}
+      AND c.account_email = ${from}
+      AND c.status = 'active'
+      AND NOT EXISTS (
+        SELECT 1 FROM smtp_dispatch_raw d
+        WHERE d.instantly_campaign_id = c.instantly_campaign_id AND d.outcome = 'sent'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM sequence_costs sc
+        WHERE sc.instantly_campaign_id = c.instantly_campaign_id AND sc.status = 'actual'
+      )
+    RETURNING c.id
+  `);
+  return rowsOf(result).length > 0;
 }
 
 /** Body + subject for one step, plus the thread it belongs to. */
@@ -524,6 +582,7 @@ function emptySummary(): DispatchSummary {
     dueBeforeCapacity: 0,
     blockedNoCapacityRow: 0,
     skippedSilenced: 0,
+    rehomed: 0,
     sent: 0,
     bounced: 0,
     senderBlocked: 0,
@@ -627,6 +686,7 @@ async function runDispatchExclusive(
       dueBeforeCapacity: current.selection.dueBeforeCapacity,
       blockedNoCapacityRow: current.selection.blockedNoCapacityRow,
       skippedSilenced: current.selection.skippedSilenced,
+      rehomed: current.selection.rehomed,
     };
     console.log(
       `[instantly-service] self-send-dispatch: done ${JSON.stringify(idle)}`,
@@ -674,6 +734,7 @@ async function runDispatchExclusive(
     dueBeforeCapacity: selection.dueBeforeCapacity,
     blockedNoCapacityRow: selection.blockedNoCapacityRow,
     skippedSilenced: selection.skippedSilenced,
+    rehomed: selection.rehomed,
     polled,
   };
 
@@ -710,6 +771,25 @@ async function runDispatchExclusive(
         );
         summary.failed += 1;
         continue;
+      }
+
+      if (step.rehomedFrom !== undefined) {
+        // Persist the move BEFORE the send, guarded on the row still being where
+        // we found it and on nothing having gone out yet — a first email is the
+        // only step that may change mailbox, and only while there is no thread.
+        // The reason is recorded on the row so nobody reads the move as drift.
+        const moved = await rehomeFirstEmail(
+          step.instantlyCampaignId,
+          step.rehomedFrom,
+          step.accountEmail,
+          asOf,
+        );
+        if (!moved) {
+          console.warn(
+            `[instantly-service] self-send: rehome of campaign=${step.instantlyCampaignId} from ${step.rehomedFrom} to ${step.accountEmail} lost its guard — skipped`,
+          );
+          continue;
+        }
       }
 
       let credential = credentials.get(step.accountEmail);
