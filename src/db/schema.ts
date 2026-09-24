@@ -9,6 +9,8 @@ import {
   uniqueIndex,
   index,
   primaryKey,
+  numeric,
+  date,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -1274,6 +1276,22 @@ export const infraPriceRates = pgTable(
   (table) => [
     primaryKey({ columns: [table.provider, table.scope, table.item, table.effectiveFrom] }),
   ],
+);
+
+// EUR → USD reference rates (ECB daily), one row per reference day, append-only.
+// The only FX rate the infrastructure spend needs: Gandi bills EUR, the rest USD.
+// No row means no USD figure anywhere — there is deliberately no fallback rate.
+export const fxRates = pgTable(
+  "fx_rates",
+  {
+    base: text("base").notNull(),
+    quote: text("quote").notNull(),
+    rate: numeric("rate", { precision: 18, scale: 8 }).notNull(),
+    asOf: date("as_of").notNull(),
+    source: text("source").notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.base, table.quote, table.asOf] })],
 );
 
 // ─── In-house seed placement (Bronze) ───────────────────────────────────────

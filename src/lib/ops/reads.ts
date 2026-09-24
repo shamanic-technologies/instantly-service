@@ -14,8 +14,10 @@ import {
   indexRates,
   monthlyCostForDomain,
   splitDomainCost,
+  vendorReportsMailboxes,
   type PriceRate,
 } from "../infra-pricing";
+import { describeFx, loadLatestEurUsd, toUsdCents } from "../fx-rates";
 import { summarizeDns, type DnsRecordRow, type DnsRecordType, type DnsSummary } from "../domain-dns-sync";
 import { fetchLatestDeliveryByAccount, fetchLifecycleByEmail } from "../account-lifecycle-sync";
 import { capForAccount } from "../account-lifecycle";
@@ -225,7 +227,7 @@ function countBy<T>(rows: T[], key: (r: T) => string | null): Record<string, num
 // ─── Domains ─────────────────────────────────────────────────────────────────
 
 export async function readDomains(asOf: Date = new Date()) {
-  const [inventory, rates, dnsByDomain, addresses, mailboxes, delivery, volume30] = await Promise.all([
+  const [inventory, rates, dnsByDomain, addresses, mailboxes, delivery, volume30, fx] = await Promise.all([
     loadInventoryDomains(),
     loadEffectiveRates(asOf),
     loadLatestDns(),
@@ -233,6 +235,7 @@ export async function readDomains(asOf: Date = new Date()) {
     loadMailboxRows(),
     fetchLatestDeliveryByAccount(),
     loadVolume("domain", 30),
+    loadLatestEurUsd(),
   ]);
   const indexed = indexRates(rates);
   const addressesByDomain = new Map<string, AddressRowDb[]>();
@@ -245,10 +248,18 @@ export async function readDomains(asOf: Date = new Date()) {
 
   return {
     asOf: asOf.toISOString(),
+    // The rate every `cost.usd` figure was converted at. Null = none on record,
+    // and then every `cost.usd` figure is null too — never a guessed rate.
+    fx: describeFx(fx),
     domains: inventory.map((domain) => {
       const monthly = monthlyCostForDomain(domain, indexed);
       const perEmail = costPerEmailCents(monthly, domain.sentLast30d);
       const split = splitDomainCost(domain, indexed);
+      const monthlyUsd = toUsdCents(monthly?.cents ?? null, monthly?.currency ?? null, fx);
+      const paidToDate =
+        monthly && domain.cancelledAt === null
+          ? estimatePaidToDate(monthly.cents, monthly.currency, domainStart(domain), asOf)
+          : null;
       const addrs = addressesByDomain.get(domain.domain) ?? [];
       const pooled = poolDelivery(
         addrs.map((a) => delivery.get(a.email)).filter((d): d is NonNullable<typeof d> => Boolean(d)),
@@ -266,6 +277,9 @@ export async function readDomains(asOf: Date = new Date()) {
         absentSince: domain.absentSince?.toISOString() ?? null,
         purchasedAt: null as string | null,
         vendorMailboxes: domain.mailboxCount,
+        // False when the vendor's inventory never reports mailboxes (Instantly
+        // DFY), so its 0 means "not reported" and must not read as a mismatch.
+        vendorReportsMailboxes: vendorReportsMailboxes(domain.provider),
         mailboxes: (mailboxesByDomain.get(domain.domain) ?? []).length,
         addresses: { total: addrs.length, byLifecycle: countBy(addrs, (a) => a.lifecycleStatus) },
         sentLast30d: domain.sentLast30d,
@@ -280,10 +294,18 @@ export async function readDomains(asOf: Date = new Date()) {
           recurringMonthlyCents: split.recurringMonthlyCents,
           renewalCents: split.renewalCents,
           renewalAt: split.renewalAt?.toISOString() ?? null,
-          paidToDate:
-            monthly && domain.cancelledAt === null
-              ? estimatePaidToDate(monthly.cents, monthly.currency, domainStart(domain), asOf)
-              : null,
+          paidToDate,
+          // The same amounts in USD at `fx`, so a consumer can state ONE total.
+          usd: {
+            monthlyCents: monthlyUsd,
+            perEmailCents:
+              monthlyUsd !== null && domain.sentLast30d > 0
+                ? Number((monthlyUsd / domain.sentLast30d).toFixed(4))
+                : null,
+            recurringMonthlyCents: toUsdCents(split.recurringMonthlyCents, split.currency, fx),
+            renewalCents: toUsdCents(split.renewalCents, split.currency, fx),
+            paidToDateCents: paidToDate ? toUsdCents(paidToDate.cents, paidToDate.currency, fx) : null,
+          },
         },
       };
     }),

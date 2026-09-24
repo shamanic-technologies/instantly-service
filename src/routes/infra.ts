@@ -11,6 +11,7 @@ import { Router, Request, Response } from "express";
 import { syncProviderInfra } from "../lib/infra-sync";
 import { syncMailboxes } from "../lib/mailboxes-sync";
 import { syncDomainDns } from "../lib/domain-dns-sync";
+import { describeFx, loadLatestEurUsd, syncFxRates, toUsdCents } from "../lib/fx-rates";
 import { loadEffectiveRates, loadInventoryDomains } from "../lib/infra-gold";
 import {
   classifyWaste,
@@ -20,6 +21,7 @@ import {
   splitDomainCost,
   summarizePlanSpend,
   summarizeSpend,
+  vendorReportsMailboxes,
 } from "../lib/infra-pricing";
 import { getOrSetCachedStats } from "../lib/stats-cache";
 
@@ -55,10 +57,31 @@ router.post("/sync", async (_req: Request, res: Response) => {
     // The DNS photograph reads the domain list this sync just refreshed.
     const dnsSummary = await syncDomainDns();
     console.log(`[infra] dns-sync: done run=${runId} ${JSON.stringify(dnsSummary)}`);
+    // Last, so an ECB outage costs only today's rate, never the inventory.
+    const fxSummary = await syncFxRates();
+    console.log(`[infra] fx-sync: done run=${runId} ${JSON.stringify(fxSummary)}`);
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[infra] infra-sync run=${runId} failed: ${message}`);
   });
+});
+
+/**
+ * POST /internal/infra/fx-sync
+ *
+ * Fetch today's ECB EUR → USD reference rate and record it. Synchronous (one
+ * small request) so a hand-run right after a deploy answers with the rate it
+ * stored. Idempotent per reference day. Also runs at the end of every
+ * `/internal/infra/sync`.
+ */
+router.post("/fx-sync", async (_req: Request, res: Response) => {
+  try {
+    res.json(await syncFxRates());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[infra] fx-sync failed: ${message}`);
+    res.status(502).json({ error: "Failed to fetch the ECB reference rate", detail: message });
+  }
 });
 
 /**
@@ -79,18 +102,23 @@ router.get("/domains", async (_req: Request, res: Response) => {
   try {
     const payload = await getOrSetCachedStats("infra-domains", async () => {
       const asOf = new Date();
-      const [domains, rates] = await Promise.all([
+      const [domains, rates, fx] = await Promise.all([
         loadInventoryDomains(),
         loadEffectiveRates(asOf),
+        loadLatestEurUsd(),
       ]);
       const indexed = indexRates(rates);
 
       return {
         asOf: asOf.toISOString(),
+        // Every `usd` figure below was converted at this rate. Null = no rate on
+        // record, so every `usd` figure is null too — never a guessed one.
+        fx: describeFx(fx),
         domains: domains.map((domain) => {
           const monthly = monthlyCostForDomain(domain, indexed);
           const perEmail = costPerEmailCents(monthly, domain.sentLast30d);
           const split = splitDomainCost(domain, indexed);
+          const monthlyUsd = toUsdCents(monthly?.cents ?? null, monthly?.currency ?? null, fx);
 
           return {
             domain: domain.domain,
@@ -103,6 +131,7 @@ router.get("/domains", async (_req: Request, res: Response) => {
             cancelledAt: domain.cancelledAt?.toISOString() ?? null,
             absentSince: domain.absentSince?.toISOString() ?? null,
             vendorMailboxes: domain.mailboxCount,
+            vendorReportsMailboxes: vendorReportsMailboxes(domain.provider),
             instantlyAccounts: domain.instantlyAccountCount,
             inProductionAccounts: domain.inProductionCount,
             sentLast30d: domain.sentLast30d,
@@ -116,6 +145,18 @@ router.get("/domains", async (_req: Request, res: Response) => {
             recurringMonthlyCents: split.recurringMonthlyCents,
             renewalCents: split.renewalCents,
             renewalAt: split.renewalAt?.toISOString() ?? null,
+            // The same amounts in USD at `fx`, so a consumer can state ONE total.
+            usd: {
+              monthlyCostCents: monthlyUsd,
+              // From the USD monthly, not a rounded per-email figure: a per-email
+              // cost is fractional cents and rounding it would erase it.
+              costPerEmailCents:
+                monthlyUsd !== null && domain.sentLast30d > 0
+                  ? Number((monthlyUsd / domain.sentLast30d).toFixed(4))
+                  : null,
+              recurringMonthlyCents: toUsdCents(split.recurringMonthlyCents, split.currency, fx),
+              renewalCents: toUsdCents(split.renewalCents, split.currency, fx),
+            },
           };
         }),
       };
@@ -174,10 +215,10 @@ router.get("/waste", async (_req: Request, res: Response) => {
  * Monthly run-rate by vendor, plus the workspace subscriptions that are owed
  * regardless of domain count.
  *
- * Totals stay PER CURRENCY — Gandi bills in EUR, everyone else in USD, and
- * blending them would need an FX rate this service does not own. That would be
- * one more unsourced number on a page whose whole point is that every figure
- * says where it came from.
+ * Totals are kept PER CURRENCY (Gandi bills in EUR, everyone else in USD) and
+ * ALSO stated as one USD figure at the ECB reference rate on record (`fx`), so
+ * the rate is always named beside the blend. With no rate on record the USD
+ * total is null rather than a sum at a guessed rate.
  *
  * `unpricedProviders` is the honest hole: a vendor listed there has domains we
  * hold and no rate anywhere, so its cost is missing from the totals rather than
@@ -187,12 +228,17 @@ router.get("/spend", async (_req: Request, res: Response) => {
   try {
     const payload = await getOrSetCachedStats("infra-spend", async () => {
       const asOf = new Date();
-      const [domains, rates] = await Promise.all([
+      const [domains, rates, fx] = await Promise.all([
         loadInventoryDomains(),
         loadEffectiveRates(asOf),
+        loadLatestEurUsd(),
       ]);
 
       const summary = summarizeSpend(domains, indexRates(rates));
+      const usdParts = summary.monthlyByCurrency.map(({ currency, cents }) => toUsdCents(cents, currency, fx));
+      const monthlyTotalUsdCents = usdParts.some((c) => c === null)
+        ? null
+        : usdParts.reduce<number>((sum, c) => sum + (c ?? 0), 0);
 
       // Sends are counted per DOMAIN, not per inventory row. A domain reported
       // by two vendors (the registrar and the mail host) has two rows carrying
@@ -208,6 +254,8 @@ router.get("/spend", async (_req: Request, res: Response) => {
       return {
         asOf: asOf.toISOString(),
         ...summary,
+        fx: describeFx(fx),
+        monthlyTotalUsdCents,
         planSubscriptions: summarizePlanSpend(rates),
         sentLast30d: totalSent,
         // Cost per email per currency, over the same trailing window. Only the
