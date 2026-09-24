@@ -486,9 +486,9 @@ export async function listLeadOptOuts(
  * Machine-readable refusal code when a send is refused for a standing opt-out.
  *
  * Distinguishable from this route's other refusals: the re-contact window
- * (`recent_brand_contact` — a timing rule that expires) and the identity
- * conflict (`lead_id_conflict`). A caller must be able to tell "come back in
- * three months" from "never contact this person again".
+ * (`recent_brand_contact` — a timing rule that expires). A caller must be
+ * able to tell "come back in three months" from "never contact this person
+ * again".
  */
 export const OPT_OUT_REFUSAL_CODE = "lead_opted_out";
 

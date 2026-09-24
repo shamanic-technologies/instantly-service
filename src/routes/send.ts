@@ -159,29 +159,57 @@ router.post("/", async (req: Request, res: Response) => {
     try {
       const sortedSequence = [...body.sequence].sort((a, b) => a.step - b.step);
 
-      // 3. Lead ID conflict check: if this email already exists with a different lead_id, reject
+      // 3. LEAD IDENTITY — the EMAIL is the identity, lead-service owns the id.
+      //
+      //    lead-service resolves a person email-first (one email = one lead) and
+      //    can REPOINT a person onto a new canonical lead id while the address
+      //    stays the same. This used to refuse the send with a 409
+      //    `lead_id_conflict` whenever the address was on file under another id,
+      //    which refused a repointed person FOREVER: nothing was sent, nothing
+      //    was queued, so our status read "not contacted, not queued" and
+      //    lead-service's retry pool re-served them every run (one prospect: 79
+      //    attempts; 19 of 24 sends in a day were this refusal).
+      //
+      //    So we ACCEPT the identity owner's id and re-key what we hold for this
+      //    address in this org onto it, keeping the superseded id on the row's
+      //    metadata. Refusing protected nothing: a second email to the same
+      //    person is prevented by the gates that key on the ADDRESS — the
+      //    (campaign, email) reservation below (a duplicate answers 200 with
+      //    `held`), the opt-out and the per-brand re-contact window — none of
+      //    which reads the lead id.
       if (body.leadId) {
-        const [conflict] = await db
+        const superseded = await db
           .select({ leadId: instantlyCampaigns.leadId })
           .from(instantlyCampaigns)
           .where(
             and(
-              eq(instantlyCampaigns.leadEmail, body.to),
+              eq(instantlyCampaigns.orgId, orgId),
+              sql`lower(${instantlyCampaigns.leadEmail}) = lower(${body.to})`,
               isNotNull(instantlyCampaigns.leadId),
               ne(instantlyCampaigns.leadId, body.leadId),
             ),
           )
           .limit(1);
 
-        if (conflict) {
-          console.error(`[send] Lead ID conflict: email=${body.to} existing=${conflict.leadId} received=${body.leadId}`);
-          return res.status(409).json({
-            error: "Lead ID conflict",
-            // Both 409s on this route carry a `code` so a caller can tell an
-            // identity conflict from a re-contact-window refusal.
-            code: "lead_id_conflict",
-            details: `Email ${body.to} already exists with lead_id ${conflict.leadId}, received ${body.leadId}`,
-          });
+        if (superseded.length > 0) {
+          await db
+            .update(instantlyCampaigns)
+            .set({
+              leadId: body.leadId,
+              metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object('repointedFromLeadId', ${instantlyCampaigns.leadId})`,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(instantlyCampaigns.orgId, orgId),
+                sql`lower(${instantlyCampaigns.leadEmail}) = lower(${body.to})`,
+                isNotNull(instantlyCampaigns.leadId),
+                ne(instantlyCampaigns.leadId, body.leadId),
+              ),
+            );
+          console.log(
+            `[send] Lead identity repointed: email=${body.to} ${superseded[0].leadId} -> ${body.leadId} (org ${orgId})`,
+          );
         }
       }
 
