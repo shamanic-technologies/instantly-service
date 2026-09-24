@@ -24,7 +24,7 @@ async function createStatusApp() {
   return app;
 }
 
-const emptyScoped = { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, replyKind: null, disqualified: false, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null, queued: false, queuedSince: null, awaitingFirstEmail: false };
+const emptyScoped = { contacted: false, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, replyKind: null, disqualified: false, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null, queued: false, queuedSince: null, awaitingFirstEmail: false, finished: false };
 
 /** Recursively concatenate every string fragment in a drizzle SQL query. */
 function chunkText(query: unknown): string {
@@ -860,6 +860,20 @@ describe("POST /status — queued with us vs lost", () => {
     expect(text).toContain("c.status = 'active'");
     expect(text).toContain('AS "queued"');
     expect(text).toContain('AS "awaitingFirstEmail"');
+    expect(text).toContain('AS "finished"');
+    expect(text).toContain("NOT LIKE 'reserving:%'");
+  });
+
+  it("a claim we finished without sending reads FINISHED, not queued — re-serving it can never send", async () => {
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { key: "a@b.com", campaignId: null, contacted: true, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, replyKind: null, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null, queued: false, queuedSince: null, awaitingFirstEmail: false, finished: true },
+      ],
+    });
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({ campaignId: "camp-1", items: [{ email: "a@b.com" }] });
+    expect(res.body.results[0].campaign).toMatchObject({ contacted: true, sent: false, queued: false, finished: true });
   });
 
   it("a contacted-not-sent lead we still hold reads QUEUED, with when and that its first email is pending", async () => {
@@ -897,5 +911,35 @@ describe("POST /status — queued with us vs lost", () => {
     const res = await request(app).post("/").send({ brandId: "b1", items: [{ email: "a@b.com" }] });
     expect(res.body.results[0].brand).toMatchObject({ queued: true, queuedSince: Ta, awaitingFirstEmail: true });
     expect(res.body.results[0].byCampaign.c1).toMatchObject({ queued: false, queuedSince: null });
+  });
+
+  it("brand scope: finished only when EVERY campaign is finished with the lead", async () => {
+    const base = { key: "a@b.com", contacted: true, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, replyKind: null, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null, queuedSince: null, awaitingFirstEmail: false };
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { ...base, campaignId: "c1", queued: false, finished: true },
+        { ...base, campaignId: "c2", queued: true, finished: false },
+      ],
+    });
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({ brandId: "b1", items: [{ email: "a@b.com" }] });
+    expect(res.body.results[0].brand).toMatchObject({ finished: false });
+    expect(res.body.results[0].byCampaign.c1).toMatchObject({ finished: true });
+    expect(res.body.results[0].byCampaign.c2).toMatchObject({ finished: false });
+  });
+
+  it("brand scope: finished when every campaign is finished with the lead", async () => {
+    const base = { key: "a@b.com", contacted: true, sent: false, delivered: false, opened: false, clicked: false, replied: false, replyClassification: null, replyKind: null, bounced: false, unsubscribed: false, cancelled: false, sentCount: 0, lastDeliveredAt: null, firstContactedAt: null, firstSentAt: null, firstDeliveredAt: null, firstOpenedAt: null, firstClickedAt: null, firstRepliedAt: null, firstBouncedAt: null, firstUnsubscribedAt: null, queuedSince: null, awaitingFirstEmail: false };
+    mockExecute.mockResolvedValueOnce({ rows: [] });
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        { ...base, campaignId: "c1", queued: false, finished: true },
+        { ...base, campaignId: "c3", queued: false, finished: true },
+      ],
+    });
+    const app = await createStatusApp();
+    const res2 = await request(app).post("/").send({ brandId: "b1", items: [{ email: "a@b.com" }] });
+    expect(res2.body.results[0].brand).toMatchObject({ finished: true });
   });
 });
