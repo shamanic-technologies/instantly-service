@@ -2202,21 +2202,64 @@ describe("POST /send", () => {
     expect(mockCreateCampaign).toHaveBeenCalled();
   });
 
-  it("should return 409 when email already exists with a different leadId", async () => {
+  // ── Lead identity: the EMAIL is the identity, lead-service owns the id ────
+
+  it("SENDS when the email is on file under a different leadId, and re-keys it onto the caller's id", async () => {
+    mockNewCampaignFlow();
     mockDbWhere.mockReset();
-    mockDbWhere.mockResolvedValueOnce([{ leadId: "existing-lead-99" }]); // lead_id conflict found
+    mockDbWhere.mockResolvedValueOnce([{ leadId: "existing-lead-99" }]); // superseded id on file
+    mockDbUpdateSet.mockClear();
 
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send({
       ...validBody,
-      leadId: "different-lead-1",
+      leadId: "canonical-lead-1",
     });
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe("Lead ID conflict");
-    expect(res.body.details).toContain("existing-lead-99");
-    expect(res.body.details).toContain("different-lead-1");
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBeUndefined();
+    expect(mockCreateCampaign).toHaveBeenCalled();
+    // The held rows move onto lead-service's canonical id.
+    const rekey = mockDbUpdateSet.mock.calls.find(
+      ([v]) => (v as { leadId?: string }).leadId === "canonical-lead-1",
+    );
+    expect(rekey).toBeDefined();
+    expect((rekey![0] as Record<string, unknown>).metadata).toBeDefined();
+    // The reservation carries the canonical id too.
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ leadEmail: validBody.to, leadId: "canonical-lead-1" }),
+    );
+  });
+
+  it("does NOT re-key anything when no other leadId is on file for the email", async () => {
+    mockNewCampaignFlow();
+    mockDbUpdateSet.mockClear();
+
+    const app = await createSendApp();
+    await request(app).post("/send").set(identityHeadersObj).send({ ...validBody, leadId: "lead-1" });
+
+    const rekey = mockDbUpdateSet.mock.calls.find(
+      ([v]) => (v as { leadId?: string }).leadId === "lead-1",
+    );
+    expect(rekey).toBeUndefined();
+  });
+
+  it("a repointed lead already held on THIS campaign is a 200 duplicate, never a second email", async () => {
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([{ leadId: "existing-lead-99" }]);
+    // Reservation loses: the (campaign, email) pair is already claimed.
+    mockDbReturning.mockResolvedValueOnce([]);
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send({
+      ...validBody,
+      leadId: "canonical-lead-1",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.duplicate).toBe(true);
     expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(mockAddLeads).not.toHaveBeenCalled();
   });
 
   // ── Reservation idempotency (DIS-148) ──────────────────────────────────────
@@ -2569,20 +2612,6 @@ describe("POST /send — per-brand re-contact window", () => {
     expect(mockDbInsertValues).not.toHaveBeenCalled();
   });
 
-  it("the refusal is distinguishable from the OTHER 409 on this route", async () => {
-    // lead-id conflict: same email, different lead_id.
-    mockDbWhere.mockResolvedValueOnce([{ leadId: "existing-lead-99" }]);
-
-    const app = await createSendApp();
-    const res = await request(app)
-      .post("/send")
-      .set(identityHeadersObj)
-      .send({ ...validBody, leadId: "different-lead-1" });
-
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe("lead_id_conflict");
-  });
-
   it("a first-ever contact is unaffected", async () => {
     mockDbExecute.mockResolvedValue({ rows: [] });
     mockNewCampaignFlow();
@@ -2711,14 +2740,13 @@ describe("POST /send — a person who asked us to stop", () => {
     expect(res.body.code).toBe("lead_opted_out");
   });
 
-  it("is distinguishable from the other two 409s on this route", async () => {
+  it("is distinguishable from the re-contact 409 on this route", async () => {
     mockFindStandingOptOut.mockResolvedValue(STANDING);
 
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
     expect(res.body.code).not.toBe("recent_brand_contact");
-    expect(res.body.code).not.toBe("lead_id_conflict");
   });
 
   it("lets a lead with NO standing opt-out through", async () => {
