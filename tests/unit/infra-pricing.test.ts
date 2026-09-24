@@ -116,6 +116,27 @@ describe("monthlyCostForDomain", () => {
     expect(cost).toBeNull();
   });
 
+  it("returns null for a domain the vendor stopped reporting — the same rule /spend applies", () => {
+    // outcaged.com: Gandi dropped it (clientHold) and we no longer own it.
+    const lapsed = domain({
+      provider: "gandi",
+      domain: "outcaged.com",
+      priceCents: 3838,
+      priceCurrency: "EUR",
+      absentSince: new Date("2026-08-17T00:00:00Z"),
+    });
+
+    expect(monthlyCostForDomain(lapsed, DFY_RATES)).toBeNull();
+    expect(splitDomainCost(lapsed, DFY_RATES)).toEqual({
+      recurringMonthlyCents: null,
+      renewalCents: null,
+      renewalAt: null,
+      currency: null,
+    });
+    // And the domain read's total can no longer disagree with /spend's.
+    expect(summarizeSpend([lapsed], DFY_RATES).monthlyByCurrency).toEqual([]);
+  });
+
   it("refuses to blend two currencies inside one domain", () => {
     const mixed = indexRates([
       rate({ provider: "weird", scope: "domain-year", unitCents: 1200, currency: "EUR" }),
