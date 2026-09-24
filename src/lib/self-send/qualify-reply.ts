@@ -66,7 +66,8 @@ Judge only what the reply says. Do not infer enthusiasm from politeness, and do
 not treat a question about how you got their address as interest.
 
 The reply may quote our own email beneath it, and every email we send ends with
-the words "Don't want to hear from me again? unsubscribe". That is OUR footer,
+the words "Not relevant? Reply "stop" and I won't email you again." (older emails
+ended with "Don't want to hear from me again? unsubscribe"). That is OUR footer,
 not their request — only a removal request THEY wrote is lead_opt_out_requested.
 
 Worked examples, from real replies:
@@ -133,7 +134,7 @@ export const REPLY_KIND_JUDGMENT_INSTRUCTIONS = `Classify a single reply to a co
 
 Judge only what the reply says. Do not infer enthusiasm from politeness, and do not treat a question about how you got their address as interest.
 
-The reply may quote our own email beneath it, and every email we send ends with the words "Don't want to hear from me again? unsubscribe". That is OUR footer, not their request — only a removal request THEY wrote is lead_opt_out_requested.`;
+The reply may quote our own email beneath it, and every email we send ends with the words "Not relevant? Reply "stop" and I won't email you again." (older emails ended with "Don't want to hear from me again? unsubscribe"). That is OUR footer, not their request — only a removal request THEY wrote is lead_opt_out_requested.`;
 
 /** Strip quoted history so the model judges what THEY wrote, not our own email. */
 export function stripQuotedHistory(text: string): string {

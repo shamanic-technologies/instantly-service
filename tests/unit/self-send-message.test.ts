@@ -174,7 +174,6 @@ describe("buildMessage", () => {
   it("ships no Instantly placeholder — only Instantly resolves that", () => {
     const message = build();
     expect(message.html).not.toContain(INSTANTLY_UNSUBSCRIBE_PLACEHOLDER);
-    expect(message.html).toContain(URL);
   });
 
   it("keeps the existing signature block rather than reimplementing it", () => {
@@ -200,10 +199,13 @@ describe("buildMessage", () => {
     expect(message.html).not.toContain('href="https://distribute.you/pricing"');
   });
 
-  // The opt-out is the one link a prospect must always be able to trust.
-  it("does NOT route the opt-out link through the click redirect", () => {
+  // Measured 2026-09-24: our opt-out URL as a visible link in the body was the
+  // Gmail spam trigger. It ships in the List-Unsubscribe header ONLY.
+  it("carries NO opt-out link in the body — the header carries it", () => {
     const message = build();
-    expect(message.html).toContain(`href="${URL}"`);
+    expect(message.html).not.toContain(URL);
+    expect(message.html).not.toContain("<a ");
+    expect(message.headers["List-Unsubscribe"]).toBe(`<${URL}>`);
   });
 
   it("sets the RFC 8058 one-click pair pointing at the same URL", () => {

@@ -50,6 +50,7 @@ import {
   SYSTEM_PROMPT,
 } from "../../src/lib/self-send/qualify-reply";
 import { SENTIMENT_EVENT_TYPES } from "../../src/routes/analytics";
+import { UNSUBSCRIBE_FOOTER_HTML } from "../../src/lib/send-lead";
 
 const CAMPAIGN = {
   instantlyCampaignId: "camp-1",
@@ -349,5 +350,13 @@ describe("declining vs asking to stop", () => {
 
   it("tells it to ignore OUR unsubscribe footer quoted back at it", () => {
     expect(SYSTEM_PROMPT).toContain("That is OUR footer");
+  });
+
+  // Lockstep: the prompt must quote the footer we ACTUALLY send today, or the
+  // model reads our own 'Reply "stop"' quoted under a reply as their request.
+  it("quotes the CURRENT footer text, derived from the constant", () => {
+    const footerText = UNSUBSCRIBE_FOOTER_HTML.replace(/<[^>]+>/g, "").replace(/&nbsp;/g, "").trim();
+    expect(footerText.length).toBeGreaterThan(0);
+    expect(SYSTEM_PROMPT).toContain(footerText);
   });
 });
