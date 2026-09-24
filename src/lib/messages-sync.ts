@@ -36,6 +36,7 @@ export type MessageKind =
   | "reply"
   | "auto_reply"
   | "bounce"
+  | "delay"
   | "unrelated";
 export type MessageTransport = "instantly" | "smtp";
 export type MessageOutcome = "sent" | "permanent" | "transient" | "received";
@@ -219,6 +220,8 @@ const IMAP_KINDS: Record<string, MessageKind> = {
   reply: "reply",
   auto_reply: "auto_reply",
   bounce: "bounce",
+  // A delivery-status notice saying the MTA is still retrying — not a bounce.
+  delay: "delay",
   unrelated: "unrelated",
 };
 

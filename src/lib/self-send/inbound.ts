@@ -16,7 +16,14 @@
 /** Header names are case-insensitive on the wire; callers pass them lowercased. */
 export type InboundHeaders = Readonly<Record<string, string | undefined>>;
 
-export type InboundKind = "reply" | "auto_reply" | "bounce" | "unrelated";
+/**
+ * `delay` is a delivery-status notification that says the message is STILL
+ * BEING TRIED (RFC 3464 `Action: delayed`, a 4.x.x status, Gmail's
+ * "** Delivery incomplete **"). It is NOT a bounce: the mail may yet be
+ * delivered, and if it is not, the reporting MTA sends a separate permanent
+ * notice — which is the one that becomes `email_bounced`.
+ */
+export type InboundKind = "reply" | "auto_reply" | "bounce" | "delay" | "unrelated";
 
 export interface InboundClassification {
   kind: InboundKind;
@@ -83,6 +90,48 @@ export function isDeliveryStatusNotification(headers: InboundHeaders): boolean {
 }
 
 /**
+ * Does this delivery-status notification report a TEMPORARY failure — the
+ * sending MTA is still retrying — rather than a permanent one?
+ *
+ * ⚠️ Only a PERMANENT failure is a bounce. `email_bounced` stops the sequence,
+ * cancels the remaining holds and counts in the bounce rate, so filing a delay
+ * as one ends outreach to a prospect whose mail may still arrive. Measured
+ * 2026-09-24: 251 of 952 stored DSNs were Gmail "Delivery incomplete" notices,
+ * and 122 of them had become `email_bounced` events (~20% of self-send bounces).
+ *
+ * The rule reads the machine-readable report, never time and never wording
+ * guesses, in this order:
+ *   1. RFC 3464 per-recipient `Action:` fields. Any `failed` ⇒ permanent (a
+ *      report covering two recipients where one failed IS a bounce for it).
+ *      Otherwise any `delayed` ⇒ transient.
+ *   2. RFC 3464 `Status:` fields (RFC 3463 codes). Any 5.x.x ⇒ permanent;
+ *      all 4.x.x ⇒ transient.
+ *   3. Gmail's own explicit markers, for a report with neither field: the
+ *      "** Delivery incomplete **" heading or the "(Delay)" subject Gmail
+ *      stamps on exactly these notices.
+ * Anything else stays a bounce — the behaviour before this rule existed.
+ * Free-text SMTP codes in a human-readable part are deliberately NOT read:
+ * Outlook NDRs quote 4xx and 5xx lines side by side.
+ */
+export function isTransientDeliveryReport(headers: InboundHeaders, body: string): boolean {
+  const actions = [...body.matchAll(/^[ \t]*Action:[ \t]*([a-z]+)/gim)].map((m) =>
+    m[1]!.toLowerCase(),
+  );
+  if (actions.includes("failed")) return false;
+  if (actions.includes("delayed")) return true;
+
+  const statuses = [...body.matchAll(/^[ \t]*Status:[ \t]*([245])\.\d{1,3}\.\d{1,3}/gim)].map(
+    (m) => m[1]!,
+  );
+  if (statuses.includes("5")) return false;
+  if (statuses.length > 0 && statuses.every((c) => c === "4")) return true;
+
+  if (/\*\*\s*Delivery incomplete\s*\*\*/i.test(body)) return true;
+  const subject = headers["subject"]?.trim().toLowerCase() ?? "";
+  return subject === "delivery status notification (delay)";
+}
+
+/**
  * Recover the Message-Id of the message a bounce is about.
  *
  * A DSN quotes the original message, so its own `In-Reply-To` is unreliable —
@@ -133,7 +182,12 @@ export function classifyInbound(
       knownMessageIds.has(id),
     );
     return {
-      kind: referenced.length > 0 ? "bounce" : "unrelated",
+      kind:
+        referenced.length === 0
+          ? "unrelated"
+          : isTransientDeliveryReport(headers, body)
+            ? "delay"
+            : "bounce",
       referencedMessageIds: referenced,
     };
   }
@@ -228,6 +282,8 @@ export function eventTypeForInbound(kind: InboundKind): string | null {
       return "auto_reply_received";
     case "bounce":
       return "email_bounced";
+    // A delay is not a bounce — see `isTransientDeliveryReport`. Recorded in
+    // bronze, promoted to nothing; a permanent failure arrives as its own DSN.
     default:
       return null;
   }
