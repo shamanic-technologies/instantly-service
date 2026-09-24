@@ -307,7 +307,10 @@ registry.registerPath({
     "silver. An autoresponder is deliberately NOT a reply: `reply_received` stops " +
     "the sequence and cancels the lead's remaining holds, so filing an " +
     "out-of-office as one would end the outreach for a prospect who never " +
-    "engaged. Idempotent without a cursor — each run re-reads an overlapping " +
+    "engaged. Only a PERMANENT delivery failure becomes `email_bounced`: a " +
+    "delivery-status notice reporting a temporary delay (RFC 3464 " +
+    "`Action: delayed`, 4.x.x, Gmail 'Delivery incomplete') is stored as " +
+    "`delay` and promotes nothing. Idempotent without a cursor — each run re-reads an overlapping " +
     "window and the unique (account, message_id) bronze index absorbs the " +
     "overlap. Returns 202 and runs in the background; watch for " +
     "`self-send-poll: done`. 409 when SELF_SEND_DISPATCH_ENABLED is not 'true'.",

@@ -105,6 +105,12 @@ export interface PollSummary {
   replies: number;
   autoReplies: number;
   bounces: number;
+  /**
+   * Delivery-status notices that report a TEMPORARY failure (the sending MTA is
+   * still retrying). Stored in bronze as `delay`, promoted to nothing — only a
+   * permanent failure is a bounce. See `isTransientDeliveryReport`.
+   */
+  delayed: number;
   /** Replies we obtained a trustworthy sentiment for. */
   qualified: number;
   /** Replies recorded and stopped, but left without a sentiment. */
@@ -414,6 +420,11 @@ async function pollAccount(
           continue;
         }
 
+        if (classification.kind === "delay") {
+          summary.delayed += 1;
+          continue;
+        }
+
         const eventType = eventTypeForInbound(classification.kind);
         if (!eventType) {
           summary.unrelated += 1;
@@ -590,6 +601,7 @@ export async function runPoll(
     replies: 0,
     autoReplies: 0,
     bounces: 0,
+    delayed: 0,
     qualified: 0,
     unqualified: 0,
     optOutsRecorded: 0,

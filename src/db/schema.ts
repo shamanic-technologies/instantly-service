@@ -693,7 +693,8 @@ export const imapMessagesRaw = pgTable(
     messageId: text("message_id").notNull(),
     fromAddress: text("from_address"),
     subject: text("subject"),
-    // 'reply' | 'auto_reply' | 'bounce' | 'unrelated'
+    // 'reply' | 'auto_reply' | 'bounce' | 'delay' | 'unrelated' — `delay` is a
+    // DSN reporting a temporary failure (see `isTransientDeliveryReport`).
     kind: text("kind").notNull(),
     // The send this message answers, once correlated through our own Message-Id.
     // Null for `unrelated`.
@@ -711,6 +712,29 @@ export const imapMessagesRaw = pgTable(
     index("imap_messages_raw_campaign_idx").on(table.instantlyCampaignId),
     index("imap_messages_raw_polled_at_idx").on(table.polledAt),
   ],
+);
+
+// Audit: a silver event taken back out of (or re-pointed within)
+// `instantly_events` because the evidence that produced it did not support it.
+// First use: DSNs reporting a TEMPORARY delay that were promoted as
+// `email_bounced` (see `delayed-dsn-backfill.ts`). The whole original row is
+// kept in `event`, so undoing is `INSERT INTO instantly_events SELECT
+// (jsonb_populate_record(NULL::instantly_events, event)).*` — nothing is lost.
+// `action` = 'retracted' (row deleted) | 'reattributed' (row kept, source moved
+// to the permanent-failure DSN that later arrived for the same send).
+export const instantlyEventsRetracted = pgTable(
+  "instantly_events_retracted",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    eventId: text("event_id").notNull(),
+    action: text("action").notNull(),
+    reason: text("reason").notNull(),
+    event: jsonb("event").notNull(),
+    priorDeliveryStatus: text("prior_delivery_status"),
+    replacementSourceRowId: text("replacement_source_row_id"),
+    retractedAt: timestamp("retracted_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("instantly_events_retracted_event_idx").on(table.eventId)],
 );
 
 // Bronze: an HTTP hit from a recipient on a link we minted (opt-out click now;

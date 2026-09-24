@@ -26,6 +26,7 @@ import {
   selectUnqualifiedReplies,
 } from "../lib/reply-qualification-fallback";
 import { backfillReplyOptOuts } from "../lib/reply-optout-backfill";
+import { backfillDelayedDsns } from "../lib/delayed-dsn-backfill";
 import { backfillScannerClicks } from "../lib/self-send/click-scanner-backfill";
 import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
 import { syncSlowRampOff } from "../lib/sync-slow-ramp";
@@ -1087,6 +1088,29 @@ router.post("/reply-optout-backfill", async (req: Request, res: Response) => {
   });
 });
 
+
+/**
+ * POST /internal/audit/delayed-dsn-backfill
+ *
+ * Platform-scoped. Takes back the `email_bounced` events that a TEMPORARY
+ * delivery delay (Gmail "** Delivery incomplete **", RFC 3464 `Action: delayed`,
+ * 4.x.x) produced before the IMAP poller learned to tell a delay from a bounce.
+ * A wrong event whose send later DID fail permanently is re-pointed at that
+ * permanent notice; one that never failed is retracted. Every touched event is
+ * archived whole in `instantly_events_retracted` first — see
+ * `lib/delayed-dsn-backfill.ts`.
+ *
+ * `{dryRun}` DEFAULTS TO TRUE and answers synchronously with the plan, naming
+ * the leads whose bounce would be retracted. `{dryRun: false}` runs
+ * synchronously too — a few hundred rows. Idempotent.
+ */
+router.post("/delayed-dsn-backfill", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { dryRun?: unknown };
+  const dryRun = body.dryRun !== false;
+  const summary = await backfillDelayedDsns({ dryRun });
+  console.log(`[audit] delayed-dsn-backfill: done dryRun=${dryRun} ${JSON.stringify(summary)}`);
+  res.json({ dryRun, ...summary });
+});
 
 /**
  * POST /internal/audit/click-scanner-backfill

@@ -421,6 +421,13 @@
       "when": 1789898523213,
       "tag": "0059_fx_rates",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1789898524213,
+      "tag": "0060_instantly_events_retracted",
+      "breakpoints": true
     }
   ]
 }
