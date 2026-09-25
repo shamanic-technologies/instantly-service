@@ -117,6 +117,18 @@ export async function maybeTriggerSalesInterestCampaign(
   eventType: string,
 ): Promise<void> {
   if (!isSalesInterestQualification(eventType)) return;
+  await triggerSalesInterestLeg(campaign, leadEmail);
+}
+
+/**
+ * The ask itself, without the reply-kind gate — for a caller that already knows
+ * a buyer is owed an answer (a stale drafted answer being redrafted). Same
+ * scope rules, same fail-soft contract: never throws.
+ */
+export async function triggerSalesInterestLeg(
+  campaign: SalesInterestTriggerCampaign,
+  leadEmail: string,
+): Promise<void> {
   if (!campaign.orgId) return;
   // A platform send belongs to no caller campaign, so it is on no funnel and no
   // offer. There is nothing to name, so nothing is asked.

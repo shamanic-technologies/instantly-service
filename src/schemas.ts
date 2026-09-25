@@ -1329,27 +1329,6 @@ const ReplyToLeadResultSchema = z
   })
   .openapi("ReplyToLeadResult");
 
-const ScheduledReplyResultSchema = z
-  .object({
-    transport: z.enum(["instantly", "smtp"]),
-    instantlyCampaignId: z.string(),
-    leadEmail: z.string(),
-    accountEmail: z
-      .string()
-      .describe("The mailbox that will answer. Resolved now, not at dispatch."),
-    subject: z.string(),
-    cc: z.string(),
-    timezone: z
-      .string()
-      .describe("The prospect's timezone the sending window was resolved in"),
-    scheduledFor: z
-      .string()
-      .describe(
-        "First instant the prospect's Mon-Fri 08:00-17:00 window opens, ISO 8601 UTC. A LOWER BOUND — a weekend still holds the reply to the next sending day.",
-      ),
-  })
-  .openapi("ScheduledReplyResult");
-
 const ReplyToLeadResponseSchema = z
   .object({
     success: z.literal(true),
@@ -1357,14 +1336,6 @@ const ReplyToLeadResponseSchema = z
     reply: ReplyToLeadResultSchema,
   })
   .openapi("ReplyToLeadResponse");
-
-const ScheduledReplyResponseSchema = z
-  .object({
-    success: z.literal(true),
-    status: z.literal("scheduled"),
-    scheduled: ScheduledReplyResultSchema,
-  })
-  .openapi("ScheduledReplyResponse");
 
 const ReplyToLeadErrorSchema = z
   .object({
@@ -1394,7 +1365,7 @@ registry.registerPath({
     "**Threaded or nothing.** On the Instantly transport the reply goes out through `POST /emails/reply`, threaded onto the prospect's latest inbound message; on the self-send transport we dispatch it ourselves with `In-Reply-To` / `References` over the conversation we already hold in bronze. There is NO fallback to a fresh email: if the thread cannot be found the call fails with `code: \"no_reply_to_thread\"`.\n\n" +
     "**The agency inbox is CC'd, visibly.** Every reply carries it as a CC (never a BCC) so a human can read the exchange and be pulled into it by a reply-all. Cold sequence sends carry no CC — this applies only to the one-to-one answer.\n\n" +
     "**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail.\n\n" +
-    "**The answer waits for the prospect's own business hours.** Everything else this service sends already does — a sequence step is held until the recipient's Mon-Fri 08:00-17:00 window opens in THEIR timezone. A reply produced outside it is enqueued (`202`, `status: \"scheduled\"`) and dispatched by the same hourly worker that sends the sequence steps, at the window's next opening; inside it, the reply goes out immediately (`200`, `status: \"sent\"`). Either way every refusal below is raised synchronously, before the decision. A scheduled reply is still NOT a sequence step: no hold, no step number, no capacity consumed.\n\n" +
+    "**The answer goes out immediately, at any hour, on any day.** A prospect who just wrote to us is at their inbox now, so a one-to-one answer is never held for their business hours (cold sequence steps still are). It is still NOT a sequence step: no hold, no step number, no capacity consumed.\n\n" +
     "**A human takeover stops the automated responder.** When `sent_by` is `automation` (the default), the reply is refused with `409 human_took_over` if a PERSON has answered this thread since the prospect last wrote — read from what actually went out, both from this service and from Instantly's own inbox. A `human` reply is never gated. Nothing is prepared or sent on a refusal.\n\n" +
     "**Cost:** none declared. The mailbox estate is a fixed cost we absorb rather than rebill, so a reply is priced exactly like the sequence sends themselves.",
   request: {
@@ -1405,11 +1376,6 @@ registry.registerPath({
     200: {
       description: "The reply was sent into the lead's existing thread",
       content: { "application/json": { schema: ReplyToLeadResponseSchema } },
-    },
-    202: {
-      description:
-        "The prospect's sending window is closed, so the reply is queued and goes out when it next opens. Everything needed to send it was resolved and accepted.",
-      content: { "application/json": { schema: ScheduledReplyResponseSchema } },
     },
     400: {
       description: "Invalid body or missing x-user-id",
