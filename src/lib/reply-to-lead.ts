@@ -71,13 +71,6 @@ import {
   SEND_TRANSPORT_SMTP,
   type SendTransport,
 } from "./self-send/transport";
-import { isSendingDay } from "./sending-calendar";
-import {
-  isWithinLocalSendWindow,
-  nextLocalSendInstant,
-  resolveLeadTimezone,
-} from "./sending-window";
-import { enqueueScheduledReply } from "./scheduled-replies";
 import { MANUAL_REPLY_STEP } from "./manual-reply-step";
 import {
   findHumanTakeover,
@@ -178,12 +171,8 @@ export interface ReplyToLeadResult {
 /**
  * A reply that has been fully resolved but not yet sent.
  *
- * Producing this is what keeps every named refusal SYNCHRONOUS even when the
- * dispatch itself waits for the prospect's morning: the thread, the mailbox and
- * the credential are all checked while the caller is still on the phone. The
- * prepared values are deliberately DISCARDED when the reply is deferred — the
- * drain re-resolves the anchor, because a newer inbound message may have
- * arrived in the meantime and the answer belongs under whatever they said last.
+ * Resolving everything first keeps every named refusal ahead of the send: the
+ * thread, the mailbox and the credential are checked before anything leaves.
  */
 interface PreparedInstantlyReply {
   transport: "instantly";
@@ -210,28 +199,19 @@ interface PreparedSmtpReply {
   cc: string;
 }
 
-/** A reply that is waiting for the prospect's own business hours to open. */
-export interface ScheduledReplyResult {
-  transport: SendTransport;
-  instantlyCampaignId: string;
-  leadEmail: string;
-  /** The mailbox that will answer — resolved now, not at dispatch. */
-  accountEmail: string;
-  subject: string;
-  cc: string;
-  /** The prospect's timezone the window was resolved in. */
-  timezone: string;
-  /** The first instant their window opens, ISO 8601 UTC. A LOWER BOUND. */
-  scheduledFor: string;
-}
-
 /**
- * What happened to the answer: it went out, or it is waiting for the prospect's
- * morning. Both are successes; a refusal throws `ReplyToLeadError`.
+ * What happened to the answer. There is one success now: it went out.
+ *
+ * ⚠️ AN ANSWER TO A PROSPECT WHO JUST WROTE TO US IS NEVER HELD (2026-09-25).
+ * It used to wait for their Mon-Fri 08:00-17:00 window and came back as a
+ * `scheduled` outcome; the owner reversed that. A prospect who replies is at
+ * their inbox RIGHT NOW, and an answer that lands the next morning loses them —
+ * measured on a positive reply read at 17:43 New York time and queued for 16
+ * hours. It also froze the drafted words: "tomorrow, September 25th" would have
+ * gone out ON September 25th. Cold sequence steps keep their window; only the
+ * one-to-one answer changed. Do NOT reintroduce a hold here.
  */
-export type ReplyToLeadOutcome =
-  | { status: "sent"; reply: ReplyToLeadResult }
-  | { status: "scheduled"; scheduled: ScheduledReplyResult };
+export type ReplyToLeadOutcome = { status: "sent"; reply: ReplyToLeadResult };
 
 export interface CampaignRow {
   /** The stored campaign row this sequence belongs to. */
@@ -828,55 +808,18 @@ async function deliverSmtpReply(
 }
 
 /**
- * True when the prospect can be mailed at this instant — the SAME two gates the
- * sequence dispatch worker applies, in the same order, from the same modules.
- *
- * Nothing here is reply-specific: `isSendingDay` is the fleet's Mon-Fri
- * calendar and `isWithinLocalSendWindow` is the prospect's own 08:00-17:00 in
- * their own timezone, with the fleet default when we hold none. Do NOT add a
- * reply-only rule to either — the queue's existing behaviour IS the answer.
- */
-export function canSendReplyNow(
-  asOf: Date,
-  timezone: string | null | undefined,
-): boolean {
-  return isSendingDay(asOf) && isWithinLocalSendWindow(asOf, timezone);
-}
-
-export interface ReplyToLeadOptions {
-  asOf?: Date;
-  /**
-   * Whether a reply produced outside the prospect's window waits.
-   *
-   * The drain passes `false`: it has already checked the window itself and is
-   * dispatching what it selected, so re-deferring there would put a reply back
-   * in the queue it was just taken out of.
-   */
-  deferOutsideWindow?: boolean;
-}
-
-/**
  * Answer a lead who replied, in their own thread, from the mailbox that
- * contacted them — at a sane hour in THEIR day.
+ * contacted them — NOW, whatever time it is in their day.
  *
- * ⚠️ THE ANSWER WAITS FOR THE PROSPECT'S BUSINESS HOURS, exactly like every
- * other message this service sends. A reply produced at 23:00 their time is
- * enqueued and goes out when their window next opens, drained by the SAME
- * hourly worker that sends the sequence steps. Nothing about the reply becomes
- * a sequence step: it takes no `sequence_steps` row and no `sequence_costs`
- * hold, and it is still recorded in bronze at step 0 when it goes out.
- *
- * Every refusal is raised BEFORE that decision, so a caller learns immediately
- * that there is no thread, no mailbox or no credential rather than hours later.
+ * ⚠️ NO BUSINESS-HOURS HOLD. See `ReplyToLeadOutcome`: the answer goes out the
+ * moment it is produced, so any relative day the words name ("tomorrow", a
+ * weekday) is true when the prospect reads it. Every refusal still runs first.
  *
  * Throws `ReplyToLeadError` on every refusal.
  */
 export async function replyToLead(
   input: ReplyToLeadInput,
-  options: ReplyToLeadOptions = {},
 ): Promise<ReplyToLeadOutcome> {
-  const asOf = options.asOf ?? new Date();
-
   const campaign = await loadCampaign(
     input.orgId,
     input.campaignId,
@@ -914,44 +857,6 @@ export async function replyToLead(
     campaign.sendTransport === SEND_TRANSPORT_SMTP
       ? await prepareSmtpReply(campaign, input)
       : await prepareInstantlyReply(campaign, input);
-
-  if (
-    options.deferOutsideWindow !== false &&
-    !canSendReplyNow(asOf, campaign.timezone)
-  ) {
-    const timezone = resolveLeadTimezone(campaign.timezone);
-    const scheduledFor = nextLocalSendInstant(asOf, timezone);
-
-    const row = await enqueueScheduledReply({
-      orgId: input.orgId,
-      userId: input.userId,
-      campaignId: campaign.campaignId,
-      instantlyCampaignId: campaign.instantlyCampaignId,
-      leadEmail: campaign.leadEmail,
-      bodyHtml: input.bodyHtml,
-      // ⚠️ LOAD-BEARING. The drain replays this row through `replyToLead`, so a
-      // human reply deferred to the prospect's morning would come back as an
-      // `automation` one under the default and be refused by a gate that does
-      // not apply to it.
-      sentBy: input.sentBy,
-      timezone: campaign.timezone,
-      scheduledFor,
-    });
-
-    return {
-      status: "scheduled",
-      scheduled: {
-        transport: campaign.sendTransport,
-        instantlyCampaignId: campaign.instantlyCampaignId,
-        leadEmail: campaign.leadEmail,
-        accountEmail: prepared.accountEmail,
-        subject: prepared.subject,
-        cc: prepared.cc,
-        timezone,
-        scheduledFor: (row.scheduledFor ?? scheduledFor).toISOString(),
-      },
-    };
-  }
 
   const reply =
     prepared.transport === SEND_TRANSPORT_SMTP

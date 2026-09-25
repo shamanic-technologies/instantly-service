@@ -24,10 +24,7 @@ import {
   resolveMailboxCredential,
   type MailboxCredential,
 } from "./mailbox-credentials";
-import {
-  loadPendingScheduledReplies,
-  selectDueScheduledReplies,
-} from "../scheduled-replies";
+import { loadPendingScheduledReplies } from "../scheduled-replies";
 import { buildMessage } from "./message";
 import { runPoll } from "./imap-poller";
 import { dispatchMessage, SmtpDispatchError } from "./smtp";
@@ -94,14 +91,13 @@ export interface DispatchSummary {
   transient: number;
   failed: number;
   /**
-   * Answers to prospects who wrote back, held until their own business hours.
-   *
-   * Drained by the SAME run, from the SAME window, deliberately: a reply is the
-   * one message where landing at 23:05 local reads worst, and giving it its own
-   * schedule would be a second set of rules to keep in step with this one. It
+   * Answers to prospects who wrote back that were held before 2026-09-25, when
+   * answers stopped waiting for business hours. A fresh one is sent, a stale
+   * automated draft is handed back for a fresh answer (`repliesRedrafted`). It
    * is NOT a sequence step — no hold, no step number, no capacity consumed.
    */
   repliesDue: number;
+  repliesRedrafted: number;
   repliesSent: number;
   repliesFailed: number;
   /**
@@ -589,6 +585,7 @@ function emptySummary(): DispatchSummary {
     transient: 0,
     failed: 0,
     repliesDue: 0,
+    repliesRedrafted: 0,
     repliesSent: 0,
     repliesFailed: 0,
     polled: false,
@@ -673,10 +670,8 @@ async function runDispatchExclusive(
   // 10-minute interval would read 249 mailboxes around the clock to discover
   // there was nothing to do.
   let current = await plan();
-  const waitingReplies = selectDueScheduledReplies(
-    await loadPendingScheduledReplies(),
-    asOf,
-  );
+  // Any waiting reply is owed now — there is no window on an answer any more.
+  const waitingReplies = await loadPendingScheduledReplies();
   const hasWork = current.selection.selected.length > 0 || waitingReplies.length > 0;
 
   if (!hasWork) {
@@ -746,6 +741,7 @@ async function runDispatchExclusive(
     const replies = await dispatchScheduledReplies(asOf);
     summary.repliesDue = replies.due;
     summary.repliesSent = replies.sent;
+    summary.repliesRedrafted = replies.redrafted;
     summary.repliesFailed = replies.failed;
   } catch (error) {
     console.error(

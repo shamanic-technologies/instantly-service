@@ -127,7 +127,7 @@ const OUT_OF_WINDOW = new Date("2026-09-03T04:00:00.000Z");
 
 /** Reply at an instant the prospect can be mailed, and assert it went out. */
 async function sendNow(input = INPUT) {
-  const outcome = await replyToLead(input, { asOf: IN_WINDOW });
+  const outcome = await replyToLead(input);
   if (outcome.status !== "sent") {
     throw new Error(`expected the reply to be sent, got "${outcome.status}"`);
   }
@@ -579,107 +579,67 @@ describe("the agency inbox rides every reply, in CC", () => {
   });
 });
 
-// ─── The answer waits for the prospect's own business hours ──────────────────
+// ─── The answer goes out now, whatever the hour ─────────────────────────────
 
-describe("a reply waits for the prospect's sending window", () => {
+describe("an answer is never held for the prospect's business hours", () => {
   it("sends immediately when their window is open", async () => {
     mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
     mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
-    const outcome = await replyToLead(INPUT, { asOf: IN_WINDOW });
+    const outcome = await replyToLead(INPUT);
 
     expect(outcome.status).toBe("sent");
     expect(mockReplyToEmail).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT send at 23:00 in the prospect's day — it schedules the next opening", async () => {
-    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
-    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
-    // The insert is the enqueue; it must return the stored row.
-    mockInsertValues.mockReturnValue({
-      returning: () =>
-        Promise.resolve([{ id: "sr-1", scheduledFor: new Date("2026-09-03T13:00:00.000Z") }]),
-    });
+  it("sends immediately at 23:00 in the prospect's day — nothing is queued", async () => {
+    // The 2026-09-24 case: a positive reply read at 17:43 New York time used to
+    // wait 16 hours for 08:00. The prospect is at their inbox now.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(OUT_OF_WINDOW);
+    try {
+      mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+      mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
+      mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
-    const outcome = await replyToLead(INPUT, { asOf: OUT_OF_WINDOW });
+      const outcome = await replyToLead(INPUT);
 
-    expect(outcome.status).toBe("scheduled");
-    // Nothing left the building.
-    expect(mockReplyToEmail).not.toHaveBeenCalled();
-    if (outcome.status !== "scheduled") throw new Error("unreachable");
-    // 08:00 America/Chicago the next morning = 13:00 UTC.
-    expect(outcome.scheduled.scheduledFor).toBe("2026-09-03T13:00:00.000Z");
-    expect(outcome.scheduled.timezone).toBe("America/Chicago");
-    // Resolved NOW, not deferred to dispatch — the caller learns who answers.
-    expect(outcome.scheduled.accountEmail).toBe("amy@boostdistribute.com");
+      expect(outcome.status).toBe("sent");
+      expect(mockReplyToEmail).toHaveBeenCalledTimes(1);
+      // The only insert is the bronze record of what went out — no waiting row.
+      expect(mockInsertValues).toHaveBeenCalledTimes(1);
+      const values = mockInsertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(values.step).toBe(MANUAL_REPLY_STEP);
+      expect(values).not.toHaveProperty("scheduledFor");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("resolves the window in the LEAD's timezone, not ours", async () => {
-    // 04:00 UTC is 23:00 in Chicago (closed) but 13:00 in Tokyo (open).
-    mockDbExecute.mockResolvedValueOnce(
-      pgResult([campaignRow({ timezone: "Asia/Tokyo" })]),
-    );
-    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
-    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+  it("sends immediately on a weekend", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-26T03:00:00.000Z"));
+    try {
+      mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+      mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
+      mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
-    const outcome = await replyToLead(INPUT, { asOf: OUT_OF_WINDOW });
-
-    expect(outcome.status).toBe("sent");
+      expect((await replyToLead(INPUT)).status).toBe("sent");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("raises the named refusals SYNCHRONOUSLY even when it would wait", async () => {
-    // No inbound message: the caller must learn now, not hours later.
+  it("still raises the named refusals before anything is sent", async () => {
     mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
     mockListEmails.mockResolvedValue([email({ id: "ours", ue_type: 1 })]);
 
-    await expect(replyToLead(INPUT, { asOf: OUT_OF_WINDOW })).rejects.toMatchObject({
+    await expect(replyToLead(INPUT)).rejects.toMatchObject({
       code: "no_reply_to_thread",
     });
     expect(mockInsertValues).not.toHaveBeenCalled();
-  });
-
-  it("a scheduled reply takes NO hold and NO sequence step — only the queue row", async () => {
-    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
-    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
-    mockInsertValues.mockReturnValue({
-      returning: () => Promise.resolve([{ id: "sr-1", scheduledFor: OUT_OF_WINDOW }]),
-    });
-
-    await replyToLead(INPUT, { asOf: OUT_OF_WINDOW });
-
-    // Exactly one insert: the waiting row. No sequence_costs, no sequence_steps,
-    // and no bronze dispatch row (nothing was dispatched).
-    expect(mockInsertValues).toHaveBeenCalledTimes(1);
-    const values = mockInsertValues.mock.calls[0]![0] as Record<string, unknown>;
-    expect(values).not.toHaveProperty("step");
-    expect(values).not.toHaveProperty("costId");
-    expect(values.bodyHtml).toBe(INPUT.bodyHtml);
-  });
-
-  it("the drain does NOT re-defer what it already selected", async () => {
-    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
-    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
-    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
-
-    const outcome = await replyToLead(INPUT, {
-      asOf: OUT_OF_WINDOW,
-      deferOutsideWindow: false,
-    });
-
-    expect(outcome.status).toBe("sent");
-  });
-
-  it("still records the reply in bronze at step 0 when it finally goes out", async () => {
-    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
-    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Quick question" })]);
-    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
-
-    await replyToLead(INPUT, { asOf: OUT_OF_WINDOW, deferOutsideWindow: false });
-
-    const values = mockInsertValues.mock.calls.at(-1)![0] as Record<string, unknown>;
-    expect(values.step).toBe(MANUAL_REPLY_STEP);
-    expect(MANUAL_REPLY_STEP).toBe(0);
+    expect(mockReplyToEmail).not.toHaveBeenCalled();
   });
 });
 
@@ -705,7 +665,7 @@ describe("a human took over, so the automated responder stops", () => {
       { at: "2026-09-04T17:51:31.000Z", source: "instantly_unibox" },
     ]);
 
-    await expect(replyToLead(AUTOMATED, { asOf: IN_WINDOW })).rejects.toMatchObject({
+    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({
       code: "human_took_over",
       status: 409,
     });
@@ -717,7 +677,7 @@ describe("a human took over, so the automated responder stops", () => {
     // placement as the opt-out and re-contact gates on POST /orgs/send.
     queueAutomationReply([{ at: "2026-09-04T17:51:31.000Z", source: "dispatched" }]);
 
-    await expect(replyToLead(AUTOMATED, { asOf: IN_WINDOW })).rejects.toThrow();
+    await expect(replyToLead(AUTOMATED)).rejects.toThrow();
 
     expect(mockListEmails).not.toHaveBeenCalled();
     expect(mockReplyToEmail).not.toHaveBeenCalled();
@@ -733,7 +693,7 @@ describe("a human took over, so the automated responder stops", () => {
       { at: "2026-09-04T17:51:31.000Z", source: "instantly_unibox" },
     ]);
 
-    await expect(replyToLead(AUTOMATED, { asOf: IN_WINDOW })).rejects.toThrow(
+    await expect(replyToLead(AUTOMATED)).rejects.toThrow(
       /2026-09-04T17:51:31.000Z.*instantly_unibox/,
     );
   });
@@ -743,7 +703,7 @@ describe("a human took over, so the automated responder stops", () => {
     mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
-    const outcome = await replyToLead(AUTOMATED, { asOf: IN_WINDOW });
+    const outcome = await replyToLead(AUTOMATED);
 
     expect(outcome.status).toBe("sent");
     expect(mockReplyToEmail).toHaveBeenCalledTimes(1);
@@ -758,10 +718,7 @@ describe("a human took over, so the automated responder stops", () => {
     mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
-    const outcome = await replyToLead(
-      { ...INPUT, sentBy: "human" },
-      { asOf: IN_WINDOW },
-    );
+    const outcome = await replyToLead({ ...INPUT, sentBy: "human" });
 
     expect(outcome.status).toBe("sent");
     expect(mockDbExecute).toHaveBeenCalledTimes(1);
@@ -774,36 +731,12 @@ describe("a human took over, so the automated responder stops", () => {
     mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
-    await replyToLead(AUTOMATED, { asOf: IN_WINDOW });
+    await replyToLead(AUTOMATED);
 
     const row = mockInsertValues.mock.calls[0][0] as {
       payload: { sentBy?: string; kind?: string };
     };
     expect(row.payload.kind).toBe("manual_reply");
     expect(row.payload.sentBy).toBe("automation");
-  });
-
-  it("remembers who asked when the answer has to wait for their morning", async () => {
-    // ⚠️ LOAD-BEARING. The drain replays the row through this same function, so
-    // a human reply deferred overnight would come back carrying the automation
-    // default and be refused by a gate that does not apply to it.
-    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
-    mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
-    mockInsertValues.mockReturnValue({
-      returning: () =>
-        Promise.resolve([
-          { id: "sr-1", scheduledFor: new Date("2026-09-03T13:00:00.000Z") },
-        ]),
-    });
-
-    const outcome = await replyToLead(
-      { ...INPUT, sentBy: "human" },
-      { asOf: OUT_OF_WINDOW },
-    );
-
-    expect(outcome.status).toBe("scheduled");
-    expect(mockInsertValues).toHaveBeenCalledWith(
-      expect.objectContaining({ sentBy: "human" }),
-    );
   });
 });
