@@ -302,6 +302,24 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
 }
 
 /**
+ * Split a fill-ordered list into its contiguous vendor tiers. `accountFillOrder`
+ * sorts on the vendor rank first, so each tier is one contiguous run.
+ */
+function groupByVendor<T extends FillOrderAccount>(ordered: T[]): T[][] {
+  const groups: T[][] = [];
+  let rank: number | null = null;
+  for (const a of ordered) {
+    const r = providerFillRank(a.infraProvider, a.vendorPrewarmedAt);
+    if (r !== rank) {
+      groups.push([]);
+      rank = r;
+    }
+    groups[groups.length - 1]!.push(a);
+  }
+  return groups;
+}
+
+/**
  * Sequential-fill account selection — saturate the first account in the fixed
  * order before touching the second.
  *
@@ -311,9 +329,11 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
  *   cap   = min(daily_limit, rampCapForVolume(the mailbox's sustained volume))
  *   load  = committed steps already booked on that day (+ today's real
  *           dispatches, on the first day only)
- *   pick  = the FIRST account of `accountFillOrder` with room on EVERY footprint
- *           day; failing that, the first with room on day one; failing that, the
- *           least-overloaded.
+ *   pick  = within the cheapest VENDOR tier, the FIRST account of
+ *           `accountFillOrder` with room on EVERY footprint day; failing that,
+ *           the first with room on day one. Only when no account of that vendor
+ *           has room today does the next vendor get asked the same two
+ *           questions. Everyone full on day one → the least-overloaded.
  *
  * Checking only day one — which is what this did before — assigns a lead whose
  * followups then collide on a day nobody looked at. The mailbox does not refuse
@@ -378,18 +398,27 @@ export function pickSequentialFillAccount<T extends FillOrderAccount>(
   const days = footprint.length > 0 ? footprint : [dateKeyUTC(asOf)];
   const firstDay = days.slice(0, 1);
 
-  // Tier 1 — the whole sequence fits.
-  for (const a of ordered) {
-    if (fitsFootprint(a, byEmail, days, asOf)) return a;
-  }
+  // The VENDOR is the outer loop, and the footprint tiers run INSIDE it. Run
+  // across the whole fleet instead, the footprint check outranks the vendor: a
+  // cheap vendor carrying the backlog has its D+3 / D+10 booked, the vendor we
+  // are drying up has empty future days BECAUSE it is being dried up, so it
+  // wins tier 1 on almost every lead while the cheap vendor still has room
+  // today. Measured 2026-09-26: 487 of 602 new sequences went to Instantly DFY.
+  // A later vendor only sees a lead once no account ahead of it has room TODAY.
+  for (const group of groupByVendor(ordered)) {
+    // Tier 1 — the whole sequence fits.
+    for (const a of group) {
+      if (fitsFootprint(a, byEmail, days, asOf)) return a;
+    }
 
-  // Tier 2 — nobody can carry the whole sequence, so fall back to the question
-  // this selector asked before it could see past today. Deliberately NOT a
-  // refusal: a fleet with no multi-day room is exactly the backlogged state in
-  // which sends must still go out, and holding the lead would only move the
-  // problem to a queue nobody watches.
-  for (const a of ordered) {
-    if (fitsFootprint(a, byEmail, firstDay, asOf)) return a;
+    // Tier 2 — nobody in this vendor can carry the whole sequence, so fall
+    // back to the question this selector asked before it could see past today.
+    // Deliberately NOT a cascade to the next vendor: a backlogged followup goes
+    // out late on a cheap mailbox, which is the price of never feeding a vendor
+    // we are winding down.
+    for (const a of group) {
+      if (fitsFootprint(a, byEmail, firstDay, asOf)) return a;
+    }
   }
 
   // Tier 3 — everything is full on day one too: the least-overloaded account is
