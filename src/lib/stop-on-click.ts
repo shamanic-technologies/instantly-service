@@ -1,32 +1,28 @@
 /**
- * Stop-on-click for campaigns whose funnel opens on a website visit.
+ * Stop-on-click for campaigns bought for a leg that lands on a website visit.
  *
  * When a prospect CLICKS a link in a cold email (`email_link_clicked`) AND the
- * campaign runs a funnel whose first leg is a visit (`form_magnet`,
- * `website_purchases`, `sales_meetings_from_website`), the lead is on the landing page — the conversion happens
- * there, so continuing the cold sequence only distracts. We PAUSE the lead's
- * Instantly campaign.
+ * campaign is bought for a leg whose ARRIVAL step is `website_visit` (today:
+ * `start_to_website_visit`), the lead is on the brand's site — the conversion
+ * happens there, so continuing the cold sequence only distracts. We PAUSE the
+ * lead's Instantly campaign.
  *
- * ⚠️ The gate is the CAMPAIGN's funnel, not the brand's goal. It used to read
- * `brands.current_goal === 'signup'` from brand-service, which was wrong on both
- * axes:
- *   - GRAIN. A funnel belongs to a campaign. Two campaigns of the same brand can
- *     run different funnels, so a brand-level answer is not an answer to the
- *     question being asked — it pauses sequences that should keep running, and
- *     misses ones that should stop.
- *   - SIGNAL. `current_goal` is a goal in the middle of being retired (see
- *     campaign-service migration 0042, which rewrites stated goals into stored
- *     funnels). `campaigns.funnel_key` is the fact that replaced it.
+ * ⚠️ The gate is the CAMPAIGN's leg, read from campaign-service (`legKey`), and
+ * what the leg means is read from features-service's published leg catalogue
+ * (`GET /public/channels` → `stepTransitions[].to.key`). The leg key is never
+ * parsed. This replaced a gate on the campaign's sales funnel, a concept the
+ * fleet retired; before that it read the brand's `current_goal`, which was the
+ * wrong GRAIN (two campaigns of one brand can be bought for different legs).
  *
- * `sales_meetings_from_conversation` deliberately does NOT stop: its conversion starts
- * with a REPLY, so a click says nothing about whether to keep sending. A NULL
- * funnel does not stop either — campaign-service's own rule is "a funnel is a
- * fact, never a guess", and pausing a live sequence on an unknown is the wrong
- * direction to be wrong in.
+ * A leg landing on `conversation` deliberately does NOT stop: its conversion
+ * starts with a REPLY, so a click says nothing about whether to keep sending. A
+ * NULL leg does not stop either — pausing a live sequence on an unknown is the
+ * wrong direction to be wrong in. A leg the catalogue does not know is WARNED
+ * (that is what a vocabulary rename looks like from here) and does not stop.
  *
  * A reply, by contrast, ALWAYS stops the sequence whatever its sentiment — that
  * is `reply_received` in `SEQUENCE_STOP_EVENTS`, entirely separate from this and
- * not conditioned on any funnel or goal. This side effect is only about clicks.
+ * not conditioned on any leg. This side effect is only about clicks.
  *
  * Placement: fired as a fail-soft side effect from `promoteEvent` in
  * silver-promote.ts, on REAL (non-inferred) click events only.
@@ -44,7 +40,8 @@
 
 import { resolveInstantlyApiKey } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
-import { funnelStopsOnClick, getCampaignFunnelKey, isUnrecognisedFunnelKey } from "./campaign-client";
+import { getCampaignLeg } from "./campaign-client";
+import { WEBSITE_VISIT_STEP_KEY, getChannelCatalogue, legArrivalStep } from "./leg-catalogue";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { stopSelfSendSequence } from "./self-send/stop-sequence";
 
@@ -59,44 +56,46 @@ export interface StopOnClickCampaign {
 }
 
 /**
- * Pause the lead's Instantly campaign iff its funnel opens on a website visit.
+ * Pause the lead's Instantly campaign iff its leg lands on a website visit.
  *
- * Fully fail-soft: any error (campaign-service down, key resolution, Instantly
- * pause) is swallowed and logged — the sequence simply continues. NEVER throws
- * into the webhook promote path (a 5xx would make Instantly auto-pause the
- * webhook).
+ * Fully fail-soft: any error (campaign-service or features-service down, key
+ * resolution, Instantly pause) is swallowed and logged — the sequence simply
+ * continues. NEVER throws into the webhook promote path (a 5xx would make
+ * Instantly auto-pause the webhook).
  */
-export async function maybeStopOnClickForFunnel(
+export async function maybeStopOnClickForLeg(
   campaign: StopOnClickCampaign,
   leadEmail: string,
 ): Promise<void> {
   if (!campaign.orgId) return;
-  // A platform send belongs to no caller campaign, so it runs no funnel and
+  // A platform send belongs to no caller campaign, so it is bought for no leg and
   // there is nothing to read. Not an error — simply out of scope.
   if (!campaign.campaignId) return;
 
   try {
-    const funnelKey = await getCampaignFunnelKey(campaign.campaignId, campaign.orgId);
+    const leg = await getCampaignLeg(campaign.campaignId, campaign.orgId);
+    if (!leg || !leg.legKey) return;
 
-    // A funnel we do not recognise is treated as no funnel (we never guess), but it is NOT the
-    // same fact as a campaign that stated none — it is what a vocabulary rename looks like from
-    // here, and the last one took the whole fleet's stop-on-click silent for weeks with nothing in
-    // the logs to see. Say so, once per click, and the next rename shows up the day it lands.
-    if (isUnrecognisedFunnelKey(funnelKey)) {
+    const arrival = legArrivalStep(await getChannelCatalogue(), leg.featureSlug, leg.legKey);
+
+    // A leg the catalogue does not know is treated as no leg (we never guess), but it is NOT the
+    // same fact as a campaign bought for none — it is what a vocabulary rename looks like from
+    // here. Say so, once per click, so the next rename shows up the day it lands.
+    if (arrival === null) {
       console.warn(
-        `[instantly-service] stop-on-click: unrecognised funnel key "${funnelKey}" on campaign=${campaign.campaignId} ` +
-          `— treating as no funnel; if campaign-service renamed the vocabulary, funnelStopsOnClick is now blind to it`,
+        `[instantly-service] stop-on-click: leg "${leg.legKey}" (feature=${leg.featureSlug}) on campaign=${campaign.campaignId} ` +
+          `is not in features-service's leg catalogue — treating as no leg; the sequence continues`,
       );
       return;
     }
 
-    if (!funnelStopsOnClick(funnelKey)) return;
+    if (arrival !== WEBSITE_VISIT_STEP_KEY) return;
 
     // A sequence WE dispatch has no Instantly campaign to pause, and reconcile
     // skips a `self:` row outright — so the stop has to be performed locally,
     // holds included, or it would not happen at all.
     if (isSelfSendCampaignId(campaign.instantlyCampaignId)) {
-      await stopSelfSendSequence(campaign, leadEmail, `stop-on-click funnel=${funnelKey}`);
+      await stopSelfSendSequence(campaign, leadEmail, `stop-on-click leg=${leg.legKey}`);
       return;
     }
 
@@ -107,7 +106,7 @@ export async function maybeStopOnClickForFunnel(
     await updateCampaignStatus(key, campaign.instantlyCampaignId, "paused");
 
     console.log(
-      `[instantly-service] stop-on-click: paused campaign=${campaign.instantlyCampaignId} lead=${leadEmail} (funnel=${funnelKey})`,
+      `[instantly-service] stop-on-click: paused campaign=${campaign.instantlyCampaignId} lead=${leadEmail} (leg=${leg.legKey})`,
     );
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);

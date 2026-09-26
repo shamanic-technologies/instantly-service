@@ -1,11 +1,11 @@
 /**
- * campaign-service client — reads the FUNNEL a campaign runs, and which stored
- * rows are ONE campaign.
+ * campaign-service client — reads the LEG a campaign is bought for, the scope a
+ * step trigger names, and which stored rows are ONE campaign.
  *
- * A funnel is a property of the CAMPAIGN, not of the brand: two campaigns of the
- * same brand can legitimately run different funnels, so reading this at brand
- * level answers a question nobody asked. campaign-service owns `funnel_key` and
- * is the only place it is a fact rather than an inference.
+ * A campaign is (offer x leg x channel): campaign-service owns `offerId`,
+ * `legKey` and `featureSlug`, and they are the only place those are facts
+ * rather than inferences. What a leg MEANS (where it lands the prospect) is
+ * features-service's statement, read through `leg-catalogue.ts`.
  */
 
 import {
@@ -17,95 +17,14 @@ import {
 const CAMPAIGN_SERVICE_URL = process.env.CAMPAIGN_SERVICE_URL;
 const CAMPAIGN_SERVICE_API_KEY = process.env.CAMPAIGN_SERVICE_API_KEY;
 
-/**
- * The sales-funnel vocabulary, mirroring campaign-service's `sales-funnel-vocabulary.ts`.
- *
- * These four ARE the funnels a campaign can state; campaign-service stores nothing else. The
- * previous gate here tested a `visit_` PREFIX, which was true of the pre-rename spellings and is
- * true of NONE of these — so every visit-led campaign silently stopped stopping the day the rename
- * landed. A prefix is a guess about how a vocabulary will be spelled next; an explicit map is not,
- * and it cannot rot the same way: adding a fifth funnel below is a type error until someone says
- * whether a click on it means the prospect has arrived.
- */
-export const SALES_FUNNEL_KEYS = [
-  "sales_meetings_from_conversation",
-  "sales_meetings_from_website",
-  "website_purchases",
-  "form_magnet",
-] as const;
-
-export type SalesFunnelKey = (typeof SALES_FUNNEL_KEYS)[number];
-
-/**
- * The pre-rename spelling of each funnel, as campaign rows written before campaign-service's
- * migration 0043 still carry it. Accepted forever on the way in, never emitted — dropping an entry
- * would silently un-stop every campaign a producer still names the old way, which is the failure
- * this map exists to prevent. Byte-identical to campaign-service's own `LEGACY_FUNNEL_KEYS`.
- */
-export const LEGACY_FUNNEL_KEYS: Readonly<Record<string, SalesFunnelKey>> = Object.freeze({
-  reply_meeting: "sales_meetings_from_conversation",
-  visit_meeting: "sales_meetings_from_website",
-  visit_signup: "website_purchases",
-  visit_form: "form_magnet",
-});
-
-const CANONICAL_FUNNEL_KEYS: ReadonlySet<string> = new Set(SALES_FUNNEL_KEYS);
-
-/**
- * The canonical funnel a value names, under any spelling — null when it names none.
- *
- * Never guesses: a token neither catalogue lists is "no funnel", not a fifth funnel we quietly
- * work. Mirrors campaign-service's `toFunnelKey`.
- */
-export function toFunnelKey(value: string | null | undefined): SalesFunnelKey | null {
-  if (!value) return null;
-  if (CANONICAL_FUNNEL_KEYS.has(value)) return value as SalesFunnelKey;
-  return LEGACY_FUNNEL_KEYS[value] ?? null;
-}
-
-/**
- * Does a click on this funnel mean the prospect has ALREADY arrived where the conversion happens?
- *
- * Exhaustive over the vocabulary on purpose — `Record<SalesFunnelKey, boolean>` makes a new funnel
- * a compile error rather than a silent `false`, so the next rename cannot re-create the outage this
- * replaces. Three of the four open on a website visit: a click puts the prospect on the landing
- * page, so more cold email only distracts. `sales_meetings_from_conversation` opens on a REPLY, so
- * a click says nothing about whether to keep sending.
- */
-const FUNNEL_OPENS_ON_VISIT: Readonly<Record<SalesFunnelKey, boolean>> = Object.freeze({
-  sales_meetings_from_conversation: false,
-  sales_meetings_from_website: true,
-  website_purchases: true,
-  form_magnet: true,
-});
-
-/**
- * True when this campaign's funnel opens on a website visit.
- *
- * A NULL funnel does NOT stop. campaign-service's own rule is that "a funnel is a fact, never a
- * guess" — a campaign that stated none keeps a null one, and pausing a live sequence on an unknown
- * is the wrong direction to be wrong in. An UNRECOGNISED token is the same absence, and it is the
- * one worth being loud about: it is exactly what a vocabulary rename looks like from here, so the
- * caller logs it rather than letting the fleet go quiet unobserved.
- */
-export function funnelStopsOnClick(funnelKey: string | null | undefined): boolean {
-  const canonical = toFunnelKey(funnelKey);
-  return canonical !== null && FUNNEL_OPENS_ON_VISIT[canonical];
-}
-
-/** True for a non-empty funnel token this service's vocabulary does not know. */
-export function isUnrecognisedFunnelKey(funnelKey: string | null | undefined): boolean {
-  return typeof funnelKey === "string" && funnelKey !== "" && toFunnelKey(funnelKey) === null;
-}
-
 interface CampaignRecord {
   id?: string | null;
   orgId?: string | null;
   brandId?: string | null;
   brandIds?: string[] | null;
   offerId?: string | null;
-  funnelKey?: string | null;
   legKey?: string | null;
+  featureSlug?: string | null;
   acquisitionChannel?: string | null;
 }
 
@@ -142,32 +61,40 @@ async function fetchCampaign(campaignId: string, orgId: string): Promise<Campaig
   return body.campaign ?? null;
 }
 
-/** A campaign's funnel key, null when it states none or the campaign is absent. */
-export async function getCampaignFunnelKey(
+/** The leg a campaign is bought for, on the channel that performs it. */
+export interface CampaignLeg {
+  /** features-service's leg key, verbatim. NULL is a real state (a campaign bought for no leg). */
+  legKey: string | null;
+  /** The channel (feature) the campaign runs on — the catalogue entry the leg is read from. */
+  featureSlug: string | null;
+}
+
+/** A campaign's leg, null when the campaign is absent. */
+export async function getCampaignLeg(
   campaignId: string,
   orgId: string,
-): Promise<string | null> {
+): Promise<CampaignLeg | null> {
   const campaign = await fetchCampaign(campaignId, orgId);
-  return campaign?.funnelKey ?? null;
+  if (!campaign) return null;
+  return { legKey: campaign.legKey ?? null, featureSlug: campaign.featureSlug ?? null };
 }
 
 /**
- * The scope a step trigger names: the (brand, offer, funnel) the lead is on.
+ * The scope a step trigger names: the (brand, offer) the lead is on.
  *
- * All three come off the CAMPAIGN row campaign-service already owns — nothing
- * here is inferred. A campaign that states none of them is not a campaign a leg
- * can be resolved for, which is an ordinary absence rather than an error.
+ * Both come off the CAMPAIGN row campaign-service already owns — nothing here is
+ * inferred. A campaign that states neither is not a campaign a leg can be
+ * resolved for, which is an ordinary absence rather than an error.
  */
 export interface CampaignTriggerScope {
   brandId: string | null;
   offerId: string | null;
-  funnelKey: string | null;
 }
 
 /**
- * Fetch the (brand, offer, funnel) a campaign runs.
+ * Fetch the (brand, offer) a campaign runs.
  *
- * Same read as {@link getCampaignFunnelKey} — one campaign-service call answers
+ * Same read as {@link getCampaignLeg} — one campaign-service call answers
  * both questions, so there is no second endpoint and no second convention. A 404
  * is null (an absent campaign has no scope); any OTHER failure throws so the
  * caller decides.
@@ -184,7 +111,6 @@ export async function getCampaignTriggerScope(
     // the column is an array, so the first entry is the brand the leg is for.
     brandId: campaign.brandIds?.[0] ?? null,
     offerId: campaign.offerId ?? null,
-    funnelKey: campaign.funnelKey ?? null,
   };
 }
 
@@ -204,7 +130,6 @@ export interface StepTriggerSkipped {
 }
 
 export interface StepTriggerOutcome {
-  funnelKey: string;
   step: string;
   legKeys: string[];
   triggered: StepTriggerTriggered[];
@@ -218,9 +143,9 @@ export interface StepTriggerOutcome {
  * campaign-service owns every decision here: which leg leaves the step (it reads
  * features-service's published catalogue), which campaign states that leg, and
  * whether that campaign may spend. This is the ASK and nothing else — no leg is
- * resolved on this side, no funnel is parsed, and no campaign is selected.
+ * resolved on this side and no campaign is selected.
  *
- * An empty `legKeys` is the COMMON answer: most brands buy one leg of one funnel,
+ * An empty `legKeys` is the COMMON answer: most brands buy one leg of one offer,
  * so a step nobody bought the leg out of is an ordinary 200 with nothing in it.
  * Anything that is not a 200 throws — the caller decides how loudly to fail.
  */
@@ -228,7 +153,6 @@ export async function triggerCampaignForStep(params: {
   orgId: string;
   brandId: string;
   offerId: string;
-  funnelKey: string;
   step: string;
 }): Promise<StepTriggerOutcome> {
   if (!CAMPAIGN_SERVICE_URL || !CAMPAIGN_SERVICE_API_KEY) {

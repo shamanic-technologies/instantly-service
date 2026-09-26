@@ -107,7 +107,7 @@ export function buildMessage(input: BuildMessageInput): BuiltMessage {
   // Runs last, on the final html, and skips anything already on our origin —
   // which is exactly the opt-out link we just resolved. Without this,
   // `email_link_clicked` never fires on this transport, so `stop-on-click` would
-  // silently never pause a self-sent lead on a visit-first funnel.
+  // silently never pause a self-sent lead whose leg lands on a website visit.
   const html =
     input.trackingOrigin === null
       ? withOptOut

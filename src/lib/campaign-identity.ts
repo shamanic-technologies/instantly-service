@@ -8,22 +8,14 @@
  * wrong; they are simply slices of one history.
  *
  * The IDENTITY is campaign-service's OWN uniqueness key —
- * `uniq_campaigns_org_brand_funnel_channel`: (org, brand, funnel, leg, channel),
- * with `coalesce(..., '')` on the two nullable parts so a row that states no
- * funnel or no leg pools with its like rather than becoming distinct from
- * everything. Reading it any other way would disagree with the owner about what
- * one campaign is.
+ * `uniq_campaigns_org_brand_offer_leg_channel`: (org, brand, offer, leg,
+ * channel), with `coalesce(..., '')` on the two nullable parts so a row that
+ * states no offer or no leg pools with its like rather than becoming distinct
+ * from everything. Reading it any other way would disagree with the owner about
+ * what one campaign is. (It keyed on the sales funnel until the fleet retired
+ * that concept; the offer took its place in the owner's index.)
  *
- * ⚠️ EVERY PART IS READ FROM campaign-service, NEVER RE-DERIVED. In particular
- * the funnel is never inferred from a goal: two funnels answer to the same goal
- * (`sales_meetings_from_conversation` and `sales_meetings_from_website` are both
- * a booked meeting), so an inference prints a funnel the campaign never stated.
- *
- * NOTE — this mirrors features-service's `campaign-identity.ts`, one notch
- * FINER: that module's key predates campaign-service's leg widening and omits
- * `legKey`. Including it can only ever REFUSE to pool two rows the owner itself
- * considers distinct, which is the safe direction, and today it is a no-op (1
- * of 705 production rows states a leg).
+ * ⚠️ EVERY PART IS READ FROM campaign-service, NEVER RE-DERIVED.
  *
  * Pure. The network read lives in `campaign-client.ts`.
  */
@@ -36,9 +28,9 @@ export interface CampaignIdentityRow {
   brandId?: string | null;
   /** Legacy array the brand used to live in — read ONLY as a fallback for `brandId`. */
   brandIds?: string[] | null;
-  /** The sales funnel the campaign states. NULL is a real state, not a gap to fill. */
-  funnelKey?: string | null;
-  /** The funnel leg. NULL is a real state; part of the owner's own key. */
+  /** The offer the campaign sells (brand-service id). NULL is a real state, not a gap to fill. */
+  offerId?: string | null;
+  /** The leg the campaign is bought for. NULL is a real state; part of the owner's own key. */
   legKey?: string | null;
   acquisitionChannel?: string | null;
 }
@@ -60,7 +52,7 @@ export function identityKeyOf(row: CampaignIdentityRow): string | null {
   const channel = row.acquisitionChannel ?? null;
   if (!brandId || !channel) return null;
   const orgId = row.orgId ?? "";
-  return [orgId, brandId, row.funnelKey ?? "", row.legKey ?? "", channel].join("|");
+  return [orgId, brandId, row.offerId ?? "", row.legKey ?? "", channel].join("|");
 }
 
 /**

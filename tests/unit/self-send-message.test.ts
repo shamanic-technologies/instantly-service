@@ -191,7 +191,7 @@ describe("buildMessage", () => {
   });
 
   // Without this, `email_link_clicked` never fires on the self-send transport, so
-  // stop-on-click would silently never pause a lead on a visit-first funnel.
+  // stop-on-click would silently never pause a lead whose leg lands on a website visit.
   it("routes a prospect-facing link through the click redirect", () => {
     const message = build({ bodyHtml: '<p>See <a href="https://distribute.you/pricing">pricing</a></p>' });
 
