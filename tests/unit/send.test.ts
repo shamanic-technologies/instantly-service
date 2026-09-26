@@ -2453,7 +2453,7 @@ describe("sequence footprint — booking every day the lead will need the mailbo
 
   it("cascades past a head account that is full on D+3 ONLY — the day nobody used to check", () => {
     const head = mature("head@x.com", "gandi");
-    const next = mature("next@x.com", "primeforge");
+    const next = mature("next@x.com", "gandi");
     // Plenty of room today; already saturated on the day this lead's SECOND
     // email would land. Before the footprint check this lead was assigned to the
     // head anyway and its followup simply went out late.
@@ -2467,7 +2467,7 @@ describe("sequence footprint — booking every day the lead will need the mailbo
 
   it("cascades on a collision at the LAST step too, not just the next one", () => {
     const head = mature("head@x.com", "gandi");
-    const next = mature("next@x.com", "primeforge");
+    const next = mature("next@x.com", "gandi");
     const load = caps2([
       ["head@x.com", { byDay: { "2026-09-10": 50 } }],
     ]);
@@ -2478,7 +2478,7 @@ describe("sequence footprint — booking every day the lead will need the mailbo
 
   it("keeps the head when the WHOLE footprint fits — the fill order is unchanged", () => {
     const head = mature("head@x.com", "gandi");
-    const next = mature("next@x.com", "primeforge");
+    const next = mature("next@x.com", "gandi");
     const load = caps2([
       ["head@x.com", { byDay: { "2026-08-31": 40, "2026-09-03": 49, "2026-09-10": 10 } }],
     ]);
@@ -2489,7 +2489,7 @@ describe("sequence footprint — booking every day the lead will need the mailbo
 
   it("charges sentToday to the FIRST day only — today's dispatches are not tomorrow's", () => {
     const head = mature("head@x.com", "gandi");
-    const next = mature("next@x.com", "primeforge");
+    const next = mature("next@x.com", "gandi");
     // 50 already sent today: full on D0, empty on every later day. If sentToday
     // were charged to all three the account would look full everywhere.
     const load = caps2([["head@x.com", { sentToday: 50 }]]);
@@ -2512,8 +2512,10 @@ describe("sequence footprint — booking every day the lead will need the mailbo
       email: "ramping@x.com",
       daily_limit: 50,
       infraProvider: "gandi",
+      // Older than `fallback`, so it heads the same vendor's order.
+      timestamp_created: "2025-12-01T00:00:00.000Z",
     });
-    const fallback = mature("fallback@x.com", "primeforge");
+    const fallback = mature("fallback@x.com", "gandi");
 
     // Peaked at 12/day ⇒ cap 18 on every day of the footprint.
     const overOnLaterDay = caps2([
@@ -2534,7 +2536,7 @@ describe("sequence footprint — booking every day the lead will need the mailbo
 
   it("falls back to a DAY-ONE fit when nobody can carry the whole sequence", () => {
     const head = mature("head@x.com", "gandi");
-    const next = mature("next@x.com", "primeforge");
+    const next = mature("next@x.com", "gandi");
     // Both are saturated on D+3, so no account fits the footprint. The head still
     // has room today and wins the second tier — a send is never blocked.
     const load = caps2([
@@ -2548,7 +2550,7 @@ describe("sequence footprint — booking every day the lead will need the mailbo
 
   it("falls back to the LEAST-OVERLOADED account when even day one is full everywhere", () => {
     const head = mature("head@x.com", "gandi");
-    const next = mature("next@x.com", "primeforge");
+    const next = mature("next@x.com", "gandi");
     const load = caps2([
       ["head@x.com", { byDay: { "2026-08-31": 80 } }],
       ["next@x.com", { byDay: { "2026-08-31": 55 } }],
@@ -2558,7 +2560,44 @@ describe("sequence footprint — booking every day the lead will need the mailbo
     ).toBe("next@x.com");
   });
 
-  it("is byte-identical to the old today-only question when no footprint is given", () => {
+    it("keeps a cheaper vendor with room TODAY over a later vendor whose whole footprint is empty", () => {
+    // The 2026-09-26 regression: Primeforge carried the backlog, so its D+3 was
+    // booked, while the Instantly DFY tier we are drying up sat empty. Run over
+    // the whole fleet, the footprint check handed DFY 487 of 602 new sequences.
+    const cheap = mature("cheap@x.com", "primeforge");
+    const dry = mature("dry@x.com", "instantly-dfy");
+    const load = caps2([
+      ["cheap@x.com", { byDay: { "2026-08-31": 10, "2026-09-03": 50 } }],
+    ]);
+    expect(
+      pickSequentialFillAccount([dry, cheap], load, MONDAY, FOOTPRINT).email,
+    ).toBe("cheap@x.com");
+  });
+
+  it("reaches the later vendor only once the earlier one has no room today", () => {
+    const cheap = mature("cheap@x.com", "primeforge");
+    const dry = mature("dry@x.com", "instantly-dfy");
+    const load = caps2([["cheap@x.com", { byDay: { "2026-08-31": 50 } }]]);
+    expect(
+      pickSequentialFillAccount([dry, cheap], load, MONDAY, FOOTPRINT).email,
+    ).toBe("dry@x.com");
+  });
+
+  it("prefers a whole-footprint fit INSIDE the vendor before a day-one fit", () => {
+    const a = mature("a@x.com", "primeforge");
+    const b = acct({
+      email: "b@x.com",
+      daily_limit: 50,
+      infraProvider: "primeforge",
+      timestamp_created: "2026-02-01T00:00:00.000Z",
+    });
+    const load = caps2([["a@x.com", { byDay: { "2026-09-03": 50 } }]]);
+    expect(
+      pickSequentialFillAccount([a, b], load, MONDAY, FOOTPRINT).email,
+    ).toBe("b@x.com");
+  });
+
+it("is byte-identical to the old today-only question when no footprint is given", () => {
     const head = mature("head@x.com", "gandi");
     const next = mature("next@x.com", "primeforge");
     const day = new Date("2026-08-31T00:00:00.000Z");
