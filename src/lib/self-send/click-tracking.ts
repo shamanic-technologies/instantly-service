@@ -9,8 +9,8 @@
  * Opens are deliberately NOT tracked, on either transport — the pixel costs
  * deliverability and `open_tracking: false` is set on every campaign we create.
  * Clicks are, because a click is a real intent signal AND because `stop-on-click`
- * keys on `email_link_clicked`: without this, a self-sent lead on a visit-first
- * funnel would never have its sequence paused.
+ * keys on `email_link_clicked`: without this, a self-sent lead on a leg landing on
+ * a website visit would never have its sequence paused.
  *
  * ⚠️ THE TARGET IS INSIDE THE SIGNED PAYLOAD, never a free query parameter.
  * A redirector that forwards to whatever `?url=` says is an OPEN REDIRECT: anyone

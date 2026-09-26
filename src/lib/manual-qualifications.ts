@@ -361,7 +361,7 @@ export async function applyManualQualificationSideEffects(
   //    claim column — so calling them here cannot double-send when the webhook
   //    path later observes the same reply.
   //    The campaign row is read here rather than threaded through the input:
-  //    both side effects need the caller `campaign_id` (to resolve the funnel
+  //    both side effects need the caller `campaign_id` (to resolve the leg
   //    and the offer) plus `user_id`/`run_id`, and the row is the authoritative
   //    record of all three. It has just been updated above, so this is a read of
   //    state we know is current.

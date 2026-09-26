@@ -8,10 +8,10 @@
  * the customer-visible half of the bug and it does not drain by itself.
  *
  * This sweep re-asks the SAME question for every lead who already clicked and whose sequence is
- * still live, through the SAME `maybeStopOnClickForFunnel` the webhook path calls — no second
- * implementation, no second gate, no local status write. campaign-service is still the one that
- * says whether the funnel opens on a visit, so a reply-led or funnel-less campaign is left running
- * exactly as it would be on a live click.
+ * still live, through the SAME `maybeStopOnClickForLeg` the webhook path calls — no second
+ * implementation, no second gate, no local status write. The campaign's leg (campaign-service) and
+ * the leg catalogue (features-service) still decide, so a reply-led or leg-less campaign is left
+ * running exactly as it would be on a live click.
  *
  * Idempotent and resumable: a campaign paused by a previous run leaves `status='active'` at the
  * next reconcile (and a re-pause of an already-paused Instantly campaign is a no-op anyway), and
@@ -20,7 +20,7 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
-import { maybeStopOnClickForFunnel } from "./stop-on-click";
+import { maybeStopOnClickForLeg } from "./stop-on-click";
 
 /** One lead who clicked and whose sequence is still running. */
 export interface ClickedActiveCampaign {
@@ -48,7 +48,7 @@ function rowsOf(result: unknown): unknown[] {
  *
  * `inferred = false` is load-bearing: an inferred click is a synthetic predecessor projected from a
  * downstream event, so pausing a live sequence on one would act on a click nobody made. A platform
- * send (`campaign_id IS NULL`) belongs to no caller campaign and runs no funnel, so it is out of
+ * send (`campaign_id IS NULL`) belongs to no caller campaign and is bought for no leg, so it is out of
  * scope here exactly as it is in the live path.
  */
 export async function selectClickedActiveCampaigns(
@@ -96,7 +96,7 @@ export async function backfillStopOnClick(
 
   for (const c of candidates) {
     try {
-      await maybeStopOnClickForFunnel(
+      await maybeStopOnClickForLeg(
         {
           instantlyCampaignId: c.instantlyCampaignId,
           campaignId: c.campaignId,
@@ -108,7 +108,7 @@ export async function backfillStopOnClick(
       );
       processed++;
     } catch (error: unknown) {
-      // maybeStopOnClickForFunnel is itself fail-soft, so reaching here means something outside it
+      // maybeStopOnClickForLeg is itself fail-soft, so reaching here means something outside it
       // broke. Count it and keep going: one campaign must not cost the rest of the sweep.
       failed++;
       const message = error instanceof Error ? error.message : String(error);

@@ -18,7 +18,7 @@ const IDENTITY = {
   orgId: "org-1",
   brandId: "brand-1",
   brandIds: ["brand-1"],
-  funnelKey: "sales_meetings_from_conversation",
+  offerId: "offer-1",
   acquisitionChannel: "cold_email",
 };
 
@@ -46,7 +46,7 @@ describe("getCampaignFamily", () => {
           campaigns: [
             { id: "camp-1", ...IDENTITY, workflowSlug: "lithium" },
             { id: "camp-2", ...IDENTITY, workflowSlug: "permafrost" },
-            { id: "other-funnel", ...IDENTITY, funnelKey: "website_purchases" },
+            { id: "other-offer", ...IDENTITY, offerId: "offer-2" },
           ],
         }),
       );

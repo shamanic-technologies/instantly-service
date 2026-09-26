@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockCancelRemainingProvisions = vi.fn();
 const mockUpdateSet = vi.fn();
-const mockGetCampaignFunnelKey = vi.fn();
+const mockGetCampaignLeg = vi.fn();
+const mockGetChannelCatalogue = vi.fn();
 const mockResolveInstantlyApiKey = vi.fn();
 const mockUpdateCampaignStatus = vi.fn();
 
@@ -24,8 +25,25 @@ vi.mock("../../src/lib/silver-promote", () => ({
 
 vi.mock("../../src/lib/campaign-client", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
-  getCampaignFunnelKey: (...args: unknown[]) => mockGetCampaignFunnelKey(...args),
+  getCampaignLeg: (...args: unknown[]) => mockGetCampaignLeg(...args),
 }));
+
+vi.mock("../../src/lib/leg-catalogue", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  getChannelCatalogue: (...args: unknown[]) => mockGetChannelCatalogue(...args),
+}));
+
+const CATALOGUE = [
+  {
+    slug: "sales-cold-email-outreach",
+    stepTransitions: [
+      { legKey: "start_to_conversation", from: null, to: { key: "conversation" } },
+      { legKey: "start_to_website_visit", from: null, to: { key: "website_visit" } },
+    ],
+  },
+];
+const VISIT_LEG = { legKey: "start_to_website_visit", featureSlug: "sales-cold-email-outreach" };
+const REPLY_LEG = { legKey: "start_to_conversation", featureSlug: "sales-cold-email-outreach" };
 
 vi.mock("../../src/lib/key-client", () => ({
   resolveInstantlyApiKey: (...args: unknown[]) => mockResolveInstantlyApiKey(...args),
@@ -36,7 +54,7 @@ vi.mock("../../src/lib/instantly-client", () => ({
 }));
 
 const { stopSelfSendSequence } = await import("../../src/lib/self-send/stop-sequence");
-const { maybeStopOnClickForFunnel } = await import("../../src/lib/stop-on-click");
+const { maybeStopOnClickForLeg } = await import("../../src/lib/stop-on-click");
 
 const SELF = {
   instantlyCampaignId: "self:11111111-1111-4111-8111-111111111111",
@@ -86,11 +104,12 @@ describe("stopSelfSendSequence", () => {
   });
 });
 
-describe("maybeStopOnClickForFunnel — transport split", () => {
+describe("maybeStopOnClickForLeg — transport split", () => {
   it("stops a self-send sequence locally, never calling Instantly", async () => {
-    mockGetCampaignFunnelKey.mockResolvedValue("visit_signup");
+    mockGetChannelCatalogue.mockResolvedValue(CATALOGUE);
+    mockGetCampaignLeg.mockResolvedValue(VISIT_LEG);
 
-    await maybeStopOnClickForFunnel(SELF, "lead@x.com");
+    await maybeStopOnClickForLeg(SELF, "lead@x.com");
 
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
     expect(mockCancelRemainingProvisions).toHaveBeenCalled();
@@ -100,9 +119,10 @@ describe("maybeStopOnClickForFunnel — transport split", () => {
   });
 
   it("still pauses on Instantly for an Instantly-dispatched sequence", async () => {
-    mockGetCampaignFunnelKey.mockResolvedValue("visit_signup");
+    mockGetChannelCatalogue.mockResolvedValue(CATALOGUE);
+    mockGetCampaignLeg.mockResolvedValue(VISIT_LEG);
 
-    await maybeStopOnClickForFunnel(INSTANTLY, "lead@x.com");
+    await maybeStopOnClickForLeg(INSTANTLY, "lead@x.com");
 
     expect(mockUpdateCampaignStatus).toHaveBeenCalledWith(
       "k",
@@ -115,11 +135,12 @@ describe("maybeStopOnClickForFunnel — transport split", () => {
     expect(mockUpdateSet).not.toHaveBeenCalled();
   });
 
-  it("leaves a reply-first funnel running on both transports", async () => {
-    mockGetCampaignFunnelKey.mockResolvedValue("reply_meeting");
+  it("leaves a leg landing on a conversation running on both transports", async () => {
+    mockGetChannelCatalogue.mockResolvedValue(CATALOGUE);
+    mockGetCampaignLeg.mockResolvedValue(REPLY_LEG);
 
-    await maybeStopOnClickForFunnel(SELF, "lead@x.com");
-    await maybeStopOnClickForFunnel(INSTANTLY, "lead@x.com");
+    await maybeStopOnClickForLeg(SELF, "lead@x.com");
+    await maybeStopOnClickForLeg(INSTANTLY, "lead@x.com");
 
     expect(mockCancelRemainingProvisions).not.toHaveBeenCalled();
     expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();

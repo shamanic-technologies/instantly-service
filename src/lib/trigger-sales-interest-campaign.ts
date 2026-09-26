@@ -14,16 +14,16 @@
  *
  * ── WHAT IS ASKED, AND WHAT IS NOT DECIDED HERE ─────────────────────────────────
  *
- * The ask names a scope — (brand, offer, funnel) — plus the STEP the lead reached,
+ * The ask names a scope — (brand, offer) — plus the STEP the lead reached,
  * and nothing else. Every decision downstream of that is campaign-service's:
  * which leg leaves the step (it reads features-service's published catalogue),
  * which campaign states that leg, and whether that campaign may spend (the run
  * starts at `gate-check` like any other, so the affordability gate is untouched).
- * No leg is resolved here, no funnel is parsed, and no campaign is selected.
+ * No leg is resolved here and no campaign is selected.
  *
  * The scope is read off the CALLER campaign — campaign-service's own row, via
- * `getCampaignTriggerScope`. Nothing is inferred: a campaign that states no brand,
- * no offer or no funnel cannot have a leg resolved for it, so the ask is simply
+ * `getCampaignTriggerScope`. Nothing is inferred: a campaign that states no brand
+ * or no offer cannot have a leg resolved for it, so the ask is simply
  * not made. That is an ordinary absence (a platform send has no caller campaign at
  * all), not a failure.
  *
@@ -54,7 +54,7 @@
  * costs latency, never the answer itself.
  *
  * A brand with no such campaign is the COMMON case, not an error: most brands buy
- * one leg of one funnel, so campaign-service answers 200 with an empty `legKeys`
+ * one leg of one offer, so campaign-service answers 200 with an empty `legKeys`
  * or a NAMED skip (unfunded, run already in flight, channel operated by the
  * customer's own team). Those are logged as the ordinary answers they are. Only an
  * unexpected failure warns.
@@ -101,7 +101,7 @@ function logOutcome(
   const skipped = outcome.skipped.map((s) => `${s.campaignId}:${s.reason}`).join(", ");
   console.log(
     `[instantly-service] sales-interest-trigger: campaign=${campaign.instantlyCampaignId} ` +
-      `lead=${leadEmail} funnel=${outcome.funnelKey} legs=[${outcome.legKeys.join(", ")}] ` +
+      `lead=${leadEmail} step=${outcome.step} legs=[${outcome.legKeys.join(", ")}] ` +
       `triggered=[${triggered}] skipped=[${skipped}]`,
   );
 }
@@ -130,21 +130,20 @@ export async function triggerSalesInterestLeg(
   leadEmail: string,
 ): Promise<void> {
   if (!campaign.orgId) return;
-  // A platform send belongs to no caller campaign, so it is on no funnel and no
+  // A platform send belongs to no caller campaign, so it is on no
   // offer. There is nothing to name, so nothing is asked.
   if (!campaign.campaignId) return;
 
   try {
     const scope = await getCampaignTriggerScope(campaign.campaignId, campaign.orgId);
-    // An absent campaign, or one stating no brand / offer / funnel, cannot have a
+    // An absent campaign, or one stating no brand / offer, cannot have a
     // leg resolved for it. Naming a scope we do not hold would be a guess.
-    if (!scope || !scope.brandId || !scope.offerId || !scope.funnelKey) return;
+    if (!scope || !scope.brandId || !scope.offerId) return;
 
     const outcome = await triggerCampaignForStep({
       orgId: campaign.orgId,
       brandId: scope.brandId,
       offerId: scope.offerId,
-      funnelKey: scope.funnelKey,
       step: SALES_INTEREST_STEP_KEY,
     });
 

@@ -171,7 +171,7 @@ router.post("/refund-stranded-holds", (req: Request, res: Response) => {
 
 /**
  * POST /campaigns/stop-on-click-backfill
- * One-shot catch-up for the clicks stop-on-click missed while its funnel gate tested a `visit_`
+ * One-shot catch-up for the clicks stop-on-click missed while its gate tested a `visit_`
  * prefix against a vocabulary campaign-service had renamed. Re-asks the SAME question, through the
  * SAME helper the webhook path calls, for every lead who already clicked and whose sequence is
  * still live — a prospect who clicked through once usually will not click again, so fixing the
