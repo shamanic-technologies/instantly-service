@@ -930,6 +930,10 @@ const TransferBrandUpdatedTableSchema = z.object({
 export const TransferBrandResponseSchema = z
   .object({
     updatedTables: z.array(TransferBrandUpdatedTableSchema),
+    skipped: z
+      .array(TransferBrandUpdatedTableSchema.extend({ reason: z.string() }))
+      .optional()
+      .describe("Rows of the brand that could not move (multi-brand campaigns). Absent when nothing was left behind."),
   })
   .openapi("TransferBrandResponse");
 
@@ -938,9 +942,11 @@ registry.registerPath({
   path: "/internal/transfer-brand",
   summary: "Transfer solo-brand rows from one org to another",
   description:
-    "Re-assigns org_id (and optionally brand_id) on all rows that reference exactly one brand matching sourceBrandId. " +
-    "When targetBrandId is present, also rewrites brand references to the target brand. " +
-    "Skips co-branding rows (multiple brand IDs). Idempotent.",
+    "Moves the brand's campaigns (solo-brand only) and every row tied to them (leads, messages, gold status, " +
+    "bronze webhook/analytics/emails/leads/config mirrors, manual qualifications and withdrawals, scheduled replies) " +
+    "from sourceOrgId to targetOrgId. When targetBrandId is present, rewrites the brand id too. Standing opt-outs of " +
+    "the brand's leads are COPIED to the target org (never removed from the source). Multi-brand campaigns are left " +
+    "and reported under `skipped`. Idempotent: a second call reports zero everywhere.",
   request: {
     body: {
       content: { "application/json": { schema: TransferBrandRequestSchema } },
