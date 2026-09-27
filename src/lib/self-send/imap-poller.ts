@@ -233,7 +233,7 @@ export async function loadKnownSends(accountEmail: string): Promise<Map<string, 
 }
 
 /** Mailboxes on the self-send transport. */
-async function loadSelfSendAccounts(): Promise<string[]> {
+export async function loadSelfSendAccounts(): Promise<string[]> {
   const result = await db.execute(sql`
     SELECT email AS "email"
     FROM instantly_accounts
@@ -286,23 +286,42 @@ async function fetchMessageSource(
   return simpleParser(full.source);
 }
 
+/**
+ * Which messages a poll reads: a date window (the routine sweep and a watcher's
+ * catch-up on connect), or every message from a UID on (a watcher reacting to a
+ * new arrival — see `inbox-watcher.ts`). UIDs, never sequence numbers: another
+ * client expunging from the INBOX shifts sequence numbers, and a message read by
+ * a shifted number is a message silently skipped.
+ */
+export type PollQuery = { since: Date } | { uidFrom: number };
+
+type ImapClient = ReturnType<typeof createImapClient>;
+
 async function pollAccount(
   accountEmail: string,
   credential: MailboxCredential,
-  since: Date,
+  query: PollQuery,
   summary: PollSummary,
-): Promise<void> {
+  /**
+   * An already-connected session to read through — the watcher's own, so a new
+   * arrival costs no fresh login. Absent, the poll opens and closes its own.
+   */
+  shared?: ImapClient,
+): Promise<number> {
+  let maxUid = 0;
   const knownSends = await loadKnownSends(accountEmail);
 
-  const client = createImapClient({
-    host: credential.imapHost,
-    port: GMAIL_IMAP_PORT,
-    secure: true,
-    auth: { user: loginFor(credential), pass: credential.appPassword },
-    logger: false,
-  }, accountEmail);
+  const client =
+    shared ??
+    createImapClient({
+      host: credential.imapHost,
+      port: GMAIL_IMAP_PORT,
+      secure: true,
+      auth: { user: loginFor(credential), pass: credential.appPassword },
+      logger: false,
+    }, accountEmail);
 
-  await client.connect();
+  if (!shared) await client.connect();
 
   try {
     const lock = await client.getMailboxLock("INBOX");
@@ -312,10 +331,16 @@ async function pollAccount(
       // the header fetch is one continuous server-side scan, rather than a scan
       // interleaved with per-message body fetches and database writes.
       const candidates: Array<{ uid: number; head: ParsedMail; messageId: string }> = [];
-      for await (const message of client.fetch(
-        { since },
-        { uid: true, envelope: true, headers: true },
-      )) {
+      const range =
+        "since" in query
+          ? client.fetch({ since: query.since }, { uid: true, envelope: true, headers: true })
+          : client.fetch(
+              `${Math.max(1, query.uidFrom)}:*`,
+              { uid: true, envelope: true, headers: true },
+              { uid: true },
+            );
+      for await (const message of range) {
+        if (message.uid > maxUid) maxUid = message.uid;
         // The server can return a fetch row without headers (a race with an
         // expunge, a partial response). Nothing to classify, so skip rather than
         // parse an empty buffer into an empty message.
@@ -543,11 +568,68 @@ async function pollAccount(
       lock.release();
     }
   } finally {
-    await client.logout().catch(() => {
-      // The session is being torn down either way; a failed logout must not mask
-      // the outcome of the poll itself.
-    });
+    // A shared session belongs to its watcher, which keeps it open to listen.
+    if (!shared) {
+      await client.logout().catch(() => {
+        // The session is being torn down either way; a failed logout must not
+        // mask the outcome of the poll itself.
+      });
+    }
   }
+  return maxUid;
+}
+
+export function emptyPollSummary(): PollSummary {
+  return {
+    accountsPolled: 0,
+    messagesRead: 0,
+    replies: 0,
+    autoReplies: 0,
+    bounces: 0,
+    delayed: 0,
+    qualified: 0,
+    unqualified: 0,
+    optOutsRecorded: 0,
+    unrelated: 0,
+    ambiguous: 0,
+    sequencesStopped: 0,
+    accountsFailed: 0,
+  };
+}
+
+/**
+ * Read ONE real mailbox for every sending address that authenticates as it —
+ * the unit the inbox watcher works in.
+ *
+ * Aliases are read in sequence, each correlating against its OWN sends: they
+ * share one INBOX, and a reply to alias A is only recognisable against A's
+ * Message-Ids. Fail-loud per address, exactly like the fleet sweep.
+ */
+export async function pollMailboxGroup(
+  accountEmails: readonly string[],
+  credential: MailboxCredential,
+  query: PollQuery,
+  shared?: ImapClient,
+): Promise<{ summary: PollSummary; maxUid: number }> {
+  const summary = emptyPollSummary();
+  let maxUid = 0;
+  for (const accountEmail of accountEmails) {
+    try {
+      maxUid = Math.max(
+        maxUid,
+        await pollAccount(accountEmail, credential, query, summary, shared),
+      );
+      summary.accountsPolled += 1;
+    } catch (error) {
+      console.error(
+        `[instantly-service] self-send-poll: account=${accountEmail} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      summary.accountsFailed += 1;
+    }
+  }
+  return { summary, maxUid };
 }
 
 /**
@@ -595,21 +677,7 @@ export async function runPoll(
     byMailbox.set(mailbox, group);
   }
 
-  const summary: PollSummary = {
-    accountsPolled: 0,
-    messagesRead: 0,
-    replies: 0,
-    autoReplies: 0,
-    bounces: 0,
-    delayed: 0,
-    qualified: 0,
-    unqualified: 0,
-    optOutsRecorded: 0,
-    unrelated: 0,
-    ambiguous: 0,
-    sequencesStopped: 0,
-    accountsFailed: 0,
-  };
+  const summary = emptyPollSummary();
 
   const groups = [...byMailbox.values()];
   let cursor = 0;
@@ -628,7 +696,7 @@ export async function runPoll(
       for (const accountEmail of group) {
         try {
           const credential = await resolveMailboxCredential(accountEmail, CALLER);
-          await pollAccount(accountEmail, credential, since, summary);
+          await pollAccount(accountEmail, credential, { since }, summary);
           summary.accountsPolled += 1;
         } catch (error) {
           console.error(

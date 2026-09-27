@@ -7,7 +7,7 @@ import { isDisqualifyingReplyKind, isReplyKind } from "../lib/reply-kind";
 
 const router = Router();
 
-// 4-stage funnel:
+// 4-stage delivery progression:
 //   1. Pre-Instantly queue (not modeled in this service)
 //   2. contacted = row exists in instantly_campaigns (lead pushed to Instantly)
 //   3. sent      = instantly_events.event_type='email_sent' (Instantly dispatched)

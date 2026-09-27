@@ -361,3 +361,76 @@ describe("runPoll body fetching", () => {
     expect(fetchOneCalls).toEqual([7]);
   });
 });
+
+/**
+ * The inbox watcher's read: through the watcher's OWN session, by UID from the
+ * last one seen. A new arrival must cost no fresh login and no window re-read.
+ */
+describe("pollMailboxGroup — reading a new arrival through the watched session", () => {
+  async function group(query: unknown, shared: boolean) {
+    vi.resetModules();
+    const calls = { connect: 0, logout: 0, created: 0, fetch: [] as unknown[][] };
+    const session = {
+      connect: async () => {
+        calls.connect += 1;
+      },
+      getMailboxLock: async () => ({ release: () => {} }),
+      fetch: (...args: unknown[]) => {
+        calls.fetch.push(args);
+        return (async function* () {
+          yield { uid: 57, headers: Buffer.from("Message-ID: <n@x.com>\r\nFrom: a@x.com\r\n") };
+          yield { uid: 58, headers: Buffer.from("Message-ID: <m@x.com>\r\nFrom: b@x.com\r\n") };
+        })();
+      },
+      fetchOne: async () => null,
+      logout: async () => {
+        calls.logout += 1;
+      },
+    };
+    vi.doMock("../../src/lib/self-send/imap-client", () => ({
+      createImapClient: () => {
+        calls.created += 1;
+        return session;
+      },
+    }));
+    const { pollMailboxGroup } = await import("../../src/lib/self-send/imap-poller");
+    mockDbExecute.mockResolvedValue(pgResult([]));
+    mockInserted.length = 0;
+    const credential = {
+      address: "a@live.com",
+      appPassword: "pw",
+      smtpHost: "smtp.gmail.com",
+      imapHost: "imap.gmail.com",
+    };
+    const result = await pollMailboxGroup(
+      ["a@live.com", "b@live.com"],
+      credential,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      query as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      shared ? (session as any) : undefined,
+    );
+    return { ...result, calls };
+  }
+
+  it("fetches by UID range on the shared session, and never logs in or out", async () => {
+    const { calls, maxUid, summary } = await group({ uidFrom: 57 }, true);
+    expect(calls.created).toBe(0);
+    expect(calls.connect).toBe(0);
+    expect(calls.logout).toBe(0);
+    // Both aliases read, each by UID — a sequence number shifts on expunge.
+    expect(calls.fetch).toHaveLength(2);
+    expect(calls.fetch[0]![0]).toBe("57:*");
+    expect(calls.fetch[0]![2]).toEqual({ uid: true });
+    expect(maxUid).toBe(58);
+    expect(summary.accountsPolled).toBe(2);
+  });
+
+  it("opens and closes its own session when none is shared (the fallback read)", async () => {
+    const { calls } = await group({ since: new Date("2026-09-22T00:00:00Z") }, false);
+    expect(calls.created).toBe(2);
+    expect(calls.connect).toBe(2);
+    expect(calls.logout).toBe(2);
+    expect(calls.fetch[0]![0]).toEqual({ since: new Date("2026-09-22T00:00:00Z") });
+  });
+});

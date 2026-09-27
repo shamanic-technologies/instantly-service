@@ -3,10 +3,10 @@
  *
  * This vocabulary answers exactly one question: what did the prospect send
  * back? It deliberately says NOTHING about how far the deal got. A booked
- * meeting and a closed-won deal are funnel outcomes about a LEAD — they are
+ * meeting and a closed-won deal are outcomes about a LEAD — they are
  * channel-agnostic (a meeting booked off an ads campaign is the same fact) and
  * they belong to the service that owns lead outcomes, which features-service
- * already reads for funnel counts. This service owns the reply, full stop.
+ * already reads for outcome counts. This service owns the reply, full stop.
  *
  * Why the split matters, concretely: both facts used to live in ONE statement
  * per lead, and only the latest statement survived the gold projection. So a

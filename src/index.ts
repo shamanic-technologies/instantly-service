@@ -227,6 +227,16 @@ async function start() {
         );
       });
 
+    // Read a prospect's reply the moment it lands: one IMAP IDLE session per
+    // self-send mailbox, independent of whether anything is due to send.
+    // Armed after the port is bound — ~123 logins must never block listen.
+    import("./lib/self-send/inbox-watcher")
+      .then(({ startInboxWatcher }) => startInboxWatcher())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start inbox watcher: ${message}`);
+      });
+
     // Seed the account lifecycle shortly after boot (fire-and-forget, AFTER the
     // port is bound — snapshot + reconcile is O(fleet size) paginated Instantly
     // calls, must never block listen). Idempotent: a subsequent boot finds the

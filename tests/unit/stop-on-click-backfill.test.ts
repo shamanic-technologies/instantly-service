@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockDbExecute = vi.fn();
-const mockMaybeStopOnClickForFunnel = vi.fn();
+const mockMaybeStopOnClickForLeg = vi.fn();
 
 vi.mock("../../src/db", () => ({ db: { execute: (...a: unknown[]) => mockDbExecute(...a) } }));
 vi.mock("../../src/lib/stop-on-click", () => ({
-  maybeStopOnClickForFunnel: (...a: unknown[]) => mockMaybeStopOnClickForFunnel(...a),
+  maybeStopOnClickForLeg: (...a: unknown[]) => mockMaybeStopOnClickForLeg(...a),
 }));
 
 const { backfillStopOnClick, selectClickedActiveCampaigns } = await import(
@@ -31,7 +31,7 @@ const ROW = {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mockMaybeStopOnClickForFunnel.mockResolvedValue(undefined);
+  mockMaybeStopOnClickForLeg.mockResolvedValue(undefined);
 });
 
 describe("selectClickedActiveCampaigns", () => {
@@ -45,7 +45,7 @@ describe("selectClickedActiveCampaigns", () => {
     // one would act on a click nobody made.
     expect(sqlText).toContain("e.inferred = false");
     expect(sqlText).toContain("email_link_clicked");
-    // Only a live sequence can still be sending, and only a caller campaign runs a funnel.
+    // Only a live sequence can still be sending, and only a caller campaign is bought for a leg.
     expect(sqlText).toContain("c.status = 'active'");
     expect(sqlText).toContain("c.campaign_id IS NOT NULL");
   });
@@ -59,13 +59,13 @@ describe("selectClickedActiveCampaigns", () => {
 
 describe("backfillStopOnClick", () => {
   // The gate lives in ONE place. The sweep re-asks the same question through the same helper — it
-  // must not re-implement a funnel test that could drift from the live path.
+  // must not re-implement a leg test that could drift from the live path.
   it("re-asks the live stop-on-click helper per lead", async () => {
     mockDbExecute.mockResolvedValue(pgResult([ROW]));
 
     const summary = await backfillStopOnClick();
 
-    expect(mockMaybeStopOnClickForFunnel).toHaveBeenCalledWith(
+    expect(mockMaybeStopOnClickForLeg).toHaveBeenCalledWith(
       {
         instantlyCampaignId: "inst-1",
         campaignId: "camp-1",
@@ -82,7 +82,7 @@ describe("backfillStopOnClick", () => {
     mockDbExecute.mockResolvedValue(
       pgResult([ROW, { ...ROW, instantlyCampaignId: "inst-2", leadEmail: "b@x.com" }]),
     );
-    mockMaybeStopOnClickForFunnel.mockRejectedValueOnce(new Error("boom"));
+    mockMaybeStopOnClickForLeg.mockRejectedValueOnce(new Error("boom"));
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const summary = await backfillStopOnClick();
@@ -107,6 +107,6 @@ describe("backfillStopOnClick", () => {
       processed: 0,
       failed: 0,
     });
-    expect(mockMaybeStopOnClickForFunnel).not.toHaveBeenCalled();
+    expect(mockMaybeStopOnClickForLeg).not.toHaveBeenCalled();
   });
 });

@@ -20,7 +20,7 @@ import { settleHoldCost } from "./hold-settlement";
 import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
 import { announceEvidenceChanged } from "./evidence-changed";
-import { maybeStopOnClickForFunnel } from "./stop-on-click";
+import { maybeStopOnClickForLeg } from "./stop-on-click";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
 import { maybeEnqueueFollowupOnInterest } from "./enqueue-followup-on-interest";
 import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
@@ -56,7 +56,7 @@ function isOneShotEvent(eventType: string): boolean {
 }
 
 // Maps an Instantly webhook event_type to the silver `delivery_status` value
-// it should set on `instantly_campaigns`. Aligns with the 4-stage funnel
+// it should set on `instantly_campaigns`. Aligns with the 4-stage delivery progression
 // (contacted → sent → delivered → terminal). POST /send writes `contacted`
 // directly; webhook `email_sent` promotes to `sent` (stage 3). Stage 4
 // `delivered` is derived in queries (sent − bounced), never written as a
@@ -646,12 +646,12 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       }
 
       // Stop-on-click: a real click pauses the sequence when the CAMPAIGN's
-      // funnel opens on a website visit — the prospect is on the landing page,
+      // leg lands on a website visit — the prospect is on the landing page,
       // so more cold email only distracts. Fail-soft, never throws here.
       // Entirely separate from the reply path above: a reply ALWAYS stops the
-      // sequence whatever its sentiment, conditioned on no funnel at all.
+      // sequence whatever its sentiment, conditioned on no leg at all.
       if (input.eventType === "email_link_clicked") {
-        await maybeStopOnClickForFunnel(campaign, input.leadEmail);
+        await maybeStopOnClickForLeg(campaign, input.leadEmail);
       }
 
       // Forward positive replies: when Instantly qualifies the reply

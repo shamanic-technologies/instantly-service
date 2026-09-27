@@ -87,7 +87,7 @@ interface CampaignRow {
   userId: string | null;
   /** Our known recipient for this per-lead campaign (used to delete the contact). */
   leadEmail: string | null;
-  /** Local funnel/lifecycle status; "paused"/"completed" = already terminal. */
+  /** Local lifecycle status; "paused"/"completed" = already terminal. */
   status: string;
 }
 

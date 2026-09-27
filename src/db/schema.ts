@@ -47,7 +47,7 @@ export const instantlyCampaigns = pgTable(
     // on historical rows written before this column existed; readers COALESCE to
     // the observed-send attribution for those. See account-sending-stats.ts.
     accountEmail: text("account_email"),
-    // 4-stage funnel:
+    // 4-stage delivery progression:
     //   contacted   = lead pushed to Instantly (POST /send success — DEFAULT)
     //   sent        = Instantly dispatched at least one email (webhook email_sent)
     //   delivered   = derived in queries (sent AND NOT bounced); never stored

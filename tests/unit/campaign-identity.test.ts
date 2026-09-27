@@ -10,14 +10,14 @@ const BASE: CampaignIdentityRow = {
   id: "a",
   orgId: "org-1",
   brandId: "brand-1",
-  funnelKey: "sales_meetings_from_conversation",
+  offerId: "offer-1",
   acquisitionChannel: "cold_email",
 };
 
 describe("identityKeyOf", () => {
   it("keys on campaign-service's own uniqueness parts", () => {
     const key = identityKeyOf(BASE);
-    expect(key).toBe("org-1|brand-1|sales_meetings_from_conversation||cold_email");
+    expect(key).toBe("org-1|brand-1|offer-1||cold_email");
   });
 
   it("pools rows that differ only by workflow — the whole point", () => {
@@ -32,14 +32,14 @@ describe("identityKeyOf", () => {
     );
   });
 
-  it("an unstated funnel pools with its like rather than becoming distinct", () => {
-    const a = identityKeyOf({ ...BASE, id: "a", funnelKey: null });
-    const b = identityKeyOf({ ...BASE, id: "b", funnelKey: undefined });
+  it("an unstated offer pools with its like rather than becoming distinct", () => {
+    const a = identityKeyOf({ ...BASE, id: "a", offerId: null });
+    const b = identityKeyOf({ ...BASE, id: "b", offerId: undefined });
     expect(a).toBe(b);
     expect(a).not.toBe(identityKeyOf(BASE));
   });
 
-  it("separates two legs of one funnel — the owner's key does", () => {
+  it("separates two legs of one offer — the owner's key does", () => {
     expect(identityKeyOf({ ...BASE, legKey: "leg-a" })).not.toBe(
       identityKeyOf({ ...BASE, legKey: "leg-b" }),
     );
@@ -61,10 +61,10 @@ describe("familyOf", () => {
     expect(familyOf(rows, "a")).toEqual(["a", "b", "c"]);
   });
 
-  it("excludes a row of another funnel, brand or channel", () => {
+  it("excludes a row of another offer, brand or channel", () => {
     const rows = [
       { ...BASE, id: "a" },
-      { ...BASE, id: "other-funnel", funnelKey: "website_purchases" },
+      { ...BASE, id: "other-offer", offerId: "offer-2" },
       { ...BASE, id: "other-brand", brandId: "brand-2" },
       { ...BASE, id: "other-channel", acquisitionChannel: "pr_cold_email" },
     ];

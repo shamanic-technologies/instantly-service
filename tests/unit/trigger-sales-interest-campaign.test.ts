@@ -27,11 +27,9 @@ const CAMPAIGN = {
 const SCOPE = {
   brandId: "brand-1",
   offerId: "offer-1",
-  funnelKey: "sales_meetings_from_conversation",
 };
 
 const EMPTY_OUTCOME = {
-  funnelKey: SCOPE.funnelKey,
   step: SALES_INTEREST_STEP_KEY,
   legKeys: [],
   triggered: [],
@@ -93,7 +91,6 @@ describe("maybeTriggerSalesInterestCampaign", () => {
       orgId: "org-1",
       brandId: "brand-1",
       offerId: "offer-1",
-      funnelKey: "sales_meetings_from_conversation",
       // features-service's step key, carried verbatim — never parsed into legs here.
       step: "conversation",
     });
@@ -109,7 +106,7 @@ describe("maybeTriggerSalesInterestCampaign", () => {
     expect(mockTriggerCampaignForStep).not.toHaveBeenCalled();
   });
 
-  // A platform send belongs to no caller campaign, so it is on no funnel and no
+  // A platform send belongs to no caller campaign, so it is on no
   // offer — there is nothing to name.
   it("asks nothing for a platform send (no caller campaign)", async () => {
     await maybeTriggerSalesInterestCampaign(
@@ -130,12 +127,11 @@ describe("maybeTriggerSalesInterestCampaign", () => {
     expect(mockGetCampaignTriggerScope).not.toHaveBeenCalled();
   });
 
-  // Nothing is inferred: a campaign stating no offer (or no funnel, or no brand)
+  // Nothing is inferred: a campaign stating no offer (or no brand)
   // cannot have a leg resolved for it, so naming a scope would be a guess.
   it.each([
     ["brandId", { ...SCOPE, brandId: null }],
     ["offerId", { ...SCOPE, offerId: null }],
-    ["funnelKey", { ...SCOPE, funnelKey: null }],
     ["campaign", null],
   ])("asks nothing when the scope states no %s", async (_label, scope) => {
     mockGetCampaignTriggerScope.mockResolvedValue(scope);
@@ -147,7 +143,7 @@ describe("maybeTriggerSalesInterestCampaign", () => {
 // ─── a brand with no responsible campaign, and a trigger that fails ──────────
 
 describe("maybeTriggerSalesInterestCampaign — quiet answers and loud failures", () => {
-  // Most brands buy one leg of one funnel, so "nobody bought the leg out of this
+  // Most brands buy one leg of one offer, so "nobody bought the leg out of this
   // step" is the COMMON answer and it is an ordinary 200, not an error.
   it("treats an empty leg set as the ordinary answer it is", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
