@@ -1,7 +1,6 @@
 import { Router } from "express";
-import { db } from "../db";
-import { sql } from "drizzle-orm";
 import { TransferBrandRequestSchema } from "../schemas";
+import { transferBrand } from "../lib/transfer-brand";
 
 const router = Router();
 
@@ -11,48 +10,15 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: parsed.error.message });
   }
 
-  const { sourceBrandId, sourceOrgId, targetOrgId, targetBrandId } = parsed.data;
-
-  // instantly_campaigns: brand_ids is text[], update solo-brand rows only
-  const campaignsResult = targetBrandId
-    ? await db.execute(sql`
-        UPDATE instantly_campaigns
-        SET org_id = ${targetOrgId},
-            brand_ids = ARRAY[${targetBrandId}],
-            updated_at = now()
-        WHERE org_id = ${sourceOrgId}
-          AND array_length(brand_ids, 1) = 1
-          AND brand_ids[1] = ${sourceBrandId}
-      `)
-    : await db.execute(sql`
-        UPDATE instantly_campaigns
-        SET org_id = ${targetOrgId}, updated_at = now()
-        WHERE org_id = ${sourceOrgId}
-          AND array_length(brand_ids, 1) = 1
-          AND brand_ids[1] = ${sourceBrandId}
-      `);
-
-  const campaignsCount = Number(campaignsResult.rowCount ?? 0);
-
-  if (campaignsCount > 0) {
-    await db.execute(sql`
-      UPDATE instantly_lead_status_current g
-      SET org_id = c.org_id,
-          brand_ids = c.brand_ids,
-          updated_at = now()
-      FROM instantly_campaigns c
-      WHERE g.instantly_campaign_id = c.instantly_campaign_id
-        AND g.lead_email = c.lead_email
-        AND g.org_id = ${sourceOrgId}
-        AND c.org_id = ${targetOrgId}
-    `);
+  try {
+    return res.json(await transferBrand(parsed.data));
+  } catch (error) {
+    console.error("[transfer-brand] failed:", error);
+    return res.status(500).json({
+      error: "Transfer failed",
+      detail: error instanceof Error ? error.message : String(error),
+    });
   }
-
-  return res.json({
-    updatedTables: [
-      { tableName: "instantly_campaigns", count: campaignsCount },
-    ],
-  });
 });
 
 export default router;
