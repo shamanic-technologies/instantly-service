@@ -1,15 +1,17 @@
 /**
- * Replace the OLD linked opt-out footer in sequence steps already pushed to
- * Instantly with the current link-free line.
+ * Remove the retired opt-out footers from sequence steps already pushed to
+ * Instantly, so the pending emails end on the signature like every new build.
  *
- * Why: a controlled placement test on 2026-09-24 isolated the visible
- * `unsubscribe` anchor in our footer as the Gmail spam trigger (15 of 48 in spam
- * with it, 0 of 50 without, same senders, receivers, body and minute). v0.82.33
- * made `UNSUBSCRIBE_FOOTER_HTML` link-free for every NEW build, and self-send
- * steps are signed at dispatch so they pick it up on their own. A sequence on the
- * Instantly transport is different: its step bodies were built once, at
- * `/orgs/send`, and live inside the Instantly campaign — so every step still to
- * go out keeps the old anchor until it is rewritten there.
+ * Two footers were retired, both of which sat after the signature:
+ *   - the linked one (`Don't want to hear from me again? <a>unsubscribe</a>`),
+ *     measured 2026-09-24 as the Gmail spam trigger (15 of 48 in spam with it,
+ *     0 of 50 with no footer);
+ *   - its link-free successor (`Not relevant? Reply "stop" ...`), removed
+ *     2026-09-28 on the owner's decision.
+ * New builds carry neither, and self-send steps are signed at dispatch so they
+ * pick that up on their own. A sequence on the Instantly transport is different:
+ * its step bodies were built once, at `/orgs/send`, and live inside the Instantly
+ * campaign, so every step still to go out keeps its footer until rewritten there.
  *
  * Pure: no IO. The sweep in `linked-footer-cleanup.ts` reads the live bodies from
  * Instantly and PATCHes them back.
@@ -19,31 +21,37 @@
  * rewriting it would only alter the record Instantly holds.
  */
 
-import { UNSUBSCRIBE_FOOTER_HTML } from "./send-lead";
+/** The blank spacer paragraph each footer opened with. Instantly's sanitizer
+ * turns `&nbsp;` into a real U+00A0 (and may keep the entity). */
+const SPACER = String.raw`(?:<p>(?:&nbsp;|\u00a0|\s)*<\/p>\s*)?`;
+const APOS = String.raw`(?:'|&#39;|&#x27;|’|&rsquo;)`;
+const QUOTE = String.raw`(?:"|&quot;|&#34;|“|”|&ldquo;|&rdquo;)`;
 
 /**
- * The old footer as Instantly stores it. Instantly's sanitizer turns `&nbsp;`
- * into a real U+00A0 (and may keep the entity), so the spacer paragraph accepts
- * any of the three; the apostrophe is accepted in its common encodings. Anchored
- * on the sentence rather than on the exact attribute list so a sanitizer
- * reordering `style` cannot hide a footer from the repair.
+ * Either retired footer as Instantly stores it. Anchored on the sentence rather
+ * than on the exact attribute list so a sanitizer reordering `style` cannot hide
+ * a footer from the repair; the apostrophe and quotes are accepted in their
+ * common encodings.
  */
-const OLD_LINKED_FOOTER =
-  /<p>(?:&nbsp;| |\s)*<\/p>\s*<p[^>]*>\s*Don(?:'|&#39;|&#x27;|’|&rsquo;)t want to hear from me again\?[\s\S]*?<\/p>/g;
+const RETIRED_FOOTER = new RegExp(
+  SPACER +
+    String.raw`<p[^>]*>\s*(?:Don` + APOS + String.raw`t want to hear from me again\?|Not relevant\? Reply ` + QUOTE + "stop" + QUOTE + String.raw`)[\s\S]*?<\/p>`,
+  "g",
+);
 
-/** True when a body still carries the old linked opt-out footer. */
+/** True when a body still carries a retired opt-out footer. */
 export function hasLinkedFooter(body: string): boolean {
-  OLD_LINKED_FOOTER.lastIndex = 0;
-  return OLD_LINKED_FOOTER.test(body);
+  RETIRED_FOOTER.lastIndex = 0;
+  return RETIRED_FOOTER.test(body);
 }
 
 /**
- * Swap every old linked footer for the current link-free line. Idempotent: the
- * output carries no old footer, so a second pass is a no-op.
+ * Remove every retired footer. Idempotent: the output carries none, so a second
+ * pass is a no-op.
  */
 export function replaceLinkedFooter(body: string): string {
-  OLD_LINKED_FOOTER.lastIndex = 0;
-  return body.replace(OLD_LINKED_FOOTER, UNSUBSCRIBE_FOOTER_HTML);
+  RETIRED_FOOTER.lastIndex = 0;
+  return body.replace(RETIRED_FOOTER, "");
 }
 
 export interface FooterStepBody {

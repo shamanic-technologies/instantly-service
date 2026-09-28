@@ -12,7 +12,9 @@ vi.mock("../../src/lib/instantly-client", () => ({
 
 import { hasLinkedFooter, replaceLinkedFooter, planFooterFixes } from "../../src/lib/linked-footer";
 import { runLinkedFooterCleanup } from "../../src/lib/linked-footer-cleanup";
-import { UNSUBSCRIBE_FOOTER_HTML } from "../../src/lib/send-lead";
+const STOP_FOOTER = '<p>&nbsp;</p><p>Not relevant? Reply "stop" and I won\'t email you again.</p>';
+// As Instantly stores it: U+00A0 spacer, quotes HTML-encoded.
+const STORED_STOP_FOOTER = '<p>\u00a0</p><p>Not relevant? Reply &quot;stop&quot; and I won&#39;t email you again.</p>';
 
 // The old footer EXACTLY as Instantly stores it (read out of prod bronze config,
 // 2026-09-24): its sanitizer turned `&nbsp;` into a real U+00A0.
@@ -33,12 +35,18 @@ describe("linked footer rewrite", () => {
 
   it("does not see a footer that is not there (negative control)", () => {
     expect(hasLinkedFooter(`<p>Hi</p>${SIG}`)).toBe(false);
-    expect(hasLinkedFooter(`<p>Hi</p>${SIG}${UNSUBSCRIBE_FOOTER_HTML}`)).toBe(false);
   });
 
-  it("swaps the linked footer for the current link-free line and leaves the rest alone", () => {
+  it("recognises and removes the retired 'Reply stop' line too, in both encodings", () => {
+    for (const f of [STOP_FOOTER, STORED_STOP_FOOTER]) {
+      expect(hasLinkedFooter(`<p>Hi</p>${SIG}${f}`)).toBe(true);
+      expect(replaceLinkedFooter(`<p>Hi</p>${SIG}${f}`)).toBe(`<p>Hi</p>${SIG}`);
+    }
+  });
+
+  it("removes the linked footer and leaves the rest alone", () => {
     const out = replaceLinkedFooter(body("Hi Julio"));
-    expect(out).toBe(`<p>Hi Julio</p>${SIG}${UNSUBSCRIBE_FOOTER_HTML}`);
+    expect(out).toBe(`<p>Hi Julio</p>${SIG}`);
     expect(out).not.toContain("<a ");
     expect(out).not.toContain("{unsubscribe_link}");
     expect(out).not.toContain("hear from me again");
@@ -90,7 +98,7 @@ describe("runLinkedFooterCleanup", () => {
     expect(sent).toHaveLength(3);
     expect(sent[0].variants[0].body).toBe(body("step 1"));
     expect(sent[1].variants[0].body).not.toContain("<a ");
-    expect(sent[2].variants[0].body).toContain(UNSUBSCRIBE_FOOTER_HTML);
+    expect(sent[2].variants[0].body).toBe(`<p>step 3</p>${SIG}`);
   });
 
   it("counts a failing campaign instead of reading as a clean run", async () => {
