@@ -65,10 +65,10 @@ Labels, and what each one means:
 Judge only what the reply says. Do not infer enthusiasm from politeness, and do
 not treat a question about how you got their address as interest.
 
-The reply may quote our own email beneath it, and every email we send ends with
-the words "Not relevant? Reply "stop" and I won't email you again." (older emails
-ended with "Don't want to hear from me again? unsubscribe"). That is OUR footer,
-not their request — only a removal request THEY wrote is lead_opt_out_requested.
+The reply may quote our own email beneath it, and older emails of ours ended with
+the words "Not relevant? Reply "stop" and I won't email you again." or "Don't want
+to hear from me again? unsubscribe". That is OUR footer, not their request — only a
+removal request THEY wrote is lead_opt_out_requested.
 
 Worked examples, from real replies:
 - "Stop" -> lead_opt_out_requested
@@ -126,15 +126,15 @@ export const REPLY_KIND_CRITERIA: Record<
 
 /**
  * The judging rules, verbatim from `SYSTEM_PROMPT`'s own two paragraphs. The
- * footer paragraph is load-bearing and not boilerplate: every email we send ends
- * with our own unsubscribe line, which the reply quotes back, so an engine that
+ * footer paragraph is load-bearing and not boilerplate: older emails of ours end
+ * with an unsubscribe line, which a reply quotes back, so an engine that
  * has not been told reads OUR words as THEIR removal request.
  */
 export const REPLY_KIND_JUDGMENT_INSTRUCTIONS = `Classify a single reply to a cold outreach email.
 
 Judge only what the reply says. Do not infer enthusiasm from politeness, and do not treat a question about how you got their address as interest.
 
-The reply may quote our own email beneath it, and every email we send ends with the words "Not relevant? Reply "stop" and I won't email you again." (older emails ended with "Don't want to hear from me again? unsubscribe"). That is OUR footer, not their request — only a removal request THEY wrote is lead_opt_out_requested.`;
+The reply may quote our own email beneath it, and older emails of ours ended with the words "Not relevant? Reply "stop" and I won't email you again." or "Don't want to hear from me again? unsubscribe". That is OUR footer, not their request — only a removal request THEY wrote is lead_opt_out_requested.`;
 
 /** Strip quoted history so the model judges what THEY wrote, not our own email. */
 export function stripQuotedHistory(text: string): string {

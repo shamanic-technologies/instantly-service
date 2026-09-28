@@ -50,7 +50,6 @@ import {
   SYSTEM_PROMPT,
 } from "../../src/lib/self-send/qualify-reply";
 import { SENTIMENT_EVENT_TYPES } from "../../src/routes/analytics";
-import { UNSUBSCRIBE_FOOTER_HTML } from "../../src/lib/send-lead";
 
 const CAMPAIGN = {
   instantlyCampaignId: "camp-1",
@@ -352,11 +351,11 @@ describe("declining vs asking to stop", () => {
     expect(SYSTEM_PROMPT).toContain("That is OUR footer");
   });
 
-  // Lockstep: the prompt must quote the footer we ACTUALLY send today, or the
-  // model reads our own 'Reply "stop"' quoted under a reply as their request.
-  it("quotes the CURRENT footer text, derived from the constant", () => {
-    const footerText = UNSUBSCRIBE_FOOTER_HTML.replace(/<[^>]+>/g, "").replace(/&nbsp;/g, "").trim();
-    expect(footerText.length).toBeGreaterThan(0);
-    expect(SYSTEM_PROMPT).toContain(footerText);
+  // Our emails no longer carry a footer (2026-09-28), but old mail quoted under a
+  // reply still does: the prompt must name both retired lines so the model never
+  // reads our own 'Reply "stop"' as their request.
+  it("names both retired footers as OURS", () => {
+    expect(SYSTEM_PROMPT).toContain('Not relevant? Reply "stop" and I won\'t email you again.');
+    expect(SYSTEM_PROMPT).toContain("Don\'t want");
   });
 });

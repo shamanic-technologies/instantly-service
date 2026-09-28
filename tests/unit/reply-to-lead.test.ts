@@ -46,7 +46,7 @@ import {
   ReplyToLeadError,
   selectReplyTarget,
 } from "../../src/lib/reply-to-lead";
-import { buildReplyBodyWithSignature, UNSUBSCRIBE_FOOTER_HTML } from "../../src/lib/send-lead";
+import { buildReplyBodyWithSignature } from "../../src/lib/send-lead";
 import type { Account, EmailRecord } from "../../src/lib/instantly-client";
 
 /** Recursively extract SQL text fragments from a drizzle SQL object. */
@@ -192,7 +192,7 @@ describe("buildReplyBodyWithSignature", () => {
     // `{unsubscribe_link}` is Instantly's SERVER-SIDE merge variable and only
     // resolves on a campaign send; on a reply it would ship as a dead link.
     expect(html).not.toContain("{unsubscribe_link}");
-    expect(html).not.toContain(UNSUBSCRIBE_FOOTER_HTML);
+    expect(html).not.toContain('Reply "stop"');
   });
 
   it("is idempotent — a re-signed body never stacks signatures", () => {
