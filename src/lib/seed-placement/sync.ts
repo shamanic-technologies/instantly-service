@@ -14,7 +14,7 @@
  * silently penalises a healthy mailbox.
  */
 
-import { createImapClient } from "../self-send/imap-client";
+import { connectImapClient, createImapClient } from "../self-send/imap-client";
 import { simpleParser, type ParsedMail } from "mailparser";
 import { sql } from "drizzle-orm";
 
@@ -108,7 +108,7 @@ async function pollReceiver(
     logger: false,
   }, receiverEmail);
 
-  await client.connect();
+  await connectImapClient(client, loginFor(credential), credential.appPassword);
 
   try {
     // Ask the server which mailboxes it HAS, once, rather than probing each
