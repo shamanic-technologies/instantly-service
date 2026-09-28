@@ -36,6 +36,7 @@ import {
 import { capForAccount } from "./account-lifecycle";
 import { dateKeyUTC } from "./sending-forecast";
 import { sequenceFootprintDays } from "./sending-window";
+import { tagColdEmailLinks } from "./cold-email-utm";
 
 /**
  * All-zero capacity for an account absent from the snapshot (idle ⇒ preferred).
@@ -578,7 +579,7 @@ export function buildEmailBodyWithSignature(body: string, account: Account): str
   const signature = accountSig || buildDefaultSignature(account);
   const stripped = stripAccountSignature(body);
 
-  const linkedBody = autolinkifyHtml(stripped);
+  const linkedBody = tagColdEmailLinks(autolinkifyHtml(stripped));
   const sigBlock = `${SIG_SEPARATOR_HTML}${signature}${UNSUBSCRIBE_FOOTER_HTML}`;
 
   return linkedBody.includes("{{accountSignature}}")
@@ -605,7 +606,7 @@ export function buildReplyBodyWithSignature(body: string, account: Account): str
   const accountSig = account.signature?.trim() || "";
   const signature = accountSig || buildDefaultSignature(account);
   const stripped = stripAccountSignature(body);
-  const linkedBody = autolinkifyHtml(stripped);
+  const linkedBody = tagColdEmailLinks(autolinkifyHtml(stripped));
   return `${linkedBody}${SIG_SEPARATOR_HTML}${signature}`;
 }
 

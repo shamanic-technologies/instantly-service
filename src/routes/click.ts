@@ -25,6 +25,7 @@ import { Router, type Request, type Response } from "express";
 import { db } from "../db";
 import { trackingHitsRaw } from "../db/schema";
 import { clientIpOf } from "../lib/client-ip";
+import { withColdEmailUtm } from "../lib/cold-email-utm";
 import { classifyImmediateSignals } from "../lib/self-send/click-classification";
 import {
   isRedirectableUrl,
@@ -73,9 +74,13 @@ router.get("/:payload/:signature", async (req: Request, res: Response) => {
     },
   });
 
+  // A distribute.you destination leaves tagged as cold email, so the landing's
+  // first-touch cookie stops recording our own outreach as `direct`. Applied
+  // AFTER the signature check, to the signed target: a customer URL comes back
+  // byte-identical, and this also reaches mail sent before the body was tagged.
   // 302, not 301: a permanent redirect would be cached by the browser and every
   // later click on the same link would skip us entirely.
-  res.redirect(302, target.url);
+  res.redirect(302, withColdEmailUtm(target.url, { content: `step-${target.step}` }));
 });
 
 export default router;

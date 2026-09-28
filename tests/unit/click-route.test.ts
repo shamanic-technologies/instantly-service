@@ -50,6 +50,34 @@ beforeEach(() => {
 });
 
 describe("GET /c/:payload/:signature", () => {
+  it("tags a distribute.you destination as cold email on the way out", async () => {
+    const path = buildClickPath({ ...TARGET, step: 2, url: "https://distribute.you" }, SECRET);
+    const res = await request(app()).get(path).set("user-agent", CHROME);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe(
+      "https://distribute.you/?utm_source=cold_email&utm_medium=cold_email&utm_content=step-2",
+    );
+  });
+
+  it("keeps a utm_source the signed distribute.you link already carries", async () => {
+    const url = "https://www.distribute.you/pricing?utm_source=partner";
+    const path = buildClickPath({ ...TARGET, url }, SECRET);
+    const res = await request(app()).get(path).set("user-agent", CHROME);
+
+    const loc = new URL(res.headers.location);
+    expect(loc.searchParams.getAll("utm_source")).toEqual(["partner"]);
+    expect(loc.searchParams.get("utm_medium")).toBe("cold_email");
+  });
+
+  it("redirects a customer destination byte-identical", async () => {
+    const url = "https://brand.example/landing?ref=Abc&x=1";
+    const path = buildClickPath({ ...TARGET, url }, SECRET);
+    const res = await request(app()).get(path).set("user-agent", CHROME);
+
+    expect(res.headers.location).toBe(url);
+  });
+
   it("NEVER promotes a silver event — the verdict is not available at request time", async () => {
     const res = await request(app()).get(VALID_PATH).set("user-agent", CHROME);
 
