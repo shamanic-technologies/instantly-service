@@ -23,6 +23,7 @@ import { announceEvidenceChanged } from "./evidence-changed";
 import { maybeStopOnClickForLeg } from "./stop-on-click";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
 import { maybeEnqueueFollowupOnInterest } from "./enqueue-followup-on-interest";
+import { maybeStopFollowupsOnDecline } from "./stop-followups-on-decline";
 import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
 import { maybeRingRepOnSalesInterest } from "./ring-rep-on-sales-interest";
 import { maybeMirrorCampaignEmails } from "./mirror-emails";
@@ -670,6 +671,12 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // queue and its draining sweep both existed, and nothing had ever written a
       // due date into them. Same gate as the trigger, fail-soft, never throws.
       await maybeEnqueueFollowupOnInterest(campaign, input.leadEmail, input.eventType);
+
+      // ...and the reverse: a reply that declines, asks to stop, or hands us
+      // somebody else takes the person back OUT of that queue. Without it a
+      // prospect who said yes then no was still handed out for a follow-up
+      // (prod 2026-09-28). Fail-soft, never throws; no-op on any other event.
+      await maybeStopFollowupsOnDecline(campaign, input.leadEmail, input.eventType);
 
       // Mirror the conversation into bronze while Instantly still holds it. A
       // reply delivered cleanly by webhook never makes its campaign drift, so

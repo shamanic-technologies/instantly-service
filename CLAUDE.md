@@ -714,6 +714,14 @@ The section above asks campaign-service to RUN the campaign bought to answer an 
 - **No retry, no claim column.** The queue is durable once written; a missed write costs latency on one prospect, and a later reply enqueues again.
 - Needs `LEAD_SERVICE_URL` + `LEAD_SERVICE_API_KEY` in this service's env file on the box — **the only new env vars**.
 
+## Taking a declining buyer back OUT of the follow-up queue
+
+The mirror of the enqueue above (`src/lib/stop-followups-on-decline.ts`, fired from `promoteEvent` right after it). lead-service stops a person being due when "they answered again: the observer of that reply says so" — and this service is that observer, yet only ever ENTERED people. Prod 2026-09-28: a prospect said yes, then "sent in error, not interested"; the row went negative, the schedule stayed, and she was handed out again four days later.
+
+- **Stops on:** every NEGATIVE reply kind, `lead_referral`, and a real `lead_unsubscribed` (click or recorded opt-out). NOT `lead_neutral` (still worth answering inside a live thread), NOT the automated kinds, never a buying signal (a test asserts the gates are disjoint).
+- **Reads state first (`readFollowupState`) and stops only when a due date or claim stands.** lead-service records the stop reason whatever the row held and the customer's lead timeline renders it, so an unconditional stop would print "follow-ups stopped" on every declining lead. Reason `reply:<eventType>`.
+- Row found by `findLeadOnCampaignByEmail` on the CALLER campaign (the scope the enqueue wrote). Fail-soft and loud, like the enqueue; not a tombstone (a later interest re-enqueues).
+
 ## Ringing the rep when a sales interest lands — and offering to connect them
 
 A prospect replies "yes, interested". Three side effects already fire at this one choke point (`promoteEvent`), and all three end in something a human reads LATER: the thread is emailed to the agency inbox, campaign-service is asked to run the leg out of the step, and the person is entered into lead-service's follow-up queue. This is the fourth, and the only one that reaches a human WHILE the prospect is still at their desk — the brand's sales rep's phone rings within a minute or two, they hear who it is and what they wrote, and when we have the prospect's number they press a key and are on the call. Logic in `src/lib/ring-rep-on-sales-interest.ts`; clients in `brand-client.ts` (new), `apollo-client.ts` (new), `twilio-client.ts` (new) and `lead-client.ts` (extended).
