@@ -126,6 +126,25 @@ describe("htmlToText", () => {
     expect(out).not.toContain("<");
     expect(out).not.toContain("style");
   });
+
+  it("separates paragraphs with an EMPTY line, a <br> with one newline", () => {
+    const out = htmlToText(
+      "<p>Hi Julia,</p><p>First paragraph.</p><p>Line one<br>line two</p><p>--</p><p>Amy Moore<br>Distribute.you</p>",
+    );
+    expect(out).toBe(
+      "Hi Julia,\n\nFirst paragraph.\n\nLine one\nline two\n\n--\n\nAmy Moore\nDistribute.you",
+    );
+  });
+
+  it("keeps a client's one-<div>-per-line reply on single lines", () => {
+    expect(htmlToText("<div>Yes</div><div>send details</div><div><br></div><div>Bob</div>")).toBe(
+      "Yes\nsend details\n\nBob",
+    );
+  });
+
+  it("never stacks more than one empty line", () => {
+    expect(htmlToText("<p>a</p><p><br></p><p>b</p>")).toBe("a\n\nb");
+  });
 });
 
 describe("selectThreadMessages", () => {
