@@ -34,6 +34,11 @@
 
 import { ImapFlow, type ImapFlowOptions } from "imapflow";
 
+import {
+  assertNotAuthQuarantined,
+  recordImapLoginOutcome,
+} from "./imap-auth-quarantine";
+
 /**
  * An `ImapFlow` whose asynchronous `'error'` events cannot terminate the
  * process. Use this instead of `new ImapFlow(...)` everywhere.
@@ -53,4 +58,42 @@ export function createImapClient(
   });
 
   return client;
+}
+
+/**
+ * Connect a client built by {@link createImapClient}, the only way openers
+ * should log in.
+ *
+ * Two things a bare `client.connect()` got wrong, both on a mailbox whose
+ * password Google refuses:
+ *
+ *   - it logged in again on every tick with a password already rejected — see
+ *     `imap-auth-quarantine.ts`, which this consults BEFORE any socket opens;
+ *   - a failed connect left the socket open (nothing closed a client that
+ *     never authenticated), so every rejected login was followed a minute
+ *     later by a `Socket timeout` from the orphan. The client is now closed on
+ *     any connect failure.
+ *
+ * Throws exactly what the connect threw (or the quarantine error), so every
+ * caller's per-mailbox try/catch keeps counting and logging the failure.
+ */
+export async function connectImapClient(
+  client: ImapFlow,
+  login: string,
+  password: string,
+): Promise<void> {
+  try {
+    assertNotAuthQuarantined(login, password);
+  } catch (error) {
+    client.close();
+    throw error;
+  }
+  try {
+    await client.connect();
+  } catch (error) {
+    recordImapLoginOutcome(login, password, error);
+    client.close();
+    throw error;
+  }
+  recordImapLoginOutcome(login, password, null);
 }

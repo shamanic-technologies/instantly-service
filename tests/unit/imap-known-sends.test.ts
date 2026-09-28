@@ -271,6 +271,7 @@ describe("runPoll body fetching", () => {
     const stub = imapStub(messages);
     vi.doMock("../../src/lib/self-send/imap-client", () => ({
       createImapClient: () => stub.client,
+      connectImapClient: (client: { connect: () => Promise<void> }) => client.connect(),
     }));
     const { runPoll } = await import("../../src/lib/self-send/imap-poller");
 
@@ -392,6 +393,7 @@ describe("pollMailboxGroup — reading a new arrival through the watched session
         calls.created += 1;
         return session;
       },
+      connectImapClient: (client: { connect: () => Promise<void> }) => client.connect(),
     }));
     const { pollMailboxGroup } = await import("../../src/lib/self-send/imap-poller");
     mockDbExecute.mockResolvedValue(pgResult([]));
