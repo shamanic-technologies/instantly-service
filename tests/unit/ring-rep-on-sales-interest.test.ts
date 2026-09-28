@@ -566,10 +566,10 @@ describe("cleanForSpeech — our own words are not read back at the rep", () => 
     expect(out).not.toContain("unsubscribe");
   });
 
-  it("does NOT lean on stripAccountSignature: htmlToText leaves ONE newline before the marker", async () => {
-    // The wire form is <p>--</p>, which htmlToText collapses to a single "\n--\n".
-    // stripAccountSignature only matches "\n\n--\n", so it would strip nothing
-    // here — this asserts the plain-text cut is the one doing the work.
+  it("does NOT lean on stripAccountSignature: a <br>-wrapped delimiter leaves ONE newline before the marker", async () => {
+    // `<br>--<br>` converts to a single "\n--\n". stripAccountSignature only
+    // matches "\n\n--\n", so it would strip nothing here — this asserts the
+    // plain-text cut is the one doing the work.
     const { stripAccountSignature } = await import("../../src/lib/send-lead");
     const single = "body\n--\nAmy Moore";
     expect(stripAccountSignature(single)).toBe(single);

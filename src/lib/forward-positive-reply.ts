@@ -99,12 +99,21 @@ export interface ThreadMessage {
  * Removes <style>/<script>, turns <br> and block-close tags into newlines,
  * strips all remaining tags, decodes the few common entities, and collapses
  * runaway blank lines.
+ *
+ * ⚠️ A PARAGRAPH ends in an EMPTY LINE (`</p>`, `</h1-6>`, `</table>` → "\n\n"),
+ * a `<br>` / `</div>` / `</li>` / `</tr>` in ONE newline. The text this returns
+ * is what a customer reads as "the email we sent" (lead timeline), and our mail
+ * is one `<p>` per paragraph, so the prospect sees blank lines between them. A
+ * single newline per `</p>` made every sent email read as one dense block.
+ * `</div>` stays single on purpose: mail clients (Gmail) write one `<div>` per
+ * LINE, so doubling it would space out every line of a prospect's reply.
  */
 export function htmlToText(html: string): string {
   return html
     .replace(/<\s*(style|script)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, "")
     .replace(/<\s*br\s*\/?\s*>/gi, "\n")
-    .replace(/<\s*\/\s*(p|div|tr|li|h[1-6]|table)\s*>/gi, "\n")
+    .replace(/<\s*\/\s*(p|h[1-6]|table)\s*>/gi, "\n\n")
+    .replace(/<\s*\/\s*(div|tr|li)\s*>/gi, "\n")
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")

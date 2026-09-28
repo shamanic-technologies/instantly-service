@@ -170,10 +170,11 @@ export const MAX_PRIOR_MESSAGES = 5;
  * ⚠️ This is NOT `stripAccountSignature` and must not be replaced by it. That
  * function owns the WIRE form (`<p>--</p>`, `<br>--<br>`) and is protected by two
  * production incidents; by the time a body reaches here it has been through
- * `htmlToText`, which collapses `</p><p>` to a SINGLE newline — so the plain
- * marker that function looks for (`\n\n--\n`) does not match and it would
- * silently strip nothing. What survives the conversion is a line that is exactly
- * `--`, which is what this matches.
+ * `htmlToText`, and whether the plain marker that function looks for
+ * (`\n\n--\n`) survives depends on how the delimiter was wrapped (`<p>--</p>`
+ * yields an empty line before it, `<br>--<br>` does not). What survives the
+ * conversion in EVERY case is a line that is exactly `--`, which is what this
+ * matches.
  */
 const SPOKEN_SIGNATURE_LINE = /^[ \t]*--[ \t]*$/;
 
