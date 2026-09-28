@@ -271,3 +271,44 @@ export async function stopFollowups(params: {
     );
   }
 }
+
+/**
+ * One lead row's follow-up state, as lead-service holds it — or null when the
+ * row does not exist for this org.
+ *
+ * Read BEFORE a stop that is not certain to be needed: lead-service records a
+ * stop reason on the row whatever it held, and the customer's lead timeline
+ * renders that reason as "follow-ups stopped". Stopping a schedule that never
+ * existed would put a false event on every declining lead's page.
+ *
+ * FAILS LOUD on anything but 200/404, same as the siblings above.
+ */
+export async function readFollowupState(params: {
+  orgId: string;
+  leadRowId: string;
+}): Promise<ScheduledFollowup["followup"] | null> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+
+  const response = await fetch(
+    `${LEAD_SERVICE_URL}/orgs/leads/${encodeURIComponent(params.leadRowId)}/followups`,
+    {
+      headers: {
+        "x-api-key": LEAD_SERVICE_API_KEY,
+        "x-org-id": params.orgId,
+      },
+    },
+  );
+
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(
+      `lead-service GET /orgs/leads/{id}/followups failed: ${response.status} - ${detail.slice(0, 200)}`,
+    );
+  }
+
+  const body = (await response.json()) as { followup?: ScheduledFollowup["followup"] };
+  return body.followup ?? null;
+}
