@@ -8,8 +8,8 @@
  * incidents (stacked signatures, a body reduced to a stray anchor) exist to
  * protect, and the two copies would drift on the next change to either.
  *
- * The opt-out URL no longer appears in the body at all (the footer is a
- * link-free line, see `UNSUBSCRIBE_FOOTER_HTML`); it ships only in the RFC 8058
+ * The opt-out URL never appears in the body (the body ends on the signature,
+ * no footer); it ships only in the RFC 8058
  * `List-Unsubscribe` header. `resolveUnsubscribePlaceholder` is kept so a body
  * that still carries Instantly's `{unsubscribe_link}` never ships it verbatim.
  */

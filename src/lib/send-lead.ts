@@ -517,37 +517,25 @@ export function buildDefaultSignature(account: Account): string {
 const SIG_SEPARATOR_HTML = "<p>--</p>";
 
 /**
- * Opt-out line appended BELOW the signature on every sent email.
+ * ⚠️ NOTHING is appended below the signature — a cold email ENDS on it.
  *
- * ⚠️ IT CARRIES NO LINK, AND THAT IS MEASURED, NOT A STYLE CHOICE. The previous
- * footer ended on a visible `unsubscribe` anchor (to `{unsubscribe_link}` on the
- * Instantly transport, to our own opt-out route on the self-send one), and a
- * controlled placement test on 2026-09-24 isolated it as the Gmail spam trigger:
- * same senders, same receivers, same body, same minute —
- *   visible link + List-Unsubscribe header .... 15 of 48 in spam
- *   visible link alone ........................ 20 of 36 in spam
- *   List-Unsubscribe header alone .............. 0 of 36 in spam
- *   no footer at all ............................ 0 of 50 in spam
- * The link was the only difference. Do NOT put an anchor back in this line.
+ * Until 2026-09-28 a line sat there: first a visible `unsubscribe` anchor
+ * (measured 2026-09-24 as the Gmail spam trigger: 15 of 48 in spam with it,
+ * 0 of 50 with no footer at all, 0 of 36 with the List-Unsubscribe header
+ * alone), then a link-free `Not relevant? Reply "stop" ...` line, removed on
+ * the owner's decision. Do NOT add a footer back on either transport.
  *
- * The opt-out itself is unchanged in substance, it just stops being a link:
- *   - the RFC 8058 `List-Unsubscribe` + `List-Unsubscribe-Post` pair still ships
- *     on every email (`insert_unsubscribe_header: true` on Instantly, set by
- *     `buildMessage` on self-send) and drives the mailbox-native one-click
- *     button — the test above shows it costs nothing;
- *   - a reply of "stop" is recognised by the reply opt-out classifier (it is
- *     one of that prompt's pinned worked examples) and recorded as a consent
- *     statement, and ANY human reply already stops the sequence.
+ * The opt-out does not depend on a line in the body:
+ *   - the RFC 8058 `List-Unsubscribe` + `List-Unsubscribe-Post` pair ships on
+ *     every email (`insert_unsubscribe_header: true` on Instantly, set by
+ *     `buildMessage` on self-send) and drives the mailbox-native button;
+ *   - a reply asking to stop is recognised by the reply opt-out classifier and
+ *     recorded as a consent statement, and ANY human reply stops the sequence.
  *
- * A `<p>&nbsp;</p>` spacer separates it from the signature. Appended as part of
- * the signature block (after the `<p>--</p>` marker) so `stripAccountSignature`
- * removes it together with the signature on re-send — idempotency
- * (`f(f(x)) === f(x)`) is preserved, and a body stored with the OLD linked footer
- * loses it on the next build.
+ * A body stored with either retired footer loses it on the next build: both sat
+ * after the `<p>--</p>` marker, so `stripAccountSignature` removes them with the
+ * old signature.
  */
-export const UNSUBSCRIBE_FOOTER_HTML =
-  "<p>&nbsp;</p>" +
-  '<p>Not relevant? Reply "stop" and I won\'t email you again.</p>';
 
 /**
  * Inject the selected account's signature into the email body.
@@ -570,9 +558,9 @@ export const UNSUBSCRIBE_FOOTER_HTML =
  * own controlled HTML and is appended verbatim — its brand domain must render
  * as plain text, NOT a clickable `<a>` link.
  *
- * The `UNSUBSCRIBE_FOOTER_HTML` line (a link-free opt-out, see its docstring)
- * is appended below the signature, INSIDE the strip-and-reappend region, so
- * idempotency holds — a re-sent body never stacks the footer.
+ * The body ends on the signature — no footer line (see the note just above
+ * this docstring). A body stored with a retired
+ * footer loses it here, since it sat inside the strip region.
  */
 export function buildEmailBodyWithSignature(body: string, account: Account): string {
   const accountSig = account.signature?.trim() || "";
@@ -580,7 +568,7 @@ export function buildEmailBodyWithSignature(body: string, account: Account): str
   const stripped = stripAccountSignature(body);
 
   const linkedBody = tagColdEmailLinks(autolinkifyHtml(stripped));
-  const sigBlock = `${SIG_SEPARATOR_HTML}${signature}${UNSUBSCRIBE_FOOTER_HTML}`;
+  const sigBlock = `${SIG_SEPARATOR_HTML}${signature}`;
 
   return linkedBody.includes("{{accountSignature}}")
     ? linkedBody.replace("{{accountSignature}}", sigBlock)
@@ -596,11 +584,9 @@ export function buildEmailBodyWithSignature(body: string, account: Account): str
  * idempotent (`f(f(x)) === f(x)`) for exactly the reasons that function
  * documents.
  *
- * The ONE difference is deliberate: `UNSUBSCRIBE_FOOTER_HTML` is NOT appended.
- * A reply to someone who just answered us is not bulk mail: an opt-out line under
- * a personal answer reads as a mail-merge, which is the opposite of what a
- * threaded reply is for.
- * The RFC 8058 `List-Unsubscribe` header on the original outreach is untouched.
+ * Since 2026-09-28 the two build the same signature block; this one is kept
+ * separate because a reply carries no `{{accountSignature}}` placeholder and no
+ * List-Unsubscribe header of its own.
  */
 export function buildReplyBodyWithSignature(body: string, account: Account): string {
   const accountSig = account.signature?.trim() || "";
