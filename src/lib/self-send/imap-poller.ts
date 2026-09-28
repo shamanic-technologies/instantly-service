@@ -13,7 +13,7 @@
  * costs a few redundant reads and cannot lose anything.
  */
 
-import { createImapClient } from "./imap-client";
+import { connectImapClient, createImapClient } from "./imap-client";
 import { simpleParser, type ParsedMail } from "mailparser";
 import { sql } from "drizzle-orm";
 
@@ -321,7 +321,7 @@ async function pollAccount(
       logger: false,
     }, accountEmail);
 
-  if (!shared) await client.connect();
+  if (!shared) await connectImapClient(client, loginFor(credential), credential.appPassword);
 
   try {
     const lock = await client.getMailboxLock("INBOX");

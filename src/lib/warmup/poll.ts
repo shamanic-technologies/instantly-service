@@ -27,7 +27,7 @@
  */
 
 import { sql } from "drizzle-orm";
-import { createImapClient } from "../self-send/imap-client";
+import { connectImapClient, createImapClient } from "../self-send/imap-client";
 import { simpleParser, type ParsedMail } from "mailparser";
 
 import { db } from "../../db";
@@ -158,7 +158,7 @@ async function pollReceiver(
     logger: false,
   }, receiverEmail);
 
-  await client.connect();
+  await connectImapClient(client, loginFor(credential), credential.appPassword);
 
   try {
     // Ask the server what it HAS, once, rather than probing each name and

@@ -41,7 +41,7 @@
  * closes every session. The dispatch-time read keeps working without it.
  */
 
-import { createImapClient } from "./imap-client";
+import { connectImapClient, createImapClient } from "./imap-client";
 import {
   GMAIL_IMAP_PORT,
   loadMailboxLogins,
@@ -281,7 +281,7 @@ async function connect(watcher: Watcher): Promise<void> {
         scheduleReconnect(watcher);
       });
 
-      await session.connect();
+      await connectImapClient(session, loginFor(credential), credential.appPassword);
       await session.mailboxOpen("INBOX");
       if (watcher.stopped) {
         await session.logout().catch(() => {});
