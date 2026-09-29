@@ -162,60 +162,95 @@ async function upsertReplies(): Promise<number> {
 }
 
 /**
- * A reply a PERSON recorded by hand. The manual qualification path states a
- * kind on a lead precisely when the reply never reached us as a message (a
- * phone call, the prospect's own inbox, a reply Instantly missed), so its
- * verdict had no reply to attach to and the per-reply read served nothing for
- * that lead (jason@uhmedical.com, "interested" on 09-03).
+ * The replies we know only through their VERDICT: a producer judged a reply we
+ * never stored as a message, so the verdict had no reply to attach to and the
+ * per-reply read served nothing for that lead.
  *
- * One such reply per thread: the EARLIEST standing (not withdrawn) manual
- * statement on a thread where no mirrored reply was received at or before it
- * (same skew as attribution). Its id is `manual:<statement bronze row id>` and
- * its `source_row_id` is that row, so the statement attributes to it `exact`
- * and every later statement lands on it through `latest_before`. The moment a
- * mirrored reply is found to precede the statement, the row stops qualifying
- * and is removed — the real message then carries the verdicts.
+ *  - A PERSON recorded it by hand (manual qualification: a phone call, the
+ *    prospect's own inbox, a reply Instantly missed) — jason@uhmedical.com,
+ *    "interested" on 09-03. Id `manual:<statement bronze row id>`, transport
+ *    `manual`, `source_table = 'manual_qualifications'`.
+ *  - INSTANTLY qualified it (webhook / lead poll) but the message itself was
+ *    never mirrored (46 verdicts on 09-29, mostly from February-July). Id
+ *    `ievt:<event id>`, transport `instantly`, `source_table = 'instantly_events'`.
+ *
+ * One such reply per thread: the EARLIEST standing (not inferred, not
+ * withdrawn) verdict event of ANY producer on a thread where no MIRRORED reply
+ * was received at or before it (same skew as attribution). That verdict
+ * attributes to it `exact` (its `source_row_id` is the statement row for a
+ * manual one, the event id otherwise) and every later verdict lands on it
+ * through `latest_before`. The moment a mirrored reply is found to precede it,
+ * the row stops qualifying and is removed — the real message then carries the
+ * verdicts. `fromEmail` and `subject` are null: nothing was stored to read.
+ *
+ * The thread's org comes from the campaign row, else from the campaign config
+ * or lead rows (a few February threads lost their campaign row). A thread with
+ * no known org still gets its reply — the verdict is attached — but no
+ * org-scoped read can return it.
  *
  * A projection like the rest: nothing is promoted, nothing is sent.
  */
-function handRecordedRepliesSql(): SQL {
+export const MIRRORED_REPLY_TABLES = ["instantly_emails_raw", "imap_messages_raw"] as const;
+export const STATED_REPLY_TABLES = ["manual_qualifications", "instantly_events"] as const;
+
+const tableList = (tables: readonly string[]): SQL =>
+  sql.join(
+    tables.map((t) => sql`${t}`),
+    sql`, `,
+  );
+
+function statedRepliesSql(): SQL {
   return sql`
-    SELECT 'manual:' || f.source_row_id AS id, f.source_row_id, f.campaign_id AS instantly_campaign_id,
-           c.campaign_id, c.org_id, c.brand_ids, c.lead_email,
+    SELECT CASE WHEN f.source = 'manual' THEN 'manual:' || f.source_row_id ELSE 'ievt:' || f.id END AS id,
+           CASE WHEN f.source = 'manual' THEN 'manual_qualifications' ELSE 'instantly_events' END AS source_table,
+           CASE WHEN f.source = 'manual' THEN f.source_row_id ELSE f.id END AS source_row_id,
+           f.campaign_id AS instantly_campaign_id,
+           c.campaign_id,
+           COALESCE(
+             c.org_id,
+             (SELECT k.org_id FROM instantly_campaigns_config_raw k
+              WHERE k.instantly_campaign_id = f.campaign_id AND k.org_id IS NOT NULL LIMIT 1),
+             (SELECT l.org_id FROM instantly_leads l
+              WHERE l.instantly_campaign_id = f.campaign_id AND l.org_id IS NOT NULL LIMIT 1)
+           ) AS org_id,
+           c.brand_ids,
+           COALESCE(c.lead_email, f.lead_email) AS lead_email,
+           CASE WHEN f.source = 'manual' THEN 'manual'
+                WHEN f.source IN ('self_send', 'emails_backfill') THEN COALESCE(c.send_transport, 'smtp')
+                ELSE 'instantly' END AS transport,
            f.timestamp AT TIME ZONE 'UTC' AS received_at
     FROM (
-      SELECT DISTINCT ON (e.campaign_id) e.campaign_id, e.source_row_id, e.timestamp
+      SELECT DISTINCT ON (e.campaign_id) e.id, e.campaign_id, e.lead_email, e.source, e.source_row_id, e.timestamp
       FROM instantly_events e
-      WHERE e.source = 'manual'
-        AND e.event_type IN (${kindList()})
+      WHERE e.event_type IN (${kindList()})
         AND e.inferred = false
         AND e.withdrawn_at IS NULL
         AND e.campaign_id IS NOT NULL
-        AND e.source_row_id IS NOT NULL
+        AND (e.source <> 'manual' OR e.source_row_id IS NOT NULL)
       ORDER BY e.campaign_id, e.timestamp, e.id
     ) f
-    JOIN instantly_campaigns c ON c.instantly_campaign_id = f.campaign_id
-    WHERE c.lead_email IS NOT NULL
+    LEFT JOIN instantly_campaigns c ON c.instantly_campaign_id = f.campaign_id
+    WHERE COALESCE(c.lead_email, f.lead_email) IS NOT NULL
       AND NOT EXISTS (
         SELECT 1 FROM replies r
         WHERE r.instantly_campaign_id = f.campaign_id
-          AND r.source_table <> 'manual_qualifications'
+          AND r.source_table IN (${tableList(MIRRORED_REPLY_TABLES)})
           AND r.received_at <= (f.timestamp AT TIME ZONE 'UTC') + ${sql.raw(`interval '${ATTRIBUTION_SKEW}'`)}
       )
   `;
 }
 
-/** 2b. Upsert the hand-recorded replies, and drop the ones no longer standing. */
-async function upsertHandRecordedReplies(): Promise<number> {
+/** 2b. Upsert the stated replies, and drop the ones no longer standing. */
+async function upsertStatedReplies(): Promise<number> {
   const result = await db.execute(sql`
     INSERT INTO replies
       (id, source_table, source_row_id, provider_message_id, instantly_campaign_id,
        campaign_id, org_id, brand_ids, lead_email, from_email, transport, subject,
        received_at, synced_at)
-    SELECT h.id, 'manual_qualifications', h.source_row_id, NULL, h.instantly_campaign_id,
-           h.campaign_id, h.org_id, h.brand_ids, h.lead_email, NULL, 'manual', NULL,
+    SELECT h.id, h.source_table, h.source_row_id, NULL, h.instantly_campaign_id,
+           h.campaign_id, h.org_id, h.brand_ids, h.lead_email, NULL, h.transport, NULL,
            h.received_at, now()
-    FROM (${handRecordedRepliesSql()}) h
+    FROM (${statedRepliesSql()}) h
     ON CONFLICT (id) DO UPDATE SET
       campaign_id = excluded.campaign_id,
       org_id = excluded.org_id,
@@ -226,8 +261,8 @@ async function upsertHandRecordedReplies(): Promise<number> {
   `);
   await db.execute(sql`
     DELETE FROM replies r
-    WHERE r.source_table = 'manual_qualifications'
-      AND NOT EXISTS (SELECT 1 FROM (${handRecordedRepliesSql()}) h WHERE h.id = r.id)
+    WHERE r.source_table IN (${tableList(STATED_REPLY_TABLES)})
+      AND NOT EXISTS (SELECT 1 FROM (${statedRepliesSql()}) h WHERE h.id = r.id)
   `);
   return (result as { rowCount?: number }).rowCount ?? 0;
 }
@@ -248,7 +283,10 @@ function attributedVerdictsSql(): SQL {
       WHERE r.instantly_campaign_id = v.instantly_campaign_id
         AND (r.id = v.reply_ref
              OR (v.reply_ref IS NULL AND v.source_row_id IS NOT NULL
-                 AND (r.source_row_id = v.source_row_id OR r.provider_message_id = v.source_row_id)))
+                 AND (r.source_row_id = v.source_row_id OR r.provider_message_id = v.source_row_id))
+             -- A reply stated by an Instantly verdict is keyed on that event.
+             OR (v.reply_ref IS NULL AND v.source_event_id IS NOT NULL
+                 AND r.source_table = 'instantly_events' AND r.source_row_id = v.source_event_id))
       UNION ALL
       SELECT r.id, 'latest_before', 1, r.received_at
       FROM replies r
@@ -301,8 +339,8 @@ async function recomputeCurrent(): Promise<void> {
 export interface ReplyVerdictSyncSummary {
   verdictsIngested: number;
   repliesUpserted: number;
-  /** Replies a person recorded by hand (no mirrored message), upserted this pass. */
-  handRecordedReplies: number;
+  /** Replies known only through a verdict (no mirrored message), upserted this pass. */
+  statedReplies: number;
 }
 
 /** One projection pass. `sinceDays` bounds the event scan; null = everything. */
@@ -311,9 +349,9 @@ export async function syncReplyVerdicts(
 ): Promise<ReplyVerdictSyncSummary> {
   const verdictsIngested = await ingestEventVerdicts(opts.sinceDays ?? null);
   const repliesUpserted = await upsertReplies();
-  const handRecordedReplies = await upsertHandRecordedReplies();
+  const statedReplies = await upsertStatedReplies();
   await recomputeCurrent();
-  return { verdictsIngested, repliesUpserted, handRecordedReplies };
+  return { verdictsIngested, repliesUpserted, statedReplies };
 }
 
 // ─── Backfill: the replies no producer ever judged ───────────────────────────
@@ -374,8 +412,8 @@ async function selectUnjudgedReplies(sinceDays: number | null, limit: number | n
       LEFT JOIN instantly_emails_raw ie ON r.source_table = 'instantly_emails_raw' AND ie.id = r.source_row_id
       LEFT JOIN imap_messages_raw m ON r.source_table = 'imap_messages_raw' AND m.id = r.source_row_id
       WHERE r.current_kind IS NULL AND ${window}
-        -- A hand-recorded reply has no message to read.
-        AND r.source_table <> 'manual_qualifications'
+        -- A stated reply has no message to read.
+        AND r.source_table IN (${tableList(MIRRORED_REPLY_TABLES)})
       ORDER BY r.received_at
       ${limit === null ? sql`` : sql`LIMIT ${limit}`}
     `),

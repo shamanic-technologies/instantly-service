@@ -71,32 +71,43 @@ describe("the projection", () => {
     expect(upsert).toContain("m.kind IN ('reply', 'auto_reply')");
   });
 
-  it("makes a reply of a statement a PERSON recorded by hand when no message was mirrored", async () => {
+  it("makes a reply of a verdict whose message was never mirrored, from ANY producer", async () => {
     await syncReplyVerdicts({ sinceDays: null });
     const upsert = sqlText(mockDbExecute.mock.calls[2][0]);
     expect(upsert).toContain("INSERT INTO replies");
+    // A person's statement keeps its manual id; Instantly's is keyed on the event.
     expect(upsert).toContain("'manual:' || f.source_row_id");
-    expect(upsert).toContain("'manual_qualifications'");
-    expect(upsert).toContain("e.source = 'manual'");
+    expect(upsert).toContain("'ievt:' || f.id");
+    expect(upsert).toContain("'instantly_events'");
+    // Instantly's own verdicts are stated too, with their own transport.
+    expect(upsert).toContain("ELSE 'instantly' END AS transport");
     expect(upsert).toContain("e.withdrawn_at IS NULL");
-    // One per thread: the earliest standing statement.
+    expect(upsert).toContain("e.inferred = false");
+    // One per thread: the earliest standing verdict.
     expect(upsert).toContain("DISTINCT ON (e.campaign_id)");
     expect(upsert).toContain("ORDER BY e.campaign_id, e.timestamp, e.id");
+    // A thread whose campaign row is gone still gets its reply; the org is looked up elsewhere.
+    expect(upsert).toContain("LEFT JOIN instantly_campaigns c");
+    expect(upsert).toContain("FROM instantly_campaigns_config_raw k");
+    expect(upsert).toContain("COALESCE(c.lead_email, f.lead_email)");
     // Only where no MIRRORED reply precedes it (same skew as attribution).
-    expect(upsert).toContain("r.source_table <> 'manual_qualifications'");
+    expect(upsert).toContain("r.source_table IN (");
     expect(upsert).toContain("+ interval '10 minutes'");
-    // Nothing is promoted and nothing is sent — a projection.
-    expect(upsert).not.toContain("instantly_events (");
     const prune = sqlText(mockDbExecute.mock.calls[3][0]);
     expect(prune).toContain("DELETE FROM replies r");
-    expect(prune).toContain("r.source_table = 'manual_qualifications'");
     expect(mockPromoteEvent).not.toHaveBeenCalled();
+  });
+
+  it("an Instantly verdict attributes exactly to the reply it stated", async () => {
+    await syncReplyVerdicts({ sinceDays: null });
+    const recompute = sqlText(mockDbExecute.mock.calls[5][0]);
+    expect(recompute).toContain("r.source_table = 'instantly_events' AND r.source_row_id = v.source_event_id");
   });
 
   it("the backfill classifier never tries to read a hand-recorded reply", async () => {
     await backfillReplyVerdicts({ sinceDays: null });
     const select = mockDbExecute.mock.calls.map((c) => sqlText(c[0])).find((t) => t.includes("r.current_kind IS NULL AND"));
-    expect(select).toContain("r.source_table <> 'manual_qualifications'");
+    expect(select).toContain("r.source_table IN (");
   });
 
   it("attributes exactly first, then to the latest reply before the verdict, and drops withdrawn statements", async () => {

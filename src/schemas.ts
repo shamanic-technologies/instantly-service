@@ -1774,7 +1774,7 @@ export const ReplyVerdictsResponseSchema = z
   .object({
     replies: z.array(
       z.object({
-        replyId: z.string().describe("Stable per-reply id (`ie:<instantly email id>`, `imap:<row id>`, or `manual:<qualification row id>` for a reply a person recorded by hand when no message was mirrored)"),
+        replyId: z.string().describe("Stable per-reply id (`ie:<instantly email id>`, `imap:<row id>`, `manual:<qualification row id>` for a reply a person recorded by hand, or `ievt:<event id>` for a reply Instantly qualified but whose message was never mirrored; the last two carry null `fromEmail` / `subject`)"),
         leadEmail: z.string(),
         instantlyCampaignId: z.string().describe("The per-lead thread"),
         campaignId: z.string().nullable().describe("The logical campaign (campaign-service id)"),
