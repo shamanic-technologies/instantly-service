@@ -2208,6 +2208,10 @@
           "notOurTarget": {
             "type": "boolean",
             "description": "They are not who we sell to: the wrong contact, or they left the role. A fact about the person; a plain 'not interested' is NOT this (that lead stays recyclable)."
+          },
+          "handedToPerson": {
+            "type": "boolean",
+            "description": "The reply hands the lead to a person rather than to the automated responder: a referral ('not me, write to X') or a reply about something other than the offer. Both classify `neutral` like a plain neutral reply; this is what separates them."
           }
         },
         "required": [
@@ -2220,7 +2224,8 @@
           "decidedAt",
           "automatedAnswer",
           "stopRequested",
-          "notOurTarget"
+          "notOurTarget",
+          "handedToPerson"
         ],
         "description": "The reply's CURRENT verdict; null only while it is still being classified"
       },

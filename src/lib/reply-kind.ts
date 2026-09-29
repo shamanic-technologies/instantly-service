@@ -344,6 +344,8 @@ export function isEscalatedReplyKind(kind: string): boolean {
  *    person has engaged. `AUTOMATED_REPLY_KINDS`.
  *  - `stopRequested`   — they asked us to STOP writing. A legal obligation, not
  *    a judgement about the offer.
+ *  - `handedToPerson`  — the reply is handed to a person (referral, off-topic);
+ *    `ESCALATED_REPLY_KINDS`, the same set the escalation path reads.
  *  - `notOurTarget`    — they are not who we sell to (the wrong contact, or they
  *    left the role). A fact about the person, not the moment; `lead_not_interested`
  *    is deliberately NOT here — that lead stays recyclable.
@@ -355,6 +357,12 @@ export interface ReplyKindFacts {
   automatedAnswer: boolean;
   stopRequested: boolean;
   notOurTarget: boolean;
+  /**
+   * The reply hands the lead to a PERSON (`ESCALATED_REPLY_KINDS`: a referral,
+   * an off-topic reply). Both project to `neutral`, exactly like a plain neutral
+   * reply, so this is the only field that separates them.
+   */
+  handedToPerson: boolean;
 }
 
 export function replyKindFacts(kind: string): ReplyKindFacts {
@@ -362,5 +370,6 @@ export function replyKindFacts(kind: string): ReplyKindFacts {
     automatedAnswer: (AUTOMATED_REPLY_KINDS as readonly string[]).includes(kind),
     stopRequested: STOP_REQUEST_REPLY_KINDS.has(kind as ReplyKind),
     notOurTarget: NOT_OUR_TARGET_REPLY_KINDS.has(kind as ReplyKind),
+    handedToPerson: isEscalatedReplyKind(kind),
   };
 }
