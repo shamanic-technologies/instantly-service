@@ -19,6 +19,13 @@ vi.mock("../../src/lib/recent-send-volume", async (importOriginal) => ({
   fetchRecentDailyVolume: vi.fn(),
 }));
 
+// The address → real-mailbox map. Empty by default: every address is its own
+// login, which is the pre-split behaviour the older cases below pin.
+vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({
+  loadMailboxLogins: vi.fn(),
+}));
+
+import { loadMailboxLogins } from "../../src/lib/self-send/mailbox-credentials";
 import {
   listAccounts,
   setWarmupDailyLimit,
@@ -306,9 +313,120 @@ describe("selectLifecycleLimitPatches", () => {
   });
 });
 
+describe("selectLifecycleLimitPatches — warmup per real mailbox (login)", () => {
+  const recoveryAliases = ["a", "b", "c", "d", "e"].map((x) => `${x}@growth.email`);
+  const oneLogin = (emails: string[], login: string) =>
+    new Map(emails.map((e) => [e, login]));
+
+  it("5 in_recovery aliases on one login split the 30 so the login's sum is ≤ 30", () => {
+    const accounts = recoveryAliases.map((e) => acct(e, 20, 30, { status: 1 }));
+    const lc = new Map(recoveryAliases.map((e) => [e, lifecycle("in_recovery", "smtp")]));
+    const patches = selectLifecycleLimitPatches(
+      accounts, lc, asOf, new Map(), oneLogin(recoveryAliases, "kevin@growth.email"),
+    );
+    expect(patches.map((p) => p.warmup)).toEqual([6, 6, 6, 6, 6]);
+    expect(patches.every((p) => p.daily === null)).toBe(true);
+    const sum = patches.reduce((t, p) => t + (p.warmup ?? 0), 0);
+    expect(sum).toBeLessThanOrEqual(30);
+  });
+
+  it("a mixed login (recovery + production aliases) gets 0 warmup on ALL aliases", () => {
+    const accounts = [
+      acct("r1@salesmolt.com", 20, 30),
+      acct("r2@salesmolt.com", 20, 30),
+      acct("r3@salesmolt.com", 20, 30),
+      acct("p1@salesmolt.com", 50, 30),
+      acct("p2@salesmolt.com", 50, 0),
+    ];
+    const lc = new Map<string, LifecycleView>([
+      ["r1@salesmolt.com", lifecycle("in_recovery", "smtp")],
+      ["r2@salesmolt.com", lifecycle("in_recovery", "smtp")],
+      ["r3@salesmolt.com", lifecycle("in_recovery", "smtp")],
+      ["p1@salesmolt.com", lifecycle("in_production", "smtp")],
+      ["p2@salesmolt.com", lifecycle("in_production", "smtp")],
+    ]);
+    const logins = oneLogin(accounts.map((a) => a.email as string), "eric@salesmolt.com");
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf, new Map(), logins)).toEqual([
+      { email: "r1@salesmolt.com", warmup: 0, daily: null, slowRamp: null },
+      { email: "r2@salesmolt.com", warmup: 0, daily: null, slowRamp: null },
+      { email: "r3@salesmolt.com", warmup: 0, daily: null, slowRamp: null },
+      { email: "p1@salesmolt.com", warmup: 0, daily: null, slowRamp: null },
+    ]);
+  });
+
+  it("an in_production alias Instantly has DISABLED still zeroes its recovery siblings", () => {
+    // We dispatch outreach from it ourselves, so it spends the login's 50.
+    const accounts = [acct("r@m.com", 20, 30), acct("p@m.com", 50, 0, { status: 0 })];
+    const lc = new Map<string, LifecycleView>([
+      ["r@m.com", lifecycle("in_recovery", "smtp")],
+      ["p@m.com", lifecycle("in_production", "smtp")],
+    ]);
+    const logins = oneLogin(["r@m.com", "p@m.com"], "login@m.com");
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf, new Map(), logins)).toEqual([
+      { email: "r@m.com", warmup: 0, daily: null, slowRamp: null },
+    ]);
+  });
+
+  it("single-alias mailboxes are unchanged (map present or absent)", () => {
+    const accounts = [acct("solo@x.com", 20, 5), acct("prod@x.com", 50, 10)];
+    const lc = new Map<string, LifecycleView>([
+      ["solo@x.com", lifecycle("in_recovery", "smtp")],
+      ["prod@x.com", lifecycle("in_production", "smtp")],
+    ]);
+    const expected = [
+      { email: "solo@x.com", warmup: 30, daily: null, slowRamp: null },
+      { email: "prod@x.com", warmup: 0, daily: null, slowRamp: null },
+    ];
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf, new Map())).toEqual(expected);
+    expect(
+      selectLifecycleLimitPatches(
+        accounts, lc, asOf, new Map(),
+        new Map([["solo@x.com", "solo@x.com"], ["prod@x.com", "prod@x.com"]]),
+      ),
+    ).toEqual(expected);
+  });
+
+  it("an Instantly-DISABLED smtp alias is skipped AND not counted in the split", () => {
+    const accounts = [
+      acct("on1@g.com", 20, 30),
+      acct("on2@g.com", 20, 30),
+      acct("off@g.com", 20, 30, { status: -1 }),
+    ];
+    const lc = new Map(accounts.map((a) => [a.email as string, lifecycle("in_recovery", "smtp")]));
+    const logins = oneLogin(accounts.map((a) => a.email as string), "kevin@g.com");
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf, new Map(), logins)).toEqual([
+      { email: "on1@g.com", warmup: 15, daily: null, slowRamp: null },
+      { email: "on2@g.com", warmup: 15, daily: null, slowRamp: null },
+    ]);
+  });
+
+  it("deactivated aliases on a shared login are untouched and not counted", () => {
+    const accounts = [acct("r@d.com", 20, 30), acct("u@d.com", 20, 50)];
+    const lc = new Map<string, LifecycleView>([
+      ["r@d.com", lifecycle("in_recovery", "smtp")],
+      ["u@d.com", lifecycle("deactivated_by_user", "smtp")],
+    ]);
+    const logins = oneLogin(["r@d.com", "u@d.com"], "l@d.com");
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf, new Map(), logins)).toEqual([]);
+  });
+
+  it("matches the login case-insensitively", () => {
+    const accounts = [acct("A@Case.com", 20, 30), acct("b@case.com", 20, 30)];
+    const lc = new Map<string, LifecycleView>([
+      ["A@Case.com", lifecycle("in_recovery", "smtp")],
+      ["b@case.com", lifecycle("in_recovery", "smtp")],
+    ]);
+    const logins = oneLogin(["a@case.com", "b@case.com"], "l@case.com");
+    expect(
+      selectLifecycleLimitPatches(accounts, lc, asOf, new Map(), logins).map((p) => p.warmup),
+    ).toEqual([15, 15]);
+  });
+});
+
 describe("syncLifecycleLimits", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(loadMailboxLogins).mockResolvedValue(new Map());
     mockSetWarmup.mockResolvedValue({} as Account);
     mockSetDaily.mockResolvedValue({} as Account);
     mockSetSlowRamp.mockResolvedValue({} as Account);
