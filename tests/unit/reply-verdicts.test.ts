@@ -71,9 +71,37 @@ describe("the projection", () => {
     expect(upsert).toContain("m.kind IN ('reply', 'auto_reply')");
   });
 
+  it("makes a reply of a statement a PERSON recorded by hand when no message was mirrored", async () => {
+    await syncReplyVerdicts({ sinceDays: null });
+    const upsert = sqlText(mockDbExecute.mock.calls[2][0]);
+    expect(upsert).toContain("INSERT INTO replies");
+    expect(upsert).toContain("'manual:' || f.source_row_id");
+    expect(upsert).toContain("'manual_qualifications'");
+    expect(upsert).toContain("e.source = 'manual'");
+    expect(upsert).toContain("e.withdrawn_at IS NULL");
+    // One per thread: the earliest standing statement.
+    expect(upsert).toContain("DISTINCT ON (e.campaign_id)");
+    expect(upsert).toContain("ORDER BY e.campaign_id, e.timestamp, e.id");
+    // Only where no MIRRORED reply precedes it (same skew as attribution).
+    expect(upsert).toContain("r.source_table <> 'manual_qualifications'");
+    expect(upsert).toContain("+ interval '10 minutes'");
+    // Nothing is promoted and nothing is sent — a projection.
+    expect(upsert).not.toContain("instantly_events (");
+    const prune = sqlText(mockDbExecute.mock.calls[3][0]);
+    expect(prune).toContain("DELETE FROM replies r");
+    expect(prune).toContain("r.source_table = 'manual_qualifications'");
+    expect(mockPromoteEvent).not.toHaveBeenCalled();
+  });
+
+  it("the backfill classifier never tries to read a hand-recorded reply", async () => {
+    await backfillReplyVerdicts({ sinceDays: null });
+    const select = mockDbExecute.mock.calls.map((c) => sqlText(c[0])).find((t) => t.includes("r.current_kind IS NULL AND"));
+    expect(select).toContain("r.source_table <> 'manual_qualifications'");
+  });
+
   it("attributes exactly first, then to the latest reply before the verdict, and drops withdrawn statements", async () => {
     await syncReplyVerdicts({ sinceDays: null });
-    const recompute = sqlText(mockDbExecute.mock.calls[3][0]);
+    const recompute = sqlText(mockDbExecute.mock.calls[5][0]);
     expect(recompute).toContain("'exact' AS attribution");
     expect(recompute).toContain("'latest_before'");
     expect(recompute).toContain("r.received_at <= v.decided_at + interval '10 minutes'");
@@ -83,13 +111,13 @@ describe("the projection", () => {
 
   it("a person's statement beats everyone, then the most recent", async () => {
     await syncReplyVerdicts({ sinceDays: null });
-    const recompute = sqlText(mockDbExecute.mock.calls[3][0]);
+    const recompute = sqlText(mockDbExecute.mock.calls[5][0]);
     expect(recompute).toContain("(producer_type = 'human') DESC, decided_at DESC");
   });
 
   it("clears the current verdict of a reply whose verdicts all went away", async () => {
     await syncReplyVerdicts({ sinceDays: null });
-    const reset = sqlText(mockDbExecute.mock.calls[2][0]);
+    const reset = sqlText(mockDbExecute.mock.calls[4][0]);
     expect(reset).toContain("current_verdict_id = NULL");
     expect(reset).toContain("NOT EXISTS (SELECT 1 FROM attributed a WHERE a.reply_id = r.id)");
   });
@@ -97,8 +125,10 @@ describe("the projection", () => {
 
 describe("the backfill", () => {
   function queueUnjudged(rows: Record<string, unknown>[]) {
-    // sync: ingest, upsert, reset, recompute; then the candidate select.
+    // sync: ingest, upsert, hand-recorded upsert + prune, reset, recompute; then the candidate select.
     mockDbExecute
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([]))
       .mockResolvedValueOnce(pgResult([]))
       .mockResolvedValueOnce(pgResult([]))
       .mockResolvedValueOnce(pgResult([]))
@@ -180,8 +210,52 @@ describe("the read", () => {
       campaignId: "38ba8069",
       brandIds: ["f2408cfb"],
       receivedAt: "2026-09-28T04:52:00.000Z",
-      verdict: { kind: "lead_referral", classification: "neutral", producerType: "model" },
+      verdict: {
+        kind: "lead_referral",
+        classification: "neutral",
+        producerType: "model",
+        automatedAnswer: false,
+        stopRequested: false,
+        notOurTarget: false,
+      },
     });
+  });
+
+  it.each([
+    ["lead_out_of_office", { automatedAnswer: true, stopRequested: false, notOurTarget: false }],
+    ["auto_reply_received", { automatedAnswer: true, stopRequested: false, notOurTarget: false }],
+    ["lead_opt_out_requested", { automatedAnswer: false, stopRequested: true, notOurTarget: false }],
+    ["lead_wrong_person", { automatedAnswer: false, stopRequested: false, notOurTarget: true }],
+    ["lead_changed_job", { automatedAnswer: false, stopRequested: false, notOurTarget: true }],
+    // A plain no stays recyclable: not a disqualification.
+    ["lead_not_interested", { automatedAnswer: false, stopRequested: false, notOurTarget: false }],
+    ["lead_interested", { automatedAnswer: false, stopRequested: false, notOurTarget: false }],
+  ])("states the facts of a %s verdict", async (kind, facts) => {
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        {
+          id: "manual:q1",
+          lead_email: "jason@uhmedical.com",
+          instantly_campaign_id: "e1e216ca",
+          campaign_id: "c1",
+          brand_ids: [],
+          transport: "manual",
+          from_email: null,
+          subject: null,
+          received_at: new Date("2026-09-03T13:21:37Z"),
+          current_kind: kind,
+          current_classification: "neutral",
+          current_producer_type: "human",
+          current_producer: "manual",
+          current_attribution: "exact",
+          current_confidence: null,
+          current_decided_at: new Date("2026-09-03T13:21:37Z"),
+          verdict_count: 1,
+        },
+      ]),
+    );
+    const [row] = await readReplyVerdicts({ orgId: "org-1", emails: ["jason@uhmedical.com"] });
+    expect(row.verdict).toMatchObject(facts);
   });
 
   it("returns nothing, and queries nothing, for an empty address list", async () => {
