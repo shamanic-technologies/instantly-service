@@ -1767,6 +1767,9 @@ const ReplyVerdictSchema = z
     notOurTarget: z
       .boolean()
       .describe("They are not who we sell to: the wrong contact, or they left the role. A fact about the person; a plain 'not interested' is NOT this (that lead stays recyclable)."),
+    handedToPerson: z
+      .boolean()
+      .describe("The reply hands the lead to a person rather than to the automated responder: a referral ('not me, write to X') or a reply about something other than the offer. Both classify `neutral` like a plain neutral reply; this is what separates them."),
   })
   .openapi("ReplyVerdict");
 
