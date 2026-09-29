@@ -1026,7 +1026,9 @@ const REPLY_KIND_VALUES = [
   "lead_not_interested",
   "lead_wrong_person",
   "lead_changed_job",
+  "lead_opt_out_requested",
   "lead_neutral",
+  "lead_off_topic",
   "lead_out_of_office",
   "auto_reply_received",
 ] as const;
@@ -1034,7 +1036,7 @@ const REPLY_KIND_VALUES = [
 export const ReplyKindSchema = z
   .enum(REPLY_KIND_VALUES)
   .describe(
-    "What KIND of reply arrived, and nothing about how far the deal got. Positive splits four ways: lead_interested (personally interested), lead_referral (not personally interested but relevant — points at the right person), lead_info_requested (wants to know more), lead_meeting_requested (wants to book). Negative splits by whether the no is about the moment or the person: lead_not_interested (declines today — recyclable), lead_wrong_person (not the right contact, hands nothing back) and lead_changed_job (has left the role we were selling to). The last two are objective facts about the person and permanent for the lead; the first is not. Deal outcomes (a booked meeting, a closed deal) are lead outcomes owned by the lead-outcomes service, not reply kinds.",
+    "What KIND of reply arrived, and nothing about how far the deal got. Positive splits four ways: lead_interested (personally interested), lead_referral (not personally interested but relevant — points at the right person), lead_info_requested (wants to know more), lead_meeting_requested (wants to book). Negative splits by whether the no is about the moment or the person: lead_not_interested (declines today — recyclable), lead_wrong_person (not the right contact, hands nothing back) and lead_changed_job (has left the role we were selling to). The last two are objective facts about the person and permanent for the lead; the first is not. lead_opt_out_requested: they asked us to stop. lead_off_topic: a real reply about something other than buying the offer (a partnership, hiring, investors, a vendor pitching us, press) — reported neutral, never answered by the automated responder, escalated to a human. Deal outcomes (a booked meeting, a closed deal) are lead outcomes owned by the lead-outcomes service, not reply kinds.",
   );
 
 export const StatusRequestSchema = z
@@ -1168,6 +1170,7 @@ const MANUAL_QUALIFICATION_STATUS_VALUES = [
   "lead_wrong_person",
   "lead_changed_job",
   "lead_neutral",
+  "lead_off_topic",
   "lead_out_of_office",
   "auto_reply_received",
   // Legacy deal-progress values — accepted, resolved to `lead_interested`.

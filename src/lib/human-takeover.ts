@@ -30,6 +30,13 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../db";
 import { MANUAL_REPLY_STEP } from "./manual-reply-step";
+import { staffSenderSql } from "./staff-senders";
+import { STAFF_REPLY_KIND } from "./self-send/inbound";
+
+function toSource(value: unknown): HumanAnswer["source"] {
+  const s = String(value);
+  return s === "dispatched" || s === "staff_cc" ? s : "instantly_unibox";
+}
 
 /**
  * Who asked for this reply to be sent.
@@ -70,8 +77,10 @@ export interface HumanAnswer {
   /**
    * `dispatched` — through this service, declared `human`.
    * `instantly_unibox` — sent by hand from Instantly's own inbox.
+   * `staff_cc` — one of our own people answered from their own mail client and
+   *   CC'd the sending mailbox, so it arrived INBOUND on it (staff-senders).
    */
-  source: "dispatched" | "instantly_unibox";
+  source: "dispatched" | "instantly_unibox" | "staff_cc";
 }
 
 function rowsOf(result: unknown): Record<string, unknown>[] {
@@ -84,7 +93,7 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
  * The latest answer a PERSON put on this thread after the prospect last wrote,
  * or null if the only answers since are ours.
  *
- * Two sources, and both are required — measured, not assumed:
+ * Three sources, and all are required — measured, not assumed:
  *
  *   1. `smtp_dispatch_raw` at step 0 carrying `sentBy: 'human'`. This is what a
  *      human surface writes once it exists, on either transport, and it is the
@@ -109,8 +118,14 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
  * whatever the session's TimeZone happens to be. The comparison decides whether
  * a reply goes out; it must not depend on a server setting.
  *
- * Known residual, stated: a person answering from their OWN mail client rather
- * than through a surface we own is invisible here unless Instantly mirrored it.
+ * THIRD SOURCE: a message one of our own people wrote (staff domain, `staff-senders`) that
+ *      arrived INBOUND on the sending mailbox because they CC'd it: Instantly
+ *      files it `ue_type 2`, the IMAP poller files it `staff_reply`. It is ALSO
+ *      excluded from "the prospect last wrote" — otherwise it would itself be
+ *      the latest inbound and no answer could ever be later than it.
+ *
+ * Known residual, stated: a person answering from their OWN mail client WITHOUT
+ * CC'ing the sending mailbox is invisible here — nothing we read ever sees it.
  * The IMAP poller reads a mailbox's inbox, not its sent folder, so there is no
  * third source to add — closing that would mean reading Sent, which is a
  * different piece of work.
@@ -129,6 +144,7 @@ export async function findHumanTakeover(
         FROM instantly_emails_raw e
         WHERE e.instantly_campaign_id = ${instantlyCampaignId}
           AND e.payload->>'ue_type' = '2'
+          AND NOT ${staffSenderSql(sql`e.payload->>'from_address_email'`)}
 
         UNION ALL
 
@@ -161,6 +177,23 @@ export async function findHumanTakeover(
             AND d.step = ${MANUAL_REPLY_STEP}
             AND d.payload->>'instantlyEmailId' = e.instantly_email_id
         )
+
+      UNION ALL
+
+      SELECT (e.payload->>'timestamp_email')::timestamptz AS at,
+             'staff_cc' AS source
+      FROM instantly_emails_raw e
+      WHERE e.instantly_campaign_id = ${instantlyCampaignId}
+        AND e.payload->>'ue_type' = '2'
+        AND ${staffSenderSql(sql`e.payload->>'from_address_email'`)}
+
+      UNION ALL
+
+      SELECT COALESCE(m.received_at, m.polled_at) AT TIME ZONE 'UTC' AS at,
+             'staff_cc' AS source
+      FROM imap_messages_raw m
+      WHERE m.instantly_campaign_id = ${instantlyCampaignId}
+        AND m.kind = ${STAFF_REPLY_KIND}
     )
     SELECT h.at AS "at", h.source AS "source"
     FROM human_answers h, latest_inbound li
@@ -176,6 +209,6 @@ export async function findHumanTakeover(
   const at = row.at;
   return {
     at: at instanceof Date ? at.toISOString() : new Date(String(at)).toISOString(),
-    source: String(row.source) === "dispatched" ? "dispatched" : "instantly_unibox",
+    source: toSource(row.source),
   };
 }

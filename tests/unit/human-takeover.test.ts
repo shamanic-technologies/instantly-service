@@ -54,6 +54,23 @@ describe("who asked for a reply to be sent", () => {
 });
 
 describe("findHumanTakeover", () => {
+  it("counts an answer one of OUR OWN people CC'd to the mailbox as a human takeover", async () => {
+    // Prod 2026-09-21: kevin@distribute.you answered from Gmail and CC'd the
+    // sending mailbox. It arrived INBOUND (ue_type 2), so the gate read it as
+    // the prospect writing again — the one reading guaranteed to hide the
+    // takeover the CC existed to announce.
+    mockDbExecute.mockResolvedValueOnce(pgResult([{ at: "2026-09-21T19:07:27.000Z", source: "staff_cc" }]));
+    const answer = await findHumanTakeover("ic-1");
+    expect(answer).toEqual({ at: "2026-09-21T19:07:27.000Z", source: "staff_cc" });
+
+    const sqlText = extractSqlText(mockDbExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("'staff_cc' AS source");
+    expect(sqlText).toContain("m.kind = ");
+    // ...and excluded from "the prospect last wrote", or it would itself be the
+    // latest inbound and no answer could ever be later than it.
+    expect(sqlText).toMatch(/ue_type' = '2'\s+AND NOT \(lower\(split_part/);
+  });
+
   it("reads BOTH places an answer can have gone out from", async () => {
     // Neither source alone is enough, and this is measured rather than
     // reasoned: of the three replies this service had dispatched in

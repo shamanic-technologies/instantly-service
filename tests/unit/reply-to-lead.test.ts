@@ -671,6 +671,16 @@ describe("a human took over, so the automated responder stops", () => {
     });
   });
 
+  it("refuses an automated reply once one of our own people CC'd an answer to the thread", async () => {
+    queueAutomationReply([{ at: "2026-09-21T19:07:27.000Z", source: "staff_cc" }]);
+
+    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({
+      code: "human_took_over",
+      status: 409,
+    });
+    expect(mockReplyToEmail).not.toHaveBeenCalled();
+  });
+
   it("sends NOTHING and prepares NOTHING on a refusal", async () => {
     // The gate runs before anything is prepared, so a refused reply resolves no
     // credential, makes no Instantly read and writes no bronze row — the same

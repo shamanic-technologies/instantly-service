@@ -94,6 +94,7 @@ describe("the reply-kind vocabulary", () => {
       lead_changed_job: "negative",
       lead_opt_out_requested: "negative",
       lead_neutral: "neutral",
+      lead_off_topic: "neutral",
       lead_out_of_office: "neutral",
       auto_reply_received: "neutral",
     });

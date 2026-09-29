@@ -952,6 +952,23 @@ Guard: the "the answer we dispatched ourselves" tests in `tests/unit/lead-conver
 
 Guard: the four Instantly-branch retention tests in `tests/unit/reply-to-lead.test.ts`.
 
+## A reply about something OTHER than the offer — `lead_off_topic`, escalated to a person
+
+The responder only handles SALES conversations (fed by `isSalesInterestQualification`). A reply about a partnership, hiring, investors, a vendor pitching us or the press used to land as `lead_neutral`, entered no queue and reached nobody (jakub@marktize.com, "can you explain?" on a partnership thread, 2026-09-28). `lead_off_topic` (`OFF_TOPIC_REPLY_KINDS`, `reply-kind.ts`) names it.
+
+- **Coarse projection `neutral`, NOT sales interest, NOT forwarded as positive, stops the sequence, disqualifies nobody.** Counted in `repliesDetail.offTopic` (additive) and summed into `repliesNeutral`.
+- **Escalated through the responder's own exit** — `maybeEscalateOffTopicReply` (`escalate-off-topic-reply.ts`) → `handThreadToHuman` (the core `escalateReply` now shares): thread forwarded to the agency inbox with their words first, follow-up ladder stopped, prospect sent nothing. Fired from `promoteEvent` AFTER the mirror, first promotion only, on the campaign row's own run/user (org-billed, same identity as the positive forward); a row missing them is logged, never escalated on a made-up identity.
+- **Classification stays the model's judgement, never a keyword list.** The classifier now receives the thread's SUBJECT (`qualifyReply(text, {subject})` → `Subject: …` prefix): a two-word reply says nothing about the topic, the subject ("Marktize + Doc Dinners partnership?") does. Passed by the IMAP poller, the qualification fallback and the inbound-replies backfill. No subject → the message is byte-identical to before.
+
+## Our own people answering — a CC'd staff message is OUR reply, never the prospect's
+
+A person on our side answers from their own client and CCs the sending mailbox; it arrives INBOUND (Instantly `ue_type 2`, IMAP inbox). Every reader took it for the prospect: 2 rows in prod (kevin@distribute.you, 2026-09-21 nina@veriskube.com → jamie@kinetikchaindenver.com, 2026-09-22 matthew@staffresonating.com → drmorley@spineandsports.org). Neither produced a silver reply event; the damage was the `messages` projection (`in/reply`), the thread the responder reads, the message an automated answer threads onto, and the takeover gate.
+
+- **Who counts: `isStaffSender` (`staff-senders.ts`) — any address on a staff domain: `STAFF_DOMAINS` (`distribute.you`) plus the agency inbox's own domain. Never the lead's own address. Cold sending domains are NOT staff** (their mail is already outbound where sent; widening would reclassify warmup).
+- IMAP: a correlated reply from staff is re-filed `staff_reply` (`refileStaffReply`) and promotes NOTHING. `messages`: both shapes map to `out / manual_reply / sent` (the upsert now also refreshes `direction`). `selectThreadMessages` renders it outbound; `selectReplyTarget` and the self-send anchor never thread onto it; the mirror readers (`fetchLatestMirroredInbound`, both backfills) exclude it via `staffSenderSql`.
+- **Takeover gate: THIRD SOURCE `staff_cc`** (Instantly `ue_type 2` from staff, IMAP `staff_reply`), and staff messages are EXCLUDED from "the prospect last wrote" — otherwise the CC would itself be the latest inbound and nothing could be later than it. A prospect writing again after the CC re-opens the responder's turn (Jamie did, at 20:40).
+- **Residual:** an answer from Gmail WITHOUT the CC is invisible to everything we read (Kevin → Jamie 15:40, 2026-09-21). The CC is the mechanism.
+
 ## A human took over — the automated responder stops, and a thread it cannot answer goes to a person
 
 The AI responder loop spans three services: lead-service holds the follow-up queue, workflow-service's `ai-meeting-booking` DAG claims a lead and drafts an answer with an LLM, and this service sends it through `POST /orgs/replies`. That DAG is the **only caller of that route in the fleet** (checked across every clone; api-service proxies no route to it). Two things were missing from the loop, and both land here.

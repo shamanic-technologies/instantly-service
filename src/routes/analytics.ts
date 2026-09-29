@@ -54,6 +54,10 @@ export const ZERO_REPLIES_DETAIL = {
   changedJob: 0,
   unsubscribe: 0,
   neutral: 0,
+  // A reply about something other than the offer (partnership, hiring,
+  // investors, vendor, press). Counted neutral; beyond the published contract,
+  // like the positive splits above.
+  offTopic: 0,
   autoReply: 0,
   outOfOffice: 0,
 };
@@ -123,7 +127,7 @@ export function buildRepliesFromDetail(detail: typeof ZERO_REPLIES_DETAIL) {
     repliesPositive: detail.interested + detail.infoRequested + detail.meetingRequested,
     repliesNegative:
       detail.notInterested + detail.wrongPerson + detail.changedJob + detail.unsubscribe,
-    repliesNeutral: detail.neutral + detail.referral,
+    repliesNeutral: detail.neutral + detail.referral + detail.offTopic,
     repliesAutoReply: detail.autoReply + detail.outOfOffice,
     repliesDetail: detail,
   };
@@ -571,6 +575,7 @@ export const SENTIMENT_EVENT_TYPES = [
   "lead_wrong_person",
   "lead_changed_job",
   "lead_neutral",
+  "lead_off_topic",
   "lead_out_of_office",
   "auto_reply_received",
 ] as const;
@@ -584,6 +589,7 @@ export interface SentimentDetail {
   wrongPerson: number;
   changedJob: number;
   neutral: number;
+  offTopic: number;
   autoReply: number;
   outOfOffice: number;
 }
@@ -597,6 +603,7 @@ const ZERO_SENTIMENT_DETAIL: SentimentDetail = {
   wrongPerson: 0,
   changedJob: 0,
   neutral: 0,
+  offTopic: 0,
   autoReply: 0,
   outOfOffice: 0,
 };
@@ -642,6 +649,7 @@ const SENTIMENT_COUNT_COLUMNS = sql`
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_wrong_person')::int AS "rdWrongPerson",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_changed_job')::int AS "rdChangedJob",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_neutral')::int AS "rdNeutral",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_off_topic')::int AS "rdOffTopic",
   COUNT(*) FILTER (WHERE ls.sentiment = 'auto_reply_received')::int AS "rdAutoReply",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_out_of_office')::int AS "rdOutOfOffice"
 `;
@@ -657,6 +665,7 @@ function rowToSentimentDetail(row: Record<string, number> | undefined): Sentimen
     wrongPerson: row.rdWrongPerson ?? 0,
     changedJob: row.rdChangedJob ?? 0,
     neutral: row.rdNeutral ?? 0,
+    offTopic: row.rdOffTopic ?? 0,
     autoReply: row.rdAutoReply ?? 0,
     outOfOffice: row.rdOutOfOffice ?? 0,
   };
@@ -883,6 +892,7 @@ export async function queryGroupedStats(
       changedJob: sentiment.changedJob,
       unsubscribe: row?.rdUnsubscribe ?? 0,
       neutral: sentiment.neutral,
+      offTopic: sentiment.offTopic,
       autoReply: sentiment.autoReply,
       outOfOffice: sentiment.outOfOffice,
     };
@@ -1001,6 +1011,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
     changedJob: sentiment.changedJob,
     unsubscribe: row.rdUnsubscribe ?? 0,
     neutral: sentiment.neutral,
+    offTopic: sentiment.offTopic,
     autoReply: sentiment.autoReply,
     outOfOffice: sentiment.outOfOffice,
   };
@@ -1119,6 +1130,7 @@ export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
       changedJob: sentiment?.changedJob ?? 0,
       unsubscribe: sr.rdUnsubscribe ?? 0,
       neutral: sentiment?.neutral ?? 0,
+      offTopic: sentiment?.offTopic ?? 0,
       autoReply: sentiment?.autoReply ?? 0,
       outOfOffice: sentiment?.outOfOffice ?? 0,
     };

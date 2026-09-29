@@ -209,6 +209,7 @@ export async function qualifyOneReply(reply: UnqualifiedReply): Promise<QualifyO
     instantlyCampaignId: reply.instantlyCampaignId,
     leadEmail: reply.leadEmail,
     source: "qualification_fallback",
+    subject: inbound.subject,
   });
   if (kind === null) return { classified: false, reason: "unqualified" };
 

@@ -51,6 +51,7 @@ import { db } from "../db";
 import { smtpDispatchRaw } from "../db/schema";
 import { agencyInbox } from "./agency-inbox";
 import { salesRepCopyList } from "./sales-rep-copy";
+import { isStaffSender } from "./staff-senders";
 import {
   getAccount,
   listEmails,
@@ -345,7 +346,15 @@ export function selectReplyTarget(
   records: EmailRecord[],
 ): { emailId: string; subject: string; eaccount: string | null } | null {
   const inbound = records
-    .filter((r) => r.ue_type === 2 && typeof r.id === "string" && r.id !== "")
+    // A staff answer CC'd to the sending mailbox is inbound on the mailbox and is
+    // OURS — threading an automated reply onto it answers our own colleague.
+    .filter(
+      (r) =>
+        r.ue_type === 2 &&
+        typeof r.id === "string" &&
+        r.id !== "" &&
+        !isStaffSender(r.from_address_email, r.lead),
+    )
     .slice()
     .sort(
       (a, b) =>

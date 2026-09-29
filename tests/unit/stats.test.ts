@@ -950,6 +950,7 @@ describe("GET /stats", () => {
             changedJob: 0,
             unsubscribe: 0,
             neutral: 0,
+            offTopic: 0,
             autoReply: 0,
             outOfOffice: 0,
           },
