@@ -292,3 +292,18 @@ describe("a reply about something other than the offer", () => {
     expect(arg.leadEmail).toBe("a@b.com");
   });
 });
+
+describe("a reply whose only words are its subject", () => {
+  it("classifies the subject they typed when the body is empty", async () => {
+    mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_opt_out_requested" } });
+    const kind = await qualifyReply("\n> On 09/24/2026 Zoey wrote:\n> Hey Michelle", { subject: "Stop" });
+    expect(kind).toBe("lead_opt_out_requested");
+    expect(mockPlatformComplete.mock.calls[0][0].message).toBe("Stop");
+  });
+
+  it("never reads OUR subject echoed back (Re:) as their words", async () => {
+    const kind = await qualifyReply("> quoted only", { subject: "Re: More patients for your clinic" });
+    expect(kind).toBeNull();
+    expect(mockPlatformComplete).not.toHaveBeenCalled();
+  });
+});
