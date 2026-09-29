@@ -43,7 +43,7 @@
 import { sql, type SQL } from "drizzle-orm";
 
 import { db } from "../db";
-import { REPLY_KINDS, REPLY_KIND_CLASSIFICATION } from "./reply-kind";
+import { REPLY_KINDS, REPLY_KIND_CLASSIFICATION, replyKindFacts } from "./reply-kind";
 import { staffSenderSql } from "./staff-senders";
 import { qualifyReply } from "./self-send/qualify-reply";
 import { htmlToText } from "./forward-positive-reply";
@@ -162,6 +162,77 @@ async function upsertReplies(): Promise<number> {
 }
 
 /**
+ * A reply a PERSON recorded by hand. The manual qualification path states a
+ * kind on a lead precisely when the reply never reached us as a message (a
+ * phone call, the prospect's own inbox, a reply Instantly missed), so its
+ * verdict had no reply to attach to and the per-reply read served nothing for
+ * that lead (jason@uhmedical.com, "interested" on 09-03).
+ *
+ * One such reply per thread: the EARLIEST standing (not withdrawn) manual
+ * statement on a thread where no mirrored reply was received at or before it
+ * (same skew as attribution). Its id is `manual:<statement bronze row id>` and
+ * its `source_row_id` is that row, so the statement attributes to it `exact`
+ * and every later statement lands on it through `latest_before`. The moment a
+ * mirrored reply is found to precede the statement, the row stops qualifying
+ * and is removed — the real message then carries the verdicts.
+ *
+ * A projection like the rest: nothing is promoted, nothing is sent.
+ */
+function handRecordedRepliesSql(): SQL {
+  return sql`
+    SELECT 'manual:' || f.source_row_id AS id, f.source_row_id, f.campaign_id AS instantly_campaign_id,
+           c.campaign_id, c.org_id, c.brand_ids, c.lead_email,
+           f.timestamp AT TIME ZONE 'UTC' AS received_at
+    FROM (
+      SELECT DISTINCT ON (e.campaign_id) e.campaign_id, e.source_row_id, e.timestamp
+      FROM instantly_events e
+      WHERE e.source = 'manual'
+        AND e.event_type IN (${kindList()})
+        AND e.inferred = false
+        AND e.withdrawn_at IS NULL
+        AND e.campaign_id IS NOT NULL
+        AND e.source_row_id IS NOT NULL
+      ORDER BY e.campaign_id, e.timestamp, e.id
+    ) f
+    JOIN instantly_campaigns c ON c.instantly_campaign_id = f.campaign_id
+    WHERE c.lead_email IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM replies r
+        WHERE r.instantly_campaign_id = f.campaign_id
+          AND r.source_table <> 'manual_qualifications'
+          AND r.received_at <= (f.timestamp AT TIME ZONE 'UTC') + ${sql.raw(`interval '${ATTRIBUTION_SKEW}'`)}
+      )
+  `;
+}
+
+/** 2b. Upsert the hand-recorded replies, and drop the ones no longer standing. */
+async function upsertHandRecordedReplies(): Promise<number> {
+  const result = await db.execute(sql`
+    INSERT INTO replies
+      (id, source_table, source_row_id, provider_message_id, instantly_campaign_id,
+       campaign_id, org_id, brand_ids, lead_email, from_email, transport, subject,
+       received_at, synced_at)
+    SELECT h.id, 'manual_qualifications', h.source_row_id, NULL, h.instantly_campaign_id,
+           h.campaign_id, h.org_id, h.brand_ids, h.lead_email, NULL, 'manual', NULL,
+           h.received_at, now()
+    FROM (${handRecordedRepliesSql()}) h
+    ON CONFLICT (id) DO UPDATE SET
+      campaign_id = excluded.campaign_id,
+      org_id = excluded.org_id,
+      brand_ids = excluded.brand_ids,
+      lead_email = excluded.lead_email,
+      received_at = excluded.received_at,
+      synced_at = excluded.synced_at
+  `);
+  await db.execute(sql`
+    DELETE FROM replies r
+    WHERE r.source_table = 'manual_qualifications'
+      AND NOT EXISTS (SELECT 1 FROM (${handRecordedRepliesSql()}) h WHERE h.id = r.id)
+  `);
+  return (result as { rowCount?: number }).rowCount ?? 0;
+}
+
+/**
  * The attributed verdicts, as a SQL fragment (CTE body): one row per
  * (verdict, reply) with its attribution. A withdrawn human statement is out.
  */
@@ -230,6 +301,8 @@ async function recomputeCurrent(): Promise<void> {
 export interface ReplyVerdictSyncSummary {
   verdictsIngested: number;
   repliesUpserted: number;
+  /** Replies a person recorded by hand (no mirrored message), upserted this pass. */
+  handRecordedReplies: number;
 }
 
 /** One projection pass. `sinceDays` bounds the event scan; null = everything. */
@@ -238,8 +311,9 @@ export async function syncReplyVerdicts(
 ): Promise<ReplyVerdictSyncSummary> {
   const verdictsIngested = await ingestEventVerdicts(opts.sinceDays ?? null);
   const repliesUpserted = await upsertReplies();
+  const handRecordedReplies = await upsertHandRecordedReplies();
   await recomputeCurrent();
-  return { verdictsIngested, repliesUpserted };
+  return { verdictsIngested, repliesUpserted, handRecordedReplies };
 }
 
 // ─── Backfill: the replies no producer ever judged ───────────────────────────
@@ -300,6 +374,8 @@ async function selectUnjudgedReplies(sinceDays: number | null, limit: number | n
       LEFT JOIN instantly_emails_raw ie ON r.source_table = 'instantly_emails_raw' AND ie.id = r.source_row_id
       LEFT JOIN imap_messages_raw m ON r.source_table = 'imap_messages_raw' AND m.id = r.source_row_id
       WHERE r.current_kind IS NULL AND ${window}
+        -- A hand-recorded reply has no message to read.
+        AND r.source_table <> 'manual_qualifications'
       ORDER BY r.received_at
       ${limit === null ? sql`` : sql`LIMIT ${limit}`}
     `),
@@ -399,6 +475,12 @@ export interface ReplyVerdictView {
     attribution: string;
     confidence: number | null;
     decidedAt: string;
+    /** A machine answered (out-of-office / auto-reply); no person engaged. */
+    automatedAnswer: boolean;
+    /** They asked us to stop writing. */
+    stopRequested: boolean;
+    /** They are not who we sell to (wrong contact, left the role). */
+    notOurTarget: boolean;
   } | null;
   verdictCount: number;
 }
@@ -455,6 +537,7 @@ export async function readReplyVerdicts(input: {
             attribution: String(r.current_attribution),
             confidence: r.current_confidence == null ? null : Number(r.current_confidence),
             decidedAt: iso(r.current_decided_at),
+            ...replyKindFacts(String(r.current_kind)),
           },
     verdictCount: Number(r.verdict_count ?? 0),
   }));

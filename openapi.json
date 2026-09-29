@@ -2085,7 +2085,7 @@
               "properties": {
                 "replyId": {
                   "type": "string",
-                  "description": "Stable per-reply id (`ie:<instantly email id>` or `imap:<row id>`)"
+                  "description": "Stable per-reply id (`ie:<instantly email id>`, `imap:<row id>`, or `manual:<qualification row id>` for a reply a person recorded by hand when no message was mirrored)"
                 },
                 "leadEmail": {
                   "type": "string"
@@ -2106,7 +2106,8 @@
                   }
                 },
                 "transport": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "`instantly` | `smtp` | ... ; `manual` = a reply a person recorded by hand (no message mirrored, so `fromEmail` and `subject` are null)"
                 },
                 "fromEmail": {
                   "type": "string",
@@ -2195,6 +2196,18 @@
           "decidedAt": {
             "type": "string",
             "description": "ISO 8601 UTC"
+          },
+          "automatedAnswer": {
+            "type": "boolean",
+            "description": "A machine answered (out-of-office, autoresponder). No person engaged; the lead has not replied in any sense that stops outreach."
+          },
+          "stopRequested": {
+            "type": "boolean",
+            "description": "They asked us to stop writing to them. A legal obligation, not a judgement about the offer."
+          },
+          "notOurTarget": {
+            "type": "boolean",
+            "description": "They are not who we sell to: the wrong contact, or they left the role. A fact about the person; a plain 'not interested' is NOT this (that lead stays recyclable)."
           }
         },
         "required": [
@@ -2204,7 +2217,10 @@
           "producer",
           "attribution",
           "confidence",
-          "decidedAt"
+          "decidedAt",
+          "automatedAnswer",
+          "stopRequested",
+          "notOurTarget"
         ],
         "description": "The reply's CURRENT verdict; null only while it is still being classified"
       },

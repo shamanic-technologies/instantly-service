@@ -1758,6 +1758,15 @@ const ReplyVerdictSchema = z
       .describe("`exact` = the producer named this reply; `latest_before` = the verdict judged the latest reply before it on the thread"),
     confidence: z.number().nullable(),
     decidedAt: z.string().describe("ISO 8601 UTC"),
+    automatedAnswer: z
+      .boolean()
+      .describe("A machine answered (out-of-office, autoresponder). No person engaged; the lead has not replied in any sense that stops outreach."),
+    stopRequested: z
+      .boolean()
+      .describe("They asked us to stop writing to them. A legal obligation, not a judgement about the offer."),
+    notOurTarget: z
+      .boolean()
+      .describe("They are not who we sell to: the wrong contact, or they left the role. A fact about the person; a plain 'not interested' is NOT this (that lead stays recyclable)."),
   })
   .openapi("ReplyVerdict");
 
@@ -1765,12 +1774,12 @@ export const ReplyVerdictsResponseSchema = z
   .object({
     replies: z.array(
       z.object({
-        replyId: z.string().describe("Stable per-reply id (`ie:<instantly email id>` or `imap:<row id>`)"),
+        replyId: z.string().describe("Stable per-reply id (`ie:<instantly email id>`, `imap:<row id>`, or `manual:<qualification row id>` for a reply a person recorded by hand when no message was mirrored)"),
         leadEmail: z.string(),
         instantlyCampaignId: z.string().describe("The per-lead thread"),
         campaignId: z.string().nullable().describe("The logical campaign (campaign-service id)"),
         brandIds: z.array(z.string()),
-        transport: z.string(),
+        transport: z.string().describe("`instantly` | `smtp` | ... ; `manual` = a reply a person recorded by hand (no message mirrored, so `fromEmail` and `subject` are null)"),
         fromEmail: z.string().nullable().describe("Who actually wrote it (can differ from the lead: an assistant, a shared inbox)"),
         subject: z.string().nullable(),
         receivedAt: z.string().describe("ISO 8601 UTC"),
