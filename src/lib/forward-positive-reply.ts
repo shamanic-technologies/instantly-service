@@ -40,11 +40,8 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db";
 import { instantlyCampaigns } from "../db/schema";
-import { resolveInstantlyApiKey } from "./key-client";
-import { listEmails, type EmailRecord } from "./instantly-client";
+import type { EmailRecord } from "./instantly-client";
 import { sendEmail } from "./email-client";
-import { isSelfSendCampaignId } from "./self-send/transport";
-import { fetchSelfSendThread } from "./self-send/thread";
 import { isEscalatedReplyKind, POSITIVE_REPLY_KINDS } from "./reply-kind";
 import { agencyInbox } from "./agency-inbox";
 import { salesRepCopyList } from "./sales-rep-copy";
@@ -85,6 +82,12 @@ export interface ForwardPositiveReplyCampaign {
   userId: string | null;
   runId: string | null;
   brandIds?: string[] | null;
+  /**
+   * The caller campaign whose WHOLE conversation the email tells. Defaults to
+   * `campaignId`. The escalation passes it separately because it deliberately
+   * leaves `campaignId` null (run attribution, see escalate-reply).
+   */
+  conversationCampaignId?: string | null;
 }
 
 /** One rendered message in the conversation thread. */
@@ -198,50 +201,16 @@ export function threadSubject(messages: ThreadMessage[]): string {
 }
 
 /**
- * Render the ordered thread as a CLEAN, client-forwardable email conversation —
- * no instantly-service branding, no notes, no labels, no metadata. Each message
- * is a standard From/To/Date/Subject header block + its full body, oldest →
- * newest, so the recipient can forward it as-is to the client. Plain text drops
- * into the template's `<pre>` (rendered with an inherited font + wrapping, so it
- * reads like a normal email, not monospace).
- */
-export function renderThreadText(messages: ThreadMessage[]): string {
-  if (messages.length === 0) return "(conversation unavailable)";
-  return messages
-    .map((m) =>
-      [
-        `From: ${m.from}`,
-        `To: ${m.to}`,
-        `Date: ${formatThreadDate(m.date)}`,
-        `Subject: ${m.subject}`,
-        ``,
-        m.bodyText,
-      ].join("\n"),
-    )
-    .join("\n\n─────────────────────────────────────────\n\n");
-}
-
-/**
- * Drop everything BEFORE the recipient's first reply. A forwarded positive reply
- * must START at the prospect's reply: the reply's OWN body already quotes the
- * outbound history beneath it, so re-listing our sent emails above it is
- * redundant and noisy for a client forward. If the lead has no inbound message
- * yet (edge — reply not synced to /emails), fall back to the full set so we
- * never forward an empty thread.
- */
-export function messagesFromFirstReply(messages: ThreadMessage[]): ThreadMessage[] {
-  const i = messages.findIndex((m) => m.direction === "inbound");
-  return i === -1 ? messages : messages.slice(i);
-}
-
-/**
- * Fetch a campaign's Instantly thread and forward it — as a CLEAN,
- * client-forwardable email (subject = the conversation's real subject; body =
- * the recipient's reply and everything after it, no branding) — to the agency
- * inbox. Starts at the prospect's reply (see messagesFromFirstReply). Shared by
- * the positive-reply webhook side effect AND the manual re-forward endpoint.
- * Returns the message count. Throws on any failure (the caller decides whether
- * to swallow it).
+ * Forward the prospect's WHOLE history to the agency inbox — every email we
+ * sent, every reply, every action they took (visits, bounces, unsubscribes),
+ * oldest first (see lib/prospect-history) — as a CLEAN, client-forwardable
+ * email. Shared by the positive-reply forward, both escalations and the manual
+ * re-forward endpoint. Returns the message count.
+ *
+ * ⚠️ It no longer starts at the prospect's first reply: a reply does not always
+ * quote what it answers, so the reader could not see what we had sent. A part
+ * of the history that cannot be read is STATED in the email and never stops
+ * it; only the send itself throws (the caller decides whether to swallow it).
  */
 export interface ThreadForwardTemplate {
   /**
@@ -263,23 +232,11 @@ export async function sendThreadForward(
   if (!campaign.orgId) {
     throw new Error("forward-thread requires an org-scoped campaign (orgId is null)");
   }
-  // A sequence WE dispatched has no Instantly thread to fetch — but both halves
-  // are already in bronze (what we sent, what came back), so the same
-  // conversation is reconstructed locally into the SAME ThreadMessage shape.
-  // Without this branch a positive reply on the self-send transport would reach
-  // Instantly's /emails, find nothing, and forward an empty thread.
-  const messages = isSelfSendCampaignId(campaign.instantlyCampaignId)
-    ? messagesFromFirstReply(await fetchSelfSendThread(campaign.instantlyCampaignId))
-    : await (async () => {
-        const { key } = await resolveInstantlyApiKey(campaign.orgId!, "system", {
-          method: "POST",
-          path: "/internal/forward-positive-reply",
-        });
-        const records = await listEmails(key, {
-          campaignId: campaign.instantlyCampaignId,
-        });
-        return messagesFromFirstReply(selectThreadMessages(records));
-      })();
+  // Dynamic import: prospect-history reads the thread through modules that
+  // import this one, so a static import would be a load-time cycle.
+  const { loadProspectHistory, renderProspectHistory } = await import("./prospect-history");
+  const history = await loadProspectHistory(campaign, leadEmail);
+  const messages = history.messages;
 
   // The client's own rep is copied on the thread their prospect just wrote,
   // seconds before their phone rings. VISIBLY, never blind: a blind-copied rep
@@ -300,7 +257,7 @@ export async function sendThreadForward(
       ...(ccEmails.length > 0 ? { ccEmails } : {}),
       metadata: {
         subject: threadSubject(messages),
-        thread: renderThreadText(messages),
+        thread: renderProspectHistory(history, leadEmail),
         ...(template.metadata ?? {}),
       },
     },
@@ -315,7 +272,7 @@ export async function sendThreadForward(
     },
   );
   console.log(
-    `[instantly-service] ${template.eventType ?? "forward-positive-reply"}: sent thread (${messages.length} msg) for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${agencyInbox()}${ccEmails.length > 0 ? ` cc=${ccEmails.join(",")}` : ""}`,
+    `[instantly-service] ${template.eventType ?? "forward-positive-reply"}: sent history (${messages.length} msg, ${history.items.length - messages.length} action${history.notes.length > 0 ? `, ${history.notes.length} unreadable part(s)` : ""}) for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${agencyInbox()}${ccEmails.length > 0 ? ` cc=${ccEmails.join(",")}` : ""}`,
   );
   return messages.length;
 }
