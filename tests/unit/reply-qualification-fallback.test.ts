@@ -78,6 +78,17 @@ beforeEach(() => {
 });
 
 describe("selectUnqualifiedReplies — which replies are still waiting", () => {
+  it("judges the LATEST real reply, and only a verdict at or after it counts", async () => {
+    // Prod 2026-09-28: a 09-24 vacation-notice kind masked Elena's 09-28
+    // referral under "any kind on the campaign" — never qualified, never escalated.
+    mockDbExecute.mockResolvedValue(pgResult([]));
+    await selectUnqualifiedReplies(10);
+    const text = extractSqlText(mockDbExecute.mock.calls[0]?.[0]);
+    expect(text).toContain("max(e.timestamp) AS replied_at");
+    expect(text).toContain("e.source <> 'poll_leads'");
+    expect(text).toContain("q.timestamp >= r.replied_at");
+  });
+
   it("asks for the absence of EVERY reply kind, not of one", async () => {
     mockDbExecute.mockResolvedValue(pgResult([]));
 

@@ -108,6 +108,13 @@ export interface UnqualifiedReply {
  * A reply Instantly filed `lead_out_of_office` HAS a verdict, and re-reading it
  * would overrule better evidence (Instantly saw the real headers) with worse.
  *
+ * ⚠️ …BUT A VERDICT ABOUT AN EARLIER MESSAGE IS NOT ONE ABOUT THIS REPLY. The
+ * anchor is the LATEST real reply, and only a kind at or after it counts.
+ * Keyed on "any kind on the campaign", a vacation notice on 09-24 masked a
+ * real referral on 09-28 (elena.staeheli@biopartner.ch): never qualified,
+ * never escalated. A kind always carries the reply's timestamp or a later one
+ * (Instantly qualifies seconds to hours after), so `>=` is exact.
+ *
  * Oldest first: a reply that has waited longest is the one most likely to still
  * be worth answering, and it is the one whose opt-out has gone unrecorded longest.
  */
@@ -131,11 +138,15 @@ export async function selectUnqualifiedReplies(
            r.replied_at
     FROM instantly_campaigns c
     JOIN LATERAL (
-      SELECT min(e.timestamp) AS replied_at
+      SELECT max(e.timestamp) AS replied_at
       FROM instantly_events e
       WHERE e.campaign_id = c.instantly_campaign_id
         AND e.event_type = 'reply_received'
         AND e.inferred = false
+        -- A poll_leads reply is inferred from the lead's status, not a message:
+        -- it lands minutes after the real one and would re-open a reply already
+        -- qualified.
+        AND e.source <> 'poll_leads'
     ) r ON r.replied_at IS NOT NULL
     WHERE c.instantly_campaign_id NOT LIKE 'self:%'
       AND c.instantly_campaign_id NOT LIKE 'reserving:%'
@@ -145,6 +156,7 @@ export async function selectUnqualifiedReplies(
         SELECT 1 FROM instantly_events q
         WHERE q.campaign_id = c.instantly_campaign_id
           AND q.event_type IN (${kinds})
+          AND q.timestamp >= r.replied_at
       )
     -- Oldest first WITHIN the window: the longest-waiting buyer is answered
     -- first, and the floor above is what keeps "oldest" from meaning "stale".

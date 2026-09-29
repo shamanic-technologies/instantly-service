@@ -312,3 +312,24 @@ export function isDisqualifyingReplyKind(kind: ReplyKind): boolean {
 export function isOffTopicReplyKind(kind: string): boolean {
   return (OFF_TOPIC_REPLY_KINDS as readonly string[]).includes(kind);
 }
+
+/**
+ * Reply kinds a PERSON must handle, so they are escalated to the agency inbox
+ * (lib/escalate-off-topic-reply) and never answered by the automated responder.
+ *
+ *  - `lead_off_topic` — not about the offer at all.
+ *  - `lead_referral`  — "not me, write to X". We do not write to a referred
+ *                       address ourselves yet, so until we do a person follows
+ *                       it up (owner decision, 2026-09-29; the case was a Swiss
+ *                       distributor pointing us at their sourcing inbox, filed
+ *                       neutral and seen by nobody).
+ *
+ * An escalated kind is NOT also forwarded as a positive reply — one email per
+ * reply, and the escalation already carries the whole thread.
+ */
+export const ESCALATED_REPLY_KINDS = new Set<ReplyKind>(["lead_off_topic", "lead_referral"]);
+
+/** True iff a reply of this kind is handed to a person. */
+export function isEscalatedReplyKind(kind: string): boolean {
+  return ESCALATED_REPLY_KINDS.has(kind as ReplyKind);
+}

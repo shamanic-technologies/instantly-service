@@ -132,3 +132,30 @@ describe("maybeEscalateOffTopicReply", () => {
     expect(offTopicQuestion(null)).toContain(WORDS_UNAVAILABLE);
   });
 });
+
+describe("a referral is handed to a person too", () => {
+  const ELENA = {
+    instantlyCampaignId: "fbde0b33-337d-4e83-8305-d9acf63da7e0",
+    campaignId: "38ba8069-3d50-4ae7-b37a-54409071e260",
+    orgId: "8bfec2f4-6184-40b7-b1aa-c8933d506a87",
+    userId: "u-1",
+    runId: "r-1",
+    brandIds: ["f2408cfb-4f02-4910-acec-e61fc8edb9cf"],
+  };
+
+  it("escalates Elena's referral with its own reason, and forwards nothing as a positive", async () => {
+    mockFetchLatestMirroredInbound.mockResolvedValueOnce({
+      instantlyEmailId: "e1",
+      text: "Hoi Joshua, danke für deine Anfrage. Solltet ihr daran interessiert sein, eure Bio-Flohsamenschalen über uns zu vertreiben, darfst du dich gerne direkt an sortimente@biopartner.ch wenden.",
+      subject: null,
+    });
+
+    await maybeEscalateOffTopicReply(ELENA, "elena.staeheli@biopartner.ch", "lead_referral");
+
+    const [input] = mockHandThreadToHuman.mock.calls[0];
+    expect(input.question).toContain("point you at someone else");
+    expect(input.question).toContain("sortimente@biopartner.ch");
+    expect(input.stopReason).toContain("referred us to someone else");
+    expect(input.brandId).toBe("f2408cfb-4f02-4910-acec-e61fc8edb9cf");
+  });
+});

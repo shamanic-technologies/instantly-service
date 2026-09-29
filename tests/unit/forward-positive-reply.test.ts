@@ -75,9 +75,9 @@ function record(overrides: Record<string, unknown>) {
 }
 
 describe("isPositiveQualification / positive set", () => {
-  it("is true for all four positive reply kinds", () => {
+  it("is true for the three buying positive kinds; a referral is escalated instead", () => {
     expect(isPositiveQualification("lead_interested")).toBe(true);
-    expect(isPositiveQualification("lead_referral")).toBe(true);
+    expect(isPositiveQualification("lead_referral")).toBe(false);
     expect(isPositiveQualification("lead_info_requested")).toBe(true);
     expect(isPositiveQualification("lead_meeting_requested")).toBe(true);
     // Negative / neutral / non-qualified → never
@@ -95,7 +95,7 @@ describe("isPositiveQualification / positive set", () => {
   // eyes"; the coarse map = "was this a buying signal we count and price". A
   // referral is the one kind where those answers differ: forward it, but never
   // report it as the customer's sales interest.
-  it("is a strict superset of REPLY_CLASSIFICATION_MAP's 'positive' entries", () => {
+  it("covers every REPLY_CLASSIFICATION_MAP 'positive' entry, and nothing else", () => {
     const positiveFromMap = Object.entries(REPLY_CLASSIFICATION_MAP)
       .filter(([, v]) => v === "positive")
       .map(([k]) => k)
@@ -106,11 +106,11 @@ describe("isPositiveQualification / positive set", () => {
     const forwardedButNotPositive = [...POSITIVE_QUALIFICATION_EVENT_TYPES]
       .filter((k) => !positiveFromMap.includes(k))
       .sort();
-    expect(forwardedButNotPositive).toEqual(["lead_referral"]);
+    expect(forwardedButNotPositive).toEqual([]);
   });
 
-  it("forwards a referral even though it reports as neutral", () => {
-    expect(isPositiveQualification("lead_referral")).toBe(true);
+  it("does NOT forward a referral: it is escalated to a person instead (one email per reply)", () => {
+    expect(isPositiveQualification("lead_referral")).toBe(false);
     expect(REPLY_CLASSIFICATION_MAP.lead_referral).toBe("neutral");
   });
 });
