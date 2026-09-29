@@ -59,6 +59,8 @@ describe("handing a thread to a human", () => {
       // The caller's run owns the attribution; restating the lead row's own
       // campaign made runs-service 409 the child and nothing was sent.
       campaignId: null,
+      // ...while the history the email tells is still the lead's whole campaign.
+      conversationCampaignId: INPUT.campaignId,
     });
   });
 

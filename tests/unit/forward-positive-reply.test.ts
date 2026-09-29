@@ -7,6 +7,8 @@ const mockUpdate = vi.fn();
 const mockResolveInstantlyApiKey = vi.fn();
 const mockListEmails = vi.fn();
 const mockSendEmail = vi.fn();
+const mockExecute = vi.fn();
+const mockFetchLeadConversation = vi.fn();
 
 // A drizzle-ish update builder: .set().where() returns an object that is both
 // awaitable (release: `await db.update()...where()`) and has .returning() (claim).
@@ -18,6 +20,7 @@ const whereObj = {
 
 vi.mock("../../src/db", () => ({
   db: {
+    execute: (...a: unknown[]) => mockExecute(...a),
     update: (...a: unknown[]) => {
       mockUpdate(...a);
       return { set: () => ({ where: () => whereObj }) };
@@ -33,6 +36,10 @@ vi.mock("../../src/lib/instantly-client", () => ({
   listEmails: (...a: unknown[]) => mockListEmails(...a),
 }));
 
+vi.mock("../../src/lib/lead-conversation", () => ({
+  fetchLeadConversation: (...a: unknown[]) => mockFetchLeadConversation(...a),
+}));
+
 vi.mock("../../src/lib/email-client", () => ({
   sendEmail: (...a: unknown[]) => mockSendEmail(...a),
 }));
@@ -42,8 +49,6 @@ import {
   POSITIVE_QUALIFICATION_EVENT_TYPES,
   htmlToText,
   selectThreadMessages,
-  messagesFromFirstReply,
-  renderThreadText,
   threadSubject,
   formatThreadDate,
   maybeForwardPositiveReply,
@@ -178,50 +183,7 @@ describe("selectThreadMessages", () => {
   });
 });
 
-describe("messagesFromFirstReply — start at the recipient's reply", () => {
-  const build = () =>
-    selectThreadMessages([
-      record({ ue_type: 1, timestamp_email: "2026-07-08T13:00:00.000Z", body: { text: "cold 1" } }),
-      record({ ue_type: 1, timestamp_email: "2026-07-13T13:00:00.000Z", body: { text: "cold 2" } }),
-      record({
-        ue_type: 2,
-        timestamp_email: "2026-07-13T17:00:00.000Z",
-        from_address_email: "lead@x.com",
-        body: { text: "reply!" },
-      }),
-    ]);
-
-  it("drops the outbound sends before the first inbound reply", () => {
-    const out = messagesFromFirstReply(build());
-    expect(out).toHaveLength(1);
-    expect(out[0].direction).toBe("inbound");
-    expect(out[0].bodyText).toBe("reply!");
-  });
-
-  it("keeps everything from the first reply onward (incl. later outbound)", () => {
-    const msgs = build();
-    msgs.push({
-      direction: "outbound",
-      from: "us@x.com",
-      to: "lead@x.com",
-      date: "2026-07-13T18:00:00.000Z",
-      subject: "Re",
-      bodyText: "our follow-up",
-    });
-    const out = messagesFromFirstReply(msgs);
-    expect(out.map((m) => m.bodyText)).toEqual(["reply!", "our follow-up"]);
-  });
-
-  it("no inbound yet → falls back to the full set (never empty)", () => {
-    const outboundOnly = selectThreadMessages([
-      record({ ue_type: 1, body: { text: "cold" } }),
-    ]);
-    expect(messagesFromFirstReply(outboundOnly)).toHaveLength(1);
-    expect(messagesFromFirstReply([])).toEqual([]);
-  });
-});
-
-describe("renderThreadText — clean, client-forwardable (no branding)", () => {
+describe("thread helpers", () => {
   const msgs = selectThreadMessages([
     record({
       ue_type: 1,
@@ -240,27 +202,6 @@ describe("renderThreadText — clean, client-forwardable (no branding)", () => {
     }),
   ]);
 
-  it("renders every message's From/To/Date/Subject + body, oldest→newest", () => {
-    const text = renderThreadText(msgs);
-    expect(text).toContain("From: amy@distribute.com");
-    expect(text).toContain("From: lead@x.com");
-    expect(text).toContain("Subject: Re: Functional medicine");
-    expect(text).toContain("Hello");
-    expect(text).toContain("Interested!");
-    // oldest first: our "Hello" appears before the "Interested!" reply
-    expect(text.indexOf("Hello")).toBeLessThan(text.indexOf("Interested!"));
-  });
-
-  it("carries NO instantly-service branding / notes / labels", () => {
-    const text = renderThreadText(msgs);
-    expect(text).not.toMatch(/instantly-service/i);
-    expect(text).not.toMatch(/Lead:/);
-    expect(text).not.toMatch(/Campaign:/);
-    expect(text).not.toMatch(/qualification/i);
-    expect(text).not.toMatch(/Message \d+/);
-    expect(text).not.toMatch(/REPLY \(from lead\)|SENT \(from us\)/);
-  });
-
   it("threadSubject = the newest real subject", () => {
     expect(threadSubject(msgs)).toBe("Re: Functional medicine");
     expect(threadSubject([])).toBe("(no subject)");
@@ -271,9 +212,6 @@ describe("renderThreadText — clean, client-forwardable (no branding)", () => {
     expect(formatThreadDate("2026-07-13T17:57:13.748Z")).toContain("UTC");
   });
 
-  it("empty thread → placeholder, no crash", () => {
-    expect(renderThreadText([])).toBe("(conversation unavailable)");
-  });
 });
 
 describe("maybeForwardPositiveReply", () => {
@@ -283,6 +221,12 @@ describe("maybeForwardPositiveReply", () => {
     mockResolveInstantlyApiKey.mockReset();
     mockListEmails.mockReset();
     mockSendEmail.mockReset();
+    mockExecute.mockReset();
+    mockFetchLeadConversation.mockReset();
+    mockExecute.mockResolvedValue({ rows: [] });
+    // The whole-campaign read is unavailable here, so the forward falls back to
+    // this sequence's own thread — the path these assertions pin.
+    mockFetchLeadConversation.mockRejectedValue(new Error("campaign-service down"));
     mockReturning.mockResolvedValue([{ id: "row-1" }]); // claim won by default
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "api-key-1", keySource: "org" });
     mockListEmails.mockResolvedValue([
@@ -347,5 +291,35 @@ describe("maybeForwardPositiveReply", () => {
     ).resolves.toBeUndefined();
     // claim + release = 2 updates
     expect(mockUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("forwards the emails we SENT before the reply, not only the reply", async () => {
+    mockListEmails.mockResolvedValue([
+      record({ ue_type: 1, timestamp_email: "2026-07-08T13:00:00.000Z", subject: "Partnership?", body: { text: "cold 1" } }),
+      record({ ue_type: 1, timestamp_email: "2026-07-11T13:00:00.000Z", subject: "Re: Partnership?", body: { text: "cold 2" } }),
+      record({
+        ue_type: 2,
+        timestamp_email: "2026-07-13T17:00:00.000Z",
+        from_address_email: "lead@x.com",
+        subject: "Re: Partnership?",
+        body: { text: "can you explain?" },
+      }),
+    ]);
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested");
+    const thread: string = mockSendEmail.mock.calls[0][0].metadata.thread;
+    expect(thread.indexOf("cold 1")).toBeGreaterThanOrEqual(0);
+    expect(thread.indexOf("cold 1")).toBeLessThan(thread.indexOf("cold 2"));
+    expect(thread.indexOf("cold 2")).toBeLessThan(thread.indexOf("can you explain?"));
+  });
+
+  it("a thread that cannot be read is STATED and the email still goes out", async () => {
+    mockListEmails.mockRejectedValue(new Error("instantly down"));
+    mockExecute.mockRejectedValue(new Error("db down"));
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested");
+    expect(mockSendEmail).toHaveBeenCalledTimes(1);
+    const thread: string = mockSendEmail.mock.calls[0][0].metadata.thread;
+    expect(thread).toContain("Note: the emails exchanged with this prospect could not be read.");
+    expect(thread).toContain("Note: this prospect's website visits, bounces and unsubscribes could not be read.");
+    expect(mockUpdate).toHaveBeenCalledTimes(1); // claim kept, no release
   });
 });
