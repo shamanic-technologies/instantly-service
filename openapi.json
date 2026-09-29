@@ -2085,7 +2085,7 @@
               "properties": {
                 "replyId": {
                   "type": "string",
-                  "description": "Stable per-reply id (`ie:<instantly email id>`, `imap:<row id>`, or `manual:<qualification row id>` for a reply a person recorded by hand when no message was mirrored)"
+                  "description": "Stable per-reply id (`ie:<instantly email id>`, `imap:<row id>`, `manual:<qualification row id>` for a reply a person recorded by hand, or `ievt:<event id>` for a reply Instantly qualified but whose message was never mirrored; the last two carry null `fromEmail` / `subject`)"
                 },
                 "leadEmail": {
                   "type": "string"
