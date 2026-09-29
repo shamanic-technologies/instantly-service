@@ -56,6 +56,7 @@ import {
   type Account,
 } from "./instantly-client";
 import { fetchLifecycleByEmail, type LifecycleView } from "./account-lifecycle-sync";
+import { loadMailboxLogins } from "./self-send/mailbox-credentials";
 import {
   warmupDailyForStatus,
   dailyLimitForStatus,
@@ -110,6 +111,12 @@ export interface LifecycleLimitsSyncSummary {
  *     the enforcement home for the age→slow-ramp rule: reconcile only flips on a
  *     STATE change, but an account crossing the 4-week line does NOT flip state,
  *     so the hourly sweep is what turns its ramp off.
+ *   - ⚠️ warmup.limit is budgeted PER REAL MAILBOX (relay login), not per address
+ *     — see {@link warmupTargetsByLogin}. Instantly applies `warmup.limit` to
+ *     each ALIAS, so N aliases on one login at the per-state 30 warm 30×N/day
+ *     through ONE mailbox's quota. `mailboxLoginByEmail` (address → login, from
+ *     `loadMailboxLogins`) is what groups them; an address absent from it is its
+ *     own login, i.e. behaves exactly as a single-alias mailbox.
  * Returns only accounts with at least one drifting field, in input order; empty
  * emails filtered out.
  */
@@ -118,7 +125,9 @@ export function selectLifecycleLimitPatches(
   lifecycleByEmail: Map<string, LifecycleView>,
   asOf: Date = new Date(),
   recentSustainedByEmail: ReadonlyMap<string, number> = new Map(),
+  mailboxLoginByEmail: ReadonlyMap<string, string> = new Map(),
 ): LifecycleLimitPatch[] {
+  const warmupByLogin = warmupTargetsByLogin(accounts, lifecycleByEmail, mailboxLoginByEmail);
   const patches: LifecycleLimitPatch[] = [];
   for (const account of accounts) {
     if (!account.email) continue;
@@ -145,7 +154,12 @@ export function selectLifecycleLimitPatches(
     let warmup: number | null = null;
     let daily: number | null = null;
     if (enforceLimits && (status === "in_production" || status === "in_recovery")) {
-      const targetWarmup = warmupDailyForStatus(status); // 0 | 30 (never null here)
+      // The login's per-alias share, not the per-state figure — see
+      // `warmupTargetsByLogin`. Always defined here: this account is enforced
+      // and in a limited state, which is exactly what that map is keyed over.
+      const targetWarmup =
+        warmupByLogin.get(loginOf(account.email, mailboxLoginByEmail)) ??
+        warmupDailyForStatus(status);
       const stateDaily = dailyLimitForStatus(status); // 50 | 20 (never null here)
       // ⚠️ NO volume ramp here. Instantly is the pipe for these mailboxes, and
       // our volume figure is blind to its warmup pool — see
@@ -176,6 +190,64 @@ export function selectLifecycleLimitPatches(
   return patches;
 }
 
+/** The real mailbox an address spends the quota of; itself when unknown. */
+function loginOf(email: string, mailboxLoginByEmail: ReadonlyMap<string, string>): string {
+  const address = email.trim().toLowerCase();
+  return mailboxLoginByEmail.get(address) ?? address;
+}
+
+/**
+ * Pure: the Instantly `warmup.limit` each ALIAS of a login gets, keyed by login.
+ * SCOPE: this sweep only (the hourly `lifecycle-limits-sync`); reconcile's flip
+ * PATCH still writes the per-state figure and this sweep corrects it next hour.
+ *
+ * Instantly sets warmup PER ADDRESS, so its pool warms `limit` from EACH alias —
+ * all through the one relay login the provider meters (measured 2026-09-28:
+ * growthagency.email's 4 aliases at 30 each sent ~117 warmup/day through one
+ * mailbox). The per-state targets (50/0 production, 20/30 recovery) are sized so
+ * a MAILBOX totals 50/day; so is the warmup:
+ *   - ANY in_production alias on the login → 0 on every alias. Production
+ *     self-warms with real volume and the login's 50 goes to outreach; Instantly
+ *     warming its recovery siblings would spend that same quota invisibly to our
+ *     selector. The production check reads every alias our lifecycle calls
+ *     in_production, including an smtp one Instantly has disabled — we still
+ *     dispatch outreach from it ourselves.
+ *   - otherwise (all enforced aliases in_recovery) → floor(30 / N) per alias,
+ *     N = the aliases this sweep enforces warmup on (Instantly-active, limited
+ *     state), so the login's total Instantly warmup is ≤ 30.
+ * A single-alias login gets exactly the per-state figure, as before.
+ * Aliases in deactivated_* states are untouched by this sweep and not counted.
+ */
+export function warmupTargetsByLogin(
+  accounts: Account[],
+  lifecycleByEmail: Map<string, LifecycleView>,
+  mailboxLoginByEmail: ReadonlyMap<string, string>,
+): Map<string, number> {
+  const enforcedCount = new Map<string, number>();
+  const hasProduction = new Set<string>();
+  const perStateTarget = new Map<string, number>();
+  for (const account of accounts) {
+    if (!account.email) continue;
+    const view = lifecycleByEmail.get(account.email);
+    const status = view?.status;
+    const login = loginOf(account.email, mailboxLoginByEmail);
+    if (status === "in_production") hasProduction.add(login);
+    const enforceLimits =
+      isInstantlyEnforced(view?.sendTransport ?? "instantly") || (account.status ?? 0) > 0;
+    if (!enforceLimits || (status !== "in_production" && status !== "in_recovery")) continue;
+    enforcedCount.set(login, (enforcedCount.get(login) ?? 0) + 1);
+    const target = warmupDailyForStatus(status) ?? 0;
+    // A login mixing states takes the smaller per-state figure (production's 0).
+    perStateTarget.set(login, Math.min(perStateTarget.get(login) ?? target, target));
+  }
+  const byLogin = new Map<string, number>();
+  for (const [login, count] of enforcedCount) {
+    const total = hasProduction.has(login) ? 0 : (perStateTarget.get(login) ?? 0);
+    byLogin.set(login, Math.floor(total / count));
+  }
+  return byLogin;
+}
+
 /**
  * IO glue: read the FULL live account list + the silver lifecycle projection,
  * then PATCH each drifting field to its lifecycle target. `limit` bounds the
@@ -187,19 +259,23 @@ export async function syncLifecycleLimits(
   limit?: number,
   asOf: Date = new Date(),
 ): Promise<LifecycleLimitsSyncSummary> {
-  const [accounts, lifecycleByEmail, volume] = await Promise.all([
+  // The address → real-mailbox map, from the same live loader the dispatcher
+  // uses. Fails LOUD: without it the sweep would warm each alias at the full
+  // per-state figure again — the multiplication this map exists to prevent.
+  const [accounts, lifecycleByEmail, volume, mailboxLoginByEmail] = await Promise.all([
     listAccounts(apiKey),
     fetchLifecycleByEmail(),
     fetchRecentDailyVolume(),
+    loadMailboxLogins({ method: "POST", path: "/internal/audit/lifecycle-limits-sync" }),
   ]);
-  // Per ADDRESS: this sweep enforces Instantly's own per-account daily_limit and
-  // holds no alias map, so it takes the address's own peak — which under-states
-  // an alias fleet, the safe direction.
+  // daily_limit stays per ADDRESS (the selector folds aliases for outreach);
+  // warmup is split per LOGIN via `mailboxLoginByEmail`.
   const patches = selectLifecycleLimitPatches(
     accounts,
     lifecycleByEmail,
     asOf,
     new Map(accounts.filter((a) => a.email).map((a) => [a.email as string, sustainedFor(volume, a.email as string)])),
+    mailboxLoginByEmail,
   );
   const batch = limit && limit > 0 ? patches.slice(0, limit) : patches;
 
