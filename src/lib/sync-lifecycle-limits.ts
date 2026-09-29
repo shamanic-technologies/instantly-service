@@ -94,7 +94,10 @@ export interface LifecycleLimitsSyncSummary {
 
 /**
  * Pure: compute the per-account drift patch.
- *   - warmup.limit + daily_limit are enforced ONLY when the silver lifecycle is
+ *   - warmup.limit + daily_limit are enforced on the `instantly` transport, AND
+ *     on an `smtp` account Instantly still holds ACTIVE (its warmup pool still
+ *     sends from it, and our own cap reads its `daily_limit`) — never on a
+ *     DISABLED smtp account (the PATCH would fail). Enforced ONLY when the silver lifecycle is
  *     `in_production` or `in_recovery` (their targets are non-null); any other
  *     state (or unknown lifecycle) leaves both untouched. The daily_limit target
  *     is additionally capped by the VOLUME ramp (`rampCapForVolume`), so a quiet mailbox
@@ -121,17 +124,27 @@ export function selectLifecycleLimitPatches(
     if (!account.email) continue;
     const view = lifecycleByEmail.get(account.email);
     const status = view?.status as LifecycleStatus | null | undefined;
-    // An account we dispatch OURSELVES has no Instantly-side limits to enforce:
-    // Instantly is not the pipe, our own worker owns the cap, and the mailbox is
-    // frequently one Instantly disabled — so every PATCH here would be both
-    // meaningless and likely to fail. Skipped wholesale, slow ramp included:
-    // `enable_slow_ramp` is an Instantly campaign setting and has no effect on a
-    // sequence Instantly never sends.
+    // An account we dispatch OURSELVES (`smtp`) is not sent through Instantly's
+    // campaigns, so `enable_slow_ramp` (a campaign setting) is meaningless there
+    // and is never touched.
     const instantlyEnforced = isInstantlyEnforced(view?.sendTransport ?? "instantly");
+    // ⚠️ But warmup.limit + daily_limit ARE still ours to enforce on an smtp
+    // account that Instantly holds ACTIVE (`status > 0`), for two reasons:
+    //   1. Instantly's warmup POOL still dispatches `warmup.limit`/day FROM the
+    //      mailbox — invisible to `fetchRecentDailyVolume`, on top of our own
+    //      warmup mesh — i.e. it spends the exact Gmail quota our cap guards.
+    //   2. Our own selector's cap (`capForAccount`) reads `daily_limit` from
+    //      silver, which mirrors Instantly's value. A value frozen at a flip
+    //      that happened on smtp (reconcile skips smtp) caps the mailbox there.
+    // Measured 2026-09-29: 16 smtp in_production mailboxes sat at the recovery
+    // 20/30 and sent ~18/day while their peers at 50/0 sent ~45.
+    // An smtp account Instantly DISABLED (`status <= 0`) is still skipped: the
+    // PATCH would fail on a dead account, and its warmup pool is off anyway.
+    const enforceLimits = instantlyEnforced || (account.status ?? 0) > 0;
 
     let warmup: number | null = null;
     let daily: number | null = null;
-    if (instantlyEnforced && (status === "in_production" || status === "in_recovery")) {
+    if (enforceLimits && (status === "in_production" || status === "in_recovery")) {
       const targetWarmup = warmupDailyForStatus(status); // 0 | 30 (never null here)
       const stateDaily = dailyLimitForStatus(status); // 50 | 20 (never null here)
       // ⚠️ NO volume ramp here. Instantly is the pipe for these mailboxes, and
@@ -146,8 +159,8 @@ export function selectLifecycleLimitPatches(
       daily = targetDaily !== null && currentDaily !== targetDaily ? targetDaily : null;
     }
 
-    // Age-driven slow ramp — every account, every state (but still only where
-    // Instantly is the pipe; see above).
+    // Age-driven slow ramp — every account, every state (but only where
+    // Instantly's campaigns are the pipe, i.e. never on smtp; see above).
     const targetSlowRamp = instantlyEnforced
       ? slowRampForAge(account.timestamp_created, asOf)
       : null;
