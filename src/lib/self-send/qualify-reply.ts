@@ -164,6 +164,17 @@ export function withSubject(message: string, subject: string | null | undefined)
   return line ? `Subject: ${line.slice(0, 300)}\n\n${message}` : message;
 }
 
+/**
+ * The subject line, when the prospect wrote it rather than their client echoing
+ * ours — i.e. it does not start with a reply/forward prefix. Null otherwise.
+ */
+export function subjectTheyTyped(subject: string | null | undefined): string | null {
+  const line = subject?.replace(/\s+/g, " ").trim();
+  if (!line) return null;
+  if (/^(re|fw|fwd|aw|wg|tr|sv|vs)\s*:/i.test(line)) return null;
+  return line.slice(0, 300);
+}
+
 /** Strip quoted history so the model judges what THEY wrote, not our own email. */
 export function stripQuotedHistory(text: string): string {
   const lines = text.split(/\r?\n/);
@@ -235,10 +246,15 @@ export async function qualifyReply(
   replyText: string,
   context?: QualifyReplyContext,
 ): Promise<QualificationEventType | null> {
-  const stripped = stripQuotedHistory(replyText).slice(0, 4000);
-  if (!stripped) return null;
   const { subject, ...shadowContext } = context ?? {};
-  const message = withSubject(stripped, subject);
+  const body = stripQuotedHistory(replyText).slice(0, 4000);
+  // An empty body with a subject THEY typed: the subject IS the message
+  // (prod 2026-09-24: a reply whose whole text was the subject "Stop" went
+  // unqualified, so the stop request was never recorded).
+  const typedSubject = body ? null : subjectTheyTyped(subject);
+  const stripped = body || typedSubject || "";
+  if (!stripped) return null;
+  const message = typedSubject ? stripped : withSubject(stripped, subject);
 
   const result = await platformComplete({
     message,
