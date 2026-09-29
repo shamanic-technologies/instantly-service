@@ -428,6 +428,13 @@
       "when": 1789898524213,
       "tag": "0060_instantly_events_retracted",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1789898525213,
+      "tag": "0061_per_reply_verdicts",
+      "breakpoints": true
     }
   ]
 }

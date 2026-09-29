@@ -31,6 +31,13 @@ import { agencyInbox } from "./agency-inbox";
 /** Staff domains beyond the agency inbox's own. Lowercase, no `@`. */
 export const STAFF_DOMAINS: readonly string[] = ["distribute.you"];
 
+/**
+ * Staff addresses on domains that are NOT ours (a personal mailbox the owner
+ * answers from). Measured 2026-09-29: 4 inbound messages on campaign threads
+ * from the owner's personal Gmail, recorded as prospect replies. Lowercase.
+ */
+export const STAFF_ADDRESSES: readonly string[] = ["kevin.lourd@gmail.com"];
+
 /** Every domain whose senders are our own people. */
 export function staffDomains(): string[] {
   const inboxDomain = agencyInbox().split("@")[1]?.trim().toLowerCase();
@@ -64,6 +71,7 @@ export function isStaffSender(
   const address = bareAddress(from);
   if (!address) return false;
   if (leadEmail && address === leadEmail.trim().toLowerCase()) return false;
+  if (STAFF_ADDRESSES.includes(address)) return true;
   const domain = address.split("@")[1];
   return domain !== undefined && staffDomains().includes(domain);
 }
@@ -82,5 +90,9 @@ export function staffSenderSql(fromExpr: SQL): SQL {
     domains.map((d) => sql`${d}`),
     sql`, `,
   );
-  return sql`(lower(split_part(coalesce(${fromExpr}, ''), '@', 2)) IN (${list}))`;
+  const addresses = sql.join(
+    STAFF_ADDRESSES.map((a) => sql`${a}`),
+    sql`, `,
+  );
+  return sql`(lower(split_part(coalesce(${fromExpr}, ''), '@', 2)) IN (${list}) OR lower(coalesce(${fromExpr}, '')) IN (${addresses}))`;
 }

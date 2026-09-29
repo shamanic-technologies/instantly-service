@@ -1,0 +1,191 @@
+/**
+ * One current verdict per real reply (lib/reply-verdicts).
+ *
+ * The SQL itself was validated against production data in a rolled-back
+ * transaction (468 replies, Elena's two messages as two verdicts); these tests
+ * pin the rules the SQL encodes, so a later edit cannot quietly drop one.
+ */
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const mockDbExecute = vi.fn();
+vi.mock("../../src/db", () => ({
+  db: { execute: (...a: unknown[]) => mockDbExecute(...a) },
+}));
+
+const mockQualifyReply = vi.fn();
+vi.mock("../../src/lib/self-send/qualify-reply", () => ({
+  qualifyReply: (...a: unknown[]) => mockQualifyReply(...a),
+}));
+
+const mockPromoteEvent = vi.fn();
+vi.mock("../../src/lib/silver-promote", () => ({
+  promoteEvent: (...a: unknown[]) => mockPromoteEvent(...a),
+}));
+
+import {
+  backfillReplyVerdicts,
+  readReplyVerdicts,
+  syncReplyVerdicts,
+} from "../../src/lib/reply-verdicts";
+
+function sqlText(obj: unknown): string {
+  if (typeof obj === "string") return obj;
+  if (obj == null) return "";
+  if (Array.isArray(obj)) return obj.map(sqlText).join("");
+  if (typeof obj === "object") {
+    const o = obj as Record<string, unknown>;
+    if (Array.isArray(o.value)) return o.value.join("");
+    if (Array.isArray(o.queryChunks)) return sqlText(o.queryChunks);
+    return Object.values(o).map(sqlText).join("");
+  }
+  return "";
+}
+
+function pgResult<T>(rows: T[]) {
+  return { command: "SELECT", rowCount: rows.length, oid: null, fields: [], rows };
+}
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  mockDbExecute.mockResolvedValue(pgResult([]));
+});
+
+describe("the projection", () => {
+  it("mirrors kind events into bronze idempotently, keyed on the event id", async () => {
+    await syncReplyVerdicts({ sinceDays: null });
+    const ingest = sqlText(mockDbExecute.mock.calls[0][0]);
+    expect(ingest).toContain("INSERT INTO reply_verdicts_raw");
+    expect(ingest).toContain("ON CONFLICT (source_event_id) DO NOTHING");
+    expect(ingest).toContain("e.inferred = false");
+    // A person's statement is a human verdict.
+    expect(ingest).toContain("WHEN e.source = 'manual' THEN 'human'");
+  });
+
+  it("counts only REAL replies: not staff, not our own mailboxes, not a mail server", async () => {
+    await syncReplyVerdicts({ sinceDays: null });
+    const upsert = sqlText(mockDbExecute.mock.calls[1][0]);
+    expect(upsert).toContain("INSERT INTO replies");
+    expect(upsert).toContain("split_part(coalesce(");
+    expect(upsert).toContain("FROM instantly_accounts a");
+    expect(upsert).toContain("'postmaster', 'mailer-daemon'");
+    expect(upsert).toContain("m.kind IN ('reply', 'auto_reply')");
+  });
+
+  it("attributes exactly first, then to the latest reply before the verdict, and drops withdrawn statements", async () => {
+    await syncReplyVerdicts({ sinceDays: null });
+    const recompute = sqlText(mockDbExecute.mock.calls[3][0]);
+    expect(recompute).toContain("'exact' AS attribution");
+    expect(recompute).toContain("'latest_before'");
+    expect(recompute).toContain("r.received_at <= v.decided_at + interval '10 minutes'");
+    expect(recompute).toContain("ORDER BY rank, received_at DESC");
+    expect(recompute).toContain("ev.withdrawn_at IS NULL");
+  });
+
+  it("a person's statement beats everyone, then the most recent", async () => {
+    await syncReplyVerdicts({ sinceDays: null });
+    const recompute = sqlText(mockDbExecute.mock.calls[3][0]);
+    expect(recompute).toContain("(producer_type = 'human') DESC, decided_at DESC");
+  });
+
+  it("clears the current verdict of a reply whose verdicts all went away", async () => {
+    await syncReplyVerdicts({ sinceDays: null });
+    const reset = sqlText(mockDbExecute.mock.calls[2][0]);
+    expect(reset).toContain("current_verdict_id = NULL");
+    expect(reset).toContain("NOT EXISTS (SELECT 1 FROM attributed a WHERE a.reply_id = r.id)");
+  });
+});
+
+describe("the backfill", () => {
+  function queueUnjudged(rows: Record<string, unknown>[]) {
+    // sync: ingest, upsert, reset, recompute; then the candidate select.
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult(rows));
+  }
+
+  it("records a verdict in BRONZE ONLY — no silver event, so no side effect fires", async () => {
+    queueUnjudged([
+      {
+        id: "ie:abc",
+        instantly_campaign_id: "ic-1",
+        lead_email: "jamie@kinetikchaindenver.com",
+        subject: "Re: x",
+        body: "Not w/o an estimate of price.",
+      },
+    ]);
+    mockQualifyReply.mockResolvedValue("lead_not_interested");
+
+    const summary = await backfillReplyVerdicts({ sinceDays: null });
+
+    expect(summary).toMatchObject({ candidates: 1, classified: 1 });
+    expect(mockPromoteEvent).not.toHaveBeenCalled();
+    const insert = mockDbExecute.mock.calls.map((c) => sqlText(c[0])).find((t) => t.includes("'backfill_classifier'"));
+    expect(insert).toBeDefined();
+    expect(mockQualifyReply).toHaveBeenCalledWith(
+      "Not w/o an estimate of price.",
+      expect.objectContaining({ subject: "Re: x", source: "reply_verdict_backfill" }),
+    );
+  });
+
+  it("never invents a verdict: an unusable classification or an empty body records nothing", async () => {
+    queueUnjudged([
+      { id: "ie:1", instantly_campaign_id: "ic-1", lead_email: "a@b.com", subject: null, body: "hmm" },
+      { id: "ie:2", instantly_campaign_id: "ic-2", lead_email: "c@d.com", subject: null, body: "" },
+    ]);
+    mockQualifyReply.mockResolvedValue(null);
+
+    const summary = await backfillReplyVerdicts({ sinceDays: null });
+
+    expect(summary).toMatchObject({ candidates: 2, classified: 0, unqualified: 1, noBody: 1 });
+    expect(mockDbExecute.mock.calls.some((c) => sqlText(c[0]).includes("'backfill_classifier'"))).toBe(false);
+  });
+});
+
+describe("the read", () => {
+  it("is org-scoped, matches the address case-insensitively, and maps the current verdict", async () => {
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        {
+          id: "ie:1",
+          lead_email: "elena.staeheli@biopartner.ch",
+          instantly_campaign_id: "fbde0b33",
+          campaign_id: "38ba8069",
+          brand_ids: ["f2408cfb"],
+          transport: "instantly",
+          from_email: "elena.staeheli@biopartner.ch",
+          subject: "Re: x",
+          received_at: new Date("2026-09-28T04:52:00Z"),
+          current_kind: "lead_referral",
+          current_classification: "neutral",
+          current_producer_type: "model",
+          current_producer: "deepseek-flash",
+          current_attribution: "exact",
+          current_confidence: null,
+          current_decided_at: new Date("2026-09-29T05:00:00Z"),
+          verdict_count: 1,
+        },
+      ]),
+    );
+
+    const out = await readReplyVerdicts({ orgId: "org-1", emails: ["Elena.Staeheli@Biopartner.ch"] });
+
+    const text = sqlText(mockDbExecute.mock.calls[0][0]);
+    expect(text).toContain("r.org_id = ");
+    expect(text).toContain("lower(r.lead_email) IN (");
+    expect(out[0]).toMatchObject({
+      replyId: "ie:1",
+      campaignId: "38ba8069",
+      brandIds: ["f2408cfb"],
+      receivedAt: "2026-09-28T04:52:00.000Z",
+      verdict: { kind: "lead_referral", classification: "neutral", producerType: "model" },
+    });
+  });
+
+  it("returns nothing, and queries nothing, for an empty address list", async () => {
+    expect(await readReplyVerdicts({ orgId: "org-1", emails: ["  "] })).toEqual([]);
+    expect(mockDbExecute).not.toHaveBeenCalled();
+  });
+});

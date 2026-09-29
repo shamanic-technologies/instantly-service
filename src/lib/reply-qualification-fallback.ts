@@ -130,6 +130,9 @@ export async function selectUnqualifiedReplies(
   );
 
   const result = await db.execute(sql`
+    SELECT * FROM (
+    SELECT DISTINCT ON (u.instantly_campaign_id) u.*
+    FROM (
     SELECT c.instantly_campaign_id,
            c.lead_email,
            c.account_email,
@@ -158,9 +161,37 @@ export async function selectUnqualifiedReplies(
           AND q.event_type IN (${kinds})
           AND q.timestamp >= r.replied_at
       )
+
+    UNION ALL
+
+    -- The per-reply arm (lib/reply-verdicts): the LATEST real reply on an
+    -- Instantly thread that has no current verdict. Catches a mirrored reply no
+    -- \`reply_received\` event ever announced.
+    SELECT c.instantly_campaign_id,
+           c.lead_email,
+           c.account_email,
+           c.org_id,
+           c.user_id,
+           rp.received_at AT TIME ZONE 'UTC' AS replied_at
+    FROM replies rp
+    JOIN instantly_campaigns c ON c.instantly_campaign_id = rp.instantly_campaign_id
+    WHERE rp.current_kind IS NULL
+      AND rp.source_table = 'instantly_emails_raw'
+      AND c.instantly_campaign_id NOT LIKE 'self:%'
+      AND c.instantly_campaign_id NOT LIKE 'reserving:%'
+      AND (rp.received_at AT TIME ZONE 'UTC') < ${cutoff}
+      AND (rp.received_at AT TIME ZONE 'UTC') >= ${floor}
+      AND NOT EXISTS (
+        SELECT 1 FROM replies newer
+        WHERE newer.instantly_campaign_id = rp.instantly_campaign_id
+          AND newer.received_at > rp.received_at
+      )
+    ) u
+    ORDER BY u.instantly_campaign_id, u.replied_at DESC
+    ) candidates
     -- Oldest first WITHIN the window: the longest-waiting buyer is answered
     -- first, and the floor above is what keeps "oldest" from meaning "stale".
-    ORDER BY r.replied_at ASC
+    ORDER BY replied_at ASC
     LIMIT ${limit}
   `);
 
