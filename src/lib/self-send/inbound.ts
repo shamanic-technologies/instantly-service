@@ -23,7 +23,33 @@ export type InboundHeaders = Readonly<Record<string, string | undefined>>;
  * delivered, and if it is not, the reporting MTA sends a separate permanent
  * notice — which is the one that becomes `email_bounced`.
  */
-export type InboundKind = "reply" | "auto_reply" | "bounce" | "delay" | "unrelated";
+export type InboundKind =
+  | "reply"
+  | "auto_reply"
+  | "bounce"
+  | "delay"
+  | "unrelated"
+  | typeof STAFF_REPLY_KIND;
+
+/**
+ * A message on a campaign thread written by one of OUR OWN people (staff domain,
+ * see lib/staff-senders) who CC'd the sending mailbox. It is our side of the
+ * conversation, never the prospect's reply: it promotes nothing, and the
+ * human-takeover gate reads it as a person having taken the thread over.
+ */
+export const STAFF_REPLY_KIND = "staff_reply" as const;
+
+/**
+ * Re-file a correlated reply as `staff_reply` when one of our own people wrote
+ * it. Only a `reply` is re-filed: a bounce or an auto-reply from our own domain
+ * is still exactly what it says it is.
+ */
+export function refileStaffReply(
+  kind: InboundKind,
+  staffSender: boolean,
+): InboundKind {
+  return kind === "reply" && staffSender ? STAFF_REPLY_KIND : kind;
+}
 
 export interface InboundClassification {
   kind: InboundKind;

@@ -26,6 +26,7 @@ import { maybeEnqueueFollowupOnInterest } from "./enqueue-followup-on-interest";
 import { maybeStopFollowupsOnDecline } from "./stop-followups-on-decline";
 import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
 import { maybeRingRepOnSalesInterest } from "./ring-rep-on-sales-interest";
+import { maybeEscalateOffTopicReply } from "./escalate-off-topic-reply";
 import { maybeMirrorCampaignEmails } from "./mirror-emails";
 import { maybeRecordOptOutFromReply } from "./reply-opt-out";
 import {
@@ -685,6 +686,14 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // deletes those words permanently, so they are copied at the moment we
       // learn they exist. Fail-soft, never throws. No-op on any other event.
       await maybeMirrorCampaignEmails(campaign, input.eventType);
+
+      // A reply about something other than the offer (a partnership, hiring,
+      // investors, a vendor, the press): the automated responder only handles
+      // sales conversations and will not answer it, so hand it to a person
+      // through the responder's own escalation path. AFTER the mirror, which is
+      // what puts their words in bronze. Fail-soft, never throws; no-op on any
+      // other event.
+      await maybeEscalateOffTopicReply(campaign, input.leadEmail, input.eventType);
 
       // ...then read what they wrote. A prospect who asks to STOP in the body of
       // a reply ("please remove me from your list") is classified by Instantly as

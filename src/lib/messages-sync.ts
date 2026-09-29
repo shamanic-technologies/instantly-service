@@ -18,6 +18,8 @@ import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { messages } from "../db/schema";
 import { parseInstantlySequenceStep } from "./self-send/instantly-sends";
+import { isStaffSender } from "./staff-senders";
+import { STAFF_REPLY_KIND } from "./self-send/inbound";
 
 /**
  * Mirror of `reply-to-lead.ts`'s `MANUAL_REPLY_STEP` — a one-to-one reply is
@@ -119,8 +121,13 @@ export interface InstantlyEmailSource {
  * one Instantly actually put on the wire (100% of outbound rows carry it).
  */
 export function mapInstantlyEmail(r: InstantlyEmailSource): MessageRow | null {
-  const inbound = r.ueType === "2";
-  const account = lower(r.eaccount) ?? (inbound ? lower(r.toAddresses) : lower(r.fromAddress));
+  // A message one of OUR OWN people wrote and CC'd to the sending mailbox lands
+  // inbound on it (`ue_type 2`) and is our reply, sent by a human — never the
+  // prospect's (lib/staff-senders).
+  const staff = r.ueType === "2" && isStaffSender(r.fromAddress, r.leadEmail);
+  const inbound = r.ueType === "2" && !staff;
+  const account =
+    lower(r.eaccount) ?? (r.ueType === "2" ? lower(r.toAddresses) : lower(r.fromAddress));
   if (!account) return null;
   const occurredAt = toDate(r.timestampEmail) ?? toDate(r.fetchedAt);
   if (!occurredAt) return null;
@@ -137,7 +144,9 @@ export function mapInstantlyEmail(r: InstantlyEmailSource): MessageRow | null {
     mailboxLogin: r.mailboxLogin,
     counterparty: inbound
       ? (lower(r.fromAddress) ?? lower(r.leadEmail))
-      : (lower(r.toAddresses) ?? lower(r.leadEmail)),
+      : staff
+        ? lower(r.leadEmail)
+        : (lower(r.toAddresses) ?? lower(r.leadEmail)),
     subject: str(r.subject),
     instantlyCampaignId: r.instantlyCampaignId,
     step,
@@ -236,17 +245,19 @@ const IMAP_KINDS: Record<string, MessageKind> = {
 export function mapImapMessage(r: ImapMessageSource): MessageRow | null {
   const occurredAt = toDate(r.receivedAt) ?? toDate(r.polledAt);
   if (!occurredAt) return null;
-  const kind = IMAP_KINDS[r.kind] ?? "unrelated";
+  // A CC'd staff answer is our reply, sent by a human (lib/staff-senders).
+  const staff = r.kind === STAFF_REPLY_KIND;
+  const kind = staff ? "manual_reply" : (IMAP_KINDS[r.kind] ?? "unrelated");
   return {
     sourceTable: "imap_messages_raw",
     sourceRowId: r.id,
     messageId: r.messageId,
-    direction: "in",
+    direction: staff ? "out" : "in",
     kind,
     transport: "smtp",
     accountEmail: r.accountEmail.toLowerCase(),
     mailboxLogin: r.mailboxLogin,
-    counterparty: lower(r.fromAddress),
+    counterparty: staff ? null : lower(r.fromAddress),
     subject: str(r.subject),
     instantlyCampaignId: r.instantlyCampaignId,
     step: r.step,
@@ -254,7 +265,7 @@ export function mapImapMessage(r: ImapMessageSource): MessageRow | null {
     contextRef: null,
     orgId: r.orgId,
     campaignId: r.campaignId,
-    outcome: "received",
+    outcome: staff ? "sent" : "received",
     placement: null,
     spfPass: null,
     dkimPass: null,
@@ -380,6 +391,7 @@ async function upsertRows(rows: MessageRow[], syncedAt: Date): Promise<number> {
         target: [messages.sourceTable, messages.sourceRowId],
         set: {
           messageId: sql`excluded.message_id`,
+          direction: sql`excluded.direction`,
           kind: sql`excluded.kind`,
           mailboxLogin: sql`excluded.mailbox_login`,
           counterparty: sql`excluded.counterparty`,

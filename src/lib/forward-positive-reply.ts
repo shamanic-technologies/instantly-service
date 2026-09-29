@@ -48,6 +48,7 @@ import { fetchSelfSendThread } from "./self-send/thread";
 import { POSITIVE_REPLY_KINDS } from "./reply-kind";
 import { agencyInbox } from "./agency-inbox";
 import { salesRepCopyList } from "./sales-rep-copy";
+import { isStaffSender } from "./staff-senders";
 
 /**
  * The reply kinds that mean "worth forwarding to the agency inbox". We forward
@@ -153,7 +154,10 @@ export function selectThreadMessages(records: EmailRecord[]): ThreadMessage[] {
         new Date(b.timestamp_email).getTime(),
     )
     .map((r) => ({
-      direction: r.ue_type === 2 ? "inbound" : "outbound",
+      // An inbound message one of our own people wrote (a staff answer CC'd to
+      // the sending mailbox) is OUR side of the conversation — see staff-senders.
+      direction:
+        r.ue_type === 2 && !isStaffSender(r.from_address_email, r.lead) ? "inbound" : "outbound",
       from: r.from_address_email || r.eaccount || "(unknown)",
       to: r.to_address_email_list || r.lead || "(unknown)",
       date: r.timestamp_email,

@@ -68,6 +68,21 @@ export async function fetchSelfSendThread(
     WHERE m.instantly_campaign_id = ${instantlyCampaignId}
       AND m.kind IN ('reply', 'auto_reply')
 
+    UNION ALL
+
+    -- One of OUR OWN people answered from their own client and CC'd the
+    -- mailbox (lib/staff-senders): our side of the conversation, not theirs.
+    SELECT
+      'outbound'                                       AS "direction",
+      COALESCE(m.from_address, m.account_email)        AS "from",
+      ''                                               AS "to",
+      COALESCE(m.subject, '')                          AS "subject",
+      COALESCE(m.payload->>'textSnippet', '')          AS "bodyHtml",
+      COALESCE(m.received_at, m.polled_at)             AS "at"
+    FROM imap_messages_raw m
+    WHERE m.instantly_campaign_id = ${instantlyCampaignId}
+      AND m.kind = 'staff_reply'
+
     ORDER BY "at"
   `);
 

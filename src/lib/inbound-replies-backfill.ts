@@ -39,6 +39,7 @@ import { stopLeadSequence } from "./stop-lead-sequence";
 import { isSequenceStoppingReplyKind } from "./reply-kind";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import type { CallerInfo } from "./key-client";
+import { staffSenderSql } from "./staff-senders";
 
 const CALLER: CallerInfo = {
   method: "POST",
@@ -153,6 +154,7 @@ export async function loadInboundCandidates(
     JOIN instantly_campaigns c
       ON c.instantly_campaign_id = m.instantly_campaign_id
     WHERE m.payload->>'ue_type' <> '1'
+      AND NOT ${staffSenderSql(sql`m.payload->>'from_address_email'`)}
       AND c.instantly_campaign_id NOT LIKE 'self:%'
       AND NOT EXISTS (
         SELECT 1 FROM instantly_events e
@@ -194,6 +196,7 @@ export async function promoteCandidate(
         instantlyCampaignId: candidate.instantlyCampaignId,
         leadEmail: candidate.leadEmail,
         source: "inbound_replies_backfill",
+        subject: candidate.subject,
       });
 
   if (kind === null) {
