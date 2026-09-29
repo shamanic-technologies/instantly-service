@@ -519,6 +519,8 @@ export interface ReplyVerdictView {
     stopRequested: boolean;
     /** They are not who we sell to (wrong contact, left the role). */
     notOurTarget: boolean;
+    /** The reply is handed to a person (referral, off-topic), not answered automatically. */
+    handedToPerson: boolean;
   } | null;
   verdictCount: number;
 }

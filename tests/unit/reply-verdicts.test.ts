@@ -228,19 +228,24 @@ describe("the read", () => {
         automatedAnswer: false,
         stopRequested: false,
         notOurTarget: false,
+        handedToPerson: true,
       },
     });
   });
 
   it.each([
-    ["lead_out_of_office", { automatedAnswer: true, stopRequested: false, notOurTarget: false }],
-    ["auto_reply_received", { automatedAnswer: true, stopRequested: false, notOurTarget: false }],
-    ["lead_opt_out_requested", { automatedAnswer: false, stopRequested: true, notOurTarget: false }],
-    ["lead_wrong_person", { automatedAnswer: false, stopRequested: false, notOurTarget: true }],
-    ["lead_changed_job", { automatedAnswer: false, stopRequested: false, notOurTarget: true }],
+    ["lead_out_of_office", { automatedAnswer: true, stopRequested: false, notOurTarget: false, handedToPerson: false }],
+    ["auto_reply_received", { automatedAnswer: true, stopRequested: false, notOurTarget: false, handedToPerson: false }],
+    ["lead_opt_out_requested", { automatedAnswer: false, stopRequested: true, notOurTarget: false, handedToPerson: false }],
+    ["lead_wrong_person", { automatedAnswer: false, stopRequested: false, notOurTarget: true, handedToPerson: false }],
+    ["lead_changed_job", { automatedAnswer: false, stopRequested: false, notOurTarget: true, handedToPerson: false }],
     // A plain no stays recyclable: not a disqualification.
-    ["lead_not_interested", { automatedAnswer: false, stopRequested: false, notOurTarget: false }],
-    ["lead_interested", { automatedAnswer: false, stopRequested: false, notOurTarget: false }],
+    ["lead_not_interested", { automatedAnswer: false, stopRequested: false, notOurTarget: false, handedToPerson: false }],
+    // A hand-over is not a plain neutral reply.
+    ["lead_referral", { automatedAnswer: false, stopRequested: false, notOurTarget: false, handedToPerson: true }],
+    ["lead_off_topic", { automatedAnswer: false, stopRequested: false, notOurTarget: false, handedToPerson: true }],
+    ["lead_neutral", { automatedAnswer: false, stopRequested: false, notOurTarget: false, handedToPerson: false }],
+    ["lead_interested", { automatedAnswer: false, stopRequested: false, notOurTarget: false, handedToPerson: false }],
   ])("states the facts of a %s verdict", async (kind, facts) => {
     mockDbExecute.mockResolvedValueOnce(
       pgResult([
