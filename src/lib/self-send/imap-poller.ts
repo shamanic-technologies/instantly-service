@@ -31,6 +31,8 @@ import {
 import {
   classifyInbound,
   correlateSend,
+  refileStaffReply,
+  STAFF_REPLY_KIND,
   eventTypeForInbound,
   isDeliveryStatusNotification,
   type CorrelatedSend,
@@ -41,6 +43,7 @@ import { parseInstantlySequenceStep } from "./instantly-sends";
 import { qualifyReply } from "./qualify-reply";
 import { OPT_OUT_REPLY_KIND, recordOptOutFromReply } from "../reply-opt-out";
 import { isSelfSendCampaignId, SEND_TRANSPORT_SMTP } from "./transport";
+import { isStaffSender } from "../staff-senders";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/poll" };
 
@@ -111,6 +114,8 @@ export interface PollSummary {
    * permanent failure is a bounce. See `isTransientDeliveryReport`.
    */
   delayed: number;
+  /** Correlated messages one of our own people wrote (CC'd staff answers). */
+  staffReplies: number;
   /** Replies we obtained a trustworthy sentiment for. */
   qualified: number;
   /** Replies recorded and stopped, but left without a sentiment. */
@@ -374,10 +379,13 @@ async function pollAccount(
           body = `${parsed.text ?? ""}\n${parsed.html || ""}`;
         }
 
-        const classification = classifyInbound(headers, body, new Set(knownSends.keys()));
+        const classified = classifyInbound(headers, body, new Set(knownSends.keys()));
+        // One of OUR OWN people answered the prospect and CC'd this mailbox: the
+        // message is our side of the thread, never the prospect's reply. Filed
+        // `staff_reply`, it promotes nothing and the takeover gate reads it.
 
         const correlation = correlateSend(
-          classification.referencedMessageIds,
+          classified.referencedMessageIds,
           knownSends,
         );
 
@@ -392,6 +400,14 @@ async function pollAccount(
         }
 
         const send = correlation.outcome === "matched" ? correlation.send : undefined;
+
+        const classification = {
+          ...classified,
+          kind: refileStaffReply(
+            classified.kind,
+            isStaffSender(candidate.head.from?.text ?? headers["from"], send?.leadEmail),
+          ),
+        };
 
         // PASS 2, second reason: a message that CONCERNS us keeps its words.
         // `unrelated` does not — measured 2026-09-18, 80,697 of the 80,891
@@ -447,6 +463,14 @@ async function pollAccount(
 
         if (classification.kind === "delay") {
           summary.delayed += 1;
+          continue;
+        }
+
+        if (classification.kind === STAFF_REPLY_KIND) {
+          summary.staffReplies += 1;
+          console.log(
+            `[instantly-service] self-send-poll: staff answer on campaign=${send.instantlyCampaignId} lead=${send.leadEmail} from=${parsed.from?.text ?? "?"} — recorded as our own reply, nothing promoted`,
+          );
           continue;
         }
 
@@ -508,6 +532,7 @@ async function pollAccount(
               instantlyCampaignId: send.instantlyCampaignId,
               leadEmail: send.leadEmail,
               source: "imap_poller",
+              subject: parsed.subject ?? null,
             });
             if (qualification) {
               await promoteEvent({
@@ -587,6 +612,7 @@ export function emptyPollSummary(): PollSummary {
     autoReplies: 0,
     bounces: 0,
     delayed: 0,
+    staffReplies: 0,
     qualified: 0,
     unqualified: 0,
     optOutsRecorded: 0,

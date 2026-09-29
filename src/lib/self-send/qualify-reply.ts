@@ -42,6 +42,7 @@ export const QUALIFICATION_EVENT_TYPES = [
   "lead_opt_out_requested",
   "lead_out_of_office",
   "lead_neutral",
+  "lead_off_topic",
 ] as const;
 
 export type QualificationEventType = (typeof QUALIFICATION_EVENT_TYPES)[number];
@@ -61,9 +62,14 @@ Labels, and what each one means:
 - lead_changed_job — they say they have left the role or the company, so the role we wrote to is no longer theirs
 - lead_out_of_office — they are away and will return; the message says nothing about the offer
 - lead_neutral — anything else, including a bare acknowledgement or an unclear reply
+- lead_off_topic — the conversation is about something OTHER than them buying what we sell: a partnership or reseller proposal, a job or hiring enquiry, investors or fundraising, a vendor pitching their own product to us, or press and media. Pick this over lead_interested, lead_info_requested, lead_meeting_requested and lead_neutral whenever the exchange is about one of those rather than a purchase; the subject line tells you what the conversation is about
 
 Judge only what the reply says. Do not infer enthusiasm from politeness, and do
 not treat a question about how you got their address as interest.
+
+When the message starts with "Subject:", that is the thread's subject line. Use
+it only to know what the conversation is about — never classify the subject
+itself as something they wrote.
 
 The reply may quote our own email beneath it, and older emails of ours ended with
 the words "Not relevant? Reply "stop" and I won't email you again." or "Don't want
@@ -76,7 +82,9 @@ Worked examples, from real replies:
 - "unsusbsribe" -> lead_opt_out_requested (a misspelling is still the request)
 - "No interest, please stop sending emails." -> lead_opt_out_requested (the second clause asks to stop; the first alone would not)
 - "Not for us, thanks." -> lead_not_interested (a decline, with no request to be removed)
-- "No interest" -> lead_not_interested (declining is not asking to be taken off the list)`;
+- "No interest" -> lead_not_interested (declining is not asking to be taken off the list)
+- Subject "Re: Acme + Beta partnership?", reply "can you explain?" -> lead_off_topic (the conversation is a partnership proposal, not a purchase)
+- "Are you hiring? I'd love to join your team" -> lead_off_topic (a job enquiry)`;
 
 /**
  * The SAME question, expressed as a typed CHOICE question for the judgment
@@ -122,6 +130,10 @@ export const REPLY_KIND_CRITERIA: Record<
   lead_out_of_office:
     "they are away and will return; the message says nothing about the offer",
   lead_neutral: "anything else, including a bare acknowledgement or an unclear reply",
+  lead_off_topic: {
+    what: "the conversation is about something OTHER than them buying what we sell: a partnership or reseller proposal, a job or hiring enquiry, investors or fundraising, a vendor pitching their own product to us, or press and media. Pick this over lead_interested, lead_info_requested, lead_meeting_requested and lead_neutral whenever the exchange is about one of those rather than a purchase; the subject line tells you what the conversation is about",
+    examples: ["Are you hiring? I'd love to join your team"],
+  },
 };
 
 /**
@@ -135,6 +147,22 @@ export const REPLY_KIND_JUDGMENT_INSTRUCTIONS = `Classify a single reply to a co
 Judge only what the reply says. Do not infer enthusiasm from politeness, and do not treat a question about how you got their address as interest.
 
 The reply may quote our own email beneath it, and older emails of ours ended with the words "Not relevant? Reply "stop" and I won't email you again." or "Don't want to hear from me again? unsubscribe". That is OUR footer, not their request — only a removal request THEY wrote is lead_opt_out_requested.`;
+
+/**
+ * What a caller knows about the reply beyond its text. `subject` is the thread's
+ * subject line: a two-word reply ("can you explain?") says nothing about what the
+ * conversation is ABOUT, and `lead_off_topic` is exactly that question — a
+ * partnership thread reads "partnership" in its subject and nowhere in the reply.
+ */
+export interface QualifyReplyContext extends ShadowJudgmentContext {
+  subject?: string | null;
+}
+
+/** Prefix the thread's subject line, when known — see `QualifyReplyContext`. */
+export function withSubject(message: string, subject: string | null | undefined): string {
+  const line = subject?.replace(/\s+/g, " ").trim();
+  return line ? `Subject: ${line.slice(0, 300)}\n\n${message}` : message;
+}
 
 /** Strip quoted history so the model judges what THEY wrote, not our own email. */
 export function stripQuotedHistory(text: string): string {
@@ -205,10 +233,12 @@ export function parseQualification(result: {
  */
 export async function qualifyReply(
   replyText: string,
-  context?: ShadowJudgmentContext,
+  context?: QualifyReplyContext,
 ): Promise<QualificationEventType | null> {
-  const message = stripQuotedHistory(replyText).slice(0, 4000);
-  if (!message) return null;
+  const stripped = stripQuotedHistory(replyText).slice(0, 4000);
+  if (!stripped) return null;
+  const { subject, ...shadowContext } = context ?? {};
+  const message = withSubject(stripped, subject);
 
   const result = await platformComplete({
     message,
@@ -232,7 +262,9 @@ export async function qualifyReply(
   // dynamically so the measurement module can import this vocabulary without a
   // load-time cycle.
   void import("../shadow-judgment")
-    .then((m) => m.shadowJudgeReply({ ...context, replyText: message, llmClassification: classification }))
+    .then((m) =>
+      m.shadowJudgeReply({ ...shadowContext, replyText: message, llmClassification: classification }),
+    )
     .catch((error: unknown) => {
       console.error(
         "[instantly-service] shadow-judgment: could not be launched — the stored classification is unaffected:",

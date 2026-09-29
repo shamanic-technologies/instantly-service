@@ -125,6 +125,50 @@ export async function escalateReply(
     );
   }
 
+  return handThreadToHuman({
+    instantlyCampaignId: campaign.instantlyCampaignId,
+    campaignId: campaign.campaignId,
+    leadEmail: campaign.leadEmail,
+    brandId: campaign.brandId,
+    orgId: input.orgId,
+    userId: input.userId,
+    runId: input.runId,
+    question,
+    stopReason: `The automated responder could not answer: ${question}`,
+  });
+}
+
+/** One thread to hand to a person — the campaign row plus who is asking. */
+export interface HandThreadToHumanInput {
+  /** The per-lead thread id (an Instantly campaign id, or a `self:` id). */
+  instantlyCampaignId: string;
+  /** The logical campaign id lead-service keys its row on. */
+  campaignId: string | null;
+  leadEmail: string;
+  brandId: string | null;
+  orgId: string;
+  userId: string;
+  /** Forwarded as `x-run-id` — transactional-email-service refuses a send without it. */
+  runId: string;
+  /** What the human has to act on; rendered first in the notification. */
+  question: string;
+  /** Recorded on lead-service's stop, so the lead timeline says why. */
+  stopReason: string;
+}
+
+/**
+ * Forward the thread to the agency inbox, then stop the follow-up ladder.
+ *
+ * The shared core of every hand-over: the responder giving up on a question
+ * (`escalateReply`) and a reply about something other than the offer
+ * (`maybeEscalateOffTopicReply`). One path, so both reach the same inbox in the
+ * same shape and stop the same row.
+ */
+export async function handThreadToHuman(
+  input: HandThreadToHumanInput,
+): Promise<EscalateReplyResult> {
+  const campaign = input;
+  const question = input.question;
   const threadMessages = await sendThreadForward(
     {
       instantlyCampaignId: campaign.instantlyCampaignId,
@@ -151,11 +195,13 @@ export async function escalateReply(
   // cannot disagree about which row a lead is; anything other than exactly one
   // match resolves to null and the schedule is left alone rather than a
   // stranger's being emptied.
-  const lead = await findLeadOnCampaignByEmail({
-    orgId: input.orgId,
-    campaignId: campaign.campaignId,
-    email: campaign.leadEmail,
-  });
+  const lead = campaign.campaignId
+    ? await findLeadOnCampaignByEmail({
+        orgId: input.orgId,
+        campaignId: campaign.campaignId,
+        email: campaign.leadEmail,
+      })
+    : null;
 
   if (!lead) {
     console.warn(
@@ -172,7 +218,7 @@ export async function escalateReply(
   await stopFollowups({
     orgId: input.orgId,
     leadRowId: lead.id,
-    reason: `The automated responder could not answer: ${question}`,
+    reason: input.stopReason,
   });
 
   console.log(

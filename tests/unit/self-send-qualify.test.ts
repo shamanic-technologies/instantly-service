@@ -249,3 +249,46 @@ describe("the shadow judgment runs beside the classifier and decides nothing", (
     expect(await qualifyReply("interested!")).toBe("lead_interested");
   });
 });
+
+describe("a reply about something other than the offer", () => {
+  it("accepts lead_off_topic as a label", () => {
+    expect(QUALIFICATION_EVENT_TYPES).toContain("lead_off_topic");
+    expect(parseQualification({ json: { classification: "lead_off_topic" } })).toBe("lead_off_topic");
+  });
+
+  it("hands the model the thread's subject, since a short reply says nothing about the topic", async () => {
+    mockPlatformComplete.mockResolvedValue({
+      content: "",
+      json: { classification: "lead_off_topic" },
+      tokensInput: 1,
+      tokensOutput: 1,
+      model: "deepseek-v4-flash",
+    });
+
+    const kind = await qualifyReply("can you explain?\n\nOn Mon, Sep 28, 2026 Kevin wrote:\n> hi", {
+      subject: "Re: Marktize + Doc Dinners partnership?",
+    });
+
+    expect(kind).toBe("lead_off_topic");
+    const [{ message, systemPrompt }] = mockPlatformComplete.mock.calls[0];
+    expect(message).toBe("Subject: Re: Marktize + Doc Dinners partnership?\n\ncan you explain?");
+    expect(systemPrompt).toContain("- lead_off_topic — ");
+    // The subject is context, not something they wrote.
+    expect(systemPrompt).toContain('When the message starts with "Subject:"');
+  });
+
+  it("sends the reply exactly as before when no subject is known", async () => {
+    mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_interested" } });
+    await qualifyReply("I would be interested");
+    expect(mockPlatformComplete.mock.calls[0][0].message).toBe("I would be interested");
+  });
+
+  it("keeps the subject out of the shadow measurement's context", async () => {
+    mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_neutral" } });
+    await qualifyReply("ok", { leadEmail: "a@b.com", subject: "Re: x" });
+    await drainDetached();
+    const [arg] = mockShadowJudgeReply.mock.calls[0];
+    expect(arg).not.toHaveProperty("subject");
+    expect(arg.leadEmail).toBe("a@b.com");
+  });
+});

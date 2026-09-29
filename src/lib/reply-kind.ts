@@ -104,6 +104,27 @@ export const NEGATIVE_REPLY_KINDS = [
 export const NEUTRAL_REPLY_KINDS = ["lead_neutral"] as const;
 
 /**
+ * A real human reply about something OTHER than buying what the client sells:
+ * a partnership or reseller proposal, a job or hiring enquiry, investors, a
+ * vendor pitching their own product to us, the press.
+ *
+ * It is neither positive nor negative about the offer, so it reports `neutral`
+ * in the coarse projection and is NOT sales interest. What makes it its own kind
+ * is what must HAPPEN: the automated responder only handles sales conversations,
+ * so it must not answer these, and nothing else in the fleet would put them in
+ * front of a person. A `lead_off_topic` reply is escalated to a human through
+ * the same path the responder uses when it cannot answer (lib/escalate-reply).
+ *
+ * Measured 2026-09-28: jakub@marktize.com replied "can you explain?" on a
+ * partnership thread. Filed `lead_neutral`, it entered no queue and reached no
+ * human, and nobody ever answered.
+ *
+ * Which topic it is stays the model's reading of the reply and its thread,
+ * never a keyword list.
+ */
+export const OFF_TOPIC_REPLY_KINDS = ["lead_off_topic"] as const;
+
+/**
  * Not a reply from a person at all — a machine answered. Deliberately never
  * stops the sequence: the prospect is back at their desk next week and has not
  * engaged (RFC 3834).
@@ -115,6 +136,7 @@ export const REPLY_KINDS = [
   ...POSITIVE_REPLY_KINDS,
   ...NEGATIVE_REPLY_KINDS,
   ...NEUTRAL_REPLY_KINDS,
+  ...OFF_TOPIC_REPLY_KINDS,
   ...AUTOMATED_REPLY_KINDS,
 ] as const;
 
@@ -223,6 +245,7 @@ export const REPLY_KIND_CLASSIFICATION: Record<ReplyKind, "positive" | "negative
   lead_changed_job: "negative",
   lead_opt_out_requested: "negative",
   lead_neutral: "neutral",
+  lead_off_topic: "neutral",
   lead_out_of_office: "neutral",
   auto_reply_received: "neutral",
 };
@@ -240,6 +263,7 @@ export const SEQUENCE_STOPPING_REPLY_KINDS = new Set<ReplyKind>([
   ...POSITIVE_REPLY_KINDS,
   ...NEGATIVE_REPLY_KINDS,
   ...NEUTRAL_REPLY_KINDS,
+  ...OFF_TOPIC_REPLY_KINDS,
 ]);
 
 /** True iff a reply of this kind means the sequence must stop. */
@@ -282,4 +306,9 @@ export const DISQUALIFYING_REPLY_KINDS = new Set<ReplyKind>([
  */
 export function isDisqualifyingReplyKind(kind: ReplyKind): boolean {
   return DISQUALIFYING_REPLY_KINDS.has(kind);
+}
+
+/** True iff this reply is about something other than the client's offer. */
+export function isOffTopicReplyKind(kind: string): boolean {
+  return (OFF_TOPIC_REPLY_KINDS as readonly string[]).includes(kind);
 }

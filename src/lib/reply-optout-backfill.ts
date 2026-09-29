@@ -33,6 +33,7 @@ import {
   OPT_OUT_REPLY_KIND,
 } from "./reply-opt-out";
 import { qualifyReply } from "./self-send/qualify-reply";
+import { staffSenderSql } from "./staff-senders";
 
 export interface ReplyOptOutBackfillOptions {
   /** Default TRUE — read-only, reports the plan. */
@@ -86,6 +87,7 @@ async function fetchCandidates(limit?: number): Promise<Candidate[]> {
     JOIN instantly_emails_raw m
       ON m.instantly_campaign_id = c.instantly_campaign_id
      AND m.payload->>'ue_type' <> '1'
+     AND NOT ${staffSenderSql(sql`m.payload->>'from_address_email'`)}
     WHERE c.org_id IS NOT NULL
       AND c.lead_email IS NOT NULL
       AND c.instantly_campaign_id NOT LIKE 'self:%'

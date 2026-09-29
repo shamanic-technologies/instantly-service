@@ -36,6 +36,7 @@ import { htmlToText } from "./forward-positive-reply";
 import { recordLeadOptOut, findStandingOptOut } from "./lead-optouts";
 import { qualifyReply, type QualificationEventType } from "./self-send/qualify-reply";
 import { isInstantlyHeldCampaignId, MIRRORED_INBOUND_EVENT_TYPES } from "./mirror-emails";
+import { staffSenderSql } from "./staff-senders";
 
 /** The single label that means "they asked us to stop". */
 export const OPT_OUT_REPLY_KIND = "lead_opt_out_requested";
@@ -66,6 +67,8 @@ export interface OptOutCandidateCampaign {
 export interface MirroredInbound {
   instantlyEmailId: string | null;
   text: string;
+  /** The message's subject line — what the conversation is about. */
+  subject: string | null;
 }
 
 /**
@@ -82,10 +85,12 @@ export async function fetchLatestMirroredInbound(
   const result = await db.execute(sql`
     SELECT instantly_email_id,
            payload->'body'->>'text' AS body_text,
-           payload->'body'->>'html' AS body_html
+           payload->'body'->>'html' AS body_html,
+           payload->>'subject' AS subject
     FROM instantly_emails_raw
     WHERE instantly_campaign_id = ${instantlyCampaignId}
       AND payload->>'ue_type' <> '1'
+      AND NOT ${staffSenderSql(sql`payload->>'from_address_email'`)}
     ORDER BY payload->>'timestamp_created' DESC
     LIMIT 1
   `);
@@ -101,6 +106,7 @@ export async function fetchLatestMirroredInbound(
   return {
     instantlyEmailId: typeof row.instantly_email_id === "string" ? row.instantly_email_id : null,
     text,
+    subject: typeof row.subject === "string" ? row.subject : null,
   };
 }
 
