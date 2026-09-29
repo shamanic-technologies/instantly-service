@@ -166,6 +166,12 @@ export const PRODUCTION_DELIVERY_PCT_BAR = 90;
  * warmup volume stopped went 100 → 44 → 0 in 48h with warmup still enabled).
  * Under a symmetric bar, every in_production account would demote itself within
  * a week. See {@link deriveLifecycle}.
+ *
+ * ⚠️ These are PER-MAILBOX figures. Instantly applies warmup per ALIAS, so the
+ * hourly limits sweep (`warmupTargetsByLogin`, sync-lifecycle-limits.ts) splits
+ * the 30 across a relay login's active aliases and zeroes every alias of a login
+ * carrying any in_production alias. Reconcile's flip PATCH still writes the raw
+ * figure; that sweep corrects it within the hour.
  */
 export const IN_PRODUCTION_WARMUP_DAILY = 0; // self-warming via real volume (50 + 0 = 50)
 export const RECOVERY_WARMUP_DAILY = 30; // recover reputation → warm harder, send less (20 + 30 = 50)
