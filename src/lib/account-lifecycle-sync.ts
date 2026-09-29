@@ -685,6 +685,8 @@ export async function reconcileLifecycle(
     // warmup and daily_limit are no longer our enforcement points there — and
     // the account is often one Instantly disabled, so the PATCH would fail and
     // (because the persist is skipped on error) block the flip from landing.
+    // An smtp account Instantly still holds ACTIVE is healed within the hour by
+    // `syncLifecycleLimits`, which enforces its warmup + daily_limit.
     const warmupTarget = warmupDailyForStatus(status, sendTransport);
     const dailyLimitTarget = dailyLimitForStatus(status, sendTransport);
 

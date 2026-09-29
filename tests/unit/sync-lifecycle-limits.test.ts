@@ -61,12 +61,12 @@ function acct(
   email: string,
   daily_limit: number | undefined,
   warmupLimit: number | undefined,
-  opts: { enableSlowRamp?: boolean; timestampCreated?: string } = {},
+  opts: { enableSlowRamp?: boolean; timestampCreated?: string; status?: number } = {},
 ): Account {
   return {
     email,
     warmup_status: 0,
-    status: 1,
+    status: opts.status ?? 1,
     daily_limit,
     warmup: warmupLimit === undefined ? undefined : { limit: warmupLimit },
     enable_slow_ramp: opts.enableSlowRamp,
@@ -237,19 +237,59 @@ describe("selectLifecycleLimitPatches", () => {
     ]);
   });
 
-  it("an smtp account is skipped ENTIRELY — warmup, daily AND slow ramp", () => {
-    // Instantly does not dispatch this mailbox: our own worker owns the cap, and
-    // the mailbox is frequently one Instantly disabled, so every PATCH here would
-    // be both meaningless and likely to fail. Slow ramp included — it is an
-    // Instantly campaign setting with no effect on a sequence Instantly never sends.
+  it("smtp + Instantly-ACTIVE in_production at the recovery 20/30 → patched to 50/0, slow ramp untouched", () => {
+    // Instantly's warmup pool still sends from an ACTIVE account, and our own
+    // cap reads its daily_limit — so both are ours to enforce even on smtp.
+    // Slow ramp is a campaign setting Instantly never applies on smtp: untouched.
     const accounts = [
-      // Drifts on every single field, and is fresh (so slow ramp would target true).
-      acct("self@x.com", 12, 7, { enableSlowRamp: false, timestampCreated: created(3) }),
+      acct("prod@x.com", 20, 30, { enableSlowRamp: false, timestampCreated: created(3) }),
     ];
     const lc = new Map<string, LifecycleView>([
-      ["self@x.com", lifecycle("in_production", "smtp")],
+      ["prod@x.com", lifecycle("in_production", "smtp")],
+    ]);
+    expect(patchesAtVolume(accounts, lc)).toEqual([
+      { email: "prod@x.com", warmup: 0, daily: 50, slowRamp: null },
+    ]);
+  });
+
+  it("smtp + Instantly-ACTIVE in_recovery at 50/0 → patched to 20/30", () => {
+    const accounts = [acct("rec@x.com", 50, 0)];
+    const lc = new Map<string, LifecycleView>([
+      ["rec@x.com", lifecycle("in_recovery", "smtp")],
+    ]);
+    expect(patchesAtVolume(accounts, lc)).toEqual([
+      { email: "rec@x.com", warmup: 30, daily: 20, slowRamp: null },
+    ]);
+  });
+
+  it("smtp + Instantly-DISABLED account is skipped ENTIRELY (the PATCH would fail)", () => {
+    const accounts = [
+      acct("off@x.com", 12, 7, { enableSlowRamp: false, timestampCreated: created(3), status: 0 }),
+      acct("err@x.com", 12, 7, { status: -1 }),
+    ];
+    const lc = new Map<string, LifecycleView>([
+      ["off@x.com", lifecycle("in_production", "smtp")],
+      ["err@x.com", lifecycle("in_recovery", "smtp")],
     ]);
     expect(patchesAtVolume(accounts, lc)).toEqual([]);
+  });
+
+  it("smtp + ACTIVE but deactivated_by_user lifecycle → no limits patch", () => {
+    const accounts = [acct("user@x.com", 0, 50)];
+    const lc = new Map<string, LifecycleView>([
+      ["user@x.com", lifecycle("deactivated_by_user", "smtp")],
+    ]);
+    expect(patchesAtVolume(accounts, lc)).toEqual([]);
+  });
+
+  it("a DISABLED account on the instantly transport is still patched (unchanged behaviour)", () => {
+    const accounts = [acct("relayoff@x.com", 20, 30, { status: 0 })];
+    const lc = new Map<string, LifecycleView>([
+      ["relayoff@x.com", lifecycle("in_production", "instantly")],
+    ]);
+    expect(patchesAtVolume(accounts, lc)).toEqual([
+      { email: "relayoff@x.com", warmup: 0, daily: 50, slowRamp: null },
+    ]);
   });
 
   it("the SAME drifting account on the instantly transport IS patched", () => {
