@@ -22,6 +22,7 @@ import {
   type ThreadFilters,
 } from "../lib/ops/reads";
 import { getOrSetCachedStats } from "../lib/stats-cache";
+import { backfillReplyVerdicts, planReplyVerdicts, syncReplyVerdicts } from "../lib/reply-verdicts";
 
 const router = Router();
 
@@ -66,6 +67,56 @@ router.post("/messages-sync", async (req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[instantly-service] messages-sync failed: ${message}`);
     res.status(500).json({ error: "messages-sync failed", detail: message });
+  }
+});
+
+/**
+ * POST /internal/ops/reply-verdicts-sync
+ *
+ * One pass of the per-reply verdict projection (lib/reply-verdicts), over the
+ * WHOLE history unless `{sinceDays}` bounds the event scan. Synchronous.
+ */
+router.post("/reply-verdicts-sync", async (req: Request, res: Response) => {
+  const raw = (req.body ?? {}) as { sinceDays?: unknown };
+  const sinceDays = raw.sinceDays === undefined ? null : Number(raw.sinceDays);
+  if (sinceDays !== null && (!Number.isFinite(sinceDays) || sinceDays < 1)) {
+    res.status(400).json({ error: "sinceDays must be a number >= 1" });
+    return;
+  }
+  try {
+    res.json(await syncReplyVerdicts({ sinceDays }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] reply-verdicts-sync failed: ${message}`);
+    res.status(500).json({ error: "reply-verdicts-sync failed", detail: message });
+  }
+});
+
+/**
+ * POST /internal/ops/reply-verdicts-backfill
+ *
+ * Classify every stored reply no producer ever judged, recording the verdict in
+ * BRONZE ONLY — no silver event, so no forward, escalation, rep call or
+ * follow-up fires and the per-(campaign × lead) value does not move.
+ * `{dryRun}` DEFAULTS TO TRUE: projects, then answers the plan (counts + cost)
+ * synchronously. `dryRun:false` runs synchronously and returns the summary.
+ */
+router.post("/reply-verdicts-backfill", async (req: Request, res: Response) => {
+  const raw = (req.body ?? {}) as { dryRun?: unknown; sinceDays?: unknown; limit?: unknown };
+  const sinceDays = raw.sinceDays === undefined ? null : Number(raw.sinceDays);
+  const limit = raw.limit === undefined ? null : Number(raw.limit);
+  try {
+    if (raw.dryRun !== false) {
+      await syncReplyVerdicts({ sinceDays: null });
+      res.json({ dryRun: true, plan: await planReplyVerdicts(sinceDays) });
+      return;
+    }
+    const summary = await backfillReplyVerdicts({ sinceDays, limit });
+    res.json({ dryRun: false, summary, plan: await planReplyVerdicts(sinceDays) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] reply-verdicts-backfill failed: ${message}`);
+    res.status(500).json({ error: "reply-verdicts-backfill failed", detail: message });
   }
 });
 

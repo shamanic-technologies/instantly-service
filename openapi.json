@@ -2075,6 +2075,165 @@
           "disqualified"
         ]
       },
+      "ReplyVerdictsResponse": {
+        "type": "object",
+        "properties": {
+          "replies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "replyId": {
+                  "type": "string",
+                  "description": "Stable per-reply id (`ie:<instantly email id>` or `imap:<row id>`)"
+                },
+                "leadEmail": {
+                  "type": "string"
+                },
+                "instantlyCampaignId": {
+                  "type": "string",
+                  "description": "The per-lead thread"
+                },
+                "campaignId": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "The logical campaign (campaign-service id)"
+                },
+                "brandIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "transport": {
+                  "type": "string"
+                },
+                "fromEmail": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "Who actually wrote it (can differ from the lead: an assistant, a shared inbox)"
+                },
+                "subject": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "receivedAt": {
+                  "type": "string",
+                  "description": "ISO 8601 UTC"
+                },
+                "verdict": {
+                  "$ref": "#/components/schemas/ReplyVerdict"
+                },
+                "verdictCount": {
+                  "type": "integer",
+                  "description": "How many verdicts were ever produced for this reply (bronze history)"
+                }
+              },
+              "required": [
+                "replyId",
+                "leadEmail",
+                "instantlyCampaignId",
+                "campaignId",
+                "brandIds",
+                "transport",
+                "fromEmail",
+                "subject",
+                "receivedAt",
+                "verdict",
+                "verdictCount"
+              ]
+            }
+          }
+        },
+        "required": [
+          "replies"
+        ]
+      },
+      "ReplyVerdict": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The reply kind (same vocabulary as `replyKind` on POST /orgs/status)"
+          },
+          "classification": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "positive",
+              "negative",
+              "neutral",
+              null
+            ]
+          },
+          "producerType": {
+            "type": "string",
+            "enum": [
+              "human",
+              "instantly",
+              "model"
+            ],
+            "description": "Who produced the current verdict. A person beats everyone."
+          },
+          "producer": {
+            "type": "string",
+            "description": "e.g. `manual`, `instantly:webhook`, `deepseek-flash`"
+          },
+          "attribution": {
+            "type": "string",
+            "enum": [
+              "exact",
+              "latest_before"
+            ],
+            "description": "`exact` = the producer named this reply; `latest_before` = the verdict judged the latest reply before it on the thread"
+          },
+          "confidence": {
+            "type": "number",
+            "nullable": true
+          },
+          "decidedAt": {
+            "type": "string",
+            "description": "ISO 8601 UTC"
+          }
+        },
+        "required": [
+          "kind",
+          "classification",
+          "producerType",
+          "producer",
+          "attribution",
+          "confidence",
+          "decidedAt"
+        ],
+        "description": "The reply's CURRENT verdict; null only while it is still being classified"
+      },
+      "ReplyVerdictsQuery": {
+        "type": "object",
+        "properties": {
+          "emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "email"
+            },
+            "minItems": 1,
+            "maxItems": 1000,
+            "description": "Lead addresses (case-insensitive). Every real reply this org holds for them is returned."
+          },
+          "brandId": {
+            "type": "string",
+            "description": "Only replies on campaigns of this brand"
+          },
+          "campaignId": {
+            "type": "string",
+            "description": "Only replies on this logical campaign"
+          }
+        },
+        "required": [
+          "emails"
+        ]
+      },
       "ManualQualificationCreateResponse": {
         "type": "object",
         "properties": {
@@ -6962,6 +7121,128 @@
           },
           "500": {
             "description": "The engaged leads could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/reply-verdicts/query": {
+      "post": {
+        "summary": "Per-reply verdicts for a set of leads",
+        "description": "Every real inbound reply this org holds for the given leads, each with its CURRENT verdict — oldest first per lead. A read (POST only so up to 1000 addresses fit in a body); it sends nothing and declares nothing.\n\n**Why per reply.** The per-(campaign × lead) `replyKind` keeps only the latest verdict, so an older verdict could hide a newer reply (an out-of-office on 09-24 masked a referral on 09-28). Here each reply carries its own verdict, so a consumer can roll up lead × offer (group by `campaignId`) or lead × brand (`brandIds`) itself.\n\n**Current verdict:** a person's statement beats Instantly's and the model's; then the most recent. A withdrawn statement no longer counts. Real replies only: our own staff, our own sending mailboxes and mail servers are not replies.\n\n**Freshness:** a projection refreshed every 2 minutes.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplyVerdictsQuery"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The replies (possibly empty)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplyVerdictsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Could not be read",
             "content": {
               "application/json": {
                 "schema": {
