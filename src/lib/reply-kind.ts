@@ -333,3 +333,34 @@ export const ESCALATED_REPLY_KINDS = new Set<ReplyKind>(["lead_off_topic", "lead
 export function isEscalatedReplyKind(kind: string): boolean {
   return ESCALATED_REPLY_KINDS.has(kind as ReplyKind);
 }
+
+/**
+ * The three facts a consumer of a reply's verdict needs about it, stated here so
+ * no downstream service has to name reply kinds itself (lead-service did; that
+ * copy of the vocabulary is exactly what drifts). Each is a function of the kind
+ * and nothing else.
+ *
+ *  - `automatedAnswer` — a machine answered (out-of-office, autoresponder); no
+ *    person has engaged. `AUTOMATED_REPLY_KINDS`.
+ *  - `stopRequested`   — they asked us to STOP writing. A legal obligation, not
+ *    a judgement about the offer.
+ *  - `notOurTarget`    — they are not who we sell to (the wrong contact, or they
+ *    left the role). A fact about the person, not the moment; `lead_not_interested`
+ *    is deliberately NOT here — that lead stays recyclable.
+ */
+export const STOP_REQUEST_REPLY_KINDS = new Set<ReplyKind>(["lead_opt_out_requested"]);
+export const NOT_OUR_TARGET_REPLY_KINDS = new Set<ReplyKind>(["lead_wrong_person", "lead_changed_job"]);
+
+export interface ReplyKindFacts {
+  automatedAnswer: boolean;
+  stopRequested: boolean;
+  notOurTarget: boolean;
+}
+
+export function replyKindFacts(kind: string): ReplyKindFacts {
+  return {
+    automatedAnswer: (AUTOMATED_REPLY_KINDS as readonly string[]).includes(kind),
+    stopRequested: STOP_REQUEST_REPLY_KINDS.has(kind as ReplyKind),
+    notOurTarget: NOT_OUR_TARGET_REPLY_KINDS.has(kind as ReplyKind),
+  };
+}
