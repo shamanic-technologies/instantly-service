@@ -952,6 +952,16 @@ Guard: the "the answer we dispatched ourselves" tests in `tests/unit/lead-conver
 
 Guard: the four Instantly-branch retention tests in `tests/unit/reply-to-lead.test.ts`.
 
+## One verdict per REPLY — `reply_verdicts_raw` (bronze) + `replies` (silver), migration `0061`
+
+The reply kind existed only once per (campaign × lead), so a newer reply could hide behind an older verdict (Elena: 09-24 out-of-office masked the 09-28 referral). `lib/reply-verdicts.ts` adds the per-reply grain as a PROJECTION (2-min in-process worker, `POST /internal/ops/reply-verdicts-sync`), never a hot-path write.
+- **Bronze `reply_verdicts_raw`, append-only:** every verdict — silver kind events mirrored with their `source_event_id` (unique ⇒ idempotent; `manual`→human, `self_send`/`emails_backfill`→model, else instantly), plus classifier-only rows naming their reply in `reply_ref`.
+- **Silver `replies`:** one row per REAL inbound reply (Instantly `ue_type 2` + IMAP `reply`/`auto_reply`), minus staff (`staff-senders`, now also `STAFF_ADDRESSES`), our own sending mailboxes (`instantly_accounts` — 50 `kevin@growthagency.*` rows on 09-24) and mail servers. Id `ie:<instantly email id>` / `imap:<row id>`.
+- **Attribution:** `exact` (reply_ref, or the event's `source_row_id` = IMAP row / Instantly email id) else `latest_before` (latest reply on the thread ≤ verdict + 10 min) else none. **Current:** human first (withdrawn excluded), then most recent.
+- **⚠️ The per-(campaign × lead) value is UNCHANGED and still derived from the kind events** (the same stream this layer ingests). A reply classified only by the backfill has NO event, so it moves nothing downstream — by design (no side effects on history, no silent consumer change).
+- **Backfill `POST /internal/ops/reply-verdicts-backfill`** (`dryRun` default TRUE → plan + cost): classifies replies no producer judged, bronze only, never promotes an event. The qualification fallback gained a per-reply arm (latest Instantly reply with no current verdict).
+- **Read `POST /orgs/reply-verdicts/query` `{emails[1..1000], brandId?, campaignId?}`** → `{replies:[{replyId, leadEmail, instantlyCampaignId, campaignId, brandIds, transport, fromEmail, subject, receivedAt, verdict:{kind, classification, producerType, producer, attribution, confidence, decidedAt}|null, verdictCount}]}`, org-scoped, oldest first per lead. For lead-service's lead × offer / lead × brand roll-ups.
+
 ## Replies a PERSON must handle — `lead_off_topic` and `lead_referral`, escalated
 
 `ESCALATED_REPLY_KINDS` (`reply-kind.ts`): `lead_off_topic` and `lead_referral` (owner, 2026-09-29: we do not write to a referred address ourselves yet, so a person follows it up — elena.staeheli@biopartner.ch pointed us at sortimente@ and was seen by nobody). Both go through `maybeEscalateOffTopicReply`; a referral is therefore NO LONGER forwarded as a positive (`POSITIVE_QUALIFICATION_EVENT_TYPES` excludes escalated kinds — one email per reply). Works for any brand: no responder campaign is needed, the ladder stop is skipped when lead-service holds no row.

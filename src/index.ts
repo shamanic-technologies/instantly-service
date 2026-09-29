@@ -21,6 +21,7 @@ import leadOptOutsRoutes from "./routes/lead-optouts";
 import repliesRoutes from "./routes/replies";
 import leadConversationsRoutes from "./routes/lead-conversations";
 import engagedLeadsRoutes from "./routes/engaged-leads";
+import replyVerdictsRoutes from "./routes/reply-verdicts";
 import auditRoutes from "./routes/audit";
 import infraRoutes from "./routes/infra";
 import opsRoutes from "./routes/ops";
@@ -92,6 +93,7 @@ app.use("/orgs/opt-outs", serviceAuth, requireOrgId, leadOptOutsRoutes);
 app.use("/orgs/replies", serviceAuth, requireOrgId, repliesRoutes);
 app.use("/orgs/conversations", serviceAuth, requireOrgId, leadConversationsRoutes);
 app.use("/orgs/engaged-leads", serviceAuth, requireOrgId, engagedLeadsRoutes);
+app.use("/orgs/reply-verdicts", serviceAuth, requireOrgId, replyVerdictsRoutes);
 app.use("/orgs", serviceAuth, requireOrgId, analyticsRoutes);
 
 const PORT = process.env.PORT || 3011;
@@ -184,6 +186,15 @@ async function start() {
     // Keep the `messages` projection (one row per email, every typology) fresh
     // for the ops reads. State is the unique source index, so a deploy mid-tick
     // loses nothing; a 10-minute in-process interval, never a cron.
+    // One current verdict per real reply (lib/reply-verdicts), refreshed every
+    // two minutes from the kind events ingestion already writes.
+    import("./lib/reply-verdicts-worker")
+      .then(({ startReplyVerdictsWorker }) => startReplyVerdictsWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start reply-verdicts worker: ${message}`);
+      });
+
     import("./lib/messages-sync-worker")
       .then(({ startMessagesSyncWorker }) => startMessagesSyncWorker())
       .catch((err: unknown) => {

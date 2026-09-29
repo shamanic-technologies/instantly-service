@@ -1735,6 +1735,76 @@ registry.registerPath({
   },
 });
 
+export const ReplyVerdictsQuerySchema = z
+  .object({
+    emails: z
+      .array(z.string().email())
+      .min(1)
+      .max(1000)
+      .describe("Lead addresses (case-insensitive). Every real reply this org holds for them is returned."),
+    brandId: z.string().optional().describe("Only replies on campaigns of this brand"),
+    campaignId: z.string().optional().describe("Only replies on this logical campaign"),
+  })
+  .openapi("ReplyVerdictsQuery");
+
+const ReplyVerdictSchema = z
+  .object({
+    kind: z.string().describe("The reply kind (same vocabulary as `replyKind` on POST /orgs/status)"),
+    classification: z.enum(["positive", "negative", "neutral"]).nullable(),
+    producerType: z.enum(["human", "instantly", "model"]).describe("Who produced the current verdict. A person beats everyone."),
+    producer: z.string().describe("e.g. `manual`, `instantly:webhook`, `deepseek-flash`"),
+    attribution: z
+      .enum(["exact", "latest_before"])
+      .describe("`exact` = the producer named this reply; `latest_before` = the verdict judged the latest reply before it on the thread"),
+    confidence: z.number().nullable(),
+    decidedAt: z.string().describe("ISO 8601 UTC"),
+  })
+  .openapi("ReplyVerdict");
+
+export const ReplyVerdictsResponseSchema = z
+  .object({
+    replies: z.array(
+      z.object({
+        replyId: z.string().describe("Stable per-reply id (`ie:<instantly email id>` or `imap:<row id>`)"),
+        leadEmail: z.string(),
+        instantlyCampaignId: z.string().describe("The per-lead thread"),
+        campaignId: z.string().nullable().describe("The logical campaign (campaign-service id)"),
+        brandIds: z.array(z.string()),
+        transport: z.string(),
+        fromEmail: z.string().nullable().describe("Who actually wrote it (can differ from the lead: an assistant, a shared inbox)"),
+        subject: z.string().nullable(),
+        receivedAt: z.string().describe("ISO 8601 UTC"),
+        verdict: ReplyVerdictSchema.nullable().describe("The reply's CURRENT verdict; null only while it is still being classified"),
+        verdictCount: z.number().int().describe("How many verdicts were ever produced for this reply (bronze history)"),
+      }),
+    ),
+  })
+  .openapi("ReplyVerdictsResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/reply-verdicts/query",
+  summary: "Per-reply verdicts for a set of leads",
+  description:
+    "Every real inbound reply this org holds for the given leads, each with its CURRENT verdict — oldest first per lead. A read (POST only so up to 1000 addresses fit in a body); it sends nothing and declares nothing.\n\n" +
+    "**Why per reply.** The per-(campaign × lead) `replyKind` keeps only the latest verdict, so an older verdict could hide a newer reply (an out-of-office on 09-24 masked a referral on 09-28). Here each reply carries its own verdict, so a consumer can roll up lead × offer (group by `campaignId`) or lead × brand (`brandIds`) itself.\n\n" +
+    "**Current verdict:** a person's statement beats Instantly's and the model's; then the most recent. A withdrawn statement no longer counts. Real replies only: our own staff, our own sending mailboxes and mail servers are not replies.\n\n" +
+    "**Freshness:** a projection refreshed every 2 minutes.",
+  request: {
+    headers: TrackingHeadersSchema,
+    body: { content: { "application/json": { schema: ReplyVerdictsQuerySchema } } },
+  },
+  responses: {
+    200: {
+      description: "The replies (possibly empty)",
+      content: { "application/json": { schema: ReplyVerdictsResponseSchema } },
+    },
+    400: { description: "Invalid body", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "Could not be read", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/orgs/manual-qualifications",

@@ -1559,3 +1559,73 @@ export const replyClassificationShadow = pgTable(
     index("reply_classification_shadow_agreed_idx").on(table.agreed),
   ],
 );
+
+/**
+ * BRONZE — every verdict ever produced for a reply (person, Instantly, our
+ * classifier), append-only. See drizzle/0061 and lib/reply-verdicts.
+ */
+export const replyVerdictsRaw = pgTable(
+  "reply_verdicts_raw",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email"),
+    /** A reply kind (lib/reply-kind REPLY_KINDS). */
+    kind: text("kind").notNull(),
+    /** human | instantly | model */
+    producerType: text("producer_type").notNull(),
+    /** e.g. manual, instantly:webhook, deepseek-flash */
+    producer: text("producer").notNull(),
+    /** event | backfill_classifier */
+    origin: text("origin").notNull(),
+    sourceEventId: text("source_event_id"),
+    sourceRowId: text("source_row_id"),
+    /** The reply id when the producer named its reply exactly. */
+    replyRef: text("reply_ref"),
+    confidence: doublePrecision("confidence"),
+    raw: jsonb("raw"),
+    decidedAt: timestamp("decided_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("reply_verdicts_raw_event_idx").on(table.sourceEventId),
+    index("reply_verdicts_raw_thread_idx").on(table.instantlyCampaignId, table.decidedAt),
+    index("reply_verdicts_raw_reply_idx").on(table.replyRef),
+  ],
+);
+
+/**
+ * SILVER — one row per real inbound reply with its CURRENT verdict. Rebuilt by
+ * the projection in lib/reply-verdicts. `replies_org_lead_idx` is an expression
+ * index on lower(lead_email), hand-written in drizzle/0061 — do not drop it on
+ * a db:generate diff.
+ */
+export const replies = pgTable(
+  "replies",
+  {
+    id: text("id").primaryKey(),
+    sourceTable: text("source_table").notNull(),
+    sourceRowId: text("source_row_id").notNull(),
+    providerMessageId: text("provider_message_id"),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    campaignId: text("campaign_id"),
+    orgId: text("org_id"),
+    brandIds: text("brand_ids").array(),
+    leadEmail: text("lead_email").notNull(),
+    fromEmail: text("from_email"),
+    transport: text("transport").notNull(),
+    subject: text("subject"),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
+    currentVerdictId: text("current_verdict_id"),
+    currentKind: text("current_kind"),
+    currentClassification: text("current_classification"),
+    currentProducerType: text("current_producer_type"),
+    currentProducer: text("current_producer"),
+    currentAttribution: text("current_attribution"),
+    currentConfidence: doublePrecision("current_confidence"),
+    currentDecidedAt: timestamp("current_decided_at", { withTimezone: true }),
+    verdictCount: integer("verdict_count").default(0).notNull(),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("replies_thread_idx").on(table.instantlyCampaignId, table.receivedAt)],
+);
