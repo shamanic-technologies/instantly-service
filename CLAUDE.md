@@ -952,7 +952,13 @@ Guard: the "the answer we dispatched ourselves" tests in `tests/unit/lead-conver
 
 Guard: the four Instantly-branch retention tests in `tests/unit/reply-to-lead.test.ts`.
 
-## A reply about something OTHER than the offer — `lead_off_topic`, escalated to a person
+## Replies a PERSON must handle — `lead_off_topic` and `lead_referral`, escalated
+
+`ESCALATED_REPLY_KINDS` (`reply-kind.ts`): `lead_off_topic` and `lead_referral` (owner, 2026-09-29: we do not write to a referred address ourselves yet, so a person follows it up — elena.staeheli@biopartner.ch pointed us at sortimente@ and was seen by nobody). Both go through `maybeEscalateOffTopicReply`; a referral is therefore NO LONGER forwarded as a positive (`POSITIVE_QUALIFICATION_EVENT_TYPES` excludes escalated kinds — one email per reply). Works for any brand: no responder campaign is needed, the ladder stop is skipped when lead-service holds no row.
+
+**The qualification fallback anchors on the LATEST real reply** (`max`, excluding `poll_leads`, which is inferred from the lead's status) and only a kind at or after it counts. Keyed on "any kind on the campaign", Elena's 09-24 out-of-office kind masked her 09-28 referral.
+
+### `lead_off_topic`
 
 The responder only handles SALES conversations (fed by `isSalesInterestQualification`). A reply about a partnership, hiring, investors, a vendor pitching us or the press used to land as `lead_neutral`, entered no queue and reached nobody (jakub@marktize.com, "can you explain?" on a partnership thread, 2026-09-28). `lead_off_topic` (`OFF_TOPIC_REPLY_KINDS`, `reply-kind.ts`) names it.
 
