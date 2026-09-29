@@ -182,6 +182,8 @@ export async function handThreadToHuman(
       userId: input.userId,
       runId: input.runId,
       brandIds: campaign.brandId ? [campaign.brandId] : null,
+      // The history the email tells IS the lead's row's campaign, whole.
+      conversationCampaignId: campaign.campaignId,
     },
     campaign.leadEmail,
     {
