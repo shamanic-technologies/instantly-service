@@ -18,6 +18,7 @@ vi.mock("../../src/lib/instantly-client", () => ({ listEmails: vi.fn() }));
 
 import {
   buildProspectActions,
+  fillThreadSubjects,
   loadProspectHistory,
   mergeHistory,
   readablePage,
@@ -50,6 +51,25 @@ function row(overrides: Partial<ActionRow>): ActionRow {
     ...overrides,
   };
 }
+
+describe("fillThreadSubjects", () => {
+  it("gives a stored follow-up the Re: subject it was sent with", () => {
+    const out = fillThreadSubjects([
+      { ...msg("2026-09-18T13:00:00.000Z", "outbound", "one"), subject: "Partnership?" },
+      { ...msg("2026-09-21T13:00:00.000Z", "outbound", "two"), subject: "" },
+      { ...msg("2026-09-28T13:00:00.000Z", "outbound", "three"), subject: "(no subject)" },
+    ]);
+    expect(out.map((m) => m.subject)).toEqual(["Partnership?", "Re: Partnership?", "Re: Partnership?"]);
+  });
+
+  it("never doubles Re: and leaves a message with its own subject alone", () => {
+    const out = fillThreadSubjects([
+      { ...msg("2026-09-18T13:00:00.000Z", "inbound", "r"), subject: "Re: Partnership?" },
+      { ...msg("2026-09-19T13:00:00.000Z", "outbound", "a"), subject: "" },
+    ]);
+    expect(out.map((m) => m.subject)).toEqual(["Re: Partnership?", "Re: Partnership?"]);
+  });
+});
 
 describe("readablePage", () => {
   it("drops our utm tagging and keeps the page", () => {

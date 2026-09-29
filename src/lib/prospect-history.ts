@@ -44,6 +44,7 @@ import { resolveInstantlyApiKey } from "./key-client";
 import { listEmails } from "./instantly-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { fetchSelfSendThread } from "./self-send/thread";
+import { subjectForStep } from "./self-send/message";
 
 const NIL_USER_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -165,6 +166,24 @@ export function buildProspectActions(rows: ActionRow[]): ProspectAction[] {
     actions.push({ kind, at: row.at, step: row.step, page });
   }
   return actions;
+}
+
+/**
+ * Pure: a follow-up we sent is stored with no subject of its own (the sender
+ * derives it at dispatch as `Re: <first subject>`), so it would render as a
+ * blank `Subject:` line. Fill it the way the sender did, from the thread's
+ * latest known subject. A message that carries its own subject is untouched.
+ */
+export function fillThreadSubjects(messages: ThreadMessage[]): ThreadMessage[] {
+  let known: string | null = null;
+  return messages.map((m) => {
+    const own = m.subject?.trim();
+    if (own && own !== "(no subject)") {
+      known = own;
+      return m;
+    }
+    return known ? { ...m, subject: subjectForStep(known, 2) } : m;
+  });
 }
 
 /** Pure: interleave messages and actions by date. An undated entry sorts last, never dropped. */
@@ -366,5 +385,6 @@ export async function loadProspectHistory(
     notes.push("this prospect's website visits, bounces and unsubscribes could not be read.");
   }
 
+  messages = fillThreadSubjects(messages);
   return { items: mergeHistory(messages, actions), messages, notes };
 }
