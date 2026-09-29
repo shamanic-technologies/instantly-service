@@ -81,6 +81,20 @@
  * arriving from here on and no historical one.
  *
  * There is no quiet-hours window. The rep may be rung at any hour, by decision.
+ *
+ * ── THE CUSTOMER AUTHORIZES IT, PER OFFER ───────────────────────────────────────
+ *
+ * The instant call is a published acquisition channel (`ai-instant-call`)
+ * performing the leg Positive reply -> Booking call (`conversation_to_booking_call`).
+ * It is REACTIVE: it runs whatever it costs, but only where the customer ticked
+ * that leg on the offer's sales path (brand-service). Three answers:
+ *   - the offer STATED a path containing the leg  → ring, as before;
+ *   - the offer STATED a path without it          → no ring, reason logged + traced;
+ *   - the offer NEVER stated a path (or the campaign names no offer) → ring, as
+ *     before this gate existed, so nobody lost a call on the deploy.
+ * A read that FAILS (campaign-service or brand-service) is logged loudly and
+ * keeps the pre-gate behaviour: an outage must neither silently drop a call nor
+ * silently change who gets rung.
  */
 
 import { and, eq, isNull } from "drizzle-orm";
@@ -101,6 +115,78 @@ import { selectThreadMessages, type ThreadMessage } from "./forward-positive-rep
 import { stripQuotedHistory } from "./self-send/qualify-reply";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { fetchSelfSendThread } from "./self-send/thread";
+import { getOfferSalesPath, type OfferSalesPath } from "./brand-client";
+import { getCampaignTriggerScope } from "./campaign-client";
+import { traceEvent } from "./trace-event";
+
+/** The leg the instant call performs — the one the customer must tick. */
+export const BOOKING_CALL_LEG_KEY = "conversation_to_booking_call";
+
+/**
+ * Whether the offer's customer authorized the instant call.
+ *
+ * `not_stated` is NOT a refusal: an offer that never stated a sales path keeps
+ * the behaviour that predates the path (ring when the brand has a rep number).
+ */
+export type BookingCallAuthorization = "authorized" | "not_authorized" | "not_stated";
+
+export function bookingCallAuthorization(
+  path: OfferSalesPath | null,
+): BookingCallAuthorization {
+  if (!path || !path.stated) return "not_stated";
+  return path.legKeys?.includes(BOOKING_CALL_LEG_KEY) ? "authorized" : "not_authorized";
+}
+
+/**
+ * Should this campaign's rep be rung? False ONLY when the offer stated a sales
+ * path without the booking-call leg. Every other outcome — no caller campaign,
+ * no offer, a path never stated, a read that failed — keeps the pre-gate
+ * behaviour, and a failure says so loudly.
+ */
+async function ringAuthorized(
+  campaign: RingRepCampaign,
+  orgId: string,
+  leadEmail: string,
+): Promise<boolean> {
+  if (!campaign.campaignId) return true;
+  let offerId: string | null;
+  let authorization: BookingCallAuthorization;
+  try {
+    offerId = (await getCampaignTriggerScope(campaign.campaignId, orgId))?.offerId ?? null;
+    if (!offerId) return true;
+    authorization = bookingCallAuthorization(await getOfferSalesPath(offerId));
+  } catch (error: unknown) {
+    console.error(
+      `[instantly-service] ring-rep: could not read whether the booking-call leg is authorized for ` +
+        `campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${describe(error)}; ` +
+        `keeping the pre-gate behaviour (ringing)`,
+    );
+    return true;
+  }
+  if (authorization !== "not_authorized") return true;
+
+  console.log(
+    `[instantly-service] ring-rep: not ringing for campaign=${campaign.instantlyCampaignId} ` +
+      `lead=${leadEmail} offer=${offerId} — the offer's sales path does not include ${BOOKING_CALL_LEG_KEY}`,
+  );
+  if (campaign.runId) {
+    void traceEvent(
+      campaign.runId,
+      {
+        service: "instantly-service",
+        event: "instant-call-not-authorized",
+        detail: `offer ${offerId} sales path does not include ${BOOKING_CALL_LEG_KEY}`,
+        data: { offerId, legKey: BOOKING_CALL_LEG_KEY, leadEmail },
+      },
+      {
+        "x-org-id": orgId,
+        ...(campaign.userId ? { "x-user-id": campaign.userId } : {}),
+        "x-campaign-id": campaign.campaignId,
+      },
+    );
+  }
+  return false;
+}
 
 /** How long we wait for Apollo to deliver the number before ringing anyway. */
 export const PHONE_REVEAL_WAIT_MS = 90_000;
@@ -417,6 +503,10 @@ export async function maybeRingRepOnSalesInterest(
 
   // A brand that stated no number wants no call. The common case, and not an error.
   if (!salesRepPhone) return;
+
+  // The customer must have authorized the booking-call leg for this offer
+  // (or never stated a path). Read before the claim, so a refusal claims nothing.
+  if (!(await ringAuthorized(campaign, campaign.orgId, leadEmail))) return;
 
   // Claim BEFORE anything external: a losing caller (a retry, a re-poll, a
   // re-qualification) stops here having rung nobody.

@@ -27,11 +27,24 @@ vi.mock("../../src/db", () => ({
   },
 }));
 
+const mockGetOfferSalesPath = vi.fn();
+const mockGetCampaignScope = vi.fn();
+const mockTraceEvent = vi.fn();
+
 vi.mock("../../src/lib/brand-client", () => ({
   getSalesRep: async (...a: unknown[]) => ({
     email: null,
     phone: await mockGetSalesRepPhone(...a),
   }),
+  getOfferSalesPath: (...a: unknown[]) => mockGetOfferSalesPath(...a),
+}));
+
+vi.mock("../../src/lib/campaign-client", () => ({
+  getCampaignTriggerScope: (...a: unknown[]) => mockGetCampaignScope(...a),
+}));
+
+vi.mock("../../src/lib/trace-event", () => ({
+  traceEvent: (...a: unknown[]) => mockTraceEvent(...a),
 }));
 
 vi.mock("../../src/lib/lead-client", async (importOriginal) => ({
@@ -71,6 +84,8 @@ const {
   MAX_PRIOR_MESSAGES,
   PHONE_REVEAL_WAIT_MS,
   REPLY_TEXT_UNAVAILABLE,
+  bookingCallAuthorization,
+  BOOKING_CALL_LEG_KEY,
 } = await import("../../src/lib/ring-rep-on-sales-interest");
 const { isSalesInterestQualification } = await import(
   "../../src/lib/trigger-sales-interest-campaign"
@@ -161,6 +176,85 @@ beforeEach(() => {
     connectOffered: true,
   });
   mockFetchMirrored.mockResolvedValue(MIRRORED_RECORDS);
+  mockGetCampaignScope.mockResolvedValue({ brandId: "brand-1", offerId: "offer-1" });
+  mockGetOfferSalesPath.mockResolvedValue({ stated: false, legKeys: null });
+  mockTraceEvent.mockResolvedValue(undefined);
+});
+
+describe("the customer's authorization of the booking-call leg", () => {
+  it("rings when the offer's stated path includes the leg", async () => {
+    mockGetOfferSalesPath.mockResolvedValue({
+      stated: true,
+      legKeys: ["start_to_conversation", "conversation_to_booking_call"],
+    });
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockGetCampaignScope).toHaveBeenCalledWith("camp-1", "org-1");
+    expect(mockGetOfferSalesPath).toHaveBeenCalledWith("offer-1");
+    expect(mockPlaceCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT ring, claims nothing, and traces why when the stated path omits the leg", async () => {
+    mockGetOfferSalesPath.mockResolvedValue({ stated: true, legKeys: ["start_to_conversation"] });
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockPlaceCall).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
+    expect(mockFindLead).not.toHaveBeenCalled();
+    expect(mockTraceEvent).toHaveBeenCalledWith(
+      "run-1",
+      expect.objectContaining({ event: "instant-call-not-authorized" }),
+      expect.objectContaining({ "x-org-id": "org-1" }),
+    );
+  });
+
+  it("does NOT ring when the path is stated with no legs at all", async () => {
+    mockGetOfferSalesPath.mockResolvedValue({ stated: true, legKeys: [] });
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockPlaceCall).not.toHaveBeenCalled();
+  });
+
+  it("keeps today's behaviour (rings) when the offer never stated a path", async () => {
+    mockGetOfferSalesPath.mockResolvedValue({ stated: false, legKeys: null });
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockPlaceCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps today's behaviour when brand-service does not know the offer (404 → null)", async () => {
+    mockGetOfferSalesPath.mockResolvedValue(null);
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockPlaceCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps today's behaviour when the campaign names no offer, without reading a path", async () => {
+    mockGetCampaignScope.mockResolvedValue({ brandId: "brand-1", offerId: null });
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockGetOfferSalesPath).not.toHaveBeenCalled();
+    expect(mockPlaceCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs loudly and keeps today's behaviour when the sales-path read fails", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockGetOfferSalesPath.mockRejectedValue(new Error("brand-service 502"));
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockPlaceCall).toHaveBeenCalledTimes(1);
+    expect(err.mock.calls.some((c) => String(c[0]).includes("brand-service 502"))).toBe(true);
+    err.mockRestore();
+  });
+
+  it("logs loudly and keeps today's behaviour when the campaign read fails", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockGetCampaignScope.mockRejectedValue(new Error("campaign-service 500"));
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockPlaceCall).toHaveBeenCalledTimes(1);
+    expect(err.mock.calls.some((c) => String(c[0]).includes("campaign-service 500"))).toBe(true);
+    err.mockRestore();
+  });
+
+  it("bookingCallAuthorization: the three answers", () => {
+    expect(bookingCallAuthorization(null)).toBe("not_stated");
+    expect(bookingCallAuthorization({ stated: false, legKeys: null })).toBe("not_stated");
+    expect(bookingCallAuthorization({ stated: true, legKeys: null })).toBe("not_authorized");
+    expect(bookingCallAuthorization({ stated: true, legKeys: [BOOKING_CALL_LEG_KEY] })).toBe("authorized");
+  });
 });
 
 describe("the gate", () => {
