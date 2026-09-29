@@ -369,6 +369,11 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
  * target a dead account and fail. That failure is not harmless: `reconcile`
  * PATCHes BEFORE it persists and skips the persist on error, so a doomed PATCH
  * would block the lifecycle flip from ever landing.
+ *
+ * ⚠️ Scope: this governs the FLIP (reconcile) and slow ramp. The hourly
+ * `syncLifecycleLimits` sweep still enforces warmup + daily_limit on an smtp
+ * account Instantly holds ACTIVE (`status > 0`): Instantly's warmup pool still
+ * sends from it, and our own cap reads its `daily_limit`. See that module.
  */
 export function isInstantlyEnforced(sendTransport: SendTransport): boolean {
   return sendTransport !== SEND_TRANSPORT_SMTP;
