@@ -25,7 +25,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { handThreadToHuman } from "./escalate-reply";
 import { htmlToText } from "./forward-positive-reply";
-import { isOffTopicReplyKind } from "./reply-kind";
+import { isEscalatedReplyKind } from "./reply-kind";
 import { fetchLatestMirroredInbound } from "./reply-opt-out";
 import { stripQuotedHistory } from "./self-send/qualify-reply";
 import { isSelfSendCampaignId } from "./self-send/transport";
@@ -43,14 +43,26 @@ export interface OffTopicCampaign {
 /** Stated when their words cannot be read — the forwarded thread still carries them. */
 export const WORDS_UNAVAILABLE = "(their words could not be read here — see the thread below)";
 
+/** Why a person is needed, per escalated kind. */
+const WHY: Record<string, { lead: string; stopReason: string }> = {
+  lead_off_topic: {
+    lead: "This reply is about something other than the offer (a partnership, hiring, investors, a vendor or the press). The automated responder only handles sales conversations, so it will not answer it.",
+    stopReason:
+      "The reply is about something other than the offer; handed to a person, the automated responder does not answer it",
+  },
+  lead_referral: {
+    lead: "They are not the right person and point you at someone else. We do not write to a referred address ourselves yet, so a person has to follow this up.",
+    stopReason:
+      "The prospect referred us to someone else; handed to a person, the automated responder does not answer it",
+  },
+};
+
 /** What the notification leads with: why a person is needed, then their words. */
-export function offTopicQuestion(replyText: string | null): string {
+export function offTopicQuestion(replyText: string | null, kind = "lead_off_topic"): string {
   const words = replyText ? stripQuotedHistory(replyText).slice(0, 2000) : "";
-  return [
-    "This reply is about something other than the offer (a partnership, hiring, investors, a vendor or the press). The automated responder only handles sales conversations, so it will not answer it.",
-    "",
-    `They wrote: ${words || WORDS_UNAVAILABLE}`,
-  ].join("\n");
+  return [WHY[kind]?.lead ?? WHY.lead_off_topic.lead, "", `They wrote: ${words || WORDS_UNAVAILABLE}`].join(
+    "\n",
+  );
 }
 
 function rowsOf(result: unknown): Record<string, unknown>[] {
@@ -76,7 +88,12 @@ async function fetchLatestReplyText(instantlyCampaignId: string): Promise<string
 }
 
 /**
- * Hand an off-topic reply to a person. No-op on any other event.
+ * Hand an escalated reply (off-topic, referral — `ESCALATED_REPLY_KINDS`) to a
+ * person. No-op on any other event.
+ *
+ * Works for ANY brand: the hand-over is an email to the agency inbox on the
+ * campaign row's own identity, and stopping the follow-up ladder is skipped when
+ * lead-service holds no row — no responder campaign is needed.
  *
  * Needs an org-scoped campaign carrying its run and user: the notification is a
  * child of that run (org-billed, the same identity the positive-reply forward
@@ -88,7 +105,7 @@ export async function maybeEscalateOffTopicReply(
   leadEmail: string,
   eventType: string,
 ): Promise<void> {
-  if (!isOffTopicReplyKind(eventType)) return;
+  if (!isEscalatedReplyKind(eventType)) return;
 
   if (!campaign.orgId || !campaign.runId || !campaign.userId) {
     console.warn(
@@ -107,9 +124,8 @@ export async function maybeEscalateOffTopicReply(
       orgId: campaign.orgId,
       userId: campaign.userId,
       runId: campaign.runId,
-      question: offTopicQuestion(replyText),
-      stopReason:
-        "The reply is about something other than the offer; handed to a person, the automated responder does not answer it",
+      question: offTopicQuestion(replyText, eventType),
+      stopReason: (WHY[eventType] ?? WHY.lead_off_topic).stopReason,
     });
     console.log(
       `[instantly-service] off-topic-escalation: campaign=${campaign.instantlyCampaignId} lead=${leadEmail} handed to a human (${result.threadMessages} msg, followupsStopped=${result.followupsStopped})`,

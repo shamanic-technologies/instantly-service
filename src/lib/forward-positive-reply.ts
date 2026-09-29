@@ -45,7 +45,7 @@ import { listEmails, type EmailRecord } from "./instantly-client";
 import { sendEmail } from "./email-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { fetchSelfSendThread } from "./self-send/thread";
-import { POSITIVE_REPLY_KINDS } from "./reply-kind";
+import { isEscalatedReplyKind, POSITIVE_REPLY_KINDS } from "./reply-kind";
 import { agencyInbox } from "./agency-inbox";
 import { salesRepCopyList } from "./sales-rep-copy";
 import { isStaffSender } from "./staff-senders";
@@ -60,13 +60,17 @@ import { isStaffSender } from "./staff-senders";
  * all — a booked meeting is recorded by the lead-outcomes service, and it is
  * not evidence that a reply just arrived.
  *
- * ⚠️ This set is a SUPERSET of the coarse map's 'positive' entries, on purpose:
- * `lead_referral` forwards but reports `neutral`. Forwarding answers "is this
+ * ⚠️ `lead_referral` is NOT forwarded here any more: it is ESCALATED instead
+ * (`ESCALATED_REPLY_KINDS`, lib/escalate-off-topic-reply), which forwards the
+ * same thread with a "a person must follow this up" lead — one email per reply.
+ * Historical note: it used to forward while reporting `neutral`. Forwarding answers "is this
  * worth a human's eyes"; the coarse map answers "was this a buying signal we
  * should price and count". A unit test asserts exactly that relationship — do
  * not restore an equality assertion between the two.
  */
-export const POSITIVE_QUALIFICATION_EVENT_TYPES = new Set<string>(POSITIVE_REPLY_KINDS);
+export const POSITIVE_QUALIFICATION_EVENT_TYPES = new Set<string>(
+  POSITIVE_REPLY_KINDS.filter((k) => !isEscalatedReplyKind(k)),
+);
 
 /** True iff this event is a positive reply kind. */
 export function isPositiveQualification(eventType: string): boolean {
