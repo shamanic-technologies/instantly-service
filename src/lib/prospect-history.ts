@@ -388,3 +388,88 @@ export async function loadProspectHistory(
   messages = fillThreadSubjects(messages);
   return { items: mergeHistory(messages, actions), messages, notes };
 }
+
+/**
+ * The history, WAITED ON until it holds the prospect's reply.
+ *
+ * ⚠️ A REPLY IS ANNOUNCED BEFORE IT IS READABLE. Instantly qualifies a reply
+ * (the `lead_interested` webhook) the moment it lands, and our copy of its words
+ * is written by the mirror side effect that runs AFTER; the whole-campaign read
+ * serves the mirror first. So a history read at the moment of the announcement
+ * held our three outbound emails and not the reply that triggered it, and two
+ * emails went out one minute after michael@thekarlfeldtcenter.com wrote, both
+ * without his words (2026-09-29).
+ *
+ * So: read; when no inbound message is there, re-mirror the Instantly thread
+ * and read again after each wait in `waitsMs`. Bounded — a reply that is still
+ * unreadable after the last wait is STATED as a note at the top of the history,
+ * never silently dropped, and the caller decides whether to send without it.
+ */
+export interface HistoryWithReply {
+  history: ProspectHistory;
+  /** The prospect's latest inbound message, verbatim. Null when unreadable. */
+  latestReply: ThreadMessage | null;
+}
+
+/** Background paths (the celebration) can afford to wait a few minutes. */
+export const REPLY_WAIT_BACKGROUND_MS = [2_000, 15_000, 30_000, 60_000, 120_000];
+/** Request paths (an escalation, a webhook side effect) wait seconds, not minutes. */
+export const REPLY_WAIT_SHORT_MS = [2_000, 5_000, 10_000];
+
+export const REPLY_UNREADABLE_NOTE =
+  "the prospect's latest reply could not be read when this email was sent, so it is missing below. Nothing here is a summary of it.";
+
+/** Pure: the prospect's latest inbound message in the history, or null. */
+export function latestInboundMessage(messages: ThreadMessage[]): ThreadMessage | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].direction === "inbound") return messages[i];
+  }
+  return null;
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+export async function loadHistoryWithLatestReply(
+  campaign: ForwardPositiveReplyCampaign,
+  leadEmail: string,
+  options: { waitsMs?: number[]; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<HistoryWithReply> {
+  const waits = options.waitsMs ?? REPLY_WAIT_SHORT_MS;
+  const sleep = options.sleep ?? defaultSleep;
+
+  let history = await loadProspectHistory(campaign, leadEmail);
+  let latestReply = latestInboundMessage(history.messages);
+
+  for (const wait of waits) {
+    if (latestReply) break;
+    // Copy the thread into bronze again: the mirror is what the read serves,
+    // and it is the step that had not run yet when the reply was announced.
+    if (campaign.orgId && !isSelfSendCampaignId(campaign.instantlyCampaignId)) {
+      try {
+        const { mirrorCampaignEmails, isInstantlyHeldCampaignId } = await import("./mirror-emails");
+        if (isInstantlyHeldCampaignId(campaign.instantlyCampaignId)) {
+          await mirrorCampaignEmails({
+            instantlyCampaignId: campaign.instantlyCampaignId,
+            orgId: campaign.orgId,
+            userId: campaign.userId,
+          });
+        }
+      } catch (error) {
+        console.warn(
+          `[instantly-service] prospect-history: re-mirror failed for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${errorMessage(error)}`,
+        );
+      }
+    }
+    await sleep(wait);
+    history = await loadProspectHistory(campaign, leadEmail);
+    latestReply = latestInboundMessage(history.messages);
+  }
+
+  if (!latestReply) {
+    console.error(
+      `[instantly-service] prospect-history: no reply from ${leadEmail} readable on campaign=${campaign.instantlyCampaignId} after ${waits.length} wait(s); the email says so`,
+    );
+    history = { ...history, notes: [REPLY_UNREADABLE_NOTE, ...history.notes] };
+  }
+  return { history, latestReply };
+}

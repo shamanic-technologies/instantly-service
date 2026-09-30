@@ -40,6 +40,12 @@ vi.mock("../../src/lib/lead-conversation", () => ({
   fetchLeadConversation: (...a: unknown[]) => mockFetchLeadConversation(...a),
 }));
 
+const mockBrandContext = vi.fn();
+vi.mock("../../src/lib/brand-client", () => ({
+  getBrandHandoffContext: (...a: unknown[]) => mockBrandContext(...a),
+  getSalesRep: async () => ({ email: null, phone: null }),
+}));
+
 vi.mock("../../src/lib/email-client", () => ({
   sendEmail: (...a: unknown[]) => mockSendEmail(...a),
 }));
@@ -214,7 +220,9 @@ describe("thread helpers", () => {
 
 });
 
-describe("maybeForwardPositiveReply", () => {
+describe("maybeForwardPositiveReply (the celebration)", () => {
+  const NOW = { background: false, waitsMs: [] as number[] };
+
   beforeEach(() => {
     mockReturning.mockReset();
     mockUpdate.mockReset();
@@ -223,103 +231,93 @@ describe("maybeForwardPositiveReply", () => {
     mockSendEmail.mockReset();
     mockExecute.mockReset();
     mockFetchLeadConversation.mockReset();
+    mockBrandContext.mockReset();
     mockExecute.mockResolvedValue({ rows: [] });
-    // The whole-campaign read is unavailable here, so the forward falls back to
-    // this sequence's own thread — the path these assertions pin.
     mockFetchLeadConversation.mockRejectedValue(new Error("campaign-service down"));
     mockReturning.mockResolvedValue([{ id: "row-1" }]); // claim won by default
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "api-key-1", keySource: "org" });
+    mockBrandContext.mockResolvedValue({
+      name: "Doc Dinners",
+      rep: { email: "rep@docdinners.com", firstName: null, role: null },
+    });
     mockListEmails.mockResolvedValue([
+      record({ ue_type: 1, timestamp_email: "2026-07-08T13:00:00.000Z", subject: "Partnership?", body: { text: "cold 1" } }),
       record({
         ue_type: 2,
+        timestamp_email: "2026-07-13T17:00:00.000Z",
         from_address_email: "lead@x.com",
         to_address_email_list: "amy@distribute.com",
-        subject: "Re: Functional medicine",
-        body: { text: "Yes, interested!" },
+        subject: "Re: Partnership?",
+        body: { text: "1. What results?\n2. <b>Guarantee</b> terms?\n\nMichael" },
       }),
     ]);
     mockSendEmail.mockResolvedValue(undefined);
   });
 
-  it("positive event: claims, fetches thread, forwards to the agency inbox", async () => {
-    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested");
+  it("celebrates to the brand's rep, the agency inbox in Bcc, with the reply verbatim", async () => {
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
 
-    expect(mockUpdate).toHaveBeenCalledTimes(1); // claim only (no release)
-    expect(mockListEmails).toHaveBeenCalledWith("api-key-1", {
-      campaignId: "inst-camp-1",
-    });
+    expect(mockUpdate).toHaveBeenCalledTimes(1); // claim only
     expect(mockSendEmail).toHaveBeenCalledTimes(1);
     const [params, identity] = mockSendEmail.mock.calls[0];
-    expect(params.eventType).toBe("positive-reply-forward");
-    expect(params.recipientEmail).toBe("kevin@distribute.you");
-    // clean, client-forwardable: subject = the conversation subject, body = the
-    // thread with the real reply and no instantly-service branding
-    expect(params.metadata.subject).toBe("Re: Functional medicine");
-    expect(params.metadata.thread).toContain("Yes, interested!");
-    expect(params.metadata.thread).not.toMatch(/instantly-service|Lead:|qualification/i);
-    expect(params.metadata.leadEmail).toBeUndefined();
+    expect(params.eventType).toBe("positive-reply-celebration");
+    expect(params.recipientEmail).toBe("rep@docdinners.com");
+    expect(params.bccEmails).toEqual(["kevin@distribute.you"]);
+    expect(params.ccEmails).toBeUndefined();
+    // complete and verbatim, escaped (the engine interpolates raw)
+    expect(params.metadata.html).toContain("1. What results?\n2. &lt;b&gt;Guarantee&lt;/b&gt; terms?\n\nMichael");
+    expect(params.metadata.text).toContain("1. What results?\n2. <b>Guarantee</b> terms?");
+    expect(params.metadata.html).toContain("cold 1");
+    expect(params.metadata.html).toContain("#2563EB");
+    expect(params.metadata.subject).toContain("Doc Dinners");
+    for (const body of [params.metadata.html, params.metadata.text, params.metadata.subject]) {
+      expect(body).not.toContain("\u2014");
+    }
     expect(identity.orgId).toBe("org-1");
   });
 
+  it("a brand that names no rep celebrates to the agency inbox alone", async () => {
+    mockBrandContext.mockResolvedValue({ name: "Doc Dinners", rep: { email: null, firstName: null, role: null } });
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.recipientEmail).toBe("kevin@distribute.you");
+    expect(params.bccEmails).toBeUndefined();
+  });
+
   it("non-positive event: no claim, no send", async () => {
-    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_not_interested");
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_not_interested", NOW);
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockSendEmail).not.toHaveBeenCalled();
   });
 
-  it("already forwarded (claim lost): no send", async () => {
-    mockReturning.mockResolvedValue([]); // claim lost
-    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_meeting_requested");
+  it("already celebrated (claim lost): no send", async () => {
+    mockReturning.mockResolvedValue([]);
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_meeting_requested", NOW);
     expect(mockListEmails).not.toHaveBeenCalled();
     expect(mockSendEmail).not.toHaveBeenCalled();
   });
 
   it("platform send (null orgId): no claim, no send", async () => {
-    await maybeForwardPositiveReply(
-      { ...campaign, orgId: null },
-      "lead@x.com",
-      "lead_interested",
-    );
+    await maybeForwardPositiveReply({ ...campaign, orgId: null }, "lead@x.com", "lead_interested", NOW);
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockSendEmail).not.toHaveBeenCalled();
   });
 
-  it("send fails: releases the claim and never throws (fail-soft)", async () => {
+  it("send fails: releases the claim and never throws", async () => {
     mockSendEmail.mockRejectedValue(new Error("email gateway down"));
     await expect(
-      maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested"),
+      maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW),
     ).resolves.toBeUndefined();
-    // claim + release = 2 updates
-    expect(mockUpdate).toHaveBeenCalledTimes(2);
+    expect(mockUpdate).toHaveBeenCalledTimes(2); // claim + release
   });
 
-  it("forwards the emails we SENT before the reply, not only the reply", async () => {
+  it("a reply that cannot be read is SAID, never summarized", async () => {
     mockListEmails.mockResolvedValue([
-      record({ ue_type: 1, timestamp_email: "2026-07-08T13:00:00.000Z", subject: "Partnership?", body: { text: "cold 1" } }),
-      record({ ue_type: 1, timestamp_email: "2026-07-11T13:00:00.000Z", subject: "Re: Partnership?", body: { text: "cold 2" } }),
-      record({
-        ue_type: 2,
-        timestamp_email: "2026-07-13T17:00:00.000Z",
-        from_address_email: "lead@x.com",
-        subject: "Re: Partnership?",
-        body: { text: "can you explain?" },
-      }),
+      record({ ue_type: 1, subject: "Partnership?", body: { text: "cold 1" } }),
     ]);
-    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested");
-    const thread: string = mockSendEmail.mock.calls[0][0].metadata.thread;
-    expect(thread.indexOf("cold 1")).toBeGreaterThanOrEqual(0);
-    expect(thread.indexOf("cold 1")).toBeLessThan(thread.indexOf("cold 2"));
-    expect(thread.indexOf("cold 2")).toBeLessThan(thread.indexOf("can you explain?"));
-  });
-
-  it("a thread that cannot be read is STATED and the email still goes out", async () => {
-    mockListEmails.mockRejectedValue(new Error("instantly down"));
-    mockExecute.mockRejectedValue(new Error("db down"));
-    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested");
-    expect(mockSendEmail).toHaveBeenCalledTimes(1);
-    const thread: string = mockSendEmail.mock.calls[0][0].metadata.thread;
-    expect(thread).toContain("Note: the emails exchanged with this prospect could not be read.");
-    expect(thread).toContain("Note: this prospect's website visits, bounces and unsubscribes could not be read.");
-    expect(mockUpdate).toHaveBeenCalledTimes(1); // claim kept, no release
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.metadata.html).toContain("We could not read their reply");
+    expect(params.metadata.text).toContain("We could not read their reply");
   });
 });

@@ -1,4 +1,10 @@
 /**
+ * ⚠️ 2026-09-29: a positive reply is now CELEBRATED to the client
+ * (lib/celebrate-positive-reply) — `maybeForwardPositiveReply` delegates there.
+ * This module keeps the thread helpers and `sendThreadForward` (the manual
+ * re-forward and the off-topic hand-over). The history below still describes
+ * the claim and the positive set, which are unchanged.
+ *
  * Forward a positive reply's full email thread to the agency inbox.
  *
  * The agency (distribute) runs cold outreach from Instantly. Instantly now
@@ -37,9 +43,6 @@
  * swallowed + logged; the claim is released so the forward is retried later.
  */
 
-import { and, eq, isNull } from "drizzle-orm";
-import { db } from "../db";
-import { instantlyCampaigns } from "../db/schema";
 import type { EmailRecord } from "./instantly-client";
 import { sendEmail } from "./email-client";
 import { isEscalatedReplyKind, POSITIVE_REPLY_KINDS } from "./reply-kind";
@@ -234,8 +237,10 @@ export async function sendThreadForward(
   }
   // Dynamic import: prospect-history reads the thread through modules that
   // import this one, so a static import would be a load-time cycle.
-  const { loadProspectHistory, renderProspectHistory } = await import("./prospect-history");
-  const history = await loadProspectHistory(campaign, leadEmail);
+  const { loadHistoryWithLatestReply, renderProspectHistory } = await import("./prospect-history");
+  // Waited on until it holds the prospect's reply (or says it could not): the
+  // reply is announced before our copy of its words is written.
+  const { history } = await loadHistoryWithLatestReply(campaign, leadEmail);
   const messages = history.messages;
 
   // The client's own rep is copied on the thread their prospect just wrote,
@@ -278,71 +283,31 @@ export async function sendThreadForward(
 }
 
 /**
- * Atomically claim the positive-reply forward for a campaign. Returns true iff
- * THIS call won the claim (the column was NULL and is now set). A losing caller
- * (already claimed / already forwarded) gets false and must not send.
- */
-async function claimForward(instantlyCampaignId: string): Promise<boolean> {
-  const claimed = await db
-    .update(instantlyCampaigns)
-    .set({ positiveReplyForwardedAt: new Date(), updatedAt: new Date() })
-    .where(
-      and(
-        eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId),
-        isNull(instantlyCampaigns.positiveReplyForwardedAt),
-      ),
-    )
-    .returning({ id: instantlyCampaigns.id });
-  return claimed.length > 0;
-}
-
-/** Release a claim (send failed) so a later retry re-attempts the forward. */
-async function releaseForward(instantlyCampaignId: string): Promise<void> {
-  await db
-    .update(instantlyCampaigns)
-    .set({ positiveReplyForwardedAt: null, updatedAt: new Date() })
-    .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
-}
-
-/**
- * Forward the full thread of a positively-qualified reply to the agency inbox.
- * No-op unless `eventType` is a positive qualification and the campaign is
- * org-scoped. Fully fail-soft — never throws.
+ * Celebrate a positively-qualified reply to the client — exactly once per
+ * thread (lib/celebrate-positive-reply). No-op unless `eventType` is a positive
+ * qualification and the campaign is org-scoped. Never throws.
  *
- * Platform sends (orgId null — e.g. journalist price-requests) are out of scope
- * for v1: they are a different product flow with a distinct key path. A positive
- * reply there is a documented follow-up, not handled here.
+ * ⚠️ BACKGROUND BY DEFAULT. This runs inside `promoteEvent`, i.e. inside
+ * Instantly's webhook, and the celebration waits (minutes, bounded) until the
+ * prospect's words are readable. The claim is taken before this returns; the
+ * send finishes on its own. `background: false` awaits it (tests).
+ *
+ * Platform sends (orgId null) are out of scope, as before.
  */
 export async function maybeForwardPositiveReply(
   campaign: ForwardPositiveReplyCampaign,
   leadEmail: string,
   eventType: string,
+  options: { background?: boolean; waitsMs?: number[] } = {},
 ): Promise<void> {
   if (!isPositiveQualification(eventType)) return;
   if (!campaign.orgId) return;
 
-  // Exactly-once: claim before any external side effect. A loser (already
-  // forwarded / claimed by a concurrent positive event) stops here.
-  let claimed: boolean;
-  try {
-    claimed = await claimForward(campaign.instantlyCampaignId);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(
-      `[instantly-service] forward-positive-reply: claim failed for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${message}; will retry on next positive signal`,
-    );
-    return;
-  }
-  if (!claimed) return;
-
-  try {
-    await sendThreadForward(campaign, leadEmail);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    // Release the claim so a later webhook retry / reconcile re-poll re-attempts.
-    await releaseForward(campaign.instantlyCampaignId).catch(() => {});
-    console.warn(
-      `[instantly-service] forward-positive-reply: no-op for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${message}; claim released, will retry`,
-    );
+  const { celebrateOnce } = await import("./celebrate-positive-reply");
+  const run = celebrateOnce(campaign, leadEmail, { waitsMs: options.waitsMs });
+  if (options.background === false) {
+    await run;
+  } else {
+    void run;
   }
 }

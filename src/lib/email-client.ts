@@ -39,6 +39,11 @@ interface SendEmailParams {
    * request this service made before the field existed.
    */
   ccEmails?: string[];
+  /**
+   * Blind-copy recipients. For an observer of the message rather than a party
+   * to it: the agency inbox watching a celebration sent to the client's rep.
+   */
+  bccEmails?: string[];
   metadata?: Record<string, string>;
 }
 
