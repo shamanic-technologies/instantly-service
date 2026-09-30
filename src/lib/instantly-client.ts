@@ -852,6 +852,8 @@ export async function replyToEmail(
      * the V2 contract) — an array is silently not a list of addresses.
      */
     ccAddressEmailList?: string;
+    /** Blind copy, same comma-separated contract. */
+    bccAddressEmailList?: string;
   },
 ): Promise<EmailRecord> {
   return instantlyRequest<EmailRecord>(apiKey, "/emails/reply", {
@@ -863,6 +865,9 @@ export async function replyToEmail(
       body: { html: params.bodyHtml },
       ...(params.ccAddressEmailList
         ? { cc_address_email_list: params.ccAddressEmailList }
+        : {}),
+      ...(params.bccAddressEmailList
+        ? { bcc_address_email_list: params.bccAddressEmailList }
         : {}),
     },
   });

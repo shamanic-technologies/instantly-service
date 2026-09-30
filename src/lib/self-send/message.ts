@@ -27,6 +27,8 @@ export interface BuiltMessage {
   to: string;
   /** Visible CC. Absent on sequence sends — only a one-to-one reply carries one. */
   cc?: string;
+  /** Blind copy. Only a hand-over carries one (the agency inbox observing). */
+  bcc?: string;
   subject: string;
   html: string;
   headers: Record<string, string>;

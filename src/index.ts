@@ -132,17 +132,39 @@ async function deployEmailTemplates(): Promise<void> {
               '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{thread}}</pre>',
           },
           {
-            // Reply escalation: the automated responder hit a question it
-            // cannot answer, so it sent the prospect nothing and handed the
-            // thread over. The question leads, because that is the thing a
-            // human has to act on; the conversation follows it verbatim, in the
-            // same <pre> the positive-reply forward uses, so the whole mail
-            // stays forwardable to the client as-is.
+            // Positive-reply celebration (lib/celebrate-positive-reply): sent to
+            // the CLIENT's rep, the agency inbox in Bcc. The whole body is
+            // rendered (and escaped) in code — the engine interpolates raw — so
+            // the template is only the envelope.
+            name: "positive-reply-celebration",
+            subject: "{{subject}}",
+            htmlBody: "{{html}}",
+            textBody: "{{text}}",
+          },
+          {
+            // Reply escalation with NO rep to hand to (lib/escalate-reply): the
+            // responder could not answer, the brand names nobody, so the agency
+            // inbox answers directly. Same subject as the thread, the history
+            // quoted as a forward. No paraphrase of what they asked: their
+            // reply is in the thread, verbatim. {{thread}} and {{brandName}}
+            // arrive escaped.
             name: "reply-escalation",
-            subject: "Needs you: {{leadEmail}} asked something we cannot answer",
+            subject: "{{subject}}",
             htmlBody: [
-              "<p>The automated responder stopped on this thread and sent nothing.</p>",
-              "<p><strong>What they asked:</strong></p>",
+              '<p style="margin:0 0 12px 0">The automated responder could not answer this reply and sent the prospect nothing. {{brandName}} has no sales rep email in Brand Settings, so this one is yours to answer. The full conversation is below.</p>',
+              '<p style="margin:0 0 8px 0;color:#64748b">---------- Forwarded conversation ----------</p>',
+              '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{thread}}</pre>',
+            ].join("\n"),
+          },
+          {
+            // Off-topic / referral hand-over (lib/escalate-off-topic-reply):
+            // why a person is needed leads, then the conversation verbatim.
+            // `question` states the reason and quotes their words under
+            // "They wrote:", never a paraphrase.
+            name: "reply-handover",
+            subject: "Needs you: {{leadEmail}} replied about something the responder does not handle",
+            htmlBody: [
+              "<p><strong>Why this needs a person:</strong></p>",
               '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{question}}</pre>',
               "<p>&nbsp;</p>",
               '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{thread}}</pre>',

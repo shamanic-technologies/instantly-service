@@ -750,3 +750,62 @@ describe("a human took over, so the automated responder stops", () => {
     expect(row.payload.sentBy).toBe("automation");
   });
 });
+
+describe("a thread handed to a person (escalation)", () => {
+  const AUTOMATED = { ...INPUT, sentBy: "automation" as const };
+
+  it("refuses every automated reply once the escalation is claimed", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow()]))
+      .mockResolvedValueOnce(pgResult([])) // no human takeover
+      .mockResolvedValueOnce(
+        pgResult([{ at: "2026-09-29T15:01:00.000Z", handedTo: "rep@docdinners.com" }]),
+      );
+
+    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({ code: "handed_over", status: 409 });
+    expect(mockReplyToEmail).not.toHaveBeenCalled();
+  });
+
+  it("lets the hand-over itself through, rep in Cc, agency in Bcc, history after the signature", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow()]))
+      .mockResolvedValueOnce(pgResult([])); // no human takeover; the escalation gate is skipped
+    mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Re: Hello" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    const outcome = await replyToLead({
+      ...AUTOMATED,
+      handoff: true,
+      copy: { cc: ["rep@docdinners.com"], bcc: ["kevin@distribute.you"] },
+      quotedHtml: "<blockquote>QUOTED</blockquote>",
+    });
+
+    expect(outcome.status).toBe("sent");
+    const [, params] = mockReplyToEmail.mock.calls[0];
+    expect(params.ccAddressEmailList).toBe("rep@docdinners.com");
+    expect(params.bccAddressEmailList).toBe("kevin@distribute.you");
+    expect(params.subject).toBe("Re: Hello");
+    expect(params.bodyHtml.endsWith("<blockquote>QUOTED</blockquote>")).toBe(true);
+    expect(params.bodyHtml.indexOf("Amy")).toBeLessThan(params.bodyHtml.indexOf("QUOTED"));
+  });
+
+  it("carries Cc and Bcc on our own transport too", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow({ sendTransport: "smtp", instantlyCampaignId: "self:1" })]))
+      .mockResolvedValueOnce(pgResult([])) // takeover
+      .mockResolvedValueOnce(pgResult([{ messageId: "<in@x>", subject: "Hello", at: "2026-09-01" }]))
+      .mockResolvedValueOnce(pgResult([{ messageId: "<out@x>" }, { messageId: "<in@x>" }]))
+      .mockResolvedValueOnce(pgResult([{ email: "amy@boostdistribute.com", firstName: "Amy", lastName: "Moore" }]));
+    mockResolveCredential.mockResolvedValue({ smtpHost: "h", appPassword: "p" });
+    mockDispatchMessage.mockResolvedValue({ messageId: "<m>", response: "250", accepted: ["alice@media.com"] });
+
+    await replyToLead({
+      ...AUTOMATED,
+      handoff: true,
+      copy: { cc: ["rep@docdinners.com"], bcc: ["kevin@distribute.you"] },
+    });
+    const [, message] = mockDispatchMessage.mock.calls[0];
+    expect(message.cc).toBe("rep@docdinners.com");
+    expect(message.bcc).toBe("kevin@distribute.you");
+  });
+});

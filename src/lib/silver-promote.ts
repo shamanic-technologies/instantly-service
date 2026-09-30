@@ -656,11 +656,6 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
         await maybeStopOnClickForLeg(campaign, input.leadEmail);
       }
 
-      // Forward positive replies: when Instantly qualifies the reply
-      // positive/interested, email the full thread to the agency inbox
-      // (exactly-once, fail-soft — never throws here). No-op on any other event.
-      await maybeForwardPositiveReply(campaign, input.leadEmail, input.eventType);
-
       // A buyer opened a conversation: ask campaign-service to run the campaign
       // bought for the leg OUT of that step now, rather than on its next tick.
       // Fail-soft — the qualification above is the primary job and stands
@@ -687,13 +682,24 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // learn they exist. Fail-soft, never throws. No-op on any other event.
       await maybeMirrorCampaignEmails(campaign, input.eventType);
 
+      // Celebrate a positive reply to the client (the brand's rep, the agency
+      // inbox in Bcc), with their reply shown word for word. AFTER the mirror,
+      // which is what puts those words in bronze — run before it, the email
+      // carried our own outbound mail and not the reply it was about
+      // (2026-09-29). Exactly-once per thread; the claim is taken here and the
+      // send finishes in the background (it waits, bounded, for the words).
+      // Never throws. No-op on any other event.
+      await maybeForwardPositiveReply(campaign, input.leadEmail, input.eventType);
+
       // A reply about something other than the offer (a partnership, hiring,
       // investors, a vendor, the press): the automated responder only handles
       // sales conversations and will not answer it, so hand it to a person
       // through the responder's own escalation path. AFTER the mirror, which is
       // what puts their words in bronze. Fail-soft, never throws; no-op on any
       // other event.
-      await maybeEscalateOffTopicReply(campaign, input.leadEmail, input.eventType);
+      // Detached: the hand-over waits (seconds, bounded) for the reply's words,
+      // and this runs inside Instantly's webhook. It never throws.
+      void maybeEscalateOffTopicReply(campaign, input.leadEmail, input.eventType);
 
       // ...then read what they wrote. A prospect who asks to STOP in the body of
       // a reply ("please remove me from your list") is classified by Instantly as

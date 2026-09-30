@@ -107,6 +107,26 @@ export function replyCcList(agency: string, salesRepCopy: string[]): string {
   return out.join(",");
 }
 
+/** The (cc, bcc) pair a reply carries: the hand-over's own, else the default. */
+function replyCopy(
+  input: ReplyToLeadInput,
+  salesRepCopy: string[],
+): { cc: string; bcc: string } {
+  if (input.copy) {
+    return {
+      cc: replyCcList("", input.copy.cc),
+      bcc: replyCcList("", input.copy.bcc),
+    };
+  }
+  return { cc: replyCcList(agencyInbox(), salesRepCopy), bcc: "" };
+}
+
+/** The signed body, with the quoted conversation (if any) after the signature. */
+function signedBody(input: ReplyToLeadInput, account: Account): string {
+  const signed = buildReplyBodyWithSignature(input.bodyHtml, account);
+  return input.quotedHtml ? `${signed}${input.quotedHtml}` : signed;
+}
+
 /**
  * The `step` a manual reply is recorded under — defined in its own module so the
  * human-takeover gate can read it without importing this one. Re-exported here
@@ -123,6 +143,7 @@ export class ReplyToLeadError extends Error {
       | "sending_account_unresolved"
       | "mailbox_credential_unavailable"
       | "human_took_over"
+      | "handed_over"
       | "reply_dispatch_failed",
     public readonly status: number,
     message: string,
@@ -150,6 +171,21 @@ export interface ReplyToLeadInput {
    * `DEFAULT_REPLY_SENDER`.
    */
   sentBy: ReplySender;
+  /**
+   * HAND-OVER ONLY (lib/escalate-reply). Replaces the default visible copy
+   * (agency inbox + rep in Cc) with exactly these lists: the client's rep in
+   * Cc — a party to the conversation from now on — and the agency inbox in Bcc,
+   * observing. Never set by the reply route: the wire cannot reach it.
+   */
+  copy?: { cc: string[]; bcc: string[] };
+  /** Pre-rendered quote of the conversation, appended AFTER the signature. */
+  quotedHtml?: string;
+  /**
+   * The escalation's own hand-over. It is the one automated write allowed on a
+   * thread whose escalation is claimed; every other automated reply there is
+   * refused (`handed_over`).
+   */
+  handoff?: boolean;
 }
 
 export interface ReplyToLeadResult {
@@ -163,6 +199,8 @@ export interface ReplyToLeadResult {
   subject: string;
   /** The agency inbox this reply was CC'd to, as the prospect sees it. */
   cc: string;
+  /** Blind copy — empty except on a hand-over. */
+  bcc: string;
   /** Identifier of the message we sent (Instantly's email id, or a Message-Id). */
   messageId: string;
   /** The message this one threads onto. Never null — a reply without one fails. */
@@ -185,6 +223,7 @@ interface PreparedInstantlyReply {
   subject: string;
   bodyHtml: string;
   cc: string;
+  bcc: string;
 }
 
 interface PreparedSmtpReply {
@@ -198,6 +237,7 @@ interface PreparedSmtpReply {
   bodyHtml: string;
   from: string;
   cc: string;
+  bcc: string;
 }
 
 /**
@@ -329,6 +369,28 @@ export async function loadCampaign(
 ): Promise<CampaignRow | null> {
   const rows = await loadCampaignSequences(orgId, [campaignId], leadEmail);
   return rows.length > 0 ? rows[rows.length - 1] : null;
+}
+
+/**
+ * The escalation claimed on this thread, or null. `handedTo` is null while the
+ * hand-over is still in flight (claimed, not yet recorded).
+ */
+export async function findEscalationHandoff(
+  instantlyCampaignId: string,
+): Promise<{ at: string; handedTo: string | null } | null> {
+  const result = await db.execute(sql`
+    SELECT c.escalated_at AS "at", c.escalation_handed_to AS "handedTo"
+    FROM instantly_campaigns c
+    WHERE c.instantly_campaign_id = ${instantlyCampaignId}
+      AND c.escalated_at IS NOT NULL
+    LIMIT 1
+  `);
+  const row = ((result as { rows?: Record<string, unknown>[] } | undefined)?.rows ?? [])[0];
+  if (!row) return null;
+  return {
+    at: row.at instanceof Date ? row.at.toISOString() : String(row.at),
+    handedTo: row.handedTo === null || row.handedTo === undefined ? null : String(row.handedTo),
+  };
 }
 
 /**
@@ -491,6 +553,7 @@ async function recordInstantlyReply(input: {
   subject: string;
   bodyHtml: string;
   cc: string;
+  bcc?: string;
   inReplyTo: string;
   outcome: "sent" | "transient";
   instantlyEmailId: string | null;
@@ -512,6 +575,7 @@ async function recordInstantlyReply(input: {
       transport: "instantly",
       subject: input.subject,
       cc: input.cc,
+      ...(input.bcc ? { bcc: input.bcc } : {}),
       ...(input.outcome === "sent" ? { bodyHtml: input.bodyHtml } : {}),
       inReplyTo: input.inReplyTo,
       instantlyEmailId: input.instantlyEmailId,
@@ -583,8 +647,8 @@ async function prepareInstantlyReply(
     accountEmail,
     account,
     subject,
-    bodyHtml: buildReplyBodyWithSignature(input.bodyHtml, account),
-    cc: replyCcList(agencyInbox(), salesRepCopy),
+    bodyHtml: signedBody(input, account),
+    ...replyCopy(input, salesRepCopy),
   };
 }
 
@@ -593,7 +657,7 @@ async function deliverInstantlyReply(
   campaign: CampaignRow,
   prepared: PreparedInstantlyReply,
 ): Promise<ReplyToLeadResult> {
-  const { sentBy, key, target, accountEmail, account, subject, bodyHtml, cc } =
+  const { sentBy, key, target, accountEmail, account, subject, bodyHtml, cc, bcc } =
     prepared;
 
   let sent: EmailRecord;
@@ -606,6 +670,7 @@ async function deliverInstantlyReply(
       // Comma-separated string, not an array — that is Instantly's contract for
       // this field, and an array is not silently coerced into one.
       ccAddressEmailList: cc,
+      ...(bcc ? { bccAddressEmailList: bcc } : {}),
     });
   } catch (error: unknown) {
     // Recorded even though it never left: the same evidence trail the smtp
@@ -617,6 +682,7 @@ async function deliverInstantlyReply(
       subject,
       bodyHtml,
       cc,
+      bcc,
       inReplyTo: target.emailId,
       outcome: "transient",
       instantlyEmailId: null,
@@ -644,6 +710,7 @@ async function deliverInstantlyReply(
     subject,
     bodyHtml,
     cc,
+    bcc,
     inReplyTo: target.emailId,
     outcome: "sent",
     instantlyEmailId: sent.id == null ? null : String(sent.id),
@@ -658,6 +725,7 @@ async function deliverInstantlyReply(
     from: buildFromHeader(account),
     subject,
     cc,
+    bcc,
     messageId: String(sent.id ?? ""),
     inReplyTo: target.emailId,
   };
@@ -715,9 +783,9 @@ async function prepareSmtpReply(
     credential,
     account,
     subject: replySubject(anchor.subject),
-    bodyHtml: buildReplyBodyWithSignature(input.bodyHtml, account),
+    bodyHtml: signedBody(input, account),
     from: buildFromHeader(account),
-    cc: replyCcList(agencyInbox(), salesRepCopy),
+    ...replyCopy(input, salesRepCopy),
   };
 }
 
@@ -726,13 +794,14 @@ async function deliverSmtpReply(
   campaign: CampaignRow,
   prepared: PreparedSmtpReply,
 ): Promise<ReplyToLeadResult> {
-  const { sentBy, anchor, accountEmail, credential, subject, bodyHtml, from, cc } =
+  const { sentBy, anchor, accountEmail, credential, subject, bodyHtml, from, cc, bcc } =
     prepared;
 
   const message = {
     from,
     to: campaign.leadEmail,
     cc,
+    ...(bcc ? { bcc } : {}),
     subject,
     html: bodyHtml,
     // No List-Unsubscribe pair: this is a one-to-one answer, not bulk mail, and
@@ -762,6 +831,7 @@ async function deliverSmtpReply(
         sentBy,
         subject,
         cc,
+        ...(bcc ? { bcc } : {}),
         bodyHtml,
         inReplyTo: anchor.inReplyTo,
         references: anchor.references,
@@ -777,6 +847,7 @@ async function deliverSmtpReply(
       from,
       subject,
       cc,
+      bcc,
       messageId: sent.messageId,
       inReplyTo: anchor.inReplyTo,
     };
@@ -858,6 +929,21 @@ export async function replyToLead(
         "human_took_over",
         409,
         `A person answered ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} at ${takeover.at} (${takeover.source}), after their last message — the automated responder does not write over a human conversation`,
+      );
+    }
+  }
+
+  // ⚠️ A THREAD HANDED TO A PERSON IS THEIRS. Once an escalation is claimed on
+  // this thread (lib/escalate-reply), the responder never writes on it again —
+  // the rep answers from their own inbox. The hand-over itself is the one
+  // automated write allowed through.
+  if (input.sentBy === "automation" && !input.handoff) {
+    const handedTo = await findEscalationHandoff(campaign.instantlyCampaignId);
+    if (handedTo) {
+      throw new ReplyToLeadError(
+        "handed_over",
+        409,
+        `The thread with ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} was handed to a person (${handedTo.handedTo ?? "hand-over in progress"}) at ${handedTo.at}; the automated responder does not write on it again`,
       );
     }
   }

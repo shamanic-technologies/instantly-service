@@ -117,6 +117,7 @@ export async function dispatchMessage(
       from: message.from,
       to: message.to,
       ...(message.cc ? { cc: message.cc } : {}),
+      ...(message.bcc ? { bcc: message.bcc } : {}),
       subject: message.subject,
       html: message.html,
       headers: message.headers,

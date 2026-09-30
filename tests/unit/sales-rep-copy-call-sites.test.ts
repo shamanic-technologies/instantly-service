@@ -59,8 +59,11 @@ describe("the one-to-one reply copies the rep", () => {
   });
 
   it("puts the rep on the same VISIBLE cc the agency inbox already rides, on both transports", () => {
-    const ccs = REPLY.match(/cc: replyCcList\(agencyInbox\(\), salesRepCopy\)/g) ?? [];
-    expect(ccs).toHaveLength(2);
+    // ONE default copy rule (agency inbox + rep, visible), read by BOTH
+    // prepare sites; only a hand-over overrides it (lib/escalate-reply).
+    expect(REPLY).toContain("cc: replyCcList(agencyInbox(), salesRepCopy)");
+    const sites = REPLY.match(/\.\.\.replyCopy\(input, salesRepCopy\)/g) ?? [];
+    expect(sites).toHaveLength(2);
     // The bare agency-only cc must be gone from both prepare sites.
     expect(REPLY).not.toContain("cc: agencyInbox(),");
   });
