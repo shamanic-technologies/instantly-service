@@ -87,6 +87,13 @@ export const instantlyCampaigns = pgTable(
     // not claim two different ways. NULL = the rep has never been rung about
     // this lead.
     salesInterestCallAt: timestamp("sales_interest_call_at"),
+    // Exactly-once claim for an escalation (lib/escalate-reply.ts, migration
+    // 0062): set BEFORE anything is sent, so a repeated escalation of the same
+    // thread sends nothing and stops nothing twice. `escalationHandedTo` is who
+    // now owns the conversation (the brand's rep, or the agency inbox); while
+    // it is set the automated responder never writes on this thread again.
+    escalatedAt: timestamp("escalated_at"),
+    escalationHandedTo: text("escalation_handed_to"),
     // Which pipe dispatches THIS lead's sequence: 'instantly' (default) or 'smtp'
     // (our own sender). FROZEN at send time from the chosen account's policy
     // column, never re-read from the account afterwards — a sequence spans days,

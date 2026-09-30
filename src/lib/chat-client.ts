@@ -99,6 +99,48 @@ export async function platformComplete(
 }
 
 /**
+ * Org-scoped completion — `POST /complete`, billed to the caller's org on the
+ * caller's run (chat-service declares the cost as a child of `x-run-id`). For
+ * work done on behalf of a customer request, e.g. the hand-over email an
+ * escalation writes into the prospect's thread.
+ *
+ * Throws on any non-2xx, carrying the status and body.
+ */
+export async function orgComplete(
+  params: ChatCompleteParams & { maxTokens?: number },
+  identity: { orgId: string; userId: string; runId: string; brandId?: string | null },
+): Promise<ChatCompleteResult> {
+  const response = await fetch(`${baseUrl()}/complete`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey(),
+      "x-org-id": identity.orgId,
+      "x-user-id": identity.userId,
+      "x-run-id": identity.runId,
+      ...(identity.brandId ? { "x-brand-id": identity.brandId } : {}),
+    },
+    body: JSON.stringify({
+      message: params.message,
+      systemPrompt: params.systemPrompt,
+      provider: params.provider,
+      model: params.model,
+      ...(params.maxTokens !== undefined && { maxTokens: params.maxTokens }),
+      ...(params.temperature !== undefined && { temperature: params.temperature }),
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(
+      `[instantly-service] chat-service POST /complete returned ${response.status}: ${text.slice(0, 300)}`,
+    );
+  }
+
+  return (await response.json()) as ChatCompleteResult;
+}
+
+/**
  * A typed JUDGMENT, as opposed to a completion.
  *
  * chat-service's judgment route answers a typed question about a piece of text
