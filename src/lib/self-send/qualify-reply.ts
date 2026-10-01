@@ -43,6 +43,8 @@ export const QUALIFICATION_EVENT_TYPES = [
   "lead_out_of_office",
   "lead_neutral",
   "lead_off_topic",
+  "lead_already_customer",
+  "lead_is_client",
 ] as const;
 
 export type QualificationEventType = (typeof QUALIFICATION_EVENT_TYPES)[number];
@@ -63,6 +65,8 @@ Labels, and what each one means:
 - lead_out_of_office — they are away and will return; the message says nothing about the offer
 - lead_neutral — anything else, including a bare acknowledgement or an unclear reply
 - lead_off_topic — the conversation is about something OTHER than them buying what we sell: a partnership or reseller proposal, a job or hiring enquiry, investors or fundraising, a vendor pitching their own product to us, or press and media. Pick this over lead_interested, lead_info_requested, lead_meeting_requested and lead_neutral whenever the exchange is about one of those rather than a purchase; the subject line tells you what the conversation is about
+- lead_already_customer — they say they ALREADY buy, use or own what we offer from this company: "I already have your unit", "we're already one of your clinics", "we've been a customer for years". Pick this over every other label when they say so, even if they also ask a question
+- lead_is_client — they say they ARE the company we are writing on behalf of, or work for it: "this is our own company", "I'm on the team", "you're emailing your own client"
 
 Judge only what the reply says. Do not infer enthusiasm from politeness, and do
 not treat a question about how you got their address as interest.
@@ -84,7 +88,9 @@ Worked examples, from real replies:
 - "Not for us, thanks." -> lead_not_interested (a decline, with no request to be removed)
 - "No interest" -> lead_not_interested (declining is not asking to be taken off the list)
 - Subject "Re: Acme + Beta partnership?", reply "can you explain?" -> lead_off_topic (the conversation is a partnership proposal, not a purchase)
-- "Are you hiring? I'd love to join your team" -> lead_off_topic (a job enquiry)`;
+- "Are you hiring? I'd love to join your team" -> lead_off_topic (a job enquiry)
+- "I actually am a Shockwave Centers of America clinic. I have the OTG unit. Is this email meant for those who don't have shockwave units?" -> lead_already_customer (they already own the product; the question does not make it interest)
+- "Ha, I work at Acme, this is our own campaign" -> lead_is_client`;
 
 /**
  * The SAME question, expressed as a typed CHOICE question for the judgment
@@ -133,6 +139,16 @@ export const REPLY_KIND_CRITERIA: Record<
   lead_off_topic: {
     what: "the conversation is about something OTHER than them buying what we sell: a partnership or reseller proposal, a job or hiring enquiry, investors or fundraising, a vendor pitching their own product to us, or press and media. Pick this over lead_interested, lead_info_requested, lead_meeting_requested and lead_neutral whenever the exchange is about one of those rather than a purchase; the subject line tells you what the conversation is about",
     examples: ["Are you hiring? I'd love to join your team"],
+  },
+  lead_already_customer: {
+    what: `they say they ALREADY buy, use or own what we offer from this company: "I already have your unit", "we're already one of your clinics", "we've been a customer for years". Pick this over every other label when they say so, even if they also ask a question`,
+    examples: [
+      "I actually am a Shockwave Centers of America clinic. I have the OTG unit. Is this email meant for those who don't have shockwave units?",
+    ],
+  },
+  lead_is_client: {
+    what: `they say they ARE the company we are writing on behalf of, or work for it: "this is our own company", "I'm on the team", "you're emailing your own client"`,
+    examples: ["Ha, I work at Acme, this is our own campaign"],
   },
 };
 

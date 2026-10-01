@@ -117,7 +117,7 @@ export interface EscalateReplyResult {
 }
 
 /** Atomically claim the escalation of one thread. True iff THIS call won. */
-async function claimEscalation(instantlyCampaignId: string): Promise<boolean> {
+export async function claimEscalation(instantlyCampaignId: string): Promise<boolean> {
   const result = await db.execute(sql`
     UPDATE instantly_campaigns
     SET escalated_at = now(), updated_at = now()
@@ -129,7 +129,7 @@ async function claimEscalation(instantlyCampaignId: string): Promise<boolean> {
 }
 
 /** Release a claim when NOTHING was sent, so a retry can hand over. */
-async function releaseEscalation(instantlyCampaignId: string): Promise<void> {
+export async function releaseEscalation(instantlyCampaignId: string): Promise<void> {
   await db.execute(sql`
     UPDATE instantly_campaigns
     SET escalated_at = NULL, escalation_handed_to = NULL, updated_at = now()
@@ -137,7 +137,7 @@ async function releaseEscalation(instantlyCampaignId: string): Promise<void> {
   `);
 }
 
-async function recordHandedTo(instantlyCampaignId: string, handedTo: string): Promise<void> {
+export async function recordHandedTo(instantlyCampaignId: string, handedTo: string): Promise<void> {
   await db.execute(sql`
     UPDATE instantly_campaigns
     SET escalation_handed_to = ${handedTo}, updated_at = now()
