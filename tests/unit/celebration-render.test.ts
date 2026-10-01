@@ -43,10 +43,18 @@ describe("renderCelebration", () => {
     notes: [],
   };
 
-  it("names the person and the brand in the subject", () => {
-    const out = renderCelebration({ leadEmail: "dr.k@kineticchiropracticutah.com", brandName: "Shockwavecenters", reply, history });
-    expect(out.subject).toBe("Good news: Andrew Kakishita replied to your Shockwavecenters outreach");
-    expect(out.html).toContain("Andrew Kakishita wrote back");
+  it("names the company and the brand in the subject", () => {
+    const out = renderCelebration({ leadEmail: "dr.k@kineticchiropracticutah.com", brandName: "Shockwavecenters", company: "Kinetic Chiropractic", reply, history });
+    expect(out.subject).toBe("\u{1F389} Congratulations: Kinetic Chiropractic replied to your Shockwavecenters outreach");
+    expect(out.html).toContain("Kinetic Chiropractic replied!");
+    expect(out.html).toContain("Andrew Kakishita at Kinetic Chiropractic answered");
+  });
+
+  it("falls back to the person, then the address, when the company is unknown", () => {
+    const named = renderCelebration({ leadEmail: "dr.k@kineticchiropracticutah.com", brandName: "Shockwavecenters", company: null, reply, history });
+    expect(named.subject).toBe("\u{1F389} Congratulations: Andrew Kakishita replied to your Shockwavecenters outreach");
+    const bare = renderCelebration({ leadEmail: "a@b.com", brandName: null, reply: { ...reply, from: "a@b.com" }, history });
+    expect(bare.subject).toBe("\u{1F389} Congratulations: a@b.com replied to your outreach");
   });
 
   it("shows the reply complete and escaped, and the earlier email once", () => {
@@ -60,7 +68,7 @@ describe("renderCelebration", () => {
   it("says so when the reply could not be read, and never summarizes it", () => {
     const out = renderCelebration({ leadEmail: "x@y.com", brandName: "B", reply: null, history: { items: [], notes: [] } });
     expect(out.html).toContain("We could not read their reply");
-    expect(out.subject).toBe("Good news: x@y.com replied to your B outreach");
+    expect(out.subject).toBe("\u{1F389} Congratulations: x@y.com replied to your B outreach");
   });
 
   it("carries no em-dash in what the client reads", () => {

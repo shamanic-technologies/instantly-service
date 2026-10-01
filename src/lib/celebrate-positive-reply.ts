@@ -26,6 +26,7 @@ import { instantlyCampaigns } from "../db/schema";
 import { agencyInbox } from "./agency-inbox";
 import { getBrandHandoffContext, type BrandHandoffContext } from "./brand-client";
 import { sendEmail } from "./email-client";
+import { findLeadOnCampaignByEmail } from "./lead-client";
 import type { ForwardPositiveReplyCampaign, ThreadMessage } from "./forward-positive-reply";
 import { formatThreadDate } from "./forward-positive-reply";
 import type { HistoryItem, ProspectHistory } from "./prospect-history";
@@ -61,6 +62,11 @@ export interface CelebrationContent {
 export interface CelebrationInput {
   leadEmail: string;
   brandName: string | null;
+  /**
+   * The prospect's company, as lead-service holds it. Null when unknown: the
+   * label then falls back to the person's name, then to the address.
+   */
+  company?: string | null;
   /** The prospect's latest reply, verbatim. Null = could not be read. */
   reply: ThreadMessage | null;
   history: Pick<ProspectHistory, "items" | "notes">;
@@ -108,8 +114,12 @@ export function prospectLabel(leadEmail: string, reply: ThreadMessage | null): s
 export function renderCelebration(input: CelebrationInput): CelebrationContent {
   const { leadEmail, brandName, reply, history } = input;
   const campaignLabel = brandName ? `your ${brandName} outreach` : "your outreach";
-  const who = prospectLabel(leadEmail, reply);
-  const subject = `Good news: ${who} replied to ${campaignLabel}`;
+  const person = prospectLabel(leadEmail, reply);
+  const company = input.company?.trim() || null;
+  const who = company ?? person;
+  const subject = `\u{1F389} Congratulations: ${who} replied to ${campaignLabel}`;
+  const byline =
+    company && person !== leadEmail ? `${person} at ${company}` : company ? `Someone at ${company}` : person;
 
   const earlier = history.items.filter(
     (item) => !(item.type === "message" && reply && item.message === reply),
@@ -132,13 +142,17 @@ export function renderCelebration(input: CelebrationInput): CelebrationContent {
     `<!doctype html><html><body style="margin:0;padding:0;background:#F8FAFC;">`,
     `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F8FAFC;"><tr><td align="center" style="padding:32px 16px;">`,
     `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FFFFFF;border:1px solid ${RULE};border-radius:16px;">`,
-    `<tr><td style="padding:28px 32px 0 32px;font:700 16px/1 ${FONT};color:${BLUE};">distribute.you</td></tr>`,
+    `<tr><td style="padding:0;background:${BLUE};border-radius:15px 15px 0 0;">`,
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="padding:28px 32px 30px 32px;">`,
+    `<div style="font:700 15px/1 ${FONT};color:#FFFFFF;opacity:.9;">distribute.you</div>`,
+    `<div style="margin:22px 0 0 0;font:40px/1 ${FONT};">\u{1F389}</div>`,
+    `<h1 style="margin:12px 0 0 0;font:700 26px/1.25 ${FONT};color:#FFFFFF;">${escapeHtml(who)} replied!</h1>`,
+    `<p style="margin:10px 0 0 0;font:15px/1.6 ${FONT};color:#DBEAFE;">${escapeHtml(byline)} answered ${escapeHtml(campaignLabel)}. Congratulations, this is the moment the outreach is for.</p>`,
+    `</td></tr></table></td></tr>`,
     `<tr><td style="padding:24px 32px 0 32px;">`,
-    `<span style="display:inline-block;padding:4px 10px;border-radius:999px;background:${TINT};border:1px solid ${TINT_RULE};font:600 12px/1.4 ${FONT};color:${BLUE};">Positive reply</span>`,
-    `<h1 style="margin:14px 0 0 0;font:700 24px/1.3 ${FONT};color:${INK};">${escapeHtml(who)} wrote back</h1>`,
-    `<p style="margin:10px 0 0 0;font:15px/1.6 ${FONT};color:#334155;">A prospect answered ${escapeHtml(campaignLabel)}. Here is their reply, exactly as they wrote it.</p>`,
+    `<span style="display:inline-block;padding:4px 10px;border-radius:999px;background:${TINT};border:1px solid ${TINT_RULE};font:600 12px/1.4 ${FONT};color:${BLUE};">Their reply, exactly as they wrote it</span>`,
     `</td></tr>`,
-    `<tr><td style="padding:20px 32px 0 32px;"><div style="background:${TINT};border:1px solid ${TINT_RULE};border-radius:12px;padding:20px;">${replyCard}</div></td></tr>`,
+    `<tr><td style="padding:12px 32px 0 32px;"><div style="background:${TINT};border:1px solid ${TINT_RULE};border-radius:12px;padding:20px;">${replyCard}</div></td></tr>`,
     notes.length > 0
       ? `<tr><td style="padding:16px 32px 0 32px;font:13px/1.5 ${FONT};color:${MUTED};">${notes.map((n) => `Note: ${escapeHtml(n)}`).join("<br>")}</td></tr>`
       : "",
@@ -150,9 +164,9 @@ export function renderCelebration(input: CelebrationInput): CelebrationContent {
   ].join("");
 
   const textLines = [
-    `${who} wrote back.`,
+    `\u{1F389} ${who} replied!`,
     ``,
-    `A prospect answered ${campaignLabel}. Here is their reply, exactly as they wrote it.`,
+    `${byline} answered ${campaignLabel}. Here is their reply, exactly as they wrote it.`,
     ``,
     reply
       ? [`From: ${reply.from}`, `Date: ${formatThreadDate(reply.date)}`, `Subject: ${reply.subject}`, ``, reply.bodyText].join("\n")
@@ -206,6 +220,28 @@ export async function brandContextOrNull(
 }
 
 /**
+ * The prospect's company as lead-service holds it, or null. A celebration never
+ * waits on or fails over a label: an unreachable lead-service is logged and the
+ * subject names the person instead.
+ */
+async function companyOrNull(
+  campaign: ForwardPositiveReplyCampaign,
+  leadEmail: string,
+): Promise<string | null> {
+  const campaignId = campaign.conversationCampaignId ?? campaign.campaignId;
+  if (!campaign.orgId || !campaignId) return null;
+  try {
+    const lead = await findLeadOnCampaignByEmail({ orgId: campaign.orgId, campaignId, email: leadEmail });
+    return lead?.company ?? null;
+  } catch (error) {
+    console.warn(
+      `[instantly-service] celebrate: could not read the company of ${leadEmail} — ${error instanceof Error ? error.message : String(error)}; naming the person instead`,
+    );
+    return null;
+  }
+}
+
+/**
  * Send the celebration for one thread (no claim — the caller holds it).
  * Throws on a send failure so the caller can release the claim.
  */
@@ -225,9 +261,11 @@ export async function sendCelebration(
   const recipient = brand?.rep.email ?? agency;
   const bcc = recipient.toLowerCase() === agency.toLowerCase() ? [] : [agency];
 
+  const company = await companyOrNull(campaign, leadEmail);
   const content = renderCelebration({
     leadEmail,
     brandName: brand?.name ?? null,
+    company,
     reply: latestReply,
     history,
   });

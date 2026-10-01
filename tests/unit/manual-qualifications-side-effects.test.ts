@@ -296,9 +296,12 @@ describe("applyManualQualificationSideEffects", () => {
     }
     const stopping = MANUAL_QUALIFICATION_STATUSES.filter(isSequenceStoppingQualification);
     // 4 positive + 4 negative + lead_neutral + lead_off_topic + the 2
-    // still-accepted legacy deal-progress values (which resolve to a positive kind).
-    expect(stopping).toHaveLength(12);
+    // not-a-prospect kinds + the 2 still-accepted legacy deal-progress values
+    // (which resolve to a positive kind).
+    expect(stopping).toHaveLength(14);
     expect(stopping).toContain("lead_off_topic");
+    expect(stopping).toContain("lead_already_customer");
+    expect(stopping).toContain("lead_is_client");
     // A person stating they changed job HAS replied — the sequence stops, and
     // its remaining holds are refunded, exactly like any other human reply.
     expect(stopping).toContain("lead_changed_job");

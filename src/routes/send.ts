@@ -13,6 +13,7 @@ import {
 import { selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
 import { stepRowsFromSendPayload } from "../lib/self-send/sequence-steps";
 import { findRecentBrandContact, recontactRefusal } from "../lib/recontact-window";
+import { findNotAProspect, notAProspectRefusal } from "../lib/not-a-prospect";
 import { findStandingOptOut, optOutRefusal } from "../lib/lead-optouts";
 import { resolveTransportForNewSequence } from "../lib/self-send/capability";
 import {
@@ -269,6 +270,17 @@ router.post("/", async (req: Request, res: Response) => {
           },
           req.headers,
         ).catch(() => {});
+        return res.status(409).json(refusal);
+      }
+
+      // 3c. NOT A PROSPECT — the person told this brand they already buy from
+      //     the client, or are the client. Permanent for the brand, unlike the
+      //     window above. Same placement and fail-loud posture. See
+      //     src/lib/not-a-prospect.ts.
+      const notAProspect = await findNotAProspect(body.to, brandIds);
+      if (notAProspect) {
+        const refusal = notAProspectRefusal(body.to, notAProspect);
+        console.warn(`[send] Refused — ${refusal.details}`);
         return res.status(409).json(refusal);
       }
 

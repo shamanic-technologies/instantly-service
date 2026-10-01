@@ -58,6 +58,10 @@ export const ZERO_REPLIES_DETAIL = {
   // investors, vendor, press). Counted neutral; beyond the published contract,
   // like the positive splits above.
   offTopic: 0,
+  // Not a prospect at all: already a customer of the client, or the client's
+  // own team (lib/reply-kind NOT_A_PROSPECT_REPLY_KINDS). Counted neutral.
+  alreadyCustomer: 0,
+  isClient: 0,
   autoReply: 0,
   outOfOffice: 0,
 };
@@ -127,7 +131,8 @@ export function buildRepliesFromDetail(detail: typeof ZERO_REPLIES_DETAIL) {
     repliesPositive: detail.interested + detail.infoRequested + detail.meetingRequested,
     repliesNegative:
       detail.notInterested + detail.wrongPerson + detail.changedJob + detail.unsubscribe,
-    repliesNeutral: detail.neutral + detail.referral + detail.offTopic,
+    repliesNeutral:
+      detail.neutral + detail.referral + detail.offTopic + detail.alreadyCustomer + detail.isClient,
     repliesAutoReply: detail.autoReply + detail.outOfOffice,
     repliesDetail: detail,
   };
@@ -576,6 +581,8 @@ export const SENTIMENT_EVENT_TYPES = [
   "lead_changed_job",
   "lead_neutral",
   "lead_off_topic",
+  "lead_already_customer",
+  "lead_is_client",
   "lead_out_of_office",
   "auto_reply_received",
 ] as const;
@@ -590,6 +597,8 @@ export interface SentimentDetail {
   changedJob: number;
   neutral: number;
   offTopic: number;
+  alreadyCustomer: number;
+  isClient: number;
   autoReply: number;
   outOfOffice: number;
 }
@@ -604,6 +613,10 @@ const ZERO_SENTIMENT_DETAIL: SentimentDetail = {
   changedJob: 0,
   neutral: 0,
   offTopic: 0,
+  // Not a prospect at all: already a customer of the client, or the client's
+  // own team (lib/reply-kind NOT_A_PROSPECT_REPLY_KINDS). Counted neutral.
+  alreadyCustomer: 0,
+  isClient: 0,
   autoReply: 0,
   outOfOffice: 0,
 };
@@ -650,6 +663,8 @@ const SENTIMENT_COUNT_COLUMNS = sql`
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_changed_job')::int AS "rdChangedJob",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_neutral')::int AS "rdNeutral",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_off_topic')::int AS "rdOffTopic",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_already_customer')::int AS "rdAlreadyCustomer",
+  COUNT(*) FILTER (WHERE ls.sentiment = 'lead_is_client')::int AS "rdIsClient",
   COUNT(*) FILTER (WHERE ls.sentiment = 'auto_reply_received')::int AS "rdAutoReply",
   COUNT(*) FILTER (WHERE ls.sentiment = 'lead_out_of_office')::int AS "rdOutOfOffice"
 `;
@@ -666,6 +681,8 @@ function rowToSentimentDetail(row: Record<string, number> | undefined): Sentimen
     changedJob: row.rdChangedJob ?? 0,
     neutral: row.rdNeutral ?? 0,
     offTopic: row.rdOffTopic ?? 0,
+    alreadyCustomer: row.rdAlreadyCustomer ?? 0,
+    isClient: row.rdIsClient ?? 0,
     autoReply: row.rdAutoReply ?? 0,
     outOfOffice: row.rdOutOfOffice ?? 0,
   };
@@ -893,6 +910,8 @@ export async function queryGroupedStats(
       unsubscribe: row?.rdUnsubscribe ?? 0,
       neutral: sentiment.neutral,
       offTopic: sentiment.offTopic,
+      alreadyCustomer: sentiment.alreadyCustomer,
+      isClient: sentiment.isClient,
       autoReply: sentiment.autoReply,
       outOfOffice: sentiment.outOfOffice,
     };
@@ -1012,6 +1031,8 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
     unsubscribe: row.rdUnsubscribe ?? 0,
     neutral: sentiment.neutral,
     offTopic: sentiment.offTopic,
+    alreadyCustomer: sentiment.alreadyCustomer,
+    isClient: sentiment.isClient,
     autoReply: sentiment.autoReply,
     outOfOffice: sentiment.outOfOffice,
   };
@@ -1131,6 +1152,8 @@ export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
       unsubscribe: sr.rdUnsubscribe ?? 0,
       neutral: sentiment?.neutral ?? 0,
       offTopic: sentiment?.offTopic ?? 0,
+      alreadyCustomer: sentiment?.alreadyCustomer ?? 0,
+      isClient: sentiment?.isClient ?? 0,
       autoReply: sentiment?.autoReply ?? 0,
       outOfOffice: sentiment?.outOfOffice ?? 0,
     };
