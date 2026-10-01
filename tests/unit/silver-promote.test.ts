@@ -65,6 +65,14 @@ vi.mock("../../src/lib/reply-opt-out", () => ({
   maybeRecordOptOutFromReply: (...args: unknown[]) => mockMaybeRecordOptOut(...args),
 }));
 
+// Instantly's plain "interested" may be refined to a finer positive kind before
+// it is written. Default: no refinement (a reset mock returns undefined).
+const mockRefine = vi.fn();
+vi.mock("../../src/lib/refine-interest-kind", () => ({
+  refineInstantlyInterest: (campaign: unknown, input: { eventType: string }) =>
+    mockRefine(campaign, input) ?? Promise.resolve({ eventType: input.eventType, reading: null }),
+}));
+
 const mockUpdateCostStatus = vi.fn();
 vi.mock("../../src/lib/runs-client", () => ({
   updateCostStatus: (...args: unknown[]) => mockUpdateCostStatus(...args),
@@ -275,6 +283,7 @@ describe("promoteFromWebhookPayload", () => {
         leadEmail: "lead@test.com",
       }),
       "reply_received",
+      undefined,
     );
 
     // ORDER IS LOAD-BEARING: the mirror is what puts the words in bronze, and
@@ -282,6 +291,42 @@ describe("promoteFromWebhookPayload", () => {
     // does not yet contain the reply.
     expect(mockMaybeMirror.mock.invocationCallOrder[0]).toBeLessThan(
       mockMaybeRecordOptOut.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("records the finer kind our classifier read when Instantly says plain 'interested', and every side effect follows it", async () => {
+    // Dr. Joe, 2026-10-01: "Send me more information on how it works." Instantly
+    // said lead_interested; the reply is an info request, and the client email,
+    // the gold kind and the opt-out read all act on THAT.
+    const reading = {
+      qualification: "lead_info_requested",
+      inbound: { instantlyEmailId: "em-1", text: "Send me more information on how it works.", subject: "Re: hi" },
+    };
+    mockRefine.mockResolvedValueOnce({ eventType: "lead_info_requested", reading });
+    mockCampaign();
+    mockNewSilverRow();
+
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-1",
+      payload: { event_type: "lead_interested", campaign_id: "inst-camp-1", lead_email: "lead@test.com" },
+    });
+
+    expect(mockRefine).toHaveBeenCalledWith(
+      expect.objectContaining({ instantlyCampaignId: "inst-camp-1" }),
+      expect.objectContaining({ eventType: "lead_interested", source: "webhook" }),
+    );
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "lead_info_requested" }),
+    );
+    // Still a positive reply: the classification projection is unchanged.
+    expect(mockDbUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ replyClassification: "positive" }),
+    );
+    // The opt-out read reuses the reading instead of paying a second model call.
+    expect(mockMaybeRecordOptOut).toHaveBeenCalledWith(
+      expect.objectContaining({ instantlyCampaignId: "inst-camp-1" }),
+      "lead_info_requested",
+      reading,
     );
   });
 

@@ -304,7 +304,7 @@ export async function maybeForwardPositiveReply(
   if (!campaign.orgId) return;
 
   const { celebrateOnce } = await import("./celebrate-positive-reply");
-  const run = celebrateOnce(campaign, leadEmail, { waitsMs: options.waitsMs });
+  const run = celebrateOnce(campaign, leadEmail, { waitsMs: options.waitsMs, kind: eventType });
   if (options.background === false) {
     await run;
   } else {
