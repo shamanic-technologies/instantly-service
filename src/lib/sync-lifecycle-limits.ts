@@ -95,10 +95,11 @@ export interface LifecycleLimitsSyncSummary {
 
 /**
  * Pure: compute the per-account drift patch.
- *   - warmup.limit + daily_limit are enforced on the `instantly` transport, AND
- *     on an `smtp` account Instantly still holds ACTIVE (its warmup pool still
- *     sends from it, and our own cap reads its `daily_limit`) — never on a
- *     DISABLED smtp account (the PATCH would fail). Enforced ONLY when the silver lifecycle is
+ *   - warmup.limit is enforced on EVERY account in a limited state, an smtp
+ *     one Instantly disabled included (it warms with its held value on resume).
+ *     daily_limit is enforced on the `instantly` transport, AND on an `smtp`
+ *     account Instantly still holds ACTIVE (our own cap reads its
+ *     `daily_limit`) — not on a DISABLED smtp account. Enforced ONLY when the silver lifecycle is
  *     `in_production` or `in_recovery` (their targets are non-null); any other
  *     state (or unknown lifecycle) leaves both untouched. The daily_limit target
  *     is additionally capped by the VOLUME ramp (`rampCapForVolume`), so a quiet mailbox
@@ -147,20 +148,25 @@ export function selectLifecycleLimitPatches(
     //      that happened on smtp (reconcile skips smtp) caps the mailbox there.
     // Measured 2026-09-29: 16 smtp in_production mailboxes sat at the recovery
     // 20/30 and sent ~18/day while their peers at 50/0 sent ~45.
-    // An smtp account Instantly DISABLED (`status <= 0`) is still skipped: the
-    // PATCH would fail on a dead account, and its warmup pool is off anyway.
-    const enforceLimits = instantlyEnforced || (account.status ?? 0) > 0;
+    // An smtp account Instantly DISABLED (`status <= 0`) keeps its daily_limit
+    // untouched (not our pipe, nothing reads it), but its WARMUP is still
+    // enforced: Instantly accepts the PATCH on a disabled account (verified
+    // 2026-10-01 on a `-1` alias), and the account warms with whatever it holds
+    // the moment Instantly resumes it (growthagency.diy/.email flap -3 <-> 1;
+    // skipping them left 14 logins holding 30 per alias, 120-150 per mailbox).
+    const enforceDaily = instantlyEnforced || (account.status ?? 0) > 0;
+    const limited = status === "in_production" || status === "in_recovery";
 
     let warmup: number | null = null;
     let daily: number | null = null;
-    if (enforceLimits && (status === "in_production" || status === "in_recovery")) {
+    if (limited) {
       // The login's per-alias share, not the per-state figure — see
-      // `warmupTargetsByLogin`. Always defined here: this account is enforced
-      // and in a limited state, which is exactly what that map is keyed over.
+      // `warmupTargetsByLogin`. Always defined here: this account is in a
+      // limited state, which is exactly what that map is keyed over.
       const targetWarmup =
         warmupByLogin.get(loginOf(account.email, mailboxLoginByEmail)) ??
         warmupDailyForStatus(status);
-      const stateDaily = dailyLimitForStatus(status); // 50 | 20 (never null here)
+      const stateDaily = enforceDaily ? dailyLimitForStatus(status) : null; // 50 | 20
       // ⚠️ NO volume ramp here. Instantly is the pipe for these mailboxes, and
       // our volume figure is blind to its warmup pool — see
       // `rampAppliesToTransport`. Applying the ramp wrote a floor of 5 onto
@@ -212,14 +218,12 @@ function loginOf(email: string, mailboxLoginByEmail: ReadonlyMap<string, string>
  *     selector. The production check reads every alias our lifecycle calls
  *     in_production, including an smtp one Instantly has disabled — we still
  *     dispatch outreach from it ourselves.
- *   - otherwise (all enforced aliases in_recovery) → floor((30 − H) / N) per
- *     alias (never below 0), N = the aliases this sweep enforces warmup on
- *     (Instantly-active, limited state), H = the `warmup.limit` still HELD by
- *     the login's limited-state aliases it cannot patch (an smtp alias Instantly
- *     disabled). A disabled alias keeps its value and warms with it again the
- *     moment Instantly resumes it, so the login's total is ≤ 30 in BOTH states.
- *     Measured 2026-10-01: one alias per login on growthagency.diy/.email flaps
- *     -3 ↔ 1; with H ignored the split swung 6 ↔ 7 and the login warmed 34.
+ *   - otherwise (all aliases in_recovery) → floor(30 / N) per alias, N = EVERY
+ *     limited-state alias on the login, Instantly-disabled ones included (they
+ *     are patched too and warm again the moment Instantly resumes them), so the
+ *     login's total is ≤ 30 whichever aliases are up. Measured 2026-10-01:
+ *     counting only the active ones, an alias flapping -3 ↔ 1 swung the split
+ *     6 ↔ 7 and growthagency.diy/.email warmed 34.
  * A single-alias login gets exactly the per-state figure, as before.
  * Aliases in deactivated_* states are untouched by this sweep and not counted.
  */
@@ -229,7 +233,6 @@ export function warmupTargetsByLogin(
   mailboxLoginByEmail: ReadonlyMap<string, string>,
 ): Map<string, number> {
   const enforcedCount = new Map<string, number>();
-  const heldByUnpatched = new Map<string, number>();
   const hasProduction = new Set<string>();
   const perStateTarget = new Map<string, number>();
   for (const account of accounts) {
@@ -239,13 +242,6 @@ export function warmupTargetsByLogin(
     const login = loginOf(account.email, mailboxLoginByEmail);
     if (status === "in_production") hasProduction.add(login);
     if (status !== "in_production" && status !== "in_recovery") continue;
-    const enforceLimits =
-      isInstantlyEnforced(view?.sendTransport ?? "instantly") || (account.status ?? 0) > 0;
-    if (!enforceLimits) {
-      // Not ours to PATCH, but its warmup.limit comes back with it on resume.
-      heldByUnpatched.set(login, (heldByUnpatched.get(login) ?? 0) + (account.warmup?.limit ?? 0));
-      continue;
-    }
     enforcedCount.set(login, (enforcedCount.get(login) ?? 0) + 1);
     const target = warmupDailyForStatus(status) ?? 0;
     // A login mixing states takes the smaller per-state figure (production's 0).
@@ -254,8 +250,7 @@ export function warmupTargetsByLogin(
   const byLogin = new Map<string, number>();
   for (const [login, count] of enforcedCount) {
     const total = hasProduction.has(login) ? 0 : (perStateTarget.get(login) ?? 0);
-    const free = Math.max(0, total - (heldByUnpatched.get(login) ?? 0));
-    byLogin.set(login, Math.floor(free / count));
+    byLogin.set(login, Math.floor(total / count));
   }
   return byLogin;
 }
