@@ -22,6 +22,7 @@ import {
   type ThreadFilters,
 } from "../lib/ops/reads";
 import { getOrSetCachedStats } from "../lib/stats-cache";
+import { readSentPerPeriod, SENT_GRAINS, type SentGrain } from "../lib/ops/sent-per-period";
 import { backfillReplyVerdicts, planReplyVerdicts, syncReplyVerdicts } from "../lib/reply-verdicts";
 
 const router = Router();
@@ -190,6 +191,40 @@ router.get("/infra", async (_req: Request, res: Response) => {
     );
   } catch (error) {
     fail(res, "infra", error);
+  }
+});
+
+/**
+ * GET /internal/ops/sent-per-period?grain=day|week|month&since=<ISO>
+ * Emails SENT per UTC period, split by purpose (to leads / manual replies /
+ * warmup / warmup replies / seeds) + distinct leads emailed. Every period from
+ * the first send (or `since`) to the current one, zeros included; the current
+ * one is flagged `inProgress`. Cached 60s per (grain, since).
+ */
+router.get("/sent-per-period", async (req: Request, res: Response) => {
+  const grain = req.query.grain;
+  if (typeof grain !== "string" || !(SENT_GRAINS as readonly string[]).includes(grain)) {
+    res.status(400).json({ error: "grain is required and must be day|week|month" });
+    return;
+  }
+  const rawSince = typeof req.query.since === "string" && req.query.since !== "" ? req.query.since : null;
+  let since: string | null = null;
+  if (rawSince !== null) {
+    const d = new Date(rawSince);
+    if (Number.isNaN(d.getTime())) {
+      res.status(400).json({ error: "since must be an ISO timestamp" });
+      return;
+    }
+    since = d.toISOString();
+  }
+  try {
+    res.json(
+      await getOrSetCachedStats(`ops-sent-per-period:${grain}:${since ?? "all"}`, () =>
+        readSentPerPeriod({ grain: grain as SentGrain, since }),
+      ),
+    );
+  } catch (error) {
+    fail(res, "sent-per-period", error);
   }
 });
 

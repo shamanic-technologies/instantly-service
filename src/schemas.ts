@@ -2826,6 +2826,54 @@ registry.registerPath({
   responses: { 200: { description: "Infra", content: { "application/json": { schema: OpsObject.openapi("OpsInfraResponse") } } }, 401: { description: "Unauthorized" } },
 });
 
+const SentCountsShape = {
+  toLeads: z.number().int().describe("`outreach` sent: cold sequence steps to a lead, Instantly + SMTP"),
+  manualReplies: z.number().int().describe("`manual_reply` sent: a human's answer to a lead — reaches a lead but is kept apart from cold outreach"),
+  warmup: z.number().int().describe("`warmup` sent: our own warmup mesh"),
+  warmupReplies: z.number().int().describe("`warmup_reply` sent: replies inside the warmup mesh"),
+  seeds: z.number().int().describe("`seed` sent: inbox-placement / seed tests"),
+};
+
+const SentPeriodSchema = z
+  .object({
+    periodStart: z.string().describe("YYYY-MM-DD, UTC, inclusive (a week starts Monday)"),
+    periodEnd: z.string().describe("YYYY-MM-DD, UTC, exclusive"),
+    inProgress: z.boolean().describe("True on the current period only — it is still filling"),
+    ...SentCountsShape,
+    leadsEmailed: z.number().int().describe("Distinct lead addresses sent an `outreach` or `manual_reply` in the period — does NOT add across periods"),
+  })
+  .openapi("SentPeriod");
+
+const SentPerPeriodResponseSchema = z
+  .object({
+    grain: z.enum(["day", "week", "month"]),
+    timezone: z.literal("UTC"),
+    since: z.string().nullable().describe("The `since` asked for (ISO), null = from the first send"),
+    asOf: z.string(),
+    totals: z.object(SentCountsShape).describe("Sum of the periods' counts"),
+    periods: z.array(SentPeriodSchema).describe("Oldest first, no gaps, zeros included, last one is the current period"),
+  })
+  .openapi("SentPerPeriodResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/sent-per-period",
+  summary: "Emails sent per day / week / month, to leads apart from our own mail (warmup, warmup replies, seeds)",
+  description:
+    "Platform-scoped, cached 60s per (grain, since). Counts outbound `messages` rows whose outcome is `sent` (a hand-off bounce never left us) per UTC period and per purpose, plus distinct leads emailed. Every period from the first send (or from the period containing `since`) to the current one, zeros included; the current period carries `inProgress: true`. Independent of `/stats` (customer totals are untouched).",
+  request: {
+    query: z.object({
+      grain: z.enum(["day", "week", "month"]).describe("REQUIRED"),
+      since: z.string().optional().describe("ISO timestamp; the series starts at the period containing it"),
+    }),
+  },
+  responses: {
+    200: { description: "Periods", content: { "application/json": { schema: SentPerPeriodResponseSchema } } },
+    400: { description: "grain missing / unknown, or since not a timestamp" },
+    401: { description: "Unauthorized" },
+  },
+});
+
 const OpsListQuery = z.object({
   limit: z.number().int().min(1).max(500).describe("REQUIRED. Page size — there is no default; a caller states how much it wants."),
   cursor: z.string().optional().describe("Opaque, from the previous page's `nextCursor`"),
