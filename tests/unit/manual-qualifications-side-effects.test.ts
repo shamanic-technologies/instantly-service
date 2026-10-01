@@ -83,6 +83,11 @@ vi.mock("../../src/lib/trigger-sales-interest-campaign", () => ({
   maybeTriggerSalesInterestCampaign: (...args: unknown[]) => mockTriggerSalesInterest(...args),
 }));
 
+const mockNotAProspect = vi.fn();
+vi.mock("../../src/lib/not-a-prospect", () => ({
+  maybeHandleNotAProspect: (...args: unknown[]) => mockNotAProspect(...args),
+}));
+
 const mockAnnounce = vi.fn();
 vi.mock("../../src/lib/evidence-changed", () => ({
   announceEvidenceChanged: (...args: unknown[]) => mockAnnounce(...args),
@@ -371,6 +376,25 @@ describe("applyManualQualificationSideEffects — a POSITIVE manual statement re
       expect.objectContaining({ instantlyCampaignId: "inst-1", campaignId: "camp-1" }),
       "lead@test.com",
       "lead_interested",
+    );
+  });
+
+  it("hands a not-a-prospect statement to the not-a-prospect path as MANUAL (nobody is messaged)", async () => {
+    await applyManualQualificationSideEffects({
+      bronzeRowId: "bronze-1",
+      orgId: "org-1",
+      instantlyCampaignId: "inst-1",
+      leadEmail: "lead@test.com",
+      status: "lead_already_customer",
+      replyKind: "lead_already_customer",
+      qualifiedAt: new Date("2026-10-01T05:00:00Z"),
+      rawPayload: {},
+    });
+    expect(mockNotAProspect).toHaveBeenCalledWith(
+      expect.objectContaining({ instantlyCampaignId: "inst-1", campaignId: "camp-1" }),
+      "lead@test.com",
+      "lead_already_customer",
+      "manual",
     );
   });
 

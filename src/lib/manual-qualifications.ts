@@ -22,6 +22,7 @@ import { refreshLeadStatusCurrent } from "./status-gold";
 import { announceEvidenceChanged } from "./evidence-changed";
 import { stopLeadSequence } from "./stop-lead-sequence";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
+import { maybeHandleNotAProspect } from "./not-a-prospect";
 import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
 import {
   ACCEPTED_QUALIFICATION_STATUSES,
@@ -373,6 +374,10 @@ export async function applyManualQualificationSideEffects(
   if (campaignRow) {
     await maybeForwardPositiveReply(campaignRow, input.leadEmail, input.replyKind);
     await maybeTriggerSalesInterestCampaign(campaignRow, input.leadEmail, input.replyKind);
+    // Not a prospect (already a customer / the client): stop the brand's other
+    // sequences and record the won-not-ours sale. Source `manual`, so the
+    // prospect is NOT messaged — the person stating it handles the conversation.
+    await maybeHandleNotAProspect(campaignRow, input.leadEmail, input.replyKind, "manual");
   }
 
   // The person expects the Leads page to move NOW, not in five minutes — tell
