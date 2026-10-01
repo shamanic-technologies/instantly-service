@@ -90,13 +90,26 @@ function actionBlockHtml(item: Extract<HistoryItem, { type: "action" }>, leadEma
 }
 
 /**
+ * Pure: who wrote, in words a client reads. The display name of the reply's
+ * From header (`"Andrew Kakishita" <dr.k@…>` → Andrew Kakishita) when it carries
+ * one, else the address we emailed. Never a name guessed from an address.
+ */
+export function prospectLabel(leadEmail: string, reply: ThreadMessage | null): string {
+  const from = reply?.from?.trim() ?? "";
+  const match = from.match(/^\s*"?([^"<]*?)"?\s*<[^>]+>\s*$/);
+  const name = match?.[1]?.trim();
+  return name && !name.includes("@") ? name : leadEmail;
+}
+
+/**
  * Pure: the celebration email. Every string from the prospect or the thread is
  * escaped — the template engine interpolates raw.
  */
 export function renderCelebration(input: CelebrationInput): CelebrationContent {
   const { leadEmail, brandName, reply, history } = input;
   const campaignLabel = brandName ? `your ${brandName} outreach` : "your outreach";
-  const subject = `Good news: ${leadEmail} replied to ${campaignLabel}`;
+  const who = prospectLabel(leadEmail, reply);
+  const subject = `Good news: ${who} replied to ${campaignLabel}`;
 
   const earlier = history.items.filter(
     (item) => !(item.type === "message" && reply && item.message === reply),
@@ -122,7 +135,7 @@ export function renderCelebration(input: CelebrationInput): CelebrationContent {
     `<tr><td style="padding:28px 32px 0 32px;font:700 16px/1 ${FONT};color:${BLUE};">distribute.you</td></tr>`,
     `<tr><td style="padding:24px 32px 0 32px;">`,
     `<span style="display:inline-block;padding:4px 10px;border-radius:999px;background:${TINT};border:1px solid ${TINT_RULE};font:600 12px/1.4 ${FONT};color:${BLUE};">Positive reply</span>`,
-    `<h1 style="margin:14px 0 0 0;font:700 24px/1.3 ${FONT};color:${INK};">${escapeHtml(leadEmail)} wrote back</h1>`,
+    `<h1 style="margin:14px 0 0 0;font:700 24px/1.3 ${FONT};color:${INK};">${escapeHtml(who)} wrote back</h1>`,
     `<p style="margin:10px 0 0 0;font:15px/1.6 ${FONT};color:#334155;">A prospect answered ${escapeHtml(campaignLabel)}. Here is their reply, exactly as they wrote it.</p>`,
     `</td></tr>`,
     `<tr><td style="padding:20px 32px 0 32px;"><div style="background:${TINT};border:1px solid ${TINT_RULE};border-radius:12px;padding:20px;">${replyCard}</div></td></tr>`,
@@ -137,7 +150,7 @@ export function renderCelebration(input: CelebrationInput): CelebrationContent {
   ].join("");
 
   const textLines = [
-    `${leadEmail} wrote back.`,
+    `${who} wrote back.`,
     ``,
     `A prospect answered ${campaignLabel}. Here is their reply, exactly as they wrote it.`,
     ``,
