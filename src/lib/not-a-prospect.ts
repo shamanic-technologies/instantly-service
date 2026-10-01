@@ -13,7 +13,7 @@
  *  1. Every OTHER live sequence of this brand to the person stops (the reply
  *     already stopped this one). Same org, same brand, same address.
  *  2. lead-service is told it is a won sale our outreach did not cause, when it
- *     is `lead_already_customer` (`reportWonNotOurs`).
+ *     is `lead_already_customer` (`recordExistingCustomerByEmail`).
  *  3. The prospect is answered NOW, in their thread, with a short apology that
  *     claims nothing about them (`REASSURANCE_SYSTEM_PROMPT`), so they are not
  *     left wondering why they were pitched. Exactly once per thread (the
@@ -46,6 +46,7 @@ import {
   renderQuotedHistory,
 } from "./escalate-reply";
 import type { ThreadMessage } from "./forward-positive-reply";
+import { recordExistingCustomerByEmail } from "./lead-client";
 import { loadHistoryWithLatestReply, REPLY_WAIT_BACKGROUND_MS } from "./prospect-history";
 import { normalizeLeadEmail } from "./recontact-window";
 import { isNotAProspectReplyKind, NOT_A_PROSPECT_REPLY_KINDS } from "./reply-kind";
@@ -259,13 +260,26 @@ export async function maybeHandleNotAProspect(
       if (ok) stopped += 1;
     }
 
+    // A person who already buys from the client is a won sale, just not ours.
+    // Told on every source (a hand-stated one included); never fatal.
+    let won = "n/a";
+    if (eventType === "lead_already_customer" && campaign.campaignId) {
+      try {
+        won = (
+          await recordExistingCustomerByEmail({ orgId, campaignId: campaign.campaignId, email: leadEmail })
+        ).status;
+      } catch (error) {
+        won = `FAILED: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+
     const reassurance =
       source === "manual"
         ? "skipped: stated by a person, who handles the conversation"
         : await reassureOnce(campaign, leadEmail);
 
     console.log(
-      `[instantly-service] not-a-prospect: ${eventType} campaign=${campaign.instantlyCampaignId} lead=${leadEmail} source=${source} siblingsStopped=${stopped}/${siblings.length} reassurance=${reassurance}`,
+      `[instantly-service] not-a-prospect: ${eventType} campaign=${campaign.instantlyCampaignId} lead=${leadEmail} source=${source} siblingsStopped=${stopped}/${siblings.length} wonNotOurs=${won} reassurance=${reassurance}`,
     );
   } catch (error) {
     console.error(

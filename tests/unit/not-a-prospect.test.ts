@@ -40,6 +40,11 @@ vi.mock("../../src/lib/escalate-reply", async () => {
   };
 });
 
+const mockRecordCustomer = vi.fn();
+vi.mock("../../src/lib/lead-client", () => ({
+  recordExistingCustomerByEmail: (...a: unknown[]) => mockRecordCustomer(...a),
+}));
+
 vi.mock("../../src/lib/celebrate-positive-reply", async () => {
   const actual = await vi.importActual<typeof import("../../src/lib/celebrate-positive-reply")>(
     "../../src/lib/celebrate-positive-reply",
@@ -91,6 +96,7 @@ beforeEach(() => {
     latestReply: ANDREW_REPLY,
   });
   mockReplyToLead.mockResolvedValue({ status: "sent", reply: {} });
+  mockRecordCustomer.mockResolvedValue({ status: "recorded" });
 });
 
 // ─── The draft's hard rule ───────────────────────────────────────────────────
@@ -166,6 +172,24 @@ describe("maybeHandleNotAProspect", () => {
     expect(mockClaim).not.toHaveBeenCalled();
     expect(mockComplete).not.toHaveBeenCalled();
     expect(mockReplyToLead).not.toHaveBeenCalled();
+  });
+
+  it("records an existing customer as a won sale that is not ours, on every source", async () => {
+    await maybeHandleNotAProspect(CAMPAIGN, "dr.k@x.com", "lead_already_customer", "manual");
+    expect(mockRecordCustomer).toHaveBeenCalledWith({ orgId: "org-1", campaignId: "camp-1", email: "dr.k@x.com" });
+  });
+
+  it("records no sale for the client's own team", async () => {
+    mockComplete.mockResolvedValue({ content: "Hi,\n\nSorry, this was not meant for you.\n\nBest," });
+    await maybeHandleNotAProspect(CAMPAIGN, "dr.k@x.com", "lead_is_client", "self_send");
+    expect(mockRecordCustomer).not.toHaveBeenCalled();
+  });
+
+  it("still reassures when lead-service refuses the sale", async () => {
+    mockRecordCustomer.mockRejectedValue(new Error("404 lead_not_found"));
+    mockComplete.mockResolvedValue({ content: "Hi,\n\nSorry, this was not meant for you.\n\nBest," });
+    await maybeHandleNotAProspect(CAMPAIGN, "dr.k@x.com", "lead_already_customer", "self_send");
+    expect(mockReplyToLead).toHaveBeenCalledTimes(1);
   });
 
   it("sends nothing when the thread was already escalated or answered", async () => {

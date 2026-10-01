@@ -83,6 +83,44 @@ export async function scheduleFollowupByEmail(params: {
 }
 
 /**
+ * Tell lead-service this person ALREADY buys from the brand: a won sale our
+ * outreach did not cause (source `reply`, no value, no cost — nothing is
+ * estimated). Idempotent on lead-service's side (`recorded` / `already_recorded`
+ * / `already_won`). Throws on any non-2xx with the status and body, so a caller
+ * logs WHY (404 `lead_not_found`, 409 `ambiguous_lead`, 409 `stated_never`).
+ */
+export async function recordExistingCustomerByEmail(params: {
+  orgId: string;
+  campaignId: string;
+  email: string;
+  replyRef?: string;
+}): Promise<{ status: string }> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+  const { orgId, campaignId, ...body } = params;
+  const response = await fetch(
+    `${LEAD_SERVICE_URL}/orgs/campaigns/${encodeURIComponent(campaignId)}/existing-customers/by-email`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": LEAD_SERVICE_API_KEY,
+        "x-org-id": orgId,
+      },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(
+      `lead-service POST /orgs/campaigns/{campaignId}/existing-customers/by-email failed: ${response.status} - ${detail.slice(0, 200)}`,
+    );
+  }
+  return (await response.json()) as { status: string };
+}
+
+/**
  * What this service needs to KNOW about a person before it rings a rep about
  * them: how to name them out loud, and Apollo's id for them so a phone number
  * can be asked for.
