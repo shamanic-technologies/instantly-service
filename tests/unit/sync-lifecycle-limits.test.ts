@@ -386,18 +386,49 @@ describe("selectLifecycleLimitPatches — warmup per real mailbox (login)", () =
     ).toEqual(expected);
   });
 
-  it("an Instantly-DISABLED smtp alias is skipped AND not counted in the split", () => {
+  it("an Instantly-DISABLED smtp alias is skipped, and the warmup it still HOLDS comes off the split", () => {
     const accounts = [
       acct("on1@g.com", 20, 30),
       acct("on2@g.com", 20, 30),
-      acct("off@g.com", 20, 30, { status: -1 }),
+      acct("off@g.com", 20, 10, { status: -1 }),
     ];
     const lc = new Map(accounts.map((a) => [a.email as string, lifecycle("in_recovery", "smtp")]));
     const logins = oneLogin(accounts.map((a) => a.email as string), "kevin@g.com");
     expect(selectLifecycleLimitPatches(accounts, lc, asOf, new Map(), logins)).toEqual([
-      { email: "on1@g.com", warmup: 15, daily: null, slowRamp: null },
-      { email: "on2@g.com", warmup: 15, daily: null, slowRamp: null },
+      { email: "on1@g.com", warmup: 10, daily: null, slowRamp: null },
+      { email: "on2@g.com", warmup: 10, daily: null, slowRamp: null },
     ]);
+  });
+
+  it("a disabled alias holding MORE than the login's budget leaves its siblings at 0, never negative", () => {
+    const accounts = [acct("on@h.com", 20, 30), acct("off@h.com", 20, 30, { status: -3 })];
+    const lc = new Map(accounts.map((a) => [a.email as string, lifecycle("in_recovery", "smtp")]));
+    const logins = oneLogin(accounts.map((a) => a.email as string), "kevin@h.com");
+    expect(selectLifecycleLimitPatches(accounts, lc, asOf, new Map(), logins)).toEqual([
+      { email: "on@h.com", warmup: 0, daily: null, slowRamp: null },
+    ]);
+  });
+
+  it("an alias flapping disabled ↔ active keeps the login ≤ 30 in BOTH states and stops oscillating (prod 2026-10-01)", () => {
+    // growthagency.email: 5 aliases, one flapping -3 ↔ 1. Ignoring the held
+    // warmup split 30/4 = 7 while it was off and it came back at 6: 4×7 + 6 = 34.
+    const emails = ["kevin", "kevinl", "kevin.lourd", "klourd", "lourd"].map((x) => `${x}@ga.email`);
+    const lc = new Map(emails.map((e) => [e, lifecycle("in_recovery", "smtp")]));
+    const logins = oneLogin(emails, "kevin@ga.email");
+    const sumAfter = (accounts: ReturnType<typeof acct>[]) => {
+      const patched = new Map(
+        selectLifecycleLimitPatches(accounts, lc, asOf, new Map(), logins).map((p) => [p.email, p.warmup]),
+      );
+      return accounts.reduce((t, a) => t + (patched.get(a.email as string) ?? a.warmup?.limit ?? 0), 0);
+    };
+    // The prod state: kevin@ disabled holding 6, its siblings at 7.
+    const flappedOff = emails.map((e) => acct(e, 20, e.startsWith("kevin@") ? 6 : 7, e.startsWith("kevin@") ? { status: -3 } : {}));
+    expect(selectLifecycleLimitPatches(flappedOff, lc, asOf, new Map(), logins).map((p) => p.warmup)).toEqual([6, 6, 6, 6]);
+    expect(sumAfter(flappedOff)).toBe(30);
+    // Instantly resumes it: every alias already at 6, nothing to patch, still 30.
+    const resumed = emails.map((e) => acct(e, 20, 6, { status: 1 }));
+    expect(selectLifecycleLimitPatches(resumed, lc, asOf, new Map(), logins)).toEqual([]);
+    expect(sumAfter(resumed)).toBe(30);
   });
 
   it("deactivated aliases on a shared login are untouched and not counted", () => {
