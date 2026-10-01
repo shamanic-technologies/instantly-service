@@ -4281,6 +4281,133 @@
           "nullable": true
         }
       },
+      "SentPerPeriodResponse": {
+        "type": "object",
+        "properties": {
+          "grain": {
+            "type": "string",
+            "enum": [
+              "day",
+              "week",
+              "month"
+            ]
+          },
+          "timezone": {
+            "type": "string",
+            "enum": [
+              "UTC"
+            ]
+          },
+          "since": {
+            "type": "string",
+            "nullable": true,
+            "description": "The `since` asked for (ISO), null = from the first send"
+          },
+          "asOf": {
+            "type": "string"
+          },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "toLeads": {
+                "type": "integer",
+                "description": "`outreach` sent: cold sequence steps to a lead, Instantly + SMTP"
+              },
+              "manualReplies": {
+                "type": "integer",
+                "description": "`manual_reply` sent: a human's answer to a lead — reaches a lead but is kept apart from cold outreach"
+              },
+              "warmup": {
+                "type": "integer",
+                "description": "`warmup` sent: our own warmup mesh"
+              },
+              "warmupReplies": {
+                "type": "integer",
+                "description": "`warmup_reply` sent: replies inside the warmup mesh"
+              },
+              "seeds": {
+                "type": "integer",
+                "description": "`seed` sent: inbox-placement / seed tests"
+              }
+            },
+            "required": [
+              "toLeads",
+              "manualReplies",
+              "warmup",
+              "warmupReplies",
+              "seeds"
+            ],
+            "description": "Sum of the periods' counts"
+          },
+          "periods": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SentPeriod"
+            },
+            "description": "Oldest first, no gaps, zeros included, last one is the current period"
+          }
+        },
+        "required": [
+          "grain",
+          "timezone",
+          "since",
+          "asOf",
+          "totals",
+          "periods"
+        ]
+      },
+      "SentPeriod": {
+        "type": "object",
+        "properties": {
+          "periodStart": {
+            "type": "string",
+            "description": "YYYY-MM-DD, UTC, inclusive (a week starts Monday)"
+          },
+          "periodEnd": {
+            "type": "string",
+            "description": "YYYY-MM-DD, UTC, exclusive"
+          },
+          "inProgress": {
+            "type": "boolean",
+            "description": "True on the current period only — it is still filling"
+          },
+          "toLeads": {
+            "type": "integer",
+            "description": "`outreach` sent: cold sequence steps to a lead, Instantly + SMTP"
+          },
+          "manualReplies": {
+            "type": "integer",
+            "description": "`manual_reply` sent: a human's answer to a lead — reaches a lead but is kept apart from cold outreach"
+          },
+          "warmup": {
+            "type": "integer",
+            "description": "`warmup` sent: our own warmup mesh"
+          },
+          "warmupReplies": {
+            "type": "integer",
+            "description": "`warmup_reply` sent: replies inside the warmup mesh"
+          },
+          "seeds": {
+            "type": "integer",
+            "description": "`seed` sent: inbox-placement / seed tests"
+          },
+          "leadsEmailed": {
+            "type": "integer",
+            "description": "Distinct lead addresses sent an `outreach` or `manual_reply` in the period — does NOT add across periods"
+          }
+        },
+        "required": [
+          "periodStart",
+          "periodEnd",
+          "inProgress",
+          "toLeads",
+          "manualReplies",
+          "warmup",
+          "warmupReplies",
+          "seeds",
+          "leadsEmailed"
+        ]
+      },
       "OpsThreadsResponse": {
         "type": "object",
         "properties": {
@@ -8722,6 +8849,57 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/sent-per-period": {
+      "get": {
+        "summary": "Emails sent per day / week / month, to leads apart from our own mail (warmup, warmup replies, seeds)",
+        "description": "Platform-scoped, cached 60s per (grain, since). Counts outbound `messages` rows whose outcome is `sent` (a hand-off bounce never left us) per UTC period and per purpose, plus distinct leads emailed. Every period from the first send (or from the period containing `since`) to the current one, zeros included; the current period carries `inProgress: true`. Independent of `/stats` (customer totals are untouched).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "description": "REQUIRED"
+            },
+            "required": true,
+            "description": "REQUIRED",
+            "name": "grain",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "ISO timestamp; the series starts at the period containing it"
+            },
+            "required": false,
+            "description": "ISO timestamp; the series starts at the period containing it",
+            "name": "since",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Periods",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SentPerPeriodResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "grain missing / unknown, or since not a timestamp"
           },
           "401": {
             "description": "Unauthorized"

@@ -14,6 +14,8 @@ vi.mock("../../src/lib/recent-send-volume", () => ({ fetchRecentDailyVolume: vi.
 vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({ loadMailboxLogins: vi.fn() }));
 
 import opsRoutes from "../../src/routes/ops";
+import { clearStatsCache } from "../../src/lib/stats-cache";
+import { mapSentPeriods } from "../../src/lib/ops/sent-per-period";
 
 function pgResult(rows: Record<string, unknown>[]) {
   return { command: "SELECT", rowCount: rows.length, oid: 0, fields: [], rows };
@@ -26,6 +28,7 @@ app.use("/internal/ops", opsRoutes);
 beforeEach(() => {
   vi.resetAllMocks();
   mockExecute.mockResolvedValue(pgResult([]));
+  clearStatsCache();
 });
 
 describe("GET /internal/ops/lifecycle-rules", () => {
@@ -84,5 +87,71 @@ describe("GET /internal/ops/messages/:id/body", () => {
     const res = await request(app).get("/internal/ops/messages/m1/body");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ text: "hello", html: "<p>hello</p>", source: "instantly_emails_raw" });
+  });
+});
+
+describe("GET /internal/ops/sent-per-period — sends per period by purpose", () => {
+  const row = (start: string, end: string, inProgress: boolean, n: Partial<Record<string, unknown>> = {}) => ({
+    period_start: start, period_end: end, in_progress: inProgress,
+    to_leads: 0, manual_replies: 0, warmup: 0, warmup_replies: 0, seeds: 0, leads_emailed: 0, ...n,
+  });
+
+  it("400s without a grain, on an unknown grain, and on a bad since", async () => {
+    expect((await request(app).get("/internal/ops/sent-per-period")).status).toBe(400);
+    expect((await request(app).get("/internal/ops/sent-per-period?grain=year")).status).toBe(400);
+    expect((await request(app).get("/internal/ops/sent-per-period?grain=day&since=yesterday")).status).toBe(400);
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it("serves every period with purposes kept apart, zeros included, the current one in progress", async () => {
+    mockExecute.mockResolvedValueOnce(pgResult([
+      // node-postgres hands bigint/int counts back as strings on some paths
+      row("2026-08-01", "2026-09-01", false, { to_leads: "22235", seeds: "1540", leads_emailed: "12178" }),
+      row("2026-09-01", "2026-10-01", false, { to_leads: 40066, manual_replies: 33, warmup: 20465, warmup_replies: 8170, seeds: 7648, leads_emailed: 18664 }),
+      row("2026-10-01", "2026-11-01", true),
+    ]));
+    const res = await request(app).get("/internal/ops/sent-per-period?grain=month");
+    expect(res.status).toBe(200);
+    expect(res.body.grain).toBe("month");
+    expect(res.body.timezone).toBe("UTC");
+    expect(res.body.since).toBeNull();
+    expect(res.body.periods).toHaveLength(3);
+    expect(res.body.periods[0]).toEqual({
+      periodStart: "2026-08-01", periodEnd: "2026-09-01", inProgress: false,
+      toLeads: 22235, manualReplies: 0, warmup: 0, warmupReplies: 0, seeds: 1540, leadsEmailed: 12178,
+    });
+    expect(res.body.periods[2]).toMatchObject({ inProgress: true, toLeads: 0 });
+    expect(res.body.periods.filter((p: { inProgress: boolean }) => p.inProgress)).toHaveLength(1);
+    expect(res.body.totals).toEqual({ toLeads: 62301, manualReplies: 33, warmup: 20465, warmupReplies: 8170, seeds: 9188 });
+  });
+
+  it("counts only SENT outbound rows per purpose, buckets in UTC, gap-fills with a series, and inlines only the whitelisted grain", async () => {
+    await request(app).get("/internal/ops/sent-per-period?grain=week&since=2026-09-01T00:00:00Z");
+    const q = JSON.stringify((mockExecute.mock.calls[0][0] as { queryChunks?: unknown[] }).queryChunks);
+    expect(q).toContain("m.direction = 'out' AND m.outcome = 'sent'");
+    expect(q).toContain("'outreach','manual_reply','warmup','warmup_reply','seed'");
+    expect(q).toContain("interval '1 week'");
+    expect(q).toContain("AT TIME ZONE 'UTC'");
+    expect(q).toContain("generate_series");
+    expect(q).toContain("LEFT JOIN counts");
+    expect(q).toContain("2026-09-01T00:00:00.000Z");
+  });
+
+  it("caches per (grain, since): a second identical call does not re-query", async () => {
+    await request(app).get("/internal/ops/sent-per-period?grain=day");
+    await request(app).get("/internal/ops/sent-per-period?grain=day");
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+    await request(app).get("/internal/ops/sent-per-period?grain=month");
+    expect(mockExecute).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("mapSentPeriods", () => {
+  it("reads the in-progress flag in either driver spelling and coerces counts", () => {
+    const out = mapSentPeriods(
+      [{ period_start: "2026-10-01", period_end: "2026-10-02", in_progress: "t", to_leads: "3" }],
+      { grain: "day", since: null, asOf: "x" },
+    );
+    expect(out.periods[0]).toMatchObject({ inProgress: true, toLeads: 3, warmup: 0 });
   });
 });
