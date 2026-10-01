@@ -212,9 +212,14 @@ function loginOf(email: string, mailboxLoginByEmail: ReadonlyMap<string, string>
  *     selector. The production check reads every alias our lifecycle calls
  *     in_production, including an smtp one Instantly has disabled — we still
  *     dispatch outreach from it ourselves.
- *   - otherwise (all enforced aliases in_recovery) → floor(30 / N) per alias,
- *     N = the aliases this sweep enforces warmup on (Instantly-active, limited
- *     state), so the login's total Instantly warmup is ≤ 30.
+ *   - otherwise (all enforced aliases in_recovery) → floor((30 − H) / N) per
+ *     alias (never below 0), N = the aliases this sweep enforces warmup on
+ *     (Instantly-active, limited state), H = the `warmup.limit` still HELD by
+ *     the login's limited-state aliases it cannot patch (an smtp alias Instantly
+ *     disabled). A disabled alias keeps its value and warms with it again the
+ *     moment Instantly resumes it, so the login's total is ≤ 30 in BOTH states.
+ *     Measured 2026-10-01: one alias per login on growthagency.diy/.email flaps
+ *     -3 ↔ 1; with H ignored the split swung 6 ↔ 7 and the login warmed 34.
  * A single-alias login gets exactly the per-state figure, as before.
  * Aliases in deactivated_* states are untouched by this sweep and not counted.
  */
@@ -224,6 +229,7 @@ export function warmupTargetsByLogin(
   mailboxLoginByEmail: ReadonlyMap<string, string>,
 ): Map<string, number> {
   const enforcedCount = new Map<string, number>();
+  const heldByUnpatched = new Map<string, number>();
   const hasProduction = new Set<string>();
   const perStateTarget = new Map<string, number>();
   for (const account of accounts) {
@@ -232,9 +238,14 @@ export function warmupTargetsByLogin(
     const status = view?.status;
     const login = loginOf(account.email, mailboxLoginByEmail);
     if (status === "in_production") hasProduction.add(login);
+    if (status !== "in_production" && status !== "in_recovery") continue;
     const enforceLimits =
       isInstantlyEnforced(view?.sendTransport ?? "instantly") || (account.status ?? 0) > 0;
-    if (!enforceLimits || (status !== "in_production" && status !== "in_recovery")) continue;
+    if (!enforceLimits) {
+      // Not ours to PATCH, but its warmup.limit comes back with it on resume.
+      heldByUnpatched.set(login, (heldByUnpatched.get(login) ?? 0) + (account.warmup?.limit ?? 0));
+      continue;
+    }
     enforcedCount.set(login, (enforcedCount.get(login) ?? 0) + 1);
     const target = warmupDailyForStatus(status) ?? 0;
     // A login mixing states takes the smaller per-state figure (production's 0).
@@ -243,7 +254,8 @@ export function warmupTargetsByLogin(
   const byLogin = new Map<string, number>();
   for (const [login, count] of enforcedCount) {
     const total = hasProduction.has(login) ? 0 : (perStateTarget.get(login) ?? 0);
-    byLogin.set(login, Math.floor(total / count));
+    const free = Math.max(0, total - (heldByUnpatched.get(login) ?? 0));
+    byLogin.set(login, Math.floor(free / count));
   }
   return byLogin;
 }
