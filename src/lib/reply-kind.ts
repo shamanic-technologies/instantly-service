@@ -125,6 +125,26 @@ export const NEUTRAL_REPLY_KINDS = ["lead_neutral"] as const;
 export const OFF_TOPIC_REPLY_KINDS = ["lead_off_topic"] as const;
 
 /**
+ * A real human reply from somebody who is NOT a prospect for this brand at all:
+ *  - `lead_already_customer` — they already buy from the client ("I already
+ *    have your unit", "we're already one of your clinics"). A won sale, but
+ *    not one our outreach caused.
+ *  - `lead_is_client` — they ARE the client, or one of the client's own team.
+ *
+ * Neither is sales interest, so neither is celebrated, triggers the responder
+ * or enters the follow-up queue. Both are permanent facts about the person for
+ * this brand: every sequence of the brand to them stops and no new one is ever
+ * sent (the send gate in lib/not-a-prospect). They report `neutral` in the
+ * coarse projection — it is not a "no" to the offer either.
+ *
+ * Measured 2026-09-30: dr.k@kineticchiropracticutah.com wrote "I actually am a
+ * Shockwave Centers of America clinic. I have the OTG unit." It was classified
+ * as a positive reply and the client received a "Good news" celebration about
+ * their own customer.
+ */
+export const NOT_A_PROSPECT_REPLY_KINDS = ["lead_already_customer", "lead_is_client"] as const;
+
+/**
  * Not a reply from a person at all — a machine answered. Deliberately never
  * stops the sequence: the prospect is back at their desk next week and has not
  * engaged (RFC 3834).
@@ -137,6 +157,7 @@ export const REPLY_KINDS = [
   ...NEGATIVE_REPLY_KINDS,
   ...NEUTRAL_REPLY_KINDS,
   ...OFF_TOPIC_REPLY_KINDS,
+  ...NOT_A_PROSPECT_REPLY_KINDS,
   ...AUTOMATED_REPLY_KINDS,
 ] as const;
 
@@ -246,6 +267,8 @@ export const REPLY_KIND_CLASSIFICATION: Record<ReplyKind, "positive" | "negative
   lead_opt_out_requested: "negative",
   lead_neutral: "neutral",
   lead_off_topic: "neutral",
+  lead_already_customer: "neutral",
+  lead_is_client: "neutral",
   lead_out_of_office: "neutral",
   auto_reply_received: "neutral",
 };
@@ -264,6 +287,7 @@ export const SEQUENCE_STOPPING_REPLY_KINDS = new Set<ReplyKind>([
   ...NEGATIVE_REPLY_KINDS,
   ...NEUTRAL_REPLY_KINDS,
   ...OFF_TOPIC_REPLY_KINDS,
+  ...NOT_A_PROSPECT_REPLY_KINDS,
 ]);
 
 /** True iff a reply of this kind means the sequence must stop. */
@@ -297,6 +321,7 @@ export const DISQUALIFYING_REPLY_KINDS = new Set<ReplyKind>([
   "lead_wrong_person",
   "lead_changed_job",
   "lead_opt_out_requested",
+  ...NOT_A_PROSPECT_REPLY_KINDS,
 ]);
 
 /**
@@ -351,7 +376,16 @@ export function isEscalatedReplyKind(kind: string): boolean {
  *    is deliberately NOT here — that lead stays recyclable.
  */
 export const STOP_REQUEST_REPLY_KINDS = new Set<ReplyKind>(["lead_opt_out_requested"]);
-export const NOT_OUR_TARGET_REPLY_KINDS = new Set<ReplyKind>(["lead_wrong_person", "lead_changed_job"]);
+export const NOT_OUR_TARGET_REPLY_KINDS = new Set<ReplyKind>([
+  "lead_wrong_person",
+  "lead_changed_job",
+  ...NOT_A_PROSPECT_REPLY_KINDS,
+]);
+
+/** True iff this kind says the person is not a prospect for the brand at all. */
+export function isNotAProspectReplyKind(kind: string): boolean {
+  return (NOT_A_PROSPECT_REPLY_KINDS as readonly string[]).includes(kind);
+}
 
 export interface ReplyKindFacts {
   automatedAnswer: boolean;

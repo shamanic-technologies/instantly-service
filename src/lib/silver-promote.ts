@@ -27,6 +27,7 @@ import { maybeStopFollowupsOnDecline } from "./stop-followups-on-decline";
 import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
 import { maybeRingRepOnSalesInterest } from "./ring-rep-on-sales-interest";
 import { maybeEscalateOffTopicReply } from "./escalate-off-topic-reply";
+import { maybeHandleNotAProspect } from "./not-a-prospect";
 import { maybeMirrorCampaignEmails } from "./mirror-emails";
 import { maybeRecordOptOutFromReply } from "./reply-opt-out";
 import {
@@ -700,6 +701,12 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // Detached: the hand-over waits (seconds, bounded) for the reply's words,
       // and this runs inside Instantly's webhook. It never throws.
       void maybeEscalateOffTopicReply(campaign, input.leadEmail, input.eventType);
+
+      // Not a prospect at all (already a customer of the client, or the
+      // client's own team): stop every sequence of the brand to them and, unless
+      // a person stated it, apologize in their thread. Detached for the same
+      // reason as above (it waits for the words). Never throws.
+      void maybeHandleNotAProspect(campaign, input.leadEmail, input.eventType, input.source);
 
       // ...then read what they wrote. A prospect who asks to STOP in the body of
       // a reply ("please remove me from your list") is classified by Instantly as

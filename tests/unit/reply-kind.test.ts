@@ -6,13 +6,16 @@ import {
   DISQUALIFYING_REPLY_KINDS,
   LEGACY_DEAL_PROGRESS_STATUSES,
   NEGATIVE_REPLY_KINDS,
+  NOT_A_PROSPECT_REPLY_KINDS,
   POSITIVE_REPLY_KINDS,
   REPLY_KINDS,
   REPLY_KIND_CLASSIFICATION,
   isDealProgressEventType,
   isDisqualifyingReplyKind,
+  isNotAProspectReplyKind,
   isReplyKind,
   isSequenceStoppingReplyKind,
+  replyKindFacts,
   resolveReplyKind,
 } from "../../src/lib/reply-kind";
 
@@ -95,6 +98,8 @@ describe("the reply-kind vocabulary", () => {
       lead_opt_out_requested: "negative",
       lead_neutral: "neutral",
       lead_off_topic: "neutral",
+      lead_already_customer: "neutral",
+      lead_is_client: "neutral",
       lead_out_of_office: "neutral",
       auto_reply_received: "neutral",
     });
@@ -188,12 +193,24 @@ describe("disqualifying reply kinds — a 'no' about the PERSON, not the MOMENT"
     expect(isDisqualifyingReplyKind("lead_not_interested")).toBe(false);
   });
 
-  it("disqualifies nothing outside the negative kinds", () => {
+  it("disqualifies nothing outside the negative and not-a-prospect kinds", () => {
     for (const kind of REPLY_KINDS) {
       if (isDisqualifyingReplyKind(kind)) {
-        expect(NEGATIVE_REPLY_KINDS).toContain(kind);
+        expect([...NEGATIVE_REPLY_KINDS, ...NOT_A_PROSPECT_REPLY_KINDS]).toContain(kind);
       }
     }
+  });
+
+  it("files a person who already buys from the client, or is the client, as not a prospect", () => {
+    for (const kind of NOT_A_PROSPECT_REPLY_KINDS) {
+      expect(REPLY_KIND_CLASSIFICATION[kind]).toBe("neutral");
+      expect(isDisqualifyingReplyKind(kind)).toBe(true);
+      expect(isSequenceStoppingReplyKind(kind)).toBe(true);
+      expect(isNotAProspectReplyKind(kind)).toBe(true);
+      expect((POSITIVE_REPLY_KINDS as readonly string[]).includes(kind)).toBe(false);
+      expect(replyKindFacts(kind).notOurTarget).toBe(true);
+    }
+    expect(isNotAProspectReplyKind("lead_interested")).toBe(false);
   });
 
   it("changes nothing about the coarse classification — all three negatives stay 'negative'", () => {

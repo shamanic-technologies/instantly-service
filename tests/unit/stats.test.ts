@@ -951,6 +951,8 @@ describe("GET /stats", () => {
             unsubscribe: 0,
             neutral: 0,
             offTopic: 0,
+            alreadyCustomer: 0,
+            isClient: 0,
             autoReply: 0,
             outOfOffice: 0,
           },

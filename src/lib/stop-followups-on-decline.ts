@@ -43,7 +43,7 @@
  */
 
 import { findLeadOnCampaignByEmail, readFollowupState, stopFollowups } from "./lead-client";
-import { REPLY_KIND_CLASSIFICATION, isReplyKind } from "./reply-kind";
+import { REPLY_KIND_CLASSIFICATION, isNotAProspectReplyKind, isReplyKind } from "./reply-kind";
 import type { SalesInterestTriggerCampaign } from "./trigger-sales-interest-campaign";
 
 export type FollowupStopCampaign = SalesInterestTriggerCampaign;
@@ -52,6 +52,7 @@ export type FollowupStopCampaign = SalesInterestTriggerCampaign;
 export function isFollowupStoppingEvent(eventType: string): boolean {
   if (eventType === "lead_unsubscribed") return true;
   if (eventType === "lead_referral") return true;
+  if (isNotAProspectReplyKind(eventType)) return true;
   return isReplyKind(eventType) && REPLY_KIND_CLASSIFICATION[eventType] === "negative";
 }
 
