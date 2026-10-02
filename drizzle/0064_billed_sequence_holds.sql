@@ -1,0 +1,11 @@
+-- Sending is billed again (owner decision 2026-10-02, reversing 2026-08-24).
+--
+-- Each queued step now declares TWO runs-service costs, split 50/50:
+-- `instantly-account-email-sent` (kept in `cost_id`) and
+-- `instantly-domain-email-sent` (this new column). One `sequence_costs` row per
+-- step stays the rule, because the row is also the send QUEUE and every reader
+-- counts it once per step. Rows written between 2026-08-24 and this deploy carry
+-- NULL in both columns and keep settling locally only (never retroactive).
+--
+-- Idempotent.
+ALTER TABLE "sequence_costs" ADD COLUMN IF NOT EXISTS "domain_cost_id" text;

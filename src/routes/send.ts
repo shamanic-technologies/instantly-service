@@ -24,8 +24,12 @@ import {
 import {
   createRun,
   updateRun,
+  updateCostStatus,
+  type IdentityContext,
   type TrackingHeaders,
 } from "../lib/runs-client";
+import { authorizeCreditSpend } from "../lib/billing-client";
+import { provisionStepEmailCosts, sendAuthorizeItems } from "../lib/send-costs";
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { SendRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
@@ -87,16 +91,59 @@ async function releaseReservation(reservedId: string): Promise<void> {
     .where(and(eq(instantlyCampaigns.id, reservedId), isReservationSql));
 }
 
+/** One step of the sequence being queued: its run and its two provisioned costs. */
+interface StepHold {
+  step: number;
+  runId: string;
+  costId: string;
+  domainCostId: string;
+}
+
+/**
+ * Give back every step this request provisioned but never queued: cancel both
+ * costs and fail the step run. Used on the refusal/failure paths only, where the
+ * response is already an error, so a failed cancel is logged LOUD (the
+ * provisioned row is not billable usage) rather than masking the real cause.
+ */
+async function abandonStepHolds(
+  holds: StepHold[],
+  identity: { orgId: string; userId: string; tracking: TrackingHeaders },
+  reason: string,
+): Promise<void> {
+  for (const h of holds) {
+    const stepIdentity: IdentityContext = { ...identity, runId: h.runId };
+    // An id is empty when the provision itself failed — nothing to cancel.
+    for (const costId of [h.costId, h.domainCostId].filter(Boolean)) {
+      try {
+        await updateCostStatus(h.runId, costId, "cancelled", stepIdentity);
+      } catch (error: unknown) {
+        console.error(
+          `[send] FAILED to cancel provisioned cost ${costId} (run ${h.runId}) after "${reason}": ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    try {
+      await updateRun(h.runId, "failed", stepIdentity, reason);
+    } catch (error: unknown) {
+      console.error(
+        `[send] FAILED to fail step run ${h.runId} after "${reason}": ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+}
+
 /**
  * POST /send
- * Add a lead to a multi-step sequence campaign via Instantly.
+ * Add a lead to a multi-step sequence campaign via Instantly or self-send.
  *
- * Creates one run per sequence step:
- * - Step 1: run completed immediately, cost = actual
- * - Steps 2-N: runs stay ongoing, costs = provisioned
- *
- * Follow-up runs are completed when webhook email_sent arrives,
- * or failed on reply/bounce/unsub/not_interested/campaign error.
+ * Every step is an email sent to a lead and is BILLED to the org
+ * (`lib/send-costs.ts`): one run per step carrying two provisioned costs,
+ * authorized once for the whole sequence, actualized when the step's real
+ * `email_sent` lands, cancelled when the step can no longer send.
  *
  * Dispatch (find healthy account + create campaign + add lead + activate)
  * is delegated to `sendLeadToInstantly()` in `lib/send-lead.ts`. One-shot —
@@ -135,25 +182,16 @@ router.post("/", async (req: Request, res: Response) => {
     });
     traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-key-resolved", detail: `keySource=${keySource}` }, req.headers).catch(() => {});
 
-    // 1. No affordability gate here, deliberately.
-    //
-    // Sending used to authorize the org's balance against three Instantly cost
-    // names. Those subscriptions (Email Outreach, Inbox Placement, the
-    // pre-warmed accounts, and the MailForge / PrimeForge mailbox estate) are
-    // now a FIXED cost we absorb rather than rebill, so there is no longer any
-    // spend on this path to authorize — and an authorize call over an empty
-    // basket would gate live sends on a question with no content.
-    //
-    // The credit gate is not lost, it moved UPSTREAM. A cold-email run pulls
-    // the lead (Apollo credits) and generates the body (LLM tokens via
-    // chat-service) before it ever reaches this route, and both still declare
-    // and authorize normally, so an org out of credit fails long before a send.
-    //
-    // Consequence on the contract: `/orgs/send` no longer returns 402. Callers
-    // that branch on it simply never take that branch.
+    // 1. Affordability is checked per sequence, AFTER the pre-flight refusals
+    //    and the reservation (so a refused or duplicate send provisions
+    //    nothing) and BEFORE any email can leave — see step 4c below.
 
-    // 2. Per-step runs are created AFTER successful campaign activation
+    // 2. Per-step runs + their provisioned costs, created once the claim is won.
+    //    `stepHolds` = provisioned but not yet queued (given back on failure);
+    //    `stepRuns` = queued and reported to the caller.
+    let stepHolds: StepHold[] = [];
     const stepRuns: { step: number; runId: string }[] = [];
+    const billingIdentity = { orgId, userId, tracking };
     // Reservation id, set once this request WINS the atomic claim below. Held
     // out here so the inner catch can release a still-open reservation.
     let reservedId: string | null = null;
@@ -403,6 +441,67 @@ router.post("/", async (req: Request, res: Response) => {
 
       reservedId = reservation.id;
 
+      // 4b. PROVISION — one run per step, each carrying the step's two email
+      //     costs. Done before any email can leave so a cost runs-service cannot
+      //     declare (422 unknown/unpriced name) blocks the send instead of
+      //     sending it unbilled. Fail loud: the catch below gives back whatever
+      //     was provisioned and releases the reservation.
+      const parentIdentity = { orgId, userId, runId: res.locals.runId as string, tracking };
+      for (const s of sortedSequence) {
+        const stepRun = await createRun({
+          serviceName: "instantly-service",
+          taskName: `email-send-step-${s.step}`,
+          brandId,
+          campaignId: campaignId ?? undefined,
+        }, parentIdentity);
+        // Pushed before provisioning so a failed provision still fails the run.
+        const hold: StepHold = { step: s.step, runId: stepRun.id, costId: "", domainCostId: "" };
+        stepHolds.push(hold);
+        const ids = await provisionStepEmailCosts(stepRun.id, keySource, {
+          orgId,
+          userId,
+          runId: stepRun.id,
+          tracking,
+        });
+        hold.costId = ids.costId;
+        hold.domainCostId = ids.domainCostId;
+      }
+
+      // 4c. AUTHORIZE — an org out of credit is refused before an email leaves.
+      //     Platform spend only (BYOK pays its vendor directly). A refusal is an
+      //     explicit 402, never a silent send.
+      if (keySource === "platform") {
+        const auth = await authorizeCreditSpend(
+          sendAuthorizeItems(sortedSequence.length),
+          "instantly-send",
+          { ...billingIdentity, runId: res.locals.runId as string },
+        );
+        if (!auth.sufficient) {
+          await abandonStepHolds(stepHolds, billingIdentity, "insufficient_credits");
+          stepHolds = [];
+          await releaseReservation(reservedId);
+          reservedId = null;
+          console.warn(
+            `[send] Refused — insufficient credits for org ${orgId} (balance=${auth.balance_cents} required=${auth.required_cents}) to=${body.to}`,
+          );
+          traceEvent(
+            res.locals.runId as string,
+            {
+              service: "instantly-service",
+              event: "send-refused-insufficient-credits",
+              detail: `to=${body.to}, balance_cents=${auth.balance_cents}, required_cents=${auth.required_cents}`,
+            },
+            req.headers,
+          ).catch(() => {});
+          return res.status(402).json({
+            error: "Insufficient credits",
+            code: "insufficient_credits",
+            balance_cents: auth.balance_cents,
+            required_cents: auth.required_cents,
+          });
+        }
+      }
+
       // 5. WINNER only — dispatch lead to a healthy Instantly account.
       const lead: Lead = {
         email: body.to,
@@ -469,7 +568,10 @@ router.post("/", async (req: Request, res: Response) => {
             });
 
       if (!sendResult.ok) {
-        // Release the reservation so a later legit retry can re-claim.
+        // Nothing will be sent: give back the provisioned costs, then release
+        // the reservation so a later legit retry can re-claim.
+        await abandonStepHolds(stepHolds, billingIdentity, sendResult.reason);
+        stepHolds = [];
         await releaseReservation(reservedId);
         reservedId = null;
         const detail = "No active Instantly accounts available for this organization";
@@ -579,37 +681,12 @@ router.post("/", async (req: Request, res: Response) => {
 
       if (createdLead) savedLead = createdLead;
 
-      // 4. Create per-step runs and queue every step.
+      // 7. Queue every step, carrying its two provisioned cost ids.
       //
-      //    NO COST IS DECLARED HERE. The Instantly / MailForge / PrimeForge
-      //    subscriptions are a fixed cost we absorb, so the three cost names
-      //    this loop used to declare (`instantly-account-email-sent`,
-      //    `instantly-domain-email-sent`, `instantly-contact-uploaded`) are no
-      //    longer written to runs-service at all. Deliberately NOT replaced by
-      //    a zero-priced row: a zero asserts "this cost nothing", which is
-      //    false — it costs us real money, we simply stopped passing it on.
-      //    Absence is the honest representation.
-      //
-      //    The per-step RUN stays. It is the unit of volume (how many sends,
-      //    for which brand, on which campaign) and dropping it would blind
-      //    every downstream stat for the sake of a billing change.
-      //
-      //    The `sequence_costs` row also stays, now with a NULL cost id,
-      //    because that table is the send QUEUE as much as it is a ledger —
-      //    see the column comment in `db/schema.ts`. One row per step now
-      //    (it used to be two, one per cost name); every reader already
-      //    collapses to `DISTINCT step`, so counts are unchanged.
-      const parentIdentity = { orgId, userId, runId: res.locals.runId as string, tracking };
-      for (const s of sortedSequence) {
-        const stepRun = await createRun({
-          serviceName: "instantly-service",
-          taskName: `email-send-step-${s.step}`,
-          brandId,
-          campaignId: campaignId ?? undefined,
-        }, parentIdentity);
-
-        const stepIdentity = { orgId, userId, runId: stepRun.id, tracking };
-
+      //    The `sequence_costs` row is the send QUEUE as much as the billing
+      //    hold — see the column comment in `db/schema.ts`. ONE row per step
+      //    (both cost ids on it); every reader counts it once per step.
+      for (const h of stepHolds) {
         await db.insert(sequenceCosts).values({
           campaignId,
           // Persist the per-lead Instantly campaign id so the webhook/reconcile
@@ -617,16 +694,18 @@ router.post("/", async (req: Request, res: Response) => {
           // (campaignId NULL). See migration 0027.
           instantlyCampaignId: sendResult.value.instantlyCampaignId,
           leadEmail: body.to,
-          step: s.step,
-          runId: stepRun.id,
-          costId: null,
+          step: h.step,
+          runId: h.runId,
+          costId: h.costId,
+          domainCostId: h.domainCostId,
           status: "provisioned",
         });
 
-        await updateRun(stepRun.id, "completed", stepIdentity);
+        await updateRun(h.runId, "completed", { orgId, userId, runId: h.runId, tracking });
 
-        stepRuns.push({ step: s.step, runId: stepRun.id });
+        stepRuns.push({ step: h.step, runId: h.runId });
       }
+      stepHolds = [];
 
       traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-done", detail: `to=${body.to}, campaignId=${campaignId ?? "none"}, added=${added}, stepRuns=${stepRuns.length}` }, req.headers).catch(() => {});
       console.log(`[send] Done — to=${body.to} campaignId=${campaignId ?? "none"} added=${added} stepRuns=${stepRuns.length}`);
@@ -638,7 +717,9 @@ router.post("/", async (req: Request, res: Response) => {
         stepRuns: stepRuns.length > 0 ? stepRuns : undefined,
       });
     } catch (error: any) {
-      // Fail any step runs that were already created
+      // Give back steps provisioned but never queued (no queue row will ever
+      // settle them), then fail any step runs that were already queued.
+      await abandonStepHolds(stepHolds, billingIdentity, error?.message ?? "send failed");
       for (const sr of stepRuns) {
         try {
           await updateRun(sr.runId, "failed", { orgId, userId, runId: sr.runId }, error.message);

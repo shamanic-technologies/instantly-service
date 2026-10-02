@@ -445,6 +445,14 @@ registry.registerPath({
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: { description: "Unauthorized" },
+    402: {
+      description:
+        "Refused: the org cannot afford the sequence (every email sent to a lead is billed, " +
+        "`instantly-account-email-sent` + `instantly-domain-email-sent` per step). No email was " +
+        "sent, the provisioned costs were cancelled and nothing was queued. " +
+        "Body: `{ error, code: \"insufficient_credits\", balance_cents, required_cents }`.",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     409: {
       description:
         "Refused, not a transport failure — no email was sent and nothing was billed. " +

@@ -76,4 +76,36 @@ describe("settleHoldCost", () => {
 
     expect(mockDbUpdate).not.toHaveBeenCalled();
   });
+
+  // From 2026-10-02 a step's email is billed again, split across two cost names
+  // carried on ONE queue row. Both must settle, or half the email stays a hold.
+  it("settles BOTH costs of a billed step (account + domain), then flips the row once", async () => {
+    await settleHoldCost(
+      { id: "hold-4", runId: "run-7", costId: "acc-7", domainCostId: "dom-7" },
+      "actual",
+      identity,
+    );
+
+    expect(mockUpdateCostStatus.mock.calls).toEqual([
+      ["run-7", "acc-7", "actual", identity],
+      ["run-7", "dom-7", "actual", identity],
+    ]);
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the row provisioned when the SECOND cost fails, so the next sweep retries", async () => {
+    mockUpdateCostStatus
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("runs-service PATCH failed: 503"));
+
+    await expect(
+      settleHoldCost(
+        { id: "hold-5", runId: "run-7", costId: "acc-7", domainCostId: "dom-7" },
+        "cancelled",
+        identity,
+      ),
+    ).rejects.toThrow("503");
+
+    expect(mockDbUpdate).not.toHaveBeenCalled();
+  });
 });
