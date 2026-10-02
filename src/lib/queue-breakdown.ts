@@ -59,6 +59,9 @@
  *      anchor to project from — anchoring on "now" would fabricate a date for a
  *      sequence Instantly has not even started. All of its un-sent steps are
  *      counted under `firstUnsent` ("not started yet"), never date-projected.
+ *      Its FIRST email does have a due day, though: the day it was assigned
+ *      (`queuedAt`). One assigned on an earlier day is counted STUCK in
+ *      `firstOverdueSequences` — never silently re-read as today's work.
  */
 
 import { MS_PER_DAY, dateKeyUTC, delayForGap } from "./sending-forecast";
@@ -93,6 +96,14 @@ export interface QueuedSequenceInput {
    * breakdown deliberately ignores it — see the note on `aggregateQueueCapacity`.
    */
   timezone?: string | null;
+  /**
+   * When the sequence was assigned to its account (`instantly_campaigns.created_at`).
+   * The nominal due day of a never-sent FIRST email is this day: a first email
+   * has no cadence to project from, it is owed the day it was assigned. Read
+   * only to tell a first email assigned today from one that should already have
+   * gone out (`firstOverdueSequences`). Null/absent = unknown, never overdue.
+   */
+  queuedAt?: Date | null;
 }
 
 export type QueueBucket = "firstUnsent" | "nextToday" | "nextTomorrow" | "nextLater";
@@ -118,6 +129,17 @@ export interface QueueBreakdown {
    * selector as ~32 and legitimately keeps taking leads).
    */
   firstUnsentSequences: number;
+  /**
+   * The STUCK subset of `firstUnsentSequences` — never-sent first emails whose
+   * sequence was assigned on a UTC day STRICTLY BEFORE today, i.e. the first
+   * email was owed on an earlier day and still has not gone out. Same nominal
+   * model as `nextOverdue` (raw UTC day, no weekend snap) and, like it, a subset
+   * counter: `firstOverdueSequences <= firstUnsentSequences` always.
+   *
+   * Exists because a first email that never dispatched used to be re-counted as
+   * "due today" every day for months, invisible as a stall (instantly-service#969).
+   */
+  firstOverdueSequences: number;
   /** Q0-next — step projected today (UTC) or overdue. */
   nextToday: number;
   /**
@@ -183,6 +205,7 @@ function emptyBreakdown(): QueueBreakdown {
     steps: 0,
     firstUnsent: 0,
     firstUnsentSequences: 0,
+    firstOverdueSequences: 0,
     nextToday: 0,
     nextOverdue: 0,
     nextTomorrow: 0,
@@ -193,9 +216,8 @@ function emptyBreakdown(): QueueBreakdown {
 /**
  * True when an un-sent `step` of a CONTACTED sequence was nominally due on a day
  * STRICTLY BEFORE `asOf`'s UTC day — i.e. it is backlog, not work due today.
- * A never-contacted sequence has no anchor to project from and is never overdue
- * (it lands in `firstUnsent`), so it returns false rather than fabricating a
- * date.
+ * A never-contacted sequence has no anchor to project its FOLLOWUPS from, so it
+ * returns false here; whether its FIRST email is overdue is `isOverdueFirstEmail`.
  */
 export function isOverdueStep(
   seq: QueuedSequenceInput,
@@ -204,6 +226,18 @@ export function isOverdueStep(
 ): boolean {
   if (seq.lastSentStep === null || seq.lastSentAt === null) return false;
   return dateKeyUTC(projectStepDate(seq, step)) < dateKeyUTC(asOf);
+}
+
+/**
+ * True when a NEVER-SENT sequence's first email was owed on a UTC day strictly
+ * before `asOf`'s — it was assigned on an earlier day and has still not gone out.
+ * A contacted sequence, or one with no known assignment date, is never a stuck
+ * first email (its overdue steps are `isOverdueStep`'s business).
+ */
+export function isOverdueFirstEmail(seq: QueuedSequenceInput, asOf: Date): boolean {
+  if (seq.lastSentStep !== null && seq.lastSentAt !== null) return false;
+  if (!seq.queuedAt) return false;
+  return dateKeyUTC(seq.queuedAt) < dateKeyUTC(asOf);
 }
 
 /**
@@ -361,7 +395,10 @@ export function aggregateQueueBreakdown(
     b.sequences += 1;
     // A never-contacted sequence owes exactly ONE first email — count it once,
     // independently of how many un-sent steps it still carries.
-    if (row.lastSentStep === null || row.lastSentAt === null) b.firstUnsentSequences += 1;
+    if (row.lastSentStep === null || row.lastSentAt === null) {
+      b.firstUnsentSequences += 1;
+      if (isOverdueFirstEmail(row, asOf)) b.firstOverdueSequences += 1;
+    }
     for (const step of row.provisionedSteps) {
       b.steps += 1;
       const bucket = classifyQueuedStep(row, step, asOf);

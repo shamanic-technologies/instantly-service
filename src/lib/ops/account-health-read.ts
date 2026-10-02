@@ -21,6 +21,7 @@ import {
   fetchSentYesterdayByAccount,
   fetchQueueSizeByAccount,
   fetchQueueBreakdownByAccount,
+  fetchNewSequencesTodayByAccount,
 } from "../account-sending-stats";
 import { fetchLatestPlacementByAccount } from "../placement-sync";
 import {
@@ -59,6 +60,7 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
     pool,
     recentVolume,
     mailboxOf,
+    newSequencesTodayByEmail,
   ] = await Promise.all([
     listAccounts(apiKey),
     fetchLatestPlacementByAccount(),
@@ -81,6 +83,7 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
     // lower — the ops view contradicting the selector about the same account,
     // which is the exact failure the `vendorPrewarmedAt` note below records.
     loadMailboxLogins({ method: "GET", path: "/internal/audit/account-health" }),
+    fetchNewSequencesTodayByAccount(),
   ]);
 
   // Position in the fill order, 1-based. `accountFillOrder` is the selector's
@@ -107,6 +110,7 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
         mailboxOf,
       ),
       asOf,
+      newSequencesTodayByEmail,
     },
   );
 

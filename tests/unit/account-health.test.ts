@@ -24,6 +24,38 @@ function lifecycle(
 }
 
 describe("buildAccountHealth", () => {
+  it("serves new sequences assigned today apart from first emails stuck from earlier days (#969)", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "kevinl@salesmolt.com" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([["kevinl@salesmolt.com", lifecycle("in_production", "passed")]]),
+      new Map(),
+      new Map([
+        [
+          "kevinl@salesmolt.com",
+          {
+            sequences: 2,
+            steps: 6,
+            firstUnsent: 6,
+            firstUnsentSequences: 2,
+            firstOverdueSequences: 2,
+            nextToday: 0,
+            nextOverdue: 0,
+            nextTomorrow: 0,
+            nextLater: 0,
+          },
+        ],
+      ]),
+      { newSequencesTodayByEmail: new Map([["other@x.com", 4]]) },
+    );
+    // Two never-sent first emails, both from earlier days: stuck, and NOT new today.
+    expect(row!.queuedFirstUnsentSequences).toBe(2);
+    expect(row!.queuedFirstOverdueSequences).toBe(2);
+    expect(row!.newSequencesToday).toBe(0);
+  });
+
   it("maps an in_production account to the locked shape, all scalars typed, placement null", () => {
     const [row] = buildAccountHealth(
       [acc({ email: "jane@send-domain.com", stat_warmup_score: 100, daily_limit: 40 })],
@@ -58,6 +90,8 @@ describe("buildAccountHealth", () => {
       queuedSequences: 0,
       queuedFirstUnsent: 0,
       queuedFirstUnsentSequences: 0,
+      queuedFirstOverdueSequences: 0,
+      newSequencesToday: 0,
       queuedNextToday: 0,
       queuedOverdue: 0,
       queuedNextTomorrow: 0,

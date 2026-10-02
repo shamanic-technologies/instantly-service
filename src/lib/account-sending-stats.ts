@@ -92,6 +92,26 @@ export async function fetchSentYesterdayByAccount(): Promise<Map<string, number>
 }
 
 /**
+ * Sequences ASSIGNED to each account today (UTC): campaign rows created today,
+ * grouped by the account persisted on the row. Counted from the assignment
+ * itself, not from the queue, so a sequence that already sent today still counts
+ * and a stuck first email from last month never does. Reservation sentinels
+ * (`reserving:`) are an in-flight send, not an assignment yet; an unattributed
+ * row is excluded, never fabricated.
+ */
+export async function fetchNewSequencesTodayByAccount(): Promise<Map<string, number>> {
+  const result = await db.execute(sql`
+    SELECT c.account_email, COUNT(*) AS count
+    FROM instantly_campaigns c
+    WHERE c.account_email IS NOT NULL
+      AND c.instantly_campaign_id NOT LIKE 'reserving:%'
+      AND c.created_at >= date_trunc('day', (now() AT TIME ZONE 'UTC'))
+    GROUP BY c.account_email
+  `);
+  return toMap(rowsOf(result));
+}
+
+/**
  * Queued-but-not-sent step count per sending account. Reuses the EXACT pending
  * gate from loadPendingLeads (active campaign + delivery_status in
  * contacted/sent + status='provisioned'), collapses each lead's provisioned
@@ -153,6 +173,7 @@ interface BreakdownRow {
   provisioned_steps: (number | string)[] | null;
   step_config: Array<{ delay?: number | string | null }> | null;
   lead_timezone?: string | null;
+  queued_at?: string | Date | null;
 }
 
 /**
@@ -204,6 +225,7 @@ async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
       SELECT c.instantly_campaign_id,
              MIN(c.account_email) AS persisted_account,
              MIN(c.timezone) AS persisted_timezone,
+             MIN(c.created_at) AS queued_at,
              MAX(sc.step) FILTER (WHERE sc.status = 'actual') AS last_sent_step,
              MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at,
              array_agg(DISTINCT sc.step) FILTER (WHERE sc.status = 'provisioned')
@@ -222,6 +244,7 @@ async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
            s.last_sent_step,
            s.last_sent_at,
            s.provisioned_steps,
+           s.queued_at,
            cfg.payload->'sequences'->0->'steps' AS step_config,
            -- The lead's zone decides which UTC day each of its sends books on the
            -- mailbox. Prefer the value persisted at send time; fall back to the
@@ -258,6 +281,7 @@ async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
         })
       : null,
     timezone: r.lead_timezone ?? null,
+    queuedAt: r.queued_at ? new Date(r.queued_at) : null,
   }));
 }
 
