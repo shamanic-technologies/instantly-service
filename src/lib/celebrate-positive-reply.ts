@@ -192,7 +192,9 @@ export function renderCelebration(input: CelebrationInput): CelebrationContent {
   const copy = variantCopy(celebrationVariantFor(input.kind), who);
   const title = `${copy.emoji} ${copy.headline}`;
   const subject = brandName ? `${title} (${brandName})` : title;
-  const intro = `Reply to your ${brandName ? `${brandName} ` : ""}outreach. Nothing to do: we answer them, and we'll come back to you if we need anything.`;
+  // Names who acts in every sentence: "Reply to your outreach" read as an order
+  // to the client (owner 2026-10-02).
+  const intro = `They answered your ${brandName ? `${brandName} ` : ""}outreach. You have nothing to do: we handle the reply and will only reach out if we need something from you.`;
   const href = escapeHtml(input.conversationUrl);
   const unreadable = "Their reply could not be read when this email was sent. It is in the conversation.";
 
