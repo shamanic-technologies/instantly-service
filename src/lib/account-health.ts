@@ -53,6 +53,11 @@ export interface SelectionView {
   recentSustainedByEmail?: Map<string, number>;
   /** Instant the table is rendered at — explicit so tests are deterministic. */
   asOf?: Date;
+  /**
+   * email → sequences ASSIGNED to this account today (UTC), from
+   * `fetchNewSequencesTodayByAccount`. Absent = none today.
+   */
+  newSequencesTodayByEmail?: Map<string, number>;
 }
 
 /**
@@ -199,6 +204,27 @@ export interface AccountHealth {
    * ~32, correctly keeps assigning it leads.
    */
   queuedFirstUnsentSequences: number;
+  /**
+   * The STUCK subset of `queuedFirstUnsentSequences`: never-sent first emails
+   * whose sequence was assigned on an earlier UTC day. Always
+   * `<= queuedFirstUnsentSequences`; not part of any partition. A non-zero value
+   * is a stall, not work for today (instantly-service#969).
+   */
+  queuedFirstOverdueSequences: number;
+  /**
+   * Never-sent first emails assigned TODAY (UTC):
+   * `queuedFirstUnsentSequences - queuedFirstOverdueSequences`, served so no
+   * consumer subtracts. "Queued today" without the stuck backlog.
+   */
+  queuedFirstDueTodaySequences: number;
+  /**
+   * Sequences ASSIGNED to this account today (UTC): `instantly_campaigns` rows
+   * created today whose `account_email` is this address, whatever has happened
+   * to them since (sent, queued, cancelled). Not a queue figure — it answers
+   * "how many new leads did the waterfall give this mailbox today", which
+   * `queuedFirstUnsentSequences` (every never-sent first email, any age) cannot.
+   */
+  newSequencesToday: number;
   /** Q0-next — step projected today (UTC) or overdue. */
   queuedNextToday: number;
   /**
@@ -289,6 +315,7 @@ export function buildAccountHealth(
   const asOf = selection.asOf ?? new Date();
   const fillRankByEmail = selection.fillRankByEmail ?? new Map<string, number>();
   const recentSustainedByEmail = selection.recentSustainedByEmail ?? new Map<string, number>();
+  const newSequencesTodayByEmail = selection.newSequencesTodayByEmail ?? new Map<string, number>();
   return accounts.map((a) => {
     const lifecycle = lifecycleByEmail.get(a.email) ?? null;
     const lifecycleStatus = lifecycle?.status ?? null;
@@ -339,6 +366,10 @@ export function buildAccountHealth(
       queuedSequences: breakdown?.sequences ?? 0,
       queuedFirstUnsent: breakdown?.firstUnsent ?? 0,
       queuedFirstUnsentSequences: breakdown?.firstUnsentSequences ?? 0,
+      queuedFirstOverdueSequences: breakdown?.firstOverdueSequences ?? 0,
+      queuedFirstDueTodaySequences:
+        (breakdown?.firstUnsentSequences ?? 0) - (breakdown?.firstOverdueSequences ?? 0),
+      newSequencesToday: newSequencesTodayByEmail.get(a.email) ?? 0,
       queuedNextToday: breakdown?.nextToday ?? 0,
       queuedOverdue: breakdown?.nextOverdue ?? 0,
       queuedNextTomorrow: breakdown?.nextTomorrow ?? 0,

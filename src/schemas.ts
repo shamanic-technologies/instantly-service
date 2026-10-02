@@ -2342,6 +2342,24 @@ const AccountHealthSchema = z
       .describe(
         "Q0-first as SEQUENCES — never-contacted leads on this account, i.e. how many FIRST emails are actually due. This is the quantity SEND SELECTION counts toward today's load; queuedFirstUnsent counts every remaining step of those same sequences and therefore over-states 'today' by the whole future sequence. An ops 'queued today' figure should be queuedFirstUnsentSequences + queuedNextToday, compared against dailyLimit — that is the number the selector decides on.",
       ),
+    queuedFirstOverdueSequences: z
+      .number()
+      .int()
+      .describe(
+        "STUCK subset of queuedFirstUnsentSequences — never-sent first emails whose sequence was assigned to this account on a UTC day STRICTLY BEFORE today, i.e. the first email was owed on an earlier day and has not gone out. Always <= queuedFirstUnsentSequences; not part of any partition. Non-zero = a stall to investigate, never work for today.",
+      ),
+    queuedFirstDueTodaySequences: z
+      .number()
+      .int()
+      .describe(
+        "Never-sent first emails whose sequence was assigned TODAY (UTC) = queuedFirstUnsentSequences - queuedFirstOverdueSequences. The 'first emails due today' figure without the stuck backlog. Note: send selection and the dispatcher still count stuck first emails as load on today's capacity (they are owed now), so selector load = queuedFirstUnsentSequences + queuedNextToday.",
+      ),
+    newSequencesToday: z
+      .number()
+      .int()
+      .describe(
+        "Sequences ASSIGNED to this account today (UTC) — campaign rows created today whose account is this address, whatever happened to them since (sent, queued, cancelled). Answers 'how many new leads did the waterfall give this mailbox today'; distinct from queuedFirstUnsentSequences, which counts every never-sent first email of any age.",
+      ),
     queuedNextToday: z
       .number()
       .int()

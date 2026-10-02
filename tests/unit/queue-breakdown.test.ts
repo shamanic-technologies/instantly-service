@@ -135,6 +135,7 @@ describe("aggregateQueueBreakdown — per-STEP partition", () => {
       // ONE never-contacted sequence → one first email due, even though it
       // carries 2 un-sent steps. This is what send selection counts for today.
       firstUnsentSequences: 1,
+      firstOverdueSequences: 0,
       nextToday: 1,
       nextTomorrow: 0,
       nextOverdue: 0,
@@ -159,10 +160,10 @@ describe("aggregateQueueBreakdown — per-STEP partition", () => {
     const map = aggregateQueueBreakdown(rows, asOf);
 
     const a = map.get("a")!;
-    expect(a).toEqual({ sequences: 1, steps: 1, firstUnsent: 1, firstUnsentSequences: 1, nextToday: 0, nextOverdue: 0, nextTomorrow: 0, nextLater: 0 });
+    expect(a).toEqual({ sequences: 1, steps: 1, firstUnsent: 1, firstUnsentSequences: 1, firstOverdueSequences: 0, nextToday: 0, nextOverdue: 0, nextTomorrow: 0, nextLater: 0 });
 
     const b = map.get("b")!;
-    expect(b).toEqual({ sequences: 1, steps: 2, firstUnsent: 0, firstUnsentSequences: 0, nextToday: 0, nextOverdue: 0, nextTomorrow: 1, nextLater: 1 });
+    expect(b).toEqual({ sequences: 1, steps: 2, firstUnsent: 0, firstUnsentSequences: 0, firstOverdueSequences: 0, nextToday: 0, nextOverdue: 0, nextTomorrow: 1, nextLater: 1 });
     expect(b.firstUnsent + b.nextToday + b.nextTomorrow + b.nextLater).toBe(b.steps);
   });
 
@@ -379,5 +380,38 @@ describe("nextOverdue — the BACKLOG subset of nextToday", () => {
     expect(a.firstUnsent + a.nextToday + a.nextTomorrow + a.nextLater).toBe(a.steps);
     expect(a.nextOverdue).toBeLessThanOrEqual(a.nextToday);
     expect(a.nextOverdue).toBeGreaterThan(0);
+  });
+});
+
+describe("firstOverdueSequences — a first email owed on an earlier day is STUCK, not today's work (#969)", () => {
+  it("splits never-sent first emails by the day they were assigned", () => {
+    const rows: QueuedSequenceInput[] = [
+      // Assigned today: due today, not stuck.
+      seq({ account: "a", provisionedSteps: [1, 2, 3], queuedAt: new Date("2026-07-11T00:01:00Z") }),
+      // Assigned last month and never sent: stuck.
+      seq({ account: "a", provisionedSteps: [1, 2, 3], queuedAt: new Date("2026-06-02T08:00:00Z") }),
+      // Assigned late yesterday: owed yesterday, stuck today (nominal UTC day).
+      seq({ account: "a", provisionedSteps: [1], queuedAt: new Date("2026-07-10T23:59:00Z") }),
+    ];
+    const a = aggregateQueueBreakdown(rows, asOf).get("a")!;
+    expect(a.firstUnsentSequences).toBe(3);
+    expect(a.firstOverdueSequences).toBe(2);
+    expect(a.firstOverdueSequences).toBeLessThanOrEqual(a.firstUnsentSequences);
+  });
+
+  it("never marks a CONTACTED sequence's first email stuck, nor one with no assignment date", () => {
+    const rows: QueuedSequenceInput[] = [
+      seq({
+        account: "a",
+        lastSentStep: 1,
+        lastSentAt: new Date(asOf.getTime() - DAY),
+        provisionedSteps: [2],
+        stepDelays: [3],
+        queuedAt: new Date("2026-06-02T08:00:00Z"),
+      }),
+      seq({ account: "a", provisionedSteps: [1] }),
+    ];
+    const a = aggregateQueueBreakdown(rows, asOf).get("a")!;
+    expect(a.firstOverdueSequences).toBe(0);
   });
 });
