@@ -132,7 +132,14 @@ describe("promotePendingClicks", () => {
     mockDbExecute.mockImplementation(async (query: unknown) => {
       const text = sqlText(query);
       if (text.includes("s.classification = 'scanner'")) {
-        return pgResult([{ id: "hit-bhemelaar" }]);
+        return pgResult([
+          {
+            id: "hit-bhemelaar",
+            shares_scanner_network: true,
+            ip_shared_across_companies: false,
+            clicked_from_many_networks: false,
+          },
+        ]);
       }
       return pgResult([]);
     });
