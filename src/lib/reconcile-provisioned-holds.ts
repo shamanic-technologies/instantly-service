@@ -69,8 +69,10 @@ export function classifyHold(e: HoldEvidence): HoldAction {
 export interface HoldRow {
   id: string;
   runId: string;
-  /** NULL for a hold written after the Instantly spend became a fixed cost. */
+  /** `instantly-account-email-sent` cost id; NULL on holds written 2026-08-24 → 2026-10-02 (unbilled). */
   costId: string | null;
+  /** `instantly-domain-email-sent` cost id; NULL before 2026-10-02. */
+  domainCostId: string | null;
   orgId: string | null;
   userId: string | null;
   action: HoldAction;
@@ -99,15 +101,16 @@ export interface ReconcileHoldsSummary {
 
 /**
  * Select every `provisioned` hold with its real-evidence-derived action. One row
- * per cost row (each step has 2 — account + domain — each acted on independently
- * by its own run_id + cost_id). `limit` bounds the batch.
+ * per hold, settled by its own run_id + every cost id it carries (a pre-0038
+ * step has two rows of one cost each; a billed step from 2026-10-02 has one row
+ * carrying both). `limit` bounds the batch.
  */
 export async function selectHoldActions(limit?: number): Promise<HoldRow[]> {
   const limitClause = limit && limit > 0 ? sql`LIMIT ${limit}` : sql``;
   const result = await db.execute(sql`
     WITH prov AS (
       SELECT
-        sc.id, sc.run_id, sc.cost_id, sc.lead_email, sc.step,
+        sc.id, sc.run_id, sc.cost_id, sc.domain_cost_id, sc.lead_email, sc.step,
         sc.campaign_id,
         COALESCE(sc.instantly_campaign_id, ic.instantly_campaign_id) AS icid,
         -- Resolve the OWNING org/user so the runs-service actualize/cancel PATCH
@@ -136,6 +139,7 @@ export async function selectHoldActions(limit?: number): Promise<HoldRow[]> {
       p.id                                        AS "id",
       p.run_id                                    AS "runId",
       p.cost_id                                   AS "costId",
+      p.domain_cost_id                            AS "domainCostId",
       p.org_id                                    AS "orgId",
       p.user_id                                   AS "userId",
       -- has_sent: real email_sent at this step for this send
@@ -185,7 +189,8 @@ export async function selectHoldActions(limit?: number): Promise<HoldRow[]> {
     : (result as { rows?: unknown[] }).rows ?? []) as Array<{
     id: string;
     runId: string;
-    costId: string;
+    costId: string | null;
+    domainCostId: string | null;
     orgId: string | null;
     userId: string | null;
     has_sent: boolean;
@@ -197,6 +202,7 @@ export async function selectHoldActions(limit?: number): Promise<HoldRow[]> {
     id: r.id,
     runId: r.runId,
     costId: r.costId,
+    domainCostId: r.domainCostId,
     orgId: r.orgId,
     userId: r.userId,
     action: classifyHold({
