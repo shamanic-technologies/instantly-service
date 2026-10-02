@@ -26,6 +26,8 @@ import {
   CLICK_DECISION_HOLD_SECONDS,
   PAIRED_UNSUBSCRIBE_WINDOW_SECONDS,
   classifyClickHit,
+  ipSharedAcrossCompaniesEvidenceSql,
+  manyNetworksEvidenceSql,
   scannerNetworkEvidenceSql,
 } from "./click-classification";
 
@@ -47,24 +49,50 @@ export interface PendingClickHit {
   hasPairedUnsubscribeFetch: boolean;
 }
 
+/** The network-level evidence about one hit. */
+export interface ClickNetworkEvidence {
+  sharesScannerNetwork: boolean;
+  ipSharedAcrossCompanies: boolean;
+  clickedFromManyNetworks: boolean;
+}
+
+const NO_NETWORK_EVIDENCE: ClickNetworkEvidence = {
+  sharesScannerNetwork: false,
+  ipSharedAcrossCompanies: false,
+  clickedFromManyNetworks: false,
+};
+
 /**
- * Of these hits, the ones whose /24 already carries a scanner verdict
- * (`scannerNetworkEvidenceSql`).
+ * The network-level evidence for these hits (`click-classification.ts`).
  *
  * Asked AFTER this run's own scanner verdicts are written, not in the candidate
  * query: a Defender pass lands its unreduced-UA hit and its ordinary-looking one
  * seconds apart, so both are pending in the SAME tick, and evidence read before
  * the first was marked would wave the second through.
  */
-export async function loadScannerNetworkHitIds(hitIds: string[]): Promise<Set<string>> {
-  if (hitIds.length === 0) return new Set();
+export async function loadNetworkEvidence(
+  hitIds: string[],
+): Promise<Map<string, ClickNetworkEvidence>> {
+  if (hitIds.length === 0) return new Map();
   const result = await db.execute(sql`
-    SELECT h.id
+    SELECT
+      h.id,
+      ${scannerNetworkEvidenceSql("h")} AS shares_scanner_network,
+      ${ipSharedAcrossCompaniesEvidenceSql("h")} AS ip_shared_across_companies,
+      ${manyNetworksEvidenceSql("h")} AS clicked_from_many_networks
     FROM tracking_hits_raw h
     WHERE h.id = ANY(${sql.param(hitIds)}::text[])
-      AND ${scannerNetworkEvidenceSql("h")}
   `);
-  return new Set(rowsOf(result).map((row) => String(row.id)));
+  return new Map(
+    rowsOf(result).map((row) => [
+      String(row.id),
+      {
+        sharesScannerNetwork: row.shares_scanner_network === true,
+        ipSharedAcrossCompanies: row.ip_shared_across_companies === true,
+        clickedFromManyNetworks: row.clicked_from_many_networks === true,
+      },
+    ]),
+  );
 }
 
 export interface ClickPromotionSummary {
@@ -180,26 +208,26 @@ export async function promotePendingClicks(
   // hits that still look human.
   const decisions = hits.map((hit) => ({
     hit,
-    verdict: classifyClickHit({ ...hit, sharesScannerNetwork: false }),
+    verdict: classifyClickHit({ ...hit, ...NO_NETWORK_EVIDENCE }),
   }));
   const ordered = [
     ...decisions.filter((d) => d.verdict.verdict === "scanner"),
     ...decisions.filter((d) => d.verdict.verdict === "human"),
   ];
   let networkChecked = false;
-  let scannerNetworkIds = new Set<string>();
+  let networkEvidence = new Map<string, ClickNetworkEvidence>();
 
   for (const decision of ordered) {
     const { hit } = decision;
     if (decision.verdict.verdict === "human" && !networkChecked) {
       networkChecked = true;
-      scannerNetworkIds = await loadScannerNetworkHitIds(
+      networkEvidence = await loadNetworkEvidence(
         decisions.filter((d) => d.verdict.verdict === "human").map((d) => d.hit.id),
       );
     }
     const verdict =
       decision.verdict.verdict === "human"
-        ? classifyClickHit({ ...hit, sharesScannerNetwork: scannerNetworkIds.has(hit.id) })
+        ? classifyClickHit({ ...hit, ...(networkEvidence.get(hit.id) ?? NO_NETWORK_EVIDENCE) })
         : decision.verdict;
 
     try {

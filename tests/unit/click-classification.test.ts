@@ -10,6 +10,8 @@ import {
   classifyImmediateSignals,
   isScannerUserAgent,
   scannerNetworkEvidenceSql,
+  ipSharedAcrossCompaniesEvidenceSql,
+  manyNetworksEvidenceSql,
 } from "../../src/lib/self-send/click-classification";
 
 const CHROME =
@@ -73,6 +75,8 @@ describe("click classification — the paired opt-out fetch", () => {
         userAgent: CHROME,
         hasPairedUnsubscribeFetch: true,
         sharesScannerNetwork: false,
+        ipSharedAcrossCompanies: false,
+        clickedFromManyNetworks: false,
       }),
     ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.pairedUnsubscribeFetch });
   });
@@ -84,6 +88,8 @@ describe("click classification — the paired opt-out fetch", () => {
         userAgent: CHROME,
         hasPairedUnsubscribeFetch: false,
         sharesScannerNetwork: false,
+        ipSharedAcrossCompanies: false,
+        clickedFromManyNetworks: false,
       }),
     ).toEqual({ verdict: "human", reason: null });
   });
@@ -117,6 +123,8 @@ describe("click classification — the scanner's network", () => {
         userAgent: DEFENDER_MAC,
         hasPairedUnsubscribeFetch: false,
         sharesScannerNetwork: true,
+        ipSharedAcrossCompanies: false,
+        clickedFromManyNetworks: false,
       }),
     ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.scannerNetwork });
   });
@@ -128,6 +136,8 @@ describe("click classification — the scanner's network", () => {
         userAgent: DEFENDER_MAC,
         hasPairedUnsubscribeFetch: false,
         sharesScannerNetwork: false,
+        ipSharedAcrossCompanies: false,
+        clickedFromManyNetworks: false,
       }),
     ).toEqual({ verdict: "human", reason: null });
   });
@@ -146,6 +156,53 @@ describe("click classification — the scanner's network", () => {
     expect(text).toContain("172\\.(1[6-9]|2\\d|3[01])");
     expect(text).toContain("192\\.168");
     expect(text).toContain("(10|127)");
+  });
+});
+
+const NO_NET = { sharesScannerNetwork: false, ipSharedAcrossCompanies: false, clickedFromManyNetworks: false };
+
+describe("click classification — re-scans and shared fetchers", () => {
+  it("calls a click from an address that also clicked for ANOTHER company a scanner", () => {
+    expect(
+      classifyClickHit({
+        method: "GET",
+        userAgent: DEFENDER_MAC,
+        hasPairedUnsubscribeFetch: false,
+        ...NO_NET,
+        ipSharedAcrossCompanies: true,
+      }),
+    ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.ipSharedAcrossCompanies });
+  });
+
+  it("calls a click from a lead fetched from 3+ unrelated networks in a day a scanner", () => {
+    expect(
+      classifyClickHit({
+        method: "GET",
+        userAgent: DEFENDER_MAC,
+        hasPairedUnsubscribeFetch: false,
+        ...NO_NET,
+        clickedFromManyNetworks: true,
+      }),
+    ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.manyNetworks });
+  });
+
+  it("shared-address evidence is the exact address, other clicks, a DIFFERENT company only", () => {
+    const text = flatten(ipSharedAcrossCompaniesEvidenceSql("h"));
+    expect(text).toContain("o.id <> h.id");
+    expect(text).toContain("interval '7 days'");
+    // Colleagues behind one office NAT are two real people: same domain never counts.
+    expect(text).toContain("split_part(lower(o.lead_email), '@', 2) <> split_part(lower(h.lead_email), '@', 2)");
+    expect(text).toContain("(\\d+\\.\\d+\\.\\d+\\.\\d+)$");
+  });
+
+  it("many-networks evidence counts distinct /16s for the SAME lead and campaign within 24h, floor 3", () => {
+    const text = flatten(manyNetworksEvidenceSql("h"));
+    expect(text).toContain("COUNT(DISTINCT");
+    expect(text).toContain("o.instantly_campaign_id = h.instantly_campaign_id");
+    expect(text).toContain("lower(o.lead_email) = lower(h.lead_email)");
+    expect(text).toContain("interval '24 hours'");
+    expect(text).toContain(">= 3");
+    expect(text).toContain("(\\d+\\.\\d+)\\.\\d+\\.\\d+$");
   });
 });
 
