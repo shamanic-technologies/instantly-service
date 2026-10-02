@@ -380,7 +380,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
     ]);
     await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
     const [params] = mockSendEmail.mock.calls[0];
-    expect(params.metadata.html).toContain("We could not read their reply");
-    expect(params.metadata.text).toContain("We could not read their reply");
+    expect(params.metadata.html).toContain("Their reply could not be read");
+    expect(params.metadata.text).toContain("Their reply could not be read");
   });
 });
