@@ -46,15 +46,16 @@ export async function stopSelfSendSequence(
   campaign: SelfSendStopTarget,
   leadEmail: string,
   reason: string,
+  status: "paused" | "completed" = "paused",
 ): Promise<void> {
   await cancelRemainingProvisions(campaign, leadEmail);
 
   await db
     .update(instantlyCampaigns)
-    .set({ status: "paused", updatedAt: new Date() })
+    .set({ status, updatedAt: new Date() })
     .where(eq(instantlyCampaigns.instantlyCampaignId, campaign.instantlyCampaignId));
 
   console.log(
-    `[instantly-service] self-send: stopped campaign=${campaign.instantlyCampaignId} lead=${leadEmail} (${reason})`,
+    `[instantly-service] stopped sequence campaign=${campaign.instantlyCampaignId} lead=${leadEmail} (${reason})`,
   );
 }

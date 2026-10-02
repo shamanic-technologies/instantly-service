@@ -41,6 +41,7 @@ import {
 } from "./sender-health";
 import { SEND_TRANSPORT_SMTP } from "./transport";
 import { dispatchScheduledReplies } from "../scheduled-replies-worker";
+import { stopQueuedSequencesOfStoppedCampaigns } from "../stopped-campaigns";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/dispatch" };
 
@@ -615,6 +616,12 @@ async function runDispatchExclusive(
 ): Promise<DispatchSummary> {
   const asOf = options.asOf ?? new Date();
 
+  // A campaign the customer stopped (or an org torn down) sends nothing more:
+  // ask campaign-service, which owns that status, and stop every queued
+  // sequence of a stopped campaign BEFORE anything is selected. Fails LOUD —
+  // a run that cannot confirm its campaigns are running sends nothing.
+  const { notYetStopped } = await stopQueuedSequencesOfStoppedCampaigns(CALLER);
+
   // Read the mailboxes BEFORE deciding what to send, in the same run and
   // awaited. A prospect who replied since the last sweep has their sequence
   // stopped by the poll, so they are already out of the queue by the time we
@@ -647,7 +654,10 @@ async function runDispatchExclusive(
   }
 
   const plan = async () => {
-    const sequences = await loadPendingSequences();
+    // A stopped campaign's sequence the sweep has not reached yet is never sent.
+    const sequences = (await loadPendingSequences()).filter(
+      (s) => !notYetStopped.has(s.instantlyCampaignId),
+    );
     const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
     return {
       sequences,
