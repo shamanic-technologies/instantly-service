@@ -212,6 +212,12 @@ export interface AccountHealth {
    */
   queuedFirstOverdueSequences: number;
   /**
+   * Never-sent first emails assigned TODAY (UTC):
+   * `queuedFirstUnsentSequences - queuedFirstOverdueSequences`, served so no
+   * consumer subtracts. "Queued today" without the stuck backlog.
+   */
+  queuedFirstDueTodaySequences: number;
+  /**
    * Sequences ASSIGNED to this account today (UTC): `instantly_campaigns` rows
    * created today whose `account_email` is this address, whatever has happened
    * to them since (sent, queued, cancelled). Not a queue figure — it answers
@@ -361,6 +367,8 @@ export function buildAccountHealth(
       queuedFirstUnsent: breakdown?.firstUnsent ?? 0,
       queuedFirstUnsentSequences: breakdown?.firstUnsentSequences ?? 0,
       queuedFirstOverdueSequences: breakdown?.firstOverdueSequences ?? 0,
+      queuedFirstDueTodaySequences:
+        (breakdown?.firstUnsentSequences ?? 0) - (breakdown?.firstOverdueSequences ?? 0),
       newSequencesToday: newSequencesTodayByEmail.get(a.email) ?? 0,
       queuedNextToday: breakdown?.nextToday ?? 0,
       queuedOverdue: breakdown?.nextOverdue ?? 0,

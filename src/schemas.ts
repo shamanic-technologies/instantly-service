@@ -2348,6 +2348,12 @@ const AccountHealthSchema = z
       .describe(
         "STUCK subset of queuedFirstUnsentSequences — never-sent first emails whose sequence was assigned to this account on a UTC day STRICTLY BEFORE today, i.e. the first email was owed on an earlier day and has not gone out. Always <= queuedFirstUnsentSequences; not part of any partition. Non-zero = a stall to investigate, never work for today.",
       ),
+    queuedFirstDueTodaySequences: z
+      .number()
+      .int()
+      .describe(
+        "Never-sent first emails whose sequence was assigned TODAY (UTC) = queuedFirstUnsentSequences - queuedFirstOverdueSequences. The 'first emails due today' figure without the stuck backlog. Note: send selection and the dispatcher still count stuck first emails as load on today's capacity (they are owed now), so selector load = queuedFirstUnsentSequences + queuedNextToday.",
+      ),
     newSequencesToday: z
       .number()
       .int()
