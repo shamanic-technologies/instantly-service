@@ -15,9 +15,10 @@
  * clicker ever unsubscribed). Nothing here reads or writes a webhook-sourced
  * event.
  *
- * ⚠️ IT DOES NOT REACTIVATE ANYTHING. `stop-on-click` paused those leads'
- * Instantly campaigns, and resuming outreach at people on the strength of a
- * correction is a decision nobody made. The pauses stand.
+ * ⚠️ IT DOES NOT REACTIVATE ANYTHING ITSELF. Resuming the self-send sequences a
+ * scanner click stopped is its own, separately dry-run step
+ * (`reactivateScannerPausedSequences`, owner decision 2026-10-02 after the Olive
+ * Defender clicks), run AFTER this sweep has re-decided the hits.
  *
  * ⚠️ THE CANDIDATE SET INCLUDES HITS ALREADY DECIDED `human`, NOT ONLY THE
  * `legacy` ONES MIGRATION 0051 MARKED. A verdict is only as good as the rule
@@ -46,6 +47,7 @@ import { refreshLeadStatusCurrent } from "../status-gold";
 import {
   PAIRED_UNSUBSCRIBE_WINDOW_SECONDS,
   classifyClickHit,
+  scannerNetworkEvidenceSql,
 } from "./click-classification";
 
 /** node-postgres resolves `db.execute` to a QueryResult OBJECT, never an array. */
@@ -63,6 +65,7 @@ interface LegacyClickHit {
   userAgent: string | null;
   brandId: string | null;
   hasPairedUnsubscribeFetch: boolean;
+  sharesScannerNetwork: boolean;
 }
 
 export interface BrandBreakdown {
@@ -109,7 +112,8 @@ async function loadLegacyClickHits(limit: number): Promise<LegacyClickHit[]> {
           AND u.received_at BETWEEN
             h.received_at - ${pairingWindow}
             AND h.received_at + ${pairingWindow}
-      ) AS has_paired_unsubscribe
+      ) AS has_paired_unsubscribe,
+      ${scannerNetworkEvidenceSql("h")} AS shares_scanner_network
     FROM tracking_hits_raw h
     LEFT JOIN instantly_campaigns c
       ON c.instantly_campaign_id = h.instantly_campaign_id
@@ -128,6 +132,7 @@ async function loadLegacyClickHits(limit: number): Promise<LegacyClickHit[]> {
       row.user_agent === null || row.user_agent === undefined ? null : String(row.user_agent),
     brandId: row.brand_id === null || row.brand_id === undefined ? null : String(row.brand_id),
     hasPairedUnsubscribeFetch: row.has_paired_unsubscribe === true,
+    sharesScannerNetwork: row.shares_scanner_network === true,
   }));
 }
 

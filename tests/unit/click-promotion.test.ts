@@ -108,8 +108,55 @@ describe("promotePendingClicks", () => {
     const summary = await promotePendingClicks();
 
     expect(summary).toMatchObject({ failed: 1, promoted: 0, decided: 0 });
-    // One SELECT only — no UPDATE marked the hit, so it stays a candidate.
-    expect(mockDbExecute).toHaveBeenCalledTimes(1);
+    // SELECTs only — no UPDATE marked the hit, so it stays a candidate.
+    expect(mockDbExecute.mock.calls.map((c) => sqlText(c[0])).join("\n")).not.toContain("UPDATE");
+  });
+
+  it("asks the network question AFTER this tick's own scanner verdicts are written (Defender, Olive 2026-10-02)", async () => {
+    // Same Azure IP, 12 s apart, both pending in the same tick: the unreduced UA
+    // is a scanner on its face; the Mac one only through its network.
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        hitRow({
+          id: "hit-aadit",
+          user_agent:
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.7444.163 Safari/537.36",
+        }),
+        hitRow({
+          id: "hit-bhemelaar",
+          user_agent:
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+        }),
+      ]),
+    );
+    mockDbExecute.mockImplementation(async (query: unknown) => {
+      const text = sqlText(query);
+      if (text.includes("s.classification = 'scanner'")) {
+        return pgResult([{ id: "hit-bhemelaar" }]);
+      }
+      return pgResult([]);
+    });
+
+    const summary = await promotePendingClicks();
+
+    expect(mockPromoteEvent).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ decided: 2, scanner: 2, promoted: 0 });
+    expect(summary.reasons).toMatchObject({ scanner_user_agent: 1, scanner_network: 1 });
+
+    const texts = mockDbExecute.mock.calls.map((c) => sqlText(c[0]));
+    const firstMark = texts.findIndex((t) => t.includes("UPDATE tracking_hits_raw"));
+    const networkQuery = texts.findIndex((t) => t.includes("s.classification = 'scanner'"));
+    expect(firstMark).toBeGreaterThan(0);
+    expect(networkQuery).toBeGreaterThan(firstMark);
+  });
+
+  it("negative control: a human click on a network with no scanner verdict is still promoted", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([hitRow()]));
+    mockDbExecute.mockResolvedValue(pgResult([]));
+
+    const summary = await promotePendingClicks();
+
+    expect(summary).toMatchObject({ promoted: 1, scanner: 0 });
   });
 
   it("selects only undecided CLICK hits past the hold, matching the lead case-folded", async () => {

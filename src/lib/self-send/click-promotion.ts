@@ -26,6 +26,7 @@ import {
   CLICK_DECISION_HOLD_SECONDS,
   PAIRED_UNSUBSCRIBE_WINDOW_SECONDS,
   classifyClickHit,
+  scannerNetworkEvidenceSql,
 } from "./click-classification";
 
 /** node-postgres resolves `db.execute` to a QueryResult OBJECT, never an array. */
@@ -44,6 +45,26 @@ export interface PendingClickHit {
   userAgent: string | null;
   receivedAt: Date;
   hasPairedUnsubscribeFetch: boolean;
+}
+
+/**
+ * Of these hits, the ones whose /24 already carries a scanner verdict
+ * (`scannerNetworkEvidenceSql`).
+ *
+ * Asked AFTER this run's own scanner verdicts are written, not in the candidate
+ * query: a Defender pass lands its unreduced-UA hit and its ordinary-looking one
+ * seconds apart, so both are pending in the SAME tick, and evidence read before
+ * the first was marked would wave the second through.
+ */
+export async function loadScannerNetworkHitIds(hitIds: string[]): Promise<Set<string>> {
+  if (hitIds.length === 0) return new Set();
+  const result = await db.execute(sql`
+    SELECT h.id
+    FROM tracking_hits_raw h
+    WHERE h.id = ANY(${sql.param(hitIds)}::text[])
+      AND ${scannerNetworkEvidenceSql("h")}
+  `);
+  return new Set(rowsOf(result).map((row) => String(row.id)));
 }
 
 export interface ClickPromotionSummary {
@@ -154,8 +175,32 @@ export async function promotePendingClicks(
     reasons: {},
   };
 
-  for (const hit of hits) {
-    const verdict = classifyClickHit(hit);
+  // Two passes. Every verdict that needs no network evidence is taken first, so
+  // its scanner rows are on disk when the network question is asked of the
+  // hits that still look human.
+  const decisions = hits.map((hit) => ({
+    hit,
+    verdict: classifyClickHit({ ...hit, sharesScannerNetwork: false }),
+  }));
+  const ordered = [
+    ...decisions.filter((d) => d.verdict.verdict === "scanner"),
+    ...decisions.filter((d) => d.verdict.verdict === "human"),
+  ];
+  let networkChecked = false;
+  let scannerNetworkIds = new Set<string>();
+
+  for (const decision of ordered) {
+    const { hit } = decision;
+    if (decision.verdict.verdict === "human" && !networkChecked) {
+      networkChecked = true;
+      scannerNetworkIds = await loadScannerNetworkHitIds(
+        decisions.filter((d) => d.verdict.verdict === "human").map((d) => d.hit.id),
+      );
+    }
+    const verdict =
+      decision.verdict.verdict === "human"
+        ? classifyClickHit({ ...hit, sharesScannerNetwork: scannerNetworkIds.has(hit.id) })
+        : decision.verdict;
 
     try {
       if (verdict.verdict === "human") {

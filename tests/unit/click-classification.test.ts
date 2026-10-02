@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 import {
   CLICK_DECISION_HOLD_SECONDS,
@@ -7,6 +9,7 @@ import {
   classifyClickHit,
   classifyImmediateSignals,
   isScannerUserAgent,
+  scannerNetworkEvidenceSql,
 } from "../../src/lib/self-send/click-classification";
 
 const CHROME =
@@ -69,6 +72,7 @@ describe("click classification — the paired opt-out fetch", () => {
         method: "GET",
         userAgent: CHROME,
         hasPairedUnsubscribeFetch: true,
+        sharesScannerNetwork: false,
       }),
     ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.pairedUnsubscribeFetch });
   });
@@ -79,6 +83,7 @@ describe("click classification — the paired opt-out fetch", () => {
         method: "GET",
         userAgent: CHROME,
         hasPairedUnsubscribeFetch: false,
+        sharesScannerNetwork: false,
       }),
     ).toEqual({ verdict: "human", reason: null });
   });
@@ -91,6 +96,56 @@ describe("click classification — the paired opt-out fetch", () => {
         hasPairedUnsubscribeFetch: true,
       }).reason,
     ).toBe(SCANNER_REASONS.headRequest);
+  });
+});
+
+// Measured 2026-10-02 (Olive): Microsoft Defender detonated the links from the
+// same Azure /24s with an unreduced Windows UA AND an ordinary reduced Mac UA.
+const DEFENDER_MAC =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+
+/** Render a drizzle SQL fragment the way node-postgres will receive it. */
+function flatten(node: SQL): string {
+  return new PgDialect().sqlToQuery(node).sql;
+}
+
+describe("click classification — the scanner's network", () => {
+  it("calls an ordinary-looking click from a /24 a scanner already used a scanner", () => {
+    expect(
+      classifyClickHit({
+        method: "GET",
+        userAgent: DEFENDER_MAC,
+        hasPairedUnsubscribeFetch: false,
+        sharesScannerNetwork: true,
+      }),
+    ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.scannerNetwork });
+  });
+
+  it("negative control: the same click from a network with no scanner verdict stays human", () => {
+    expect(
+      classifyClickHit({
+        method: "GET",
+        userAgent: DEFENDER_MAC,
+        hasPairedUnsubscribeFetch: false,
+        sharesScannerNetwork: false,
+      }),
+    ).toEqual({ verdict: "human", reason: null });
+  });
+
+  it("keys the evidence on the /24, a scanner verdict, other clicks only, and a ±7 day window", () => {
+    const text = flatten(scannerNetworkEvidenceSql("h"));
+    expect(text).toContain("s.classification = 'scanner'");
+    expect(text).toContain("s.kind = 'click'");
+    expect(text).toContain("s.id <> h.id");
+    expect(text).toContain("interval '7 days'");
+    expect(text).toContain("(\\d+\\.\\d+\\.\\d+)\\.\\d+$");
+  });
+
+  it("never treats a private address as a network: pre-fix hits all carry Caddy's 172.18.x", () => {
+    const text = flatten(scannerNetworkEvidenceSql("h"));
+    expect(text).toContain("172\\.(1[6-9]|2\\d|3[01])");
+    expect(text).toContain("192\\.168");
+    expect(text).toContain("(10|127)");
   });
 });
 
