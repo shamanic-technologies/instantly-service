@@ -53,6 +53,7 @@ describe("buildAccountHealth", () => {
     // Two never-sent first emails, both from earlier days: stuck, and NOT new today.
     expect(row!.queuedFirstUnsentSequences).toBe(2);
     expect(row!.queuedFirstOverdueSequences).toBe(2);
+    expect(row!.queuedFirstDueTodaySequences).toBe(0);
     expect(row!.newSequencesToday).toBe(0);
   });
 
@@ -91,6 +92,7 @@ describe("buildAccountHealth", () => {
       queuedFirstUnsent: 0,
       queuedFirstUnsentSequences: 0,
       queuedFirstOverdueSequences: 0,
+      queuedFirstDueTodaySequences: 0,
       newSequencesToday: 0,
       queuedNextToday: 0,
       queuedOverdue: 0,

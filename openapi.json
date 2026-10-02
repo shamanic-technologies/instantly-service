@@ -3836,6 +3836,10 @@
             "type": "integer",
             "description": "STUCK subset of queuedFirstUnsentSequences — never-sent first emails whose sequence was assigned to this account on a UTC day STRICTLY BEFORE today, i.e. the first email was owed on an earlier day and has not gone out. Always <= queuedFirstUnsentSequences; not part of any partition. Non-zero = a stall to investigate, never work for today."
           },
+          "queuedFirstDueTodaySequences": {
+            "type": "integer",
+            "description": "Never-sent first emails whose sequence was assigned TODAY (UTC) = queuedFirstUnsentSequences - queuedFirstOverdueSequences. The 'first emails due today' figure without the stuck backlog. Note: send selection and the dispatcher still count stuck first emails as load on today's capacity (they are owed now), so selector load = queuedFirstUnsentSequences + queuedNextToday."
+          },
           "newSequencesToday": {
             "type": "integer",
             "description": "Sequences ASSIGNED to this account today (UTC) — campaign rows created today whose account is this address, whatever happened to them since (sent, queued, cancelled). Answers 'how many new leads did the waterfall give this mailbox today'; distinct from queuedFirstUnsentSequences, which counts every never-sent first email of any age."
@@ -3884,6 +3888,7 @@
           "queuedFirstUnsent",
           "queuedFirstUnsentSequences",
           "queuedFirstOverdueSequences",
+          "queuedFirstDueTodaySequences",
           "newSequencesToday",
           "queuedNextToday",
           "queuedOverdue",
