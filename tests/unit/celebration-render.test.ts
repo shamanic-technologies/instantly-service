@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { prospectLabel, renderCelebration } from "../../src/lib/celebrate-positive-reply";
+import {
+  celebrationVariantFor,
+  conversationHref,
+  prospectLabel,
+  renderCelebration,
+} from "../../src/lib/celebrate-positive-reply";
 import type { ThreadMessage } from "../../src/lib/forward-positive-reply";
 
 const reply: ThreadMessage = {
@@ -34,6 +39,8 @@ describe("prospectLabel", () => {
   });
 });
 
+const URL = "https://dashboard.distribute.you/v2/orgs/org_3Jv0/brands/brand-1/people/row-1";
+
 describe("renderCelebration", () => {
   const history = {
     items: [
@@ -42,23 +49,85 @@ describe("renderCelebration", () => {
     ],
     notes: [],
   };
+  const base = {
+    leadEmail: "dr.k@kineticchiropracticutah.com",
+    brandName: "Shockwavecenters",
+    company: "Kinetic Chiropractic",
+    reply,
+    history,
+    conversationUrl: URL,
+  };
 
-  it("names the company and the brand in the subject", () => {
-    const out = renderCelebration({ leadEmail: "dr.k@kineticchiropracticutah.com", brandName: "Shockwavecenters", company: "Kinetic Chiropractic", reply, history });
-    expect(out.subject).toBe("\u{1F389} Congratulations: Kinetic Chiropractic replied to your Shockwavecenters outreach");
-    expect(out.html).toContain("Kinetic Chiropractic replied!");
-    expect(out.html).toContain("Andrew Kakishita at Kinetic Chiropractic answered");
+  it("a MEETING request gets its own email: the full celebration", () => {
+    const out = renderCelebration({ ...base, kind: "lead_meeting_requested" });
+    expect(out.subject).toBe("\u{1F389} Kinetic Chiropractic wants to book a call");
+    expect(out.html).toContain("Kinetic Chiropractic wants to book a call!");
+    expect(out.html).toContain("Congratulations, this is the moment the outreach is for.");
+    expect(out.html).toContain("\u{1F389}");
+  });
+
+  it("an INFO request is calm: no congratulations, no party emoji", () => {
+    const out = renderCelebration({ ...base, kind: "lead_info_requested" });
+    expect(out.subject).toBe("\u{1F4AC} Kinetic Chiropractic asked for more information");
+    expect(out.html).toContain("Kinetic Chiropractic asked for more information");
+    expect(out.html).toContain("Andrew Kakishita at Kinetic Chiropractic replied to your Shockwavecenters outreach and wants to know more.");
+    for (const body of [out.subject, out.html, out.text]) {
+      expect(body).not.toContain("Congratulations");
+      expect(body).not.toContain("the moment the outreach is for");
+      expect(body).not.toContain("\u{1F389}");
+    }
+  });
+
+  it("a plain INTEREST sits in between", () => {
+    const out = renderCelebration({ ...base, kind: "lead_interested" });
+    expect(out.subject).toBe("\u{1F44F} Kinetic Chiropractic replied with interest to your Shockwavecenters outreach");
+    expect(out.html).toContain("Kinetic Chiropractic is interested");
+    expect(out.html).not.toContain("Congratulations");
+    expect(out.html).not.toContain("\u{1F389}");
+  });
+
+  it("an unknown kind reads as plain interest", () => {
+    expect(celebrationVariantFor(undefined)).toBe("interested");
+    expect(celebrationVariantFor("lead_interested")).toBe("interested");
+    expect(celebrationVariantFor("lead_info_requested")).toBe("info_requested");
+    expect(celebrationVariantFor("lead_meeting_requested")).toBe("meeting_requested");
+  });
+
+  for (const kind of ["lead_meeting_requested", "lead_info_requested", "lead_interested"]) {
+    it(`${kind}: tells the client they have nothing to do, and links the conversation`, () => {
+      const out = renderCelebration({ ...base, kind });
+      for (const body of [out.html, out.text]) {
+        expect(body).toContain("You have nothing to do.");
+        expect(body).toContain("We answer Andrew Kakishita for you, in the same email thread.");
+        expect(body).toContain("If we need any information from you to answer, we will come back to you.");
+        expect(body).toContain("Follow the conversation");
+      }
+      expect(out.html).toContain(`href="${URL}"`);
+      expect(out.text).toContain(`Follow the conversation: ${URL}`);
+    });
+
+    it(`${kind}: carries no em-dash and never mentions opens`, () => {
+      const out = renderCelebration({ ...base, kind });
+      for (const body of [out.subject, out.html, out.text]) {
+        expect(body).not.toContain("\u2014");
+        expect(body.toLowerCase()).not.toMatch(/\bopen(ed|s)?\b(?! the conversation)/);
+      }
+    });
+  }
+
+  it("names nobody it cannot name: an address-only prospect is 'them'", () => {
+    const out = renderCelebration({ ...base, leadEmail: "a@b.com", company: null, reply: { ...reply, from: "a@b.com" }, kind: "lead_info_requested" });
+    expect(out.subject).toBe("\u{1F4AC} a@b.com asked for more information");
+    expect(out.text).toContain("We answer them for you, in the same email thread.");
   });
 
   it("falls back to the person, then the address, when the company is unknown", () => {
-    const named = renderCelebration({ leadEmail: "dr.k@kineticchiropracticutah.com", brandName: "Shockwavecenters", company: null, reply, history });
-    expect(named.subject).toBe("\u{1F389} Congratulations: Andrew Kakishita replied to your Shockwavecenters outreach");
-    const bare = renderCelebration({ leadEmail: "a@b.com", brandName: null, reply: { ...reply, from: "a@b.com" }, history });
-    expect(bare.subject).toBe("\u{1F389} Congratulations: a@b.com replied to your outreach");
+    const named = renderCelebration({ ...base, company: null, kind: "lead_meeting_requested" });
+    expect(named.subject).toBe("\u{1F389} Andrew Kakishita wants to book a call");
   });
 
   it("shows the reply complete and escaped, and the earlier email once", () => {
-    const out = renderCelebration({ leadEmail: "dr.k@kineticchiropracticutah.com", brandName: null, reply, history });
+    const out = renderCelebration({ ...base, brandName: null });
     expect(out.html).toContain("&lt;shockwave&gt; units?");
     expect(out.html).not.toContain("<shockwave>");
     expect(out.text).toContain(reply.bodyText);
@@ -66,14 +135,29 @@ describe("renderCelebration", () => {
   });
 
   it("says so when the reply could not be read, and never summarizes it", () => {
-    const out = renderCelebration({ leadEmail: "x@y.com", brandName: "B", reply: null, history: { items: [], notes: [] } });
+    const out = renderCelebration({ ...base, leadEmail: "x@y.com", company: null, reply: null, history: { items: [], notes: [] } });
     expect(out.html).toContain("We could not read their reply");
-    expect(out.subject).toBe("\u{1F389} Congratulations: x@y.com replied to your B outreach");
   });
 
-  it("carries no em-dash in what the client reads", () => {
-    const out = renderCelebration({ leadEmail: "dr.k@kineticchiropracticutah.com", brandName: "B", reply, history });
-    expect(out.html).not.toContain("—");
-    expect(out.text).not.toContain("—");
+  it("escapes the dashboard link", () => {
+    const out = renderCelebration({ ...base, conversationUrl: 'https://x/"><script>' });
+    expect(out.html).not.toContain('"><script>');
+  });
+});
+
+describe("conversationHref", () => {
+  it("deep-links the person page with the CLERK org id", () => {
+    expect(conversationHref({ externalOrgId: "org_3Jv0", brandId: "b-1", leadRowId: "row-1" })).toBe(
+      "https://dashboard.distribute.you/v2/orgs/org_3Jv0/brands/b-1/people/row-1",
+    );
+  });
+  it("falls back to the brand's People list without a lead row", () => {
+    expect(conversationHref({ externalOrgId: "org_3Jv0", brandId: "b-1", leadRowId: null })).toBe(
+      "https://dashboard.distribute.you/v2/orgs/org_3Jv0/brands/b-1/people",
+    );
+  });
+  it("falls back to the dashboard home without the org or the brand", () => {
+    expect(conversationHref({ externalOrgId: null, brandId: "b-1", leadRowId: "row-1" })).toBe("https://dashboard.distribute.you/v2");
+    expect(conversationHref({ externalOrgId: "org_3Jv0", brandId: null, leadRowId: "row-1" })).toBe("https://dashboard.distribute.you/v2");
   });
 });

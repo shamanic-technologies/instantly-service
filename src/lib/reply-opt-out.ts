@@ -195,6 +195,8 @@ export async function recordOptOutFromReply(
 export async function maybeRecordOptOutFromReply(
   campaign: OptOutCandidateCampaign,
   eventType: string,
+  /** A reading already taken of the latest reply (lib/refine-interest-kind): reused when it is still the latest. */
+  reading?: { qualification: QualificationEventType | null; inbound: MirroredInbound },
 ): Promise<void> {
   if (!MIRRORED_INBOUND_EVENT_TYPES.has(eventType)) return;
   if (!isInstantlyHeldCampaignId(campaign.instantlyCampaignId)) return;
@@ -210,9 +212,15 @@ export async function maybeRecordOptOutFromReply(
     const inbound = await fetchLatestMirroredInbound(campaign.instantlyCampaignId);
     if (!inbound) return;
 
+    const sameMessage =
+      reading !== undefined &&
+      reading.inbound.instantlyEmailId !== null &&
+      reading.inbound.instantlyEmailId === inbound.instantlyEmailId;
+
     await recordOptOutFromReply({
       campaign,
       replyText: inbound.text,
+      ...(sameMessage ? { qualification: reading.qualification } : {}),
       evidence: {
         source: "mirrored_reply",
         eventType,

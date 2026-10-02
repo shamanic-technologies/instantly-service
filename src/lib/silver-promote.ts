@@ -30,6 +30,7 @@ import { maybeEscalateOffTopicReply } from "./escalate-off-topic-reply";
 import { maybeHandleNotAProspect } from "./not-a-prospect";
 import { maybeMirrorCampaignEmails } from "./mirror-emails";
 import { maybeRecordOptOutFromReply } from "./reply-opt-out";
+import { refineInstantlyInterest } from "./refine-interest-kind";
 import {
   DEAL_PROGRESS_TO_REPLY_KIND,
   REPLY_KIND_CLASSIFICATION,
@@ -619,14 +620,22 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
   // they had by definition replied positively) at the single ingestion choke
   // point. Write-time, never read-time: bronze keeps the raw provider payload,
   // silver carries the new vocabulary only.
-  const input: PromoteEventInput = isDealProgressEventType(rawInput.eventType)
+  const resolved: PromoteEventInput = isDealProgressEventType(rawInput.eventType)
     ? { ...rawInput, eventType: DEAL_PROGRESS_TO_REPLY_KIND[rawInput.eventType] }
     : rawInput;
 
-  const campaign = await findCampaign(input.instantlyCampaignId);
+  const campaign = await findCampaign(resolved.instantlyCampaignId);
   if (!campaign) {
     return { promoted: false, silverEventId: null };
   }
+
+  // Instantly knows one positive kind; the prospect may have asked for a call or
+  // for information. Read which BEFORE the event is written, so the recorded
+  // kind and every side effect below (the client's email first) follow what the
+  // prospect actually asked. Positive kinds only, stats unchanged; never throws.
+  const refinement = await refineInstantlyInterest(campaign, resolved);
+  const input: PromoteEventInput =
+    refinement.eventType === resolved.eventType ? resolved : { ...resolved, eventType: refinement.eventType };
 
   const result = await insertOrUpgradeSilverEvent(input);
 
@@ -722,6 +731,7 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
           orgId: campaign.orgId,
         },
         input.eventType,
+        refinement.reading ?? undefined,
       );
 
       // ...and ring the brand's sales rep about that buyer, offering to connect

@@ -442,6 +442,13 @@
       "when": 1789898526213,
       "tag": "0062_escalation_handoff",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1789898527213,
+      "tag": "0063_meeting_request_celebration",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,9 @@ const mockListEmails = vi.fn();
 const mockSendEmail = vi.fn();
 const mockExecute = vi.fn();
 const mockFetchLeadConversation = vi.fn();
+const mockSet = vi.fn();
+const mockExternalOrgId = vi.fn();
+const mockFindLead = vi.fn();
 
 // A drizzle-ish update builder: .set().where() returns an object that is both
 // awaitable (release: `await db.update()...where()`) and has .returning() (claim).
@@ -23,7 +26,12 @@ vi.mock("../../src/db", () => ({
     execute: (...a: unknown[]) => mockExecute(...a),
     update: (...a: unknown[]) => {
       mockUpdate(...a);
-      return { set: () => ({ where: () => whereObj }) };
+      return {
+        set: (v: unknown) => {
+          mockSet(v);
+          return { where: () => whereObj };
+        },
+      };
     },
   },
 }));
@@ -44,6 +52,14 @@ const mockBrandContext = vi.fn();
 vi.mock("../../src/lib/brand-client", () => ({
   getBrandHandoffContext: (...a: unknown[]) => mockBrandContext(...a),
   getSalesRep: async () => ({ email: null, phone: null }),
+}));
+
+vi.mock("../../src/lib/client-org-client", () => ({
+  getExternalOrgId: (...a: unknown[]) => mockExternalOrgId(...a),
+}));
+
+vi.mock("../../src/lib/lead-client", () => ({
+  findLeadOnCampaignByEmail: (...a: unknown[]) => mockFindLead(...a),
 }));
 
 vi.mock("../../src/lib/email-client", () => ({
@@ -232,6 +248,11 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
     mockExecute.mockReset();
     mockFetchLeadConversation.mockReset();
     mockBrandContext.mockReset();
+    mockSet.mockReset();
+    mockExternalOrgId.mockReset();
+    mockFindLead.mockReset();
+    mockExternalOrgId.mockResolvedValue("org_3Jv0lYZiVaymxPEuyEbrbXs8hpv");
+    mockFindLead.mockResolvedValue({ id: "346a5c86-ac49-4321-a873-a63c830b3217", company: null });
     mockExecute.mockResolvedValue({ rows: [] });
     mockFetchLeadConversation.mockRejectedValue(new Error("campaign-service down"));
     mockReturning.mockResolvedValue([{ id: "row-1" }]); // claim won by default
@@ -309,6 +330,48 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
       maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW),
     ).resolves.toBeUndefined();
     expect(mockUpdate).toHaveBeenCalledTimes(2); // claim + release
+  });
+
+  it("links the conversation on the dashboard person page, under the CLERK org id", async () => {
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_info_requested", NOW);
+    expect(mockExternalOrgId).toHaveBeenCalledWith("org-1");
+    const [params] = mockSendEmail.mock.calls[0];
+    const href =
+      "https://dashboard.distribute.you/v2/orgs/org_3Jv0lYZiVaymxPEuyEbrbXs8hpv/brands/brand-1/people/346a5c86-ac49-4321-a873-a63c830b3217";
+    expect(params.metadata.html).toContain(`href="${href}"`);
+    expect(params.metadata.subject).toContain("asked for more information");
+    expect(params.metadata.subject).not.toContain("\u{1F389}");
+  });
+
+  it("an unresolvable org still sends, the button opening the dashboard home", async () => {
+    mockExternalOrgId.mockRejectedValue(new Error("client-service down"));
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.metadata.html).toContain('href="https://dashboard.distribute.you/v2"');
+  });
+
+  it("a MEETING request claims its own column (and the general one when free), and sends the dedicated email", async () => {
+    mockReturning.mockResolvedValue([{ id: "row-1", tookGeneral: true }]);
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_meeting_requested", NOW);
+    expect(mockSet.mock.calls[0][0]).toHaveProperty("meetingRequestCelebratedAt");
+    expect(mockSet.mock.calls[0][0]).toHaveProperty("positiveReplyForwardedAt");
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.metadata.subject).toContain("wants to book a call");
+  });
+
+  it("a failed MEETING send after an earlier celebration gives back ONLY the meeting claim", async () => {
+    mockReturning.mockResolvedValue([{ id: "row-1", tookGeneral: false }]);
+    mockSendEmail.mockRejectedValue(new Error("email gateway down"));
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_meeting_requested", NOW);
+    const release = mockSet.mock.calls[1][0];
+    expect(release).toHaveProperty("meetingRequestCelebratedAt", null);
+    expect(release).not.toHaveProperty("positiveReplyForwardedAt");
+  });
+
+  it("an info or interest reply claims only the general column (never the meeting one)", async () => {
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_info_requested", NOW);
+    expect(mockSet.mock.calls[0][0]).toHaveProperty("positiveReplyForwardedAt");
+    expect(mockSet.mock.calls[0][0]).not.toHaveProperty("meetingRequestCelebratedAt");
   });
 
   it("a reply that cannot be read is SAID, never summarized", async () => {
