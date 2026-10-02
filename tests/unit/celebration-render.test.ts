@@ -86,9 +86,11 @@ describe("renderCelebration (all the information, few words)", () => {
   for (const kind of ["lead_meeting_requested", "lead_info_requested", "lead_interested"]) {
     it(`${kind}: keeps every piece of information`, () => {
       const out = renderCelebration({ ...base, kind });
-      const intro = "Reply to your Shockwavecenters outreach. Nothing to do: we answer them, and we'll come back to you if we need anything.";
+      const intro = "They answered your Shockwavecenters outreach. You have nothing to do: we handle the reply and will only reach out if we need something from you.";
       expect(out.text).toContain(intro);
-      expect(out.html).toContain("Reply to your Shockwavecenters outreach. Nothing to do: we answer them, and we&#39;ll come back to you if we need anything.");
+      expect(out.html).toContain(intro);
+      // Never an imperative the client could read as a request from us.
+      expect(out.text).not.toMatch(/^Reply to/m);
       // their reply, verbatim, with who / when / subject
       expect(out.text).toContain(reply.bodyText);
       expect(out.html).toContain("&lt;shockwave&gt; units?");
