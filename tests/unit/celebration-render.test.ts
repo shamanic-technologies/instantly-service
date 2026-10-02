@@ -31,26 +31,41 @@ describe("prospectLabel", () => {
   });
 });
 
+const sent: ThreadMessage = {
+  direction: "outbound",
+  from: "kevin.l@maildistribute.com",
+  to: "dr.k@kineticchiropracticutah.com",
+  date: "2026-09-30T14:08:00.000Z",
+  subject: "Kinetic Chiropractic shockwave",
+  bodyText: "Hi Andrew,",
+};
 const URL = "https://dashboard.distribute.you/v2/orgs/org_3Jv0/brands/brand-1/people/row-1";
 
-describe("renderCelebration (short: title, one line, their reply, one button)", () => {
+describe("renderCelebration (all the information, few words)", () => {
+  const history = {
+    items: [
+      { type: "message" as const, message: sent },
+      { type: "message" as const, message: reply },
+    ],
+    notes: [],
+  };
   const base = {
     leadEmail: "dr.k@kineticchiropracticutah.com",
     brandName: "Shockwavecenters",
     company: "Kinetic Chiropractic",
     reply,
+    history,
     conversationUrl: URL,
   };
 
   it("a MEETING request: the party emoji", () => {
     const out = renderCelebration({ ...base, kind: "lead_meeting_requested" });
-    expect(out.subject).toBe("\u{1F389} Andrew Kakishita wants to book a call (Shockwavecenters)");
-    expect(out.html).toContain("\u{1F389} Andrew Kakishita wants to book a call");
+    expect(out.subject).toBe("\u{1F389} Andrew Kakishita (Kinetic Chiropractic) wants to book a call (Shockwavecenters)");
   });
 
   it("an INFO request is calm: never the party emoji, never congratulated", () => {
     const out = renderCelebration({ ...base, kind: "lead_info_requested" });
-    expect(out.subject).toBe("\u{1F4AC} Andrew Kakishita asked for more information (Shockwavecenters)");
+    expect(out.subject).toBe("\u{1F4AC} Andrew Kakishita (Kinetic Chiropractic) asked for more information (Shockwavecenters)");
     for (const body of [out.subject, out.html, out.text]) {
       expect(body).not.toContain("Congratulations");
       expect(body).not.toContain("\u{1F389}");
@@ -59,7 +74,7 @@ describe("renderCelebration (short: title, one line, their reply, one button)", 
 
   it("a plain INTEREST sits in between", () => {
     const out = renderCelebration({ ...base, kind: "lead_interested" });
-    expect(out.subject).toBe("\u{1F44F} Andrew Kakishita is interested (Shockwavecenters)");
+    expect(out.subject).toBe("\u{1F44F} Andrew Kakishita (Kinetic Chiropractic) is interested (Shockwavecenters)");
   });
 
   it("an unknown kind reads as plain interest", () => {
@@ -69,25 +84,32 @@ describe("renderCelebration (short: title, one line, their reply, one button)", 
   });
 
   for (const kind of ["lead_meeting_requested", "lead_info_requested", "lead_interested"]) {
-    it(`${kind}: one line, the reply verbatim, one button, nothing else`, () => {
+    it(`${kind}: keeps every piece of information`, () => {
       const out = renderCelebration({ ...base, kind });
-      expect(out.text).toContain("Nothing to do, we're answering them.");
-      expect(out.html).toContain("Nothing to do, we&#39;re answering them.");
-      expect(out.html).toContain(`href="${URL}"`);
-      expect(out.html).toContain("Follow the conversation");
+      const intro = "Reply to your Shockwavecenters outreach. Nothing to do: we answer them, and we'll come back to you if we need anything.";
+      expect(out.text).toContain(intro);
+      expect(out.html).toContain("Reply to your Shockwavecenters outreach. Nothing to do: we answer them, and we&#39;ll come back to you if we need anything.");
+      // their reply, verbatim, with who / when / subject
       expect(out.text).toContain(reply.bodyText);
       expect(out.html).toContain("&lt;shockwave&gt; units?");
       expect(out.html).not.toContain("<shockwave>");
-      // Less to read: no process explanation, no history, no footer.
-      for (const gone of ["What happens next", "The conversation so far", "exactly as they wrote it", "Sent by distribute.you", "Hi Andrew,"]) {
-        expect(out.html).not.toContain(gone);
-      }
-      expect(out.text.split("\n").filter((l) => l.trim()).length).toBeLessThanOrEqual(5 + reply.bodyText.split("\n").length);
+      expect(out.html).toContain("Re: Kinetic Chiropractic shockwave");
+      // the earlier thread, once
+      expect(out.html).toContain("Earlier in the conversation");
+      expect(out.html.split("Hi Andrew,").length - 1).toBe(1);
+      expect(out.text).toContain("Hi Andrew,");
+      // the link
+      expect(out.html).toContain(`href="${URL}"`);
+      expect(out.text).toContain(`Follow the conversation: ${URL}`);
     });
 
-    it(`${kind}: no em-dash`, () => {
+    it(`${kind}: no flourish, no em-dash`, () => {
       const out = renderCelebration({ ...base, kind });
-      for (const body of [out.subject, out.html, out.text]) expect(body).not.toContain("\u2014");
+      for (const body of [out.subject, out.html, out.text]) {
+        expect(body).not.toContain("\u2014");
+        expect(body).not.toContain("the moment the outreach is for");
+        expect(body).not.toContain("What happens next");
+      }
     });
   }
 
@@ -102,8 +124,8 @@ describe("renderCelebration (short: title, one line, their reply, one button)", 
   });
 
   it("says so when the reply could not be read, and never summarizes it", () => {
-    const out = renderCelebration({ ...base, reply: null });
-    expect(out.html).toContain("Their reply could not be read here");
+    const out = renderCelebration({ ...base, reply: null, history: { items: [], notes: [] } });
+    expect(out.html).toContain("Their reply could not be read");
   });
 
   it("escapes the dashboard link", () => {

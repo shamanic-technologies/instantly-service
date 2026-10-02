@@ -18,9 +18,9 @@
  * migration 0063), so a call request that follows an info request on the same
  * thread is still announced; an info request is calm (no "Congratulations", a
  * different emoji), it is a mark of interest and not a booking; a plain interest
- * sits in between. Every variant is SHORT (owner 2026-10-02): a title, "nothing
- * to do, we're answering them", their reply word for word, and a button to the
- * conversation in the dashboard.
+ * sits in between. Every variant keeps ALL the information (who, which outreach,
+ * what happens next, the reply with its date and subject, the earlier thread,
+ * the dashboard link) in as few words as possible (owner 2026-10-02).
  *
  * ⚠️ THE REPLY IS ANNOUNCED BEFORE IT IS READABLE. The history is waited on
  * (`loadHistoryWithLatestReply`) until it holds the prospect's message; one that
@@ -37,6 +37,8 @@ import { getBrandHandoffContext, type BrandHandoffContext } from "./brand-client
 import { sendEmail } from "./email-client";
 import { findLeadOnCampaignByEmail } from "./lead-client";
 import type { ForwardPositiveReplyCampaign, ThreadMessage } from "./forward-positive-reply";
+import { formatThreadDate } from "./forward-positive-reply";
+import type { HistoryItem, ProspectHistory } from "./prospect-history";
 
 /** The transactional-email template this module sends (deployed at startup). */
 export const CELEBRATION_EVENT_TYPE = "positive-reply-celebration";
@@ -109,6 +111,8 @@ export interface CelebrationInput {
   company?: string | null;
   /** The prospect's latest reply, verbatim. Null = could not be read. */
   reply: ThreadMessage | null;
+  /** Everything before the reply (emails both ways, actions), oldest first. */
+  history: Pick<ProspectHistory, "items" | "notes">;
   /** The recorded reply kind. Decides the email; unknown reads as plain interest. */
   kind?: string | null;
   /** Where the "Follow the conversation" button goes (`conversationHref`). */
@@ -143,51 +147,103 @@ export function variantCopy(variant: CelebrationVariant, who: string): VariantCo
   return { emoji: "\u{1F44F}", headline: `${who} is interested` };
 }
 
-/** The one line under the title, on every variant (owner 2026-10-02: less to read). */
-export const NOTHING_TO_DO_LINE = "Nothing to do, we're answering them.";
-
 export const FOLLOW_BUTTON_LABEL = "Follow the conversation";
 
+const RULE = "#E2E8F0";
+
+/** Pure: "Name · date · subject", the line above any message. */
+function metaLine(from: string, date: string, subject: string): string {
+  return [from, formatThreadDate(date), subject].filter((p) => p.trim()).join(" \u00B7 ");
+}
+
+function historyItemHtml(item: HistoryItem, leadEmail: string): string {
+  if (item.type === "message") {
+    const m = item.message;
+    return [
+      `<tr><td style="padding:12px 0 0 0;border-top:1px solid ${RULE};">`,
+      `<div style="font:12px/1.5 ${FONT};color:${MUTED};">${escapeHtml(metaLine(m.from, m.date, m.subject))}</div>`,
+      `<div style="padding:4px 0 0 0;font:14px/1.55 ${FONT};color:#334155;white-space:pre-wrap;word-break:break-word;">${escapeHtml(m.bodyText)}</div>`,
+      `</td></tr>`,
+    ].join("");
+  }
+  return `<tr><td style="padding:10px 0 0 0;border-top:1px solid ${RULE};font:13px/1.5 ${FONT};color:${MUTED};">${escapeHtml(`${formatThreadDate(item.action.at)} \u00B7 ${actionText(item, leadEmail)}`)}</td></tr>`;
+}
+
+function actionText(item: Extract<HistoryItem, { type: "action" }>, leadEmail: string): string {
+  const a = item.action;
+  if (a.kind === "click") return a.page ? `${leadEmail} visited ${a.page}` : `${leadEmail} clicked a link`;
+  if (a.kind === "bounce") return `An email to ${leadEmail} bounced`;
+  return `${leadEmail} unsubscribed`;
+}
+
 /**
- * Pure: the email. A title, one line, their reply word for word, one button.
- * Nothing else (owner 2026-10-02: "trop de texte, trop de charge mentale"): the
- * earlier emails live behind the button. Every string from the prospect is
- * escaped (the template engine interpolates raw).
+ * Pure: the email. Owner 2026-10-02: every piece of information stays (who and
+ * their company, which outreach, what happens next, their reply with its date
+ * and subject, the earlier thread, the link), in as few words as possible; no
+ * flourish, no process prose. Every string from the prospect is escaped (the
+ * template engine interpolates raw).
  */
 export function renderCelebration(input: CelebrationInput): CelebrationContent {
-  const { leadEmail, brandName, reply } = input;
+  const { leadEmail, brandName, reply, history } = input;
   const person = prospectLabel(leadEmail, reply);
   const company = input.company?.trim() || null;
-  const who = person !== leadEmail ? person : (company ?? leadEmail);
+  const who =
+    person !== leadEmail ? (company ? `${person} (${company})` : person) : (company ?? leadEmail);
   const copy = variantCopy(celebrationVariantFor(input.kind), who);
   const title = `${copy.emoji} ${copy.headline}`;
   const subject = brandName ? `${title} (${brandName})` : title;
+  const intro = `Reply to your ${brandName ? `${brandName} ` : ""}outreach. Nothing to do: we answer them, and we'll come back to you if we need anything.`;
   const href = escapeHtml(input.conversationUrl);
+  const unreadable = "Their reply could not be read when this email was sent. It is in the conversation.";
+
+  const earlier = history.items.filter((item) => !(item.type === "message" && reply && item.message === reply));
+  const notes = history.notes.filter((n) => !(reply === null && n.startsWith("the prospect's latest reply")));
 
   const replyHtml = reply
-    ? `<div style="font:15px/1.6 ${FONT};color:${INK};white-space:pre-wrap;word-break:break-word;">${escapeHtml(reply.bodyText)}</div>`
-    : `<div style="font:14px/1.6 ${FONT};color:${MUTED};">Their reply could not be read here. It is in the conversation.</div>`;
+    ? [
+        `<div style="font:12px/1.5 ${FONT};color:${MUTED};">${escapeHtml(metaLine(person, reply.date, reply.subject))}</div>`,
+        `<div style="padding:6px 0 0 0;font:15px/1.6 ${FONT};color:${INK};white-space:pre-wrap;word-break:break-word;">${escapeHtml(reply.bodyText)}</div>`,
+      ].join("")
+    : `<div style="font:14px/1.6 ${FONT};color:${MUTED};">${unreadable}</div>`;
 
   const html = [
     `<!doctype html><html><body style="margin:0;padding:0;background:#FFFFFF;">`,
     `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:32px 16px;">`,
     `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;">`,
     `<tr><td><h1 style="margin:0;font:700 22px/1.3 ${FONT};color:${INK};">${escapeHtml(title)}</h1></td></tr>`,
-    `<tr><td style="padding:8px 0 0 0;font:15px/1.6 ${FONT};color:${MUTED};">${escapeHtml(NOTHING_TO_DO_LINE)}</td></tr>`,
+    `<tr><td style="padding:8px 0 0 0;font:15px/1.6 ${FONT};color:${MUTED};">${escapeHtml(intro)}</td></tr>`,
     `<tr><td style="padding:20px 0 0 0;"><div style="background:${TINT};border:1px solid ${TINT_RULE};border-radius:12px;padding:16px 18px;">${replyHtml}</div></td></tr>`,
+    notes.length > 0
+      ? `<tr><td style="padding:12px 0 0 0;font:13px/1.5 ${FONT};color:${MUTED};">${notes.map((n) => `Note: ${escapeHtml(n)}`).join("<br>")}</td></tr>`
+      : "",
     `<tr><td style="padding:20px 0 0 0;"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="border-radius:10px;background:${BLUE};">`,
     `<a href="${href}" style="display:inline-block;padding:12px 20px;font:600 14px/1 ${FONT};color:#FFFFFF;text-decoration:none;border-radius:10px;">${FOLLOW_BUTTON_LABEL}</a>`,
     `</td></tr></table></td></tr>`,
+    earlier.length > 0
+      ? `<tr><td style="padding:28px 0 0 0;"><div style="font:600 13px/1.4 ${FONT};color:${INK};">Earlier in the conversation</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:6px;">${earlier.map((i) => historyItemHtml(i, leadEmail)).join("")}</table></td></tr>`
+      : "",
     `</table></td></tr></table></body></html>`,
   ].join("");
 
   const text = [
     title,
-    NOTHING_TO_DO_LINE,
+    intro,
     ``,
-    reply ? reply.bodyText : "Their reply could not be read here. It is in the conversation.",
+    reply ? [metaLine(person, reply.date, reply.subject), reply.bodyText].join("\n") : unreadable,
+    ...(notes.length > 0 ? ["", ...notes.map((n) => `Note: ${n}`)] : []),
     ``,
     `${FOLLOW_BUTTON_LABEL}: ${input.conversationUrl}`,
+    ...(earlier.length > 0
+      ? [
+          ``,
+          `Earlier in the conversation`,
+          ...earlier.map((item) =>
+            item.type === "message"
+              ? `\n${metaLine(item.message.from, item.message.date, item.message.subject)}\n${item.message.bodyText}`
+              : `\n${formatThreadDate(item.action.at)} \u00B7 ${actionText(item, leadEmail)}`,
+          ),
+        ]
+      : []),
   ].join("\n");
 
   return { subject, html, text };
@@ -347,7 +403,7 @@ export async function sendCelebration(
 ): Promise<{ recipient: string; bcc: string[]; replyRead: boolean; conversationUrl: string }> {
   if (!campaign.orgId) throw new Error("celebrate requires an org-scoped campaign (orgId is null)");
   const { loadHistoryWithLatestReply, REPLY_WAIT_BACKGROUND_MS } = await import("./prospect-history");
-  const { latestReply } = await loadHistoryWithLatestReply(campaign, leadEmail, {
+  const { history, latestReply } = await loadHistoryWithLatestReply(campaign, leadEmail, {
     waitsMs: options.waitsMs ?? REPLY_WAIT_BACKGROUND_MS,
   });
 
@@ -367,6 +423,7 @@ export async function sendCelebration(
     brandName: brand?.name ?? null,
     company: lead?.company ?? null,
     reply: latestReply,
+    history,
     kind: options.kind,
     conversationUrl,
   });
