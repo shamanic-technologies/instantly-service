@@ -7,6 +7,14 @@ const mockDispatchMessage = vi.fn();
 const mockResolveCredential = vi.fn();
 const mockLoadMailboxLogins = vi.fn();
 
+// The stopped-campaign sweep asks campaign-service first on every run; it has
+// its own tests (stopped-campaigns.test.ts). Stubbed so the queued reads below
+// stay aligned with the dispatch path.
+const mockStopStoppedCampaigns = vi.fn();
+vi.mock("../../src/lib/stopped-campaigns", () => ({
+  stopQueuedSequencesOfStoppedCampaigns: (...args: unknown[]) => mockStopStoppedCampaigns(...args),
+}));
+
 vi.mock("../../src/db", () => ({
   db: {
     execute: (...args: unknown[]) => mockExecute(...args),
@@ -126,6 +134,7 @@ function primeReads(options: { hasBody?: boolean } = {}) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   // Credentialed, and each address IS its own SMTP login.
   mockLoadMailboxLogins.mockImplementation(async () =>
     new Map([
@@ -146,6 +155,48 @@ beforeEach(() => {
     appPassword: "pw",
     smtpHost: "smtp.gmail.com",
     imapHost: "imap.gmail.com",
+  });
+});
+
+describe("runDispatch — a stopped campaign sends nothing more", () => {
+  // campaign-service owns whether a campaign runs; the queue asks it on every
+  // run BEFORE reading what to send, so a sequence of a stopped campaign is out
+  // of the queue by the time anything is selected.
+  it("asks campaign-service before the first queue read", async () => {
+    primeReads();
+    mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<m1@mail>",
+      response: "250 OK",
+      accepted: ["prospect@example.com"],
+      rejected: [],
+    });
+
+    await runDispatch({ asOf: NOW });
+
+    expect(mockStopStoppedCampaigns).toHaveBeenCalledTimes(1);
+    expect(mockStopStoppedCampaigns.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockExecute.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("never sends a sequence of a stopped campaign the sweep has not reached yet", async () => {
+    primeReads();
+    mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set(["camp-1"]) });
+
+    const summary = await runDispatch({ asOf: NOW });
+
+    expect(summary.sent).toBe(0);
+    expect(mockDispatchMessage).not.toHaveBeenCalled();
+  });
+
+  it("sends NOTHING when it cannot confirm the campaigns are running", async () => {
+    primeReads();
+    mockStopStoppedCampaigns.mockRejectedValue(new Error("campaign-service GET /campaigns/list failed: 503"));
+
+    await expect(runDispatch({ asOf: NOW })).rejects.toThrow(/campaigns\/list/);
+    expect(mockExecute).not.toHaveBeenCalled();
+    expect(mockDispatchMessage).not.toHaveBeenCalled();
   });
 });
 
