@@ -23,12 +23,15 @@
  * have paused the sequence, and that pause is the harm being fixed.
  */
 
+import { sql, type SQL } from "drizzle-orm";
+
 /** Every non-human verdict names its reason. A human hit carries none. */
 export const SCANNER_REASONS = {
   headRequest: "head_request",
   scannerUserAgent: "scanner_user_agent",
   missingUserAgent: "missing_user_agent",
   pairedUnsubscribeFetch: "paired_unsubscribe_fetch",
+  scannerNetwork: "scanner_network",
 } as const;
 
 export type ScannerReason = (typeof SCANNER_REASONS)[keyof typeof SCANNER_REASONS];
@@ -144,6 +147,12 @@ export interface ClickHitEvidence extends ClickHitSignals {
    * window, either side of this click?
    */
   hasPairedUnsubscribeFetch: boolean;
+  /**
+   * Did another click from the same /24 network get ruled a scanner within
+   * `SCANNER_NETWORK_WINDOW_DAYS` either side of this one? See
+   * `scannerNetworkEvidenceSql`.
+   */
+  sharesScannerNetwork: boolean;
 }
 
 /** The full verdict, once the pairing window has closed. Total — never null. */
@@ -153,6 +162,10 @@ export function classifyClickHit(hit: ClickHitEvidence): ClickClassification {
 
   if (hit.hasPairedUnsubscribeFetch) {
     return { verdict: "scanner", reason: SCANNER_REASONS.pairedUnsubscribeFetch };
+  }
+
+  if (hit.sharesScannerNetwork) {
+    return { verdict: "scanner", reason: SCANNER_REASONS.scannerNetwork };
   }
 
   return { verdict: "human", reason: null };
@@ -173,3 +186,59 @@ export const PAIRED_UNSUBSCRIBE_WINDOW_SECONDS = 60;
  * `stop-on-click` by the same, and nothing else.
  */
 export const CLICK_DECISION_HOLD_SECONDS = 120;
+
+/**
+ * How far either side of a click a scanner verdict on the same /24 still marks
+ * that network as a scanner's.
+ *
+ * ⚠️ WHY A NETWORK RULE AT ALL. Microsoft Defender's link detonation rotates its
+ * user-agent between the unreduced `Windows … Chrome/142.0.7444.163` shape that
+ * `isUnreducedChromeVersion` catches and a perfectly ordinary reduced
+ * `Macintosh … Chrome/143.0.0.0`, from the SAME Azure /24s (`48.209.223.x`,
+ * `72.145.83.x`, `57.155.170.x`). Measured 2026-10-02 on Olive: all 7 "human"
+ * clicks (6 at Flow Traders, 1 at QCP) came from a /24 that had produced
+ * scanner-ruled hits minutes earlier — `bhemelaar` 12 s after `aadit` on the
+ * very same IP. Fleet-wide, 268 of 383 "human" clicks sat on such a network.
+ *
+ * It is a POSITIVE fingerprint, not a time threshold: the evidence is a machine
+ * verdict on that network, not how fast the click came. A real person clicks
+ * from their ISP or office egress, never from the cloud /24 a mail scanner is
+ * detonating links from.
+ */
+export const SCANNER_NETWORK_WINDOW_DAYS = 7;
+
+/**
+ * The /24 of an IPv4 client address (also the IPv4-mapped `::ffff:a.b.c.d` form),
+ * as SQL. NULL for anything else, and for private / loopback ranges: every hit
+ * recorded before the real client IP was captured carries Caddy's
+ * `::ffff:172.18.0.27`, and treating that as one network would brand the whole
+ * pre-fix era a scanner.
+ */
+function networkKeySql(column: SQL): SQL {
+  return sql`CASE
+    WHEN ${column} ~ '(^|:)(10|127)\\.\\d+\\.\\d+\\.\\d+$'
+      OR ${column} ~ '(^|:)172\\.(1[6-9]|2\\d|3[01])\\.\\d+\\.\\d+$'
+      OR ${column} ~ '(^|:)192\\.168\\.\\d+\\.\\d+$'
+    THEN NULL
+    ELSE substring(${column} from '(?:^|:)(\\d+\\.\\d+\\.\\d+)\\.\\d+$')
+  END`;
+}
+
+/**
+ * `EXISTS (…)`: another click from the same /24, within the window, already
+ * ruled a scanner. `hitAlias` is the alias of the `tracking_hits_raw` row being
+ * decided. Shared by the live promotion and the backfill so both apply ONE rule.
+ */
+export function scannerNetworkEvidenceSql(hitAlias: string): SQL {
+  const h = sql.raw(hitAlias);
+  const window = sql.raw(`interval '${SCANNER_NETWORK_WINDOW_DAYS} days'`);
+  return sql`EXISTS (
+    SELECT 1
+    FROM tracking_hits_raw s
+    WHERE s.kind = 'click'
+      AND s.classification = 'scanner'
+      AND s.id <> ${h}.id
+      AND s.received_at BETWEEN ${h}.received_at - ${window} AND ${h}.received_at + ${window}
+      AND ${networkKeySql(sql`s.client_ip`)} = ${networkKeySql(sql.raw(`${hitAlias}.client_ip`))}
+  )`;
+}
