@@ -47,6 +47,8 @@ import { refreshLeadStatusCurrent } from "../status-gold";
 import {
   PAIRED_UNSUBSCRIBE_WINDOW_SECONDS,
   classifyClickHit,
+  ipSharedAcrossCompaniesEvidenceSql,
+  manyNetworksEvidenceSql,
   scannerNetworkEvidenceSql,
 } from "./click-classification";
 
@@ -66,6 +68,8 @@ interface LegacyClickHit {
   brandId: string | null;
   hasPairedUnsubscribeFetch: boolean;
   sharesScannerNetwork: boolean;
+  ipSharedAcrossCompanies: boolean;
+  clickedFromManyNetworks: boolean;
 }
 
 export interface BrandBreakdown {
@@ -113,7 +117,9 @@ async function loadLegacyClickHits(limit: number): Promise<LegacyClickHit[]> {
             h.received_at - ${pairingWindow}
             AND h.received_at + ${pairingWindow}
       ) AS has_paired_unsubscribe,
-      ${scannerNetworkEvidenceSql("h")} AS shares_scanner_network
+      ${scannerNetworkEvidenceSql("h")} AS shares_scanner_network,
+      ${ipSharedAcrossCompaniesEvidenceSql("h")} AS ip_shared_across_companies,
+      ${manyNetworksEvidenceSql("h")} AS clicked_from_many_networks
     FROM tracking_hits_raw h
     LEFT JOIN instantly_campaigns c
       ON c.instantly_campaign_id = h.instantly_campaign_id
@@ -133,6 +139,8 @@ async function loadLegacyClickHits(limit: number): Promise<LegacyClickHit[]> {
     brandId: row.brand_id === null || row.brand_id === undefined ? null : String(row.brand_id),
     hasPairedUnsubscribeFetch: row.has_paired_unsubscribe === true,
     sharesScannerNetwork: row.shares_scanner_network === true,
+    ipSharedAcrossCompanies: row.ip_shared_across_companies === true,
+    clickedFromManyNetworks: row.clicked_from_many_networks === true,
   }));
 }
 

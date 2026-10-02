@@ -32,6 +32,8 @@ export const SCANNER_REASONS = {
   missingUserAgent: "missing_user_agent",
   pairedUnsubscribeFetch: "paired_unsubscribe_fetch",
   scannerNetwork: "scanner_network",
+  ipSharedAcrossCompanies: "ip_shared_across_companies",
+  manyNetworks: "many_networks",
 } as const;
 
 export type ScannerReason = (typeof SCANNER_REASONS)[keyof typeof SCANNER_REASONS];
@@ -153,6 +155,10 @@ export interface ClickHitEvidence extends ClickHitSignals {
    * `scannerNetworkEvidenceSql`.
    */
   sharesScannerNetwork: boolean;
+  /** See `ipSharedAcrossCompaniesEvidenceSql`. */
+  ipSharedAcrossCompanies: boolean;
+  /** See `manyNetworksEvidenceSql`. */
+  clickedFromManyNetworks: boolean;
 }
 
 /** The full verdict, once the pairing window has closed. Total — never null. */
@@ -166,6 +172,14 @@ export function classifyClickHit(hit: ClickHitEvidence): ClickClassification {
 
   if (hit.sharesScannerNetwork) {
     return { verdict: "scanner", reason: SCANNER_REASONS.scannerNetwork };
+  }
+
+  if (hit.ipSharedAcrossCompanies) {
+    return { verdict: "scanner", reason: SCANNER_REASONS.ipSharedAcrossCompanies };
+  }
+
+  if (hit.clickedFromManyNetworks) {
+    return { verdict: "scanner", reason: SCANNER_REASONS.manyNetworks };
   }
 
   return { verdict: "human", reason: null };
@@ -208,19 +222,23 @@ export const CLICK_DECISION_HOLD_SECONDS = 120;
 export const SCANNER_NETWORK_WINDOW_DAYS = 7;
 
 /**
- * The /24 of an IPv4 client address (also the IPv4-mapped `::ffff:a.b.c.d` form),
- * as SQL. NULL for anything else, and for private / loopback ranges: every hit
+ * The first `octets` octets of an IPv4 client address (also the IPv4-mapped
+ * `::ffff:a.b.c.d` form) — the /24 for 3, the /16 for 2 — or, for 4, the address
+ * itself. NULL for anything else, and for private / loopback ranges: every hit
  * recorded before the real client IP was captured carries Caddy's
  * `::ffff:172.18.0.27`, and treating that as one network would brand the whole
  * pre-fix era a scanner.
  */
-function networkKeySql(column: SQL): SQL {
+function ipv4PrefixSql(column: SQL, octets: 2 | 3 | 4): SQL {
+  const capture = sql.raw(
+    `'(?:^|:)(${Array.from({ length: octets }, () => "\\d+").join("\\.")})${"\\.\\d+".repeat(4 - octets)}$'`,
+  );
   return sql`CASE
     WHEN ${column} ~ '(^|:)(10|127)\\.\\d+\\.\\d+\\.\\d+$'
       OR ${column} ~ '(^|:)172\\.(1[6-9]|2\\d|3[01])\\.\\d+\\.\\d+$'
       OR ${column} ~ '(^|:)192\\.168\\.\\d+\\.\\d+$'
     THEN NULL
-    ELSE substring(${column} from '(?:^|:)(\\d+\\.\\d+\\.\\d+)\\.\\d+$')
+    ELSE substring(${column} from ${capture})
   END`;
 }
 
@@ -239,6 +257,61 @@ export function scannerNetworkEvidenceSql(hitAlias: string): SQL {
       AND s.classification = 'scanner'
       AND s.id <> ${h}.id
       AND s.received_at BETWEEN ${h}.received_at - ${window} AND ${h}.received_at + ${window}
-      AND ${networkKeySql(sql`s.client_ip`)} = ${networkKeySql(sql.raw(`${hitAlias}.client_ip`))}
+      AND ${ipv4PrefixSql(sql`s.client_ip`, 3)} = ${ipv4PrefixSql(sql.raw(`${hitAlias}.client_ip`), 3)}
   )`;
+}
+
+/**
+ * How far either side of a click another company's click from the same address
+ * still counts.
+ *
+ * ⚠️ A person reads their OWN mailbox. One public address following links mailed
+ * to two different COMPANIES is a shared fetcher (a security vendor's cloud
+ * egress, a link-preview service), never one reader. Measured 2026-10-02: a
+ * Microsoft address clicked for 7 leads at 3 companies; AWS addresses for leads
+ * at unrelated clinics. Same-company pairs are deliberately NOT counted: two
+ * colleagues behind one office NAT are two real people.
+ */
+export const SHARED_IP_WINDOW_DAYS = 7;
+
+export function ipSharedAcrossCompaniesEvidenceSql(hitAlias: string): SQL {
+  const h = sql.raw(hitAlias);
+  const window = sql.raw(`interval '${SHARED_IP_WINDOW_DAYS} days'`);
+  return sql`EXISTS (
+    SELECT 1
+    FROM tracking_hits_raw o
+    WHERE o.kind = 'click'
+      AND o.id <> ${h}.id
+      AND o.received_at BETWEEN ${h}.received_at - ${window} AND ${h}.received_at + ${window}
+      AND ${ipv4PrefixSql(sql`o.client_ip`, 4)} = ${ipv4PrefixSql(sql.raw(`${hitAlias}.client_ip`), 4)}
+      AND split_part(lower(o.lead_email), '@', 2) <> split_part(lower(${h}.lead_email), '@', 2)
+  )`;
+}
+
+/**
+ * A lead "clicked" from this many unrelated /16 networks inside
+ * `MANY_NETWORKS_WINDOW_HOURS` is being re-scanned, not read.
+ *
+ * ⚠️ Measured 2026-10-02: after the network rule, the remaining "human" clicks
+ * were dominated by single leads fetched from AWS, OVH and residential-proxy
+ * ranges over a few hours (one lead: 8 addresses, 6 providers). A person moving
+ * between office, home and phone shows at most two or three — so the floor is 3
+ * DISTINCT /16s within a day, counted over the same (campaign, lead) only.
+ * Accepted cost (owner, 2026-10-02): a real click buried in such a burst is
+ * ruled with the scanner.
+ */
+export const MANY_NETWORKS_MIN = 3;
+export const MANY_NETWORKS_WINDOW_HOURS = 24;
+
+export function manyNetworksEvidenceSql(hitAlias: string): SQL {
+  const h = sql.raw(hitAlias);
+  const window = sql.raw(`interval '${MANY_NETWORKS_WINDOW_HOURS} hours'`);
+  return sql`(
+    SELECT COUNT(DISTINCT ${ipv4PrefixSql(sql`o.client_ip`, 2)})
+    FROM tracking_hits_raw o
+    WHERE o.kind = 'click'
+      AND o.instantly_campaign_id = ${h}.instantly_campaign_id
+      AND lower(o.lead_email) = lower(${h}.lead_email)
+      AND o.received_at BETWEEN ${h}.received_at - ${window} AND ${h}.received_at + ${window}
+  ) >= ${sql.raw(String(MANY_NETWORKS_MIN))}`;
 }
