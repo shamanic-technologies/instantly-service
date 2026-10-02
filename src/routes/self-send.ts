@@ -15,6 +15,7 @@ import { Router, type Request, type Response } from "express";
 import { runDispatch } from "../lib/self-send/dispatch-worker";
 import { runPoll } from "../lib/self-send/imap-poller";
 import { promotePendingClicks } from "../lib/self-send/click-promotion";
+import { sweepStalledFirstEmails } from "../lib/self-send/stalled-first-emails";
 
 const router = Router();
 
@@ -113,6 +114,43 @@ router.post("/promote-clicks", async (req: Request, res: Response) => {
 
   const summary = await promotePendingClicks({ limit });
   res.json(summary);
+});
+
+/**
+ * Move or close Instantly sequences whose first email never went out
+ * (`stalled-first-emails.ts`). The dispatch interval runs it on every tick; this
+ * is the hand-run and the dry-run.
+ *
+ * Body `{ dryRun?: boolean (default TRUE), limit?: number }`. A dry run answers
+ * synchronously with the plan (no Instantly call, no write); a real run answers
+ * 202 and logs `stalled-first-emails: done`. Gated on the dispatch switch: a
+ * moved sequence is only sent by the dispatcher.
+ */
+router.post("/stalled-first-emails", async (req: Request, res: Response) => {
+  if (!isSelfSendDispatchEnabled()) {
+    res.status(409).json({
+      error: "Self-send dispatch is disabled (SELF_SEND_DISPATCH_ENABLED is not 'true')",
+    });
+    return;
+  }
+  const dryRun = req.body?.dryRun !== false;
+  const limit =
+    typeof req.body?.limit === "number" && Number.isFinite(req.body.limit)
+      ? req.body.limit
+      : undefined;
+
+  if (dryRun) {
+    res.json(await sweepStalledFirstEmails({ dryRun: true, limit: limit ?? Number.MAX_SAFE_INTEGER }));
+    return;
+  }
+  res.status(202).json({ accepted: true });
+  sweepStalledFirstEmails({ limit }).catch((error) => {
+    console.error(
+      `[instantly-service] stalled-first-emails failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  });
 });
 
 export default router;
