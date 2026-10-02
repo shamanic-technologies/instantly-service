@@ -371,19 +371,28 @@ describe("processRow — success path", () => {
     );
   });
 
-  it("declares NO cost on a redispatch — the re-upload consumes a slot we already paid for", async () => {
+  it("provisions the two email costs per redispatched step — never the contact upload", async () => {
     queueSelectLead();
     queueSelectCosts([]);
 
     await processRow(row());
 
-    // A redispatch used to charge a fresh instantly-contact-uploaded plus a
-    // provisioned email pair per step. The Instantly subscription is a fixed
-    // cost we absorb now, so nothing is declared.
-    expect(mockAddCosts).not.toHaveBeenCalled();
+    expect(mockAddCosts).toHaveBeenCalled();
+    for (const [, items] of mockAddCosts.mock.calls) {
+      expect(items).toEqual([
+        { costName: "instantly-account-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
+        { costName: "instantly-domain-email-sent", quantity: 1, costSource: "platform", status: "provisioned" },
+      ]);
+    }
   });
 
-  it("queues the redispatched steps with a NULL cost id", async () => {
+  it("queues each redispatched step as ONE row carrying both cost ids", async () => {
+    mockAddCosts.mockImplementation(async (runId: string) => ({
+      costs: [
+        { id: `acc-${runId}`, costName: "instantly-account-email-sent" },
+        { id: `dom-${runId}`, costName: "instantly-domain-email-sent" },
+      ],
+    }));
     queueSelectLead();
     queueSelectCosts([]);
 
@@ -395,8 +404,10 @@ describe("processRow — success path", () => {
     });
     expect(queueInserts.length).toBeGreaterThan(0);
     for (const [value] of queueInserts) {
-      expect((value as Record<string, unknown>).costId).toBeNull();
-      expect((value as Record<string, unknown>).status).toBe("provisioned");
+      const v = value as Record<string, unknown>;
+      expect(v.costId).toBe(`acc-${v.runId}`);
+      expect(v.domainCostId).toBe(`dom-${v.runId}`);
+      expect(v.status).toBe("provisioned");
     }
   });
 

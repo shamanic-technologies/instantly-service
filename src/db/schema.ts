@@ -567,28 +567,25 @@ export const sequenceCosts = pgTable(
     leadEmail: text("lead_email").notNull(),
     step: integer("step").notNull(),
     runId: text("run_id").notNull(),
-    // Runs-service cost id — NULL on every row written from 2026-08 onwards.
+    // Runs-service cost ids for the step's email, split 50/50 across two cost
+    // names: `cost_id` = `instantly-account-email-sent`, `domain_cost_id` =
+    // `instantly-domain-email-sent`.
     //
-    // This table is TWO things at once, and only one of them still involves
-    // money. It is the billing hold ledger (a `provisioned` row is a reserved
-    // charge that later actualizes or cancels), AND it is the send QUEUE: every
-    // ops surface — the self-send dispatch worker, the fleet sending-forecast,
-    // the per-account queue breakdown, capacity-aware account selection,
-    // account-health `queueSize`, reconcile's `pendingSends` — reads
-    // `status='provisioned'` as "steps scheduled but not yet sent".
+    // This table is TWO things at once. It is the billing hold ledger (a
+    // `provisioned` row is a reserved charge that later actualizes on the real
+    // `email_sent` or cancels when the step can no longer send), AND it is the
+    // send QUEUE: every ops surface — the self-send dispatch worker, the fleet
+    // sending-forecast, the per-account queue breakdown, capacity-aware account
+    // selection, account-health `queueSize`, reconcile's `pendingSends` — reads
+    // `status='provisioned'` as "steps scheduled but not yet sent". So it stays
+    // ONE row per step carrying both ids (pre-0038 rows were two per step).
     //
-    // The Instantly subscriptions became a FIXED cost we absorb rather than
-    // rebill, so instantly-service stopped declaring `instantly-*-email-sent` /
-    // `instantly-contact-uploaded` to runs-service entirely. The queue still has
-    // to exist, so the row is still written — it simply no longer carries a cost
-    // id. Do NOT re-add `.notNull()`: that would make the queue undeclarable
-    // without a billing row and silently empty the send pipeline.
-    //
-    // Historical rows keep their cost id and keep resolving against
-    // runs-service; `settleHoldCost` branches on NULL. The unique index below
-    // stays non-partial — Postgres treats every NULL as distinct, so unbilled
-    // rows never collide.
+    // Both are NULL on rows written 2026-08-24 → 2026-10-02, when sending was not
+    // billed (migration 0038); those settle locally only (`settleHoldCost`).
+    // Do NOT re-add `.notNull()`. The unique index below stays non-partial —
+    // Postgres treats every NULL as distinct.
     costId: text("cost_id"),
+    domainCostId: text("domain_cost_id"),
     status: text("status").notNull().default("provisioned"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),

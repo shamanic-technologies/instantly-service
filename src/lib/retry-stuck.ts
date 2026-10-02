@@ -67,6 +67,7 @@ import {
   type IdentityContext,
 } from "./runs-client";
 import { settleHoldCost } from "./hold-settlement";
+import { provisionStepEmailCosts } from "./send-costs";
 import { handleCampaignError } from "./campaign-error-handler";
 import { deleteLeadStatusCurrent, refreshLeadStatusCurrent } from "./status-gold";
 import { announceEvidenceChanged } from "./evidence-changed";
@@ -272,20 +273,16 @@ async function cancelExistingCosts(
 }
 
 /**
- * Queue every step of the re-sent campaign on a fresh per-step run. Mirrors the
- * /send entry-point pattern.
- *
- * NO COST IS DECLARED. A redispatch creates a brand-new Instantly campaign and
- * re-uploads the lead, which used to be charged as a fresh
- * `instantly-contact-uploaded` plus a provisioned email pair per step. All three
- * cost names are gone: the Instantly subscription (and the mailbox estate behind
- * it) is a fixed cost we absorb rather than rebill, so a redispatch now consumes
- * a workspace slot we already paid for. The per-step run and the queue row stay
- * — see the `/send` loop and the `cost_id` comment in `db/schema.ts`.
+ * Queue every step of the re-sent campaign on a fresh per-step run, each step
+ * carrying its two provisioned email costs (`lib/send-costs.ts`). Mirrors the
+ * /send entry-point pattern; the old holds were cancelled just before, so the
+ * org pays once per email that actually leaves. `instantly-contact-uploaded`
+ * stays undeclared (included at the vendor).
  */
 async function provisionFreshCosts(
   row: StuckCampaignRow,
   parentIdentity: IdentityContext,
+  keySource: "platform" | "org",
   stepCount: number,
   instantlyCampaignId: string,
 ): Promise<void> {
@@ -304,6 +301,12 @@ async function provisionFreshCosts(
 
     const stepIdentity: IdentityContext = { ...parentIdentity, runId: stepRun.id };
 
+    const { costId, domainCostId } = await provisionStepEmailCosts(
+      stepRun.id,
+      keySource,
+      stepIdentity,
+    );
+
     await db.insert(sequenceCosts).values({
       campaignId: row.campaignId,
       // The fresh Instantly campaign id from the redispatch — lets the
@@ -312,7 +315,8 @@ async function provisionFreshCosts(
       leadEmail: row.leadEmail,
       step,
       runId: stepRun.id,
-      costId: null,
+      costId,
+      domainCostId,
       status: "provisioned",
     });
 
@@ -455,12 +459,14 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
   // Resolve Instantly key for the parent's org (= the org the original
   // /send was for). If the key isn't configured anymore, we can't retry.
   let apiKey: string;
+  let keySource: "platform" | "org";
   try {
     const keyResult = await resolveInstantlyApiKey(parentIdentity.orgId, "system", {
       method: "POST",
       path: "/internal/campaigns/retry-stuck",
     });
     apiKey = keyResult.key;
+    keySource = keyResult.keySource;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     await cancelRowAsTerminal(row, `key_unavailable: ${message}`);
@@ -572,6 +578,7 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
     await provisionFreshCosts(
       row,
       parentIdentity,
+      keySource,
       seq.sortedSequence.length,
       result.value.instantlyCampaignId,
     );
