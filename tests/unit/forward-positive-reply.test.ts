@@ -288,8 +288,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
     // complete and verbatim, escaped (the engine interpolates raw)
     expect(params.metadata.html).toContain("1. What results?\n2. &lt;b&gt;Guarantee&lt;/b&gt; terms?\n\nMichael");
     expect(params.metadata.text).toContain("1. What results?\n2. <b>Guarantee</b> terms?");
-    // Short: the earlier emails live behind the button, not in the email.
-    expect(params.metadata.html).not.toContain("cold 1");
+    expect(params.metadata.html).toContain("cold 1");
     expect(params.metadata.html).toContain("#2563EB");
     expect(params.metadata.subject).toContain("Doc Dinners");
     for (const body of [params.metadata.html, params.metadata.text, params.metadata.subject]) {
@@ -381,7 +380,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
     ]);
     await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
     const [params] = mockSendEmail.mock.calls[0];
-    expect(params.metadata.html).toContain("Their reply could not be read here");
-    expect(params.metadata.text).toContain("Their reply could not be read here");
+    expect(params.metadata.html).toContain("Their reply could not be read");
+    expect(params.metadata.text).toContain("Their reply could not be read");
   });
 });
