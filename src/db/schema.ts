@@ -77,6 +77,11 @@ export const instantlyCampaigns = pgTable(
     // back to NULL only if the send itself fails, so a later retry re-attempts.
     // NULL = the positive reply for this lead has never been forwarded.
     positiveReplyForwardedAt: timestamp("positive_reply_forwarded_at"),
+    // Exactly-once claim for the dedicated MEETING-REQUEST email to the client
+    // (migration 0063). Its own column so a call request that follows an info
+    // request on the same thread still gets its email; a meeting request that
+    // arrives first takes `positive_reply_forwarded_at` too, in the same UPDATE.
+    meetingRequestCelebratedAt: timestamp("meeting_request_celebrated_at"),
     // Exactly-once claim for the "ring the brand's sales rep when a sales
     // interest lands" side effect (lib/ring-rep-on-sales-interest.ts). Set
     // atomically BEFORE any external call is placed; a webhook retry / reconcile

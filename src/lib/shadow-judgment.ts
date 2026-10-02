@@ -56,6 +56,8 @@ export type ShadowJudgmentSource =
   | "qualification_fallback"
   // A stored reply no producer ever judged, classified once by the per-reply backfill.
   | "reply_verdict_backfill"
+  // Instantly's plain "interested", read for the finer positive kind (lib/refine-interest-kind).
+  | "interest_refinement"
   | "unattributed";
 
 export interface ShadowJudgmentContext {
