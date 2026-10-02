@@ -253,3 +253,42 @@ async function fetchBrandCampaigns(
   }
   return body.campaigns;
 }
+
+/** A campaign row as `GET /campaigns/list` serves it: its identity plus its status. */
+export interface CampaignStatusRow extends CampaignIdentityRow {
+  /** campaign-service's own vocabulary: `ongoing` | `stopped`. Read verbatim. */
+  status: string;
+}
+
+/**
+ * Every campaign campaign-service holds, across every org, with its status.
+ *
+ * campaign-service owns whether a campaign is running: the customer's stop, an
+ * org teardown and a billing hold all land as `status: "stopped"` there and
+ * nowhere else. The send queue asks it here before every dispatch tick (see
+ * `stopped-campaigns.ts`). ~730 rows in prod, one call.
+ *
+ * ⚠️ FAILS LOUD: the caller refuses to send when it cannot ask.
+ */
+export async function listCampaignStatuses(): Promise<CampaignStatusRow[]> {
+  if (!CAMPAIGN_SERVICE_URL || !CAMPAIGN_SERVICE_API_KEY) {
+    throw new Error("CAMPAIGN_SERVICE_URL or CAMPAIGN_SERVICE_API_KEY is not set");
+  }
+
+  const response = await fetch(`${CAMPAIGN_SERVICE_URL}/campaigns/list`, {
+    headers: { "x-api-key": CAMPAIGN_SERVICE_API_KEY },
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `campaign-service GET /campaigns/list failed: ${response.status} - ${body.slice(0, 200)}`,
+    );
+  }
+
+  const body = (await response.json()) as { campaigns?: CampaignStatusRow[] };
+  if (!Array.isArray(body.campaigns)) {
+    throw new Error("campaign-service GET /campaigns/list returned no campaigns array");
+  }
+  return body.campaigns;
+}

@@ -7,6 +7,8 @@ import { updateCampaignStatus as updateInstantlyStatus } from "../lib/instantly-
 import { resolveInstantlyApiKey } from "../lib/key-client";
 import { UpdateStatusRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
+import { isSelfSendCampaignId } from "../lib/self-send/transport";
+import { stopSelfSendSequence } from "../lib/self-send/stop-sequence";
 import { reconcileAll } from "../lib/reconcile";
 import { refundStrandedHolds } from "../lib/refund-stranded-holds";
 import { backfillStopOnClick } from "../lib/stop-on-click-backfill";
@@ -96,18 +98,38 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Campaign not found" });
     }
 
-    // Resolve Instantly API key using header identity
+    // Resolve the Instantly API key only when a row actually lives on Instantly:
+    // a self-send sequence (`self:`) or an unfinished reservation has no Instantly
+    // campaign, and Instantly 400s their ids ("params/id must match format uuid").
     const orgId = res.locals.orgId as string;
     const userId = res.locals.userId as string;
-    const { key: apiKey } = await resolveInstantlyApiKey(orgId, userId, {
-      method: "PATCH",
-      path: "/campaigns/:campaignId/status",
-    });
+    const onInstantly = campaigns.filter(
+      (c) => !isSelfSendCampaignId(c.instantlyCampaignId) && !c.instantlyCampaignId.startsWith("reserving:"),
+    );
+    const apiKey = onInstantly.length > 0
+      ? (await resolveInstantlyApiKey(orgId, userId, {
+          method: "PATCH",
+          path: "/campaigns/:campaignId/status",
+        })).key
+      : null;
 
     // Update all sub-campaigns in Instantly + DB
     const updated = [];
     for (const campaign of campaigns) {
-      await updateInstantlyStatus(apiKey, campaign.instantlyCampaignId, status);
+      if (isSelfSendCampaignId(campaign.instantlyCampaignId) && status !== "active" && campaign.leadEmail) {
+        // We are the sender: refund the queued steps and take the row out of the
+        // dispatcher's reach, the way every other self-send stop does.
+        await stopSelfSendSequence(campaign, campaign.leadEmail, `status route: ${status}`, status);
+        const [row] = await db
+          .select()
+          .from(instantlyCampaigns)
+          .where(eq(instantlyCampaigns.id, campaign.id));
+        updated.push(row);
+        continue;
+      }
+      if (apiKey && onInstantly.includes(campaign)) {
+        await updateInstantlyStatus(apiKey, campaign.instantlyCampaignId, status);
+      }
       const [row] = await db
         .update(instantlyCampaigns)
         .set({ status, updatedAt: new Date() })

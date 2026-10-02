@@ -17,6 +17,14 @@ const mockRunPoll = vi.fn();
 const mockLoadMailboxLogins = vi.fn();
 const mockDispatchScheduledReplies = vi.fn();
 
+// The stopped-campaign sweep asks campaign-service first on every run; it has
+// its own tests (stopped-campaigns.test.ts). Stubbed so the queued reads below
+// stay aligned with the dispatch path.
+const mockStopStoppedCampaigns = vi.fn();
+vi.mock("../../src/lib/stopped-campaigns", () => ({
+  stopQueuedSequencesOfStoppedCampaigns: (...args: unknown[]) => mockStopStoppedCampaigns(...args),
+}));
+
 vi.mock("../../src/db", () => ({
   db: {
     execute: (...args: unknown[]) => mockExecute(...args),
@@ -124,6 +132,7 @@ function primeStepContent() {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   __resetDispatchInFlight();
   mockLoadMailboxLogins.mockResolvedValue(
     new Map([["amy@saviolabsco.com", "amy@saviolabsco.com"]]),
