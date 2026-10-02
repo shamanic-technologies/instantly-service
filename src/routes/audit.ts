@@ -28,6 +28,7 @@ import {
 import { backfillReplyOptOuts } from "../lib/reply-optout-backfill";
 import { backfillDelayedDsns } from "../lib/delayed-dsn-backfill";
 import { backfillScannerClicks } from "../lib/self-send/click-scanner-backfill";
+import { reactivateScannerPausedSequences } from "../lib/self-send/reactivate-scanner-paused";
 import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
 import { syncSlowRampOff } from "../lib/sync-slow-ramp";
 import { syncLifecycleLimits } from "../lib/sync-lifecycle-limits";
@@ -1159,6 +1160,45 @@ router.post("/click-scanner-backfill", async (req: Request, res: Response) => {
   })().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] click-scanner-backfill run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/audit/reactivate-scanner-paused
+ *
+ * Platform-scoped. Resumes the self-send sequences `stop-on-click` stopped on a
+ * click since ruled a scanner's (see `reactivate-scanner-paused.ts` for every
+ * condition). Run AFTER `/click-scanner-backfill` has re-decided the hits.
+ *
+ * `{dryRun}` DEFAULTS TO TRUE and answers synchronously with the counts.
+ * `{dryRun: false}` answers 202 and resumes in the background (log
+ * `reactivate-scanner-paused: done`); `{limit}` bounds a batch. Idempotent.
+ */
+router.post("/reactivate-scanner-paused", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { dryRun?: unknown; limit?: unknown };
+  const dryRun = body.dryRun !== false;
+  const limit =
+    typeof body.limit === "number" && Number.isFinite(body.limit) && body.limit > 0
+      ? Math.floor(body.limit)
+      : undefined;
+
+  if (dryRun) {
+    res.json(await reactivateScannerPausedSequences({ dryRun: true, limit }));
+    return;
+  }
+
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, dryRun: false, runId });
+  console.log(`[audit] reactivate-scanner-paused: dispatched run=${runId}`);
+
+  (async () => {
+    const summary = await reactivateScannerPausedSequences({ dryRun: false, limit });
+    console.log(
+      `[audit] reactivate-scanner-paused: done run=${runId} ${JSON.stringify(summary)}`,
+    );
+  })().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[audit] reactivate-scanner-paused run=${runId} failed: ${message}`);
   });
 });
 

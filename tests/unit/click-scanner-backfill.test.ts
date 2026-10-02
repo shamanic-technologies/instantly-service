@@ -98,7 +98,34 @@ describe("backfillScannerClicks — dry run", () => {
     expect(text).toContain("h.classification IN ('legacy', 'human')");
     // A scanner verdict is never re-opened: nothing here promotes, so reversing
     // one would leave bronze claiming a click silver does not have.
-    expect(text).not.toContain("'scanner'");
+    // The only 'scanner' the query reads is the network EVIDENCE about OTHER hits.
+    expect(text.replaceAll("s.classification = 'scanner'", "")).not.toContain("'scanner'");
+  });
+
+  it("demotes a human hit whose /24 carries a scanner verdict (Defender's Mac UA, Olive 2026-10-02)", async () => {
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        hitRow({
+          id: "hit-bhemelaar",
+          user_agent:
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+          has_paired_unsubscribe: false,
+          shares_scanner_network: true,
+        }),
+        hitRow({
+          id: "hit-real",
+          lead_email: "real@example.com",
+          has_paired_unsubscribe: false,
+          shares_scanner_network: false,
+        }),
+      ]),
+    );
+
+    const summary = await backfillScannerClicks();
+
+    expect(summary).toMatchObject({ scannerHits: 1, humanHits: 1 });
+    expect(summary.reasons).toEqual({ scanner_network: 1 });
+    expect(sqlText(mockDbExecute.mock.calls[0][0])).toContain("AS shares_scanner_network");
   });
 });
 
