@@ -917,6 +917,61 @@ export const WarmupRequestSchema = z
 
 export type WarmupRequest = z.infer<typeof WarmupRequestSchema>;
 
+// ─── Bounced emails (fleet-wide) ────────────────────────────────────────────
+
+export const BouncedEmailsRequestSchema = z
+  .object({
+    emails: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(1000)
+      .describe("Addresses to look up (case-insensitive, trimmed). Not validated as RFC emails: one odd address must not 400 the whole batch."),
+  })
+  .openapi("BouncedEmailsRequest");
+
+const BouncedEmailSchema = z.object({
+  email: z.string().describe("The address, lowercased and trimmed"),
+  firstBouncedAt: z.string().describe("ISO timestamp of the first recorded bounce on any of our sends"),
+});
+
+export const BouncedEmailsResponseSchema = z
+  .object({
+    bounced: z
+      .array(BouncedEmailSchema)
+      .describe("The subset of the requested addresses that bounced. An address absent here has no recorded bounce."),
+  })
+  .openapi("BouncedEmailsResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/bounced-emails",
+  summary: "Which of these addresses bounced on one of our sends (fleet-wide)",
+  description:
+    "A bounce is a fact about the address, not the sender, so this read is NOT org-scoped: it answers across every org " +
+    "and brand. Every recorded `email_bounced` event is a permanent failure (temporary delivery delays are never promoted " +
+    "and were retracted), so all are hard bounces. Fails loud (500) rather than returning an empty list on a read error.",
+  request: {
+    body: {
+      content: { "application/json": { schema: BouncedEmailsRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "The bounced subset (possibly empty)",
+      content: { "application/json": { schema: BouncedEmailsResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "The bounce record could not be read",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ─── Transfer Brand ─────────────────────────────────────────────────────────
 
 export const TransferBrandRequestSchema = z
