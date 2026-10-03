@@ -16,6 +16,7 @@ import webhooksRoutes from "./routes/webhooks";
 import sendRoutes from "./routes/send";
 import statusRoutes from "./routes/status";
 import transferBrandRoutes from "./routes/transfer-brand";
+import bouncedEmailsRoutes from "./routes/bounced-emails";
 import manualQualificationsRoutes from "./routes/manual-qualifications";
 import leadOptOutsRoutes from "./routes/lead-optouts";
 import repliesRoutes from "./routes/replies";
@@ -77,6 +78,7 @@ app.use("/public", serviceAuth, analyticsPublicRoutes);
 app.use("/internal/campaigns", serviceAuth, campaignsRoutes);  // reconcile + retry-stuck triggers
 app.use("/internal/accounts", serviceAuth, accountsRoutes);    // list all accounts
 app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
+app.use("/internal/bounced-emails", serviceAuth, bouncedEmailsRoutes); // fleet-wide bounce lookup (human-service serve gate)
 app.use("/internal/audit", serviceAuth, auditRoutes);          // staff sending forecast (capacity vs scheduled volume)
 app.use("/internal/infra", serviceAuth, infraRoutes);          // provider inventory sync (Gandi / Mailforge / Primeforge / DFY)
 app.use("/internal/ops", serviceAuth, opsRoutes);            // unified model: mailbox sync (PR 1), gold reads later

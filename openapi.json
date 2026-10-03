@@ -1435,6 +1435,53 @@
           "synced"
         ]
       },
+      "BouncedEmailsResponse": {
+        "type": "object",
+        "properties": {
+          "bounced": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "email": {
+                  "type": "string",
+                  "description": "The address, lowercased and trimmed"
+                },
+                "firstBouncedAt": {
+                  "type": "string",
+                  "description": "ISO timestamp of the first recorded bounce on any of our sends"
+                }
+              },
+              "required": [
+                "email",
+                "firstBouncedAt"
+              ]
+            },
+            "description": "The subset of the requested addresses that bounced. An address absent here has no recorded bounce."
+          }
+        },
+        "required": [
+          "bounced"
+        ]
+      },
+      "BouncedEmailsRequest": {
+        "type": "object",
+        "properties": {
+          "emails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 1000,
+            "description": "Addresses to look up (case-insensitive, trimmed). Not validated as RFC emails: one odd address must not 400 the whole batch."
+          }
+        },
+        "required": [
+          "emails"
+        ]
+      },
       "TransferBrandResponse": {
         "type": "object",
         "properties": {
@@ -6512,6 +6559,56 @@
           },
           "401": {
             "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/bounced-emails": {
+      "post": {
+        "summary": "Which of these addresses bounced on one of our sends (fleet-wide)",
+        "description": "A bounce is a fact about the address, not the sender, so this read is NOT org-scoped: it answers across every org and brand. Every recorded `email_bounced` event is a permanent failure (temporary delivery delays are never promoted and were retracted), so all are hard bounces. Fails loud (500) rather than returning an empty list on a read error.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BouncedEmailsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The bounced subset (possibly empty)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BouncedEmailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "The bounce record could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
