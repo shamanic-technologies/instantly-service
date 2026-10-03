@@ -1707,6 +1707,97 @@ registry.registerPath({
   },
 });
 
+export const LeadSendingScheduleQuerySchema = z
+  .object({
+    email: z
+      .string()
+      .trim()
+      .min(1)
+      .describe("The lead's email address (the lead identity in this service, matched case-insensitively)"),
+    brand_id: z
+      .string()
+      .uuid()
+      .optional()
+      .describe("Only consider this lead's sequences that carry this brand"),
+  })
+  .openapi("LeadSendingScheduleQuery");
+
+export const LeadSendingScheduleSchema = z
+  .object({
+    weekdays: z
+      .array(
+        z.enum([
+          "sunday",
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+        ]),
+      )
+      .describe("Local days of the week a cold email may be sent, in `timezone`"),
+    startHour: z
+      .number()
+      .int()
+      .describe("Local hour (0-23, in `timezone`) the sending window opens, inclusive"),
+    endHour: z
+      .number()
+      .int()
+      .describe("Local hour (0-23, in `timezone`) the sending window closes, exclusive"),
+    timezone: z
+      .string()
+      .describe("IANA timezone the window is evaluated in for this lead"),
+    timezoneIsDefault: z
+      .boolean()
+      .describe(
+        "True when we hold no usable timezone for this lead and `timezone` is the fleet default we fall back to",
+      ),
+    hasSequence: z
+      .boolean()
+      .describe(
+        "True when this service holds a sequence for this lead (in this brand when brand_id is given). False = the schedule that WOULD apply",
+      ),
+  })
+  .openapi("LeadSendingSchedule");
+
+export const LeadSendingScheduleResponseSchema = z
+  .object({
+    success: z.literal(true),
+    schedule: LeadSendingScheduleSchema,
+  })
+  .openapi("LeadSendingScheduleResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/sending-schedule",
+  summary: "When a lead may be emailed",
+  description:
+    "The sending window that governs cold email to ONE lead: which local weekdays, which local hours, and in which timezone. Every value is read from the same constants the send path uses, so a consumer never re-types the window and this read moves the day the window does.\n\n" +
+    "**Timezone.** The zone persisted on the lead's most recent sequence in this org (and brand, when `brand_id` is given), falling back to the zone shipped in that sequence's campaign schedule. No sequence, or no usable zone, = the fleet default zone with `timezoneIsDefault: true`.\n\n" +
+    "**Never 404.** A lead we hold nothing for gets the schedule that WOULD apply (`hasSequence: false`, default zone).\n\n" +
+    "**Cost:** none. It sends nothing and declares nothing.",
+  request: {
+    headers: TrackingHeadersSchema,
+    query: LeadSendingScheduleQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "The lead's sending schedule",
+      content: { "application/json": { schema: LeadSendingScheduleResponseSchema } },
+    },
+    400: {
+      description: "Invalid query",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "The schedule could not be read",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 export const EngagedLeadsQuerySchema = z
   .object({
     brand_id: z
