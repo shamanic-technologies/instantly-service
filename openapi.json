@@ -2049,6 +2049,73 @@
           "code"
         ]
       },
+      "LeadSendingScheduleResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "schedule": {
+            "$ref": "#/components/schemas/LeadSendingSchedule"
+          }
+        },
+        "required": [
+          "success",
+          "schedule"
+        ]
+      },
+      "LeadSendingSchedule": {
+        "type": "object",
+        "properties": {
+          "weekdays": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "sunday",
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday"
+              ]
+            },
+            "description": "Local days of the week a cold email may be sent, in `timezone`"
+          },
+          "startHour": {
+            "type": "integer",
+            "description": "Local hour (0-23, in `timezone`) the sending window opens, inclusive"
+          },
+          "endHour": {
+            "type": "integer",
+            "description": "Local hour (0-23, in `timezone`) the sending window closes, exclusive"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone the window is evaluated in for this lead"
+          },
+          "timezoneIsDefault": {
+            "type": "boolean",
+            "description": "True when we hold no usable timezone for this lead and `timezone` is the fleet default we fall back to"
+          },
+          "hasSequence": {
+            "type": "boolean",
+            "description": "True when this service holds a sequence for this lead (in this brand when brand_id is given). False = the schedule that WOULD apply"
+          }
+        },
+        "required": [
+          "weekdays",
+          "startHour",
+          "endHour",
+          "timezone",
+          "timezoneIsDefault",
+          "hasSequence"
+        ]
+      },
       "EngagedLeadsResponse": {
         "type": "object",
         "properties": {
@@ -7279,6 +7346,141 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LeadConversationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/sending-schedule": {
+      "get": {
+        "summary": "When a lead may be emailed",
+        "description": "The sending window that governs cold email to ONE lead: which local weekdays, which local hours, and in which timezone. Every value is read from the same constants the send path uses, so a consumer never re-types the window and this read moves the day the window does.\n\n**Timezone.** The zone persisted on the lead's most recent sequence in this org (and brand, when `brand_id` is given), falling back to the zone shipped in that sequence's campaign schedule. No sequence, or no usable zone, = the fleet default zone with `timezoneIsDefault: true`.\n\n**Never 404.** A lead we hold nothing for gets the schedule that WOULD apply (`hasSequence: false`, default zone).\n\n**Cost:** none. It sends nothing and declares nothing.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The lead's email address (the lead identity in this service, matched case-insensitively)"
+            },
+            "required": true,
+            "description": "The lead's email address (the lead identity in this service, matched case-insensitively)",
+            "name": "email",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Only consider this lead's sequences that carry this brand"
+            },
+            "required": false,
+            "description": "Only consider this lead's sequences that carry this brand",
+            "name": "brand_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The lead's sending schedule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadSendingScheduleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "The schedule could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }

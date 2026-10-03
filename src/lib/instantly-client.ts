@@ -4,6 +4,8 @@
  */
 
 import { resolveInstantlyTimezone } from "./instantly-timezone.js";
+import { SENDING_WEEKDAYS } from "./sending-calendar.js";
+import { SEND_WINDOW_END_HOUR, SEND_WINDOW_START_HOUR } from "./sending-window.js";
 
 const INSTANTLY_API_URL = "https://api.instantly.ai/api/v2";
 
@@ -384,8 +386,15 @@ export async function createCampaign(apiKey: string, params: CreateCampaignParam
           // resolved onto its nearest accepted member — see
           // `instantly-timezone.ts`. Absent / malformed / unmappable degrades to
           // US Central; a timezone must never block a send.
-          timing: { from: "08:00", to: "17:00" },
-          days: { "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false },
+          // Built from the same constants `GET /orgs/sending-schedule` serves
+          // and send selection books against, so the three never drift.
+          timing: {
+            from: `${String(SEND_WINDOW_START_HOUR).padStart(2, "0")}:00`,
+            to: `${String(SEND_WINDOW_END_HOUR).padStart(2, "0")}:00`,
+          },
+          days: Object.fromEntries(
+            [0, 1, 2, 3, 4, 5, 6].map((d) => [String(d), SENDING_WEEKDAYS.includes(d)]),
+          ),
           timezone: resolveInstantlyTimezone(params.timezone),
         },
       ],
