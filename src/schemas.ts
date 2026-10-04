@@ -645,17 +645,42 @@ export const StatsQuerySchema = z
 
 export type StatsQuery = z.infer<typeof StatsQuerySchema>;
 
+const QUEUED_EMAILS_DESCRIPTION =
+  "Emails queued right now and not yet sent for this scope: every scheduled sequence step (all steps counted, " +
+  "same grain as `sent`) of a LIVE per-lead campaign (status active, delivery status contacted or sent). " +
+  "A current snapshot, not dated. Holds of stopped, paused, completed, replied or bounced sequences never count " +
+  "(they will never be sent). Scoped by the same query params as every other figure (org, runIds, brandId, " +
+  "campaignId, goal, brandProfileId, audienceId, workflowSlugs, featureSlugs). 0 = nothing waiting; " +
+  "null = the queue could not be read (unknown, never a 0).";
+
+const StatsEmailStatsSchema = EmailStatsSchema.extend({
+  queued: z.number().int().nullable().describe(QUEUED_EMAILS_DESCRIPTION),
+});
+
+const StatsGroupedEmailStatsSchema = EmailStatsSchema.extend({
+  queued: z
+    .number()
+    .int()
+    .nullable()
+    .optional()
+    .describe(
+      QUEUED_EMAILS_DESCRIPTION +
+        " Per group key for groupBy=campaignId|brandId|workflowSlug|featureSlug|leadEmail|audienceId; " +
+        "ABSENT for groupBy=day (a queue is a snapshot, it has no day).",
+    ),
+});
+
 const StatsResponseSchema = z
   .object({
     recipientStats: RecipientStatsSchema,
-    emailStats: EmailStatsSchema,
+    emailStats: StatsEmailStatsSchema,
   })
   .openapi("StatsResponse");
 
 const StatsGroupedEntrySchema = z.object({
   key: z.string().describe("Group key. For groupBy=day this is YYYY-MM-DD in the requested timezone."),
   recipientStats: RecipientStatsSchema,
-  emailStats: EmailStatsSchema,
+  emailStats: StatsGroupedEmailStatsSchema,
 });
 
 const StatsGroupedResponseSchema = z

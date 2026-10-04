@@ -409,8 +409,8 @@ describe("GET /stats", () => {
 
     await request(app).get("/stats").set(identityHeadersObj);
 
-    // Stats query + campaign-aggregates + latest-sentiment + step + step-sentiment
-    expect(mockExecute).toHaveBeenCalledTimes(5);
+    // Stats query + campaign-aggregates + latest-sentiment + step + step-sentiment + queued-emails
+    expect(mockExecute).toHaveBeenCalledTimes(6);
 
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
@@ -825,8 +825,9 @@ describe("GET /stats", () => {
       expect(group.recipientStats.clicked).toBe(0);
       expect(group.recipientStats.bounced).toBe(0);
       expect(group.recipientStats.repliesPositive).toBe(0);
+      // `queued` is a snapshot from its own read (empty here = nothing queued).
       expect(group.emailStats).toEqual({
-        sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, unsubscribed: 0,
+        sent: 0, delivered: 0, opened: 0, clicked: 0, bounced: 0, unsubscribed: 0, queued: 0,
       });
     }
   });
@@ -1557,5 +1558,111 @@ describe("delivered is attributed to the send, not to the bounce", () => {
     const allSql = mockExecute.mock.calls.map((c) => extractSqlText(c[0])).join("\n---\n");
     expect(allSql).toContain('AS "delivered"');
     expect(allSql).toContain("b.step = e.step");
+  });
+});
+
+describe("GET /stats — emailStats.queued (emails queued right now, not yet sent)", () => {
+  beforeEach(() => {
+    clearStatsCache();
+    mockExecute.mockReset();
+  });
+
+  /** Route every db.execute by SQL text: the queued read is the only one on sequence_costs. */
+  function routeQueued(queued: (sqlText: string) => unknown) {
+    mockExecute.mockImplementation(async (q: unknown) => {
+      const text = extractSqlText(q);
+      if (text.includes("sequence_costs")) return queued(text);
+      if (text.includes('AS "esSent"')) return { rows: [makeStatsRow({ esSent: 4 })] };
+      return { rows: [] };
+    });
+  }
+
+  it("serves the scope's queued steps on live campaigns, scoped like every other figure", async () => {
+    routeQueued(() => ({ rows: [{ queued: 7 }] }));
+    const app = await createStatsApp();
+
+    const res = await request(app)
+      .get("/stats")
+      .query({ brandId: "brand-1", campaignId: "camp-1", featureSlugs: "f1", workflowSlugs: "w1" })
+      .set(identityHeadersObj);
+
+    expect(res.status).toBe(200);
+    expect(res.body.emailStats.queued).toBe(7);
+    expect(res.body.emailStats.sent).toBe(4);
+
+    const queuedSql = mockExecute.mock.calls
+      .map((c) => extractSqlText(c[0]))
+      .find((t) => t.includes("sequence_costs"))!;
+    // Unsent scheduled steps only, on genuinely LIVE sequences (same gate as the forecast).
+    expect(queuedSql).toContain("sc.status = 'provisioned'");
+    expect(queuedSql).toContain("c.status = 'active'");
+    expect(queuedSql).toContain("c.delivery_status IN ('contacted', 'sent')");
+    expect(queuedSql).toContain("COUNT(DISTINCT sc.step)");
+    // Same scope as the rest of the read.
+    expect(queuedSql).toContain("c.org_id =");
+    expect(queuedSql).toContain("ANY(c.brand_ids)");
+    expect(queuedSql).toContain("c.campaign_id =");
+    expect(queuedSql).toContain("c.feature_slug IN");
+    expect(queuedSql).toContain("c.workflow_slug IN");
+    // Internal test leads excluded like every other stats figure.
+    expect(queuedSql).toContain("c.lead_email NOT IN");
+  });
+
+  it("reads 0 when nothing is waiting", async () => {
+    routeQueued(() => ({ rows: [{ queued: 0 }] }));
+    const app = await createStatsApp();
+
+    const res = await request(app).get("/stats").set(identityHeadersObj);
+
+    expect(res.status).toBe(200);
+    expect(res.body.emailStats.queued).toBe(0);
+  });
+
+  it("serves null (unknown), never 0, when the queue cannot be read — the rest of the read survives", async () => {
+    routeQueued(() => {
+      throw new Error("pool exhausted");
+    });
+    const app = await createStatsApp();
+
+    const res = await request(app).get("/stats").set(identityHeadersObj);
+
+    expect(res.status).toBe(200);
+    expect(res.body.emailStats.queued).toBeNull();
+    expect(res.body.emailStats.sent).toBe(4);
+  });
+
+  it("serves queued per group key on a non-day grouping (absent key = 0)", async () => {
+    mockExecute.mockImplementation(async (q: unknown) => {
+      const text = extractSqlText(q);
+      if (text.includes("sequence_costs")) return { rows: [{ groupKey: "camp-a", queued: 12 }] };
+      if (text.includes('AS "esSent"')) {
+        return {
+          rows: [
+            { groupKey: "camp-a", ...makeStatsRow({ esSent: 3 }) },
+            { groupKey: "camp-b", ...makeStatsRow({ esSent: 5 }) },
+          ],
+        };
+      }
+      return { rows: [] };
+    });
+    const app = await createStatsApp();
+
+    const res = await request(app).get("/stats").query({ groupBy: "campaignId" }).set(identityHeadersObj);
+
+    expect(res.status).toBe(200);
+    const byKey = Object.fromEntries(res.body.groups.map((g: any) => [g.key, g.emailStats.queued]));
+    expect(byKey).toEqual({ "camp-a": 12, "camp-b": 0 });
+  });
+
+  it("omits queued on groupBy=day (a queue is a snapshot, it has no day) and issues no queue read", async () => {
+    routeQueued(() => ({ rows: [{ queued: 99 }] }));
+    const app = await createStatsApp();
+
+    const res = await request(app).get("/stats").query({ groupBy: "day" }).set(identityHeadersObj);
+
+    expect(res.status).toBe(200);
+    for (const g of res.body.groups) expect(g.emailStats).not.toHaveProperty("queued");
+    const texts = mockExecute.mock.calls.map((c) => extractSqlText(c[0]));
+    expect(texts.some((t) => t.includes("sequence_costs"))).toBe(false);
   });
 });
