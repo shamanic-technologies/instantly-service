@@ -649,6 +649,11 @@
                   ]
                 },
                 "description": "Per-step breakdown (instantly broadcast only; empty/omitted for postmark transactional)"
+              },
+              "queued": {
+                "type": "integer",
+                "nullable": true,
+                "description": "Emails queued right now and not yet sent for this scope: every scheduled sequence step (all steps counted, same grain as `sent`) of a LIVE per-lead campaign (status active, delivery status contacted or sent). A current snapshot, not dated. Holds of stopped, paused, completed, replied or bounced sequences never count (they will never be sent). Scoped by the same query params as every other figure (org, runIds, brandId, campaignId, goal, brandProfileId, audienceId, workflowSlugs, featureSlugs). 0 = nothing waiting; null = the queue could not be read (unknown, never a 0)."
               }
             },
             "required": [
@@ -657,7 +662,8 @@
               "opened",
               "clicked",
               "bounced",
-              "unsubscribed"
+              "unsubscribed",
+              "queued"
             ]
           }
         },
@@ -948,6 +954,11 @@
                         ]
                       },
                       "description": "Per-step breakdown (instantly broadcast only; empty/omitted for postmark transactional)"
+                    },
+                    "queued": {
+                      "type": "integer",
+                      "nullable": true,
+                      "description": "Emails queued right now and not yet sent for this scope: every scheduled sequence step (all steps counted, same grain as `sent`) of a LIVE per-lead campaign (status active, delivery status contacted or sent). A current snapshot, not dated. Holds of stopped, paused, completed, replied or bounced sequences never count (they will never be sent). Scoped by the same query params as every other figure (org, runIds, brandId, campaignId, goal, brandProfileId, audienceId, workflowSlugs, featureSlugs). 0 = nothing waiting; null = the queue could not be read (unknown, never a 0). Per group key for groupBy=campaignId|brandId|workflowSlug|featureSlug|leadEmail|audienceId; ABSENT for groupBy=day (a queue is a snapshot, it has no day)."
                     }
                   },
                   "required": [

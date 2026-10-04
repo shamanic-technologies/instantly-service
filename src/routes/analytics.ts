@@ -888,10 +888,15 @@ export async function queryGroupedStats(
   // sentiment event, manual winning ties) — NOT every sentiment event ever
   // recorded, which never drops a re-qualified reply (see SENTIMENT_EVENT_TYPES;
   // `unsubscribe` stays an event count, a separate signal).
-  const [result, aggregatesMap, sentimentMap] = await Promise.all([
+  // Queued emails are a snapshot: attached per key on non-day groupings only
+  // (issued LAST so the existing db.execute call order is unchanged).
+  const [result, aggregatesMap, sentimentMap, queuedMap] = await Promise.all([
     db.execute(eventsQuery),
     queryGroupedCampaignAggregates(whereClause, groupBy, timezone),
     queryGroupedSentiment(whereClause, groupBy, timezone),
+    groupBy === "day"
+      ? Promise.resolve(undefined)
+      : queryGroupedQueuedEmails(whereClause, groupBy),
   ]);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
@@ -946,6 +951,9 @@ export async function queryGroupedStats(
         clicked: row?.esClicked ?? 0,
         bounced: esBounced,
         unsubscribed: row?.esUnsubscribed ?? 0,
+        ...(queuedMap !== undefined && {
+          queued: queuedMap === null ? null : queuedMap.get(String(key)) ?? 0,
+        }),
       },
     };
   };
@@ -1066,6 +1074,102 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
   };
 }
 
+/**
+ * Emails QUEUED right now for the scope: every sequence step that is scheduled
+ * and not yet sent, on a genuinely LIVE per-lead campaign. Same grain as
+ * `emailStats.sent` (one email = one (lead campaign, step)), a current SNAPSHOT,
+ * never dated.
+ *
+ * Source: `sequence_costs status='provisioned'` IS the send queue (CLAUDE.md).
+ * Live gate = the one the sending forecast and reconcile `pendingSends` use
+ * (`c.status='active' AND c.delivery_status IN ('contacted','sent')`), so a
+ * stopped / paused / completed / replied / bounced sequence's stranded holds
+ * (they will never be sent) do not count. Hold-to-campaign match mirrors
+ * `matchesHoldCampaign` (per-lead id, historical org holds fall back to
+ * campaign_id + lead). `COUNT(DISTINCT step)` because pre-0038 rows are doubled.
+ * Internal test leads are excluded exactly like every other stats figure.
+ */
+const QUEUED_STEPS_LATERAL = sql`
+  CROSS JOIN LATERAL (
+    SELECT COUNT(DISTINCT sc.step)::int AS steps
+    FROM sequence_costs sc
+    WHERE sc.status = 'provisioned'
+      AND (sc.instantly_campaign_id = c.instantly_campaign_id
+           OR (sc.instantly_campaign_id IS NULL
+               AND sc.campaign_id = c.campaign_id
+               AND sc.lead_email = c.lead_email))
+  ) q
+`;
+const LIVE_SEQUENCE_GATE = sql`c.status = 'active' AND c.delivery_status IN ('contacted', 'sent')`;
+
+/**
+ * Scope-level queued-email count. A COUNT always returns one row, so a missing
+ * row or a failed read is UNKNOWN: `null` (logged loud), never a 0.
+ */
+export async function queryQueuedEmails(whereClause: SQL): Promise<number | null> {
+  try {
+    const result = await db.execute(sql`
+      SELECT COALESCE(SUM(q.steps), 0)::int AS "queued"
+      FROM instantly_campaigns c
+      ${QUEUED_STEPS_LATERAL}
+      WHERE ${whereClause}
+        AND ${LIVE_SEQUENCE_GATE}
+        AND ${campaignExclusionClause()}
+    `);
+    const rows = Array.isArray(result) ? result : (result as any)?.rows ?? [];
+    const value = rows[0]?.queued;
+    if (value === undefined || value === null || !Number.isFinite(Number(value))) {
+      console.error("[instantly-service] queued-emails read returned no row; serving null (unknown)");
+      return null;
+    }
+    return Number(value);
+  } catch (error: any) {
+    console.error(
+      `[instantly-service] queued-emails read failed; serving null (unknown): ${error?.cause?.message ?? error?.message ?? error}`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Per-group queued-email counts for a non-day grouping. A key absent from the
+ * map has nothing queued (0). `null` = the read failed (unknown). Never called
+ * for `groupBy=day`: a queue is a snapshot, it has no day.
+ */
+export async function queryGroupedQueuedEmails(
+  whereClause: SQL,
+  groupBy: string,
+): Promise<Map<string, number> | null> {
+  const col = CAMPAIGN_GROUP_BY_COLUMNS[groupBy];
+  if (!col || groupBy === "day") return null;
+  const groupCol = sql.raw(col);
+  const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
+  try {
+    const result = await db.execute(sql`
+      SELECT ${groupCol} AS "groupKey", COALESCE(SUM(q.steps), 0)::int AS "queued"
+      FROM instantly_campaigns c
+      ${lateralJoin}
+      ${QUEUED_STEPS_LATERAL}
+      WHERE ${whereClause}
+        AND ${LIVE_SEQUENCE_GATE}
+        AND ${campaignExclusionClause()}
+        AND ${groupCol} IS NOT NULL
+      GROUP BY ${groupCol}
+    `);
+    const rows = Array.isArray(result) ? result : (result as any)?.rows;
+    if (!Array.isArray(rows)) {
+      console.error("[instantly-service] grouped queued-emails read returned no rows array; serving null (unknown)");
+      return null;
+    }
+    return new Map(rows.map((r: any) => [String(r.groupKey), Number(r.queued) || 0]));
+  } catch (error: any) {
+    console.error(
+      `[instantly-service] grouped queued-emails read failed; serving null (unknown): ${error?.cause?.message ?? error?.message ?? error}`,
+    );
+    return null;
+  }
+}
+
 /** Add optional slug filter conditions. */
 export function addSlugConditions(
   conditions: SQL[],
@@ -1182,7 +1286,7 @@ export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
 export async function computeStatsPayload(
   whereClause: SQL,
 ): Promise<{ recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: Record<string, unknown> }> {
-  const [overall, stepStats] = await Promise.all([
+  const [overall, stepStats, queued] = await Promise.all([
     queryStats(whereClause),
     computeStepStats(whereClause).catch((stepError: any) => {
       console.error(
@@ -1190,12 +1294,15 @@ export async function computeStatsPayload(
       );
       return [] as StepStat[];
     }),
+    // Issued LAST so existing db.execute call order is unchanged.
+    queryQueuedEmails(whereClause),
   ]);
   return {
     recipientStats: overall.recipientStats,
     emailStats: {
       ...overall.emailStats,
       ...(stepStats.length > 0 && { stepStats }),
+      queued,
     },
   };
 }
