@@ -318,7 +318,8 @@ export async function escalateReply(
     threadMessages = history.messages.length;
 
     // The client hears about it: exactly once per thread, shared with the
-    // Instantly qualification path. Background — it waits for the words.
+    // Instantly qualification path. Background — it waits for the words. An
+    // info request recorded on the thread is never announced (celebrateOnce).
     void celebrateOnce(thread, campaign.leadEmail);
 
     const repEmail = brand?.rep.email ?? null;
