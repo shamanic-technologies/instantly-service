@@ -98,59 +98,6 @@ export async function getSalesRep(
 }
 
 /**
- * How an offer sells — the legs its customer ticked on the offer's sales path.
- *
- * `stated: false` is "the offer never stated a path", which is a DIFFERENT answer
- * from `stated: true` with an empty `legKeys` ("stated, and ticked nothing").
- * The instant call keys on that difference: a path never stated keeps the
- * behaviour that predates the path, a stated one decides.
- */
-export interface OfferSalesPath {
-  stated: boolean;
-  legKeys: string[] | null;
-}
-
-/**
- * The sales path an offer's customer stated, or `null` when brand-service does
- * not know the offer (404).
- *
- * brand-service's INTERNAL read keyed on the offer alone — the caller holds the
- * offer id off campaign-service's row and nothing else. Any other non-2xx
- * throws with its status and body, so the caller can tell "unreadable" from
- * "never stated".
- */
-export async function getOfferSalesPath(offerId: string): Promise<OfferSalesPath | null> {
-  if (!BRAND_SERVICE_URL || !BRAND_SERVICE_API_KEY) {
-    throw new Error("BRAND_SERVICE_URL or BRAND_SERVICE_API_KEY is not set");
-  }
-
-  const response = await fetch(
-    `${BRAND_SERVICE_URL}/internal/offers/${encodeURIComponent(offerId)}/sales-path`,
-    { headers: { "x-api-key": BRAND_SERVICE_API_KEY } },
-  );
-
-  if (response.status === 404) return null;
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `brand-service GET /internal/offers/{offerId}/sales-path failed: ${response.status} - ${body.slice(0, 200)}`,
-    );
-  }
-
-  const body = (await response.json()) as { stated?: unknown; legKeys?: unknown };
-  if (typeof body.stated !== "boolean") {
-    throw new Error("brand-service GET /internal/offers/{offerId}/sales-path returned no boolean `stated`");
-  }
-  return {
-    stated: body.stated,
-    legKeys: Array.isArray(body.legKeys)
-      ? body.legKeys.filter((k): k is string => typeof k === "string")
-      : null,
-  };
-}
-
-/**
  * What a hand-over needs to say who the prospect is being handed to: the
  * brand's display name and its sales rep.
  *
