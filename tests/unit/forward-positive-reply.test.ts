@@ -12,6 +12,7 @@ const mockFetchLeadConversation = vi.fn();
 const mockSet = vi.fn();
 const mockExternalOrgId = vi.fn();
 const mockFindLead = vi.fn();
+const mockLimit = vi.fn();
 
 // A drizzle-ish update builder: .set().where() returns an object that is both
 // awaitable (release: `await db.update()...where()`) and has .returning() (claim).
@@ -24,6 +25,8 @@ const whereObj = {
 vi.mock("../../src/db", () => ({
   db: {
     execute: (...a: unknown[]) => mockExecute(...a),
+    // recordedReplyKind (escalation path: no kind passed).
+    select: () => ({ from: () => ({ where: () => ({ limit: (...a: unknown[]) => mockLimit(...a) }) }) }),
     update: (...a: unknown[]) => {
       mockUpdate(...a);
       return {
@@ -251,6 +254,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
     mockSet.mockReset();
     mockExternalOrgId.mockReset();
     mockFindLead.mockReset();
+    mockLimit.mockReset();
     mockExternalOrgId.mockResolvedValue("org_3Jv0lYZiVaymxPEuyEbrbXs8hpv");
     mockFindLead.mockResolvedValue({ id: "346a5c86-ac49-4321-a873-a63c830b3217", company: null });
     mockExecute.mockResolvedValue({ rows: [] });
@@ -333,13 +337,13 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
   });
 
   it("links the conversation on the dashboard person page, under the CLERK org id", async () => {
-    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_info_requested", NOW);
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
     expect(mockExternalOrgId).toHaveBeenCalledWith("org-1");
     const [params] = mockSendEmail.mock.calls[0];
     const href =
       "https://dashboard.distribute.you/v2/orgs/org_3Jv0lYZiVaymxPEuyEbrbXs8hpv/brands/brand-1/people/346a5c86-ac49-4321-a873-a63c830b3217";
     expect(params.metadata.html).toContain(`href="${href}"`);
-    expect(params.metadata.subject).toContain("asked for more information");
+    expect(params.metadata.subject).toContain("is interested");
     expect(params.metadata.subject).not.toContain("\u{1F389}");
   });
 
@@ -368,11 +372,40 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
     expect(release).not.toHaveProperty("positiveReplyForwardedAt");
   });
 
-  it("an info or interest reply claims only the general column (never the meeting one)", async () => {
-    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_info_requested", NOW);
+  it("an interest reply claims only the general column (never the meeting one)", async () => {
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
     expect(mockSet.mock.calls[0][0]).toHaveProperty("positiveReplyForwardedAt");
     expect(mockSet.mock.calls[0][0]).not.toHaveProperty("meetingRequestCelebratedAt");
   });
+
+  // Owner 2026-10-05: "Only celebrate successes." An info request is handled
+  // silently by us: no email to anyone, and no claim taken.
+  it("an INFO request sends nothing and takes no claim", async () => {
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_info_requested", NOW);
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockListEmails).not.toHaveBeenCalled();
+    expect(mockSendEmail).not.toHaveBeenCalled();
+  });
+
+  it("an INFO request recorded on the thread (escalation path, no kind passed) sends nothing", async () => {
+    const { celebrateOnce } = await import("../../src/lib/celebrate-positive-reply");
+    mockLimit.mockResolvedValueOnce([{ replyKind: "lead_info_requested" }]);
+    await expect(celebrateOnce(campaign, "lead@x.com", { waitsMs: [0] })).resolves.toBe(false);
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockSendEmail).not.toHaveBeenCalled();
+  });
+
+  for (const later of ["lead_interested", "lead_meeting_requested"]) {
+    it(`info request first, then ${later} on the same thread: the later success IS celebrated`, async () => {
+      mockReturning.mockResolvedValue([{ id: "row-1", tookGeneral: true }]);
+      await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_info_requested", NOW);
+      expect(mockSendEmail).not.toHaveBeenCalled();
+      await maybeForwardPositiveReply(campaign, "lead@x.com", later, NOW);
+      expect(mockSet.mock.calls[0][0]).toHaveProperty("positiveReplyForwardedAt");
+      expect(mockSendEmail).toHaveBeenCalledTimes(1);
+      expect(mockSendEmail.mock.calls[0][0].metadata.subject).not.toContain("more information");
+    });
+  }
 
   it("a reply that cannot be read is SAID, never summarized", async () => {
     mockListEmails.mockResolvedValue([

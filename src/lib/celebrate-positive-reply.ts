@@ -7,20 +7,28 @@
  * reply copies) in To, the agency inbox in Bcc. A brand that named no rep
  * celebrates to the agency inbox alone — somebody must still see it.
  *
+ * ONLY SUCCESSES ARE ANNOUNCED (owner, 2026-10-05: "Only celebrate
+ * successes."). An info request (`lead_info_requested`: questions, "send me
+ * more") is NOT a success: it is handled silently by us (the responder answers,
+ * stats still count it positive) and sends NO email, to the rep or anyone. It
+ * takes no claim either, so if the same thread later turns into interest or a
+ * meeting request, that success is still celebrated. Every path that can
+ * celebrate goes through `celebrateOnce`, which holds this gate.
+ *
  * ONCE PER THREAD: the claim is `positive_reply_forwarded_at` (migration 0028),
  * shared by every path that can celebrate — the Instantly qualification, a
- * hand-recorded qualification, and the escalation (a reply the responder could
- * not answer is still a reply worth celebrating). Whichever arrives first sends;
- * the rest find the claim taken and send nothing. A send that fails releases it.
+ * hand-recorded qualification, and the escalation (it passes no kind: the
+ * thread's recorded kind is read, so an info request it escalates stays silent
+ * too). Whichever arrives first sends; the rest find the claim taken and send
+ * nothing. A send that fails releases it.
  *
- * THREE EMAILS, ONE PER POSITIVE KIND (owner, 2026-10-01): a meeting request
+ * TWO EMAILS, ONE PER CELEBRATED KIND (owner, 2026-10-01): a meeting request
  * gets the full celebration and its OWN claim (`meeting_request_celebrated_at`,
- * migration 0063), so a call request that follows an info request on the same
- * thread is still announced; an info request is calm (no "Congratulations", a
- * different emoji), it is a mark of interest and not a booking; a plain interest
- * sits in between. Every variant keeps ALL the information (who, which outreach,
- * what happens next, the reply with its date and subject, the earlier thread,
- * the dashboard link) in as few words as possible (owner 2026-10-02).
+ * migration 0063), so a call request that follows a plain interest on the same
+ * thread is still announced; a plain interest is the calmer one. Every variant
+ * keeps ALL the information (who, which outreach, what happens next, the reply
+ * with its date and subject, the earlier thread, the dashboard link) in as few
+ * words as possible (owner 2026-10-02).
  *
  * ⚠️ THE REPLY IS ANNOUNCED BEFORE IT IS READABLE. The history is waited on
  * (`loadHistoryWithLatestReply`) until it holds the prospect's message; one that
@@ -51,12 +59,22 @@ export const DASHBOARD_ORIGIN = "https://dashboard.distribute.you";
  * the kind is what `promoteEvent` recorded (Instantly's plain "interested" is
  * refined to the finer kind our classifier read, lib/refine-interest-kind).
  */
-export type CelebrationVariant = "meeting_requested" | "interested" | "info_requested";
+export type CelebrationVariant = "meeting_requested" | "interested";
 
 export function celebrationVariantFor(kind: string | null | undefined): CelebrationVariant {
   if (kind === "lead_meeting_requested") return "meeting_requested";
-  if (kind === "lead_info_requested") return "info_requested";
   return "interested";
+}
+
+/**
+ * Positive reply kinds that are NOT a success, so never announced (owner
+ * 2026-10-05). The reply is still recorded and counted positive; only the email
+ * is withheld.
+ */
+export const UNCELEBRATED_POSITIVE_KINDS: ReadonlySet<string> = new Set(["lead_info_requested"]);
+
+export function isCelebratedKind(kind: string | null | undefined): boolean {
+  return !(kind && UNCELEBRATED_POSITIVE_KINDS.has(kind));
 }
 
 /**
@@ -137,13 +155,11 @@ interface VariantCopy {
 }
 
 /**
- * Pure: the title of each variant. Owner rules (2026-10-01): an info request is
- * a mark of interest, NOT a booking request, so it never wears the party emoji;
- * a meeting request is the celebration.
+ * Pure: the title of each variant. A meeting request is the full celebration;
+ * a plain interest is the calmer one.
  */
 export function variantCopy(variant: CelebrationVariant, who: string): VariantCopy {
   if (variant === "meeting_requested") return { emoji: "\u{1F389}", headline: `${who} wants to book a call` };
-  if (variant === "info_requested") return { emoji: "\u{1F4AC}", headline: `${who} asked for more information` };
   return { emoji: "\u{1F44F}", headline: `${who} is interested` };
 }
 
@@ -457,7 +473,8 @@ export async function sendCelebration(
 /**
  * Celebrate a thread exactly once (twice at most: a meeting request after an
  * earlier positive reply gets its own email). Never throws: claim, send, release
- * on failure. Returns true iff this call sent.
+ * on failure. Returns true iff this call sent. An info request sends nothing and
+ * claims nothing (`isCelebratedKind`).
  *
  * `kind` is the reply kind that fired it; a caller that does not carry one (the
  * escalation) leaves it undefined and the thread's recorded kind is read.
@@ -473,6 +490,14 @@ export async function celebrateOnce(
   try {
     kind =
       options.kind !== undefined ? options.kind : await recordedReplyKind(campaign.instantlyCampaignId, leadEmail);
+    if (!isCelebratedKind(kind)) {
+      // Not a success: handled silently, and NO claim, so a later success on
+      // this thread is still celebrated (owner 2026-10-05).
+      console.log(
+        `[instantly-service] celebrate: skipped for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} kind=${kind} (not a success, never announced)`,
+      );
+      return false;
+    }
     claim = await claimCelebration(campaign.instantlyCampaignId, celebrationVariantFor(kind));
   } catch (error) {
     console.warn(

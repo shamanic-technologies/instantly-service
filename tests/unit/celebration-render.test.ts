@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   celebrationVariantFor,
+  isCelebratedKind,
   conversationHref,
   prospectLabel,
   renderCelebration,
@@ -63,27 +64,24 @@ describe("renderCelebration (all the information, few words)", () => {
     expect(out.subject).toBe("\u{1F389} Andrew Kakishita (Kinetic Chiropractic) wants to book a call (Shockwavecenters)");
   });
 
-  it("an INFO request is calm: never the party emoji, never congratulated", () => {
-    const out = renderCelebration({ ...base, kind: "lead_info_requested" });
-    expect(out.subject).toBe("\u{1F4AC} Andrew Kakishita (Kinetic Chiropractic) asked for more information (Shockwavecenters)");
-    for (const body of [out.subject, out.html, out.text]) {
-      expect(body).not.toContain("Congratulations");
-      expect(body).not.toContain("\u{1F389}");
-    }
+  it("an INFO request is never a celebrated kind (owner 2026-10-05: only successes)", () => {
+    expect(isCelebratedKind("lead_info_requested")).toBe(false);
+    expect(isCelebratedKind("lead_interested")).toBe(true);
+    expect(isCelebratedKind("lead_meeting_requested")).toBe(true);
+    expect(isCelebratedKind(null)).toBe(true);
   });
 
-  it("a plain INTEREST sits in between", () => {
+  it("a plain INTEREST is the calmer email", () => {
     const out = renderCelebration({ ...base, kind: "lead_interested" });
     expect(out.subject).toBe("\u{1F44F} Andrew Kakishita (Kinetic Chiropractic) is interested (Shockwavecenters)");
   });
 
   it("an unknown kind reads as plain interest", () => {
     expect(celebrationVariantFor(undefined)).toBe("interested");
-    expect(celebrationVariantFor("lead_info_requested")).toBe("info_requested");
     expect(celebrationVariantFor("lead_meeting_requested")).toBe("meeting_requested");
   });
 
-  for (const kind of ["lead_meeting_requested", "lead_info_requested", "lead_interested"]) {
+  for (const kind of ["lead_meeting_requested", "lead_interested"]) {
     it(`${kind}: keeps every piece of information`, () => {
       const out = renderCelebration({ ...base, kind });
       const intro = "They answered your Shockwavecenters outreach. You have nothing to do: we handle the reply and will only reach out if we need something from you.";
@@ -117,11 +115,11 @@ describe("renderCelebration (all the information, few words)", () => {
 
   it("names the company, then the address, when the reply carries no name", () => {
     const noName = { ...reply, from: "dr.k@kineticchiropracticutah.com" };
-    expect(renderCelebration({ ...base, reply: noName, kind: "lead_info_requested" }).subject).toBe(
-      "\u{1F4AC} Kinetic Chiropractic asked for more information (Shockwavecenters)",
+    expect(renderCelebration({ ...base, reply: noName, kind: "lead_interested" }).subject).toBe(
+      "\u{1F44F} Kinetic Chiropractic is interested (Shockwavecenters)",
     );
-    expect(renderCelebration({ ...base, reply: noName, company: null, brandName: null, kind: "lead_info_requested" }).subject).toBe(
-      "\u{1F4AC} dr.k@kineticchiropracticutah.com asked for more information",
+    expect(renderCelebration({ ...base, reply: noName, company: null, brandName: null, kind: "lead_interested" }).subject).toBe(
+      "\u{1F44F} dr.k@kineticchiropracticutah.com is interested",
     );
   });
 
