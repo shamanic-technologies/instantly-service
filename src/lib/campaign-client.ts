@@ -114,6 +114,63 @@ export async function getCampaignTriggerScope(
   };
 }
 
+/** The channel and leg of an AI Instant Call campaign (campaign-service #560). */
+export const AI_INSTANT_CALL_FEATURE_SLUG = "ai-instant-call";
+export const AI_INSTANT_CALL_LEG_KEY = "conversation_to_booking_call";
+
+/**
+ * The id of the ONGOING AI Instant Call campaign for one offer, or null when it
+ * is off.
+ *
+ * AI Instant Call is a real campaign in campaign-service with no workflow: the
+ * customer turns it on or off per offer, and a payment hold stops it like any
+ * other campaign. Null covers every way it is off (never created, stopped by the
+ * customer, stopped by a hold). The identity index allows at most one live row
+ * per (org, brand, offer, leg, channel). Any non-2xx THROWS: the caller must not
+ * read an unreadable answer as "off" or as "on".
+ */
+export async function findOngoingInstantCallCampaign(params: {
+  orgId: string;
+  brandId: string;
+  offerId: string;
+}): Promise<string | null> {
+  if (!CAMPAIGN_SERVICE_URL || !CAMPAIGN_SERVICE_API_KEY) {
+    throw new Error("CAMPAIGN_SERVICE_URL or CAMPAIGN_SERVICE_API_KEY is not set");
+  }
+
+  const query = new URLSearchParams({
+    brandId: params.brandId,
+    offerId: params.offerId,
+    featureSlug: AI_INSTANT_CALL_FEATURE_SLUG,
+    legKey: AI_INSTANT_CALL_LEG_KEY,
+    status: "ongoing",
+  });
+  const response = await fetch(`${CAMPAIGN_SERVICE_URL}/campaigns?${query.toString()}`, {
+    headers: {
+      "x-api-key": CAMPAIGN_SERVICE_API_KEY,
+      "x-org-id": params.orgId,
+    },
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `campaign-service GET /campaigns (ai-instant-call) failed: ${response.status} - ${body.slice(0, 200)}`,
+    );
+  }
+
+  const body = (await response.json()) as { campaigns?: unknown };
+  if (!Array.isArray(body.campaigns)) {
+    throw new Error("campaign-service GET /campaigns (ai-instant-call) returned no `campaigns` array");
+  }
+  const first = body.campaigns[0] as { id?: unknown } | undefined;
+  if (!first) return null;
+  if (typeof first.id !== "string" || !first.id) {
+    throw new Error("campaign-service GET /campaigns (ai-instant-call) returned a row with no id");
+  }
+  return first.id;
+}
+
 /** One campaign campaign-service DID run for the leg out of the step. */
 export interface StepTriggerTriggered {
   campaignId: string;

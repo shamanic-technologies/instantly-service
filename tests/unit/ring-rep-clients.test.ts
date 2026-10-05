@@ -12,6 +12,8 @@ beforeEach(() => {
   process.env.TWILIO_SERVICE_API_KEY = "twilio-key";
   process.env.LEAD_SERVICE_URL = "https://lead.example";
   process.env.LEAD_SERVICE_API_KEY = "lead-key";
+  process.env.CAMPAIGN_SERVICE_URL = "https://campaign.example";
+  process.env.CAMPAIGN_SERVICE_API_KEY = "campaign-key";
 });
 
 afterEach(() => {
@@ -327,5 +329,44 @@ describe("findLeadOnCampaignByEmail", () => {
     await expect(
       findLeadOnCampaignByEmail({ orgId: "o", campaignId: "c", email: "a@b.com" }),
     ).rejects.toThrow(/500/);
+  });
+});
+
+describe("findOngoingInstantCallCampaign", () => {
+  const PARAMS = { orgId: "org-1", brandId: "brand-1", offerId: "offer-1" };
+
+  it("reads campaign-service's LOCKED query with the reply's org and returns the one row's id", async () => {
+    const fetchMock = stubFetch({ json: { campaigns: [{ id: "aic-1", status: "ongoing" }] } });
+    const { findOngoingInstantCallCampaign } = await import("../../src/lib/campaign-client");
+    expect(await findOngoingInstantCallCampaign(PARAMS)).toBe("aic-1");
+    const [url, init] = fetchMock.mock.calls[0];
+    const parsed = new URL(url as string);
+    expect(parsed.origin + parsed.pathname).toBe("https://campaign.example/campaigns");
+    expect(Object.fromEntries(parsed.searchParams)).toEqual({
+      brandId: "brand-1",
+      offerId: "offer-1",
+      featureSlug: "ai-instant-call",
+      legKey: "conversation_to_booking_call",
+      status: "ongoing",
+    });
+    expect(init.headers).toEqual({ "x-api-key": "campaign-key", "x-org-id": "org-1" });
+  });
+
+  it("is null when no campaign is ongoing (off)", async () => {
+    stubFetch({ json: { campaigns: [] } });
+    const { findOngoingInstantCallCampaign } = await import("../../src/lib/campaign-client");
+    expect(await findOngoingInstantCallCampaign(PARAMS)).toBeNull();
+  });
+
+  it("throws on a non-2xx, never reads it as off", async () => {
+    stubFetch({ ok: false, status: 502, text: "bad gateway" });
+    const { findOngoingInstantCallCampaign } = await import("../../src/lib/campaign-client");
+    await expect(findOngoingInstantCallCampaign(PARAMS)).rejects.toThrow(/502/);
+  });
+
+  it("throws on a body with no campaigns array", async () => {
+    stubFetch({ json: {} });
+    const { findOngoingInstantCallCampaign } = await import("../../src/lib/campaign-client");
+    await expect(findOngoingInstantCallCampaign(PARAMS)).rejects.toThrow(/campaigns/);
   });
 });

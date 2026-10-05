@@ -82,19 +82,24 @@
  *
  * There is no quiet-hours window. The rep may be rung at any hour, by decision.
  *
- * ── THE CUSTOMER AUTHORIZES IT, PER OFFER ───────────────────────────────────────
+ * ── THE CUSTOMER TURNS IT ON, PER OFFER, AND IT HAS ITS OWN BUDGET ────────────
  *
- * The instant call is a published acquisition channel (`ai-instant-call`)
- * performing the leg Positive reply -> Booking call (`conversation_to_booking_call`).
- * It is REACTIVE: it runs whatever it costs, but only where the customer ticked
- * that leg on the offer's sales path (brand-service). Three answers:
- *   - the offer STATED a path containing the leg  → ring, as before;
- *   - the offer STATED a path without it          → no ring, reason logged + traced;
- *   - the offer NEVER stated a path (or the campaign names no offer) → ring, as
- *     before this gate existed, so nobody lost a call on the deploy.
- * A read that FAILS (campaign-service or brand-service) is logged loudly and
- * keeps the pre-gate behaviour: an outage must neither silently drop a call nor
- * silently change who gets rung.
+ * AI Instant Call is a real campaign in campaign-service (`ai-instant-call`, leg
+ * `conversation_to_booking_call`, no workflow): the customer turns it On or Off
+ * per offer, and billing caps it with that campaign's own "Up to $X/day". So:
+ *   - the reply's offer has an ONGOING AI Instant Call campaign → ring, and every
+ *     cost the call causes (the call itself, the phone reveal that lets it
+ *     connect) is attributed to THAT campaign, never to the cold-email campaign
+ *     that sent the email;
+ *   - no ongoing one (never created, stopped by the customer, stopped by a
+ *     payment hold) → no ring, the decision logged and traced;
+ *   - the sending campaign names no offer (or is a platform send) → no AI Instant
+ *     Call campaign can exist for it → no ring;
+ *   - a read that FAILS → no ring, logged loudly: an unbilled ring is untracked
+ *     spend.
+ * The offer's sales-path ticks in brand-service are no longer read here: ticking
+ * a path that uses the leg is what CREATES the campaign, and the campaign is the
+ * authority.
  */
 
 import { and, eq, isNull } from "drizzle-orm";
@@ -115,77 +120,105 @@ import { selectThreadMessages, type ThreadMessage } from "./forward-positive-rep
 import { stripQuotedHistory } from "./self-send/qualify-reply";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { fetchSelfSendThread } from "./self-send/thread";
-import { getOfferSalesPath, type OfferSalesPath } from "./brand-client";
-import { getCampaignTriggerScope } from "./campaign-client";
+import {
+  AI_INSTANT_CALL_LEG_KEY,
+  findOngoingInstantCallCampaign,
+  getCampaignTriggerScope,
+} from "./campaign-client";
 import { traceEvent } from "./trace-event";
 
-/** The leg the instant call performs — the one the customer must tick. */
-export const BOOKING_CALL_LEG_KEY = "conversation_to_booking_call";
+/** Why nobody is rung, when the AI Instant Call campaign says no. */
+type InstantCallRefusal = "no_offer" | "campaign_off";
 
-/**
- * Whether the offer's customer authorized the instant call.
- *
- * `not_stated` is NOT a refusal: an offer that never stated a sales path keeps
- * the behaviour that predates the path (ring when the brand has a rep number).
- */
-export type BookingCallAuthorization = "authorized" | "not_authorized" | "not_stated";
-
-export function bookingCallAuthorization(
-  path: OfferSalesPath | null,
-): BookingCallAuthorization {
-  if (!path || !path.stated) return "not_stated";
-  return path.legKeys?.includes(BOOKING_CALL_LEG_KEY) ? "authorized" : "not_authorized";
-}
-
-/**
- * Should this campaign's rep be rung? False ONLY when the offer stated a sales
- * path without the booking-call leg. Every other outcome — no caller campaign,
- * no offer, a path never stated, a read that failed — keeps the pre-gate
- * behaviour, and a failure says so loudly.
- */
-async function ringAuthorized(
+function traceNotRung(
   campaign: RingRepCampaign,
   orgId: string,
   leadEmail: string,
-): Promise<boolean> {
-  if (!campaign.campaignId) return true;
-  let offerId: string | null;
-  let authorization: BookingCallAuthorization;
+  offerId: string | null,
+  reason: InstantCallRefusal,
+  detail: string,
+): void {
+  if (!campaign.runId) return;
+  void traceEvent(
+    campaign.runId,
+    {
+      service: "instantly-service",
+      event: "instant-call-not-authorized",
+      detail,
+      data: { offerId, legKey: AI_INSTANT_CALL_LEG_KEY, leadEmail, reason },
+    },
+    {
+      "x-org-id": orgId,
+      ...(campaign.userId ? { "x-user-id": campaign.userId } : {}),
+      ...(campaign.campaignId ? { "x-campaign-id": campaign.campaignId } : {}),
+    },
+  );
+}
+
+/**
+ * The AI Instant Call campaign to ring under and bill to, or null for no ring.
+ *
+ * Null when the sending campaign names no offer, when the offer has no ongoing
+ * AI Instant Call campaign, and when either read FAILS (logged loudly). Every
+ * decision is logged on one `ring-rep: gate` line.
+ */
+async function resolveInstantCallCampaign(
+  campaign: RingRepCampaign,
+  orgId: string,
+  brandId: string,
+  leadEmail: string,
+): Promise<string | null> {
+  const where = `campaign=${campaign.instantlyCampaignId} lead=${leadEmail}`;
+  if (!campaign.campaignId) {
+    console.log(`[instantly-service] ring-rep: gate no-ring ${where} — platform send, no offer`);
+    traceNotRung(campaign, orgId, leadEmail, null, "no_offer", "platform send names no offer");
+    return null;
+  }
+
+  let offerId: string | null = null;
+  let instantCallCampaignId: string | null;
   try {
-    offerId = (await getCampaignTriggerScope(campaign.campaignId, orgId))?.offerId ?? null;
-    if (!offerId) return true;
-    authorization = bookingCallAuthorization(await getOfferSalesPath(offerId));
+    const scope = await getCampaignTriggerScope(campaign.campaignId, orgId);
+    offerId = scope?.offerId ?? null;
+    if (!offerId) {
+      console.log(
+        `[instantly-service] ring-rep: gate no-ring ${where} — campaign ${campaign.campaignId} names no offer`,
+      );
+      traceNotRung(campaign, orgId, leadEmail, null, "no_offer", "sending campaign names no offer");
+      return null;
+    }
+    instantCallCampaignId = await findOngoingInstantCallCampaign({
+      orgId,
+      brandId: scope?.brandId ?? brandId,
+      offerId,
+    });
   } catch (error: unknown) {
     console.error(
-      `[instantly-service] ring-rep: could not read whether the booking-call leg is authorized for ` +
-        `campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${describe(error)}; ` +
-        `keeping the pre-gate behaviour (ringing)`,
+      `[instantly-service] ring-rep: gate FAILED ${where} offer=${offerId ?? "unknown"} — ` +
+        `could not read whether AI Instant Call is on: ${describe(error)}; NOT ringing (an unbilled ring is untracked spend)`,
     );
-    return true;
+    return null;
   }
-  if (authorization !== "not_authorized") return true;
+
+  if (!instantCallCampaignId) {
+    console.log(
+      `[instantly-service] ring-rep: gate no-ring ${where} offer=${offerId} — no ongoing AI Instant Call campaign`,
+    );
+    traceNotRung(
+      campaign,
+      orgId,
+      leadEmail,
+      offerId,
+      "campaign_off",
+      `offer ${offerId} has no ongoing AI Instant Call campaign`,
+    );
+    return null;
+  }
 
   console.log(
-    `[instantly-service] ring-rep: not ringing for campaign=${campaign.instantlyCampaignId} ` +
-      `lead=${leadEmail} offer=${offerId} — the offer's sales path does not include ${BOOKING_CALL_LEG_KEY}`,
+    `[instantly-service] ring-rep: gate ring ${where} offer=${offerId} aicCampaign=${instantCallCampaignId}`,
   );
-  if (campaign.runId) {
-    void traceEvent(
-      campaign.runId,
-      {
-        service: "instantly-service",
-        event: "instant-call-not-authorized",
-        detail: `offer ${offerId} sales path does not include ${BOOKING_CALL_LEG_KEY}`,
-        data: { offerId, legKey: BOOKING_CALL_LEG_KEY, leadEmail },
-      },
-      {
-        "x-org-id": orgId,
-        ...(campaign.userId ? { "x-user-id": campaign.userId } : {}),
-        "x-campaign-id": campaign.campaignId,
-      },
-    );
-  }
-  return false;
+  return instantCallCampaignId;
 }
 
 /** How long we wait for Apollo to deliver the number before ringing anyway. */
@@ -504,9 +537,15 @@ export async function maybeRingRepOnSalesInterest(
   // A brand that stated no number wants no call. The common case, and not an error.
   if (!salesRepPhone) return;
 
-  // The customer must have authorized the booking-call leg for this offer
-  // (or never stated a path). Read before the claim, so a refusal claims nothing.
-  if (!(await ringAuthorized(campaign, campaign.orgId, leadEmail))) return;
+  // The offer's AI Instant Call campaign must be ON. Read before the claim, so a
+  // refusal claims nothing. Its id is what every cost of the call is billed to.
+  const instantCallCampaignId = await resolveInstantCallCampaign(
+    campaign,
+    campaign.orgId,
+    brandId,
+    leadEmail,
+  );
+  if (!instantCallCampaignId) return;
 
   // Claim BEFORE anything external: a losing caller (a retry, a re-poll, a
   // re-qualification) stops here having rung nobody.
@@ -557,7 +596,8 @@ export async function maybeRingRepOnSalesInterest(
             userId: campaign.userId,
             runId: campaign.runId,
             brandId,
-            campaignId: campaign.campaignId,
+            // The reveal exists only so the call can connect: billed with it.
+            campaignId: instantCallCampaignId,
           },
           deps,
         );
@@ -598,13 +638,13 @@ export async function maybeRingRepOnSalesInterest(
       ...(connectTo ? { connectTo } : {}),
       ...(campaign.runId ? { parentRunId: campaign.runId } : {}),
       brandId,
-      ...(campaign.campaignId ? { campaignId: campaign.campaignId } : {}),
+      campaignId: instantCallCampaignId,
     });
 
     console.log(
       `[instantly-service] ring-rep: called ${salesRepPhone} about campaign=${campaign.instantlyCampaignId} ` +
         `lead=${leadEmail} callId=${placed.callId} connectOffered=${placed.connectOffered} ` +
-        `priorMessages=${priorMessages.length} ` +
+        `aicCampaign=${instantCallCampaignId} priorMessages=${priorMessages.length} ` +
         `reveal=${reveal?.status ?? "not-requested"}${reveal?.doNotCall ? " (do-not-call)" : ""}`,
     );
   } catch (error: unknown) {
