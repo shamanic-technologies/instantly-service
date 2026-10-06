@@ -55,8 +55,14 @@ function campaign(id: string, status: string, over: Record<string, unknown> = {}
   };
 }
 
-function queued(instantlyCampaignId: string, campaignId: string, leadEmail: string, orgId = "org-1") {
-  return { instantlyCampaignId, campaignId, orgId, userId: null, runId: "run-1", leadEmail };
+function queued(
+  instantlyCampaignId: string,
+  campaignId: string,
+  leadEmail: string,
+  orgId = "org-1",
+  contacted = false,
+) {
+  return { instantlyCampaignId, campaignId, orgId, userId: null, runId: "run-1", leadEmail, contacted };
 }
 
 beforeEach(() => {
@@ -69,7 +75,7 @@ beforeEach(() => {
 
 describe("stoppedCampaignIds — campaign-service's status, family-aware", () => {
   it("a stopped campaign with no live sibling is stopped", () => {
-    expect(stoppedCampaignIds([campaign("a", "stopped")])).toEqual(new Set(["a"]));
+    expect(new Set(stoppedCampaignIds([campaign("a", "stopped")]).keys())).toEqual(new Set(["a"]));
   });
 
   it("a running campaign is never stopped", () => {
@@ -88,7 +94,7 @@ describe("stoppedCampaignIds — campaign-service's status, family-aware", () =>
       campaign("a", "stopped"),
       campaign("b", "ongoing", { legKey: "start_to_website_visit" }),
     ]);
-    expect(ids).toEqual(new Set(["a"]));
+    expect(new Set(ids.keys())).toEqual(new Set(["a"]));
   });
 
   it("a row stating too little to pool is judged on its own status", () => {
@@ -96,7 +102,7 @@ describe("stoppedCampaignIds — campaign-service's status, family-aware", () =>
       campaign("a", "stopped", { acquisitionChannel: null }),
       campaign("b", "ongoing", { acquisitionChannel: null }),
     ]);
-    expect(ids).toEqual(new Set(["a"]));
+    expect(new Set(ids.keys())).toEqual(new Set(["a"]));
   });
 });
 
@@ -202,6 +208,50 @@ describe("stopQueuedSequencesOfStoppedCampaigns", () => {
 
     expect(summary).toMatchObject({ stoppedInstantly: 1, stoppedSelfSend: 0, deferred: 1 });
     expect(notYetStopped).toEqual(new Set(["self:1"]));
+  });
+
+  // Owner rule 2026-10-06: "stopping a campaign SHOULD NOT pause the followups!!!"
+  describe("a customer stop keeps the follow-ups of leads already emailed", () => {
+    for (const stopReason of ["manual", null, undefined]) {
+      it(`stop_reason=${String(stopReason)}: a CONTACTED sequence keeps its follow-ups, a never-contacted one is stopped`, async () => {
+        mockListCampaignStatuses.mockResolvedValue([campaign("camp-stopped", "stopped", { stopReason })]);
+        mockExecute.mockResolvedValue({
+          rows: [
+            queued("self:emailed", "camp-stopped", "emailed@x.com", "org-1", true),
+            queued("019f9856-0000-4000-8000-000000000001", "camp-stopped", "emailed2@x.com", "org-1", true),
+            queued("self:new", "camp-stopped", "new@x.com", "org-1", false),
+          ],
+        });
+
+        const { summary, notYetStopped } = await stopQueuedSequencesOfStoppedCampaigns(CALLER);
+
+        expect(summary).toMatchObject({ keptFollowups: 2, stoppedSelfSend: 1, stoppedInstantly: 0, failed: 0 });
+        expect(mockCancelRemainingProvisions).toHaveBeenCalledTimes(1);
+        expect(mockCancelRemainingProvisions).toHaveBeenCalledWith(
+          expect.objectContaining({ instantlyCampaignId: "self:new" }),
+          "new@x.com",
+        );
+        expect(mockUpdateCampaignStatus).not.toHaveBeenCalled();
+        expect(notYetStopped.size).toBe(0);
+      });
+    }
+
+    for (const stopReason of ["org_teardown", "payment_declined", "no_payment_method"]) {
+      it(`stop_reason=${stopReason}: EVERY queued sequence is stopped, contacted or not`, async () => {
+        mockListCampaignStatuses.mockResolvedValue([campaign("camp-stopped", "stopped", { stopReason })]);
+        mockExecute.mockResolvedValue({
+          rows: [
+            queued("self:emailed", "camp-stopped", "emailed@x.com", "org-1", true),
+            queued("self:new", "camp-stopped", "new@x.com", "org-1", false),
+          ],
+        });
+
+        const { summary } = await stopQueuedSequencesOfStoppedCampaigns(CALLER);
+
+        expect(summary).toMatchObject({ keptFollowups: 0, stoppedSelfSend: 2 });
+        expect(mockCancelRemainingProvisions).toHaveBeenCalledTimes(2);
+      });
+    }
   });
 
   it("fails LOUD when campaign-service cannot be read (the dispatcher then sends nothing)", async () => {
