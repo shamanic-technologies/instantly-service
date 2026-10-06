@@ -315,6 +315,12 @@ async function fetchBrandCampaigns(
 export interface CampaignStatusRow extends CampaignIdentityRow {
   /** campaign-service's own vocabulary: `ongoing` | `stopped`. Read verbatim. */
   status: string;
+  /**
+   * WHY it stopped, campaign-service's closed vocabulary (`manual` |
+   * `org_teardown` | `payment_declined` | `no_payment_method`), null when it
+   * never stopped or predates the column. Read verbatim.
+   */
+  stopReason?: string | null;
 }
 
 /**

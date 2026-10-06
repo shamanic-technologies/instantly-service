@@ -14,6 +14,7 @@ import { refundStrandedHolds } from "../lib/refund-stranded-holds";
 import { backfillStopOnClick } from "../lib/stop-on-click-backfill";
 import { actualizeOrphanedSends } from "../lib/actualize-orphaned-sends";
 import { reconcileProvisionedHolds } from "../lib/reconcile-provisioned-holds";
+import { restoreStoppedFollowups } from "../lib/restore-stopped-followups";
 
 const router = Router();
 
@@ -286,6 +287,52 @@ router.post("/reconcile-provisioned-holds", async (req: Request, res: Response) 
   reconcileProvisionedHolds({ dryRun: false, limit }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[instantly-service] reconcile-provisioned-holds run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/campaigns/restore-stopped-followups
+ * Re-queue the follow-ups the stopped-campaign sweep cut on a customer stop
+ * (2026-10-02 → 2026-10-06), for the campaign ids the caller names (an
+ * owner-approved list; nothing here picks campaigns). Normal cost path: fresh
+ * provisioned holds billed to the org, one authorize per lead, Instantly
+ * campaign resumed. See `lib/restore-stopped-followups.ts`.
+ *
+ * Body: `{ campaignIds: string[] (required), dryRun?: boolean (default true), limit?: number }`.
+ *   - dryRun (default) → the plan per campaign, synchronously.
+ *   - dryRun:false → 202 + background; log `restore-stopped-followups: done`.
+ */
+router.post("/restore-stopped-followups", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { campaignIds?: unknown; dryRun?: unknown; limit?: unknown };
+  const campaignIds = Array.isArray(body.campaignIds)
+    ? body.campaignIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+    : [];
+  if (campaignIds.length === 0) {
+    return res.status(400).json({ error: "campaignIds (non-empty string[]) is required" });
+  }
+  const dryRun = body.dryRun !== false;
+  const limit =
+    typeof body.limit === "number" && body.limit > 0 ? Math.floor(body.limit) : undefined;
+  const caller = { method: req.method, path: req.path };
+
+  if (dryRun) {
+    try {
+      return res.status(200).json(await restoreStoppedFollowups({ campaignIds, dryRun, limit, caller }));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[instantly-service] restore-stopped-followups dry-run failed: ${message}`);
+      return res.status(500).json({ error: message });
+    }
+  }
+
+  const runId = randomUUID();
+  console.log(
+    `[instantly-service] restore-stopped-followups: dispatched run=${runId} campaigns=${campaignIds.join(",")} limit=${limit ?? "all"}`,
+  );
+  res.status(202).json({ runId, dryRun: false, campaignIds, limit: limit ?? null });
+  restoreStoppedFollowups({ campaignIds, dryRun, limit, caller }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] restore-stopped-followups run=${runId} failed: ${message}`);
   });
 });
 

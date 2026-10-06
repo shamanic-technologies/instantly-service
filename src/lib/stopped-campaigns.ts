@@ -1,20 +1,31 @@
 /**
- * A campaign the customer stopped sends nothing more — on either transport,
- * including the steps already queued.
+ * What a stopped campaign stops: NEW first emails always; the queued follow-ups
+ * only when the org cannot go on (torn down, or billing cannot charge it).
  *
- * ⚠️ campaign-service OWNS whether a campaign is running. A customer stop, an
- * org teardown (`org_teardown`) and a billing hold (`payment_declined`,
- * `no_payment_method`) all land there as `status: "stopped"` and are pushed to
- * nobody. Our send queue (`provisioned` holds) outlives the campaign by up to a
- * sequence length, and the dispatcher reads only local state, so before this
- * every queued followup of a stopped campaign kept going out. Prod 2026-10-02:
- * 3,905 queued sequences on 16 stopped campaigns, and a torn-down throwaway org
- * whose first emails left three minutes after the teardown.
+ * ⚠️ OWNER RULE (2026-10-06, verbatim): "stopping a campaign SHOULD NOT pause
+ * the followups!!!" A customer stop (`stop_reason` `manual`, or none) means no
+ * new prospect is emailed. A lead we ALREADY emailed keeps receiving the
+ * sequence they were promised, on its own schedule, billed as before. The
+ * first version of this sweep (2026-10-02) cut every queued step of every
+ * stopped campaign; ~3,800 contacted leads lost their follow-ups, and a resume
+ * restored none of them (`restore-stopped-followups.ts` put them back).
  *
- * So the queue ASKS the owner, once per dispatch tick, BEFORE selecting
- * (`runDispatch`). One `GET /campaigns/list` answers for the whole fleet. Every
- * local sequence still holding a provisioned step under a stopped campaign is
- * stopped here:
+ * campaign-service OWNS whether a campaign is running, and why it stopped
+ * (`stop_reason`, its closed vocabulary in campaign-service `stop-reason.ts`).
+ * It pushes the status to nobody; our send queue (`provisioned` holds) outlives
+ * the campaign by up to a sequence length, and the dispatcher reads only local
+ * state. So the queue ASKS the owner, once per dispatch tick, BEFORE selecting
+ * (`runDispatch`). One `GET /campaigns/list` answers for the whole fleet.
+ *
+ * Which queued sequences of a stopped campaign are stopped here:
+ *   - stop reason in {@link CUT_ALL_STOP_REASONS} (`org_teardown`,
+ *     `payment_declined`, `no_payment_method`): EVERY queued sequence. The org
+ *     is gone or cannot pay. Prod 2026-10-02: a torn-down throwaway org's first
+ *     emails left three minutes after the teardown.
+ *   - any other reason (`manual`, null): ONLY a sequence that never sent a real
+ *     email (its first email is a NEW first email). A contacted lead is left
+ *     alone and its follow-ups go out.
+ * Stopping one:
  *   - self-send (`self:`): `stopSelfSendSequence` — holds cancelled (refund),
  *     row marked `paused`, out of the dispatcher's reach.
  *   - Instantly: the per-lead Instantly campaign is PAUSED first (that is what
@@ -52,7 +63,7 @@ import { stopSelfSendSequence } from "./self-send/stop-sequence";
  * its identity key is `stopped` too; a row stating too little to pool is judged
  * on its own status alone.
  */
-export function stoppedCampaignIds(rows: CampaignStatusRow[]): Set<string> {
+export function stoppedCampaignIds(rows: CampaignStatusRow[]): Map<string, string | null> {
   const liveFamilies = new Set<string>();
   for (const row of rows) {
     if (row.status === "stopped") continue;
@@ -60,14 +71,31 @@ export function stoppedCampaignIds(rows: CampaignStatusRow[]): Set<string> {
     if (key !== null) liveFamilies.add(key);
   }
 
-  const stopped = new Set<string>();
+  const stopped = new Map<string, string | null>();
   for (const row of rows) {
     if (!row.id || row.status !== "stopped") continue;
     const key = identityKeyOf(row);
     if (key !== null && liveFamilies.has(key)) continue;
-    stopped.add(row.id);
+    stopped.set(row.id, row.stopReason ?? null);
   }
   return stopped;
+}
+
+/**
+ * The stop reasons that cut a campaign's ALREADY-STARTED sequences too: the org
+ * is torn down, or billing cannot charge it. Every other stop (a person's
+ * `manual` decision, or no reason) stops only NEW first emails — owner rule
+ * 2026-10-06. campaign-service owns the vocabulary; read verbatim.
+ */
+export const CUT_ALL_STOP_REASONS: ReadonlySet<string> = new Set([
+  "org_teardown",
+  "payment_declined",
+  "no_payment_method",
+]);
+
+/** Whether a stop with this reason cuts a sequence that already emailed its lead. */
+export function stopCutsStartedSequences(stopReason: string | null): boolean {
+  return stopReason !== null && CUT_ALL_STOP_REASONS.has(stopReason);
 }
 
 /** One local sequence still holding a provisioned step. */
@@ -78,6 +106,8 @@ export interface QueuedSequence {
   userId: string | null;
   runId: string | null;
   leadEmail: string;
+  /** A real (`inferred=false`) email has been sent to this lead on this sequence. */
+  contacted: boolean;
 }
 
 /**
@@ -93,6 +123,8 @@ export interface StoppedCampaignSweepSummary {
   /** Sequences of a stopped campaign left for a later tick (limit reached or failed). */
   deferred: number;
   queuedSequences: number;
+  /** Contacted sequences of a customer-stopped campaign, left to send their follow-ups. */
+  keptFollowups: number;
   /** Queued sequences whose campaign id campaign-service does not know (left running). */
   unknownCampaign: number;
   stoppedSelfSend: number;
@@ -117,7 +149,18 @@ async function loadQueuedSequences(): Promise<QueuedSequence[]> {
            c.org_id                AS "orgId",
            c.user_id               AS "userId",
            c.run_id                AS "runId",
-           c.lead_email            AS "leadEmail"
+           c.lead_email            AS "leadEmail",
+           EXISTS (
+             SELECT 1 FROM instantly_events e
+             WHERE e.campaign_id = c.instantly_campaign_id
+               AND e.event_type = 'email_sent'
+               AND e.inferred = false
+           ) OR EXISTS (
+             SELECT 1 FROM sequence_costs sa
+             WHERE sa.status = 'actual'
+               AND sa.lead_email = c.lead_email
+               AND sa.instantly_campaign_id = c.instantly_campaign_id
+           )                       AS "contacted"
     FROM instantly_campaigns c
     WHERE c.status = 'active'
       AND c.campaign_id IS NOT NULL
@@ -164,6 +207,7 @@ export async function stopQueuedSequencesOfStoppedCampaigns(
     campaignsRead: campaigns.length,
     deferred: 0,
     queuedSequences: queued.length,
+    keptFollowups: 0,
     unknownCampaign: 0,
     stoppedSelfSend: 0,
     stoppedInstantly: 0,
@@ -172,8 +216,17 @@ export async function stopQueuedSequencesOfStoppedCampaigns(
 
   const targets: QueuedSequence[] = [];
   for (const seq of queued) {
-    if (!known.has(seq.campaignId)) summary.unknownCampaign += 1;
-    else if (stopped.has(seq.campaignId)) targets.push(seq);
+    if (!known.has(seq.campaignId)) {
+      summary.unknownCampaign += 1;
+      continue;
+    }
+    if (!stopped.has(seq.campaignId)) continue;
+    // A customer stop never cuts a lead we already emailed: their follow-ups go out.
+    if (seq.contacted && !stopCutsStartedSequences(stopped.get(seq.campaignId) ?? null)) {
+      summary.keptFollowups += 1;
+      continue;
+    }
+    targets.push(seq);
   }
 
   // Instantly first: a self-send sequence left over is held back by the
@@ -188,7 +241,7 @@ export async function stopQueuedSequencesOfStoppedCampaigns(
   summary.deferred = notYetStopped.size;
 
   for (const seq of targets.slice(0, limit)) {
-    const reason = `campaign ${seq.campaignId} stopped in campaign-service`;
+    const reason = `campaign ${seq.campaignId} stopped in campaign-service (${stopped.get(seq.campaignId) ?? "no reason"})`;
     try {
       if (isSelfSendCampaignId(seq.instantlyCampaignId)) {
         await stopSelfSendSequence(seq, seq.leadEmail, reason);
