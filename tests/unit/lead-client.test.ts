@@ -28,6 +28,57 @@ const RESPONSE = {
   email: "prospect@example.com",
 };
 
+describe("recordFollowupActByEmail", () => {
+  it("POSTs the held campaign's path with the acting campaign and ring run in headers", async () => {
+    const answer = {
+      outcome: "recorded",
+      leadCampaignId: "lc-1",
+      leadId: "lead-1",
+      email: "prospect@example.com",
+    };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 201, json: async () => answer });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { recordFollowupActByEmail } = await import("../../src/lib/lead-client");
+    const result = await recordFollowupActByEmail({
+      orgId: "org-1",
+      heldByCampaignId: "send-camp",
+      actingCampaignId: "aic-camp",
+      runId: "ring-run",
+      email: "prospect@example.com",
+    });
+
+    expect(result).toEqual(answer);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://lead.example/orgs/campaigns/send-camp/followup-actions/by-email");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({
+      "x-api-key": "lead-key",
+      "x-org-id": "org-1",
+      "x-campaign-id": "aic-camp",
+      "x-run-id": "ring-run",
+    });
+    expect(JSON.parse(String(init.body))).toEqual({ email: "prospect@example.com" });
+  });
+
+  it("throws with the status and the refusal body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 404, text: async () => '{"code":"lead_not_found"}' }),
+    );
+    const { recordFollowupActByEmail } = await import("../../src/lib/lead-client");
+    await expect(
+      recordFollowupActByEmail({
+        orgId: "org-1",
+        heldByCampaignId: "send-camp",
+        actingCampaignId: "aic-camp",
+        runId: "ring-run",
+        email: "p@example.com",
+      }),
+    ).rejects.toThrow(/404.*lead_not_found/);
+  });
+});
+
 describe("scheduleFollowupByEmail", () => {
   it("POSTs the deployed path with the org identity, and returns the debt", async () => {
     const fetchMock = vi.fn().mockResolvedValue({

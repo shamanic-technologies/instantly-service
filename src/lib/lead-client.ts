@@ -350,3 +350,71 @@ export async function readFollowupState(params: {
   const body = (await response.json()) as { followup?: ScheduledFollowup["followup"] };
   return body.followup ?? null;
 }
+
+/** What lead-service answers when an act on a held person is recorded. */
+export interface RecordedFollowupAct {
+  outcome: "recorded" | "already_recorded";
+  leadCampaignId: string;
+  leadId: string;
+  email: string;
+}
+
+/** How long the act record may take before it is abandoned. It never blocks a ring. */
+export const RECORD_ACT_TIMEOUT_MS = 15_000;
+
+/**
+ * Tell lead-service that ANOTHER campaign acted on a person this campaign holds.
+ *
+ * The AI Instant Call campaign rings the rep about a prospect who replied to a
+ * cold-email campaign. lead-service's per-acting-campaign conversation counts
+ * read its follow-up ledger, which only queue claims ever wrote, so a placed
+ * ring read as "0 handed" on the AI Instant Call campaign. This is the write.
+ *
+ * - `heldByCampaignId` (path) = the SENDING campaign the prospect replied to,
+ *   the same id the ring's lead lookup is scoped to.
+ * - `actingCampaignId` (`x-campaign-id`) = the AI Instant Call campaign.
+ * - `runId` (`x-run-id`) = the ring's ROOT run: one ring is one act, and a
+ *   retry under the same run is a no-op on lead-service's side
+ *   (`already_recorded`).
+ *
+ * FAILS LOUD on any non-2xx (404 `lead_not_found`, 409 `ambiguous_lead`, 400
+ * `acting_campaign_required` / `run_required`) with lead-service's body, so the
+ * caller logs WHY. No retry: the caller records once and moves on.
+ */
+export async function recordFollowupActByEmail(params: {
+  orgId: string;
+  heldByCampaignId: string;
+  actingCampaignId: string;
+  runId: string;
+  email: string;
+  userId?: string | null;
+  brandId?: string | null;
+}): Promise<RecordedFollowupAct> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+  const response = await fetch(
+    `${LEAD_SERVICE_URL}/orgs/campaigns/${encodeURIComponent(params.heldByCampaignId)}/followup-actions/by-email`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": LEAD_SERVICE_API_KEY,
+        "x-org-id": params.orgId,
+        "x-campaign-id": params.actingCampaignId,
+        "x-run-id": params.runId,
+        ...(params.userId ? { "x-user-id": params.userId } : {}),
+        ...(params.brandId ? { "x-brand-id": params.brandId } : {}),
+      },
+      body: JSON.stringify({ email: params.email }),
+      signal: AbortSignal.timeout(RECORD_ACT_TIMEOUT_MS),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(
+      `lead-service POST /orgs/campaigns/{campaignId}/followup-actions/by-email failed: ${response.status} - ${detail.slice(0, 200)}`,
+    );
+  }
+  return (await response.json()) as RecordedFollowupAct;
+}

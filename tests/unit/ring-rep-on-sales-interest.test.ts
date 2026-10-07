@@ -51,7 +51,9 @@ vi.mock("../../src/lib/trace-event", () => ({
 vi.mock("../../src/lib/lead-client", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
   findLeadOnCampaignByEmail: (...a: unknown[]) => mockFindLead(...a),
+  recordFollowupActByEmail: (...a: unknown[]) => mockRecordAct(...a),
 }));
+const mockRecordAct = vi.fn();
 
 vi.mock("../../src/lib/apollo-client", () => ({
   requestPhoneReveal: (...a: unknown[]) => mockRequestReveal(...a),
@@ -187,6 +189,70 @@ beforeEach(() => {
   mockTraceEvent.mockResolvedValue(undefined);
   mockCreateRun.mockResolvedValue({ id: "ring-run-1" });
   mockUpdateRun.mockResolvedValue({ id: "ring-run-1" });
+  mockRecordAct.mockResolvedValue({
+    outcome: "recorded",
+    leadCampaignId: "lc-1",
+    leadId: "lead-1",
+    email: "prospect@example.com",
+  });
+});
+
+describe("a placed ring is recorded on lead-service as the AI Instant Call campaign's act", () => {
+  it("records once: held = sending campaign, acting = AI Instant Call campaign, run = ring root run, email = prospect", async () => {
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+
+    expect(mockPlaceCall).toHaveBeenCalledTimes(1);
+    expect(mockRecordAct).toHaveBeenCalledTimes(1);
+    expect(mockRecordAct.mock.calls[0][0]).toMatchObject({
+      orgId: "org-1",
+      heldByCampaignId: "camp-1",
+      actingCampaignId: "aic-camp-1",
+      runId: "ring-run-1",
+      email: "prospect@example.com",
+    });
+    // Recorded AFTER the call was placed, never before.
+    expect(mockRecordAct.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockPlaceCall.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("does NOT record when placement failed (claim released)", async () => {
+    mockPlaceCall.mockRejectedValue(new Error("twilio 502"));
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockRecordAct).not.toHaveBeenCalled();
+    expect(updates.some((u) => u.salesInterestCallAt === null)).toBe(true);
+  });
+
+  it("does NOT record when the gate says no ring", async () => {
+    mockFindInstantCall.mockResolvedValue(null);
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockPlaceCall).not.toHaveBeenCalled();
+    expect(mockRecordAct).not.toHaveBeenCalled();
+  });
+
+  it("a record failure does not throw, keeps the claim, is logged loudly and traced on the ring run", async () => {
+    mockRecordAct.mockRejectedValue(new Error("lead-service 409 - {\"code\":\"ambiguous_lead\"}"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested"),
+    ).resolves.toBeUndefined();
+
+    expect(mockRecordAct).toHaveBeenCalledTimes(1);
+    // The call rang: its claim is never released by a record failure.
+    expect(updates.some((u) => u.salesInterestCallAt === null)).toBe(false);
+    const logged = errorSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).toMatch(/act NOT recorded/);
+    expect(logged).toContain("held=camp-1");
+    expect(logged).toContain("aicCampaign=aic-camp-1");
+    expect(logged).toContain("ringRun=ring-run-1");
+    expect(logged).toContain("ambiguous_lead");
+    const trace = mockTraceEvent.mock.calls.find(
+      (c) => (c[1] as { event: string }).event === "instant-call-act-not-recorded",
+    );
+    expect(trace?.[0]).toBe("ring-run-1");
+    errorSpy.mockRestore();
+  });
 });
 
 describe("the ring's run identity (runs-service refuses a child naming another campaign)", () => {
