@@ -100,6 +100,17 @@
  * The offer's sales-path ticks in brand-service are no longer read here: ticking
  * a path that uses the leg is what CREATES the campaign, and the campaign is the
  * authority.
+ *
+ * ── THE RING HAS ITS OWN ROOT RUN ─────────────────────────────────────────────
+ *
+ * runs-service makes a child run INHERIT its parent's campaign and refuses a
+ * child naming another one (409 "Parent-child field conflict"). The reply's run
+ * belongs to the cold-email campaign, so a reveal or a call parented on it while
+ * naming the AI Instant Call campaign is refused: from v0.83.9 every ring died
+ * that way (no call placed fleet-wide 2026-10-01 → 2026-10-07). So the ring opens
+ * a ROOT run (`instantly-service` / `ai-instant-call`) carrying the AI Instant
+ * Call campaign and brand, and the reveal and the call are its children. The
+ * link back to the reply's run is a trace on that run, never a parent edge.
  */
 
 import { and, eq, isNull } from "drizzle-orm";
@@ -126,6 +137,11 @@ import {
   getCampaignTriggerScope,
 } from "./campaign-client";
 import { traceEvent } from "./trace-event";
+import { createRun, updateRun, type IdentityContext } from "./runs-client";
+
+/** The ring's own root run: what the reveal and the call are children of. */
+export const RING_RUN_SERVICE_NAME = "instantly-service";
+export const RING_RUN_TASK_NAME = "ai-instant-call";
 
 /** Why nobody is rung, when the AI Instant Call campaign says no. */
 type InstantCallRefusal = "no_offer" | "campaign_off";
@@ -561,7 +577,40 @@ export async function maybeRingRepOnSalesInterest(
   }
   if (!claimed) return;
 
+  // Every spend below runs under the AI Instant Call campaign, so it needs a run
+  // of that campaign: a ROOT run, because a child of the reply's run would
+  // inherit the cold-email campaign (see THE RING HAS ITS OWN ROOT RUN).
+  const ringIdentity: IdentityContext = {
+    orgId: campaign.orgId,
+    userId: campaign.userId ?? "",
+    tracking: { campaignId: instantCallCampaignId, brandId },
+  };
+  let ringRunId: string | null = null;
+
   try {
+    ringRunId = (
+      await createRun(
+        { serviceName: RING_RUN_SERVICE_NAME, taskName: RING_RUN_TASK_NAME },
+        ringIdentity,
+      )
+    ).id;
+    if (campaign.runId) {
+      void traceEvent(
+        campaign.runId,
+        {
+          service: "instantly-service",
+          event: "instant-call-ringing",
+          detail: `ringing the sales rep under AI Instant Call campaign ${instantCallCampaignId}`,
+          data: { ringRunId, instantCallCampaignId, leadEmail },
+        },
+        {
+          "x-org-id": campaign.orgId,
+          ...(campaign.userId ? { "x-user-id": campaign.userId } : {}),
+          ...(campaign.campaignId ? { "x-campaign-id": campaign.campaignId } : {}),
+        },
+      );
+    }
+
     // Who they are, and Apollo's id for them. Best effort by design: a rep is
     // rung about an unidentified buyer rather than not rung at all.
     let lead: LeadForCall | null = null;
@@ -587,14 +636,14 @@ export async function maybeRingRepOnSalesInterest(
     // failed, a wait that ran out, a do-not-call flag — ends the same way: the
     // call happens and says we have no number.
     let reveal: PhoneReveal | null = null;
-    if (lead?.apolloPersonId && campaign.userId && campaign.runId) {
+    if (lead?.apolloPersonId && campaign.userId) {
       try {
         reveal = await revealPhoneWithinBudget(
           lead.apolloPersonId,
           {
             orgId: campaign.orgId,
             userId: campaign.userId,
-            runId: campaign.runId,
+            runId: ringRunId,
             brandId,
             // The reveal exists only so the call can connect: billed with it.
             campaignId: instantCallCampaignId,
@@ -636,18 +685,26 @@ export async function maybeRingRepOnSalesInterest(
       reply: buildCallReply(leadEmail, lead, replyText),
       ...(priorMessages.length > 0 ? { priorMessages } : {}),
       ...(connectTo ? { connectTo } : {}),
-      ...(campaign.runId ? { parentRunId: campaign.runId } : {}),
+      parentRunId: ringRunId,
       brandId,
       campaignId: instantCallCampaignId,
+    });
+    await updateRun(ringRunId, "completed", ringIdentity).catch((error: unknown) => {
+      console.warn(
+        `[instantly-service] ring-rep: call placed but ring run ${ringRunId} not closed — ${describe(error)}`,
+      );
     });
 
     console.log(
       `[instantly-service] ring-rep: called ${salesRepPhone} about campaign=${campaign.instantlyCampaignId} ` +
         `lead=${leadEmail} callId=${placed.callId} connectOffered=${placed.connectOffered} ` +
-        `aicCampaign=${instantCallCampaignId} priorMessages=${priorMessages.length} ` +
+        `aicCampaign=${instantCallCampaignId} ringRun=${ringRunId} priorMessages=${priorMessages.length} ` +
         `reveal=${reveal?.status ?? "not-requested"}${reveal?.doNotCall ? " (do-not-call)" : ""}`,
     );
   } catch (error: unknown) {
+    if (ringRunId) {
+      await updateRun(ringRunId, "failed", ringIdentity, describe(error)).catch(() => {});
+    }
     await releaseCall(campaign.instantlyCampaignId).catch(() => {});
     console.warn(
       `[instantly-service] ring-rep: no call placed for campaign=${campaign.instantlyCampaignId} ` +

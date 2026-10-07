@@ -58,6 +58,13 @@ vi.mock("../../src/lib/apollo-client", () => ({
   readPhoneReveal: (...a: unknown[]) => mockReadReveal(...a),
 }));
 
+const mockCreateRun = vi.fn();
+const mockUpdateRun = vi.fn();
+vi.mock("../../src/lib/runs-client", () => ({
+  createRun: (...a: unknown[]) => mockCreateRun(...a),
+  updateRun: (...a: unknown[]) => mockUpdateRun(...a),
+}));
+
 vi.mock("../../src/lib/twilio-client", () => ({
   placeCall: (...a: unknown[]) => mockPlaceCall(...a),
 }));
@@ -178,6 +185,69 @@ beforeEach(() => {
   mockGetCampaignScope.mockResolvedValue({ brandId: "brand-1", offerId: "offer-1" });
   mockFindInstantCall.mockResolvedValue("aic-camp-1");
   mockTraceEvent.mockResolvedValue(undefined);
+  mockCreateRun.mockResolvedValue({ id: "ring-run-1" });
+  mockUpdateRun.mockResolvedValue({ id: "ring-run-1" });
+});
+
+describe("the ring's run identity (runs-service refuses a child naming another campaign)", () => {
+  it("opens a ROOT run under the AI Instant Call campaign — never a child of the reply's run", async () => {
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+
+    expect(mockCreateRun).toHaveBeenCalledTimes(1);
+    const [params, identity] = mockCreateRun.mock.calls[0];
+    expect(params).toEqual({ serviceName: "instantly-service", taskName: "ai-instant-call" });
+    expect(identity).toEqual({
+      orgId: "org-1",
+      userId: "user-1",
+      tracking: { campaignId: "aic-camp-1", brandId: "brand-1" },
+    });
+    // No x-run-id: the cold-email run would be the parent and its campaign would conflict.
+    expect(identity.runId).toBeUndefined();
+  });
+
+  it("parents the phone reveal AND the call on the ring run, both naming the AI Instant Call campaign", async () => {
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+
+    expect(mockRequestReveal.mock.calls[0][1]).toEqual({
+      orgId: "org-1",
+      userId: "user-1",
+      runId: "ring-run-1",
+      brandId: "brand-1",
+      campaignId: "aic-camp-1",
+    });
+    const call = mockPlaceCall.mock.calls[0][0];
+    expect(call.parentRunId).toBe("ring-run-1");
+    expect(call.campaignId).toBe("aic-camp-1");
+    expect(call.brandId).toBe("brand-1");
+    expect(call.parentRunId).not.toBe(CAMPAIGN.runId);
+    expect(mockUpdateRun).toHaveBeenCalledWith("ring-run-1", "completed", expect.anything());
+  });
+
+  it("still rings a send with no reply run (the ring run is its own root)", async () => {
+    await maybeRingRepOnSalesInterest(
+      { ...CAMPAIGN, runId: null },
+      "prospect@example.com",
+      "lead_interested",
+    );
+    expect(mockRequestReveal.mock.calls[0][1].runId).toBe("ring-run-1");
+    expect(mockPlaceCall.mock.calls[0][0].parentRunId).toBe("ring-run-1");
+  });
+
+  it("places nothing and releases the claim when the ring run cannot be opened", async () => {
+    mockCreateRun.mockRejectedValue(new Error("runs-service POST /v1/runs failed: 500"));
+
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+
+    expect(mockRequestReveal).not.toHaveBeenCalled();
+    expect(mockPlaceCall).not.toHaveBeenCalled();
+    expect(updates[updates.length - 1].salesInterestCallAt).toBeNull();
+  });
+
+  it("fails the ring run when the call could not be placed", async () => {
+    mockPlaceCall.mockRejectedValue(new Error("twilio 502"));
+    await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", "lead_interested");
+    expect(mockUpdateRun).toHaveBeenCalledWith("ring-run-1", "failed", expect.anything(), "twilio 502");
+  });
 });
 
 describe("the offer's AI Instant Call campaign is the gate and the bill", () => {
@@ -291,6 +361,8 @@ describe("the gate", () => {
       mockFetchMirrored.mockResolvedValue(MIRRORED_RECORDS);
       mockGetCampaignScope.mockResolvedValue({ brandId: "brand-1", offerId: "offer-1" });
       mockFindInstantCall.mockResolvedValue("aic-camp-1");
+      mockCreateRun.mockResolvedValue({ id: "ring-run-1" });
+      mockUpdateRun.mockResolvedValue({ id: "ring-run-1" });
 
       await maybeRingRepOnSalesInterest(CAMPAIGN, "prospect@example.com", kind);
 
@@ -351,7 +423,8 @@ describe("the call", () => {
     });
     expect(body.brandId).toBe("brand-1");
     expect(body.campaignId).toBe("aic-camp-1");
-    expect(body.parentRunId).toBe("run-1");
+    // The ring's own root run, never the reply's (runs-service 409s the mismatch).
+    expect(body.parentRunId).toBe("ring-run-1");
   });
 
   it("still happens, WITHOUT a connect number, when Apollo has none", async () => {
