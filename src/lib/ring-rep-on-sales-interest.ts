@@ -123,7 +123,11 @@ import {
   type PhoneReveal,
   type RevealIdentity,
 } from "./apollo-client";
-import { findLeadOnCampaignByEmail, type LeadForCall } from "./lead-client";
+import {
+  findLeadOnCampaignByEmail,
+  recordFollowupActByEmail,
+  type LeadForCall,
+} from "./lead-client";
 import { placeCall, type CallReply, type PriorMessage } from "./twilio-client";
 import { isSalesInterestQualification } from "./trigger-sales-interest-campaign";
 import { fetchMirroredEmailRecords } from "./mirror-emails";
@@ -710,6 +714,85 @@ export async function maybeRingRepOnSalesInterest(
       `[instantly-service] ring-rep: no call placed for campaign=${campaign.instantlyCampaignId} ` +
         `lead=${leadEmail} — ${describe(error)}; claim released, will retry on the next positive signal`,
     );
+    return;
+  }
+
+  // The call is PLACED (twilio-service accepted it). Only now is the act a fact,
+  // and only now is it told to lead-service. Outside the try above on purpose:
+  // nothing here may release the claim of a call that already rang.
+  if (campaign.campaignId && ringRunId) {
+    await recordRingAct({
+      orgId: campaign.orgId,
+      userId: campaign.userId,
+      brandId,
+      sendingCampaignId: campaign.campaignId,
+      instantCallCampaignId,
+      ringRunId,
+      leadEmail,
+    });
+  }
+}
+
+/**
+ * Record on lead-service that the AI Instant Call campaign acted on this person,
+ * so its conversation counts show them as handed to it.
+ *
+ * NEVER THROWS and never retries: the call has already rung. A failure is
+ * logged loudly with campaign, lead and run, and traced on the ring run, so a
+ * dashboard reading 0 handed has its reason one click away.
+ */
+async function recordRingAct(params: {
+  orgId: string;
+  userId: string | null;
+  brandId: string;
+  sendingCampaignId: string;
+  instantCallCampaignId: string;
+  ringRunId: string;
+  leadEmail: string;
+}): Promise<void> {
+  const traceHeaders = {
+    "x-org-id": params.orgId,
+    ...(params.userId ? { "x-user-id": params.userId } : {}),
+    "x-campaign-id": params.instantCallCampaignId,
+    "x-brand-id": params.brandId,
+  };
+  try {
+    const recorded = await recordFollowupActByEmail({
+      orgId: params.orgId,
+      heldByCampaignId: params.sendingCampaignId,
+      actingCampaignId: params.instantCallCampaignId,
+      runId: params.ringRunId,
+      email: params.leadEmail,
+      userId: params.userId,
+      brandId: params.brandId,
+    });
+    console.log(
+      `[instantly-service] ring-rep: act recorded (${recorded.outcome}) held=${params.sendingCampaignId} ` +
+        `aicCampaign=${params.instantCallCampaignId} lead=${params.leadEmail} ringRun=${params.ringRunId}`,
+    );
+  } catch (error: unknown) {
+    console.error(
+      `[instantly-service] ring-rep: call placed but act NOT recorded on lead-service held=${params.sendingCampaignId} ` +
+        `aicCampaign=${params.instantCallCampaignId} lead=${params.leadEmail} ringRun=${params.ringRunId} — ` +
+        `${describe(error)}; the AI Instant Call conversation counts will miss this person`,
+    );
+    void Promise.resolve(
+      traceEvent(
+        params.ringRunId,
+        {
+          service: "instantly-service",
+          event: "instant-call-act-not-recorded",
+          level: "error",
+          detail: `lead-service did not record the act: ${describe(error)}`,
+          data: {
+            heldByCampaignId: params.sendingCampaignId,
+            instantCallCampaignId: params.instantCallCampaignId,
+            leadEmail: params.leadEmail,
+          },
+        },
+        traceHeaders,
+      ),
+    ).catch(() => {});
   }
 }
 
