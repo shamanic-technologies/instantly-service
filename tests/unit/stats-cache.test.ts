@@ -109,8 +109,11 @@ describe("stats-cache", () => {
       expect(getCachedStats("k")).toBeUndefined();
     });
 
-    it("refreshes half-way through the default TTL", () => {
-      expect(STATS_REFRESH_AFTER_MS).toBe(STATS_CACHE_TTL_MS / 2);
+    it("refreshes late in the TTL (45 s of 60 s), not half-way: the refresh point is the recompute period of a polled key", () => {
+      expect(STATS_REFRESH_AFTER_MS).toBe(45_000);
+      expect(STATS_CACHE_TTL_MS).toBe(60_000);
+      // The reload still gets a lead time well above the 4-5 s observed load.
+      expect(STATS_CACHE_TTL_MS - STATS_REFRESH_AFTER_MS).toBeGreaterThanOrEqual(15_000);
     });
   });
 });

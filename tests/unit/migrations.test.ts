@@ -36,3 +36,18 @@ describe("drizzle migration journal", () => {
     });
   });
 });
+
+describe("instantly_emails_raw per-mailbox index (migration 0065)", () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, "..", "..", rel), "utf-8");
+
+  it("indexes the exact expression the per-mailbox readers filter on", () => {
+    const migration = read("drizzle/0065_emails_raw_eaccount_idx.sql");
+    expect(migration).toContain(
+      "CREATE INDEX IF NOT EXISTS instantly_emails_raw_eaccount_idx\n  ON instantly_emails_raw ((payload->>'eaccount'));",
+    );
+    // Without it, every IMAP poll and inbox-watcher arrival seq-scanned the
+    // whole bronze table (~0.9 s of 3 workers each on prod, 2026-10-08).
+    expect(read("src/lib/self-send/imap-poller.ts")).toContain("m.payload->>'eaccount' = ${accountEmail}");
+    expect(read("src/lib/self-send/orphan-reply-sweep.ts")).toContain("payload->>'eaccount' = ${accountEmail}");
+  });
+});
