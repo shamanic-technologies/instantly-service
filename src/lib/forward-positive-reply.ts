@@ -125,8 +125,50 @@ export interface ThreadMessage {
  * single newline per `</p>` made every sent email read as one dense block.
  * `</div>` stays single on purpose: mail clients (Gmail) write one `<div>` per
  * LINE, so doubling it would space out every line of a prospect's reply.
+ *
+ * ⚠️ A `<blockquote>` comes out as `> `-prefixed lines (one `>` per nesting
+ * level), the plain-text quoting every client uses. Without the prefix the
+ * quoted thread reads as the prospect's own words, and `stripQuotedHistory`
+ * cannot tell where a quote ENDS, so a bottom-posted answer below it ("STOP!")
+ * was cut away with the quote.
  */
 export function htmlToText(html: string): string {
+  return quoteBlockquotes(flattenHtml(
+    html
+      .replace(/<\s*blockquote\b[^>]*>/gi, `\n${QUOTE_OPEN}\n`)
+      .replace(/<\s*\/\s*blockquote\s*>/gi, `\n${QUOTE_CLOSE}\n`),
+  ));
+}
+
+const QUOTE_OPEN = "\u0001";
+const QUOTE_CLOSE = "\u0002";
+
+/** Prefix the lines between the blockquote sentinels; drop the sentinels. */
+function quoteBlockquotes(text: string): string {
+  if (!text.includes(QUOTE_OPEN)) return text;
+  let depth = 0;
+  const out: string[] = [];
+  // Blank lines touching a quote boundary are the markup's own spacing.
+  let afterBoundary = false;
+  const atBoundary = () => {
+    while (out.length && /^[> ]*$/.test(out[out.length - 1])) out.pop();
+    afterBoundary = true;
+  };
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === QUOTE_OPEN) { atBoundary(); depth += 1; continue; }
+    if (trimmed === QUOTE_CLOSE) { atBoundary(); depth = Math.max(0, depth - 1); continue; }
+    if (afterBoundary && !trimmed) continue;
+    afterBoundary = false;
+    out.push(depth > 0 ? `${"> ".repeat(depth)}${line}`.trimEnd() : line);
+  }
+  return out
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function flattenHtml(html: string): string {
   return html
     .replace(/<\s*(style|script)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, "")
     .replace(/<\s*br\s*\/?\s*>/gi, "\n")

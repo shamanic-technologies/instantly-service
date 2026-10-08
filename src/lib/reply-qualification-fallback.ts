@@ -29,6 +29,7 @@ import { maybeMirrorCampaignEmails } from "./mirror-emails";
 import { fetchLatestMirroredInbound } from "./reply-opt-out";
 import { promoteEvent } from "./silver-promote";
 import { QUALIFICATION_EVENT_TYPES, qualifyReply } from "./self-send/qualify-reply";
+import { alertUnclassifiedReply } from "./unclassified-reply-alert";
 
 /**
  * How long Instantly gets to speak before we classify the reply ourselves.
@@ -217,7 +218,8 @@ export async function selectUnqualifiedReplies(
 /** What one reply's classification attempt produced. */
 export type QualifyOutcome =
   | { classified: true; eventType: string }
-  | { classified: false; reason: "no_body" | "unqualified" };
+  | { classified: false; reason: "no_body" }
+  | { classified: false; reason: "unqualified"; bodyText: string };
 
 /**
  * Classify one waiting reply and promote the kind.
@@ -254,7 +256,7 @@ export async function qualifyOneReply(reply: UnqualifiedReply): Promise<QualifyO
     source: "qualification_fallback",
     subject: inbound.subject,
   });
-  if (kind === null) return { classified: false, reason: "unqualified" };
+  if (kind === null) return { classified: false, reason: "unqualified", bodyText: inbound.text };
 
   await promoteEvent({
     eventType: kind,
@@ -289,6 +291,8 @@ export interface QualificationFallbackSummary {
   noBody: number;
   unqualified: number;
   failed: number;
+  /** Replies still unclassified past the alert delay, told to the agency inbox this tick. */
+  alerted: number;
 }
 
 /**
@@ -310,6 +314,7 @@ export async function runReplyQualificationFallback(
     noBody: 0,
     unqualified: 0,
     failed: 0,
+    alerted: 0,
   };
 
   for (const reply of candidates) {
@@ -320,10 +325,32 @@ export async function runReplyQualificationFallback(
         console.log(
           `[instantly-service] qualification-fallback: classified ${outcome.eventType} — lead=${reply.leadEmail} campaign=${reply.instantlyCampaignId} (Instantly emitted no verdict)`,
         );
-      } else if (outcome.reason === "no_body") {
-        summary.noBody += 1;
       } else {
-        summary.unqualified += 1;
+        if (outcome.reason === "no_body") summary.noBody += 1;
+        else summary.unqualified += 1;
+        // Giving up silently is how a "STOP!" sat unrecorded for a week: a reply
+        // still without a kind an hour in is told to a person, once.
+        try {
+          const alert = await alertUnclassifiedReply(
+            {
+              ...reply,
+              reason: outcome.reason,
+              bodyText: outcome.reason === "unqualified" ? outcome.bodyText : null,
+            },
+            opts.asOf,
+          );
+          if (alert === "sent") {
+            summary.alerted += 1;
+            console.warn(
+              `[instantly-service] qualification-fallback: reply still unclassified (${outcome.reason}), agency inbox told — lead=${reply.leadEmail} campaign=${reply.instantlyCampaignId}`,
+            );
+          }
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `[instantly-service] qualification-fallback: unclassified-reply alert NOT delivered lead=${reply.leadEmail} campaign=${reply.instantlyCampaignId}: ${message}`,
+          );
+        }
       }
     } catch (error: unknown) {
       summary.failed += 1;

@@ -1,0 +1,13 @@
+/**
+ * The reply that went unclassified for a week (prod 2026-10-01, ie:01a0f7ba-…):
+ * BOTTOM-POSTED. Attribution, our whole thread `>`-quoted (incl. both retired
+ * footers), THEN the prospect's "STOP!" and their signature. Verbatim from
+ * `instantly_emails_raw.payload.body.text`.
+ */
+export const BOTTOM_POSTED_STOP_REPLY = "On 2026-10-01 08:03, Naomi Martin wrote:\n\n> I know how busy things get running a clinic office, so I'll make this > my last note.\n> > The team caps their onboarding at five new clinics a month to maintain > quality, so I wanted to check if you had any interest before they lock > in their Tulsa partner.\n> > If it's not a priority for Peace Chiropractic Clinic right now, totally > understand. Just let me know if you ever want that intro.\n> > --\n> > Naomi Martin\n> Distribute.you | Marketing Agency\n> > Not relevant? Reply \"stop\" and I won't email you again.\n> > On Thu, September 24, 2026 1:01 PM, Naomi Martin > <naomi@axionmilestone.com> wrote:\n> > Just floating this to the top of your inbox.\n> > One thing I should add is that this team actually guarantees patient > acquisition. They recently shared a campaign where a clinic booked 14 > appointments right on the spot at the dinner.\n> > They waive their marketing service fee for the first event so you can > see the system work firsthand.\n> > Worth a brief chat to see the mechanics?\n> > --\n> > Naomi Martin\n> Distribute.you | Marketing Agency\n> > Not relevant? Reply \"stop\" and I won't email you again.\n> On Mon, September 21, 2026 1:08 PM, Naomi Martin > <naomi@axionmilestone.com> wrote:\n> > Pamela,\n> > I work with a team that builds done-for-you educational dinner events > specifically for chiropractic clinics. They handle the heavy > lifting--venue booking, targeted ads, RSVP management, and the > follow-up sequences.\n> > They've got this dialed in to the point where clinics are consistently > securing 17 to 23 new patients per event. They only partner with one > practice per local market area to make sure events never compete.\n> > Since they're looking for a partner in Tulsa, I wanted to reach out. > Open to a quick intro to them to see if it's a fit for Peace > Chiropractic Clinic?\n> > --\n> > Naomi Martin\n> Distribute.you | Marketing Agency\n> > Don't want to hear from me again? unsubscribe\n\nSTOP!\n\n-- \nPeace Chiropractic Clinic\n4134 South Harvard Avenue Suite B2\nTulsa, OK 74135\nP: (918) 747-2717\nF: (918) 747-2718\n\nwww.peacechiro.com [1]\n\n\n\nLinks:\n------\n[1] http://www.peacechiro.com\n";
+
+/** The same thread with the prospect's words removed: nothing but OUR quoted mail. */
+export const ONLY_OUR_QUOTED_THREAD = BOTTOM_POSTED_STOP_REPLY.slice(
+  0,
+  BOTTOM_POSTED_STOP_REPLY.indexOf("\n\nSTOP!"),
+);
