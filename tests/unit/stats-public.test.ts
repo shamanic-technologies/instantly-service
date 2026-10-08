@@ -289,6 +289,29 @@ describe("GET /stats", () => {
 
 });
 
+describe("GET /stats cache key and timezone", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValue({ rows: [] });
+    clearStatsCache();
+  });
+
+  it("shares the fleet read across timezones unless groupBy=day", async () => {
+    const app = await createPublicStatsApp();
+    await request(app).get("/stats").query({ featureSlugs: "f", groupBy: "workflowSlug", timezone: "Europe/Paris" });
+    const afterFirst = mockExecute.mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(0);
+    await request(app).get("/stats").query({ featureSlugs: "f", groupBy: "workflowSlug", timezone: "Asia/Tokyo" });
+    expect(mockExecute.mock.calls.length).toBe(afterFirst);
+
+    await request(app).get("/stats").query({ featureSlugs: "f", groupBy: "day", timezone: "Europe/Paris" });
+    const afterDay = mockExecute.mock.calls.length;
+    await request(app).get("/stats").query({ featureSlugs: "f", groupBy: "day", timezone: "Asia/Tokyo" });
+    expect(mockExecute.mock.calls.length).toBeGreaterThan(afterDay);
+  });
+});
+
 describe("GET /stats/engagement-latency", () => {
   beforeEach(() => {
     vi.clearAllMocks();

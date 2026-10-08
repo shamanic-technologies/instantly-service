@@ -1324,6 +1324,21 @@ export async function computeStatsPayload(
 }
 
 /**
+ * The timezone part of a GET /stats (and /public/stats) cache key.
+ *
+ * Only `groupBy=day` reads the zone (`localDayKey`); every other read emits SQL
+ * with no zone in it at all, so two requests that differ only by `timezone`
+ * compute byte-identical answers. Keeping the zone in their key made each
+ * spelling its own entry, its own aggregation and its own 45 s refresh-ahead
+ * cycle on the heaviest instantly-service query: a caller that sends its zone on
+ * every read (harmless to the answer) split one computation per zone. The day
+ * key keeps the (canonicalized) zone: it changes the buckets.
+ */
+export function timezoneCacheKeyPart(groupBy: string | undefined, timezone: string): string | undefined {
+  return groupBy === "day" ? timezone : undefined;
+}
+
+/**
  * GET /stats
  * Aggregated stats from webhook events. Filters via query params; runIds comma-separated.
  */
@@ -1379,7 +1394,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     workflowSlugs,
     featureSlugs,
     groupBy,
-    timezone,
+    timezone: timezoneCacheKeyPart(groupBy, timezone),
   });
   try {
     const payload = await getOrSetCachedStats(cacheKey, async () => {
