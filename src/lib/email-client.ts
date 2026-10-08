@@ -17,6 +17,8 @@ export interface TemplateItem {
   messageStream?: string;
   /** "brand" wraps a fragment in the distribute.you layout; "none" sends it as registered. */
   layout?: "brand" | "none";
+  /** "transactional": person-to-person delivery (no unsubscribe header/footer). Omitted = stored value. */
+  stream?: "broadcast" | "transactional";
 }
 
 interface DeployTemplatesParams {

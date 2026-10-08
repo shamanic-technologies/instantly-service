@@ -8,7 +8,12 @@
  * to the prospect, or forward the thread as is) MUST be `"none"`: wrapped, the
  * answer-request reached the client as a branded newsletter (owner 2026-10-08).
  * Omitting `layout` on an existing template keeps whatever is stored, so the
- * value is always stated here. Guard: tests/unit/email-templates.test.ts.
+ * value is always stated here.
+ *
+ * `stream: "transactional"`: delivered person-to-person (Postmark transactional
+ * stream, no List-Unsubscribe header, no unsubscribe footer, no sign-off), for
+ * a template the client answers with Reply or forwards as is. Omitted = the
+ * stored value (default broadcast). Guard: tests/unit/email-templates.test.ts.
  */
 
 import type { TemplateItem } from "./email-client";
@@ -38,6 +43,7 @@ export const EMAIL_TEMPLATES: TemplateItem[] = [
       // email (not monospace) and is robust to the engine's escaping.
       name: "positive-reply-forward",
       layout: "none",
+      stream: "transactional",
       subject: "{{subject}}",
       htmlBody:
         '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{thread}}</pre>',
@@ -61,6 +67,7 @@ export const EMAIL_TEMPLATES: TemplateItem[] = [
       // with Reply, never as a branded newsletter.
       name: "positive-reply-answer-request",
       layout: "none",
+      stream: "transactional",
       subject: "{{subject}}",
       htmlBody: "{{html}}",
       textBody: "{{text}}",
