@@ -44,6 +44,12 @@ interface SendEmailParams {
    * to it: the agency inbox watching a celebration sent to the client's rep.
    */
   bccEmails?: string[];
+  /**
+   * The Reply-To of the email. Absent = the service default (the founder).
+   * The "answer it yourself" email names the PROSPECT here, so the client's
+   * Reply addresses them.
+   */
+  replyToEmail?: string;
   metadata?: Record<string, string>;
 }
 

@@ -11,6 +11,9 @@
  * Fails LOUD on a non-2xx: the caller (the client email) decides what a missing
  * id means for its link, and it must know an unreachable client-service from an
  * org that has no Clerk id. Do not grow this into a general org mirror.
+ *
+ * Second read: `listOrgMembers`, who to tell when a reply needs the client
+ * (lib/ask-client-to-answer).
  */
 
 export async function getExternalOrgId(orgId: string): Promise<string | null> {
@@ -33,4 +36,43 @@ export async function getExternalOrgId(orgId: string): Promise<string | null> {
   const body = (await response.json()) as { externalId?: string | null };
   const externalId = typeof body.externalId === "string" ? body.externalId.trim() : "";
   return externalId || null;
+}
+
+/** A person of the client org we can email. */
+export interface OrgMember {
+  email: string;
+  firstName: string | null;
+}
+
+/**
+ * The org's members with an email address, oldest first. Membership is
+ * client-service's own reading (`GET /internal/users?orgId=`, the same rows its
+ * member check reads). Rows without an address are dropped. Fails LOUD.
+ */
+export async function listOrgMembers(orgId: string): Promise<OrgMember[]> {
+  const url = process.env.CLIENT_SERVICE_URL;
+  const apiKey = process.env.CLIENT_SERVICE_API_KEY;
+  if (!url || !apiKey) {
+    throw new Error("CLIENT_SERVICE_URL or CLIENT_SERVICE_API_KEY is not set");
+  }
+
+  const response = await fetch(`${url}/internal/users?orgId=${encodeURIComponent(orgId)}`, {
+    headers: { "x-api-key": apiKey },
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`client-service GET /internal/users failed: ${response.status} - ${detail.slice(0, 200)}`);
+  }
+  const body = (await response.json()) as { users?: Array<{ email?: unknown; firstName?: unknown }> };
+  if (!Array.isArray(body.users)) throw new Error("client-service GET /internal/users returned no `users` array");
+  const seen = new Set<string>();
+  const members: OrgMember[] = [];
+  for (const u of body.users) {
+    const email = typeof u.email === "string" ? u.email.trim() : "";
+    if (!email || seen.has(email.toLowerCase())) continue;
+    seen.add(email.toLowerCase());
+    const firstName = typeof u.firstName === "string" && u.firstName.trim() ? u.firstName.trim() : null;
+    members.push({ email, firstName });
+  }
+  return members;
 }
