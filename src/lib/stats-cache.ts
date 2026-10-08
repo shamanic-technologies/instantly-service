@@ -33,11 +33,25 @@ const inFlight = new Map<string, Promise<unknown>>();
 export const STATS_CACHE_TTL_MS = DEFAULT_TTL_MS;
 
 /**
- * Refresh-ahead point for the polled GET /stats reads: half the TTL, so a
- * background reload (seconds on the busy box) lands well before the entry
- * expires and a page polling every 5 s never meets a cold key.
+ * Lead time the background reload gets before the entry expires. A fleet
+ * /public/stats reload measured 4-5 s on the saturated box (2026-10-08), so 15 s
+ * is three times the worst observed load.
  */
-export const STATS_REFRESH_AFTER_MS = DEFAULT_TTL_MS / 2;
+export const STATS_REFRESH_LEAD_MS = 15_000;
+
+/**
+ * Refresh-ahead point for the polled GET /stats reads: TTL minus the lead time
+ * (45 s), so the background reload still lands before the entry expires and a
+ * page polling every 5 s never meets a cold key.
+ *
+ * ⚠️ NOT half the TTL (v0.83.15 shipped TTL/2): every hit at or past this age
+ * starts a reload, so for a key polled faster than this point the recompute
+ * period IS this point. TTL/2 recomputed every steadily polled key every ~30 s,
+ * twice the pre-refresh-ahead rate, on a Postgres already burning most of the
+ * box. Readers gain nothing from the earlier reload: no answer is ever older
+ * than the 60 s TTL either way.
+ */
+export const STATS_REFRESH_AFTER_MS = DEFAULT_TTL_MS - STATS_REFRESH_LEAD_MS;
 
 /**
  * Build a deterministic cache key from a prefix + the validated query object.

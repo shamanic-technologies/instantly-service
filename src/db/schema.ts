@@ -854,6 +854,11 @@ export const instantlyEmailsRaw = pgTable(
   (table) => [
     uniqueIndex("instantly_emails_raw_email_id_idx").on(table.instantlyEmailId),
     index("instantly_emails_raw_campaign_id_idx").on(table.instantlyCampaignId),
+    // NOTE: a hand-written EXPRESSION index on `(payload->>'eaccount')` exists
+    // in migration 0065 (drizzle has no expression-index form). It serves the
+    // per-mailbox reads in self-send (`loadKnownSends`, `loadMailboxLeads`),
+    // which otherwise seq-scan this table on every IMAP poll. Do NOT drop it on
+    // a `db:generate` diff.
   ],
 );
 
