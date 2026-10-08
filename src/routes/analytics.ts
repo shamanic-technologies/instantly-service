@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
 import { StatsQuerySchema, GroupedStatsRequestSchema } from "../schemas";
-import { statsCacheKey, getOrSetCachedStats } from "../lib/stats-cache";
+import { statsCacheKey, getOrSetCachedStats, STATS_CACHE_TTL_MS, STATS_REFRESH_AFTER_MS } from "../lib/stats-cache";
 import { canonicalIanaTimezone, unrecognizedTimezoneFromError } from "../lib/timezone";
 
 const router = Router();
@@ -451,24 +451,36 @@ export async function queryGroupedCampaignAggregates(
  * own step did not bounce, a RECIPIENT when they have no bounce at all (which
  * is exactly what `rsSent − rsBounced` meant whenever both sat in one bucket).
  *
- * The subqueries carry no bind, so interpolating them several times in one
+ * The bounce sets are LEFT JOINed once per statement (`BOUNCE_JOINS`, placed
+ * right after the FROM/JOIN that defines `e`), not probed per send row: a
+ * correlated `EXISTS` inside an aggregate FILTER cannot be decorrelated by the
+ * planner, so the fleet-wide read ran it 2 x 169k times (~1M buffer hits, 4-17 s
+ * on the box, 2026-10-08). The joined sets are DISTINCT on their keys, so they
+ * never multiply a row; a NULL key (e.g. `e.step` NULL) matches nothing, exactly
+ * like the old `b.step = e.step`. Same figures, byte for byte.
+ *
+ * The fragments carry no bind, so interpolating them several times in one
  * statement is safe — unlike `groupCol`, whose re-emission broke this file
  * twice.
  */
-const BOUNCED_STEP = sql`EXISTS (
-          SELECT 1 FROM instantly_events b
-          WHERE b.campaign_id = e.campaign_id
-            AND b.lead_email = e.lead_email
-            AND b.step = e.step
-            AND b.event_type = 'email_bounced'
-        )`;
+const BOUNCE_JOINS = sql`
+      LEFT JOIN (
+        SELECT DISTINCT campaign_id, lead_email, step FROM instantly_events
+        WHERE event_type = 'email_bounced'
+      ) bounced_step
+        ON bounced_step.campaign_id = e.campaign_id
+       AND bounced_step.lead_email = e.lead_email
+       AND bounced_step.step = e.step
+      LEFT JOIN (
+        SELECT DISTINCT campaign_id, lead_email FROM instantly_events
+        WHERE event_type = 'email_bounced'
+      ) bounced_lead
+        ON bounced_lead.campaign_id = e.campaign_id
+       AND bounced_lead.lead_email = e.lead_email`;
 
-const BOUNCED_LEAD = sql`EXISTS (
-          SELECT 1 FROM instantly_events b
-          WHERE b.campaign_id = e.campaign_id
-            AND b.lead_email = e.lead_email
-            AND b.event_type = 'email_bounced'
-        )`;
+const BOUNCED_STEP = sql`(bounced_step.campaign_id IS NOT NULL)`;
+
+const BOUNCED_LEAD = sql`(bounced_lead.campaign_id IS NOT NULL)`;
 
 /** The two `delivered` counts, for a SELECT list using the esX / rsX names. */
 const DELIVERED_AGGREGATES = sql`
@@ -855,6 +867,7 @@ export async function queryGroupedStats(
         COALESCE(COUNT(DISTINCT e.lead_email) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rsUnsubscribed",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
       FROM grouped_events e
+      ${BOUNCE_JOINS}
       WHERE e.group_key IS NOT NULL
       GROUP BY e.group_key
       ORDER BY e.group_key
@@ -876,6 +889,7 @@ export async function queryGroupedStats(
       FROM instantly_events e
       JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
       ${lateralJoin}
+      ${BOUNCE_JOINS}
       WHERE ${whereClause}
         AND ${internalExclusionClause()}
         AND ${groupCol} IS NOT NULL
@@ -1004,6 +1018,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
       FROM instantly_events e
       JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+      ${BOUNCE_JOINS}
       WHERE ${whereClause}
         AND ${internalExclusionClause()}
     `),
@@ -1232,6 +1247,7 @@ export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'lead_unsubscribed'), 0)::int AS "rdUnsubscribe"
       FROM instantly_events e
       JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+      ${BOUNCE_JOINS}
       WHERE ${whereClause}
         AND ${internalExclusionClause()}
         AND e.step IS NOT NULL
@@ -1372,7 +1388,7 @@ router.get("/stats", async (req: Request, res: Response) => {
         return { groups };
       }
       return computeStatsPayload(whereClause);
-    });
+    }, STATS_CACHE_TTL_MS, { refreshAfterMs: STATS_REFRESH_AFTER_MS });
     return res.json(payload);
   } catch (error: any) {
     const msg = error.cause?.message ?? error.message ?? String(error);
