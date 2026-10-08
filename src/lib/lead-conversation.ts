@@ -58,6 +58,9 @@
  * Declares NO cost and sends nothing — it is a read of what already happened.
  */
 
+import { sql } from "drizzle-orm";
+
+import { db } from "../db";
 import {
   selectThreadMessages,
   type ThreadMessage,
@@ -161,7 +164,41 @@ export interface ConversationMessage {
   campaignId: string;
   /** That row's Instantly (or `self:`) sequence id. */
   instantlyCampaignId: string;
+  /**
+   * WHICH `email_sent` outreach fact this message is (`GET
+   * /internal/outreach-facts`), so a consumer pairs message and fact by
+   * identity, never by comparing their clocks — see `loadSendFactIndex`.
+   * Null on every inbound message, and on an outbound one no served fact
+   * recorded (a manual answer, a send the event stream never saw, or a send
+   * younger than the feed's next emission tick).
+   */
+  outreachFact: ConversationSendFact | null;
 }
+
+/** The served `email_sent` fact an outbound message is, in the feed's own words. */
+export interface ConversationSendFact {
+  /** The fact's `subjectKey`, byte for byte — the id lead-service keeps for it. */
+  subjectKey: string;
+  /** The fact's step (1 = first email). Null where the feed serves none (poll-only sends). */
+  step: number | null;
+  /** The fact's position: always set, by step or by order. */
+  position: "first" | "followup";
+}
+
+/**
+ * The served `email_sent` facts of one lead's sequences, keyed by the stored
+ * copy each one recorded: Instantly's email id (webhook `email_id`, or the
+ * mirror row a poll event was promoted from) or our own dispatch row id.
+ */
+export interface SendFactIndex {
+  byInstantlyEmailId: Map<string, ConversationSendFact>;
+  byDispatchId: Map<string, ConversationSendFact>;
+}
+
+const EMPTY_SEND_FACTS: SendFactIndex = {
+  byInstantlyEmailId: new Map(),
+  byDispatchId: new Map(),
+};
 
 /** One stored campaign row that contributed to the exchange. */
 export interface ConversationSequence {
@@ -218,6 +255,7 @@ export interface LeadConversation {
 function toConversationMessage(
   m: ThreadMessage,
   sequence: CampaignRow,
+  facts: SendFactIndex,
 ): ConversationMessage {
   return {
     direction: m.direction,
@@ -228,7 +266,94 @@ function toConversationMessage(
     text: m.bodyText,
     campaignId: sequence.campaignId,
     instantlyCampaignId: sequence.instantlyCampaignId,
+    outreachFact: sendFactOf(m, facts),
   };
+}
+
+/** The fact this message IS, by its stored copy's id. Inbound never is one. */
+function sendFactOf(
+  m: ThreadMessage,
+  facts: SendFactIndex,
+): ConversationSendFact | null {
+  if (m.direction !== "outbound" || !m.sourceRef) return null;
+  const { instantlyEmailId, dispatchId } = m.sourceRef;
+  return (
+    (instantlyEmailId ? facts.byInstantlyEmailId.get(instantlyEmailId) : undefined) ??
+    (dispatchId ? facts.byDispatchId.get(dispatchId) : undefined) ??
+    null
+  );
+}
+
+/**
+ * Every served `email_sent` fact of this lead on these sequences, indexed by
+ * the stored copy of the email it recorded.
+ *
+ * ⚠️ IDENTITY, NEVER TIME. The fact is stamped with the EVENT's time (the
+ * webhook's), the message with the EMAIL's own time, and the two routinely sit
+ * a minute apart (measured: 13:05:44 vs 13:06:45 for one step-1 send), so a
+ * consumer pairing them by clock pairs nothing — or, with a window, pairs two
+ * close emails wrongly. Each event already names its email:
+ *  - webhook: `raw_payload.email_id` = Instantly's email id (every webhook
+ *    send in prod carries one);
+ *  - poll:    `source_row_id` = the `instantly_emails_raw` row it came from;
+ *  - self-send: `source_row_id` = our `smtp_dispatch_raw` row.
+ * Read from the SERVED facts (not raw events) so the subject key handed out is
+ * one lead-service holds: an unstepped poll copy of a webhook send is never a
+ * fact, and the webhook fact claims the email instead.
+ *
+ * Fail loud: an unreadable index would silently strip every pairing.
+ */
+export async function loadSendFactIndex(
+  leadEmail: string,
+  instantlyCampaignIds: string[],
+): Promise<SendFactIndex> {
+  if (instantlyCampaignIds.length === 0) return EMPTY_SEND_FACTS;
+  let rows: Record<string, unknown>[];
+  try {
+    const result = await db.execute(sql`
+      SELECT f.subject_key AS "subjectKey",
+             f.payload->>'step' AS "step",
+             f.payload->>'position' AS "position",
+             COALESCE(e.raw_payload->>'email_id', r.instantly_email_id) AS "instantlyEmailId",
+             CASE WHEN e.source = 'self_send' THEN e.source_row_id END AS "dispatchId"
+      FROM outreach_facts f
+      JOIN instantly_events e ON e.id = substr(f.subject_key, 6)
+      LEFT JOIN instantly_emails_raw r ON e.source = 'poll_emails' AND r.id = e.source_row_id
+      WHERE f.type = 'email_sent'
+        AND f.subject_key LIKE 'ievt:%'
+        AND lower(f.lead_email) = ${leadEmail.trim().toLowerCase()}
+        AND f.instantly_campaign_id = ANY(${sql.param(instantlyCampaignIds)}::text[])
+      ORDER BY f.seq
+    `);
+    rows = (result as { rows: Record<string, unknown>[] }).rows;
+  } catch (error: unknown) {
+    throw new LeadConversationError(
+      "thread_unavailable",
+      502,
+      `Could not read the send facts for ${leadEmail}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  const index: SendFactIndex = { byInstantlyEmailId: new Map(), byDispatchId: new Map() };
+  for (const row of rows) {
+    const fact: ConversationSendFact = {
+      subjectKey: String(row.subjectKey),
+      step: row.step == null ? null : Number(row.step),
+      position: row.position === "followup" ? "followup" : "first",
+    };
+    // First served fact wins: the feed emits one per event, oldest first.
+    const emailId = row.instantlyEmailId;
+    if (typeof emailId === "string" && emailId && !index.byInstantlyEmailId.has(emailId)) {
+      index.byInstantlyEmailId.set(emailId, fact);
+    }
+    const dispatchId = row.dispatchId;
+    if (typeof dispatchId === "string" && dispatchId && !index.byDispatchId.has(dispatchId)) {
+      index.byDispatchId.set(dispatchId, fact);
+    }
+  }
+  return index;
 }
 
 /**
@@ -242,13 +367,14 @@ function toConversationMessage(
  */
 export function mergeConversationMessages(
   threads: { sequence: CampaignRow; messages: ThreadMessage[] }[],
+  facts: SendFactIndex = EMPTY_SEND_FACTS,
 ): ConversationMessage[] {
   const entries = threads.flatMap(({ sequence, messages }, sequenceIndex) =>
     messages.map((m, messageIndex) => ({
       sequenceIndex,
       messageIndex,
       time: Date.parse(m.date),
-      message: toConversationMessage(m, sequence),
+      message: toConversationMessage(m, sequence, facts),
     })),
   );
 
@@ -504,8 +630,13 @@ export async function fetchLeadConversation(
     }),
   );
 
+  const facts = await loadSendFactIndex(
+    input.leadEmail,
+    sequences.map((s) => s.instantlyCampaignId),
+  );
   const messages = mergeConversationMessages(
     threads.map(({ sequence, thread }) => ({ sequence, messages: thread })),
+    facts,
   );
 
   // The asked row still describes itself, so a single-row campaign answers byte

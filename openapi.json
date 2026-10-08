@@ -2004,6 +2004,35 @@
           "instantlyCampaignId": {
             "type": "string",
             "description": "That row's sequence id"
+          },
+          "outreachFact": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "subjectKey": {
+                "type": "string",
+                "description": "The `subjectKey` of the `email_sent` fact in GET /internal/outreach-facts, byte for byte (`ievt:<event id>`)."
+              },
+              "step": {
+                "type": "integer",
+                "nullable": true,
+                "description": "That fact's step (1 = first email). Null where the feed serves none (poll-only sends)."
+              },
+              "position": {
+                "type": "string",
+                "enum": [
+                  "first",
+                  "followup"
+                ],
+                "description": "That fact's position: first email or a follow-up."
+              }
+            },
+            "required": [
+              "subjectKey",
+              "step",
+              "position"
+            ],
+            "description": "WHICH served `email_sent` outreach fact this outbound message is, tied by the stored email's identity (never by time). Null on every inbound message, and on an outbound one no served fact recorded (a manual answer, a send the event stream never saw, a send younger than the feed's ~2 min emission tick)."
           }
         },
         "required": [
@@ -2014,7 +2043,8 @@
           "subject",
           "text",
           "campaignId",
-          "instantlyCampaignId"
+          "instantlyCampaignId",
+          "outreachFact"
         ]
       },
       "ConversationSequence": {

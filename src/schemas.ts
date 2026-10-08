@@ -1661,6 +1661,26 @@ const ConversationMessageSchema = z
       .string()
       .describe("The stored campaign row this message was exchanged under"),
     instantlyCampaignId: z.string().describe("That row's sequence id"),
+    outreachFact: z
+      .object({
+        subjectKey: z
+          .string()
+          .describe(
+            "The `subjectKey` of the `email_sent` fact in GET /internal/outreach-facts, byte for byte (`ievt:<event id>`).",
+          ),
+        step: z
+          .number()
+          .int()
+          .nullable()
+          .describe("That fact's step (1 = first email). Null where the feed serves none (poll-only sends)."),
+        position: z
+          .enum(["first", "followup"])
+          .describe("That fact's position: first email or a follow-up."),
+      })
+      .nullable()
+      .describe(
+        "WHICH served `email_sent` outreach fact this outbound message is, tied by the stored email's identity (never by time). Null on every inbound message, and on an outbound one no served fact recorded (a manual answer, a send the event stream never saw, a send younger than the feed's ~2 min emission tick).",
+      ),
   })
   .openapi("ConversationMessage");
 
