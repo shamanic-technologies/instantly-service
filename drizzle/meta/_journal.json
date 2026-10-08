@@ -477,6 +477,13 @@
       "when": 1791100000000,
       "tag": "0067_outreach_facts",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1791200000000,
+      "tag": "0068_client_answer_requested",
+      "breakpoints": true
     }
   ]
 }
