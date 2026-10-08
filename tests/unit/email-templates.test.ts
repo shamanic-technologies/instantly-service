@@ -22,6 +22,12 @@ describe("registered email templates", () => {
     }
   });
 
+  it("the answer-request and the forwardable thread go person-to-person (no unsubscribe)", () => {
+    for (const n of ["positive-reply-answer-request", "positive-reply-forward"]) {
+      expect(EMAIL_TEMPLATES.find((t) => t.name === n)?.stream, n).toBe("transactional");
+    }
+  });
+
   it("names are unique", () => {
     const names = EMAIL_TEMPLATES.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
