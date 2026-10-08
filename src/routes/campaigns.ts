@@ -336,4 +336,46 @@ router.post("/restore-stopped-followups", async (req: Request, res: Response) =>
   });
 });
 
+/**
+ * POST /campaigns/ask-client-to-answer — staff, by hand, ONE thread.
+ * Body `{ instantlyCampaignId, leadEmail }`. Runs the same decision as the live
+ * path (lib/ask-client-to-answer): nothing is sent when a responder runs on the
+ * brand's offer or when the thread was already asked. Synchronous; answers the
+ * outcome (recipients, subject, the rendered text).
+ */
+router.post("/ask-client-to-answer", async (req: Request, res: Response) => {
+  const { instantlyCampaignId, leadEmail } = (req.body ?? {}) as { instantlyCampaignId?: unknown; leadEmail?: unknown };
+  if (typeof instantlyCampaignId !== "string" || !instantlyCampaignId || typeof leadEmail !== "string" || !leadEmail) {
+    return res.status(400).json({ error: "instantlyCampaignId and leadEmail are required strings" });
+  }
+  try {
+    const [row] = await db
+      .select()
+      .from(instantlyCampaigns)
+      .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId))
+      .limit(1);
+    if (!row) return res.status(404).json({ error: "campaign not found" });
+    if (row.leadEmail?.toLowerCase() !== leadEmail.trim().toLowerCase()) {
+      return res.status(400).json({ error: "leadEmail does not match this campaign row" });
+    }
+    const { maybeAskClientToAnswer } = await import("../lib/ask-client-to-answer");
+    const outcome = await maybeAskClientToAnswer(
+      {
+        instantlyCampaignId: row.instantlyCampaignId,
+        campaignId: row.campaignId,
+        orgId: row.orgId,
+        userId: row.userId,
+        runId: row.runId,
+        brandIds: row.brandIds,
+      },
+      leadEmail.trim(),
+    );
+    return res.status(200).json(outcome);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] ask-client-to-answer route failed: ${message}`);
+    return res.status(500).json({ error: message });
+  }
+});
+
 export default router;

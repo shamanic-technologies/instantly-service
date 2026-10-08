@@ -312,7 +312,16 @@ export async function maybeForwardPositiveReply(
   if (!campaign.orgId) return;
 
   const { celebrateOnce } = await import("./celebrate-positive-reply");
-  const run = celebrateOnce(campaign, leadEmail, { waitsMs: options.waitsMs, kind: eventType });
+  // A celebration SENT on a brand with no AI responder running is followed by
+  // a second email asking the client to answer it themselves
+  // (lib/ask-client-to-answer). The celebration itself is unchanged.
+  const run = celebrateOnce(campaign, leadEmail, { waitsMs: options.waitsMs, kind: eventType }).then(
+    async (sent) => {
+      if (!sent) return;
+      const { maybeAskClientToAnswer } = await import("./ask-client-to-answer");
+      await maybeAskClientToAnswer(campaign, leadEmail);
+    },
+  );
   if (options.background === false) {
     await run;
   } else {

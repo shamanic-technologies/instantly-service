@@ -171,6 +171,54 @@ export async function findOngoingInstantCallCampaign(params: {
   return first.id;
 }
 
+/** The channel that rings the rep by phone: it answers no email, so it is not a responder. */
+const PHONE_CHANNEL_FEATURE_SLUGS: ReadonlySet<string> = new Set([AI_INSTANT_CALL_FEATURE_SLUG]);
+
+/**
+ * Pure: is this campaign an AI responder, i.e. a campaign bought for a leg OUT
+ * of the conversation step (`conversation_to_*`) on a channel that writes back?
+ * AI Instant Call also leaves that step but only rings the rep's phone: the
+ * prospect's email is still unanswered, so it does not count.
+ */
+export function isResponderCampaign(row: { legKey?: unknown; featureSlug?: unknown }): boolean {
+  return (
+    typeof row.legKey === "string" &&
+    row.legKey.startsWith("conversation_to_") &&
+    !(typeof row.featureSlug === "string" && PHONE_CHANNEL_FEATURE_SLUGS.has(row.featureSlug))
+  );
+}
+
+/**
+ * The ids of the ONGOING AI responder campaigns for one (brand, offer), empty
+ * when nobody will answer a reply on it. Any non-2xx THROWS: an unreadable
+ * answer is neither "a responder runs" nor "nobody does".
+ */
+export async function findOngoingResponderCampaigns(params: {
+  orgId: string;
+  brandId: string;
+  offerId: string;
+}): Promise<string[]> {
+  if (!CAMPAIGN_SERVICE_URL || !CAMPAIGN_SERVICE_API_KEY) {
+    throw new Error("CAMPAIGN_SERVICE_URL or CAMPAIGN_SERVICE_API_KEY is not set");
+  }
+
+  const query = new URLSearchParams({ brandId: params.brandId, offerId: params.offerId, status: "ongoing" });
+  const response = await fetch(`${CAMPAIGN_SERVICE_URL}/campaigns?${query.toString()}`, {
+    headers: { "x-api-key": CAMPAIGN_SERVICE_API_KEY, "x-org-id": params.orgId },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`campaign-service GET /campaigns (responders) failed: ${response.status} - ${body.slice(0, 200)}`);
+  }
+  const body = (await response.json()) as { campaigns?: unknown };
+  if (!Array.isArray(body.campaigns)) {
+    throw new Error("campaign-service GET /campaigns (responders) returned no `campaigns` array");
+  }
+  return (body.campaigns as Array<{ id?: unknown; legKey?: unknown; featureSlug?: unknown }>)
+    .filter(isResponderCampaign)
+    .map((c) => String(c.id));
+}
+
 /** One campaign campaign-service DID run for the leg out of the step. */
 export interface StepTriggerTriggered {
   campaignId: string;

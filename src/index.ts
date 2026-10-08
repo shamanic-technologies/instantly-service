@@ -148,6 +148,15 @@ async function deployEmailTemplates(): Promise<void> {
             textBody: "{{text}}",
           },
           {
+            // "Answer it yourself" (lib/ask-client-to-answer): a celebrated
+            // positive reply on a brand with no AI responder running. Plain
+            // text rendered and escaped in code; Reply-To is the prospect.
+            name: "positive-reply-answer-request",
+            subject: "{{subject}}",
+            htmlBody: "{{html}}",
+            textBody: "{{text}}",
+          },
+          {
             // Reply escalation with NO rep to hand to (lib/escalate-reply): the
             // responder could not answer, the brand names nobody, so the agency
             // inbox answers directly. Same subject as the thread, the history
