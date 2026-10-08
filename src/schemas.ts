@@ -326,6 +326,43 @@ registry.registerPath({
   },
 });
 
+export const OrphanRepliesRequestSchema = z
+  .object({
+    dryRun: z.boolean().optional(),
+    backfill: z.boolean().optional(),
+    sinceDays: z.number().int().min(1).max(120).optional(),
+    limit: z.number().int().min(1).max(20000).optional(),
+  })
+  .openapi("OrphanRepliesRequest");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/self-send/orphan-replies",
+  summary: "Recover prospect replies sent from another address",
+  description:
+    "Platform-scoped ops sweep over `unrelated` inbound mail (no reference to any " +
+    "send of ours). Structural noise (our own domains, lists, automated mail, " +
+    "Instantly warmup) is skipped; each remaining message is offered, with the " +
+    "leads its mailbox wrote to that share a name, company domain or subject with " +
+    "it, to a chat-service judgment (`choice`, persisted on the bronze row, judged " +
+    "once). A match at or above 0.75 probability is re-filed as that lead's reply " +
+    "and promotes `reply_received` (stops the sequence) plus the usual qualification. " +
+    "`backfill` (default true) reads every unjudged row of `sinceDays` (default 30) " +
+    "and re-reads missing bodies over IMAP; `dryRun` (default TRUE) judges but writes " +
+    "nothing. Returns 202; watch for `orphan-replies: done`.",
+  request: {
+    body: {
+      content: { "application/json": { schema: OrphanRepliesRequestSchema } },
+    },
+  },
+  responses: {
+    202: {
+      description: "Sweep accepted; runs in the background",
+      content: { "application/json": { schema: AcceptedResponseSchema } },
+    },
+  },
+});
+
 // ─── Send ───────────────────────────────────────────────────────────────────
 
 export const SequenceStepSchema = z.object({

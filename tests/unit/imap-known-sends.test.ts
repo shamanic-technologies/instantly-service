@@ -303,22 +303,54 @@ describe("runPoll body fetching", () => {
   });
 
   it("never downloads the body of a message that is not ours", async () => {
-    // A newsletter: real mail, on a real mailbox, referencing nothing we sent.
+    // A newsletter, a notification and an Instantly warmup email: real mail on a
+    // real mailbox, referencing nothing we sent, and structurally NOT a person
+    // answering us (see orphan-reply.ts).
     const { summary, fetchOneCalls, inserted } = await poll([
-      { uid: 1, headers: "Message-ID: <news@substack.com>\r\nFrom: a@substack.com\r\n" },
-      { uid: 2, headers: "Message-ID: <alert@github.com>\r\nFrom: b@github.com\r\n" },
+      {
+        uid: 1,
+        headers:
+          "Message-ID: <news@substack.com>\r\nFrom: a@substack.com\r\nList-Unsubscribe: <https://substack.com/u>\r\n",
+      },
+      { uid: 2, headers: "Message-ID: <alert@github.com>\r\nFrom: notifications@github.com\r\n" },
+      {
+        uid: 3,
+        headers:
+          "Message-ID: <w@stranger.co>\r\nFrom: Kari <kari@stranger.co>\r\nSubject: Kevin - sync call | DAVM9XE WNT6JJB\r\n",
+      },
     ]);
 
-    expect(summary.messagesRead).toBe(2);
-    expect(summary.unrelated).toBe(2);
+    expect(summary.messagesRead).toBe(3);
+    expect(summary.unrelated).toBe(3);
     expect(fetchOneCalls).toEqual([]);
     // The row still exists — it is the dedup key and the record of what we
     // ignored. Only the snippet is absent, and `null` says so rather than
     // claiming we read an empty body.
-    expect(inserted).toHaveLength(2);
+    expect(inserted).toHaveLength(3);
     for (const row of inserted) {
       expect((row.payload as { textSnippet: unknown }).textSnippet).toBeNull();
+      expect(row.payload).not.toHaveProperty("orphanCandidate");
     }
+  });
+
+  it("keeps the words of a person writing from an address we never emailed", async () => {
+    // Prod 2026-09-24: a prospect answered from her OTHER address as a new email.
+    // It threads onto nothing, so it is `unrelated` — but nothing about who sent
+    // it or how says it is noise, so its body is stored and it is flagged for
+    // the orphan-reply judgment.
+    const { summary, fetchOneCalls, inserted } = await poll([
+      {
+        uid: 9,
+        headers:
+          'Message-ID: <x@chsmetabolismdoc.com>\r\nFrom: "Stacy Blecher" <drblecher@chsmetabolismdoc.com>\r\nSubject: Doc Dinners\r\n',
+      },
+    ]);
+
+    expect(summary.unrelated).toBe(1);
+    expect(summary.replies).toBe(0);
+    expect(fetchOneCalls).toEqual([9]);
+    expect(inserted[0]!.kind).toBe("unrelated");
+    expect(inserted[0]!.payload).toMatchObject({ textSnippet: "body text", orphanCandidate: true });
   });
 
   it("DOES download the body of a reply to one of our sends", async () => {

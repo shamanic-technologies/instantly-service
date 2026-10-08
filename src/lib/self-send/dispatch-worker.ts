@@ -27,6 +27,7 @@ import {
 import { loadPendingScheduledReplies } from "../scheduled-replies";
 import { buildMessage } from "./message";
 import { runPoll } from "./imap-poller";
+import { runOrphanReplySweep } from "./orphan-reply-sweep";
 import { dispatchMessage, SmtpDispatchError } from "./smtp";
 import {
   classifyPermanentFailure,
@@ -720,6 +721,19 @@ async function runDispatchExclusive(
       );
     });
     polled = true;
+
+    // A message the poll could not thread onto one of our sends may still be a
+    // prospect answering from ANOTHER address (orphan-reply.ts). Judged here,
+    // after the poll and before the re-selection, so a recovered reply stops its
+    // sequence before we pick what to send. Fail-soft like the poll: an
+    // unjudged row stays flagged and the next run offers it again.
+    await runOrphanReplySweep().catch((error) => {
+      console.error(
+        `[instantly-service] self-send: orphan-reply sweep failed, sending anyway: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
 
     // Re-select against what the poll just learned. The probe above is only a
     // "is this run worth waking for" read; the selection we ACT on is taken
