@@ -18,6 +18,13 @@
 
 import type { TemplateItem } from "./email-client";
 
+/**
+ * The answer-request is signed "Kevin", so the client sees Kevin as the sender.
+ * Same address the transactional default uses (authenticated in Postmark), only
+ * the display name is added.
+ */
+export const ANSWER_REQUEST_FROM = "Kevin Lourd <growth@distribute.you>";
+
 export const EMAIL_TEMPLATES: TemplateItem[] = [
     {
       name: "campaign-error",
@@ -68,6 +75,7 @@ export const EMAIL_TEMPLATES: TemplateItem[] = [
       name: "positive-reply-answer-request",
       layout: "none",
       stream: "transactional",
+      from: ANSWER_REQUEST_FROM,
       subject: "{{subject}}",
       htmlBody: "{{html}}",
       textBody: "{{text}}",
