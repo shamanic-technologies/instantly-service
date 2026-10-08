@@ -2000,13 +2000,49 @@ const ReplyVerdictSchema = z
     handedToPerson: z
       .boolean()
       .describe("The reply hands the lead to a person rather than to the automated responder: a referral ('not me, write to X') or a reply about something other than the offer. Both classify `neutral` like a plain neutral reply; this is what separates them."),
+    positiveSignal: z
+      .enum(["interest", "information_request", "meeting_request"])
+      .nullable()
+      .describe("Which buying signal a positive reply carries: plain interest, a request for information (a question about the offer), or a request for a meeting. Null for every non-positive verdict."),
+    declinedOffer: z
+      .boolean()
+      .describe("They said no to the offer for now. Recyclable; NOT a stop request (`stopRequested`) and NOT `notOurTarget`."),
+    notOurTargetReason: z
+      .enum(["wrong_contact", "left_role", "already_customer", "is_the_client"])
+      .nullable()
+      .describe("Why `notOurTarget`: the wrong contact (hands nobody back), they left the role or company, they already buy from the client, or they ARE the client. Null when `notOurTarget` is false."),
+    handoffReason: z
+      .enum(["referral", "unrelated_proposal"])
+      .nullable()
+      .describe("Why `handedToPerson`: they pointed us at someone else (`referral`), or the conversation is about something other than buying the offer (`unrelated_proposal`; its subtype is `judgments.proposalType`). Null when `handedToPerson` is false."),
   })
   .openapi("ReplyVerdict");
 
-export const ReplyVerdictsResponseSchema = z
+const ReplyJudgmentSchema = z.object({
+  value: z.string(),
+  confidence: z.number().nullable().describe("0..1, how concentrated the judgment engine's distribution was"),
+});
+
+const ReplyJudgmentsSchema = z
   .object({
-    replies: z.array(
-      z.object({
+    proposalType: ReplyJudgmentSchema.extend({ value: z.enum(["partnership", "hiring", "investment", "other"]) })
+      .nullable()
+      .describe("For an `unrelated_proposal` reply: what it proposes (partnership / reseller / affiliate; a job or recruiting; money in the company: investing, fundraising, acquisition; anything else, e.g. a vendor pitching us, press). Null otherwise or until judged."),
+    question: ReplyJudgmentSchema.extend({ value: z.enum(["none", "answerable", "needs_sender_company"]) })
+      .nullable()
+      .describe("For a reply a PERSON wrote: `none` = asks no question; `answerable` = a question the outreach team can answer right away from the offer itself; `needs_sender_company` = only the company we write for can answer it, so it must be escalated to them. Null for an automated answer, a reply with no stored words, or until judged."),
+  })
+  .describe("Judgments about the reply's words (chat-service judgment engine), each judged ONCE per reply and kept. The verdict's kind stays the classifier's; these answer finer questions the kind leaves open.");
+
+const ReplyEscalationSchema = z
+  .object({
+    escalatedAt: z.string().describe("ISO 8601 UTC"),
+    handedTo: z.string().nullable().describe("Who now owns the conversation (the brand's rep, the agency inbox, or `reassured`)"),
+  })
+  .nullable()
+  .describe("The thread was actually handed to a person (the responder's escalation) after THIS reply and before any later one. Null when it never was.");
+
+const ReplyViewSchema = z.object({
         replyId: z.string().describe("Stable per-reply id (`ie:<instantly email id>`, `imap:<row id>`, `manual:<qualification row id>` for a reply a person recorded by hand, or `ievt:<event id>` for a reply Instantly qualified but whose message was never mirrored; the last two carry null `fromEmail` / `subject`)"),
         leadEmail: z.string(),
         instantlyCampaignId: z.string().describe("The per-lead thread"),
@@ -2018,9 +2054,12 @@ export const ReplyVerdictsResponseSchema = z
         receivedAt: z.string().describe("ISO 8601 UTC"),
         verdict: ReplyVerdictSchema.nullable().describe("The reply's CURRENT verdict; null only while it is still being classified"),
         verdictCount: z.number().int().describe("How many verdicts were ever produced for this reply (bronze history)"),
-      }),
-    ),
-  })
+        judgments: ReplyJudgmentsSchema,
+        escalation: ReplyEscalationSchema,
+      });
+
+export const ReplyVerdictsResponseSchema = z
+  .object({ replies: z.array(ReplyViewSchema) })
   .openapi("ReplyVerdictsResponse");
 
 registry.registerPath({
@@ -2044,6 +2083,122 @@ registry.registerPath({
     400: { description: "Invalid body", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Unauthorized" },
     500: { description: "Could not be read", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+export const OutreachFactsQuerySchema = z.object({
+  since: z
+    .string()
+    .regex(/^\d+$/, "since must be a cursor returned by this route (digits)")
+    .optional()
+    .describe("Cursor: return facts AFTER this `seq` (exclusive). Omit to start from the beginning."),
+  limit: z.coerce.number().int().min(1).max(1000).optional().describe("Page size, default 500, max 1000"),
+  orgId: z.string().optional().describe("Only facts of this org (internal org UUID)"),
+  brandId: z.string().optional().describe("Only facts on campaigns of this brand"),
+  email: z.string().optional().describe("Only facts about this person (case-insensitive)"),
+});
+
+export const OutreachFactsSyncSchema = z
+  .object({
+    judgeLimit: z.number().int().min(0).max(100000).optional().describe("Replies to judge before emitting (default 100)"),
+    sinceDays: z.number().int().min(1).nullable().optional().describe("Event scan window by insertion time; null/omitted = whole history"),
+  })
+  .openapi("OutreachFactsSync");
+
+const OutreachFactSchema = z
+  .object({
+    seq: z.string().describe("The fact's position in the feed (digits). Pass the last one as `since` to resume."),
+    type: z
+      .enum(["email_sent", "email_opened", "link_clicked", "email_bounced", "unsubscribed", "reply", "withdrawn"])
+      .describe("What happened. Exactly one of the per-type objects below is non-null (the one matching `type`)."),
+    subjectKey: z
+      .string()
+      .describe("What the fact is about: `ievt:<event id>` for an email event, `reply:<replyId>` for a reply. Every fact about the same thing shares it."),
+    supersedesSeq: z
+      .string()
+      .nullable()
+      .describe("A CORRECTION: this fact replaces the fact with that `seq` (a reply whose verdict, judgments or escalation changed), or withdraws it (`type: withdrawn`). Null for a first statement. Facts are never edited."),
+    occurredAt: z.string().describe("ISO 8601 UTC, when it happened (for a withdrawal: when we learned it)"),
+    recordedAt: z.string().describe("ISO 8601 UTC, when the fact entered the feed"),
+    leadEmail: z.string().describe("The person (stored casing; match case-insensitively)"),
+    orgId: z.string().nullable().describe("Internal org UUID; null for a platform send or a thread whose campaign row was lost"),
+    campaignId: z.string().nullable().describe("The logical campaign (campaign-service id)"),
+    instantlyCampaignId: z.string().describe("The per-lead sequence (thread)"),
+    brandIds: z.array(z.string()),
+    transport: z.string().nullable().describe("`instantly` | `smtp` (our own sender) | `manual`"),
+    send: z
+      .object({
+        step: z.number().int().nullable().describe("1-based step of the sequence; null when the provider reported the send without one"),
+        position: z.enum(["first", "followup"]).describe("The first email of the sequence, or a follow-up"),
+        positionBasis: z.enum(["step", "order"]).describe("`step` = from the step number; `order` = no step was reported, placed by its order among this thread's sends"),
+        accountEmail: z.string().nullable().describe("The mailbox that sent it"),
+      })
+      .nullable(),
+    open: z.object({ step: z.number().int().nullable() }).nullable(),
+    click: z
+      .object({
+        step: z.number().int().nullable(),
+        url: z.string().nullable().describe("The URL clicked, as our own click tracker recorded it. Null when the provider's tracker did not tell us (Instantly-sent mail)."),
+      })
+      .nullable(),
+    bounce: z.object({ step: z.number().int().nullable() }).nullable(),
+    unsubscribe: z
+      .object({
+        step: z.number().int().nullable(),
+        via: z.enum(["link", "recorded"]).describe("`link` = they used the unsubscribe link/header; `recorded` = an opt-out recorded for them (stated to staff, or asked for in a reply)"),
+      })
+      .nullable(),
+    reply: ReplyViewSchema.nullable().describe("A real reply with its CURRENT verdict, distinctions, judgments and escalation (same shape as one item of POST /orgs/reply-verdicts/query)."),
+    withdrawal: z
+      .object({
+        withdrawnSeq: z.string().describe("The fact withdrawn (also in `supersedesSeq`)"),
+        withdrawnType: z.string().describe("Its type"),
+        reason: z
+          .enum(["source_removed", "statement_withdrawn"])
+          .describe("`source_removed` = it turned out not to have happened (a click proven to be a link scanner, a bounce retracted as a delayed notice, a reply placeholder replaced by the real message); `statement_withdrawn` = staff withdrew a recorded opt-out"),
+      })
+      .nullable(),
+  })
+  .openapi("OutreachFact");
+
+export const OutreachFactsResponseSchema = z
+  .object({
+    facts: z.array(OutreachFactSchema),
+    nextCursor: z.string().describe("Pass as `since` for the next page (unchanged when the page is empty)"),
+    hasMore: z.boolean(),
+  })
+  .openapi("OutreachFactsPage");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/outreach-facts",
+  summary: "Outreach fact feed (fleet-wide, cursor-paginated)",
+  description:
+    "Every dated thing our cold-email outreach did or saw for a person, in ONE total order, for a consumer to COPY into its own store and then follow incrementally: each email we sent (first or follow-up), each open, click (with the URL when we recorded it), bounce and unsubscribe, and each real reply with its verdict and finer distinctions. Read-only, DB-only, no cost.\n\n" +
+    "**Append-only.** A fact is never edited. A reply whose verdict, judgments or escalation changes gets a NEW `reply` fact naming the one it supersedes; something that turned out not to have happened gets a `withdrawn` fact. A consumer keeps, per `subjectKey`, the latest fact.\n\n" +
+    "**Paging.** Start with no `since`; pass `nextCursor` back until `hasMore` is false; then poll with the last cursor. A cursor never skips a fact (emission is serialized).\n\n" +
+    "**Coverage.** From the first stored event (2026-02-10). Real events only (no inferred projections). Opens on our own sender are not observed (no pixel). Spam complaints are not captured. Freshness: emitted every 2 minutes; a reply waits up to 30 minutes for its verdict and judgments before being emitted anyway (then corrected).",
+  request: { query: OutreachFactsQuerySchema },
+  responses: {
+    200: { description: "A page of facts", content: { "application/json": { schema: OutreachFactsResponseSchema } } },
+    400: { description: "Invalid query", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "Could not be read", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/outreach-facts/sync",
+  summary: "Run one outreach-fact emission pass by hand",
+  description:
+    "Judges up to `judgeLimit` replies still owed a judgment, then appends every new fact. The in-process worker does the same every 2 minutes; this is for ops. Idempotent.",
+  request: { body: { content: { "application/json": { schema: OutreachFactsSyncSchema } } } },
+  responses: {
+    200: { description: "What the pass did" },
+    400: { description: "Invalid body", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "The pass failed", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 

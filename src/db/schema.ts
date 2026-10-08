@@ -11,6 +11,8 @@ import {
   primaryKey,
   numeric,
   date,
+  bigserial,
+  bigint,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -1651,4 +1653,52 @@ export const replies = pgTable(
     syncedAt: timestamp("synced_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [index("replies_thread_idx").on(table.instantlyCampaignId, table.receivedAt)],
+);
+
+/**
+ * GOLD — the outreach FACT FEED (lib/outreach-facts, drizzle/0067): every dated
+ * thing our outreach did or saw for a person, append-only, in `seq` order.
+ * A correction is a new row naming the one it supersedes. The partial unique
+ * index (one row per event subject) and `instantly_events_created_at_idx` are
+ * hand-written in 0067 — do not drop them on a db:generate diff.
+ */
+export const outreachFacts = pgTable(
+  "outreach_facts",
+  {
+    seq: bigserial("seq", { mode: "number" }).primaryKey(),
+    subjectKey: text("subject_key").notNull(),
+    type: text("type").notNull(),
+    supersedesSeq: bigint("supersedes_seq", { mode: "number" }),
+    contentHash: text("content_hash"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    leadEmail: text("lead_email").notNull(),
+    orgId: text("org_id"),
+    campaignId: text("campaign_id"),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    brandIds: text("brand_ids").array(),
+    transport: text("transport"),
+    payload: jsonb("payload").notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("outreach_facts_subject_idx").on(table.subjectKey, table.seq)],
+);
+
+/**
+ * BRONZE — each Jev judgment about a reply (lib/reply-judgments), judged ONCE
+ * per (reply, question) and kept (drizzle/0067).
+ */
+export const replyJudgments = pgTable(
+  "reply_judgments",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    replyId: text("reply_id").notNull(),
+    question: text("question").notNull(),
+    choice: text("choice").notNull(),
+    confidence: doublePrecision("confidence"),
+    probabilities: jsonb("probabilities"),
+    model: text("model"),
+    inputTokens: integer("input_tokens"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("reply_judgments_reply_question_idx").on(table.replyId, table.question)],
 );
