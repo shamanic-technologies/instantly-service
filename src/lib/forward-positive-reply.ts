@@ -102,6 +102,13 @@ export interface ThreadMessage {
   date: string;
   subject: string;
   bodyText: string;
+  /**
+   * Which stored copy this message IS — Instantly's email id (mirror / live
+   * read) or our own `smtp_dispatch_raw` row id. Absent where the source has
+   * none (an inbound IMAP row). Lets a reader tie the message to the
+   * `email_sent` event that recorded it by IDENTITY, never by time.
+   */
+  sourceRef?: { instantlyEmailId?: string; dispatchId?: string };
 }
 
 /**
@@ -173,6 +180,7 @@ export function selectThreadMessages(records: EmailRecord[]): ThreadMessage[] {
       date: r.timestamp_email,
       subject: r.subject || "(no subject)",
       bodyText: bodyToText(r),
+      ...(r.id ? { sourceRef: { instantlyEmailId: r.id } } : {}),
     }));
 }
 
