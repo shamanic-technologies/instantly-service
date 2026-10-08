@@ -175,6 +175,12 @@ describe("htmlToText", () => {
   it("never stacks more than one empty line", () => {
     expect(htmlToText("<p>a</p><p><br></p><p>b</p>")).toBe("a\n\nb");
   });
+
+  it("renders a blockquote as > lines, nested once per level", () => {
+    expect(
+      htmlToText("<div>Yes</div><blockquote><div>pitch</div><blockquote>older</blockquote></blockquote><div>Bob</div>"),
+    ).toBe("Yes\n> pitch\n> > older\nBob");
+  });
 });
 
 describe("selectThreadMessages", () => {
