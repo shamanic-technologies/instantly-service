@@ -191,21 +191,72 @@ export function subjectTheyTyped(subject: string | null | undefined): string | n
   return line.slice(0, 300);
 }
 
-/** Strip quoted history so the model judges what THEY wrote, not our own email. */
+const QUOTED_LINE = /^\s*>/;
+const ATTRIBUTION_LINE = /^\s*On .{0,120}\bwrote:\s*$/i;
+/** The attribution's second half, when the client wrapped it ("…Kevin Lourd" / "<kevin@x> wrote:", or Gmail's bare "wrote:"). */
+const ATTRIBUTION_TAIL = /^\s*(?:\S.{0,120}\s)?wrote:\s*$/i;
+const ORIGINAL_MESSAGE_LINE = /^\s*-{2,}\s*Original Message\s*-{2,}/i;
+/** RFC 3676 signature separator ("-- "), and the bare "--" / "----" clients write. */
+const SIGNATURE_DELIMITER = /^\s*-{2,}\s*$/;
+
+/**
+ * Strip quoted history so the model judges what THEY wrote, not our own email.
+ *
+ * ⚠️ A `>`-QUOTED BLOCK IS SKIPPED, NOT CUT AT: text the prospect wrote BELOW
+ * it (bottom-posting, interleaved answers) is kept. Cutting at the first quote
+ * marker dropped exactly that text — prod 2026-10-01: a reply opening with
+ * "On 2026-10-01 08:03, Naomi Martin wrote:" + our whole thread `>`-quoted, then
+ * "STOP!" and the clinic signature, stripped to nothing, was never classified,
+ * and its opt-out was never recorded.
+ *
+ * Below a quote, their signature ends their words: a Gmail reply carries it
+ * under the quote, and a legal disclaimer there tipped "We are good, thanks."
+ * from not-interested to neutral in the 30-day replay. Above any quote nothing
+ * changes, so a top-posted reply reads exactly as before.
+ *
+ * The attribution line is dropped with its block. An attribution or an
+ * "Original Message" rule NOT followed by `>` lines introduces an UNPREFIXED
+ * quote, whose end nothing marks, so everything below it is cut, as before:
+ * our own footer sits in there and must never read as their request.
+ */
 export function stripQuotedHistory(text: string): string {
   const lines = text.split(/\r?\n/);
   const kept: string[] = [];
+  let afterQuote = false;
 
-  for (const line of lines) {
-    // A quote marker, or the "On <date>, <someone> wrote:" attribution line that
-    // every client puts above the quoted block.
-    if (/^\s*>/.test(line)) break;
-    if (/^\s*On .{0,120}\bwrote:\s*$/i.test(line)) break;
-    if (/^\s*-{2,}\s*Original Message\s*-{2,}/i.test(line)) break;
+  const nextNonBlankIsQuoted = (from: number): boolean => {
+    for (let j = from; j < lines.length; j++) {
+      if (lines[j].trim()) return QUOTED_LINE.test(lines[j]);
+    }
+    return false;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (QUOTED_LINE.test(line)) {
+      afterQuote = true;
+      continue;
+    }
+    if (ORIGINAL_MESSAGE_LINE.test(line)) break;
+    if (afterQuote && SIGNATURE_DELIMITER.test(line)) break;
+
+    const wrappedAttribution =
+      !ATTRIBUTION_LINE.test(line) &&
+      ATTRIBUTION_TAIL.test(line) &&
+      kept.length > 0 &&
+      /^\s*On\s/i.test(kept[kept.length - 1]);
+    if (ATTRIBUTION_LINE.test(line) || wrappedAttribution) {
+      if (wrappedAttribution) kept.pop();
+      if (nextNonBlankIsQuoted(i + 1)) continue;
+      break;
+    }
     kept.push(line);
   }
 
-  return kept.join("\n").trim();
+  return kept
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /** True when the value is one of the labels we accept. */

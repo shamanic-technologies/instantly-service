@@ -172,6 +172,19 @@ async function deployEmailTemplates(): Promise<void> {
             ].join("\n"),
           },
           {
+            // A reply the qualification fallback still has no kind for an hour
+            // in (lib/unclassified-reply-alert): no gate opens on it, so a
+            // person reads it. Sent once per reply.
+            name: "reply-unclassified",
+            subject: "Unclassified reply: {{leadEmail}}",
+            htmlBody: [
+              "<p>A reply has no verdict, so nothing acts on it: no opt-out, no forward, no follow-up. Please read it and qualify it by hand.</p>",
+              "<p><strong>Why:</strong> {{why}}</p>",
+              "<p><strong>Lead:</strong> {{leadEmail}}<br><strong>Instantly campaign:</strong> {{instantlyCampaignId}}<br><strong>Received:</strong> {{repliedAt}}</p>",
+              '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{body}}</pre>',
+            ].join("\n"),
+          },
+          {
             // Off-topic / referral hand-over (lib/escalate-off-topic-reply):
             // why a person is needed leads, then the conversation verbatim.
             // `question` states the reason and quotes their words under

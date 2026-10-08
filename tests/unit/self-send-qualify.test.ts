@@ -21,6 +21,11 @@ import {
 } from "../../src/lib/self-send/qualify-reply";
 import { REPLY_CLASSIFICATION_MAP } from "../../src/lib/silver-promote";
 import { qualifyReply } from "../../src/lib/self-send/qualify-reply";
+import { htmlToText } from "../../src/lib/forward-positive-reply";
+import {
+  BOTTOM_POSTED_STOP_REPLY,
+  ONLY_OUR_QUOTED_THREAD,
+} from "../helpers/bottom-posted-reply";
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -153,6 +158,97 @@ describe("stripQuotedHistory", () => {
 
   it("returns empty for a reply that is nothing but quoted history", () => {
     expect(stripQuotedHistory("> only the quote")).toBe("");
+  });
+
+  // Prod 2026-10-01: cutting at the first marker stripped this reply to NOTHING.
+  it("keeps what they wrote BELOW a >-quoted block (bottom-posting)", () => {
+    const words = stripQuotedHistory(BOTTOM_POSTED_STOP_REPLY);
+    expect(words).toBe("STOP!");
+    // None of OUR quoted mail survives: not the attribution, not either footer.
+    expect(words).not.toMatch(/wrote:/);
+    expect(words).not.toMatch(/Reply "stop"/i);
+    expect(words).not.toMatch(/unsubscribe/i);
+    expect(words).not.toMatch(/Naomi/);
+  });
+
+  it("keeps interleaved answers between quoted lines", () => {
+    expect(
+      stripQuotedHistory(
+        "On Mon, 16 Aug 2026, Amy Moore wrote:\n> Open to a call?\nNo.\n> Someone else?\nTry Bob.\n",
+      ),
+    ).toBe("No.\nTry Bob.");
+  });
+
+  it("drops an attribution the client wrapped over two lines", () => {
+    expect(
+      stripQuotedHistory(
+        "On Thu, September 24, 2026 1:01 PM, Naomi Martin\n<naomi@x.com> wrote:\n> pitch\n\nstop",
+      ),
+    ).toBe("stop");
+  });
+
+  // Gmail's plain-text part: the name and the email wrapped away, "wrote:" alone.
+  it("drops Gmail's wrapped attribution with a bare wrote: line", () => {
+    expect(
+      stripQuotedHistory(
+        "stop\n\nOn Mon, Sep 28, 2026 at 8:17 AM Kevin Lourd\nwrote:\n\n> Hi Tim,\n> pitch\n\n--\nTim Blake",
+      ),
+    ).toBe("stop");
+  });
+
+  it("keeps a signature ABOVE the quote, as before (top-posting unchanged)", () => {
+    expect(stripQuotedHistory("No thanks.\n\n--\nDr. E\n\nOn Thu, Sep 24, 2026, K wrote:\n> pitch")).toBe(
+      "No thanks.\n\n--\nDr. E",
+    );
+  });
+
+  it("returns empty for our quoted thread with nothing of theirs", () => {
+    expect(stripQuotedHistory(ONLY_OUR_QUOTED_THREAD)).toBe("");
+  });
+
+  // An unprefixed quote has no end marker: everything under it stays cut.
+  it("still cuts everything under an attribution with no > block", () => {
+    expect(
+      stripQuotedHistory(
+        "Thanks.\n\nOn Mon, 16 Aug 2026, Amy Moore wrote:\nOur pitch\n\nNot relevant? Reply \"stop\" and I won't email you again.",
+      ),
+    ).toBe("Thanks.");
+  });
+
+  it("keeps a bottom-posted answer in an HTML-only reply (blockquote)", () => {
+    const text = htmlToText(
+      '<div>On Thu, Oct 1, 2026, Naomi Martin wrote:<br></div><blockquote type="cite"><p>Open to an intro?</p><p>Not relevant? Reply "stop" and I won\'t email you again.</p></blockquote><div>STOP!</div><div>Pam</div>',
+    );
+    expect(stripQuotedHistory(text)).toBe("STOP!\nPam");
+  });
+});
+
+describe("qualifyReply on a bottom-posted reply", () => {
+  it("sends the classifier THEIR words and records the stop", async () => {
+    mockPlatformComplete.mockResolvedValue({
+      content: "",
+      json: { classification: "lead_opt_out_requested" },
+      tokensInput: 1,
+      tokensOutput: 1,
+      model: "deepseek-v4-flash",
+    });
+
+    const kind = await qualifyReply(BOTTOM_POSTED_STOP_REPLY, {
+      subject: "Re: Patient dinner events in Tulsa",
+    });
+
+    expect(kind).toBe("lead_opt_out_requested");
+    const sent = mockPlatformComplete.mock.calls[0][0].message as string;
+    expect(sent).toContain("STOP!");
+    expect(sent).not.toMatch(/Reply "stop"/i);
+  });
+
+  it("never asks the classifier about our quoted footer alone", async () => {
+    const kind = await qualifyReply(ONLY_OUR_QUOTED_THREAD, {
+      subject: "Re: Patient dinner events in Tulsa",
+    });
+    expect(kind).toBeNull();
+    expect(mockPlatformComplete).not.toHaveBeenCalled();
   });
 });
 
