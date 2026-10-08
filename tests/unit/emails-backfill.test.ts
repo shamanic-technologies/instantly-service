@@ -259,3 +259,39 @@ describe("backfillEmails", () => {
     await expect(backfillEmails(API_KEY)).rejects.toThrow("insert failed");
   });
 });
+
+// ─── Frequent catch-up: stop at the previous walk's frontier ────────────────
+
+describe("backfillEmails — stopAtKnownPage", () => {
+  it("stops at the first page that stored nothing (newest-first frontier reached)", async () => {
+    mockListEmailsPage
+      .mockResolvedValueOnce({ items: [email({ id: "new-1" })], nextStartingAfter: "c1" })
+      .mockResolvedValueOnce({ items: [email({ id: "old-1" })], nextStartingAfter: "c2" })
+      .mockResolvedValueOnce({ items: [email({ id: "old-2" })], nextStartingAfter: "c3" });
+    mockInsertEmailsBatch.mockImplementation((_c: unknown, _o: unknown, emails: EmailRecord[]) =>
+      Promise.resolve(emails.filter((e) => e.id.startsWith("new")).map((e) => ({ id: `row-${e.id}` }))),
+    );
+
+    const summary = await backfillEmails(API_KEY, { maxPages: 20, stopAtKnownPage: true });
+
+    expect(mockListEmailsPage).toHaveBeenCalledTimes(2);
+    expect(summary.pages).toBe(2);
+    expect(summary.emailsStored).toBe(1);
+    expect(summary.stoppedAtKnownPage).toBe(true);
+  });
+
+  it("without the flag, keeps walking past an already-mirrored page (the daily floor)", async () => {
+    mockListEmailsPage
+      .mockResolvedValueOnce({ items: [email({ id: "old-1" })], nextStartingAfter: "c1" })
+      .mockResolvedValueOnce({ items: [email({ id: "new-1" })], nextStartingAfter: null });
+    mockInsertEmailsBatch.mockImplementation((_c: unknown, _o: unknown, emails: EmailRecord[]) =>
+      Promise.resolve(emails.filter((e) => e.id.startsWith("new")).map((e) => ({ id: `row-${e.id}` }))),
+    );
+
+    const summary = await backfillEmails(API_KEY, { maxPages: 20 });
+
+    expect(summary.pages).toBe(2);
+    expect(summary.emailsStored).toBe(1);
+    expect(summary.stoppedAtKnownPage).toBe(false);
+  });
+});
