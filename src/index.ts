@@ -248,6 +248,15 @@ async function start() {
         console.error(`[instantly-service] failed to start messages-sync worker: ${message}`);
       });
 
+    // Mirror what Instantly sent (followups included) within minutes, not at
+    // the next daily cron: the conversation read trusts a non-empty mirror.
+    import("./lib/unibox-mirror-worker")
+      .then(({ startUniboxMirrorWorker }) => startUniboxMirrorWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start unibox-mirror worker: ${message}`);
+      });
+
     // Qualify the replies Instantly never gave a verdict on. Every side effect
     // this service runs on a reply gates on the reply KIND, so a missing verdict
     // leaves a buyer unanswered and an opt-out unrecorded with nothing logged.
