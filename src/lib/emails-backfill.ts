@@ -62,6 +62,12 @@ export interface EmailsBackfillSummary {
    * ~20 minutes never reaches new ground at all.
    */
   nextCursor: string | null;
+  /**
+   * True when the walk stopped because a whole page was already mirrored
+   * (`stopAtKnownPage`). Newest-first ordering means everything below it was
+   * read by an earlier walk.
+   */
+  stoppedAtKnownPage: boolean;
 }
 
 /**
@@ -137,9 +143,9 @@ async function resolveOrgIds(campaignIds: string[]): Promise<Map<string, string 
  */
 export async function backfillEmails(
   apiKey: string,
-  options: { maxPages?: number; startingAfter?: string } = {},
+  options: { maxPages?: number; startingAfter?: string; stopAtKnownPage?: boolean } = {},
 ): Promise<EmailsBackfillSummary> {
-  const { maxPages } = options;
+  const { maxPages, stopAtKnownPage = false } = options;
   const summary: EmailsBackfillSummary = {
     pages: 0,
     emailsRead: 0,
@@ -148,6 +154,7 @@ export async function backfillEmails(
     campaignlessRead: 0,
     exhausted: false,
     nextCursor: options.startingAfter ?? null,
+    stoppedAtKnownPage: false,
   };
 
   let startingAfter: string | undefined = options.startingAfter;
@@ -163,8 +170,9 @@ export async function backfillEmails(
     const campaignIds = [...groups.keys()].filter((id): id is string => id !== null);
     const orgByCampaign = await resolveOrgIds(campaignIds);
 
+    let storedThisPage = 0;
     for (const [campaignId, emails] of groups) {
-      summary.emailsStored += (
+      storedThisPage += (
         await insertEmailsBatch(
           campaignId,
           campaignId === null ? null : (orgByCampaign.get(campaignId) ?? null),
@@ -173,6 +181,7 @@ export async function backfillEmails(
       ).length;
       if (campaignId === null) summary.campaignlessRead += emails.length;
     }
+    summary.emailsStored += storedThisPage;
 
     if (summary.pages % PROGRESS_EVERY_PAGES === 0) {
       console.log(
@@ -196,6 +205,14 @@ export async function backfillEmails(
     }
     startingAfter = page.nextStartingAfter;
     summary.nextCursor = page.nextStartingAfter;
+
+    // The frequent catch-up walk (lib/unibox-mirror-worker) stops at the first
+    // page that added nothing: the list is newest-first, so the frontier of the
+    // previous walk has been reached.
+    if (stopAtKnownPage && storedThisPage === 0) {
+      summary.stoppedAtKnownPage = true;
+      break;
+    }
   }
 
   return summary;
