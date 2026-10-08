@@ -64,8 +64,18 @@ export async function runUniboxMirrorTick(): Promise<void> {
   }
 }
 
+/**
+ * First tick shortly after boot. A deploy recreates the container, and on a
+ * busy day merges land more often than every 15 minutes: an interval alone
+ * would be reset before it ever fired. Cheap when nothing is new (one page).
+ */
+export const UNIBOX_MIRROR_BOOT_DELAY_MS = 60 * 1000;
+
 export function startUniboxMirrorWorker(): void {
   if (timer) return;
+  setTimeout(() => {
+    void runUniboxMirrorTick();
+  }, UNIBOX_MIRROR_BOOT_DELAY_MS).unref?.();
   timer = setInterval(() => {
     void runUniboxMirrorTick();
   }, UNIBOX_MIRROR_INTERVAL_MS);
