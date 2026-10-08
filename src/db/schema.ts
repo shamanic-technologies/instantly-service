@@ -475,15 +475,24 @@ export const instantlyEvents = pgTable(
     // path joins events->campaigns on campaign_id then filters/counts by
     // event_type, lead_email and step; this composite lets Postgres do an
     // index-only scan per matched campaign (validated: nested-loop index-only
-    // scan instead of a heap fetch). It does NOT help the no-filter
-    // /public/stats path (the planner seq-scans everything anyway) — that path
-    // is handled by the in-memory TTL cache instead.
+    // scan instead of a heap fetch).
+    // ⚠️ The real index also carries INCLUDE (account_email, "timestamp")
+    // (migration 0066, hand-written: drizzle's builder has no INCLUDE form), so
+    // the exclusion clause and the day bucket read from the index too and the
+    // fleet / org / per-campaign reads stop seq-scanning the ~1 kB-per-row heap.
+    // Do NOT recreate it without the INCLUDE on a `db:generate` diff.
     index("instantly_events_stats_covering_idx").on(
       table.campaignId,
       table.eventType,
       table.leadEmail,
       table.step,
     ),
+    // The two bounce sets every stats statement LEFT JOINs (`BOUNCE_JOINS` in
+    // routes/analytics.ts) as an index-only scan (migration 0066). The predicate
+    // is the fragment's literal filter: change one, change both.
+    index("instantly_events_bounced_idx")
+      .on(table.campaignId, table.leadEmail, table.step)
+      .where(sql`event_type = 'email_bounced'`),
   ],
 );
 

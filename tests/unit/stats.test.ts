@@ -1425,6 +1425,36 @@ describe("GET /stats caching (DIS perf)", () => {
     expect(mockExecute.mock.calls.length).toBeGreaterThan(callsAfterFirst);
   });
 
+  it("shares one computation across timezones when the read has no day bucket", async () => {
+    const app = await createStatsApp();
+
+    await request(app).get("/stats").query({ groupBy: "workflowSlug", timezone: "Europe/Paris" }).set(identityHeadersObj);
+    const callsAfterFirst = mockExecute.mock.calls.length;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+
+    // Same read, another zone: the SQL carries no zone, so the answer is the same entry.
+    const second = await request(app).get("/stats").query({ groupBy: "workflowSlug", timezone: "America/New_York" }).set(identityHeadersObj);
+    expect(second.status).toBe(200);
+    const third = await request(app).get("/stats").query({ groupBy: "workflowSlug" }).set(identityHeadersObj);
+    expect(third.status).toBe(200);
+    // Flat read too.
+    await request(app).get("/stats").query({ timezone: "Europe/Paris" }).set(identityHeadersObj);
+    const callsAfterFlat = mockExecute.mock.calls.length;
+    await request(app).get("/stats").query({ timezone: "Asia/Tokyo" }).set(identityHeadersObj);
+    expect(mockExecute.mock.calls.length).toBe(callsAfterFlat);
+    expect(callsAfterFlat).toBeGreaterThan(callsAfterFirst);
+  });
+
+  it("keeps one entry per timezone for groupBy=day (the zone moves the buckets)", async () => {
+    const app = await createStatsApp();
+
+    await request(app).get("/stats").query({ groupBy: "day", timezone: "Europe/Paris" }).set(identityHeadersObj);
+    const callsAfterFirst = mockExecute.mock.calls.length;
+
+    await request(app).get("/stats").query({ groupBy: "day", timezone: "America/New_York" }).set(identityHeadersObj);
+    expect(mockExecute.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+  });
+
   it("scopes the cache by org (different org bypasses another org's cached entry)", async () => {
     const app = await createStatsApp();
 
