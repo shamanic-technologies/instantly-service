@@ -407,3 +407,59 @@ export function replyKindFacts(kind: string): ReplyKindFacts {
     handedToPerson: isEscalatedReplyKind(kind),
   };
 }
+
+/**
+ * The finer distinctions inside the four facts above, in THIS service's own
+ * words, so a consumer can tell apart what one coarse flag lumps together
+ * without naming a reply kind (lead-service has a test forbidding any kind name
+ * in its source). Each is a function of the kind and nothing else; null when
+ * the distinction does not apply to this kind.
+ *
+ *  - `positiveSignal` — which buying signal a positive reply carries: plain
+ *    interest, a request for information, a request for a meeting.
+ *  - `declinedOffer`  — they said no to the offer for now (recyclable); NOT a
+ *    stop request and NOT "not our target".
+ *  - `notOurTargetReason` — why `notOurTarget`: the wrong contact, they left the
+ *    role, they already buy from the client, they ARE the client.
+ *  - `handoffReason`  — why `handedToPerson`: they pointed us at someone else
+ *    (referral), or the conversation is about something other than buying
+ *    (an unrelated proposal; its subtype is a separate judgment).
+ */
+export type PositiveSignal = "interest" | "information_request" | "meeting_request";
+export type NotOurTargetReason = "wrong_contact" | "left_role" | "already_customer" | "is_the_client";
+export type HandoffReason = "referral" | "unrelated_proposal";
+
+export interface ReplyKindDistinctions {
+  positiveSignal: PositiveSignal | null;
+  declinedOffer: boolean;
+  notOurTargetReason: NotOurTargetReason | null;
+  handoffReason: HandoffReason | null;
+}
+
+const POSITIVE_SIGNAL: Partial<Record<ReplyKind, PositiveSignal>> = {
+  lead_interested: "interest",
+  lead_info_requested: "information_request",
+  lead_meeting_requested: "meeting_request",
+};
+
+const NOT_OUR_TARGET_REASON: Partial<Record<ReplyKind, NotOurTargetReason>> = {
+  lead_wrong_person: "wrong_contact",
+  lead_changed_job: "left_role",
+  lead_already_customer: "already_customer",
+  lead_is_client: "is_the_client",
+};
+
+const HANDOFF_REASON: Partial<Record<ReplyKind, HandoffReason>> = {
+  lead_referral: "referral",
+  lead_off_topic: "unrelated_proposal",
+};
+
+export function replyKindDistinctions(kind: string): ReplyKindDistinctions {
+  const k = kind as ReplyKind;
+  return {
+    positiveSignal: POSITIVE_SIGNAL[k] ?? null,
+    declinedOffer: k === "lead_not_interested",
+    notOurTargetReason: NOT_OUR_TARGET_REASON[k] ?? null,
+    handoffReason: HANDOFF_REASON[k] ?? null,
+  };
+}
