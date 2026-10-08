@@ -6,6 +6,7 @@ import {
   queryGroupedStats,
   queryEngagementLatencyGroups,
   addSlugConditions,
+  timezoneCacheKeyPart,
 } from "./analytics";
 import { statsCacheKey, getOrSetCachedStats, STATS_CACHE_TTL_MS, STATS_REFRESH_AFTER_MS } from "../lib/stats-cache";
 import { canonicalIanaTimezone, unrecognizedTimezoneFromError } from "../lib/timezone";
@@ -138,7 +139,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     workflowSlugs,
     featureSlugs,
     groupBy,
-    timezone,
+    timezone: timezoneCacheKeyPart(groupBy, timezone),
   });
   try {
     const payload = await getOrSetCachedStats(cacheKey, async () => {
