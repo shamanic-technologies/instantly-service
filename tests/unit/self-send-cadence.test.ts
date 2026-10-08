@@ -43,6 +43,11 @@ vi.mock("../../src/lib/self-send/imap-poller", () => ({
   runPoll: (...args: unknown[]) => mockRunPoll(...args),
 }));
 
+const mockOrphanSweep = vi.fn(async () => ({}));
+vi.mock("../../src/lib/self-send/orphan-reply-sweep", () => ({
+  runOrphanReplySweep: async (...args: unknown[]) => mockOrphanSweep(...(args as [])),
+}));
+
 vi.mock("../../src/lib/scheduled-replies-worker", () => ({
   dispatchScheduledReplies: (...args: unknown[]) =>
     mockDispatchScheduledReplies(...args),
@@ -202,6 +207,9 @@ describe("runDispatch — the probe that decides whether to read the mailboxes",
     const summary = await runDispatch({ asOf: NOW, pollFirst: true });
 
     expect(mockRunPoll).not.toHaveBeenCalled();
+    // ...but a possible reply from ANOTHER address the inbox watcher flagged
+    // overnight is still judged now: a local read, not a mailbox read.
+    expect(mockOrphanSweep).toHaveBeenCalledTimes(1);
     expect(summary.polled).toBe(false);
     expect(summary.sent).toBe(0);
     // The step was due and simply had no room — the distinction that made a
