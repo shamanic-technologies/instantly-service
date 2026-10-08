@@ -14,6 +14,7 @@ import { Router, type Request, type Response } from "express";
 
 import { runDispatch } from "../lib/self-send/dispatch-worker";
 import { runPoll } from "../lib/self-send/imap-poller";
+import { runOrphanReplySweep } from "../lib/self-send/orphan-reply-sweep";
 import { promotePendingClicks } from "../lib/self-send/click-promotion";
 import { sweepStalledFirstEmails } from "../lib/self-send/stalled-first-emails";
 
@@ -92,6 +93,40 @@ router.post("/poll", async (req: Request, res: Response) => {
   });
 });
 
+
+/**
+ * Judge the `unrelated` inbound messages that may be a prospect answering from
+ * ANOTHER address, and re-file the matches as the lead's reply
+ * (`orphan-reply-sweep.ts`). The dispatch run does the routine half after every
+ * poll; this is the backfill and the dry run.
+ *
+ * Body `{ dryRun?: boolean (default TRUE), backfill?: boolean (default TRUE),
+ * sinceDays?: number (default 30, max 120), limit?: number }`. A dry run judges
+ * (the spend being measured) but writes nothing. Both answer 202 (a backfill
+ * re-reads mailboxes over IMAP, far past a request timeout) and log
+ * `orphan-replies: done` with the summary and every recovered reply.
+ */
+router.post("/orphan-replies", async (req: Request, res: Response) => {
+  const dryRun = req.body?.dryRun !== false;
+  const backfill = req.body?.backfill !== false;
+  const sinceDays =
+    typeof req.body?.sinceDays === "number" && Number.isFinite(req.body.sinceDays)
+      ? req.body.sinceDays
+      : undefined;
+  const limit =
+    typeof req.body?.limit === "number" && Number.isFinite(req.body.limit)
+      ? req.body.limit
+      : undefined;
+
+  res.status(202).json({ accepted: true });
+  runOrphanReplySweep({ dryRun, backfill, sinceDays, limit }).catch((error) => {
+    console.error(
+      `[instantly-service] orphan-replies failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  });
+});
 
 /**
  * Decide and promote the self-send clicks whose pairing window has closed.

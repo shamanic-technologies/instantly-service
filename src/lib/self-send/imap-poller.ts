@@ -44,6 +44,8 @@ import { qualifyReply } from "./qualify-reply";
 import { OPT_OUT_REPLY_KIND, recordOptOutFromReply } from "../reply-opt-out";
 import { isSelfSendCampaignId, SEND_TRANSPORT_SMTP } from "./transport";
 import { isStaffSender } from "../staff-senders";
+import { orphanReplyExclusion } from "./orphan-reply";
+import { loadOwnMailDomains } from "./own-mail-domains";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/poll" };
 
@@ -141,7 +143,7 @@ export interface PollSummary {
   accountsFailed: number;
 }
 
-interface KnownSend extends CorrelatedSend {
+export interface KnownSend extends CorrelatedSend {
   /** The org that owns the sequence — needed to resolve a key and pause it. */
   orgId: string | null;
 }
@@ -235,6 +237,122 @@ export async function loadKnownSends(accountEmail: string): Promise<Map<string, 
   }
 
   return sends;
+}
+
+/**
+ * Everything a HUMAN reply does once it is tied to one of our sends: count it,
+ * stop the sender's side of an Instantly sequence, qualify what it means, record
+ * an opt-out it asks for. The caller has already promoted `reply_received`.
+ *
+ * Shared by the threaded path (`pollAccount`, correlated through our own
+ * Message-Id) and the orphan path (`orphan-reply-sweep.ts`, an email from
+ * another address the judgment tied to a lead), so a recovered reply acts
+ * EXACTLY like any other.
+ */
+export async function actOnInboundReply(input: {
+  send: KnownSend;
+  accountEmail: string;
+  rowId: string;
+  text: string;
+  subject: string | null;
+  messageId: string | null;
+  timestamp: Date;
+  summary: PollSummary;
+}): Promise<void> {
+  const { send, accountEmail, rowId, text, subject, messageId, timestamp, summary } = input;
+  summary.replies += 1;
+
+  // `promoteEvent` above did OUR half of the stop — the row is marked
+  // and the remaining holds are cancelled. On an Instantly-transport
+  // sequence that tells the SENDER nothing, and we only ever read this
+  // reply ourselves BECAUSE Instantly could not: its IMAP link to the
+  // mailbox is broken, so its own stop-on-reply never fired and it will
+  // keep dispatching the rest of the sequence at someone who has
+  // already answered. Exactly the manual-qualification situation, and
+  // it takes the same second half, through the same helper.
+  //
+  // A `self:` sequence needs nothing here: there is no campaign to
+  // pause, and `promoteEvent` already did both halves.
+  if (!isSelfSendCampaignId(send.instantlyCampaignId) && send.orgId) {
+    const stopped = await stopLeadSequence({
+      orgId: send.orgId,
+      instantlyCampaignId: send.instantlyCampaignId,
+      leadEmail: send.leadEmail,
+      reason: "reply read from our own mailbox; Instantly never saw it",
+      caller: CALLER,
+    });
+    if (stopped) summary.sequencesStopped += 1;
+  }
+
+  // Qualify the reply so a hot one reaches the agency inbox. This does
+  // NOT decide whether to stop the sequence — `reply_received` above
+  // already did that, whatever the sentiment. It only decides what the
+  // reply MEANS, which drives the forward and the gold stats.
+  //
+  // Fail-soft and AFTER the stop: a classification we cannot obtain
+  // leaves the reply recorded and the sequence correctly stopped, just
+  // unlabelled. Promoting a guessed sentiment would be worse — a
+  // fabricated "neutral" on a hot reply reads as a real judgement.
+  try {
+    const replyText = text;
+    const qualification = await qualifyReply(replyText, {
+      instantlyCampaignId: send.instantlyCampaignId,
+      leadEmail: send.leadEmail,
+      source: "imap_poller",
+      subject,
+    });
+    if (qualification) {
+      await promoteEvent({
+        eventType: qualification,
+        instantlyCampaignId: send.instantlyCampaignId,
+        leadEmail: send.leadEmail,
+        accountEmail,
+        step: send.step,
+        variant: null,
+        timestamp,
+        source: "self_send",
+        sourceRowId: rowId,
+      });
+      summary.qualified += 1;
+
+      // They asked us to stop. The kind event above records WHAT they
+      // said; this records the CONSENT, which is a different fact with
+      // a different scope — it applies to every campaign this org holds
+      // for the address, not just this sequence, and it is withdrawable.
+      // The classification is passed through, so no second model call is
+      // paid to answer a question already answered.
+      if (qualification === OPT_OUT_REPLY_KIND && send.orgId) {
+        const optOut = await recordOptOutFromReply({
+          campaign: {
+            instantlyCampaignId: send.instantlyCampaignId,
+            leadEmail: send.leadEmail,
+            orgId: send.orgId,
+          },
+          replyText,
+          qualification,
+          evidence: {
+            source: "self_send_reply",
+            instantlyCampaignId: send.instantlyCampaignId,
+            messageId,
+            imapMessageRowId: rowId,
+          },
+        });
+        if (optOut.recorded) summary.optOutsRecorded += 1;
+      }
+    } else {
+      console.warn(
+        `[instantly-service] self-send-poll: no usable qualification for campaign=${send.instantlyCampaignId} — reply recorded and sequence stopped, sentiment left unset`,
+      );
+      summary.unqualified += 1;
+    }
+  } catch (error) {
+    console.error(
+      `[instantly-service] self-send-poll: qualification failed for campaign=${send.instantlyCampaignId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    summary.unqualified += 1;
+  }
 }
 
 /** Mailboxes on the self-send transport. */
@@ -416,7 +534,24 @@ async function pollAccount(
         // sweep. Their bronze row still exists (the dedup key and the record of
         // what we ignored); only the snippet is absent, and `null` says so
         // rather than claiming an empty body.
-        const keepsWords = classification.kind !== "unrelated";
+        //
+        // EXCEPT a message that may be a prospect answering from ANOTHER address
+        // (`orphan-reply.ts`): no reference to our sends, but nothing about who
+        // sent it or how says it is noise. Those keep their words, so the
+        // judgment can read them and so a lost reply can always be read later.
+        // ~104 a day fleet-wide (prod, 30 days to 2026-10-08), not the 80k.
+        const orphanCandidate =
+          classification.kind === "unrelated" &&
+          correlation.outcome === "none" &&
+          orphanReplyExclusion(
+            {
+              fromAddress: candidate.head.from?.text ?? null,
+              subject: candidate.head.subject ?? null,
+              headers,
+            },
+            await loadOwnMailDomains(),
+          ) === null;
+        const keepsWords = classification.kind !== "unrelated" || orphanCandidate;
         if (keepsWords && parsed === candidate.head) {
           parsed = await fetchMessageSource(client, uid, parsed);
         }
@@ -439,6 +574,9 @@ async function pollAccount(
               from: parsed.from?.text ?? null,
               referencedMessageIds: classification.referencedMessageIds,
               textSnippet: keepsWords ? (parsed.text ?? "").slice(0, 4000) : null,
+              // Read by `orphan-reply-sweep.ts`, which judges it right after
+              // this poll inside the same dispatch run.
+              ...(orphanCandidate ? { orphanCandidate: true } : {}),
             },
             receivedAt: parsed.date ?? null,
           })
@@ -493,99 +631,16 @@ async function pollAccount(
         });
 
         if (classification.kind === "reply") {
-          summary.replies += 1;
-
-          // `promoteEvent` above did OUR half of the stop — the row is marked
-          // and the remaining holds are cancelled. On an Instantly-transport
-          // sequence that tells the SENDER nothing, and we only ever read this
-          // reply ourselves BECAUSE Instantly could not: its IMAP link to the
-          // mailbox is broken, so its own stop-on-reply never fired and it will
-          // keep dispatching the rest of the sequence at someone who has
-          // already answered. Exactly the manual-qualification situation, and
-          // it takes the same second half, through the same helper.
-          //
-          // A `self:` sequence needs nothing here: there is no campaign to
-          // pause, and `promoteEvent` already did both halves.
-          if (!isSelfSendCampaignId(send.instantlyCampaignId) && send.orgId) {
-            const stopped = await stopLeadSequence({
-              orgId: send.orgId,
-              instantlyCampaignId: send.instantlyCampaignId,
-              leadEmail: send.leadEmail,
-              reason: "reply read from our own mailbox; Instantly never saw it",
-              caller: CALLER,
-            });
-            if (stopped) summary.sequencesStopped += 1;
-          }
-
-          // Qualify the reply so a hot one reaches the agency inbox. This does
-          // NOT decide whether to stop the sequence — `reply_received` above
-          // already did that, whatever the sentiment. It only decides what the
-          // reply MEANS, which drives the forward and the gold stats.
-          //
-          // Fail-soft and AFTER the stop: a classification we cannot obtain
-          // leaves the reply recorded and the sequence correctly stopped, just
-          // unlabelled. Promoting a guessed sentiment would be worse — a
-          // fabricated "neutral" on a hot reply reads as a real judgement.
-          try {
-            const replyText = parsed.text ?? "";
-            const qualification = await qualifyReply(replyText, {
-              instantlyCampaignId: send.instantlyCampaignId,
-              leadEmail: send.leadEmail,
-              source: "imap_poller",
-              subject: parsed.subject ?? null,
-            });
-            if (qualification) {
-              await promoteEvent({
-                eventType: qualification,
-                instantlyCampaignId: send.instantlyCampaignId,
-                leadEmail: send.leadEmail,
-                accountEmail,
-                step: send.step,
-                variant: null,
-                timestamp: parsed.date ?? new Date(),
-                source: "self_send",
-                sourceRowId: row.id,
-              });
-              summary.qualified += 1;
-
-              // They asked us to stop. The kind event above records WHAT they
-              // said; this records the CONSENT, which is a different fact with
-              // a different scope — it applies to every campaign this org holds
-              // for the address, not just this sequence, and it is withdrawable.
-              // The classification is passed through, so no second model call is
-              // paid to answer a question already answered.
-              if (qualification === OPT_OUT_REPLY_KIND && send.orgId) {
-                const optOut = await recordOptOutFromReply({
-                  campaign: {
-                    instantlyCampaignId: send.instantlyCampaignId,
-                    leadEmail: send.leadEmail,
-                    orgId: send.orgId,
-                  },
-                  replyText,
-                  qualification,
-                  evidence: {
-                    source: "self_send_reply",
-                    instantlyCampaignId: send.instantlyCampaignId,
-                    messageId: parsed.messageId ?? null,
-                    imapMessageRowId: row.id,
-                  },
-                });
-                if (optOut.recorded) summary.optOutsRecorded += 1;
-              }
-            } else {
-              console.warn(
-                `[instantly-service] self-send-poll: no usable qualification for campaign=${send.instantlyCampaignId} — reply recorded and sequence stopped, sentiment left unset`,
-              );
-              summary.unqualified += 1;
-            }
-          } catch (error) {
-            console.error(
-              `[instantly-service] self-send-poll: qualification failed for campaign=${send.instantlyCampaignId}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-            summary.unqualified += 1;
-          }
+          await actOnInboundReply({
+            send,
+            accountEmail,
+            rowId: row.id,
+            text: parsed.text ?? "",
+            subject: parsed.subject ?? null,
+            messageId: parsed.messageId ?? null,
+            timestamp: parsed.date ?? new Date(),
+            summary,
+          });
         } else if (classification.kind === "auto_reply") summary.autoReplies += 1;
         else summary.bounces += 1;
       }
