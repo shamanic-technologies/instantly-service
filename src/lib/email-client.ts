@@ -8,13 +8,15 @@ const TRANSACTIONAL_EMAIL_SERVICE_URL =
 const TRANSACTIONAL_EMAIL_SERVICE_API_KEY =
   process.env.TRANSACTIONAL_EMAIL_SERVICE_API_KEY || "";
 
-interface TemplateItem {
+export interface TemplateItem {
   name: string;
   subject: string;
   htmlBody: string;
   textBody?: string;
   from?: string;
   messageStream?: string;
+  /** "brand" wraps a fragment in the distribute.you layout; "none" sends it as registered. */
+  layout?: "brand" | "none";
 }
 
 interface DeployTemplatesParams {
