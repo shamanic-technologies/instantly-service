@@ -737,3 +737,126 @@ describe("fetchLeadConversation — the answer we dispatched ourselves", () => {
     );
   });
 });
+
+describe("fetchLeadConversation — which email_sent fact each message IS (UNIBOX-SENT-EMAIL-IDENTITY)", () => {
+  // Prod 2026-10-08 (lanou.abigail@mayo.edu): the email's own time 13:05:44,
+  // the step-1 fact's (webhook) time 13:06:45. Pairing by clock pairs nothing.
+  const FIRST = email({
+    id: "01a0f26b",
+    ue_type: 1,
+    step: "0_0_0",
+    timestamp_email: "2026-09-30T13:05:44.000Z",
+  });
+  const FOLLOWUP = email({
+    id: "01a11b9e",
+    ue_type: 1,
+    step: "0_1_0",
+    timestamp_email: "2026-10-08T13:05:59.000Z",
+  });
+  const REPLY = email({
+    id: "r-1",
+    ue_type: 2,
+    from_address_email: "alice@media.com",
+    timestamp_email: "2026-10-08T15:00:00.000Z",
+    body: { text: "Not now" },
+  } as Partial<EmailRecord>);
+  const MANUAL = email({ id: "m-1", ue_type: 3, timestamp_email: "2026-10-08T16:00:00.000Z" });
+
+  it("ties each outbound email to its fact by the stored email's id, never by time", async () => {
+    queueDb(
+      [campaignRow()],
+      [mirrorRow(FIRST), mirrorRow(FOLLOWUP), mirrorRow(REPLY), mirrorRow(MANUAL)],
+      [
+        { subjectKey: "ievt:evt-1", step: "1", position: "first", instantlyEmailId: "01a0f26b", dispatchId: null },
+        { subjectKey: "ievt:evt-2", step: "2", position: "followup", instantlyEmailId: "01a11b9e", dispatchId: null },
+      ],
+    );
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messages.map((m) => m.outreachFact)).toEqual([
+      { subjectKey: "ievt:evt-1", step: 1, position: "first" },
+      { subjectKey: "ievt:evt-2", step: 2, position: "followup" },
+      // Inbound is never a send fact.
+      null,
+      // A manual answer no served fact recorded: null, not a guess.
+      null,
+    ]);
+  });
+
+  it("serves a poll-only fact with step null — the identity, not the step, pairs it", async () => {
+    queueDb(
+      [campaignRow()],
+      [mirrorRow(FIRST)],
+      [{ subjectKey: "ievt:poll-1", step: null, position: "first", instantlyEmailId: "01a0f26b", dispatchId: null }],
+    );
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messages[0].outreachFact).toEqual({ subjectKey: "ievt:poll-1", step: null, position: "first" });
+  });
+
+  it("an outbound email whose send no served fact recorded carries an explicit null", async () => {
+    queueDb([campaignRow()], [mirrorRow(FIRST)], []);
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messages[0]).toHaveProperty("outreachFact", null);
+  });
+
+  it("reads the SERVED facts of this lead on every sequence of the family, by identity", async () => {
+    queueDb([campaignRow()], [mirrorRow(FIRST)], []);
+
+    await fetchLeadConversation(INPUT);
+
+    const factSql = extractSqlText(mockDbExecute.mock.calls.at(-1)?.[0]);
+    expect(factSql).toContain("FROM outreach_facts f");
+    expect(factSql).toContain("f.type = 'email_sent'");
+    expect(factSql).toContain("raw_payload->>'email_id'");
+    // No time comparison anywhere in the pairing.
+    expect(factSql).not.toMatch(/occurred_at|timestamp/);
+  });
+
+  it("ties a self-send email by its dispatch row id", async () => {
+    mockFetchSelfSendThread.mockResolvedValue([
+      {
+        direction: "outbound",
+        from: "amy@boostdistribute.com",
+        to: "alice@media.com",
+        date: "2026-09-01T10:00:00.000Z",
+        subject: "hi",
+        bodyText: "hi",
+        sourceRef: { dispatchId: "disp-1" },
+      },
+      {
+        direction: "inbound",
+        from: "alice@media.com",
+        to: "amy@boostdistribute.com",
+        date: "2026-09-02T10:00:00.000Z",
+        subject: "Re: hi",
+        bodyText: "ok",
+      },
+    ]);
+    queueDb(
+      [campaignRow({ sendTransport: "smtp", instantlyCampaignId: "self:1" })],
+      [{ subjectKey: "ievt:self-1", step: "1", position: "first", instantlyEmailId: null, dispatchId: "disp-1" }],
+    );
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messages.map((m) => m.outreachFact)).toEqual([
+      { subjectKey: "ievt:self-1", step: 1, position: "first" },
+      null,
+    ]);
+  });
+
+  it("FAILS LOUD when the facts cannot be read — never strips every pairing silently", async () => {
+    mockDbExecute.mockReset();
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow()]))
+      .mockResolvedValueOnce(pgResult([mirrorRow(FIRST)]))
+      .mockRejectedValueOnce(new Error("db down"));
+
+    await expect(fetchLeadConversation(INPUT)).rejects.toMatchObject({ code: "thread_unavailable", status: 502 });
+  });
+});
