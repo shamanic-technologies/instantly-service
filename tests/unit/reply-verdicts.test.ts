@@ -233,6 +233,50 @@ describe("the read", () => {
     });
   });
 
+  it("adds the distinctions, the Jev judgments and the escalation (additive)", async () => {
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        {
+          id: "imap:7",
+          lead_email: "p@x.com",
+          instantly_campaign_id: "self:1",
+          campaign_id: "c",
+          brand_ids: ["b"],
+          transport: "smtp",
+          from_email: "p@x.com",
+          subject: "Re: x",
+          received_at: new Date("2026-10-01T10:00:00Z"),
+          current_kind: "lead_off_topic",
+          current_classification: "neutral",
+          current_producer_type: "model",
+          current_producer: "deepseek-flash",
+          current_attribution: "exact",
+          current_confidence: null,
+          current_decided_at: new Date("2026-10-01T10:01:00Z"),
+          verdict_count: 1,
+          esc_at: new Date("2026-10-01T11:00:00Z"),
+          esc_handed_to: "agency",
+        },
+      ]),
+    );
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        { reply_id: "imap:7", question: "proposal_type", choice: "partnership", confidence: 0.91 },
+        { reply_id: "imap:7", question: "question", choice: "none", confidence: 0.7 },
+      ]),
+    );
+
+    const [out] = await readReplyVerdicts({ orgId: "org-1", emails: ["p@x.com"] });
+
+    expect(sqlText(mockDbExecute.mock.calls[0][0])).toContain("LEFT JOIN LATERAL");
+    expect(out.verdict).toMatchObject({ handedToPerson: true, handoffReason: "unrelated_proposal", positiveSignal: null });
+    expect(out.judgments).toEqual({
+      proposalType: { value: "partnership", confidence: 0.91 },
+      question: { value: "none", confidence: 0.7 },
+    });
+    expect(out.escalation).toEqual({ escalatedAt: "2026-10-01T11:00:00.000Z", handedTo: "agency" });
+  });
+
   it.each([
     ["lead_out_of_office", { automatedAnswer: true, stopRequested: false, notOurTarget: false, handedToPerson: false }],
     ["auto_reply_received", { automatedAnswer: true, stopRequested: false, notOurTarget: false, handedToPerson: false }],

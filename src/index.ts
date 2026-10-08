@@ -27,6 +27,7 @@ import replyVerdictsRoutes from "./routes/reply-verdicts";
 import auditRoutes from "./routes/audit";
 import infraRoutes from "./routes/infra";
 import opsRoutes from "./routes/ops";
+import outreachFactsRoutes from "./routes/outreach-facts";
 import unsubscribeRoutes from "./routes/unsubscribe";
 import selfSendRoutes from "./routes/self-send";
 import clickRoutes from "./routes/click";
@@ -80,6 +81,7 @@ app.use("/internal/campaigns", serviceAuth, campaignsRoutes);  // reconcile + re
 app.use("/internal/accounts", serviceAuth, accountsRoutes);    // list all accounts
 app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 app.use("/internal/bounced-emails", serviceAuth, bouncedEmailsRoutes); // fleet-wide bounce lookup (human-service serve gate)
+app.use("/internal/outreach-facts", serviceAuth, outreachFactsRoutes); // fleet fact feed lead-service copies by cursor
 app.use("/internal/audit", serviceAuth, auditRoutes);          // staff sending forecast (capacity vs scheduled volume)
 app.use("/internal/infra", serviceAuth, infraRoutes);          // provider inventory sync (Gandi / Mailforge / Primeforge / DFY)
 app.use("/internal/ops", serviceAuth, opsRoutes);            // unified model: mailbox sync (PR 1), gold reads later
@@ -219,6 +221,15 @@ async function start() {
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[instantly-service] failed to start reply-verdicts worker: ${message}`);
+      });
+
+    // The outreach fact feed (lib/outreach-facts): judge owed replies with Jev,
+    // then append new facts. The first pass on an empty feed is the backfill.
+    import("./lib/outreach-facts-worker")
+      .then(({ startOutreachFactsWorker }) => startOutreachFactsWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start outreach-facts worker: ${message}`);
       });
 
     import("./lib/messages-sync-worker")

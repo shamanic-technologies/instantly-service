@@ -43,7 +43,14 @@
 import { sql, type SQL } from "drizzle-orm";
 
 import { db } from "../db";
-import { REPLY_KINDS, REPLY_KIND_CLASSIFICATION, replyKindFacts } from "./reply-kind";
+import {
+  REPLY_KINDS,
+  REPLY_KIND_CLASSIFICATION,
+  replyKindDistinctions,
+  replyKindFacts,
+  type ReplyKindDistinctions,
+} from "./reply-kind";
+import { readReplyJudgments, type JudgmentQuestionKey, type StoredJudgment } from "./reply-judgments";
 import { staffSenderSql } from "./staff-senders";
 import { qualifyReply } from "./self-send/qualify-reply";
 import { htmlToText } from "./forward-positive-reply";
@@ -521,8 +528,22 @@ export interface ReplyVerdictView {
     notOurTarget: boolean;
     /** The reply is handed to a person (referral, off-topic), not answered automatically. */
     handedToPerson: boolean;
-  } | null;
+  } & ReplyKindDistinctions | null;
   verdictCount: number;
+  /**
+   * Jev judgments about the reply's words (lib/reply-judgments), judged once and
+   * kept. Null when the question does not apply to the current verdict, the
+   * reply has no stored words, or it is not judged yet.
+   */
+  judgments: {
+    proposalType: StoredJudgment | null;
+    question: StoredJudgment | null;
+  };
+  /**
+   * The thread was handed to a person (the responder's escalation) after THIS
+   * reply and before any later one. Null when it never was.
+   */
+  escalation: { escalatedAt: string; handedTo: string | null } | null;
 }
 
 function iso(value: unknown): string {
@@ -548,7 +569,8 @@ export async function readReplyVerdicts(input: {
   );
   const rows = rowsOf(
     await db.execute(sql`
-      SELECT * FROM replies r
+      SELECT r.*, ${escalationColumns()} FROM replies r
+      ${escalationJoin()}
       WHERE r.org_id = ${input.orgId}
         AND lower(r.lead_email) IN (${list})
         ${input.campaignId ? sql`AND r.campaign_id = ${input.campaignId}` : sql``}
@@ -556,7 +578,44 @@ export async function readReplyVerdicts(input: {
       ORDER BY lower(r.lead_email), r.received_at
     `),
   );
-  return rows.map((r) => ({
+  const judgments = await readReplyJudgments(rows.map((r) => String(r.id)));
+  return rows.map((r) => toReplyVerdictView(r, judgments.get(String(r.id)) ?? {}));
+}
+
+/** Columns `escalationJoin` adds: `esc_at`, `esc_handed_to`. */
+export function escalationColumns(): SQL {
+  return sql`esc.escalated_at AS esc_at, esc.handed_to AS esc_handed_to`;
+}
+
+/**
+ * The thread's escalation (instantly_campaigns.escalated_at, one per thread),
+ * attributed to the latest reply received at or before it.
+ */
+export function escalationJoin(): SQL {
+  return sql`
+    LEFT JOIN LATERAL (
+      SELECT c.escalated_at AT TIME ZONE 'UTC' AS escalated_at, c.escalation_handed_to AS handed_to
+      FROM instantly_campaigns c
+      WHERE c.instantly_campaign_id = r.instantly_campaign_id
+        AND c.escalated_at IS NOT NULL
+        AND r.received_at <= c.escalated_at AT TIME ZONE 'UTC'
+        AND NOT EXISTS (
+          SELECT 1 FROM replies r2
+          WHERE r2.instantly_campaign_id = r.instantly_campaign_id
+            AND r2.received_at > r.received_at
+            AND r2.received_at <= c.escalated_at AT TIME ZONE 'UTC'
+        )
+      LIMIT 1
+    ) esc ON true`;
+}
+
+/** One `replies` row (+ escalation columns) and its judgments, as served. */
+export function toReplyVerdictView(
+  r: Record<string, unknown>,
+  judged: Partial<Record<JudgmentQuestionKey, StoredJudgment>>,
+): ReplyVerdictView {
+  const kind = r.current_kind == null ? null : String(r.current_kind);
+  return {
     replyId: String(r.id),
     leadEmail: String(r.lead_email),
     instantlyCampaignId: String(r.instantly_campaign_id),
@@ -567,18 +626,28 @@ export async function readReplyVerdicts(input: {
     subject: (r.subject as string | null) ?? null,
     receivedAt: iso(r.received_at),
     verdict:
-      r.current_kind == null
+      kind === null
         ? null
         : {
-            kind: String(r.current_kind),
+            kind,
             classification: (r.current_classification as string | null) ?? null,
             producerType: String(r.current_producer_type),
             producer: String(r.current_producer),
             attribution: String(r.current_attribution),
             confidence: r.current_confidence == null ? null : Number(r.current_confidence),
             decidedAt: iso(r.current_decided_at),
-            ...replyKindFacts(String(r.current_kind)),
+            ...replyKindFacts(kind),
+            ...replyKindDistinctions(kind),
           },
     verdictCount: Number(r.verdict_count ?? 0),
-  }));
+    judgments: {
+      // A judgment only stands while the verdict still calls for it.
+      proposalType:
+        kind !== null && replyKindDistinctions(kind).handoffReason === "unrelated_proposal"
+          ? (judged.proposal_type ?? null)
+          : null,
+      question: kind !== null && !replyKindFacts(kind).automatedAnswer ? (judged.question ?? null) : null,
+    },
+    escalation: r.esc_at == null ? null : { escalatedAt: iso(r.esc_at), handedTo: (r.esc_handed_to as string | null) ?? null },
+  };
 }
