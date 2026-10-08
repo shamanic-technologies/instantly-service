@@ -7,7 +7,7 @@ import {
   queryEngagementLatencyGroups,
   addSlugConditions,
 } from "./analytics";
-import { statsCacheKey, getOrSetCachedStats } from "../lib/stats-cache";
+import { statsCacheKey, getOrSetCachedStats, STATS_CACHE_TTL_MS, STATS_REFRESH_AFTER_MS } from "../lib/stats-cache";
 import { canonicalIanaTimezone, unrecognizedTimezoneFromError } from "../lib/timezone";
 
 const router = Router();
@@ -147,7 +147,7 @@ router.get("/stats", async (req: Request, res: Response) => {
         return { groups };
       }
       return computeStatsPayload(whereClause);
-    });
+    }, STATS_CACHE_TTL_MS, { refreshAfterMs: STATS_REFRESH_AFTER_MS });
     return res.json(payload);
   } catch (error: any) {
     const msg = error.cause?.message ?? error.message ?? String(error);

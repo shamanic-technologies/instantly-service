@@ -5,6 +5,9 @@ import {
   setCachedStats,
   clearStatsCache,
   STATS_CACHE_TTL_MS,
+  getOrSetCachedStats,
+  deleteCachedStatsWhere,
+  STATS_REFRESH_AFTER_MS,
 } from "../../src/lib/stats-cache";
 
 describe("stats-cache", () => {
@@ -51,5 +54,63 @@ describe("stats-cache", () => {
 
   it("exposes a 60s default TTL", () => {
     expect(STATS_CACHE_TTL_MS).toBe(60_000);
+  });
+
+  describe("refresh-ahead (opt-in refreshAfterMs)", () => {
+    const flush = () => new Promise((r) => setImmediate(r));
+
+    it("answers a stale-but-unexpired hit from memory and reloads in the background", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const opts = { refreshAfterMs: 500 };
+      expect(await getOrSetCachedStats("k", async () => 1, 1000, opts)).toBe(1);
+      vi.advanceTimersByTime(600);
+      let release!: (v: number) => void;
+      const reload = vi.fn(() => new Promise<number>((r) => { release = r; }));
+      // Served at once from memory while ONE background reload runs.
+      expect(await getOrSetCachedStats("k", reload, 1000, opts)).toBe(1);
+      expect(await getOrSetCachedStats("k", reload, 1000, opts)).toBe(1);
+      expect(reload).toHaveBeenCalledTimes(1);
+      release(2);
+      await flush();
+      expect(await getOrSetCachedStats("k", reload, 1000, opts)).toBe(2);
+      expect(reload).toHaveBeenCalledTimes(1);
+    });
+
+    it("never serves past the TTL: a failed background reload lets the entry expire and the next caller gets the error", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const opts = { refreshAfterMs: 500 };
+      await getOrSetCachedStats("k", async () => 1, 1000, opts);
+      vi.advanceTimersByTime(600);
+      const failing = vi.fn(async () => { throw new Error("db down"); });
+      expect(await getOrSetCachedStats("k", failing, 1000, opts)).toBe(1);
+      await flush();
+      expect(errSpy).toHaveBeenCalled();
+      vi.advanceTimersByTime(500);
+      await expect(getOrSetCachedStats("k", failing, 1000, opts)).rejects.toThrow("db down");
+      errSpy.mockRestore();
+    });
+
+    it("does not refresh ahead without the option (default behaviour unchanged)", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const loader = vi.fn(async () => 1);
+      await getOrSetCachedStats("k", loader, 1000);
+      vi.advanceTimersByTime(900);
+      await getOrSetCachedStats("k", loader, 1000);
+      expect(loader).toHaveBeenCalledTimes(1);
+    });
+
+    it("a load in flight when its key is invalidated does not store its (pre-write) value", async () => {
+      let release!: (v: number) => void;
+      const slow = getOrSetCachedStats("k", () => new Promise<number>((r) => { release = r; }));
+      deleteCachedStatsWhere((key) => key === "k");
+      release(1);
+      expect(await slow).toBe(1);
+      expect(getCachedStats("k")).toBeUndefined();
+    });
+
+    it("refreshes half-way through the default TTL", () => {
+      expect(STATS_REFRESH_AFTER_MS).toBe(STATS_CACHE_TTL_MS / 2);
+    });
   });
 });
