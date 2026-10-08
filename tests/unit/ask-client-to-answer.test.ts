@@ -54,6 +54,7 @@ import {
   maybeAskClientToAnswer,
   renderAnswerRequest,
   replySubject,
+  tidyBody,
 } from "../../src/lib/ask-client-to-answer";
 import { isResponderCampaign } from "../../src/lib/campaign-client";
 import type { ThreadMessage } from "../../src/lib/forward-positive-reply";
@@ -181,6 +182,12 @@ describe("renderAnswerRequest (owner copy, locked 2026-10-08)", () => {
   });
 });
 
+describe("tidyBody", () => {
+  it("keeps every word, folds runs of blank lines and trailing spaces", () => {
+    expect(tidyBody("Hello Scott,\n\n\n\nI would be curious.\n\n\n\n\nDoug  \n\u200B\n")).toBe("Hello Scott,\n\nI would be curious.\n\nDoug");
+  });
+});
+
 describe("answerRequestRecipients", () => {
   it("every member, the agency inbox in Bcc once; no member = the agency inbox", () => {
     expect(answerRequestRecipients([{ email: "a@c.com", firstName: "A" }, { email: "b@c.com", firstName: null }], "growth@distribute.you")).toEqual([
@@ -227,6 +234,8 @@ describe("maybeAskClientToAnswer", () => {
     // org-billed on the campaign row's run, never haiku
     const [completeParams, identity] = mockComplete.mock.calls[0];
     expect(completeParams.model).not.toBe("haiku");
+    // sonnet answers 400 to any sampling parameter (prod 2026-10-08: line dropped)
+    expect(completeParams).not.toHaveProperty("temperature");
     expect(identity).toMatchObject({ orgId: "org-uuid", runId: "run-uuid" });
   });
 

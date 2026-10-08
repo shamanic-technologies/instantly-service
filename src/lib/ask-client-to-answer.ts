@@ -96,8 +96,16 @@ export interface AnswerRequestContent {
   html: string;
 }
 
+/** Pure: a body as written, with runs of blank lines (mail-client spacing) folded to one. */
+export function tidyBody(body: string): string {
+  return body
+    .replace(/[ \t\u00A0\u200B]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function messageBlock(m: ThreadMessage): string {
-  return [`From: ${m.from}`, `Date: ${formatThreadDate(m.date)}`, `Subject: ${m.subject}`, ``, m.bodyText.trim()].join(
+  return [`From: ${m.from}`, `Date: ${formatThreadDate(m.date)}`, `Subject: ${m.subject}`, ``, tidyBody(m.bodyText)].join(
     "\n",
   );
 }
@@ -182,8 +190,9 @@ async function summaryLineOrNull(
         systemPrompt: SUMMARY_SYSTEM_PROMPT,
         provider: "anthropic",
         model: "sonnet",
+        // No `temperature`: chat-service refuses sampling parameters on
+        // reasoning-first models (400), which silently dropped the line.
         maxTokens: 120,
-        temperature: 0,
       },
       { orgId: campaign.orgId, userId: campaign.userId, runId: campaign.runId, brandId: campaign.brandIds?.[0] },
     );
