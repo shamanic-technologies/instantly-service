@@ -54,10 +54,12 @@ import {
   maybeAskClientToAnswer,
   renderAnswerRequest,
   replySubject,
+  replyWordsOnly,
   tidyBody,
 } from "../../src/lib/ask-client-to-answer";
 import { isResponderCampaign } from "../../src/lib/campaign-client";
 import type { ThreadMessage } from "../../src/lib/forward-positive-reply";
+import { stripQuotedHistory } from "../../src/lib/self-send/qualify-reply";
 
 // ─── Fixtures (Doug, Shockwavecenters, 2026-10-08) ──────────────────────────
 
@@ -179,6 +181,36 @@ describe("renderAnswerRequest (owner copy, locked 2026-10-08)", () => {
     });
     expect(bare.text).toContain("Hi,\n\nGood news: x@y.com is interested and is waiting for an answer.\n\nYou can answer");
     expect(bare.text).toContain("It adds their email in To:");
+  });
+});
+
+describe("the reply quoting the thread (Doug, prod 2026-10-08)", () => {
+  const quoting: ThreadMessage = {
+    ...reply,
+    bodyText: [
+      "Hello Scott,", "", "", "", "I would be curious to see the difference between my clinical protocols and yours.", "", "",
+      "Doug Arvanitis, D.C.", "", "",
+      "From: Scott Miller <scott@axionmilestone.com>", "To: <drdoug@prohealthdoc.com>", "Date: Thu, 08 Oct 2026 08:09:35 -0400",
+      "Subject: Re: Shockwave therapy ROI at Pro Health", "", "Hi Doug, follow-up.", "",
+      "On Thu, October 1, 2026 12:11 PM, Scott Miller wrote:", "Hi Doug, first email.",
+    ].join("\n"),
+  };
+  const content = renderAnswerRequest({
+    clientFirstName: "David", leadEmail: "drdoug@prohealthdoc.com", leadFullName: "Doug Arvanitis",
+    leadFirstName: "Doug", company: "Pro Health", summaryLine: null, reply: quoting, earlier: [sent1, sent2, quoting],
+  });
+
+  it("shows the conversation ONCE: their words on top, every earlier email once below", () => {
+    const below = content.text.split("\n---\n")[1];
+    expect(below.match(/Hi Doug, follow-up\./g)).toHaveLength(1);
+    expect(below.match(/Hi Doug, first email\./g)).toHaveLength(1);
+    expect(below.startsWith("From: Doug Arvanitis <drdoug@prohealthdoc.com>")).toBe(true);
+    expect(below).toContain("Hello Scott,\n\nI would be curious to see the difference between my clinical protocols and yours.\n\nDoug Arvanitis, D.C.\n\nFrom: Kevin Lourd");
+  });
+
+  it("a reply with nothing quoted is unchanged; a body that is only a quote is kept as written", () => {
+    expect(replyWordsOnly("Yes please.", stripQuotedHistory)).toBe("Yes please.");
+    expect(replyWordsOnly("> quoted only", stripQuotedHistory)).toBe("> quoted only");
   });
 });
 

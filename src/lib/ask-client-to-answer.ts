@@ -43,6 +43,7 @@ import type { ForwardPositiveReplyCampaign, ThreadMessage } from "./forward-posi
 import { formatThreadDate } from "./forward-positive-reply";
 import { findLeadOnCampaignByEmail } from "./lead-client";
 import type { HistoryItem } from "./prospect-history";
+import { stripQuotedHistory } from "./self-send/qualify-reply";
 
 /** The transactional-email template this module sends (deployed at startup). */
 export const CLIENT_ANSWER_EVENT_TYPE = "positive-reply-answer-request";
@@ -104,6 +105,29 @@ export function tidyBody(body: string): string {
     .trim();
 }
 
+/**
+ * Pure: the prospect's own words, without the thread their client quoted under
+ * them (that thread is listed in full below, once). Cuts at the shared quote
+ * markers (`stripQuotedHistory`: `>`, "On ... wrote:", "Original Message") and
+ * at an Outlook header block (`From:` followed by `Sent:`/`Date:`/`To:`/
+ * `Subject:` within 4 lines) or its `____` rule. Nothing quoted = unchanged;
+ * nothing left = the body as written.
+ */
+export function replyWordsOnly(body: string, stripShared: (t: string) => string): string {
+  const shared = stripShared(body);
+  const lines = shared.split(/\r?\n/);
+  let cut = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*_{8,}\s*$/.test(lines[i])) { cut = i; break; }
+    if (/^\s*From:\s*\S/i.test(lines[i]) && lines.slice(i + 1, i + 5).some((l) => /^\s*(Sent|Date|To|Subject):/i.test(l))) {
+      cut = i;
+      break;
+    }
+  }
+  const words = lines.slice(0, cut).join("\n").trim();
+  return words || body;
+}
+
 function messageBlock(m: ThreadMessage): string {
   return [`From: ${m.from}`, `Date: ${formatThreadDate(m.date)}`, `Subject: ${m.subject}`, ``, tidyBody(m.bodyText)].join(
     "\n",
@@ -132,7 +156,8 @@ export function renderAnswerRequest(input: AnswerRequestInput): AnswerRequestCon
     ``,
     `---`,
   ];
-  const conversation = [input.reply, ...input.earlier.filter((m) => m !== input.reply).sort(byDateDesc)]
+  const reply = { ...input.reply, bodyText: replyWordsOnly(input.reply.bodyText, stripQuotedHistory) };
+  const conversation = [reply, ...input.earlier.filter((m) => m !== input.reply).sort(byDateDesc)]
     .map(messageBlock)
     .join("\n\n");
   const text = `${lines.join("\n")}\n${conversation}`;
@@ -175,8 +200,7 @@ async function summaryLineOrNull(
 ): Promise<string | null> {
   if (!campaign.orgId || !campaign.runId || !campaign.userId) return null;
   try {
-    const { stripQuotedHistory } = await import("./self-send/qualify-reply");
-    const words = stripQuotedHistory(reply.bodyText).trim() || reply.bodyText;
+    const words = replyWordsOnly(reply.bodyText, stripQuotedHistory);
     const result = await orgComplete(
       {
         message: [
