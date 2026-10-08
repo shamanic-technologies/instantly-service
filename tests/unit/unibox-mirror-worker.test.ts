@@ -50,3 +50,16 @@ describe("unibox-mirror tick", () => {
     expect(mockBackfillEmails).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("unibox-mirror worker start", () => {
+  it("runs a first tick shortly after boot, not only after a full interval (deploys reset the interval)", async () => {
+    vi.useFakeTimers();
+    const { startUniboxMirrorWorker, stopUniboxMirrorWorker, UNIBOX_MIRROR_BOOT_DELAY_MS } =
+      await import("../../src/lib/unibox-mirror-worker");
+    startUniboxMirrorWorker();
+    await vi.advanceTimersByTimeAsync(UNIBOX_MIRROR_BOOT_DELAY_MS + 10);
+    expect(mockBackfillEmails).toHaveBeenCalledTimes(1);
+    stopUniboxMirrorWorker();
+    vi.useRealTimers();
+  });
+});
