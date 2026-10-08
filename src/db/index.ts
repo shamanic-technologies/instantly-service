@@ -79,8 +79,14 @@ pool.query = function retryingQuery(...args: any[]): any {
 // Raise work_mem per session so the sort stays in memory — faster scans,
 // connections released sooner. Safe on RAM: the compute autoscales to 1 CU /
 // 4GB precisely under this load, and idle (0.25 CU floor) runs no such sorts.
+//
+// JIT off: these aggregates are costed far above jit_above_cost, and on the
+// shared, CPU-saturated box compiling the plan took longer than running it
+// (fleet /public/stats, 2026-10-08: JIT 7.0 s of a 17.4 s execution, inlining
+// alone 3.0 s). A plan's results do not depend on JIT, only its speed.
 pool.on("connect", (client) => {
   void client.query("SET work_mem = '32MB'");
+  void client.query("SET jit = off");
 });
 
 export const db = drizzle(pool);

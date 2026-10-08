@@ -1469,11 +1469,16 @@ describe("delivered is attributed to the send, not to the bounce", () => {
     // can never exceed the sends actually in the bucket.
     expect(eventsSql).toContain('AS "esDelivered"');
     expect(eventsSql).toContain('AS "rsDelivered"');
-    expect(eventsSql).toContain("b.campaign_id = e.campaign_id");
-    expect(eventsSql).toContain("b.event_type = 'email_bounced'");
+    expect(eventsSql).toContain("bounced_step.campaign_id = e.campaign_id");
+    expect(eventsSql).toContain("bounced_lead.campaign_id = e.campaign_id");
+    expect(eventsSql).toContain("WHERE event_type = 'email_bounced'");
     // The EMAIL grain keys on the step, the RECIPIENT grain on the lead — the
     // asymmetry is what leaves the existing recipient semantics untouched.
-    expect(eventsSql).toContain("b.step = e.step");
+    expect(eventsSql).toContain("bounced_step.step = e.step");
+    expect(eventsSql).not.toContain("bounced_lead.step");
+    // Joined once per statement, never a per-row correlated probe (2 x 169k
+    // subplan loops on the fleet read, 2026-10-08).
+    expect(eventsSql).not.toContain("EXISTS");
   });
 
   it("reports 0, never a negative, on a day that only carries bounces", async () => {
@@ -1557,7 +1562,7 @@ describe("delivered is attributed to the send, not to the bounce", () => {
 
     const allSql = mockExecute.mock.calls.map((c) => extractSqlText(c[0])).join("\n---\n");
     expect(allSql).toContain('AS "delivered"');
-    expect(allSql).toContain("b.step = e.step");
+    expect(allSql).toContain("bounced_step.step = e.step");
   });
 });
 
