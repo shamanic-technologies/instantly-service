@@ -686,6 +686,19 @@ async function runDispatchExclusive(
   const hasWork = current.selection.selected.length > 0 || waitingReplies.length > 0;
 
   if (!hasWork) {
+    // The inbox watcher keeps reading mailboxes while nothing is due (nights,
+    // weekends) and flags a possible reply from ANOTHER address; judging it is a
+    // local read plus a few judgments, so it must not wait for the next send
+    // window to reach the client's Unibox.
+    if (options.pollFirst) {
+      await runOrphanReplySweep().catch((error) => {
+        console.error(
+          `[instantly-service] self-send: idle orphan-reply sweep failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    }
     const idle: DispatchSummary = {
       ...emptySummary(),
       sequencesRead: current.sequences.length,
