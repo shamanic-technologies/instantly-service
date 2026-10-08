@@ -28,6 +28,12 @@ describe("registered email templates", () => {
     }
   });
 
+  it("the answer-request comes from Kevin, as signed", () => {
+    expect(EMAIL_TEMPLATES.find((t) => t.name === "positive-reply-answer-request")?.from).toBe(
+      "Kevin Lourd <growth@distribute.you>",
+    );
+  });
+
   it("names are unique", () => {
     const names = EMAIL_TEMPLATES.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
