@@ -2273,6 +2273,128 @@
           "disqualified"
         ]
       },
+      "WrittenToLeadsResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "description": "Rows on THIS page"
+          },
+          "leads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WrittenToLead"
+            },
+            "description": "Ordered by (instantlyCampaignId, leadEmail) ascending, the keyset the cursor walks"
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass as `cursor` for the next page. Null = this was the last page."
+          }
+        },
+        "required": [
+          "success",
+          "count",
+          "leads",
+          "nextCursor"
+        ]
+      },
+      "WrittenToLead": {
+        "type": "object",
+        "properties": {
+          "campaignId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The caller's own campaign id. Null on a platform send."
+          },
+          "instantlyCampaignId": {
+            "type": "string",
+            "description": "This service's per-lead sequence id, the identity `GET /orgs/conversations` takes"
+          },
+          "leadEmail": {
+            "type": "string"
+          },
+          "brandIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "firstSentAt": {
+            "type": "string",
+            "description": "Our first real send in this sequence (ISO 8601 UTC)"
+          },
+          "lastSentAt": {
+            "type": "string",
+            "description": "Our latest real send in this sequence, bounced or not (ISO 8601 UTC)"
+          },
+          "engaged": {
+            "type": "boolean",
+            "description": "True iff `GET /orgs/engaged-leads` lists this row too: `(replied AND NOT unsubscribed) OR clicked`"
+          },
+          "replied": {
+            "type": "boolean",
+            "description": "A human reply was received. Autoresponders never set it (see `replyKind`)."
+          },
+          "clicked": {
+            "type": "boolean",
+            "description": "The lead clicked a link WE sent"
+          },
+          "unsubscribed": {
+            "type": "boolean"
+          },
+          "bounced": {
+            "type": "boolean"
+          },
+          "firstRepliedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "firstClickedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "replyClassification": {
+            "type": "string",
+            "nullable": true,
+            "description": "positive | negative | neutral. Null when no reply is qualified."
+          },
+          "replyKind": {
+            "type": "string",
+            "nullable": true,
+            "description": "The finer reading of the latest statement, incl. `auto_reply_received` / `lead_out_of_office`. Null when none is on record."
+          },
+          "disqualified": {
+            "type": "boolean",
+            "description": "True only for a kind that is permanent about the PERSON (wrong person, changed job)"
+          }
+        },
+        "required": [
+          "campaignId",
+          "instantlyCampaignId",
+          "leadEmail",
+          "brandIds",
+          "firstSentAt",
+          "lastSentAt",
+          "engaged",
+          "replied",
+          "clicked",
+          "unsubscribed",
+          "bounced",
+          "firstRepliedAt",
+          "firstClickedAt",
+          "replyClassification",
+          "replyKind",
+          "disqualified"
+        ]
+      },
       "ReplyVerdictsResponse": {
         "type": "object",
         "properties": {
@@ -8254,6 +8376,165 @@
           },
           "500": {
             "description": "The engaged leads could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/written-to-leads": {
+      "get": {
+        "summary": "Every lead we have actually written to (paged)",
+        "description": "One row per (sequence, lead) with at least one REAL `email_sent`, whether or not the lead ever answered. The superset of `GET /orgs/engaged-leads`: a Unibox lists every conversation, including the ones where only we wrote. `engaged` marks the rows engaged-leads would also return.\n\n**Population.** Exactly the brand's `sent` rows on `POST /orgs/status` (read from the same gold projection). A lead contacted but not yet sent is NOT listed.\n\n**Paging.** Keyset on `(instantlyCampaignId, leadEmail)`. Read until `nextCursor` is null. Default page 1000, max 5000. A row promoted between two pages never shifts a page boundary.\n\n**Cost:** none. It sends nothing and declares nothing.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Only leads whose sequence carries this brand"
+            },
+            "required": false,
+            "description": "Only leads whose sequence carries this brand",
+            "name": "brand_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Only leads on this logical campaign"
+            },
+            "required": false,
+            "description": "Only leads on this logical campaign",
+            "name": "campaign_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 5000,
+              "description": "Page size, 1-5000. Omitted = 1000."
+            },
+            "required": false,
+            "description": "Page size, 1-5000. Omitted = 1000.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The previous page's `nextCursor`, verbatim. Omitted = first page."
+            },
+            "required": false,
+            "description": "The previous page's `nextCursor`, verbatim. Omitted = first page.",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of written-to leads (possibly empty)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WrittenToLeadsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "The written-to leads could not be read",
             "content": {
               "application/json": {
                 "schema": {
