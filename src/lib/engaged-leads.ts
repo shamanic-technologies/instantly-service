@@ -111,7 +111,7 @@ interface GoldRow {
 }
 
 /** node-postgres resolves `db.execute` to a QueryResult OBJECT, never an array. */
-function rowsOf(result: unknown): Record<string, unknown>[] {
+export function rowsOf(result: unknown): Record<string, unknown>[] {
   if (Array.isArray(result)) return result as Record<string, unknown>[];
   const rows = (result as { rows?: unknown })?.rows;
   return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
@@ -129,7 +129,7 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
  * left to the runtime's zone: this service's container happens to run UTC, but
  * that is incidental and not something the output format should depend on.
  */
-function isoOrNull(value: unknown): string | null {
+export function isoOrNull(value: unknown): string | null {
   if (value == null) return null;
   if (value instanceof Date) return value.toISOString();
 
@@ -145,13 +145,18 @@ function isoOrNull(value: unknown): string | null {
 }
 
 /**
- * Pure mapper — gold row to domain object.
- *
  * `disqualified` is derived STRICTLY from `replyKind` via the shared
  * `isDisqualifyingReplyKind`, never computed independently here. A second
  * definition of "disqualified" is how two surfaces start disagreeing about the
  * same person, and `POST /orgs/status` already answers this question.
  */
+export function disqualifiedByKind(replyKind: string | null): boolean {
+  return replyKind !== null && isReplyKind(replyKind)
+    ? isDisqualifyingReplyKind(replyKind)
+    : false;
+}
+
+/** Pure mapper — gold row to domain object. */
 export function toEngagedLead(row: GoldRow): EngagedLead {
   const replyKind = row.replyKind;
   const engagedAt = isoOrNull(row.engagedAt);
@@ -175,10 +180,7 @@ export function toEngagedLead(row: GoldRow): EngagedLead {
     firstClickedAt: isoOrNull(row.firstClickedAt),
     replyClassification: row.replyClassification,
     replyKind,
-    disqualified:
-      replyKind !== null && isReplyKind(replyKind)
-        ? isDisqualifyingReplyKind(replyKind)
-        : false,
+    disqualified: disqualifiedByKind(replyKind),
   };
 }
 

@@ -1985,6 +1985,115 @@ registry.registerPath({
   },
 });
 
+export const WrittenToLeadsQuerySchema = z
+  .object({
+    brand_id: z
+      .string()
+      .uuid()
+      .optional()
+      .describe("Only leads whose sequence carries this brand"),
+    campaign_id: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Only leads on this logical campaign"),
+    limit: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(5000)
+      .optional()
+      .describe("Page size, 1-5000. Omitted = 1000."),
+    cursor: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("The previous page's `nextCursor`, verbatim. Omitted = first page."),
+  })
+  .openapi("WrittenToLeadsQuery");
+
+const WrittenToLeadSchema = z
+  .object({
+    campaignId: z
+      .string()
+      .nullable()
+      .describe("The caller's own campaign id. Null on a platform send."),
+    instantlyCampaignId: z
+      .string()
+      .describe("This service's per-lead sequence id, the identity `GET /orgs/conversations` takes"),
+    leadEmail: z.string(),
+    brandIds: z.array(z.string()),
+    firstSentAt: z.string().describe("Our first real send in this sequence (ISO 8601 UTC)"),
+    lastSentAt: z
+      .string()
+      .describe("Our latest real send in this sequence, bounced or not (ISO 8601 UTC)"),
+    engaged: z
+      .boolean()
+      .describe("True iff `GET /orgs/engaged-leads` lists this row too: `(replied AND NOT unsubscribed) OR clicked`"),
+    replied: z.boolean().describe("A human reply was received. Autoresponders never set it (see `replyKind`)."),
+    clicked: z.boolean().describe("The lead clicked a link WE sent"),
+    unsubscribed: z.boolean(),
+    bounced: z.boolean(),
+    firstRepliedAt: z.string().nullable(),
+    firstClickedAt: z.string().nullable(),
+    replyClassification: z
+      .string()
+      .nullable()
+      .describe("positive | negative | neutral. Null when no reply is qualified."),
+    replyKind: z
+      .string()
+      .nullable()
+      .describe("The finer reading of the latest statement, incl. `auto_reply_received` / `lead_out_of_office`. Null when none is on record."),
+    disqualified: z
+      .boolean()
+      .describe("True only for a kind that is permanent about the PERSON (wrong person, changed job)"),
+  })
+  .openapi("WrittenToLead");
+
+export const WrittenToLeadsResponseSchema = z
+  .object({
+    success: z.literal(true),
+    count: z.number().int().describe("Rows on THIS page"),
+    leads: z
+      .array(WrittenToLeadSchema)
+      .describe("Ordered by (instantlyCampaignId, leadEmail) ascending, the keyset the cursor walks"),
+    nextCursor: z
+      .string()
+      .nullable()
+      .describe("Pass as `cursor` for the next page. Null = this was the last page."),
+  })
+  .openapi("WrittenToLeadsResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/written-to-leads",
+  summary: "Every lead we have actually written to (paged)",
+  description:
+    "One row per (sequence, lead) with at least one REAL `email_sent`, whether or not the lead ever answered. The superset of `GET /orgs/engaged-leads`: a Unibox lists every conversation, including the ones where only we wrote. `engaged` marks the rows engaged-leads would also return.\n\n" +
+    "**Population.** Exactly the brand's `sent` rows on `POST /orgs/status` (read from the same gold projection). A lead contacted but not yet sent is NOT listed.\n\n" +
+    "**Paging.** Keyset on `(instantlyCampaignId, leadEmail)`. Read until `nextCursor` is null. Default page 1000, max 5000. A row promoted between two pages never shifts a page boundary.\n\n" +
+    "**Cost:** none. It sends nothing and declares nothing.",
+  request: {
+    headers: TrackingHeadersSchema,
+    query: WrittenToLeadsQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "One page of written-to leads (possibly empty)",
+      content: { "application/json": { schema: WrittenToLeadsResponseSchema } },
+    },
+    400: {
+      description: "Invalid query or cursor",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "The written-to leads could not be read",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 export const ReplyVerdictsQuerySchema = z
   .object({
     emails: z
