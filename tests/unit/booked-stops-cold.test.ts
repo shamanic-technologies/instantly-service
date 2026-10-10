@@ -193,6 +193,26 @@ describe("booked meeting stops the cold sequence (Fernanda, Doc Dinners, 2026-10
   });
 });
 
+describe("two callers share one sweep", () => {
+  it("a call landing while a sweep runs joins it: one queue read, one stop, same result", async () => {
+    mockExecute.mockResolvedValue({ rows: [queued()] });
+    serveLedger({ [DOC_DINNERS]: { meeting_booked: [{ leadId: FERNANDA_LEAD, email: FERNANDA }] } });
+
+    const [a, b] = await Promise.all([
+      stopQueuedSequencesOfBookedPeople(CALLER),
+      stopQueuedSequencesOfBookedPeople(CALLER),
+    ]);
+
+    expect(a).toBe(b);
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+    expect(mockUpdateCampaignStatus).toHaveBeenCalledTimes(1);
+
+    // Once settled, the next call runs a fresh sweep.
+    await stopQueuedSequencesOfBookedPeople(CALLER);
+    expect(mockExecute).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("isBookedSequence", () => {
   const ledger = new Map([[DOC_DINNERS, { leadIds: new Set([FERNANDA_LEAD]), emails: new Set([FERNANDA]) }]]);
 

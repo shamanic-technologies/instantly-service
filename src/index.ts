@@ -221,6 +221,15 @@ async function start() {
         );
       });
 
+    // A person who booked a meeting gets no more cold email from that brand: its own
+    // drive, because the dispatch interval restarts on every deploy. Armed after listen.
+    import("./lib/booked-stops-cold-worker")
+      .then(({ startBookedStopsWorker }) => startBookedStopsWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start booked-stops-cold worker: ${message}`);
+      });
+
     // Read a prospect's reply the moment it lands: one IMAP IDLE session per
     // self-send mailbox, independent of whether anything is due to send.
     // Armed after the port is bound — ~123 logins must never block listen.
