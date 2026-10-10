@@ -4,13 +4,12 @@
  * against.
  *
  * ── Why this exists ───────────────────────────────────────────────────────────
- * Campaigns are created with a Mon-Fri window (`createAndActivateCampaign` sends
- * `days: { "0": false, "1": true … "5": true, "6": false }`), so nothing
- * dispatches on a Saturday or a Sunday. Send selection, however, compares an
+ * Campaigns are created with a Mon-Sat window (`createAndActivateCampaign` sends
+ * `days` built from `SENDING_WEEKDAYS`), so nothing dispatches on a Sunday. Send selection, however, compares an
  * account's load against its daily cap for the CALENDAR day — so on a weekend it
  * measured a day that can never consume the capacity it was handing out, and
- * granted Saturday's AND Sunday's slots on top of Monday's. All three landed on
- * Monday's single cap, which is one of the ways a head-of-fill-order account
+ * granted the off day's slots on top of the next sending day's, which landed on
+ * that day's single cap, which is one of the ways a head-of-fill-order account
  * ends up carrying more queued work than it can drain.
  *
  * `isSendingDay` answers the fleet-wide half of that question: is this a day the
@@ -37,10 +36,16 @@
  * nominally due" but "can this mailbox absorb one more lead".
  */
 
-/** Days a campaign is allowed to dispatch on, as JS `getUTCDay()` values (0=Sun). */
-export const SENDING_WEEKDAYS: readonly number[] = [1, 2, 3, 4, 5];
+/**
+ * Days a campaign is allowed to dispatch on, as JS `getUTCDay()` values (0=Sun).
+ * Saturday added 2026-10-10 (owner): the weekday study read Saturday at 0.08%
+ * positive replies vs 0.03-0.05% Mon-Fri (noise, p 0.385, but no sign of harm)
+ * and a sixth day is ~20% more capacity on the same mailboxes. Sunday stays off:
+ * it is the day the weekly seed placement test runs (`seed-placement/due.ts`).
+ */
+export const SENDING_WEEKDAYS: readonly number[] = [1, 2, 3, 4, 5, 6];
 
-/** True when `d` falls on a day the fleet's campaigns can dispatch (Mon-Fri, UTC). */
+/** True when `d` falls on a day the fleet's campaigns can dispatch (Mon-Sat, UTC). */
 export function isSendingDay(d: Date): boolean {
   return SENDING_WEEKDAYS.includes(d.getUTCDay());
 }

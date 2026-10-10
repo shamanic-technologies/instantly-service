@@ -70,12 +70,13 @@ describe("evidenceExpiresAt / projectNextSeedTest / nextNonSendingDay", () => {
     expect(evidenceExpiresAt(null)).toBeNull();
   });
 
-  it("the next non-sending day is the coming Saturday, or today on a weekend", () => {
-    expect(nextNonSendingDay(new Date("2026-09-16T10:00:00Z"))).toBe("2026-09-19"); // Wed → Sat
+  it("the next non-sending day is the coming Sunday, or today on a Sunday", () => {
+    expect(nextNonSendingDay(new Date("2026-09-16T10:00:00Z"))).toBe("2026-09-20"); // Wed → Sun
+    expect(nextNonSendingDay(new Date("2026-09-19T10:00:00Z"))).toBe("2026-09-20"); // Sat (sending) → Sun
     expect(nextNonSendingDay(new Date("2026-09-20T10:00:00Z"))).toBe("2026-09-20"); // Sun
   });
 
-  it("never tested → due today; recently tested → expected on the weekend after the interval elapses", () => {
+  it("never tested → due today; recently tested → expected on the Sunday after the interval elapses", () => {
     const asOf = new Date("2026-09-16T10:00:00Z");
     expect(projectNextSeedTest(null, asOf)).toMatchObject({ due: true, reason: "no_previous_test", expectedAt: "2026-09-16" });
     const recent = projectNextSeedTest(new Date("2026-09-14T00:00:00Z"), asOf);

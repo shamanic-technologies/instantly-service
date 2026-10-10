@@ -96,8 +96,8 @@ describe("when a never-started first email counts as stalled", () => {
   it("counts only full sending days between the assignment day and today", () => {
     // Assigned Monday 09-28; Tue, Wed, Thu elapsed before Friday 10-02.
     expect(sendingDaysElapsed(new Date("2026-09-28T23:00:00Z"), AS_OF)).toBe(3);
-    // Assigned Friday 09-25; the weekend does not count.
-    expect(sendingDaysElapsed(new Date("2026-09-25T10:00:00Z"), AS_OF)).toBe(4);
+    // Assigned Friday 09-25; Saturday counts (Mon-Sat), Sunday does not.
+    expect(sendingDaysElapsed(new Date("2026-09-25T10:00:00Z"), AS_OF)).toBe(5);
     // Assigned yesterday.
     expect(sendingDaysElapsed(new Date("2026-10-01T10:00:00Z"), AS_OF)).toBe(0);
   });

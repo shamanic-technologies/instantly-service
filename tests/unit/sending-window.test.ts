@@ -47,31 +47,32 @@ describe("sending-window", () => {
   });
 
   describe("isLocalSendingDay", () => {
-    it("accepts Mon-Fri and refuses the weekend", () => {
+    it("accepts Mon-Sat and refuses Sunday", () => {
       expect(isLocalSendingDay(2026, 8, 31)).toBe(true); // Monday
       expect(isLocalSendingDay(2026, 9, 4)).toBe(true); // Friday
-      expect(isLocalSendingDay(2026, 9, 5)).toBe(false); // Saturday
+      expect(isLocalSendingDay(2026, 9, 5)).toBe(true); // Saturday
       expect(isLocalSendingDay(2026, 9, 6)).toBe(false); // Sunday
     });
   });
 
   describe("nextLocalSendInstant", () => {
     it("returns the instant UNCHANGED inside the local window", () => {
-      // 09:00 Monday in Chicago — squarely inside 08:00-17:00.
+      // 09:00 Monday in Chicago — squarely inside 07:00-19:00.
       const asOf = new Date("2026-08-31T14:00:00Z");
       expect(nextLocalSendInstant(asOf, CHICAGO).toISOString()).toBe(asOf.toISOString());
     });
 
     it("waits for the window to OPEN when the local day has not started", () => {
-      // 06:00 Monday in Chicago → 08:00 the same local day (13:00Z).
+      // 06:00 Monday in Chicago → 07:00 the same local day (12:00Z).
+      expect(SEND_WINDOW_START_HOUR).toBe(7);
       const got = nextLocalSendInstant(new Date("2026-08-31T11:00:00Z"), CHICAGO);
       expect(localParts(got, CHICAGO)).toMatchObject({ day: 31, hour: SEND_WINDOW_START_HOUR });
-      expect(got.toISOString()).toBe("2026-08-31T13:00:00.000Z");
+      expect(got.toISOString()).toBe("2026-08-31T12:00:00.000Z");
     });
 
     it("rolls to the NEXT local weekday once the window has closed", () => {
-      // 18:00 Monday in Chicago (23:00Z) → 08:00 Tuesday local.
-      const got = nextLocalSendInstant(new Date("2026-08-31T23:00:00Z"), CHICAGO);
+      // 20:00 Monday in Chicago (01:00Z Tuesday) → 07:00 Tuesday local.
+      const got = nextLocalSendInstant(new Date("2026-09-01T01:00:00Z"), CHICAGO);
       expect(localParts(got, CHICAGO)).toMatchObject({
         month: 9,
         day: 1,
@@ -79,9 +80,9 @@ describe("sending-window", () => {
       });
     });
 
-    it("skips a local weekend to Monday", () => {
-      // Saturday 10:00 Chicago → 08:00 Monday local.
-      const got = nextLocalSendInstant(new Date("2026-09-05T15:00:00Z"), CHICAGO);
+    it("skips a local Sunday to Monday", () => {
+      // Sunday 10:00 Chicago → 07:00 Monday local.
+      const got = nextLocalSendInstant(new Date("2026-09-06T15:00:00Z"), CHICAGO);
       expect(localParts(got, CHICAGO)).toMatchObject({
         month: 9,
         day: 7,
@@ -90,7 +91,7 @@ describe("sending-window", () => {
     });
 
     it("is idempotent — snapping an already-open instant returns it", () => {
-      const once = nextLocalSendInstant(new Date("2026-09-05T15:00:00Z"), CHICAGO);
+      const once = nextLocalSendInstant(new Date("2026-09-06T15:00:00Z"), CHICAGO);
       const twice = nextLocalSendInstant(once, CHICAGO);
       expect(twice.toISOString()).toBe(once.toISOString());
     });
@@ -98,13 +99,14 @@ describe("sending-window", () => {
 
   describe("bookedDayKey — the lead's local day is not the mailbox's UTC day", () => {
     it("books a New Zealand lead's local MONDAY on the mailbox's SUNDAY", () => {
-      // Sunday 2026-08-30 06:00Z is Sunday 18:00 in Auckland: the local weekend,
-      // so the next window is Monday 08:00 local = Sunday 20:00 UTC.
+      // Sunday 2026-08-30 06:00Z is Sunday 18:00 in Auckland: the local off day,
+      // so the next window is Monday 07:00 local = Sunday 19:00 UTC.
       const key = bookedDayKey(new Date("2026-08-30T06:00:00Z"), AUCKLAND);
       expect(key).toBe("2026-08-30");
       // ...and the instant really is inside the prospect's Monday morning.
       const instant = nextLocalSendInstant(new Date("2026-08-30T06:00:00Z"), AUCKLAND);
-      expect(localParts(instant, AUCKLAND)).toMatchObject({ day: 31, hour: 8 });
+      expect(localParts(instant, AUCKLAND)).toMatchObject({ day: 31, hour: SEND_WINDOW_START_HOUR });
+      expect(instant.toISOString()).toBe("2026-08-30T19:00:00.000Z");
     });
 
     it("books a Chicago lead on the same UTC day it is assigned", () => {
@@ -119,7 +121,7 @@ describe("sending-window", () => {
       expect(keys).toEqual(["2026-08-31", "2026-09-03", "2026-09-10"]);
     });
 
-    it("snaps a hop landing on a local weekend forward, and CHAINS off the snapped day", () => {
+    it("snaps a hop landing on a local Sunday forward, and CHAINS off the snapped day", () => {
       // Thursday 09-03 + 3 = Sunday 09-06 → snapped to Monday 09-07.
       // The next +7 then chains off Monday (→ 09-14), NOT off the nominal Sunday.
       const keys = sequenceFootprintDays(new Date("2026-09-03T14:00:00Z"), CHICAGO, [3, 7]);
@@ -154,18 +156,20 @@ describe("sending-window", () => {
 
   describe("chainBookedDays", () => {
     it("anchors on the first open window, not on the raw instant", () => {
-      // Saturday anchor → everything starts from Monday.
-      const keys = chainBookedDays(new Date("2026-09-05T15:00:00Z"), CHICAGO, [3]);
+      // Sunday anchor → everything starts from Monday.
+      const keys = chainBookedDays(new Date("2026-09-06T15:00:00Z"), CHICAGO, [3]);
       expect(keys).toEqual(["2026-09-07", "2026-09-10"]);
     });
   });
 
   describe("isWithinLocalSendWindow", () => {
-    it("is true only inside the prospect's local business hours on a local weekday", () => {
+    it("is true only inside the prospect's local 07:00-19:00 hours on a local Mon-Sat", () => {
       expect(isWithinLocalSendWindow(new Date("2026-08-31T14:00:00Z"), CHICAGO)).toBe(true); // 09:00 Mon
       expect(isWithinLocalSendWindow(new Date("2026-08-31T11:00:00Z"), CHICAGO)).toBe(false); // 06:00 Mon
-      expect(isWithinLocalSendWindow(new Date("2026-08-31T23:00:00Z"), CHICAGO)).toBe(false); // 18:00 Mon
-      expect(isWithinLocalSendWindow(new Date("2026-09-05T15:00:00Z"), CHICAGO)).toBe(false); // Sat
+      expect(isWithinLocalSendWindow(new Date("2026-08-31T23:00:00Z"), CHICAGO)).toBe(true); // 18:00 Mon
+      expect(isWithinLocalSendWindow(new Date("2026-09-01T01:00:00Z"), CHICAGO)).toBe(false); // 20:00 Mon
+      expect(isWithinLocalSendWindow(new Date("2026-09-05T15:00:00Z"), CHICAGO)).toBe(true); // Sat
+      expect(isWithinLocalSendWindow(new Date("2026-09-06T15:00:00Z"), CHICAGO)).toBe(false); // Sun
     });
 
     it("opens for an Auckland lead while it is still Sunday for us", () => {
@@ -175,10 +179,10 @@ describe("sending-window", () => {
     });
 
     it("closes exactly at the end hour", () => {
-      // 17:00 Chicago = 22:00Z — the window is half-open, so this is CLOSED.
-      expect(SEND_WINDOW_END_HOUR).toBe(17);
-      expect(isWithinLocalSendWindow(new Date("2026-08-31T22:00:00Z"), CHICAGO)).toBe(false);
-      expect(isWithinLocalSendWindow(new Date("2026-08-31T21:59:00Z"), CHICAGO)).toBe(true);
+      // 19:00 Chicago = 00:00Z next day — the window is half-open, so this is CLOSED.
+      expect(SEND_WINDOW_END_HOUR).toBe(19);
+      expect(isWithinLocalSendWindow(new Date("2026-09-01T00:00:00Z"), CHICAGO)).toBe(false);
+      expect(isWithinLocalSendWindow(new Date("2026-08-31T23:59:00Z"), CHICAGO)).toBe(true);
     });
   });
 });

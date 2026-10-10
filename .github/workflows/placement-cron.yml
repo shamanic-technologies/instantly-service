@@ -61,7 +61,7 @@ name: Inbox-placement tests (maintain + sync)
 
 on:
   schedule:
-    - cron: "0 6 * * 6" # Saturdays 06:00 UTC — one weekly full-pool test
+    - cron: "0 6 * * 0" # Sundays 06:00 UTC — one weekly full-pool test (Saturday is a sending day since 2026-10-10)
     - cron: "0 7 * * *" # DAILY 07:00 UTC — sync ONLY (see the sync-cadence note above)
   workflow_dispatch:
 
