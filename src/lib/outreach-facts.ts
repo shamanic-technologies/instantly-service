@@ -17,6 +17,14 @@
  *    verdict, the kind-derived distinctions, the Jev judgments and the
  *    escalation. When any of that changes, a NEW reply fact is appended naming
  *    the one it supersedes (`supersedes_seq`). Never an edit.
+ *  - REPLY-SENT facts (`reply_sent`), one per email WE sent into a prospect's
+ *    thread outside the sequence: every answer through `POST /orgs/replies`
+ *    (a human's or the automation's, both transports: `smtp_dispatch_raw`
+ *    step 0), an answer one of our people sent from their own client and
+ *    CC'd the mailbox (IMAP `staff_reply`), and an answer typed straight into
+ *    Instantly's Unibox (mirror `ue_type` 3 no dispatch row claims). Emitted
+ *    once (partial unique index on `subject_key`, drizzle/0069), so a
+ *    consumer holding a copy of the thread learns it moved.
  *  - `withdrawn` facts: the source is gone — a click later proven to be a link
  *    scanner (its event deleted), a bounce retracted as a delayed DSN, a
  *    recorded opt-out withdrawn by staff, a stated reply pruned once its real
@@ -37,7 +45,7 @@ import { sql, type SQL } from "drizzle-orm";
 
 import { db } from "../db";
 import { escalationColumns, escalationJoin, toReplyVerdictView, type ReplyVerdictView } from "./reply-verdicts";
-import { readReplyJudgments, selectRepliesToJudge } from "./reply-judgments";
+import { readReplyJudgments } from "./reply-judgments";
 
 /** Any 64-bit constant unique to this lock. */
 const FEED_LOCK_KEY = 726_400_117;
@@ -49,7 +57,7 @@ export const EVENT_FACT_TYPES = [
   "email_bounced",
   "unsubscribed",
 ] as const;
-export const OUTREACH_FACT_TYPES = [...EVENT_FACT_TYPES, "reply", "withdrawn"] as const;
+export const OUTREACH_FACT_TYPES = [...EVENT_FACT_TYPES, "reply", "reply_sent", "withdrawn"] as const;
 export type OutreachFactType = (typeof OUTREACH_FACT_TYPES)[number];
 
 /** Silver event type → fact type. */
@@ -63,13 +71,6 @@ const EVENT_TYPE_TO_FACT: Record<string, (typeof EVENT_FACT_TYPES)[number]> = {
 
 /** Event facts whose source can later disappear or be withdrawn. */
 const WITHDRAWABLE_EVENT_FACTS = ["link_clicked", "email_bounced", "unsubscribed"] as const;
-
-/**
- * A reply still owed its verdict or a judgment is held this long before it is
- * emitted anyway (then corrected), so the feed rarely has to correct itself but
- * a classifier outage never hides a reply for more than half an hour.
- */
-export const REPLY_HOLD_MINUTES = 30;
 
 /**
  * A sequence send Instantly's `/emails` poll reported without a step is the
@@ -197,6 +198,77 @@ export function eventWithdrawalsInsertSql(): SQL {
   `;
 }
 
+// ─── Reply-sent facts ────────────────────────────────────────────────────────
+
+export const REPLY_SENT_VIA = ["replies_route", "staff_client", "provider_unibox"] as const;
+export type ReplySentVia = (typeof REPLY_SENT_VIA)[number];
+
+/**
+ * Emit every email we sent into a prospect's thread outside the sequence, not
+ * emitted yet, oldest first. Three stores hold one, each read whole through a
+ * small index except the IMAP mirror (3 GB), read by `polled_at` over
+ * `sinceDays` (null = the whole history):
+ *  - `smtp_dispatch_raw` step 0 `sent`: every `POST /orgs/replies` answer on
+ *    either transport, `sentBy` = `human` | `automation`;
+ *  - `imap_messages_raw` `staff_reply`: one of our people answered from their
+ *    own client and CC'd the mailbox;
+ *  - `instantly_emails_raw` `ue_type` 3: typed into Instantly's Unibox. One our
+ *    route sent is the dispatch row's (its `instantlyEmailId`), never twice.
+ * Idempotent (unique subject).
+ */
+export function replySentFactsInsertSql(sinceDays: number | null): SQL {
+  const imapWindow =
+    sinceDays === null ? sql`` : sql`AND m.polled_at > now() - make_interval(days => ${sinceDays})`;
+  return sql`
+    INSERT INTO outreach_facts
+      (subject_key, type, occurred_at, lead_email, org_id, campaign_id, instantly_campaign_id,
+       brand_ids, transport, payload)
+    SELECT x.subject_key, 'reply_sent', x.occurred_at, COALESCE(c.lead_email, x.lead_email), c.org_id,
+           c.campaign_id, x.instantly_campaign_id, c.brand_ids,
+           COALESCE(x.transport, c.send_transport, 'instantly'),
+           jsonb_build_object('via', x.via, 'sentBy', x.sent_by, 'accountEmail', x.account_email,
+                              'subject', x.subject)
+    FROM (
+      SELECT 'rsent:' || d.id AS subject_key, d.dispatched_at AT TIME ZONE 'UTC' AS occurred_at,
+             d.lead_email, d.instantly_campaign_id,
+             CASE WHEN d.payload->>'transport' = 'instantly' THEN 'instantly' ELSE 'smtp' END AS transport,
+             'replies_route' AS via, d.payload->>'sentBy' AS sent_by, d.account_email,
+             d.payload->>'subject' AS subject
+      FROM smtp_dispatch_raw d
+      WHERE d.step = 0 AND d.outcome = 'sent'
+
+      UNION ALL
+
+      SELECT 'rsent:imap:' || m.id, COALESCE(m.received_at, m.polled_at) AT TIME ZONE 'UTC',
+             NULL, m.instantly_campaign_id, NULL,
+             'staff_client', 'human', COALESCE(m.from_address, m.account_email), m.subject
+      FROM imap_messages_raw m
+      WHERE m.kind = 'staff_reply' AND m.instantly_campaign_id IS NOT NULL
+        ${imapWindow}
+
+      UNION ALL
+
+      SELECT 'rsent:iem:' || r.instantly_email_id, (r.payload->>'timestamp_email')::timestamptz,
+             r.payload->>'lead', r.instantly_campaign_id, 'instantly',
+             'provider_unibox', 'human', r.payload->>'eaccount', r.payload->>'subject'
+      FROM instantly_emails_raw r
+      WHERE r.payload->>'ue_type' = '3'
+        AND r.instantly_campaign_id IS NOT NULL
+        AND r.payload->>'timestamp_email' IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM smtp_dispatch_raw d
+          WHERE d.instantly_campaign_id = r.instantly_campaign_id AND d.step = 0
+            AND d.payload->>'instantlyEmailId' = r.instantly_email_id
+        )
+    ) x
+    LEFT JOIN instantly_campaigns c ON c.instantly_campaign_id = x.instantly_campaign_id
+    WHERE x.instantly_campaign_id NOT LIKE 'reserving:%'
+      AND COALESCE(c.lead_email, x.lead_email) IS NOT NULL
+    ORDER BY x.occurred_at, x.subject_key
+    ON CONFLICT (subject_key) WHERE type = 'reply_sent' DO NOTHING
+  `;
+}
+
 // ─── Reply facts ─────────────────────────────────────────────────────────────
 
 /**
@@ -222,35 +294,30 @@ export function replyContentHash(view: ReplyVerdictView): string {
   return createHash("sha256").update(JSON.stringify(stable)).digest("hex").slice(0, 32);
 }
 
+/**
+ * A reply is emitted the tick it lands, verdict or not: a consumer holding a
+ * copy of the thread must learn it moved within minutes. Its verdict and
+ * judgments arrive as a correction (a new fact superseding it).
+ */
 interface ReplyCandidate {
   view: ReplyVerdictView;
   orgId: string | null;
   hash: string;
-  /** Still owed its verdict or a judgment, and young enough to wait for it. */
-  held: boolean;
 }
 
 async function loadReplyCandidates(): Promise<ReplyCandidate[]> {
   const rows = rowsOf(
     await db.execute(sql`
-      SELECT r.*, ${escalationColumns()},
-             r.received_at > now() - make_interval(mins => ${REPLY_HOLD_MINUTES}) AS young
+      SELECT r.*, ${escalationColumns()}
       FROM replies r
       ${escalationJoin()}
       ORDER BY r.received_at, r.id
     `),
   );
   const judgments = await readReplyJudgments(rows.map((r) => String(r.id)));
-  const owed = new Set((await selectRepliesToJudge(100_000)).map((r) => r.replyId));
   return rows.map((row) => {
     const view = toReplyVerdictView(row, judgments.get(String(row.id)) ?? {});
-    const young = row.young === true;
-    return {
-      view,
-      orgId: (row.org_id as string | null) ?? null,
-      hash: replyContentHash(view),
-      held: young && (view.verdict === null || owed.has(view.replyId)),
-    };
+    return { view, orgId: (row.org_id as string | null) ?? null, hash: replyContentHash(view) };
   });
 }
 
@@ -285,7 +352,6 @@ async function latestReplyFacts(tx: Executor): Promise<Map<string, LatestReplyFa
 export interface ReplyFactPlan {
   emit: { candidate: ReplyCandidate; supersedesSeq: number | null }[];
   withdraw: LatestReplyFact[];
-  held: number;
 }
 
 /** Pure: which reply facts to append, given what silver says and what was emitted. */
@@ -293,17 +359,13 @@ export function planReplyFacts(
   candidates: ReplyCandidate[],
   latest: Map<string, LatestReplyFact>,
 ): ReplyFactPlan {
-  const plan: ReplyFactPlan = { emit: [], withdraw: [], held: 0 };
+  const plan: ReplyFactPlan = { emit: [], withdraw: [] };
   const present = new Set<string>();
   for (const candidate of candidates) {
     const key = `reply:${candidate.view.replyId}`;
     present.add(key);
     const prior = latest.get(key);
     if (prior && prior.type === "reply" && prior.hash === candidate.hash) continue;
-    if (candidate.held) {
-      plan.held += 1;
-      continue;
-    }
     plan.emit.push({ candidate, supersedesSeq: prior && prior.type === "reply" ? prior.seq : null });
   }
   for (const [key, prior] of latest) {
@@ -328,7 +390,7 @@ export interface OutreachFactsSyncSummary {
   replyFacts: number;
   replyCorrections: number;
   withdrawnReplies: number;
-  heldReplies: number;
+  repliesSent: number;
 }
 
 /**
@@ -351,6 +413,7 @@ export async function syncOutreachFacts(
 
     const events = await tx.execute(eventFactsInsertSql(sinceDays));
     const withdrawnEvents = await tx.execute(eventWithdrawalsInsertSql());
+    const repliesSent = await tx.execute(replySentFactsInsertSql(sinceDays));
 
     const plan = planReplyFacts(candidates, await latestReplyFacts(tx));
     let replyFacts = 0;
@@ -386,7 +449,7 @@ export async function syncOutreachFacts(
       replyFacts,
       replyCorrections,
       withdrawnReplies: plan.withdraw.length,
-      heldReplies: plan.held,
+      repliesSent: (repliesSent as { rowCount?: number }).rowCount ?? 0,
     };
   });
 }
@@ -412,6 +475,7 @@ export interface OutreachFact {
   bounce: { step: number | null } | null;
   unsubscribe: { step: number | null; via: "link" | "recorded" } | null;
   reply: ReplyVerdictView | null;
+  replySent: { via: ReplySentVia; sentBy: "human" | "automation" | null; accountEmail: string | null; subject: string | null } | null;
   withdrawal: { withdrawnSeq: string; withdrawnType: string; reason: "source_removed" | "statement_withdrawn" } | null;
 }
 
@@ -446,6 +510,15 @@ export function toOutreachFact(row: Record<string, unknown>): OutreachFact {
     bounce: type === "email_bounced" ? { step } : null,
     unsubscribe: type === "unsubscribed" ? { step, via: p.via as "link" | "recorded" } : null,
     reply: type === "reply" ? (p as unknown as ReplyVerdictView) : null,
+    replySent:
+      type === "reply_sent"
+        ? {
+            via: p.via as ReplySentVia,
+            sentBy: p.sentBy === "human" || p.sentBy === "automation" ? p.sentBy : null,
+            accountEmail: (p.accountEmail as string | null) ?? null,
+            subject: (p.subject as string | null) ?? null,
+          }
+        : null,
     withdrawal:
       type === "withdrawn"
         ? {
