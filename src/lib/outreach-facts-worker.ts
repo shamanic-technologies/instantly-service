@@ -22,7 +22,7 @@ export async function runOutreachFactsTick(): Promise<void> {
   const judged = await judgePendingReplies((await feedHasReplyFacts()) ? JUDGE_PER_TICK : 100_000);
   const summary = await syncOutreachFacts({ sinceDays: TICK_WINDOW_DAYS });
   const emitted =
-    summary.eventFacts + summary.withdrawnEvents + summary.replyFacts + summary.replyCorrections + summary.withdrawnReplies;
+    summary.eventFacts + summary.withdrawnEvents + summary.replyFacts + summary.replyCorrections + summary.withdrawnReplies + summary.repliesSent;
   if (emitted > 0 || judged.judged > 0) {
     console.log(`[instantly-service] outreach-facts: ${JSON.stringify({ ...summary, judged: judged.judged })}`);
   }
