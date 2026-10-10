@@ -1665,7 +1665,10 @@ export const replies = pgTable(
  * thing our outreach did or saw for a person, append-only, in `seq` order.
  * A correction is a new row naming the one it supersedes. The partial unique
  * index (one row per event subject) and `instantly_events_created_at_idx` are
- * hand-written in 0067 — do not drop them on a db:generate diff.
+ * hand-written in 0067, the `reply_sent` unique index and its two source
+ * partial indexes (`smtp_dispatch_raw_replies_idx`,
+ * `instantly_emails_raw_manual_sent_idx`) in 0069 — do not drop them on a
+ * db:generate diff.
  */
 export const outreachFacts = pgTable(
   "outreach_facts",

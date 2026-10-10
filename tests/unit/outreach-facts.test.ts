@@ -21,6 +21,7 @@ import {
   eventFactsInsertSql,
   eventWithdrawalsInsertSql,
   planReplyFacts,
+  replySentFactsInsertSql,
   replyContentHash,
   toOutreachFact,
 } from "../../src/lib/outreach-facts";
@@ -211,13 +212,31 @@ describe("event facts", () => {
   });
 });
 
+describe("reply-sent facts: every email we sent into the thread", () => {
+  it("reads our replies on both transports, staff answers and Unibox sends, once each", () => {
+    const q = sqlText(replySentFactsInsertSql(2));
+    expect(q).toContain("'reply_sent'");
+    expect(q).toContain("d.step = 0 AND d.outcome = 'sent'");
+    expect(q).toContain("m.kind = 'staff_reply'");
+    expect(q).toContain("r.payload->>'ue_type' = '3'");
+    // A Unibox copy of an answer our route sent is the dispatch row's, never twice.
+    expect(q).toContain("d.payload->>'instantlyEmailId' = r.instantly_email_id");
+    expect(q).toContain("ON CONFLICT (subject_key) WHERE type = 'reply_sent' DO NOTHING");
+    expect(q).toContain("m.polled_at > now()");
+  });
+
+  it("scans the whole IMAP history only when asked for everything", () => {
+    expect(sqlText(replySentFactsInsertSql(null))).not.toContain("m.polled_at > now()");
+  });
+});
+
 describe("reply facts: corrections are new facts", () => {
   const latest = (entries: [string, { seq: number; type: string; hash: string | null }][]) =>
     new Map(entries.map(([k, v]) => [k, { ...v, row: {} }]));
 
   it("emits a new reply once, then nothing while it says the same", () => {
     const v = view();
-    const c = { view: v, orgId: "org", hash: replyContentHash(v), held: false };
+    const c = { view: v, orgId: "org", hash: replyContentHash(v) };
     expect(planReplyFacts([c], new Map()).emit).toEqual([{ candidate: c, supersedesSeq: null }]);
     expect(planReplyFacts([c], latest([["reply:imap:1", { seq: 7, type: "reply", hash: c.hash }]])).emit).toEqual([]);
   });
@@ -226,7 +245,7 @@ describe("reply facts: corrections are new facts", () => {
     const before = view();
     const after = view({ escalation: { escalatedAt: "2026-10-08T01:00:00.000Z", handedTo: "agency" } });
     expect(replyContentHash(after)).not.toBe(replyContentHash(before));
-    const c = { view: after, orgId: "org", hash: replyContentHash(after), held: false };
+    const c = { view: after, orgId: "org", hash: replyContentHash(after) };
     const plan = planReplyFacts([c], latest([["reply:imap:1", { seq: 7, type: "reply", hash: replyContentHash(before) }]]));
     expect(plan.emit[0].supersedesSeq).toBe(7);
   });
@@ -238,17 +257,16 @@ describe("reply facts: corrections are new facts", () => {
     expect(replyContentHash(b)).toBe(replyContentHash(a));
   });
 
-  it("holds a reply still owed its verdict or a judgment, and withdraws one that vanished", () => {
-    const held = { view: view({}, null), orgId: "org", hash: "h", held: true };
-    const plan = planReplyFacts([held], latest([["reply:manual:1", { seq: 3, type: "reply", hash: "x" }]]));
-    expect(plan.emit).toEqual([]);
-    expect(plan.held).toBe(1);
+  it("emits a reply still owed its verdict at once (corrected later), and withdraws one that vanished", () => {
+    const fresh = { view: view({}, null), orgId: "org", hash: "h" };
+    const plan = planReplyFacts([fresh], latest([["reply:manual:1", { seq: 3, type: "reply", hash: "x" }]]));
+    expect(plan.emit).toEqual([{ candidate: fresh, supersedesSeq: null }]);
     expect(plan.withdraw.map((w) => w.seq)).toEqual([3]);
   });
 
   it("restates a reply that comes back after a withdrawal as a first statement", () => {
     const v = view();
-    const c = { view: v, orgId: "org", hash: replyContentHash(v), held: false };
+    const c = { view: v, orgId: "org", hash: replyContentHash(v) };
     const plan = planReplyFacts([c], latest([["reply:imap:1", { seq: 9, type: "withdrawn", hash: null }]]));
     expect(plan.emit[0].supersedesSeq).toBeNull();
     expect(plan.withdraw).toEqual([]);
@@ -300,5 +318,17 @@ describe("the served fact", () => {
     expect(fact.reply?.verdict?.classification).toBe("negative");
     expect(fact.reply?.verdict?.declinedOffer).toBe(true);
     expect(fact.reply?.judgments.question?.value).toBe("none");
+  });
+
+  it("serves a reply we sent with who wrote it (Robert Burke: our automated follow-up)", () => {
+    const fact = toOutreachFact({
+      ...base,
+      subject_key: "rsent:21dcbfca",
+      type: "reply_sent",
+      payload: { via: "replies_route", sentBy: "automation", accountEmail: "bria@x.com", subject: "Re: hello" },
+    });
+    expect(fact.replySent).toEqual({ via: "replies_route", sentBy: "automation", accountEmail: "bria@x.com", subject: "Re: hello" });
+    expect([fact.send, fact.reply, fact.withdrawal]).toEqual([null, null, null]);
+    expect(toOutreachFact({ ...base, type: "email_sent", payload: { step: 1, position: "first" } }).replySent).toBeNull();
   });
 });

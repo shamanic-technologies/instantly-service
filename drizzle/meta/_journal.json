@@ -484,6 +484,13 @@
       "when": 1791200000000,
       "tag": "0068_client_answer_requested",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1791300000000,
+      "tag": "0069_outreach_reply_sent_facts",
+      "breakpoints": true
     }
   ]
 }
