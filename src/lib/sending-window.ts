@@ -4,7 +4,7 @@
  * mailbox's quota it consumes.
  *
  * ── Why the lead's timezone decides a MAILBOX's day ───────────────────────────
- * Every campaign we create carries a Mon-Fri 08:00-17:00 schedule in the
+ * Every campaign we create carries a Mon-Sat 07:00-19:00 schedule in the
  * RECIPIENT's timezone (`createCampaign` → `campaign_schedule.schedules[0]`,
  * one campaign = one lead), so a send fires inside that prospect's local
  * business hours. The mailbox, however, is billed against a UTC calendar day.
@@ -37,10 +37,15 @@ import { dateKeyUTC } from "./sending-forecast";
 import { SENDING_WEEKDAYS } from "./sending-calendar";
 
 /** First hour (local) a campaign may dispatch — `campaign_schedule.timing.from`. */
-export const SEND_WINDOW_START_HOUR = 8;
+export const SEND_WINDOW_START_HOUR = 7;
 
-/** Hour (local) the window closes — `campaign_schedule.timing.to` (17:00). */
-export const SEND_WINDOW_END_HOUR = 17;
+/**
+ * Hour (local) the window closes — `campaign_schedule.timing.to` (19:00).
+ * 08:00-17:00 until 2026-10-10; widened to 07:00-19:00 by the owner (the hour
+ * study read 07:00 at 0.10% and 18:00-19:00 at 0.03-0.05% vs 0.06% at 08:00:
+ * noise either way). Re-read the hour/weekday studies on post-change sends.
+ */
+export const SEND_WINDOW_END_HOUR = 19;
 
 /**
  * Timezone assumed for a lead we hold none for.
@@ -198,7 +203,7 @@ function weekdayOf(year: number, month: number, day: number): number {
   return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
 }
 
-/** True when a local calendar date is one the campaign schedule allows (Mon-Fri). */
+/** True when a local calendar date is one the campaign schedule allows (Mon-Sat). */
 export function isLocalSendingDay(year: number, month: number, day: number): boolean {
   return SENDING_WEEKDAYS.includes(weekdayOf(year, month, day));
 }
@@ -237,8 +242,8 @@ export function resolveLeadTimezone(timeZone: string | null | undefined): string
  * Three cases, and the middle one is the whole point of the function:
  *   - inside today's local window → `asOf` itself, so nothing shifts for the
  *     overwhelmingly common case of a weekday send during business hours;
- *   - before it opens → 08:00 local the SAME local day;
- *   - after it closes, or a local weekend → 08:00 local on the next local
+ *   - before it opens → 07:00 local the SAME local day;
+ *   - after it closes, or a local Sunday → 07:00 local on the next local
  *     weekday, which is routinely a different UTC day than the caller's own.
  *
  * Throws rather than looping if no window is found inside `MAX_WINDOW_SEARCH_DAYS`

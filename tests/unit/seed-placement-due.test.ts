@@ -17,7 +17,7 @@ import {
 } from "../../src/lib/seed-placement/due";
 import { DELIVERY_EVIDENCE_MAX_AGE_DAYS } from "../../src/lib/account-lifecycle";
 
-// 2026-08-29 is a Saturday; 2026-08-31 a Monday.
+// 2026-08-29 is a Saturday, 2026-08-30 a Sunday (the only non-sending day), 2026-08-31 a Monday.
 const SAT = new Date("2026-08-29T08:00:00.000Z");
 const SUN = new Date("2026-08-30T08:00:00.000Z");
 const MON = new Date("2026-08-31T08:00:00.000Z");
@@ -42,29 +42,36 @@ describe("decideSeedTestDue", () => {
     });
   });
 
-  it("is due on a Saturday once the interval has passed", () => {
-    expect(decideSeedTestDue(daysBefore(SAT, 7), SAT)).toMatchObject({
+  it("is due on a Sunday once the interval has passed", () => {
+    expect(decideSeedTestDue(daysBefore(SUN, 7), SUN)).toMatchObject({
       due: true,
       reason: "weekend_cadence",
     });
   });
 
-  it("SELF-HEALS: a skipped Saturday is picked up by Sunday", () => {
-    // This is the whole point. The 2026-08-29 Saturday tick never fired.
+  it("is NOT due on a Saturday once the interval has passed: Saturday is a sending day now", () => {
+    // Mon-Sat since 2026-10-10: seeds on a Saturday would stack on a full cold day.
+    const d = decideSeedTestDue(daysBefore(SAT, 7), SAT);
+    expect(d).toMatchObject({ due: false, reason: "waiting_for_weekend" });
+    expect(d.ageDays).toBeLessThan(SEED_EVIDENCE_URGENT_AGE_DAYS);
+  });
+
+  it("SELF-HEALS: a Sunday that finds a late-landing test still runs", () => {
+    // A skipped tick costs nothing: the next Sunday tick with stale-ish evidence fires.
     expect(decideSeedTestDue(daysBefore(SUN, 8), SUN)).toMatchObject({
       due: true,
       reason: "weekend_cadence",
     });
   });
 
-  it("waits for the weekend on a normal sending day, so seeds land on an idle mailbox", () => {
+  it("waits for Sunday on a normal sending day, so seeds land on an idle mailbox", () => {
     expect(decideSeedTestDue(daysBefore(MON, 7), MON)).toMatchObject({
       due: false,
       reason: "waiting_for_weekend",
     });
   });
 
-  it("OVERRIDES the weekend preference once evidence is urgently old", () => {
+  it("OVERRIDES the Sunday preference once evidence is urgently old", () => {
     // A weekday seed spike is the lesser evil against the entire fleet ageing
     // into delivery_evidence_stale and dropping out of the sending pool.
     expect(decideSeedTestDue(daysBefore(WED, SEED_EVIDENCE_URGENT_AGE_DAYS), WED)).toMatchObject({
@@ -74,9 +81,9 @@ describe("decideSeedTestDue", () => {
   });
 
   it("reports the evidence age so the log says WHY", () => {
-    const d = decideSeedTestDue(daysBefore(SAT, 7), SAT);
+    const d = decideSeedTestDue(daysBefore(SUN, 7), SUN);
     expect(d.ageDays).toBeCloseTo(7, 5);
-    expect(decideSeedTestDue(null, SAT).ageDays).toBeNull();
+    expect(decideSeedTestDue(null, SUN).ageDays).toBeNull();
   });
 });
 

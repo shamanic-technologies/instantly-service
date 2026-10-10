@@ -2670,9 +2670,9 @@ it("is byte-identical to the old today-only question when no footprint is given"
   });
 
   it("anchors on the LEAD's window: a prospect whose local day is over books tomorrow", () => {
-    // 2026-08-31T23:00Z is 18:00 Monday in Chicago — the window has closed, so
-    // this lead is a TUESDAY lead even though it is still Monday for the fleet.
-    const closed = new Date("2026-08-31T23:00:00.000Z");
+    // 2026-09-01T01:00Z is 20:00 Monday in Chicago — the 07:00-19:00 window has
+    // closed, so this lead is a TUESDAY lead even though it was Monday locally.
+    const closed = new Date("2026-09-01T01:00:00.000Z");
     expect(sequenceFootprintDays(closed, CHICAGO, [3, 7])).toEqual([
       "2026-09-01",
       "2026-09-04",
@@ -2681,7 +2681,7 @@ it("is byte-identical to the old today-only question when no footprint is given"
   });
 
   it("books a New Zealand lead's first email on the mailbox's SUNDAY", () => {
-    // Sunday 06:00Z is Sunday evening in Auckland → next window is Monday 08:00
+    // Sunday 06:00Z is Sunday evening in Auckland → next window is Monday 07:00
     // local, which is still SUNDAY here. The mailbox spends its Sunday.
     const sunday = new Date("2026-08-30T06:00:00.000Z");
     expect(sequenceFootprintDays(sunday, "Pacific/Auckland", [3, 7])[0]).toBe("2026-08-30");
