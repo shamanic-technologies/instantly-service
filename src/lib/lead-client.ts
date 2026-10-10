@@ -418,3 +418,61 @@ export async function recordFollowupActByEmail(params: {
   }
   return (await response.json()) as RecordedFollowupAct;
 }
+
+/**
+ * Outcomes that mean a meeting is booked with the person: the booking itself, and the two steps
+ * that cannot happen without one. The SAME set lead-service's own follow-up queue excludes on
+ * (`FOLLOWUP_BOOKED_OUTCOMES` there), read here verbatim rather than re-decided.
+ */
+export const BOOKED_OUTCOME_EVENTS = ["meeting_booked", "meeting_attended", "sale"] as const;
+
+/** Who has a live booked outcome at one brand, keyed both ways a local row can be matched. */
+export interface BookedPeople {
+  leadIds: Set<string>;
+  emails: Set<string>;
+}
+
+const BOOKED_READ_TIMEOUT_MS = 15_000;
+
+/**
+ * Every person with a LIVE booked outcome at `brandId`, read from lead-service's conversion ledger
+ * (`GET /internal/brands/:brandId/converted-leads?event=…`: attributed, not withdrawn, any source —
+ * CRM, tracker, a person's statement). One read per event in {@link BOOKED_OUTCOME_EVENTS}.
+ *
+ * FAILS LOUD on any non-2xx or malformed body: an unreadable ledger is NOT "nobody booked", and the
+ * caller must not keep emailing on a guess.
+ */
+export async function listBookedPeople(brandId: string): Promise<BookedPeople> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+  const booked: BookedPeople = { leadIds: new Set(), emails: new Set() };
+  await Promise.all(
+    BOOKED_OUTCOME_EVENTS.map(async (event) => {
+      const response = await fetch(
+        `${LEAD_SERVICE_URL}/internal/brands/${encodeURIComponent(brandId)}/converted-leads?event=${event}`,
+        {
+          headers: { "x-api-key": LEAD_SERVICE_API_KEY },
+          signal: AbortSignal.timeout(BOOKED_READ_TIMEOUT_MS),
+        },
+      );
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(
+          `lead-service GET /internal/brands/{brandId}/converted-leads?event=${event} failed: ${response.status} - ${detail.slice(0, 200)}`,
+        );
+      }
+      const body = (await response.json()) as { outcomes?: unknown };
+      if (!Array.isArray(body.outcomes)) {
+        throw new Error(
+          `lead-service GET /internal/brands/{brandId}/converted-leads?event=${event} returned no outcomes array`,
+        );
+      }
+      for (const raw of body.outcomes as Array<{ leadId?: unknown; email?: unknown }>) {
+        if (typeof raw.leadId === "string" && raw.leadId) booked.leadIds.add(raw.leadId);
+        if (typeof raw.email === "string" && raw.email) booked.emails.add(raw.email.trim().toLowerCase());
+      }
+    }),
+  );
+  return booked;
+}

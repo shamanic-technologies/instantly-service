@@ -43,6 +43,7 @@ import {
 import { SEND_TRANSPORT_SMTP } from "./transport";
 import { dispatchScheduledReplies } from "../scheduled-replies-worker";
 import { stopQueuedSequencesOfStoppedCampaigns } from "../stopped-campaigns";
+import { stopQueuedSequencesOfBookedPeople } from "../booked-stops-cold";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/dispatch" };
 
@@ -621,7 +622,13 @@ async function runDispatchExclusive(
   // ask campaign-service, which owns that status, and stop every queued
   // sequence of a stopped campaign BEFORE anything is selected. Fails LOUD —
   // a run that cannot confirm its campaigns are running sends nothing.
-  const { notYetStopped } = await stopQueuedSequencesOfStoppedCampaigns(CALLER);
+  const { notYetStopped: stoppedCampaignLeft } = await stopQueuedSequencesOfStoppedCampaigns(CALLER);
+
+  // A person who booked a meeting with the brand gets no more cold email from it, on either
+  // transport: ask lead-service's ledger and stop their queued sequences. Fails LOUD — an
+  // unreadable ledger is not "nobody booked", so the run sends nothing.
+  const { notYetStopped: bookedLeft } = await stopQueuedSequencesOfBookedPeople(CALLER);
+  const notYetStopped = new Set<string>([...stoppedCampaignLeft, ...bookedLeft]);
 
   // Read the mailboxes BEFORE deciding what to send, in the same run and
   // awaited. A prospect who replied since the last sweep has their sequence
