@@ -25,6 +25,13 @@ vi.mock("../../src/lib/stopped-campaigns", () => ({
   stopQueuedSequencesOfStoppedCampaigns: (...args: unknown[]) => mockStopStoppedCampaigns(...args),
 }));
 
+// The booked-meeting sweep asks lead-service on every run; its own tests are
+// booked-stops-cold.test.ts. Defaults to "nobody booked".
+const mockStopBooked = vi.fn();
+vi.mock("../../src/lib/booked-stops-cold", () => ({
+  stopQueuedSequencesOfBookedPeople: (...args: unknown[]) => mockStopBooked(...args),
+}));
+
 vi.mock("../../src/db", () => ({
   db: {
     execute: (...args: unknown[]) => mockExecute(...args),
@@ -138,6 +145,7 @@ function primeStepContent() {
 beforeEach(() => {
   vi.resetAllMocks();
   mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+  mockStopBooked.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   __resetDispatchInFlight();
   mockLoadMailboxLogins.mockResolvedValue(
     new Map([["amy@saviolabsco.com", "amy@saviolabsco.com"]]),

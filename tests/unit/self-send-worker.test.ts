@@ -15,6 +15,13 @@ vi.mock("../../src/lib/stopped-campaigns", () => ({
   stopQueuedSequencesOfStoppedCampaigns: (...args: unknown[]) => mockStopStoppedCampaigns(...args),
 }));
 
+// The booked-meeting sweep asks lead-service on every run; its own tests are
+// booked-stops-cold.test.ts. Defaults to "nobody booked".
+const mockStopBooked = vi.fn();
+vi.mock("../../src/lib/booked-stops-cold", () => ({
+  stopQueuedSequencesOfBookedPeople: (...args: unknown[]) => mockStopBooked(...args),
+}));
+
 vi.mock("../../src/db", () => ({
   db: {
     execute: (...args: unknown[]) => mockExecute(...args),
@@ -135,6 +142,7 @@ function primeReads(options: { hasBody?: boolean } = {}) {
 beforeEach(() => {
   vi.resetAllMocks();
   mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+  mockStopBooked.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   // Credentialed, and each address IS its own SMTP login.
   mockLoadMailboxLogins.mockImplementation(async () =>
     new Map([
@@ -195,6 +203,47 @@ describe("runDispatch — a stopped campaign sends nothing more", () => {
     mockStopStoppedCampaigns.mockRejectedValue(new Error("campaign-service GET /campaigns/list failed: 503"));
 
     await expect(runDispatch({ asOf: NOW })).rejects.toThrow(/campaigns\/list/);
+    expect(mockExecute).not.toHaveBeenCalled();
+    expect(mockDispatchMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("runDispatch — a person who booked a meeting gets no more cold email", () => {
+  it("asks lead-service's ledger before the first queue read", async () => {
+    primeReads();
+    mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<m1@mail>",
+      response: "250 OK",
+      accepted: ["prospect@example.com"],
+      rejected: [],
+    });
+
+    await runDispatch({ asOf: NOW });
+
+    expect(mockStopBooked).toHaveBeenCalledTimes(1);
+    expect(mockStopBooked.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockExecute.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("never sends a booked person's sequence the sweep has not stopped yet", async () => {
+    primeReads();
+    mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+    mockStopBooked.mockResolvedValue({ summary: {}, notYetStopped: new Set(["camp-1"]) });
+
+    const summary = await runDispatch({ asOf: NOW });
+
+    expect(summary.sent).toBe(0);
+    expect(mockDispatchMessage).not.toHaveBeenCalled();
+  });
+
+  it("sends NOTHING when the booked-outcome ledger cannot be read", async () => {
+    primeReads();
+    mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+    mockStopBooked.mockRejectedValue(new Error("lead-service GET /internal/brands/{brandId}/converted-leads failed: 503"));
+
+    await expect(runDispatch({ asOf: NOW })).rejects.toThrow(/converted-leads/);
     expect(mockExecute).not.toHaveBeenCalled();
     expect(mockDispatchMessage).not.toHaveBeenCalled();
   });
