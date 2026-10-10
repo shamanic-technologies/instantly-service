@@ -377,18 +377,22 @@ describe("selectDueSteps — the prospect's own business hours", () => {
   // prospect's business hours. Here we ARE the scheduler, so without this gate a
   // lead's first email fires at whatever hour the hourly cron happens to run.
   it("holds a step until the lead's local window OPENS", () => {
-    // Monday 07:00 in Chicago — the campaign schedule opens at 08:00.
-    const beforeOpen = new Date("2026-08-17T12:00:00Z");
+    // Monday 06:00 in Chicago — the campaign schedule opens at 07:00.
+    const beforeOpen = new Date("2026-08-17T11:00:00Z");
     expect(pick([due()], [capacity], beforeOpen)).toEqual([]);
     // ...and one hour later it goes.
-    const afterOpen = new Date("2026-08-17T13:00:00Z");
+    const afterOpen = new Date("2026-08-17T12:00:00Z");
     expect(pick([due()], [capacity], afterOpen)).toHaveLength(1);
   });
 
   it("stops once the lead's local window CLOSES", () => {
-    // Monday 17:00 in Chicago — the window is half-open, so this is shut.
-    const afterClose = new Date("2026-08-17T22:00:00Z");
+    // Monday 19:00 in Chicago (Tuesday 00:00Z, a UTC sending day) — the window
+    // is half-open, so this is shut...
+    const afterClose = new Date("2026-08-18T00:00:00Z");
     expect(pick([due()], [capacity], afterClose)).toEqual([]);
+    // ...while one minute earlier it was still open.
+    const beforeClose = new Date("2026-08-17T23:59:00Z");
+    expect(pick([due()], [capacity], beforeClose)).toHaveLength(1);
   });
 
   it("uses each lead's OWN zone, so one sends while another waits", () => {
@@ -411,21 +415,21 @@ describe("selectDueSteps — the prospect's own business hours", () => {
     expect(picked.map((d) => d.instantlyCampaignId)).toEqual(["c-chi"]);
   });
 
-  it("holds a lead whose local day is a weekend even though ours is not", () => {
-    // Friday 2026-08-21 22:30Z is already SATURDAY in Auckland.
-    const fridayHere = new Date("2026-08-21T22:30:00Z");
-    expect(fridayHere.getUTCDay()).toBe(5);
+  it("holds a lead whose local day is a Sunday even though ours is not", () => {
+    // Saturday 2026-08-22 22:30Z (a UTC sending day) is already SUNDAY 10:30 in Auckland.
+    const saturdayHere = new Date("2026-08-22T22:30:00Z");
+    expect(saturdayHere.getUTCDay()).toBe(6);
     const nz = sequence({ provisionedSteps: [1], timezone: "Pacific/Auckland" });
-    expect(pick([nz], [capacity], fridayHere)).toEqual([]);
+    expect(pick([nz], [capacity], saturdayHere)).toEqual([]);
   });
 
   // The UTC gate is the outer floor and this one is stricter, never looser: a
-  // lead whose local window opens while it is still the weekend HERE waits for
+  // lead whose local window opens while it is still Sunday HERE waits for
   // the next UTC sending day. Capacity books the earlier of the two, so a send
   // arrives on its booked day or after it — never before.
-  it("still refuses a lead whose local window is open on OUR weekend", () => {
+  it("still refuses a lead whose local window is open on OUR Sunday", () => {
     // Sunday 2026-08-16 20:30Z is Monday 08:30 in Auckland — open for the
-    // prospect, but the fleet-wide weekend gate holds it anyway.
+    // prospect, but the fleet-wide Sunday gate holds it anyway.
     const sundayHere = new Date("2026-08-16T20:30:00Z");
     expect(sundayHere.getUTCDay()).toBe(0);
     const nz = sequence({ provisionedSteps: [1], timezone: "Pacific/Auckland" });
@@ -462,11 +466,10 @@ describe("selectDueSteps — sending calendar", () => {
     expect(MONDAY.getUTCDay()).toBe(1);
   });
 
-  // Every campaign in the fleet is created Mon-Fri, and both transports run on
+  // Every campaign in the fleet is created Mon-Sat, and both transports run on
   // the same mailboxes — diverging would change a mailbox's behaviour purely
   // because of which pipe a lead was assigned to.
   it.each([
-    ["Saturday", SATURDAY],
     ["Sunday", SUNDAY],
   ])("sends nothing on a %s, even with a badly overdue step", (_label, day) => {
     const overdue = sequence({
@@ -478,33 +481,38 @@ describe("selectDueSteps — sending calendar", () => {
     expect(pick([overdue], [capacity], day)).toEqual([]);
   });
 
-  // The weekly placement test runs Saturday precisely because mailboxes are
+  // The weekly placement test runs Sunday precisely because mailboxes are
   // otherwise empty and can absorb a ~30-50 seed spike.
-  it("leaves the Saturday placement-test slot completely free", () => {
+  it("leaves the Sunday placement-test slot completely free", () => {
     const many = Array.from({ length: 20 }, (_, i) =>
       sequence({ instantlyCampaignId: `c-${i}`, leadEmail: `p${i}@x.com` }),
     );
-    expect(pick(many, [capacity], SATURDAY)).toHaveLength(0);
+    expect(pick(many, [capacity], SUNDAY)).toHaveLength(0);
   });
 
-  // Nothing is lost — a weekend-due step simply waits, and Monday drains the
+  // Nothing is lost — a Sunday-due step simply waits, and Monday drains the
   // backlog most-overdue-first.
-  it("carries a weekend-due step over to Monday", () => {
-    const dueOnSaturday = sequence({
+  it("carries a Sunday-due step over to Monday", () => {
+    const dueOnSunday = sequence({
       provisionedSteps: [2],
       lastSentStep: 1,
-      lastSentAt: new Date(SATURDAY.getTime() - 2 * DAY),
+      lastSentAt: new Date(SUNDAY.getTime() - 2 * DAY),
     });
 
-    expect(pick([dueOnSaturday], [capacity], SATURDAY)).toEqual([]);
+    expect(pick([dueOnSunday], [capacity], SUNDAY)).toEqual([]);
 
-    const onMonday = pick([dueOnSaturday], [capacity], MONDAY);
+    const onMonday = pick([dueOnSunday], [capacity], MONDAY);
     expect(onMonday).toHaveLength(1);
     expect(onMonday[0]!.step).toBe(2);
   });
 
   it("is unchanged on a weekday", () => {
     expect(pick([sequence()], [capacity], MONDAY)).toHaveLength(1);
+  });
+
+  it("sends on a Saturday: Saturday is a sending day since 2026-10-10", () => {
+    // 15:00Z Saturday = 10:00 Chicago, inside the lead's local window.
+    expect(pick([sequence()], [capacity], SATURDAY)).toHaveLength(1);
   });
 });
 
@@ -604,9 +612,9 @@ describe("selectDueSteps — a throttled run is distinguishable from an idle one
     expect(out.blockedNoCapacityRow).toBe(12);
   });
 
-  it("reports zeros on a weekend rather than a count nothing will act on", () => {
-    const SATURDAY = new Date("2026-08-15T15:00:00Z");
-    const out = selectDueSteps(leads(9, "amy@saviolabsco.com"), [], SATURDAY);
+  it("reports zeros on a Sunday rather than a count nothing will act on", () => {
+    const SUNDAY = new Date("2026-08-16T15:00:00Z");
+    const out = selectDueSteps(leads(9, "amy@saviolabsco.com"), [], SUNDAY);
     expect(out).toEqual({
       selected: [],
       dueBeforeCapacity: 0,

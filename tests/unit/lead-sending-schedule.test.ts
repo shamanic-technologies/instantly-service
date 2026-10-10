@@ -38,7 +38,7 @@ describe("buildLeadSendingSchedule", () => {
   it("serves the send path's own window constants", () => {
     const s = buildLeadSendingSchedule("Europe/Paris", true);
     expect(s).toEqual({
-      weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+      weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"],
       startHour: SEND_WINDOW_START_HOUR,
       endHour: SEND_WINDOW_END_HOUR,
       timezone: "Europe/Paris",
@@ -81,8 +81,8 @@ describe("GET /orgs/sending-schedule", () => {
       timezone: "America/New_York",
       timezoneIsDefault: false,
       hasSequence: true,
-      startHour: 8,
-      endHour: 17,
+      startHour: 7,
+      endHour: 19,
     });
   });
 

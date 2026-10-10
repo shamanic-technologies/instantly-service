@@ -55,7 +55,7 @@ name: Inbox-placement — prime the sender pool
 
 on:
   schedule:
-    - cron: "30 5 * * 6" # Saturday 05:30 UTC — 30 min before the 06:00 test
+    - cron: "30 5 * * 0" # Sunday 05:30 UTC — 30 min before the 06:00 test
   workflow_dispatch:
 
 jobs:

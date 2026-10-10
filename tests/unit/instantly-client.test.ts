@@ -90,7 +90,7 @@ describe("instantly-client", () => {
     expect(options.headers.Authorization).toBe(`Bearer ${TEST_API_KEY}`);
   });
 
-  it("createCampaign schedules business hours on weekdays, default tz when none given", async () => {
+  it("createCampaign schedules 07:00-19:00 Mon-Sat (Sunday off), default tz when none given", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true, status: 200,
       json: () => Promise.resolve({ id: "camp-1", name: "T", status: "draft", created_at: "", updated_at: "" }),
@@ -100,8 +100,8 @@ describe("instantly-client", () => {
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     const sched = body.campaign_schedule.schedules[0];
-    expect(sched.timing).toEqual({ from: "08:00", to: "17:00" });
-    expect(sched.days).toEqual({ "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false });
+    expect(sched.timing).toEqual({ from: "07:00", to: "19:00" });
+    expect(sched.days).toEqual({ "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": true });
     expect(sched.timezone).toBe("America/Chicago");
   });
 

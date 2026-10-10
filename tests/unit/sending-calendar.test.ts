@@ -6,11 +6,11 @@ import {
 
 describe("sending-calendar", () => {
   describe("SENDING_WEEKDAYS", () => {
-    it("mirrors the campaign schedule shipped to Instantly: Mon-Fri, no weekend", () => {
+    it("mirrors the campaign schedule shipped to Instantly: Mon-Sat, Sunday off", () => {
       // instantly-client.ts createAndActivateCampaign sends
-      // { "0": false, "1": true ... "5": true, "6": false }
-      expect(SENDING_WEEKDAYS).toEqual([1, 2, 3, 4, 5]);
-      expect(isSendingDay(new Date("2026-08-15T10:00:00.000Z"))).toBe(false); // Sat
+      // { "0": false, "1": true ... "6": true }
+      expect(SENDING_WEEKDAYS).toEqual([1, 2, 3, 4, 5, 6]);
+      expect(isSendingDay(new Date("2026-08-15T10:00:00.000Z"))).toBe(true); // Sat
       expect(isSendingDay(new Date("2026-08-16T10:00:00.000Z"))).toBe(false); // Sun
       expect(isSendingDay(new Date("2026-08-17T10:00:00.000Z"))).toBe(true); // Mon
       expect(isSendingDay(new Date("2026-08-21T10:00:00.000Z"))).toBe(true); // Fri
