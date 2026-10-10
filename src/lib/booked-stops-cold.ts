@@ -126,14 +126,28 @@ async function loadQueuedBrandSequences(): Promise<QueuedBrandSequence[]> {
   }));
 }
 
+let inFlight: Promise<BookedSweep> | null = null;
+
 /**
  * Ask lead-service who is booked at each brand with a queued sequence, and stop every queued
  * sequence of a booked person, on its own transport.
+ *
+ * Two callers (the dispatch tick, and its own worker in `booked-stops-cold-worker.ts`): a call
+ * landing while a sweep runs JOINS it and gets that sweep's result, so the two never stop the
+ * same sequence twice in parallel and the dispatcher still gets the held-back set.
  */
-export async function stopQueuedSequencesOfBookedPeople(
+export function stopQueuedSequencesOfBookedPeople(
   caller: CallerInfo,
   limit: number = BOOKED_SWEEP_LIMIT,
 ): Promise<BookedSweep> {
+  if (inFlight) return inFlight;
+  inFlight = sweepBookedPeople(caller, limit).finally(() => {
+    inFlight = null;
+  });
+  return inFlight;
+}
+
+async function sweepBookedPeople(caller: CallerInfo, limit: number): Promise<BookedSweep> {
   const queued = await loadQueuedBrandSequences();
   const brands = [...new Set(queued.flatMap((s) => s.brandIds))];
 
