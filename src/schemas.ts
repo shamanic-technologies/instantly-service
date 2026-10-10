@@ -2238,11 +2238,11 @@ const OutreachFactSchema = z
   .object({
     seq: z.string().describe("The fact's position in the feed (digits). Pass the last one as `since` to resume."),
     type: z
-      .enum(["email_sent", "email_opened", "link_clicked", "email_bounced", "unsubscribed", "reply", "withdrawn"])
+      .enum(["email_sent", "email_opened", "link_clicked", "email_bounced", "unsubscribed", "reply", "reply_sent", "withdrawn"])
       .describe("What happened. Exactly one of the per-type objects below is non-null (the one matching `type`)."),
     subjectKey: z
       .string()
-      .describe("What the fact is about: `ievt:<event id>` for an email event, `reply:<replyId>` for a reply. Every fact about the same thing shares it."),
+      .describe("What the fact is about: `ievt:<event id>` for an email event, `reply:<replyId>` for a reply, `rsent:<id>` for a reply we sent. Every fact about the same thing shares it."),
     supersedesSeq: z
       .string()
       .nullable()
@@ -2278,6 +2278,17 @@ const OutreachFactSchema = z
       })
       .nullable(),
     reply: ReplyViewSchema.nullable().describe("A real reply with its CURRENT verdict, distinctions, judgments and escalation (same shape as one item of POST /orgs/reply-verdicts/query)."),
+    replySent: z
+      .object({
+        via: z
+          .enum(["replies_route", "staff_client", "provider_unibox"])
+          .describe("`replies_route` = sent through POST /orgs/replies (a human's or the automation's answer, either transport); `staff_client` = one of our people answered from their own mail client and copied the mailbox; `provider_unibox` = typed into Instantly's Unibox"),
+        sentBy: z.enum(["human", "automation"]).nullable().describe("Who wrote it; null when the record does not say"),
+        accountEmail: z.string().nullable().describe("The mailbox (or person) that sent it"),
+        subject: z.string().nullable(),
+      })
+      .nullable()
+      .describe("An email WE sent into the prospect's thread outside the sequence (an answer, a follow-up to their reply). Its `occurredAt` is when it went out. Stated once, never corrected."),
     withdrawal: z
       .object({
         withdrawnSeq: z.string().describe("The fact withdrawn (also in `supersedesSeq`)"),
@@ -2303,10 +2314,10 @@ registry.registerPath({
   path: "/internal/outreach-facts",
   summary: "Outreach fact feed (fleet-wide, cursor-paginated)",
   description:
-    "Every dated thing our cold-email outreach did or saw for a person, in ONE total order, for a consumer to COPY into its own store and then follow incrementally: each email we sent (first or follow-up), each open, click (with the URL when we recorded it), bounce and unsubscribe, and each real reply with its verdict and finer distinctions. Read-only, DB-only, no cost.\n\n" +
+    "Every dated thing our cold-email outreach did or saw for a person, in ONE total order, for a consumer to COPY into its own store and then follow incrementally: each email we sent (first or follow-up), each open, click (with the URL when we recorded it), bounce and unsubscribe, and each real reply with its verdict and finer distinctions, and each email we sent into the thread outside the sequence (`reply_sent`: our answers, manual or automated). Read-only, DB-only, no cost.\n\n" +
     "**Append-only.** A fact is never edited. A reply whose verdict, judgments or escalation changes gets a NEW `reply` fact naming the one it supersedes; something that turned out not to have happened gets a `withdrawn` fact. A consumer keeps, per `subjectKey`, the latest fact.\n\n" +
     "**Paging.** Start with no `since`; pass `nextCursor` back until `hasMore` is false; then poll with the last cursor. A cursor never skips a fact (emission is serialized).\n\n" +
-    "**Coverage.** From the first stored event (2026-02-10). Real events only (no inferred projections). Opens on our own sender are not observed (no pixel). Spam complaints are not captured. Freshness: emitted every 2 minutes; a reply waits up to 30 minutes for its verdict and judgments before being emitted anyway (then corrected).",
+    "**Coverage.** From the first stored event (2026-02-10). Real events only (no inferred projections). Opens on our own sender are not observed (no pixel). Spam complaints are not captured. Freshness: emitted every 2 minutes. A reply is emitted the tick it lands, with its verdict and judgments when already known, else null; they arrive as a correction. A reply typed into Instantly's Unibox (`provider_unibox`) is stated once our mirror of the thread picks it up.",
   request: { query: OutreachFactsQuerySchema },
   responses: {
     200: { description: "A page of facts", content: { "application/json": { schema: OutreachFactsResponseSchema } } },
