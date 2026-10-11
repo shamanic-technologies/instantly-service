@@ -17,7 +17,7 @@ describe("registered email templates", () => {
   });
 
   it("agency-inbox alerts are plain", () => {
-    for (const n of ["campaign-error", "reply-escalation", "reply-handover", "reply-unclassified"]) {
+    for (const n of ["campaign-error", "reply-escalation", "reply-handover", "reply-unclassified", "unanswered-question-check-in"]) {
       expect(layoutOf(n), n).toBe("none");
     }
   });

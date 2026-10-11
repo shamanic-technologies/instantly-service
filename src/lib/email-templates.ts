@@ -125,4 +125,18 @@ export const EMAIL_TEMPLATES: TemplateItem[] = [
         '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{thread}}</pre>',
       ].join("\n"),
     },
+    {
+      // An OLD question nobody answered in the thread (lib/ask-client-to-answer,
+      // older than QUESTION_STALE_AFTER_MS): staff only, never the client. It
+      // names the client and the prospect on line one, dates their question,
+      // and carries a ready check-in to send from the thread's own mailbox
+      // (someone may have answered another way). Body rendered and escaped in
+      // code; plain like every agency-inbox alert, default stream (the
+      // retired info-request alert's "Revenue made easy." footer).
+      name: "unanswered-question-check-in",
+      layout: "none",
+      subject: "{{subject}}",
+      htmlBody: "{{html}}",
+      textBody: "{{text}}",
+    },
 ];
