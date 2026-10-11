@@ -7,8 +7,9 @@
  * here and both routes call it. Byte-identical output for the audit route.
  */
 
-import { listAccounts, type Account } from "../instantly-client";
-import { resolvePlatformInstantlyApiKey, type CallerInfo } from "../key-client";
+import type { Account } from "../instantly-client";
+import type { CallerInfo } from "../key-client";
+import { listAccountsFromSilver } from "../silver-accounts";
 import { buildAccountHealth, type AccountHealth, type InboxPlacement } from "../account-health";
 import {
   fetchLifecycleByEmail,
@@ -43,9 +44,8 @@ export interface AccountHealthRead {
 
 export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHealthRead> {
   const asOf = new Date();
-  const apiKey = await resolvePlatformInstantlyApiKey(caller);
 
-  // Account list (Instantly) + latest placement, sent-today, and queue-size
+  // Account list (our silver, last Instantly snapshot) + latest placement, sent-today, and queue-size
   // per account (our silver + cost holds) run independently — parallelize.
   // Placement/sent/queue are best-effort per contract (null/0 when absent); a
   // live account list is required (fail loud).
@@ -62,7 +62,7 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
     mailboxOf,
     newSequencesTodayByEmail,
   ] = await Promise.all([
-    listAccounts(apiKey),
+    listAccountsFromSilver(),
     fetchLatestPlacementByAccount(),
     fetchSentTodayByAccount(),
     fetchSentYesterdayByAccount(),

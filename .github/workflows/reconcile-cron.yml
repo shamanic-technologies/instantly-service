@@ -4,9 +4,11 @@ name: Reconcile webhook catch-up (daily)
 # missed by the webhook into the silver event log. Idempotent — re-running has
 # no effect when nothing drifted.
 #
-# Two steps, in order:
-#   1. /internal/campaigns/reconcile — pull Instantly state → silver.
-#   2. /internal/campaigns/reconcile-provisioned-holds (commit) — evidence-based
+# The former step 1 (/internal/campaigns/reconcile, pull Instantly state ->
+# silver) was removed when the Instantly Email Outreach plan was cancelled
+# (2026-10-12): every open Instantly sequence was closed, nothing is left to pull.
+#
+#   /internal/campaigns/reconcile-provisioned-holds (commit) — evidence-based
 #      self-heal of stranded provisioned email-send holds. For each hold, from
 #      real (inferred=false) silver evidence: actualize a step with a real
 #      `email_sent` (the live webhook-actualize can be dropped transiently on a
@@ -46,37 +48,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: POST /internal/campaigns/reconcile
-        env:
-          SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}
-          API_KEY: ${{ secrets.INSTANTLY_SERVICE_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SERVICE_URL}" ] || [ -z "${API_KEY}" ]; then
-            echo "Missing INSTANTLY_SERVICE_URL or INSTANTLY_SERVICE_API_KEY secret"
-            exit 1
-          fi
-
-          response_file=$(mktemp)
-          status=$(curl -sS -o "${response_file}" -w "%{http_code}" \
-            -X POST \
-            -H "X-API-Key: ${API_KEY}" \
-            -H "Content-Type: application/json" \
-            --max-time 60 \
-            "${SERVICE_URL}/internal/campaigns/reconcile")
-
-          echo "HTTP ${status}"
-          cat "${response_file}"
-          echo
-
-          # Endpoint returns 202 Accepted and runs the job in the background.
-          # Verify completion via Railway logs (`reconcile: done`) or by polling
-          # `instantly_*_raw` bronze tables — NOT via this curl exit code.
-          if [ "${status}" != "202" ] && [ "${status}" != "200" ]; then
-            echo "Reconcile dispatch failed with HTTP ${status}"
-            exit 1
-          fi
-
       - name: POST /internal/campaigns/reconcile-provisioned-holds (commit)
         env:
           SERVICE_URL: ${{ secrets.INSTANTLY_SERVICE_URL }}

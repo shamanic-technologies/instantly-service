@@ -28,9 +28,12 @@ vi.mock("../../src/lib/self-send/mailbox-credentials", async (importOriginal) =>
   loadMailboxLogins: (...args: unknown[]) => mockLoadMailboxLogins(...args),
 }));
 
+// The account list is OUR silver (last Instantly snapshot), not a live
+// Instantly read: the Instantly plan is cancelled and the ops table must not go
+// down with its API.
 const mockListAccounts = vi.fn();
-vi.mock("../../src/lib/instantly-client", () => ({
-  listAccounts: (...args: unknown[]) => mockListAccounts(...args),
+vi.mock("../../src/lib/silver-accounts", () => ({
+  listAccountsFromSilver: (...args: unknown[]) => mockListAccounts(...args),
 }));
 
 const mockResolvePlatformKey = vi.fn();
@@ -147,7 +150,7 @@ describe("GET /internal/audit/account-health", () => {
     expect(typeof res.body.asOf).toBe("string");
   });
 
-  it("fails loud (500) when the platform key cannot be resolved — no fabricated list", async () => {
+  it("needs no Instantly key: the table renders when the Instantly key is gone", async () => {
     mockResolvePlatformKey.mockRejectedValue(
       new Error("key-service GET /keys/platform/instantly/decrypt failed: 404"),
     );
@@ -156,19 +159,18 @@ describe("GET /internal/audit/account-health", () => {
     const app = await makeApp();
     const res = await request(app).get("/internal/audit/account-health");
 
-    expect(res.status).toBe(500);
-    expect(res.body.error).toMatch(/key-service/);
-    expect(mockListAccounts).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mockResolvePlatformKey).not.toHaveBeenCalled();
   });
 
   it("fails loud (500) when the account source throws — no silent fallback", async () => {
-    mockListAccounts.mockRejectedValue(new Error("instantly boom"));
+    mockListAccounts.mockRejectedValue(new Error("db boom"));
 
     const app = await makeApp();
     const res = await request(app).get("/internal/audit/account-health");
 
     expect(res.status).toBe(500);
-    expect(res.body.error).toMatch(/instantly boom/);
+    expect(res.body.error).toMatch(/db boom/);
   });
   /**
    * The rank must come from the SELECTOR's own pool read + comparator, not from
