@@ -41,6 +41,7 @@ vi.mock("../../src/lib/brand-client", () => ({
 vi.mock("../../src/lib/campaign-client", () => ({
   getCampaignTriggerScope: (...a: unknown[]) => mockGetCampaignScope(...a),
   findOngoingInstantCallCampaign: (...a: unknown[]) => mockFindInstantCall(...a),
+  AI_INSTANT_CALL_FEATURE_SLUG: "ai-instant-call",
   AI_INSTANT_CALL_LEG_KEY: "conversation_to_booking_call",
 }));
 
@@ -265,7 +266,9 @@ describe("the ring's run identity (runs-service refuses a child naming another c
     expect(identity).toEqual({
       orgId: "org-1",
       userId: "user-1",
-      tracking: { campaignId: "aic-camp-1", brandId: "brand-1" },
+      // The feature slug is what every per-campaign money read filters costs on;
+      // the reveal's and the call's child runs inherit it from this root.
+      tracking: { campaignId: "aic-camp-1", brandId: "brand-1", featureSlug: "ai-instant-call" },
     });
     // No x-run-id: the cold-email run would be the parent and its campaign would conflict.
     expect(identity.runId).toBeUndefined();
@@ -280,8 +283,10 @@ describe("the ring's run identity (runs-service refuses a child naming another c
       runId: "ring-run-1",
       brandId: "brand-1",
       campaignId: "aic-camp-1",
+      featureSlug: "ai-instant-call",
     });
     const call = mockPlaceCall.mock.calls[0][0];
+    expect(call.featureSlug).toBe("ai-instant-call");
     expect(call.parentRunId).toBe("ring-run-1");
     expect(call.campaignId).toBe("aic-camp-1");
     expect(call.brandId).toBe("brand-1");

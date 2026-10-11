@@ -113,9 +113,11 @@ describe("phone reveal client", () => {
       runId: "run-1",
       brandId: "brand-1",
       campaignId: "camp-1",
+      featureSlug: "ai-instant-call",
     });
 
     const [url, init] = fetchMock.mock.calls[0];
+    expect(init.headers["x-feature-slug"]).toBe("ai-instant-call");
     expect(url).toBe("https://apollo.example/people/p-1/phone-reveal");
     expect(init.method).toBe("POST");
     expect(init.headers["x-org-id"]).toBe("org-1");
@@ -178,6 +180,35 @@ describe("placeCall", () => {
       connectTo: "+15551230000",
       reply: { name: "Dana", message: "interested" },
     });
+  });
+
+  it("forwards the run, brand, campaign and feature slug as identity headers (the call cost is read under the feature)", async () => {
+    const fetchMock = stubFetch({
+      json: { success: true, callId: "c-1", costName: "voice-us", connectOffered: false },
+    });
+    const { placeCall } = await import("../../src/lib/twilio-client");
+
+    await placeCall({
+      orgId: "org-1",
+      userId: "user-1",
+      to: "+15559990000",
+      reply: { name: "Dana", message: "interested" },
+      parentRunId: "ring-run-1",
+      brandId: "brand-1",
+      campaignId: "aic-camp-1",
+      featureSlug: "ai-instant-call",
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers["x-feature-slug"]).toBe("ai-instant-call");
+    expect(init.headers["x-run-id"]).toBe("ring-run-1");
+    expect(init.headers["x-campaign-id"]).toBe("aic-camp-1");
+    expect(init.headers["x-brand-id"]).toBe("brand-1");
+    const body = JSON.parse(init.body);
+    // The feature slug is a header, never a body field twilio-service does not parse.
+    expect(body.featureSlug).toBeUndefined();
+    // twilio-service still parses the run/brand/campaign from the body.
+    expect(body).toMatchObject({ parentRunId: "ring-run-1", brandId: "brand-1", campaignId: "aic-camp-1" });
   });
 
   it("fails loud on a non-2xx — a call that was never placed must not read as one that was", async () => {
