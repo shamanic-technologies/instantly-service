@@ -230,6 +230,15 @@ async function start() {
         console.error(`[instantly-service] failed to start booked-stops-cold worker: ${message}`);
       });
 
+    // A prospect's question still unanswered a day later reaches staff,
+    // whatever the responder's status says. Armed after listen.
+    import("./lib/info-request-deadline-worker")
+      .then(({ startInfoRequestDeadlineWorker }) => startInfoRequestDeadlineWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start info-request-deadline worker: ${message}`);
+      });
+
     // Read a prospect's reply the moment it lands: one IMAP IDLE session per
     // self-send mailbox, independent of whether anything is due to send.
     // Armed after the port is bound — ~123 logins must never block listen.
