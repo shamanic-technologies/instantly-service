@@ -49,6 +49,7 @@ import { isEscalatedReplyKind, POSITIVE_REPLY_KINDS } from "./reply-kind";
 import { agencyInbox } from "./agency-inbox";
 import { salesRepCopyList } from "./sales-rep-copy";
 import { isStaffSender } from "./staff-senders";
+import type { ResponderVerdict } from "./trigger-sales-interest-campaign";
 
 /**
  * The reply kinds that mean "worth forwarding to the agency inbox". We forward
@@ -275,11 +276,6 @@ export interface ThreadForwardTemplate {
   eventType?: string;
   /** Extra template variables, merged over `subject` / `thread`. */
   metadata?: Record<string, string>;
-  /**
-   * Copy the brand's sales rep (default true). False for a STAFF-only alert
-   * the client must not receive (lib/alert-unanswered-info-request).
-   */
-  copySalesRep?: boolean;
 }
 
 export async function sendThreadForward(
@@ -307,8 +303,7 @@ export async function sendThreadForward(
   // the same reasoning that makes the one-to-one reply resolve its sending
   // identity rather than accept one. A brand that stated no rep, or a rep with
   // no email, sends exactly what it sent before this existed.
-  const ccEmails =
-    template.copySalesRep === false ? [] : await salesRepCopyList(campaign.brandIds?.[0], campaign.orgId);
+  const ccEmails = await salesRepCopyList(campaign.brandIds?.[0], campaign.orgId);
 
   await sendEmail(
     {
@@ -354,30 +349,32 @@ export async function maybeForwardPositiveReply(
   campaign: ForwardPositiveReplyCampaign,
   leadEmail: string,
   eventType: string,
-  options: { background?: boolean; waitsMs?: number[] } = {},
+  options: {
+    background?: boolean;
+    waitsMs?: number[];
+    /**
+     * What campaign-service answered when the responder was asked to take this
+     * reply (lib/trigger-sales-interest-campaign). `nobody` = the client is
+     * asked to answer it themselves, right away. Anything else asks nothing
+     * here; the 24 h deadline (lib/unanswered-reply-deadline) catches a
+     * responder that took it and never answered.
+     */
+    responder?: ResponderVerdict;
+  } = {},
 ): Promise<void> {
   if (!isPositiveQualification(eventType)) return;
   if (!campaign.orgId) return;
 
   const { celebrateOnce } = await import("./celebrate-positive-reply");
-  // A celebration SENT on a brand with no AI responder running is followed by
-  // a second email asking the client to answer it themselves
-  // (lib/ask-client-to-answer). The celebration itself is unchanged.
-  // An info request is never celebrated, so the ask above never fires for it:
-  // when no responder will answer the question, staff are told instead
-  // (lib/alert-unanswered-info-request). Never silence.
-  const run = celebrateOnce(campaign, leadEmail, { waitsMs: options.waitsMs, kind: eventType }).then(
-    async (sent) => {
-      if (eventType === "lead_info_requested") {
-        const { maybeAlertUnansweredInfoRequest } = await import("./alert-unanswered-info-request");
-        await maybeAlertUnansweredInfoRequest(campaign, leadEmail, eventType);
-        return;
-      }
-      if (!sent) return;
-      const { maybeAskClientToAnswer } = await import("./ask-client-to-answer");
-      await maybeAskClientToAnswer(campaign, leadEmail);
-    },
-  );
+  // The celebration (never for an info request) goes first; when NO responder
+  // will answer, a second email asks the client to answer it themselves
+  // (lib/ask-client-to-answer), staff in Cc. Owner 2026-10-11: a prospect's
+  // reply never sits unseen, and the client is the one asked.
+  const run = celebrateOnce(campaign, leadEmail, { waitsMs: options.waitsMs, kind: eventType }).then(async () => {
+    if (options.responder !== "nobody") return;
+    const { maybeAskClientToAnswer } = await import("./ask-client-to-answer");
+    await maybeAskClientToAnswer(campaign, leadEmail, { because: "no_responder" });
+  });
   if (options.background === false) {
     await run;
   } else {

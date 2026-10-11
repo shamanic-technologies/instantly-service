@@ -670,7 +670,7 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // bought for the leg OUT of that step now, rather than on its next tick.
       // Fail-soft — the qualification above is the primary job and stands
       // whatever this does. No-op on any other event.
-      await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
+      const responder = await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
 
       // ...and enter that same buyer into lead-service's follow-up queue, owed an
       // answer now. Without this the campaign above runs and finds nobody: the
@@ -699,7 +699,9 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // (2026-09-29). Exactly-once per thread; the claim is taken here and the
       // send finishes in the background (it waits, bounded, for the words).
       // Never throws. No-op on any other event.
-      await maybeForwardPositiveReply(campaign, input.leadEmail, input.eventType);
+      // When the trigger above says no responder will answer, the client is
+      // also asked to answer it themselves (staff in Cc).
+      await maybeForwardPositiveReply(campaign, input.leadEmail, input.eventType, { responder });
 
       // A reply about something other than the offer (a partnership, hiring,
       // investors, a vendor, the press): the automated responder only handles

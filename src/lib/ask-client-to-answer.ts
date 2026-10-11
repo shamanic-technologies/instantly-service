@@ -8,10 +8,16 @@
  * client, the client waits on us, and nobody writes back (Shockwavecenters,
  * 2026-10-08: drdoug@prohealthdoc.com asked a question and got nothing).
  *
- * So, right after a celebration was SENT, and only when no responder campaign
- * runs on (brand, offer) AT THAT MOMENT (`findOngoingResponderCampaigns`), every
- * member of the client org gets a SECOND, separate, plain email (owner
- * 2026-10-08, copy locked word for word, only the placeholders vary):
+ * Owner 2026-10-11: whether a responder answers is read off what campaign-service
+ * ANSWERED when asked to take the reply (lib/trigger-sales-interest-campaign),
+ * never off a campaign's `ongoing` status: a responder that was on but out of
+ * money answered nobody. So when campaign-service says no email responder took
+ * it (none bought, client's money out, own team, refused), or one took it and
+ * sent nothing in 24 h (lib/unanswered-reply-deadline), every member of the
+ * client org gets a plain email (copy locked word for word by the owner
+ * 2026-10-08, only the placeholders vary). Covers questions (info requests,
+ * which get no celebration) as well as interested replies (after the
+ * celebration):
  *
  *   - Subject `Re: <thread subject>`, Reply-To = the PROSPECT, so hitting Reply
  *     answers them under the same subject with the conversation quoted below.
@@ -20,9 +26,9 @@
  *   - Below `---`, the whole conversation, newest first: their reply verbatim on
  *     top, then every email of the thread with sender and date.
  *
- * The celebration is untouched. Agency inbox in Bcc (on the first member's copy
- * only, one copy is enough); an org with no member reachable gets it at the
- * agency inbox, somebody must answer.
+ * The celebration is untouched. Agency inbox in Cc, visible (owner 2026-10-11,
+ * "the staff in cc"; on the first member's copy only, one copy is enough); an
+ * org with no member reachable gets it at the agency inbox, somebody must answer.
  *
  * ONCE PER THREAD: claim `client_answer_requested_at` (migration 0068), taken
  * before the send, released only when NO member could be emailed. A failed
@@ -170,12 +176,12 @@ export function renderAnswerRequest(input: AnswerRequestInput): AnswerRequestCon
 export function answerRequestRecipients(
   members: OrgMember[],
   agency: string,
-): Array<{ email: string; firstName: string | null; bcc: string[] }> {
-  if (members.length === 0) return [{ email: agency, firstName: null, bcc: [] }];
+): Array<{ email: string; firstName: string | null; cc: string[] }> {
+  if (members.length === 0) return [{ email: agency, firstName: null, cc: [] }];
   return members.map((m, i) => ({
     email: m.email,
     firstName: m.firstName,
-    bcc: i === 0 && m.email.toLowerCase() !== agency.toLowerCase() ? [agency] : [],
+    cc: i === 0 && m.email.toLowerCase() !== agency.toLowerCase() ? [agency] : [],
   }));
 }
 
@@ -274,7 +280,7 @@ export async function responderRuns(campaign: ForwardPositiveReplyCampaign): Pro
 }
 
 export type AnswerRequestOutcome =
-  | { sent: true; recipients: string[]; bcc: string[]; subject: string; text: string }
+  | { sent: true; recipients: string[]; cc: string[]; subject: string; text: string }
   | { sent: false; reason: string };
 
 /**
@@ -284,24 +290,35 @@ export type AnswerRequestOutcome =
 export async function maybeAskClientToAnswer(
   campaign: ForwardPositiveReplyCampaign,
   leadEmail: string,
-  options: { waitsMs?: number[] } = {},
+  options: {
+    waitsMs?: number[];
+    /**
+     * Why we already know nobody answers: campaign-service said no responder
+     * took the reply (`no_responder`), or one took it and sent nothing in 24 h
+     * (`overdue`, lib/unanswered-reply-deadline). Absent (staff hand run) = the
+     * responder's status is read here.
+     */
+    because?: "no_responder" | "overdue";
+  } = {},
 ): Promise<AnswerRequestOutcome> {
   const tag = `campaign=${campaign.instantlyCampaignId} lead=${leadEmail}`;
   if (!campaign.orgId) return { sent: false, reason: "no_org" };
 
-  let runs: boolean | null;
-  try {
-    runs = await responderRuns(campaign);
-  } catch (error) {
-    console.error(
-      `[instantly-service] ask-client-to-answer: responder read FAILED for ${tag}, nothing sent — ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return { sent: false, reason: "responder_read_failed" };
-  }
-  if (runs === null) return { sent: false, reason: "no_caller_campaign" };
-  if (runs) {
-    console.log(`[instantly-service] ask-client-to-answer: a responder runs for ${tag}; nothing to ask`);
-    return { sent: false, reason: "responder_running" };
+  if (!options.because) {
+    let runs: boolean | null;
+    try {
+      runs = await responderRuns(campaign);
+    } catch (error) {
+      console.error(
+        `[instantly-service] ask-client-to-answer: responder read FAILED for ${tag}, nothing sent — ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { sent: false, reason: "responder_read_failed" };
+    }
+    if (runs === null) return { sent: false, reason: "no_caller_campaign" };
+    if (runs) {
+      console.log(`[instantly-service] ask-client-to-answer: a responder runs for ${tag}; nothing to ask`);
+      return { sent: false, reason: "responder_running" };
+    }
   }
 
   let claimed: boolean;
@@ -349,7 +366,7 @@ export async function maybeAskClientToAnswer(
     const recipients = answerRequestRecipients(members, agencyInbox());
 
     const sentTo: string[] = [];
-    const bccSent: string[] = [];
+    const ccSent: string[] = [];
     let content: AnswerRequestContent | null = null;
     for (const r of recipients) {
       content = renderAnswerRequest({
@@ -368,7 +385,7 @@ export async function maybeAskClientToAnswer(
             appId: "instantly-service",
             eventType: CLIENT_ANSWER_EVENT_TYPE,
             recipientEmail: r.email,
-            ...(r.bcc.length > 0 ? { bccEmails: r.bcc } : {}),
+            ...(r.cc.length > 0 ? { ccEmails: r.cc } : {}),
             replyToEmail: leadEmail,
             metadata: { subject: content.subject, html: content.html, text: content.text },
           },
@@ -380,7 +397,7 @@ export async function maybeAskClientToAnswer(
           },
         );
         sentTo.push(r.email);
-        bccSent.push(...r.bcc);
+        ccSent.push(...r.cc);
       } catch (error) {
         console.error(
           `[instantly-service] ask-client-to-answer: send to ${r.email} FAILED for ${tag} — ${error instanceof Error ? error.message : String(error)}`,
@@ -390,7 +407,7 @@ export async function maybeAskClientToAnswer(
     if (sentTo.length === 0 || !content) throw new Error("no member could be emailed");
 
     console.log(
-      `[instantly-service] ask-client-to-answer: sent for ${tag} → ${sentTo.join(",")}${bccSent.length ? ` bcc=${bccSent.join(",")}` : ""} replyTo=${leadEmail} subject="${content.subject}" summary=${summaryLine ? "yes" : "dropped"}`,
+      `[instantly-service] ask-client-to-answer: sent for ${tag} → ${sentTo.join(",")}${ccSent.length ? ` cc=${ccSent.join(",")}` : ""} replyTo=${leadEmail} subject="${content.subject}" summary=${summaryLine ? "yes" : "dropped"} because=${options.because ?? "no_responder_running"}`,
     );
     // The client now owns this thread: no responder switched on later may answer it.
     await handThreadFollowupsToHuman({
@@ -400,7 +417,7 @@ export async function maybeAskClientToAnswer(
       reason: `Client asked to answer (${sentTo.join(", ")}): no AI responder ran when the reply arrived.`,
       tag: "ask-client-to-answer",
     });
-    return { sent: true, recipients: sentTo, bcc: bccSent, subject: content.subject, text: content.text };
+    return { sent: true, recipients: sentTo, cc: ccSent, subject: content.subject, text: content.text };
   } catch (error) {
     await releaseAnswerRequest(campaign.instantlyCampaignId).catch(() => {});
     console.error(
