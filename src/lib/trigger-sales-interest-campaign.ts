@@ -61,6 +61,7 @@
  */
 
 import {
+  findOngoingResponderCampaigns,
   getCampaignTriggerScope,
   triggerCampaignForStep,
   type StepTriggerOutcome,
@@ -107,17 +108,43 @@ function logOutcome(
 }
 
 /**
+ * Will an AI responder answer this reply by EMAIL? Read off campaign-service's
+ * own answer to the trigger, never off a campaign's `ongoing` status (owner
+ * 2026-10-11: a responder that is on but out of money answered nobody, and
+ * nobody was told).
+ *
+ * - `answers`: a responder campaign took the run, or one of its runs is already
+ *   in flight (campaign-service: "the event is already being answered").
+ * - `nobody`: anything else. No responder bought, no offer on the thread, the
+ *   client's money is out (`unfunded`, `global_sales_budget_reached`,
+ *   `item_budget_reached`), run by the client's own team, refused. A run taken
+ *   by a PHONE leg (AI Instant Call) answers no email, so it is not counted.
+ * - `unknown`: the question could not be asked or read. Nothing is decided on
+ *   it; the 24 h deadline (lib/unanswered-reply-deadline) still catches it.
+ */
+export type ResponderVerdict = "answers" | "nobody" | "unknown";
+
+/** Pure: the campaigns that took the event (run started, or one already in flight). */
+export function campaignsTakingEvent(outcome: StepTriggerOutcome): string[] {
+  return [
+    ...outcome.triggered.map((t) => t.campaignId),
+    ...outcome.skipped.filter((s) => s.reason === "run_in_flight").map((s) => s.campaignId),
+  ];
+}
+
+/**
  * Ask campaign-service to run the campaign responsible for the leg out of the
- * sales-interest step. No-op unless the event is a sales-interest qualification and
- * the caller campaign states a resolvable scope. Fully fail-soft — never throws.
+ * sales-interest step, and say whether an email responder took it. Undefined
+ * when the event is not a sales-interest qualification. Fully fail-soft:
+ * never throws.
  */
 export async function maybeTriggerSalesInterestCampaign(
   campaign: SalesInterestTriggerCampaign,
   leadEmail: string,
   eventType: string,
-): Promise<void> {
-  if (!isSalesInterestQualification(eventType)) return;
-  await triggerSalesInterestLeg(campaign, leadEmail);
+): Promise<ResponderVerdict | undefined> {
+  if (!isSalesInterestQualification(eventType)) return undefined;
+  return triggerSalesInterestLeg(campaign, leadEmail);
 }
 
 /**
@@ -128,17 +155,18 @@ export async function maybeTriggerSalesInterestCampaign(
 export async function triggerSalesInterestLeg(
   campaign: SalesInterestTriggerCampaign,
   leadEmail: string,
-): Promise<void> {
-  if (!campaign.orgId) return;
-  // A platform send belongs to no caller campaign, so it is on no
-  // offer. There is nothing to name, so nothing is asked.
-  if (!campaign.campaignId) return;
+): Promise<ResponderVerdict> {
+  // A platform send belongs to no org and no caller campaign: nobody to ask,
+  // and nobody to tell either (the answer request needs an org).
+  if (!campaign.orgId) return "unknown";
+  if (!campaign.campaignId) return "unknown";
 
   try {
     const scope = await getCampaignTriggerScope(campaign.campaignId, campaign.orgId);
-    // An absent campaign, or one stating no brand / offer, cannot have a
-    // leg resolved for it. Naming a scope we do not hold would be a guess.
-    if (!scope || !scope.brandId || !scope.offerId) return;
+    if (!scope || !scope.brandId) return "unknown";
+    // A thread on no offer can have no responder: the responder is bought per
+    // (brand, offer), so nothing will answer it.
+    if (!scope.offerId) return "nobody";
 
     const outcome = await triggerCampaignForStep({
       orgId: campaign.orgId,
@@ -148,11 +176,19 @@ export async function triggerSalesInterestLeg(
     });
 
     logOutcome(campaign, leadEmail, outcome);
+
+    const taking = campaignsTakingEvent(outcome);
+    if (taking.length === 0) return "nobody";
+    const emailResponders = new Set(
+      await findOngoingResponderCampaigns({ orgId: campaign.orgId, brandId: scope.brandId, offerId: scope.offerId }),
+    );
+    return taking.some((id) => emailResponders.has(id)) ? "answers" : "nobody";
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(
       `[instantly-service] sales-interest-trigger: no-op for campaign=${campaign.instantlyCampaignId} ` +
         `lead=${leadEmail} — ${message}; the qualification stands and the campaign runs on its next tick`,
     );
+    return "unknown";
   }
 }

@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockGetCampaignTriggerScope = vi.fn();
 const mockTriggerCampaignForStep = vi.fn();
+const mockFindResponders = vi.fn();
 
 vi.mock("../../src/lib/campaign-client", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
   getCampaignTriggerScope: (...args: unknown[]) => mockGetCampaignTriggerScope(...args),
   triggerCampaignForStep: (...args: unknown[]) => mockTriggerCampaignForStep(...args),
+  findOngoingResponderCampaigns: (...args: unknown[]) => mockFindResponders(...args),
 }));
 
 const {
@@ -40,6 +42,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mockGetCampaignTriggerScope.mockResolvedValue(SCOPE);
   mockTriggerCampaignForStep.mockResolvedValue(EMPTY_OUTCOME);
+  mockFindResponders.mockResolvedValue(["responder-1"]);
 });
 
 // ─── which replies count as a sales interest (pure) ───────────────────────────
@@ -149,7 +152,7 @@ describe("maybeTriggerSalesInterestCampaign — quiet answers and loud failures"
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await expect(
       maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested"),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("nobody");
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -182,7 +185,7 @@ describe("maybeTriggerSalesInterestCampaign — quiet answers and loud failures"
 
     await expect(
       maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested"),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("unknown");
 
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0]).toContain("502 catalogue unreadable");
@@ -195,10 +198,64 @@ describe("maybeTriggerSalesInterestCampaign — quiet answers and loud failures"
 
     await expect(
       maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested"),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("unknown");
 
     expect(warn).toHaveBeenCalledTimes(1);
     expect(mockTriggerCampaignForStep).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+// ─── the verdict: will an EMAIL responder answer? (owner 2026-10-11) ─────────
+
+describe("maybeTriggerSalesInterestCampaign — responder verdict", () => {
+  const skip = (campaignId: string, reason: string) => ({ campaignId, legKey: "conversation_to_meeting_booked", reason, detail: reason });
+
+  it("a responder took the run: answers", async () => {
+    mockTriggerCampaignForStep.mockResolvedValue({
+      ...EMPTY_OUTCOME,
+      triggered: [{ campaignId: "responder-1", legKey: "conversation_to_meeting_booked", workflowSlug: "ai-meeting-booking-rhodium" }],
+    });
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_info_requested")).toBe("answers");
+  });
+
+  it("a responder run already in flight: answers", async () => {
+    mockTriggerCampaignForStep.mockResolvedValue({ ...EMPTY_OUTCOME, skipped: [skip("responder-1", "run_in_flight")] });
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested")).toBe("answers");
+  });
+
+  it.each(["unfunded", "global_sales_budget_reached", "item_budget_reached", "no_workflow", "dispatch_refused"])(
+    "responder ON but skipped (%s): nobody — the out-of-money hole",
+    async (reason) => {
+      mockTriggerCampaignForStep.mockResolvedValue({ ...EMPTY_OUTCOME, skipped: [skip("responder-1", reason)] });
+      expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_info_requested")).toBe("nobody");
+    },
+  );
+
+  it("no responder bought (empty answer): nobody", async () => {
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_info_requested")).toBe("nobody");
+  });
+
+  it("only the PHONE leg took it (AI Instant Call answers no email): nobody", async () => {
+    mockFindResponders.mockResolvedValue([]);
+    mockTriggerCampaignForStep.mockResolvedValue({
+      ...EMPTY_OUTCOME,
+      triggered: [{ campaignId: "instant-call-1", legKey: "conversation_to_booking_call", workflowSlug: "" }],
+    });
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested")).toBe("nobody");
+  });
+
+  it("thread on no offer: nobody (a responder is bought per offer)", async () => {
+    mockGetCampaignTriggerScope.mockResolvedValue({ ...SCOPE, offerId: null });
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested")).toBe("nobody");
+  });
+
+  it("campaign-service unreadable: unknown (never read as nobody)", async () => {
+    mockTriggerCampaignForStep.mockRejectedValue(new Error("502"));
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested")).toBe("unknown");
+  });
+
+  it("not a sales interest: no verdict", async () => {
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_not_interested")).toBeUndefined();
   });
 });

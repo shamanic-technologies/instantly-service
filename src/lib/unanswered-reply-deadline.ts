@@ -1,0 +1,139 @@
+/**
+ * A prospect's reply a responder took but never answered: after 24 h, the
+ * client is asked to answer it themselves (lib/ask-client-to-answer, staff in Cc).
+ *
+ * When a positive reply lands, campaign-service is asked to run the responder
+ * and its answer decides (lib/trigger-sales-interest-campaign): nobody takes it
+ * = the client is asked right away. But "taken" is not "answered": a stuck run,
+ * or a lead the run never reached, sends nothing. Measured 2026-10-11 over 45
+ * days of positive replies: median answer 5 h, p90 7 days, 12 of 28 never.
+ *
+ * So this sweep reads the OUTCOME: every positive reply (interested, question,
+ * meeting request) we learned of more than `UNANSWERED_REPLY_DEADLINE_MS` ago
+ * (and less than `UNANSWERED_REPLY_LOOKBACK` ago), whose thread is still that
+ * kind, with no answer sent into it since (our dispatcher's step 0, or an
+ * Instantly Unibox message), not escalated to staff, and not asked yet, gets the
+ * answer request. Same once-per-thread claim as the live path.
+ *
+ * ⚠️ Threads staff were alerted about on 2026-10-11 (the retired staff-only
+ * alert, `metadata.infoRequestUnansweredAlert`) are left with staff: one of the
+ * three was a reply from August, relabeled later.
+ *
+ * Fails loud on the read (the worker logs it, the next tick retries); each send
+ * is fail-soft on its own.
+ */
+
+import { sql } from "drizzle-orm";
+
+import { db } from "../db";
+import { maybeAskClientToAnswer } from "./ask-client-to-answer";
+
+/** A working day: past the responder's normal answer time (median 5 h). */
+export const UNANSWERED_REPLY_DEADLINE_MS = 24 * 60 * 60 * 1000;
+/** How far back a still-open reply is chased. */
+export const UNANSWERED_REPLY_LOOKBACK = "14 days";
+/** The reply kinds a responder is asked to answer and the client may be asked about. */
+export const ANSWERABLE_REPLY_KINDS = ["lead_interested", "lead_info_requested", "lead_meeting_requested"] as const;
+
+export interface UnansweredReply {
+  instantlyCampaignId: string;
+  leadEmail: string;
+  campaignId: string | null;
+  orgId: string;
+  userId: string;
+  runId: string;
+  brandIds: string[] | null;
+}
+
+function rowsOf(result: unknown): Record<string, unknown>[] {
+  const rows = (result as { rows?: unknown }).rows;
+  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+}
+
+const kindsSql = sql.join(
+  ANSWERABLE_REPLY_KINDS.map((k) => sql`${k}`),
+  sql`, `,
+);
+
+/** Positive replies nobody answered within the deadline and the client was not asked about. */
+export async function findUnansweredReplies(asOf: Date = new Date()): Promise<UnansweredReply[]> {
+  const cutoff = new Date(asOf.getTime() - UNANSWERED_REPLY_DEADLINE_MS).toISOString();
+  const result = await db.execute(sql`
+    WITH q AS (
+      SELECT e.campaign_id AS instantly_campaign_id, max(e.created_at) AS known_at
+      FROM instantly_events e
+      WHERE e.event_type IN (${kindsSql})
+        AND e.inferred = false
+        AND e.withdrawn_at IS NULL
+        AND e.created_at > now() - ${UNANSWERED_REPLY_LOOKBACK}::interval
+      GROUP BY e.campaign_id
+    )
+    SELECT c.instantly_campaign_id, c.lead_email, c.campaign_id, c.org_id, c.user_id, c.run_id, c.brand_ids
+    FROM q
+    JOIN instantly_campaigns c ON c.instantly_campaign_id = q.instantly_campaign_id
+    JOIN instantly_lead_status_current g ON g.instantly_campaign_id = c.instantly_campaign_id
+    WHERE q.known_at <= ${cutoff}::timestamp
+      AND g.reply_kind IN (${kindsSql})
+      AND c.org_id IS NOT NULL AND c.user_id IS NOT NULL AND c.run_id IS NOT NULL
+      AND c.client_answer_requested_at IS NULL
+      AND c.escalated_at IS NULL
+      AND (c.metadata->'infoRequestUnansweredAlert') IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM smtp_dispatch_raw d
+        WHERE d.instantly_campaign_id = c.instantly_campaign_id
+          AND d.step = 0
+          AND d.dispatched_at >= q.known_at
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM instantly_emails_raw m
+        WHERE m.instantly_campaign_id = c.instantly_campaign_id
+          AND m.payload->>'ue_type' = '3'
+          AND (m.payload->>'timestamp_email')::timestamptz >= q.known_at AT TIME ZONE 'UTC'
+      )
+    ORDER BY q.known_at
+  `);
+  return rowsOf(result).map((r) => ({
+    instantlyCampaignId: String(r.instantly_campaign_id),
+    leadEmail: String(r.lead_email),
+    campaignId: (r.campaign_id as string | null) ?? null,
+    orgId: String(r.org_id),
+    userId: String(r.user_id),
+    runId: String(r.run_id),
+    brandIds: Array.isArray(r.brand_ids) ? (r.brand_ids as string[]) : null,
+  }));
+}
+
+let inFlight: Promise<{ unanswered: number; asked: number }> | null = null;
+
+/** One sweep. Concurrent calls join the one in flight. Throws when the read fails. */
+export function askClientsAboutUnansweredReplies(
+  asOf: Date = new Date(),
+): Promise<{ unanswered: number; asked: number }> {
+  if (inFlight) return inFlight;
+  inFlight = (async () => {
+    const unanswered = await findUnansweredReplies(asOf);
+    let asked = 0;
+    for (const u of unanswered) {
+      const outcome = await maybeAskClientToAnswer(
+        {
+          instantlyCampaignId: u.instantlyCampaignId,
+          campaignId: u.campaignId,
+          orgId: u.orgId,
+          userId: u.userId,
+          runId: u.runId,
+          brandIds: u.brandIds,
+        },
+        u.leadEmail,
+        { because: "overdue" },
+      );
+      if (outcome.sent) asked += 1;
+    }
+    if (unanswered.length > 0) {
+      console.log(`[instantly-service] unanswered-reply-deadline: ${unanswered.length} unanswered, ${asked} clients asked`);
+    }
+    return { unanswered: unanswered.length, asked };
+  })().finally(() => {
+    inFlight = null;
+  });
+  return inFlight;
+}

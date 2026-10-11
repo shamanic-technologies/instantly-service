@@ -372,8 +372,9 @@ export async function applyManualQualificationSideEffects(
     .where(eq(instantlyCampaigns.instantlyCampaignId, input.instantlyCampaignId));
 
   if (campaignRow) {
-    await maybeForwardPositiveReply(campaignRow, input.leadEmail, input.replyKind);
-    await maybeTriggerSalesInterestCampaign(campaignRow, input.leadEmail, input.replyKind);
+    // Trigger first: its answer decides whether the client is asked to answer.
+    const responder = await maybeTriggerSalesInterestCampaign(campaignRow, input.leadEmail, input.replyKind);
+    await maybeForwardPositiveReply(campaignRow, input.leadEmail, input.replyKind, { responder });
     // Not a prospect (already a customer / the client): stop the brand's other
     // sequences and record the won-not-ours sale. Source `manual`, so the
     // prospect is NOT messaged — the person stating it handles the conversation.

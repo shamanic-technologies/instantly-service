@@ -227,10 +227,10 @@ describe("tidyBody", () => {
 describe("answerRequestRecipients", () => {
   it("every member, the agency inbox in Bcc once; no member = the agency inbox", () => {
     expect(answerRequestRecipients([{ email: "a@c.com", firstName: "A" }, { email: "b@c.com", firstName: null }], "growth@distribute.you")).toEqual([
-      { email: "a@c.com", firstName: "A", bcc: ["growth@distribute.you"] },
-      { email: "b@c.com", firstName: null, bcc: [] },
+      { email: "a@c.com", firstName: "A", cc: ["growth@distribute.you"] },
+      { email: "b@c.com", firstName: null, cc: [] },
     ]);
-    expect(answerRequestRecipients([], "growth@distribute.you")).toEqual([{ email: "growth@distribute.you", firstName: null, bcc: [] }]);
+    expect(answerRequestRecipients([], "growth@distribute.you")).toEqual([{ email: "growth@distribute.you", firstName: null, cc: [] }]);
   });
 });
 
@@ -263,7 +263,8 @@ describe("maybeAskClientToAnswer", () => {
     expect(params.eventType).toBe("positive-reply-answer-request");
     expect(params.recipientEmail).toBe("shockwavecenters@gmail.com");
     expect(params.replyToEmail).toBe("drdoug@prohealthdoc.com");
-    expect(params.bccEmails).toEqual(["growth@distribute.you"]);
+    expect(params.ccEmails).toEqual(["growth@distribute.you"]);
+    expect(params.bccEmails).toBeUndefined();
     expect(params.metadata.subject).toBe("Re: Shockwave therapy ROI at Pro Health");
     expect(params.metadata.text).toContain("Hi David,");
     expect(params.metadata.text).toContain("Doug asked how the clinical protocols at Pro Health compare with yours.");
