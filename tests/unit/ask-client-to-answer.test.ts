@@ -43,6 +43,10 @@ vi.mock("../../src/lib/client-org-client", () => ({
 vi.mock("../../src/lib/chat-client", () => ({ orgComplete: (...a: unknown[]) => mockComplete(...a) }));
 vi.mock("../../src/lib/email-client", () => ({ sendEmail: (...a: unknown[]) => mockSendEmail(...a) }));
 vi.mock("../../src/lib/lead-client", () => ({ findLeadOnCampaignByEmail: (...a: unknown[]) => mockFindLead(...a) }));
+const mockHandThread = vi.fn();
+vi.mock("../../src/lib/hand-followups-to-human", () => ({
+  handThreadFollowupsToHuman: (...a: unknown[]) => mockHandThread(...a),
+}));
 vi.mock("../../src/lib/prospect-history", () => ({
   loadHistoryWithLatestReply: (...a: unknown[]) => mockHistory(...a),
   REPLY_WAIT_SHORT_MS: [],
@@ -271,12 +275,24 @@ describe("maybeAskClientToAnswer", () => {
     expect(identity).toMatchObject({ orgId: "org-uuid", runId: "run-uuid" });
   });
 
+  it("once the client is asked, the thread is HANDED in lead-service: no responder switched on later answers it", async () => {
+    await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com");
+    expect(mockHandThread).toHaveBeenCalledTimes(1);
+    expect(mockHandThread.mock.calls[0][0]).toMatchObject({
+      orgId: "org-uuid",
+      campaignId: campaign.campaignId,
+      leadEmail: "drdoug@prohealthdoc.com",
+    });
+    expect(mockHandThread.mock.calls[0][0].reason).toContain("shockwavecenters@gmail.com");
+  });
+
   it("a responder running: sends nothing and takes no claim", async () => {
     mockResponders.mockResolvedValue(["responder-campaign"]);
     const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com");
     expect(outcome).toEqual({ sent: false, reason: "responder_running" });
     expect(mockSendEmail).not.toHaveBeenCalled();
     expect(mockReturning).not.toHaveBeenCalled();
+    expect(mockHandThread).not.toHaveBeenCalled();
   });
 
   it("once per thread: a taken claim sends nothing", async () => {
@@ -305,5 +321,7 @@ describe("maybeAskClientToAnswer", () => {
     const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com");
     expect(outcome).toEqual({ sent: false, reason: "send_failed" });
     expect(mockSet).toHaveBeenLastCalledWith(expect.objectContaining({ clientAnswerRequestedAt: null }));
+    // Nobody was told, so nobody owns it: the thread is NOT handed.
+    expect(mockHandThread).not.toHaveBeenCalled();
   });
 });

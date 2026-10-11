@@ -268,9 +268,8 @@ export async function findLeadOnCampaignByEmail(params: {
  * thread a human took over stayed claimable forever.
  *
  * ⚠️ A STOP IS NOT A TOMBSTONE, by lead-service's own model: a later `scheduled`
- * re-enters the person. That is exactly right here — if the prospect writes
- * again, the reply side effects re-enqueue them and qualification re-decides. Do
- * NOT reach for something more permanent.
+ * re-enters the person. That is right for a decline or a fresh reply. A thread
+ * handed to a PERSON is the other case: use `handFollowupsToHuman`, never a stop.
  *
  * `reason` is REQUIRED by the producer and must be non-empty (it 400s
  * `reason_required` otherwise) — a schedule emptied for a reason nobody recorded
@@ -475,4 +474,45 @@ export async function listBookedPeople(brandId: string): Promise<BookedPeople> {
     }),
   );
   return booked;
+}
+
+/**
+ * Give a person's thread to a HUMAN for good: lead-service `kind: "handed"`
+ * (owner 2026-10-11). No automated responder claims the row again, and unlike a
+ * stop a later `scheduled` (the prospect writes again) does NOT re-enter it, so
+ * switching a responder on can never answer a thread a person owns
+ * (Shockwavecenters: the client had been asked to answer, staff had promised to
+ * follow up, and the responder answered both).
+ *
+ * `reason` is REQUIRED (to whom / why). FAILS LOUD; callers are fail-soft.
+ */
+export async function handFollowupsToHuman(params: {
+  orgId: string;
+  /** lead-service's `leads_campaigns` row id — from `findLeadOnCampaignByEmail`. */
+  leadRowId: string;
+  reason: string;
+}): Promise<void> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+
+  const response = await fetch(
+    `${LEAD_SERVICE_URL}/orgs/leads/${encodeURIComponent(params.leadRowId)}/followups`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": LEAD_SERVICE_API_KEY,
+        "x-org-id": params.orgId,
+      },
+      body: JSON.stringify({ kind: "handed", reason: params.reason }),
+    },
+  );
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(
+      `lead-service POST /orgs/leads/{id}/followups (handed) failed: ${response.status} - ${detail.slice(0, 200)}`,
+    );
+  }
 }

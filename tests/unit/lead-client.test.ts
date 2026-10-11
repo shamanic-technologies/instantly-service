@@ -166,3 +166,27 @@ describe("scheduleFollowupByEmail", () => {
     ).rejects.toThrow(/LEAD_SERVICE_URL/);
   });
 });
+
+describe("handFollowupsToHuman", () => {
+  it("POSTs kind=handed with the reason on the row's followups path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => RESPONSE });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { handFollowupsToHuman } = await import("../../src/lib/lead-client");
+    await handFollowupsToHuman({ orgId: "org-1", leadRowId: "row-1", reason: "Client asked to answer" });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://lead.example/orgs/leads/row-1/followups");
+    expect(init.method).toBe("POST");
+    expect(init.headers["x-org-id"]).toBe("org-1");
+    expect(JSON.parse(init.body)).toEqual({ kind: "handed", reason: "Client asked to answer" });
+  });
+
+  it("fails loud on a refusal", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => "bad kind" }));
+    const { handFollowupsToHuman } = await import("../../src/lib/lead-client");
+    await expect(
+      handFollowupsToHuman({ orgId: "org-1", leadRowId: "row-1", reason: "x" }),
+    ).rejects.toThrow(/400/);
+  });
+});

@@ -42,6 +42,7 @@ import { sendEmail } from "./email-client";
 import type { ForwardPositiveReplyCampaign, ThreadMessage } from "./forward-positive-reply";
 import { formatThreadDate } from "./forward-positive-reply";
 import { findLeadOnCampaignByEmail } from "./lead-client";
+import { handThreadFollowupsToHuman } from "./hand-followups-to-human";
 import type { HistoryItem } from "./prospect-history";
 import { stripQuotedHistory } from "./self-send/qualify-reply";
 
@@ -391,6 +392,14 @@ export async function maybeAskClientToAnswer(
     console.log(
       `[instantly-service] ask-client-to-answer: sent for ${tag} → ${sentTo.join(",")}${bccSent.length ? ` bcc=${bccSent.join(",")}` : ""} replyTo=${leadEmail} subject="${content.subject}" summary=${summaryLine ? "yes" : "dropped"}`,
     );
+    // The client now owns this thread: no responder switched on later may answer it.
+    await handThreadFollowupsToHuman({
+      orgId: campaign.orgId,
+      campaignId: callerId,
+      leadEmail,
+      reason: `Client asked to answer (${sentTo.join(", ")}): no AI responder ran when the reply arrived.`,
+      tag: "ask-client-to-answer",
+    });
     return { sent: true, recipients: sentTo, bcc: bccSent, subject: content.subject, text: content.text };
   } catch (error) {
     await releaseAnswerRequest(campaign.instantlyCampaignId).catch(() => {});
