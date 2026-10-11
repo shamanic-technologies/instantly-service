@@ -16,6 +16,7 @@ vi.mock("../../src/lib/stats-cache", () => ({
 
 import {
   isSelfSendCapable,
+  keepSelfSendCapable,
   resolveTransportForNewSequence,
   CREDENTIALED_MAILBOXES_CACHE_KEY,
 } from "../../src/lib/self-send/capability";
@@ -93,5 +94,37 @@ describe("isSelfSendCapable", () => {
       CREDENTIALED_MAILBOXES_CACHE_KEY,
       expect.any(Function),
     );
+  });
+});
+
+describe("keepSelfSendCapable — the send pool after the Instantly plan", () => {
+  it("keeps only the mailboxes we hold a credential for", async () => {
+    mockLoadCredentialedMailboxes.mockResolvedValue(new Set(["amy@saviolabsco.com"]));
+
+    const pool = await keepSelfSendCapable(
+      [
+        { email: "Amy@SavioLabsCo.com", rank: 1 },
+        { email: "persona@axionmilestone.com", rank: 4 },
+      ],
+      CALLER,
+    );
+
+    expect(pool).toEqual([{ email: "Amy@SavioLabsCo.com", rank: 1 }]);
+  });
+
+  it("returns an empty pool when no mailbox is ours (never an Instantly fallback)", async () => {
+    mockLoadCredentialedMailboxes.mockResolvedValue(new Set());
+
+    await expect(
+      keepSelfSendCapable([{ email: "persona@axionmilestone.com" }], CALLER),
+    ).resolves.toEqual([]);
+  });
+
+  it("fails loud when the credential source cannot be read", async () => {
+    mockLoadCredentialedMailboxes.mockRejectedValue(new Error("key-service 503"));
+
+    await expect(
+      keepSelfSendCapable([{ email: "amy@saviolabsco.com" }], CALLER),
+    ).rejects.toThrow("key-service 503");
   });
 });
