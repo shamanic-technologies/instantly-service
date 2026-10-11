@@ -73,6 +73,8 @@ export interface RevealIdentity {
   runId: string;
   brandId?: string | null;
   campaignId?: string | null;
+  /** The feature the reveal is spent for: its cost is read under this slug. */
+  featureSlug?: string | null;
 }
 
 function revealHeaders(identity: RevealIdentity): Record<string, string> {
@@ -85,6 +87,7 @@ function revealHeaders(identity: RevealIdentity): Record<string, string> {
   };
   if (identity.brandId) headers["x-brand-id"] = identity.brandId;
   if (identity.campaignId) headers["x-campaign-id"] = identity.campaignId;
+  if (identity.featureSlug) headers["x-feature-slug"] = identity.featureSlug;
   return headers;
 }
 

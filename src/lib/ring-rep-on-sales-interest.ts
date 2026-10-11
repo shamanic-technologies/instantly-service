@@ -136,6 +136,7 @@ import { stripQuotedHistory } from "./self-send/qualify-reply";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { fetchSelfSendThread } from "./self-send/thread";
 import {
+  AI_INSTANT_CALL_FEATURE_SLUG,
   AI_INSTANT_CALL_LEG_KEY,
   findOngoingInstantCallCampaign,
   getCampaignTriggerScope,
@@ -584,10 +585,18 @@ export async function maybeRingRepOnSalesInterest(
   // Every spend below runs under the AI Instant Call campaign, so it needs a run
   // of that campaign: a ROOT run, because a child of the reply's run would
   // inherit the cold-email campaign (see THE RING HAS ITS OWN ROOT RUN).
+  // It names the AI Instant Call FEATURE too: every per-campaign money read
+  // filters runs costs by the campaign's feature slug, and the reveal's and the
+  // call's child runs inherit it from this root. Without it the call cost read
+  // as $0 on its own campaign (2026-10-11).
   const ringIdentity: IdentityContext = {
     orgId: campaign.orgId,
     userId: campaign.userId ?? "",
-    tracking: { campaignId: instantCallCampaignId, brandId },
+    tracking: {
+      campaignId: instantCallCampaignId,
+      brandId,
+      featureSlug: AI_INSTANT_CALL_FEATURE_SLUG,
+    },
   };
   let ringRunId: string | null = null;
 
@@ -651,6 +660,7 @@ export async function maybeRingRepOnSalesInterest(
             brandId,
             // The reveal exists only so the call can connect: billed with it.
             campaignId: instantCallCampaignId,
+            featureSlug: AI_INSTANT_CALL_FEATURE_SLUG,
           },
           deps,
         );
@@ -692,6 +702,7 @@ export async function maybeRingRepOnSalesInterest(
       parentRunId: ringRunId,
       brandId,
       campaignId: instantCallCampaignId,
+      featureSlug: AI_INSTANT_CALL_FEATURE_SLUG,
     });
     await updateRun(ringRunId, "completed", ringIdentity).catch((error: unknown) => {
       console.warn(

@@ -88,6 +88,11 @@ export interface PlaceCallParams {
   parentRunId?: string;
   brandId?: string;
   campaignId?: string;
+  /**
+   * The feature the call is spent for, sent as `x-feature-slug` (a header, never
+   * the body). Per-campaign money reads filter runs costs by it.
+   */
+  featureSlug?: string;
 }
 
 export interface PlacedCall {
@@ -106,15 +111,22 @@ export async function placeCall(params: PlaceCallParams): Promise<PlacedCall> {
     throw new Error("TWILIO_SERVICE_URL or TWILIO_SERVICE_API_KEY is not set");
   }
 
-  const { orgId, userId, ...body } = params;
+  const { orgId, userId, featureSlug, ...body } = params;
+  // Identity headers are forwarded like every other hop; the run/brand/campaign
+  // stay in the body too, which is what twilio-service parses today.
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "x-api-key": TWILIO_SERVICE_API_KEY,
+    "x-org-id": orgId,
+    "x-user-id": userId,
+  };
+  if (body.parentRunId) headers["x-run-id"] = body.parentRunId;
+  if (body.brandId) headers["x-brand-id"] = body.brandId;
+  if (body.campaignId) headers["x-campaign-id"] = body.campaignId;
+  if (featureSlug) headers["x-feature-slug"] = featureSlug;
   const response = await fetch(`${TWILIO_SERVICE_URL}/calls`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": TWILIO_SERVICE_API_KEY,
-      "x-org-id": orgId,
-      "x-user-id": userId,
-    },
+    headers,
     body: JSON.stringify(body),
   });
 
