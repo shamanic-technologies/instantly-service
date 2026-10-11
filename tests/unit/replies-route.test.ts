@@ -33,6 +33,11 @@ vi.mock("../../src/lib/escalate-reply", () => ({
   EscalateReplyError: FakeEscalateReplyError,
 }));
 
+const mockHandThread = vi.fn();
+vi.mock("../../src/lib/hand-followups-to-human", () => ({
+  handThreadFollowupsToHuman: (...a: unknown[]) => mockHandThread(...a),
+}));
+
 import repliesRoutes from "../../src/routes/replies";
 
 function app() {
@@ -106,6 +111,18 @@ describe("POST /orgs/replies — who asked reaches the gate", () => {
 
     const res = await request(app()).post("/orgs/replies").send(REPLY_BODY).expect(409);
     expect(res.body.code).toBe("human_took_over");
+    // The thread is a person's: the queue is told, so the responder never claims it again.
+    expect(mockHandThread).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: "org-1", campaignId: "camp-1", leadEmail: "alice@media.com" }),
+    );
+  });
+
+  it("any other refusal hands nothing over", async () => {
+    mockReplyToLead.mockRejectedValue(
+      new FakeReplyToLeadError("no_reply_to_thread", 409, "never wrote back"),
+    );
+    await request(app()).post("/orgs/replies").send(REPLY_BODY).expect(409);
+    expect(mockHandThread).not.toHaveBeenCalled();
   });
 });
 

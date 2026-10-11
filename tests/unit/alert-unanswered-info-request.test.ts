@@ -12,6 +12,10 @@ vi.mock("../../src/lib/ask-client-to-answer", () => ({
 vi.mock("../../src/lib/forward-positive-reply", () => ({
   sendThreadForward: (...a: unknown[]) => mockForward(...a),
 }));
+const mockHandThread = vi.fn();
+vi.mock("../../src/lib/hand-followups-to-human", () => ({
+  handThreadFollowupsToHuman: (...a: unknown[]) => mockHandThread(...a),
+}));
 vi.mock("../../src/lib/escalate-off-topic-reply", () => ({
   fetchLatestReplyText: (...a: unknown[]) => mockReplyText(...a),
   WORDS_UNAVAILABLE: "(unavailable)",
@@ -52,6 +56,10 @@ describe("info request nobody will answer → staff alert", () => {
     expect(template.metadata.question).toContain("No AI responder runs");
     expect(template.metadata.question).toContain("They wrote: Please send me the specs. Do you have a video?");
     expect(template.metadata.question).not.toContain("Kevin wrote");
+    // Staff own it now: the thread is HANDED in lead-service, on the caller campaign.
+    expect(mockHandThread).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: "org-1", campaignId: "c-1", leadEmail: "steve@kaizen.com" }),
+    );
   });
 
   it("an active responder: nothing sent, no claim taken (behaves as today)", async () => {
@@ -60,6 +68,7 @@ describe("info request nobody will answer → staff alert", () => {
     expect(out).toEqual({ sent: false, reason: "responder_running" });
     expect(mockForward).not.toHaveBeenCalled();
     expect(mockExecute).not.toHaveBeenCalled();
+    expect(mockHandThread).not.toHaveBeenCalled();
   });
 
   it("responder unreadable: still alerts (never silence), says why", async () => {
