@@ -275,6 +275,11 @@ export interface ThreadForwardTemplate {
   eventType?: string;
   /** Extra template variables, merged over `subject` / `thread`. */
   metadata?: Record<string, string>;
+  /**
+   * Copy the brand's sales rep (default true). False for a STAFF-only alert
+   * the client must not receive (lib/alert-unanswered-info-request).
+   */
+  copySalesRep?: boolean;
 }
 
 export async function sendThreadForward(
@@ -302,7 +307,8 @@ export async function sendThreadForward(
   // the same reasoning that makes the one-to-one reply resolve its sending
   // identity rather than accept one. A brand that stated no rep, or a rep with
   // no email, sends exactly what it sent before this existed.
-  const ccEmails = await salesRepCopyList(campaign.brandIds?.[0], campaign.orgId);
+  const ccEmails =
+    template.copySalesRep === false ? [] : await salesRepCopyList(campaign.brandIds?.[0], campaign.orgId);
 
   await sendEmail(
     {
@@ -357,8 +363,16 @@ export async function maybeForwardPositiveReply(
   // A celebration SENT on a brand with no AI responder running is followed by
   // a second email asking the client to answer it themselves
   // (lib/ask-client-to-answer). The celebration itself is unchanged.
+  // An info request is never celebrated, so the ask above never fires for it:
+  // when no responder will answer the question, staff are told instead
+  // (lib/alert-unanswered-info-request). Never silence.
   const run = celebrateOnce(campaign, leadEmail, { waitsMs: options.waitsMs, kind: eventType }).then(
     async (sent) => {
+      if (eventType === "lead_info_requested") {
+        const { maybeAlertUnansweredInfoRequest } = await import("./alert-unanswered-info-request");
+        await maybeAlertUnansweredInfoRequest(campaign, leadEmail, eventType);
+        return;
+      }
       if (!sent) return;
       const { maybeAskClientToAnswer } = await import("./ask-client-to-answer");
       await maybeAskClientToAnswer(campaign, leadEmail);

@@ -2,12 +2,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockCelebrate = vi.fn();
 const mockAsk = vi.fn();
+const mockAlert = vi.fn();
 
 vi.mock("../../src/lib/celebrate-positive-reply", () => ({
   celebrateOnce: (...a: unknown[]) => mockCelebrate(...a),
 }));
 vi.mock("../../src/lib/ask-client-to-answer", () => ({
   maybeAskClientToAnswer: (...a: unknown[]) => mockAsk(...a),
+}));
+
+vi.mock("../../src/lib/alert-unanswered-info-request", () => ({
+  maybeAlertUnansweredInfoRequest: (...a: unknown[]) => mockAlert(...a),
 }));
 
 import { maybeForwardPositiveReply } from "../../src/lib/forward-positive-reply";
@@ -34,9 +39,16 @@ describe("celebration then 'answer it yourself'", () => {
     expect(mockAsk).toHaveBeenCalledWith(campaign, "lead@x.com");
   });
 
-  it("no celebration sent (info request, claim taken): nothing asked", async () => {
+  it("info request: never asks the client, hands the staff alert the thread instead", async () => {
     mockCelebrate.mockResolvedValue(false);
     await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_info_requested", { background: false });
     expect(mockAsk).not.toHaveBeenCalled();
+    expect(mockAlert).toHaveBeenCalledWith(campaign, "lead@x.com", "lead_info_requested");
+  });
+
+  it("an interested reply never reaches the info-request alert", async () => {
+    mockCelebrate.mockResolvedValue(true);
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", { background: false });
+    expect(mockAlert).not.toHaveBeenCalled();
   });
 });
