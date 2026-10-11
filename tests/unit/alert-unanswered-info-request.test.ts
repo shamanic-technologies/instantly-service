@@ -92,6 +92,15 @@ describe("info request nobody will answer → staff alert", () => {
     expect(mockExecute).toHaveBeenCalledTimes(2);
   });
 
+  it("overdue mode (deadline sweep): never asks the responder status, says nobody answered", async () => {
+    const out = await maybeAlertUnansweredInfoRequest(campaign, "pam@buffalo.com", "lead_info_requested", {
+      overdueSince: "on Oct 5",
+    });
+    expect(out.sent).toBe(true);
+    expect(mockResponderRuns).not.toHaveBeenCalled();
+    expect(mockForward.mock.calls[0][2].metadata.question).toContain("asked a question on Oct 5 and nobody has answered it yet");
+  });
+
   it("any other kind is a no-op", async () => {
     const out = await maybeAlertUnansweredInfoRequest(campaign, "pam@buffalo.com", "lead_interested");
     expect(out).toEqual({ sent: false, reason: "not_info_request" });
