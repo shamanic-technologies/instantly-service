@@ -12,9 +12,16 @@ vi.mock("../../src/db/schema", () => ({
   sequenceCosts: {},
 }));
 
+// The forecast's account list is OUR silver (last Instantly snapshot), never a
+// live Instantly read: the Instantly plan is cancelled.
 const mockListAccounts = vi.fn();
+vi.mock("../../src/lib/silver-accounts", () => ({
+  listAccountsFromSilver: (...args: unknown[]) => mockListAccounts(...args),
+}));
 vi.mock("../../src/lib/instantly-client", () => ({
-  listAccounts: (...args: unknown[]) => mockListAccounts(...args),
+  listAccounts: () => {
+    throw new Error("the forecast must not read Instantly");
+  },
 }));
 
 class KeyServiceError extends Error {
@@ -133,7 +140,7 @@ describe("GET /internal/audit/sending-forecast", () => {
     expect(res.body.totalAccountCount).toBe(0);
   });
 
-  it("fails loud (500) when key-service has no platform key (404) — no silent zero", async () => {
+  it("needs no Instantly key: the forecast renders when the Instantly key is gone", async () => {
     mockResolvePlatformKey.mockRejectedValue(
       new KeyServiceError(404, "Platform key not configured"),
     );
@@ -143,20 +150,19 @@ describe("GET /internal/audit/sending-forecast", () => {
     const app = await makeApp();
     const res = await request(app).get("/internal/audit/sending-forecast");
 
-    expect(res.status).toBe(500);
-    expect(res.body.error).toMatch(/Platform key not configured/);
-    expect(mockListAccounts).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mockResolvePlatformKey).not.toHaveBeenCalled();
   });
 
   it("fails loud (500) when the account source throws — no fabricated capacity", async () => {
-    mockListAccounts.mockRejectedValue(new Error("instantly boom"));
+    mockListAccounts.mockRejectedValue(new Error("db boom"));
     mockExecute.mockResolvedValue({ rows: [] });
 
     const app = await makeApp();
     const res = await request(app).get("/internal/audit/sending-forecast");
 
     expect(res.status).toBe(500);
-    expect(res.body.error).toMatch(/instantly boom/);
+    expect(res.body.error).toMatch(/db boom/);
   });
 
   it("dedups concurrent requests to ONE loader run (collapses the retry storm)", async () => {
