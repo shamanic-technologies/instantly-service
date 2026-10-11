@@ -258,7 +258,7 @@ async function releaseAnswerRequest(instantlyCampaignId: string): Promise<void> 
  * responder trigger asks on (brand, offer) and fires nothing without one).
  * Throws when campaign-service cannot be read.
  */
-async function responderRuns(campaign: ForwardPositiveReplyCampaign): Promise<boolean | null> {
+export async function responderRuns(campaign: ForwardPositiveReplyCampaign): Promise<boolean | null> {
   const callerId = campaign.conversationCampaignId ?? campaign.campaignId;
   if (!campaign.orgId || !callerId) return null;
   const scope = await getCampaignTriggerScope(callerId, campaign.orgId);

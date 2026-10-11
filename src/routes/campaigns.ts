@@ -378,4 +378,47 @@ router.post("/ask-client-to-answer", async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /campaigns/alert-unanswered-info-request — staff, by hand, ONE thread.
+ * Body `{ instantlyCampaignId, leadEmail }`. Replays the live decision for an
+ * info request (lib/alert-unanswered-info-request): staff are alerted unless an
+ * AI responder runs on the brand's offer or the thread was already alerted.
+ * Synchronous; answers the outcome.
+ */
+router.post("/alert-unanswered-info-request", async (req: Request, res: Response) => {
+  const { instantlyCampaignId, leadEmail } = (req.body ?? {}) as { instantlyCampaignId?: unknown; leadEmail?: unknown };
+  if (typeof instantlyCampaignId !== "string" || !instantlyCampaignId || typeof leadEmail !== "string" || !leadEmail) {
+    return res.status(400).json({ error: "instantlyCampaignId and leadEmail are required strings" });
+  }
+  try {
+    const [row] = await db
+      .select()
+      .from(instantlyCampaigns)
+      .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId))
+      .limit(1);
+    if (!row) return res.status(404).json({ error: "campaign not found" });
+    if (row.leadEmail?.toLowerCase() !== leadEmail.trim().toLowerCase()) {
+      return res.status(400).json({ error: "leadEmail does not match this campaign row" });
+    }
+    const { maybeAlertUnansweredInfoRequest, INFO_REQUEST_KIND } = await import("../lib/alert-unanswered-info-request");
+    const outcome = await maybeAlertUnansweredInfoRequest(
+      {
+        instantlyCampaignId: row.instantlyCampaignId,
+        campaignId: row.campaignId,
+        orgId: row.orgId,
+        userId: row.userId,
+        runId: row.runId,
+        brandIds: row.brandIds,
+      },
+      leadEmail.trim(),
+      INFO_REQUEST_KIND,
+    );
+    return res.status(200).json(outcome);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] alert-unanswered-info-request route failed: ${message}`);
+    return res.status(500).json({ error: message });
+  }
+});
+
 export default router;

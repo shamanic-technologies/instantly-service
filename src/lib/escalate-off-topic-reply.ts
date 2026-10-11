@@ -71,7 +71,7 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
 }
 
 /** The prospect's latest reply on this thread, whichever pipe carried it. */
-async function fetchLatestReplyText(instantlyCampaignId: string): Promise<string | null> {
+export async function fetchLatestReplyText(instantlyCampaignId: string): Promise<string | null> {
   if (!isSelfSendCampaignId(instantlyCampaignId)) {
     return (await fetchLatestMirroredInbound(instantlyCampaignId))?.text ?? null;
   }
