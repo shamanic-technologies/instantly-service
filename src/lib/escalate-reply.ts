@@ -37,10 +37,10 @@
  * conversation) and the campaign identity (so it can name the lead row whose
  * schedule stops). Do NOT add a content heuristic here; a caller declares.
  *
- * ⚠️ NOTHING IS RETROACTIVE AND NOTHING IS PERMANENT. A stop is not a tombstone
- * by lead-service's own model: if the prospect writes again, the reply side
- * effects re-enqueue them and qualification re-decides. That is correct — a new
- * message is a new decision.
+ * ⚠️ THE HAND-OVER IS PERMANENT (owner 2026-10-11). The ladder is not stopped
+ * but HANDED (lead-service `kind: "handed"`): if the prospect writes again, the
+ * re-enqueue leaves no due date and no automated responder claims the thread.
+ * The person it went to owns the conversation from here.
  */
 
 import { sql } from "drizzle-orm";
@@ -56,7 +56,7 @@ import {
   type ForwardPositiveReplyCampaign,
   type ThreadMessage,
 } from "./forward-positive-reply";
-import { findLeadOnCampaignByEmail, stopFollowups } from "./lead-client";
+import { findLeadOnCampaignByEmail, handFollowupsToHuman } from "./lead-client";
 import {
   loadHistoryWithLatestReply,
   renderProspectHistory,
@@ -455,7 +455,7 @@ async function stopLadderOnce(input: {
       );
       return false;
     }
-    await stopFollowups({ orgId: input.orgId, leadRowId: lead.id, reason: input.reason });
+    await handFollowupsToHuman({ orgId: input.orgId, leadRowId: lead.id, reason: input.reason });
     return true;
   } catch (error) {
     console.error(
@@ -547,7 +547,7 @@ export async function handThreadToHuman(
     };
   }
 
-  await stopFollowups({
+  await handFollowupsToHuman({
     orgId: input.orgId,
     leadRowId: lead.id,
     reason: input.stopReason,

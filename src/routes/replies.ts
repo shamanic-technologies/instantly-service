@@ -16,6 +16,7 @@ import { EscalateReplyBodySchema, ReplyToLeadBodySchema } from "../schemas";
 import { escalateReply, EscalateReplyError } from "../lib/escalate-reply";
 import { resolveReplySender } from "../lib/human-takeover";
 import { replyToLead, ReplyToLeadError } from "../lib/reply-to-lead";
+import { handThreadFollowupsToHuman } from "../lib/hand-followups-to-human";
 
 const router = Router();
 
@@ -51,6 +52,17 @@ router.post("/", async (req: Request, res: Response) => {
   } catch (error: unknown) {
     // A named refusal the caller can branch on.
     if (error instanceof ReplyToLeadError) {
+      // A person already answered this thread: it is theirs. Say so to the queue,
+      // or the responder claims it again at its next due date and is refused again.
+      if (error.code === "human_took_over") {
+        await handThreadFollowupsToHuman({
+          orgId,
+          campaignId: campaign_id,
+          leadEmail: email,
+          reason: "A person answered this thread after the prospect last wrote (human_took_over).",
+          tag: "reply-to-lead",
+        });
+      }
       return res
         .status(error.status)
         .json({ error: error.message, code: error.code });

@@ -29,6 +29,7 @@ import { db } from "../db";
 import { responderRuns } from "./ask-client-to-answer";
 import type { ForwardPositiveReplyCampaign } from "./forward-positive-reply";
 import { sendThreadForward } from "./forward-positive-reply";
+import { handThreadFollowupsToHuman } from "./hand-followups-to-human";
 
 /** The transactional-email template this module sends (deployed at startup). */
 export const INFO_REQUEST_ALERT_EVENT_TYPE = "info-request-unanswered";
@@ -142,6 +143,14 @@ export async function maybeAlertUnansweredInfoRequest(
       copySalesRep: false,
     });
     console.log(`[instantly-service] info-request-alert: SENT for ${tag} (${messages} msg) — ${why}`);
+    // Staff were told to answer it: the thread is theirs, no responder switched on later may answer it.
+    await handThreadFollowupsToHuman({
+      orgId: campaign.orgId,
+      campaignId: campaign.conversationCampaignId ?? campaign.campaignId,
+      leadEmail,
+      reason: "Staff told to answer an info request nobody would answer (agency inbox).",
+      tag: "info-request-alert",
+    });
     return { sent: true, why };
   } catch (error) {
     await release(campaign.instantlyCampaignId).catch(() => {});

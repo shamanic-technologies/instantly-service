@@ -54,10 +54,10 @@ const mockSendEmail = vi.fn();
 vi.mock("../../src/lib/email-client", () => ({ sendEmail: (...a: unknown[]) => mockSendEmail(...a) }));
 
 const mockFindLead = vi.fn();
-const mockStopFollowups = vi.fn();
+const mockHandFollowups = vi.fn();
 vi.mock("../../src/lib/lead-client", () => ({
   findLeadOnCampaignByEmail: (...a: unknown[]) => mockFindLead(...a),
-  stopFollowups: (...a: unknown[]) => mockStopFollowups(...a),
+  handFollowupsToHuman: (...a: unknown[]) => mockHandFollowups(...a),
 }));
 
 import {
@@ -133,7 +133,7 @@ beforeEach(() => {
   mockReplyToLead.mockResolvedValue({ status: "sent", reply: {} });
   mockSendEmail.mockResolvedValue(undefined);
   mockFindLead.mockResolvedValue({ id: "lead-row-1", email: "michael@clinic.com" });
-  mockStopFollowups.mockResolvedValue(undefined);
+  mockHandFollowups.mockResolvedValue(undefined);
 });
 
 // ─── The hand-over to the client's rep ───────────────────────────────────────
@@ -190,10 +190,10 @@ describe("escalating a reply when the brand names a rep", () => {
     ).toContain("Marie, Head of Partnerships at Doc Dinners");
   });
 
-  it("records ONE stop, naming who took the thread", async () => {
+  it("records ONE hand-over (permanent, not a stop), naming who took the thread", async () => {
     await escalateReply(INPUT);
-    expect(mockStopFollowups).toHaveBeenCalledTimes(1);
-    expect(mockStopFollowups.mock.calls[0][0].reason).toBe(
+    expect(mockHandFollowups).toHaveBeenCalledTimes(1);
+    expect(mockHandFollowups.mock.calls[0][0].reason).toBe(
       "Handed to rep@docdinners.com: the automated responder could not answer this reply.",
     );
   });
@@ -208,7 +208,7 @@ describe("a repeated escalation of the same thread", () => {
     expect(mockReplyToLead).not.toHaveBeenCalled();
     expect(mockSendEmail).not.toHaveBeenCalled();
     expect(mockCelebrate).not.toHaveBeenCalled();
-    expect(mockStopFollowups).not.toHaveBeenCalled();
+    expect(mockHandFollowups).not.toHaveBeenCalled();
     expect(result).toMatchObject({ handoff: "already_escalated", handedTo: "rep@docdinners.com" });
   });
 });
@@ -243,7 +243,7 @@ describe("escalating when the brand names no rep", () => {
     await expect(escalateReply(INPUT)).rejects.toThrow("postmark down");
     const released = mockExecute.mock.calls.some(([q]) => JSON.stringify(q).includes("escalated_at = NULL"));
     expect(released).toBe(true);
-    expect(mockStopFollowups).not.toHaveBeenCalled();
+    expect(mockHandFollowups).not.toHaveBeenCalled();
   });
 });
 
