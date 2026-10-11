@@ -65,6 +65,18 @@ describe("a reply a responder took but never answered → client asked after 24 
     expect(mockAsk).not.toHaveBeenCalled();
   });
 
+  it("'answered since' is dated from when THEY wrote (Gallego: wrote Aug 2, labeled Oct 8, our bump Sep 4)", async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+    await askClientsAboutUnansweredReplies(new Date("2026-10-11T12:00:00Z"));
+    const q = sqlText(mockExecute.mock.calls[0][0]);
+    expect(q).toContain("LEAST(");
+    expect(q).toContain("ue_type' = '2'");
+    expect(q).toContain("lower(c.lead_email)");
+    expect(q).toContain("d.dispatched_at >= a.asked_at");
+    expect(q).toContain(">= a.asked_at AT TIME ZONE 'UTC'");
+    expect(q).not.toContain(">= q.known_at");
+  });
+
   it("a failed read throws (the worker logs it loud), nobody is asked", async () => {
     mockExecute.mockRejectedValue(new Error("pool timeout"));
     await expect(askClientsAboutUnansweredReplies()).rejects.toThrow("pool timeout");
