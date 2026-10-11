@@ -371,6 +371,7 @@ describe("applyManualQualificationSideEffects — a POSITIVE manual statement re
       expect.objectContaining({ instantlyCampaignId: "inst-1", campaignId: "camp-1" }),
       "lead@test.com",
       "lead_interested",
+      { responder: undefined },
     );
     expect(mockTriggerSalesInterest).toHaveBeenCalledWith(
       expect.objectContaining({ instantlyCampaignId: "inst-1", campaignId: "camp-1" }),
@@ -416,6 +417,7 @@ describe("applyManualQualificationSideEffects — a POSITIVE manual statement re
       expect.anything(),
       "lead@test.com",
       "lead_interested",
+      { responder: undefined },
     );
   });
 
@@ -437,6 +439,7 @@ describe("applyManualQualificationSideEffects — a POSITIVE manual statement re
       expect.anything(),
       "lead@test.com",
       "lead_not_interested",
+      { responder: undefined },
     );
   });
 });
