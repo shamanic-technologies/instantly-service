@@ -6,6 +6,7 @@ import { db } from "../db";
 import { instantlyCampaigns } from "../db/schema";
 import { sendThreadForward } from "../lib/forward-positive-reply";
 import { listAccounts, getAccountRaw } from "../lib/instantly-client";
+import { listAccountsFromSilver } from "../lib/silver-accounts";
 import { resolvePlatformInstantlyApiKey } from "../lib/key-client";
 import {
   computeCapacitySummary,
@@ -188,15 +189,13 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
       async () => {
         const asOf = new Date();
 
-        const apiKey = await resolvePlatformInstantlyApiKey({
-          method: "GET",
-          path: "/internal/audit/sending-forecast",
-        });
+        // The account list is OUR silver (last Instantly snapshot + our own
+        // limits), so the forecast survives the Instantly plan being cancelled.
         // The ramp reads measured volume, and the quota belongs to the relay
         // login — so the fleet total needs both, or it reports the theoretical
         // ceiling instead of what can actually go out today.
         const [accounts, lifecycleByEmail, volume, mailboxOf] = await Promise.all([
-          listAccounts(apiKey),
+          listAccountsFromSilver(),
           fetchLifecycleByEmail(),
           fetchRecentDailyVolume(),
           loadMailboxLogins({ method: "GET", path: "/internal/audit/sending-forecast" }),
@@ -334,7 +333,18 @@ router.post("/accounts-sync", async (_req: Request, res: Response) => {
       method: "POST",
       path: "/internal/audit/accounts-sync",
     });
-    const snapshot = await snapshotAccounts(apiKey);
+    // The Instantly plan is cancelled, so the snapshot can fail for good. The
+    // lifecycle reads OUR silver (and the seed-test delivery), so a dead
+    // snapshot must not freeze promotions and demotions of the mailboxes we send
+    // from ourselves: the failure is logged loud and the reconcile still runs.
+    let snapshot: Awaited<ReturnType<typeof snapshotAccounts>> | { failed: string };
+    try {
+      snapshot = await snapshotAccounts(apiKey);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[audit] accounts-sync run=${runId} Instantly snapshot failed, reconciling from silver: ${message}`);
+      snapshot = { failed: message };
+    }
     const lifecycle = await reconcileLifecycle(apiKey);
     console.log(
       `[audit] accounts-sync: done run=${runId} ${JSON.stringify({ snapshot, lifecycle })}`,

@@ -723,6 +723,12 @@ export async function reconcileLifecycle(
       dailyLimit: row.dailyLimit ?? null,
       createdAt: now,
     });
+    // On our own sender nobody PATCHes Instantly any more, so silver's
+    // `daily_limit` (what `capForAccount` reads) is written HERE, from the same
+    // per-state constant an Instantly flip would have pushed. Without it a box
+    // promoted to in_production keeps its recovery 20/day forever.
+    const ownDailyLimit =
+      sendTransport === SEND_TRANSPORT_SMTP ? dailyLimitForStatus(status) : null;
     await db
       .update(instantlyAccounts)
       .set({
@@ -730,6 +736,9 @@ export async function reconcileLifecycle(
         lifecycleReason: eventReason,
         lifecycleUpdatedAt: now,
         updatedAt: now,
+        ...(ownDailyLimit === null
+          ? {}
+          : { dailyLimit: ownDailyLimit, dailySendLimit: ownDailyLimit }),
       })
       .where(sql`${instantlyAccounts.email} = ${row.email}`);
 

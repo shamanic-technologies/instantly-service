@@ -433,6 +433,63 @@ describe("reconcileLifecycle", () => {
     expect(event.reason).toBe("reactivated");
   });
 
+  // The Instantly plan is cancelled: nobody PATCHes Instantly for a mailbox we
+  // send from ourselves, and the snapshot no longer reads a limit back. The
+  // promotion must write OUR limit onto silver, or the box keeps the recovery
+  // 20/day that `capForAccount` reads, forever.
+  it("smtp: a promotion writes the production daily limit onto silver itself", async () => {
+    mockSelfSendCapable.mockResolvedValue(true);
+    seedReads({
+      accounts: [
+        {
+          email: "self@fuseconnectio.com",
+          instantlyStatus: 1,
+          warmupScore: 0,
+          dailyLimit: 20,
+          sendTransport: "smtp",
+          lifecycleStatus: "in_recovery",
+        },
+      ],
+      delivery: [
+        { accountEmail: "self@fuseconnectio.com", inboxCount: 37, seedTotal: 39 },
+      ],
+    });
+
+    await reconcileLifecycle("api-key");
+
+    expect(mockSetDaily).not.toHaveBeenCalled();
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ lifecycleStatus: "in_production", dailyLimit: 50, dailySendLimit: 50 }),
+    );
+  });
+
+  it("instantly transport: the flip leaves silver's limit to the Instantly PATCH", async () => {
+    mockSelfSendCapable.mockResolvedValue(false);
+    seedReads({
+      accounts: [
+        {
+          email: "dfy@axionmilestone.com",
+          instantlyStatus: 1,
+          warmupScore: 100,
+          dailyLimit: 20,
+          sendTransport: "instantly",
+          lifecycleStatus: "in_recovery",
+        },
+      ],
+      delivery: [
+        { accountEmail: "dfy@axionmilestone.com", inboxCount: 39, seedTotal: 39 },
+      ],
+    });
+
+    await reconcileLifecycle("api-key");
+
+    const flip = mockUpdateSet.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((v) => v.lifecycleStatus === "in_production");
+    expect(flip).toBeDefined();
+    expect(flip).not.toHaveProperty("dailyLimit");
+  });
+
   it("smtp: a mailbox BELOW the delivery bar still lands in_recovery and sends nothing", async () => {
     mockSelfSendCapable.mockResolvedValue(true);
     // The safety half. Moving a dead mailbox onto our own pipe does not promote
