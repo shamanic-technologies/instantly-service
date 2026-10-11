@@ -43,7 +43,7 @@ import { agencyInbox } from "./agency-inbox";
 import { findOngoingResponderCampaigns, getCampaignTriggerScope } from "./campaign-client";
 import { orgComplete } from "./chat-client";
 import { listOrgMembers, type OrgMember } from "./client-org-client";
-import { escapeHtml, prospectLabel } from "./celebrate-positive-reply";
+import { brandContextOrNull, escapeHtml, prospectLabel } from "./celebrate-positive-reply";
 import { sendEmail } from "./email-client";
 import type { ForwardPositiveReplyCampaign, ThreadMessage } from "./forward-positive-reply";
 import { formatThreadDate } from "./forward-positive-reply";
@@ -51,9 +51,20 @@ import { findLeadOnCampaignByEmail } from "./lead-client";
 import { handThreadFollowupsToHuman } from "./hand-followups-to-human";
 import type { HistoryItem } from "./prospect-history";
 import { stripQuotedHistory } from "./self-send/qualify-reply";
+import { bareAddress } from "./staff-senders";
 
 /** The transactional-email template this module sends (deployed at startup). */
 export const CLIENT_ANSWER_EVENT_TYPE = "positive-reply-answer-request";
+/** The staff-only check-in this module sends for an OLD question (deployed at startup). */
+export const STAFF_CHECK_IN_EVENT_TYPE = "unanswered-question-check-in";
+
+/**
+ * A question older than this may have been answered where we cannot see it (a
+ * call, the client's own mailbox). Asking the client to answer it reads wrong,
+ * so staff get a ready check-in to send instead (owner 2026-10-11, Dr. Gallego:
+ * asked Aug 2, relabeled Oct 8).
+ */
+export const QUESTION_STALE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
 
 // ─── Pure ────────────────────────────────────────────────────────────────────
 
@@ -81,6 +92,85 @@ export function cleanSummaryLine(raw: string | null | undefined): string | null 
   return line;
 }
 
+/** Pure: every address WE sent from in this thread (any of our sending mailboxes). */
+export function ourAddresses(messages: ThreadMessage[]): Set<string> {
+  const ours = new Set<string>();
+  for (const m of messages) {
+    if (m.direction !== "outbound") continue;
+    const a = bareAddress(m.from);
+    if (a) ours.add(a);
+  }
+  return ours;
+}
+
+function timeOf(m: ThreadMessage): number {
+  const t = Date.parse(m.date);
+  return Number.isFinite(t) ? t : Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * Pure: the latest message the PROSPECT wrote: inbound and not sent from one of
+ * our own mailboxes. Never one of ours (owner 2026-10-11: an alert quoted
+ * Fallon's Sep 4 bump as Dr. Gallego's question). Null when there is none.
+ */
+export function latestProspectMessage(messages: ThreadMessage[]): ThreadMessage | null {
+  const ours = ourAddresses(messages);
+  let best: ThreadMessage | null = null;
+  for (const m of messages) {
+    if (m.direction !== "inbound") continue;
+    const from = bareAddress(m.from);
+    if (from && ours.has(from)) continue;
+    if (!best || timeOf(m) >= timeOf(best)) best = m;
+  }
+  return best;
+}
+
+/**
+ * Pure: our first message sent AFTER the prospect's question, or null. Any
+ * message from us counts, a manual reply from the Instantly Unibox included,
+ * and one of our mailboxes filed inbound (a copy landing in the thread): a
+ * person handled the thread, so nobody is asked to answer it.
+ */
+export function ourAnswerAfter(messages: ThreadMessage[], question: ThreadMessage): ThreadMessage | null {
+  const asked = timeOf(question);
+  if (!Number.isFinite(asked)) return null;
+  const ours = ourAddresses(messages);
+  const fromUs = (m: ThreadMessage) => {
+    if (m.direction === "outbound") return true;
+    const from = bareAddress(m.from);
+    return Boolean(from && ours.has(from));
+  };
+  const after = messages.filter((m) => fromUs(m) && timeOf(m) > asked).sort((a, b) => timeOf(a) - timeOf(b));
+  return after[0] ?? null;
+}
+
+/** Pure: the mailbox the thread was sent from (our latest message), and the first name it signs with. */
+export function threadSender(messages: ThreadMessage[]): { address: string | null; firstName: string | null } {
+  const ours = messages.filter((m) => m.direction === "outbound").sort((a, b) => timeOf(b) - timeOf(a))[0];
+  if (!ours) return { address: null, firstName: null };
+  const address = bareAddress(ours.from);
+  const display = ours.from.match(/^\s*"?([^"<]*?)"?\s*<[^>]+>\s*$/)?.[1]?.trim();
+  if (display && !display.includes("@")) return { address, firstName: display.split(/\s+/)[0] };
+  const local = address?.split("@")[0] ?? "";
+  const word = local.split(/[._+-]/)[0];
+  return { address, firstName: /^[a-z]{2,}$/i.test(word) ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : null };
+}
+
+/** Pure: "Aug 2, 2026" (UTC). */
+export function shortDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+
+/** Pure: the first line, naming both sides. "Client: Doc Dinners · Prospect: Dr. Gallego (Shin Wellness)". */
+export function whoLine(input: { brandName: string | null; leadEmail: string; leadFullName: string | null; company: string | null }): string {
+  const name = input.leadFullName?.trim();
+  const detail = input.company?.trim() || input.leadEmail;
+  const prospect = name ? `${name} (${detail})` : input.leadEmail;
+  return `Client: ${input.brandName?.trim() || "unknown brand"} · Prospect: ${prospect}`;
+}
+
 export interface AnswerRequestInput {
   /** The member's first name; null = "Hi,". */
   clientFirstName: string | null;
@@ -92,7 +182,9 @@ export interface AnswerRequestInput {
   company: string | null;
   /** The one line on what they wrote; null = dropped. */
   summaryLine: string | null;
-  /** The prospect's reply, verbatim. */
+  /** The brand the thread is for; null = "unknown brand". */
+  brandName: string | null;
+  /** The prospect's reply (their latest message, never ours), verbatim. */
   reply: ThreadMessage;
   /** Every other email of the thread (any order). */
   earlier: ThreadMessage[];
@@ -145,15 +237,26 @@ function byDateDesc(a: ThreadMessage, b: ThreadMessage): number {
   return (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0);
 }
 
-/** Pure: the email (owner copy, locked 2026-10-08). Plain text; the HTML is that text, escaped. */
+function conversationBelow(reply: ThreadMessage, earlier: ThreadMessage[]): string {
+  const words = { ...reply, bodyText: replyWordsOnly(reply.bodyText, stripQuotedHistory) };
+  return [words, ...earlier.filter((m) => m !== reply).sort(byDateDesc)].map(messageBlock).join("\n\n");
+}
+
+/**
+ * Pure: the email (owner copy 2026-10-08, plus the who line and the date of
+ * their message, owner 2026-10-11). Plain text; the HTML is that text, escaped.
+ */
 export function renderAnswerRequest(input: AnswerRequestInput): AnswerRequestContent {
   const who = input.leadFullName?.trim() || input.leadEmail;
   const company = input.company?.trim();
   const possessive = input.leadFirstName?.trim() ? `${input.leadFirstName.trim()}'s` : "their";
   const lines = [
+    whoLine(input),
+    ``,
     input.clientFirstName?.trim() ? `Hi ${input.clientFirstName.trim()},` : "Hi,",
     ``,
     `Good news: ${who}${company ? ` at ${company}` : ""} is interested and is waiting for an answer.`,
+    `They wrote on ${shortDate(input.reply.date)}.`,
     ...(input.summaryLine ? [input.summaryLine] : []),
     ``,
     `You can answer by hitting Reply on this email. It adds ${possessive} email in To:, under the same subject, with the conversation below.`,
@@ -163,13 +266,76 @@ export function renderAnswerRequest(input: AnswerRequestInput): AnswerRequestCon
     ``,
     `---`,
   ];
-  const reply = { ...input.reply, bodyText: replyWordsOnly(input.reply.bodyText, stripQuotedHistory) };
-  const conversation = [reply, ...input.earlier.filter((m) => m !== input.reply).sort(byDateDesc)]
-    .map(messageBlock)
-    .join("\n\n");
-  const text = `${lines.join("\n")}\n${conversation}`;
+  const text = `${lines.join("\n")}\n${conversationBelow(input.reply, input.earlier)}`;
   const html = `<div style="white-space:pre-wrap;word-break:break-word;">${escapeHtml(text)}</div>`;
   return { subject: replySubject(input.reply.subject), text, html };
+}
+
+export interface StaffCheckInInput {
+  brandName: string | null;
+  leadEmail: string;
+  leadFullName: string | null;
+  company: string | null;
+  /** Their question (their latest message, never ours). */
+  question: ThreadMessage;
+  earlier: ThreadMessage[];
+  /** The mailbox the thread was sent from; the check-in goes from there. */
+  senderAddress: string | null;
+  /** The check-in to send, ready as is. */
+  checkIn: string;
+}
+
+/**
+ * Pure: the staff-only email for an OLD question. Someone may have answered it
+ * where we cannot see (a call, the client's mailbox), so staff get a check-in
+ * to send in the thread, never a request to answer the original question.
+ */
+export function renderStaffCheckIn(input: StaffCheckInInput): AnswerRequestContent {
+  const brand = input.brandName?.trim() || "the client";
+  const who = input.leadFullName?.trim() || input.leadEmail;
+  const lines = [
+    whoLine(input),
+    ``,
+    `${who} asked a question on ${shortDate(input.question.date)}.`,
+    `Nobody answered in this thread.`,
+    `Someone may have answered another way, so check in first.`,
+    ``,
+    `Send this in the thread${input.senderAddress ? `, from ${input.senderAddress}` : ""}:`,
+    ``,
+    input.checkIn,
+    ``,
+    `${brand.charAt(0).toUpperCase()}${brand.slice(1)} was not emailed about this.`,
+    ``,
+    `---`,
+  ];
+  const text = `${lines.join("\n")}\n${conversationBelow(input.question, input.earlier)}`;
+  const html = `<div style="white-space:pre-wrap;word-break:break-word;">${escapeHtml(text)}</div>`;
+  return { subject: `Check in with ${who} (${input.brandName?.trim() || "unknown brand"})`, text, html };
+}
+
+/** Pure: the check-in written from a template (English), when the model cannot write one. */
+export function templateCheckIn(input: { leadFirstName: string | null; brandName: string | null; senderFirstName: string | null }): string {
+  const brand = input.brandName?.trim() || "the team";
+  return [
+    input.leadFirstName?.trim() ? `Hi ${input.leadFirstName.trim()},` : "Hi,",
+    ``,
+    `Following up on this. Did you get to talk with ${brand}? If not, I can set up the intro this week.`,
+    ``,
+    input.senderFirstName?.trim() || "Thanks",
+  ].join("\n");
+}
+
+/** Pure: a model-written check-in made safe to send, or null to use the template. */
+export function cleanCheckIn(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const text = raw
+    .trim()
+    .replace(/^["'“]+|["'”]+$/g, "")
+    .replace(/\s*[—–]\s*/g, ", ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!text || /^none\.?$/i.test(text) || text.length > 600) return null;
+  return text;
 }
 
 /** Pure: who receives it. Members with an address; none = the agency inbox alone. */
@@ -236,6 +402,56 @@ async function summaryLineOrNull(
   }
 }
 
+const CHECK_IN_SYSTEM_PROMPT = [
+  "You write a short check-in email that a sales rep sends in an old email thread.",
+  "The prospect asked something a while ago. Someone may have answered them another way, so the rep does not answer the question: the rep checks whether they got what they needed, and offers to set it up this week.",
+  "The rep introduced the prospect to a business (the brand). Name the brand and what they asked about, in a few words.",
+  "Rules:",
+  "- Write in the language the prospect wrote in.",
+  "- First line: a greeting with the prospect's first name when given, else a plain greeting.",
+  "- Then two or three short sentences. One idea per sentence. Plain words.",
+  "- Last line: the rep's first name alone.",
+  "- No dashes, no quotes, no subject line, no placeholders, no promises beyond setting up the intro or sending the info.",
+  "Example: Hi Doug,\n\nFollowing up on this. Did you get to talk with Shockwavecenters about their protocols? If not, I can set up the intro this week.\n\nScott",
+].join("\n");
+
+async function checkInText(
+  campaign: ForwardPositiveReplyCampaign,
+  question: ThreadMessage,
+  input: { leadFirstName: string | null; brandName: string | null; senderFirstName: string | null },
+): Promise<string> {
+  if (campaign.orgId && campaign.runId && campaign.userId) {
+    try {
+      const result = await orgComplete(
+        {
+          message: [
+            `Prospect first name: ${input.leadFirstName ?? "unknown"}`,
+            `Brand: ${input.brandName ?? "unknown"}`,
+            `Rep first name: ${input.senderFirstName ?? "unknown"}`,
+            `What the prospect wrote on ${shortDate(question.date)}, verbatim:`,
+            `"""`,
+            replyWordsOnly(question.bodyText, stripQuotedHistory),
+            `"""`,
+          ].join("\n"),
+          systemPrompt: CHECK_IN_SYSTEM_PROMPT,
+          provider: "anthropic",
+          model: "sonnet",
+          maxTokens: 300,
+        },
+        { orgId: campaign.orgId, userId: campaign.userId, runId: campaign.runId, brandId: campaign.brandIds?.[0] },
+      );
+      const cleaned = cleanCheckIn(result.content);
+      if (cleaned) return cleaned;
+      console.warn(`[instantly-service] ask-client-to-answer: check-in unusable for campaign=${campaign.instantlyCampaignId}, English template used`);
+    } catch (error) {
+      console.warn(
+        `[instantly-service] ask-client-to-answer: check-in unavailable for campaign=${campaign.instantlyCampaignId}, English template used — ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return templateCheckIn(input);
+}
+
 // ─── IO ──────────────────────────────────────────────────────────────────────
 
 async function claimAnswerRequest(instantlyCampaignId: string): Promise<boolean> {
@@ -280,7 +496,7 @@ export async function responderRuns(campaign: ForwardPositiveReplyCampaign): Pro
 }
 
 export type AnswerRequestOutcome =
-  | { sent: true; recipients: string[]; cc: string[]; subject: string; text: string }
+  | { sent: true; to: "client" | "staff"; recipients: string[]; cc: string[]; subject: string; text: string }
   | { sent: false; reason: string };
 
 /**
@@ -299,6 +515,8 @@ export async function maybeAskClientToAnswer(
      * responder's status is read here.
      */
     because?: "no_responder" | "overdue";
+    /** The clock (tests). */
+    asOf?: Date;
   } = {},
 ): Promise<AnswerRequestOutcome> {
   const tag = `campaign=${campaign.instantlyCampaignId} lead=${leadEmail}`;
@@ -334,10 +552,26 @@ export async function maybeAskClientToAnswer(
 
   try {
     const { loadHistoryWithLatestReply, REPLY_WAIT_SHORT_MS } = await import("./prospect-history");
-    const { history, latestReply } = await loadHistoryWithLatestReply(campaign, leadEmail, {
+    const { history } = await loadHistoryWithLatestReply(campaign, leadEmail, {
       waitsMs: options.waitsMs ?? REPLY_WAIT_SHORT_MS,
     });
+    const earlier = history.items
+      .filter((i): i is Extract<HistoryItem, { type: "message" }> => i.type === "message")
+      .map((i) => i.message);
+    // Their own words, never one of ours (a manual bump is not their question).
+    const latestReply = latestProspectMessage(earlier);
     if (!latestReply) throw new Error("the prospect's reply is not readable yet");
+
+    // We wrote after their question (a manual reply from the Unibox, the
+    // responder): a person handled the thread, nobody is asked.
+    const answered = ourAnswerAfter(earlier, latestReply);
+    if (answered) {
+      await releaseAnswerRequest(campaign.instantlyCampaignId).catch(() => {});
+      console.log(
+        `[instantly-service] ask-client-to-answer: ${tag} answered in the thread on ${answered.date} by ${answered.from} (question ${latestReply.date}); nothing sent`,
+      );
+      return { sent: false, reason: "answered_in_thread" };
+    }
 
     const callerId = campaign.conversationCampaignId ?? campaign.campaignId;
     const lead = callerId
@@ -357,11 +591,16 @@ export async function maybeAskClientToAnswer(
       (fromName !== leadEmail ? fromName : null);
     const firstName = lead?.firstName?.trim() || (fullName ? fullName.split(/\s+/)[0] : null);
     const company = lead?.company?.trim() || null;
+    const brand = await brandContextOrNull(campaign.brandIds?.[0], campaign.orgId);
+    const brandName = brand?.name ?? null;
+
+    const asOf = options.asOf ?? new Date();
+    if (asOf.getTime() - timeOf(latestReply) > QUESTION_STALE_AFTER_MS) {
+      return await sendStaffCheckIn({ campaign, leadEmail, tag, callerId, brandName, fullName, firstName, company, question: latestReply, earlier });
+    }
+
     const summaryLine = await summaryLineOrNull(campaign, latestReply, firstName, company);
 
-    const earlier = history.items
-      .filter((i): i is Extract<HistoryItem, { type: "message" }> => i.type === "message")
-      .map((i) => i.message);
     const members = await listOrgMembers(campaign.orgId);
     const recipients = answerRequestRecipients(members, agencyInbox());
 
@@ -376,6 +615,7 @@ export async function maybeAskClientToAnswer(
         leadFirstName: firstName,
         company,
         summaryLine,
+        brandName,
         reply: latestReply,
         earlier,
       });
@@ -417,7 +657,7 @@ export async function maybeAskClientToAnswer(
       reason: `Client asked to answer (${sentTo.join(", ")}): no AI responder ran when the reply arrived.`,
       tag: "ask-client-to-answer",
     });
-    return { sent: true, recipients: sentTo, cc: ccSent, subject: content.subject, text: content.text };
+    return { sent: true, to: "client", recipients: sentTo, cc: ccSent, subject: content.subject, text: content.text };
   } catch (error) {
     await releaseAnswerRequest(campaign.instantlyCampaignId).catch(() => {});
     console.error(
@@ -425,4 +665,67 @@ export async function maybeAskClientToAnswer(
     );
     return { sent: false, reason: "send_failed" };
   }
+}
+
+/**
+ * The OLD-question branch: staff only (the client is not emailed), a ready
+ * check-in in the prospect's language, signed as the thread's sender. Same
+ * once-per-thread claim; follow-ups handed to a person. Throws on a failed send
+ * (the caller releases the claim).
+ */
+async function sendStaffCheckIn(args: {
+  campaign: ForwardPositiveReplyCampaign;
+  leadEmail: string;
+  tag: string;
+  callerId: string | null | undefined;
+  brandName: string | null;
+  fullName: string | null;
+  firstName: string | null;
+  company: string | null;
+  question: ThreadMessage;
+  earlier: ThreadMessage[];
+}): Promise<AnswerRequestOutcome> {
+  const { campaign, leadEmail, tag, question, earlier } = args;
+  const sender = threadSender(earlier);
+  const checkIn = await checkInText(campaign, question, {
+    leadFirstName: args.firstName,
+    brandName: args.brandName,
+    senderFirstName: sender.firstName,
+  });
+  const content = renderStaffCheckIn({
+    brandName: args.brandName,
+    leadEmail,
+    leadFullName: args.fullName,
+    company: args.company,
+    question,
+    earlier,
+    senderAddress: sender.address,
+    checkIn,
+  });
+  const agency = agencyInbox();
+  await sendEmail(
+    {
+      appId: "instantly-service",
+      eventType: STAFF_CHECK_IN_EVENT_TYPE,
+      recipientEmail: agency,
+      metadata: { subject: content.subject, html: content.html, text: content.text },
+    },
+    {
+      orgId: campaign.orgId!,
+      userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
+      runId: campaign.runId || undefined,
+      tracking: { campaignId: campaign.campaignId ?? undefined, brandId: campaign.brandIds?.[0] },
+    },
+  );
+  console.log(
+    `[instantly-service] ask-client-to-answer: question from ${shortDate(question.date)} is old, staff check-in sent for ${tag} → ${agency} subject="${content.subject}"`,
+  );
+  await handThreadFollowupsToHuman({
+    orgId: campaign.orgId!,
+    campaignId: args.callerId,
+    leadEmail,
+    reason: `Staff asked to check in (${agency}): the question dates from ${shortDate(question.date)}, it may have been answered elsewhere.`,
+    tag: "ask-client-to-answer",
+  });
+  return { sent: true, to: "staff", recipients: [agency], cc: [], subject: content.subject, text: content.text };
 }

@@ -47,6 +47,8 @@ const mockHandThread = vi.fn();
 vi.mock("../../src/lib/hand-followups-to-human", () => ({
   handThreadFollowupsToHuman: (...a: unknown[]) => mockHandThread(...a),
 }));
+const mockBrand = vi.fn();
+vi.mock("../../src/lib/brand-client", () => ({ getBrandHandoffContext: (...a: unknown[]) => mockBrand(...a) }));
 vi.mock("../../src/lib/prospect-history", () => ({
   loadHistoryWithLatestReply: (...a: unknown[]) => mockHistory(...a),
   REPLY_WAIT_SHORT_MS: [],
@@ -54,6 +56,11 @@ vi.mock("../../src/lib/prospect-history", () => ({
 
 import {
   answerRequestRecipients,
+  latestProspectMessage,
+  ourAnswerAfter,
+  renderStaffCheckIn,
+  templateCheckIn,
+  threadSender,
   cleanSummaryLine,
   maybeAskClientToAnswer,
   renderAnswerRequest,
@@ -84,6 +91,9 @@ const reply: ThreadMessage = {
   subject: "Re: Shockwave therapy ROI at Pro Health",
   bodyText: "I would be curious to see the difference between my clinical protocols and yours",
 };
+
+/** A day after Doug wrote: a fresh question. */
+const DOUG_NOW = new Date("2026-10-09T10:00:00.000Z");
 
 const campaign = {
   instantlyCampaignId: "54fb99ff-4976-4ccc-be41-47b5b5e86ca3",
@@ -125,7 +135,7 @@ describe("isResponderCampaign", () => {
   });
 });
 
-describe("renderAnswerRequest (owner copy, locked 2026-10-08)", () => {
+describe("renderAnswerRequest (owner copy 2026-10-08 + who line and date 2026-10-11)", () => {
   const content = renderAnswerRequest({
     clientFirstName: "David",
     leadEmail: "drdoug@prohealthdoc.com",
@@ -133,6 +143,7 @@ describe("renderAnswerRequest (owner copy, locked 2026-10-08)", () => {
     leadFirstName: "Doug",
     company: "Pro Health",
     summaryLine: "He asked how his clinical protocols compare with yours.",
+    brandName: "Shockwavecenters",
     reply,
     earlier: [sent1, sent2, reply],
   });
@@ -141,9 +152,12 @@ describe("renderAnswerRequest (owner copy, locked 2026-10-08)", () => {
     expect(content.subject).toBe("Re: Shockwave therapy ROI at Pro Health");
     expect(content.text.startsWith(
       [
+        "Client: Shockwavecenters · Prospect: Doug Arvanitis (Pro Health)",
+        "",
         "Hi David,",
         "",
         "Good news: Doug Arvanitis at Pro Health is interested and is waiting for an answer.",
+        "They wrote on Oct 8, 2026.",
         "He asked how his clinical protocols compare with yours.",
         "",
         "You can answer by hitting Reply on this email. It adds Doug's email in To:, under the same subject, with the conversation below.",
@@ -181,9 +195,9 @@ describe("renderAnswerRequest (owner copy, locked 2026-10-08)", () => {
   it("drops the summary line, the company and the names when it does not have them", () => {
     const bare = renderAnswerRequest({
       clientFirstName: null, leadEmail: "x@y.com", leadFullName: null, leadFirstName: null,
-      company: null, summaryLine: null, reply, earlier: [],
+      company: null, summaryLine: null, brandName: null, reply, earlier: [],
     });
-    expect(bare.text).toContain("Hi,\n\nGood news: x@y.com is interested and is waiting for an answer.\n\nYou can answer");
+    expect(bare.text.startsWith("Client: unknown brand · Prospect: x@y.com\n\nHi,\n\nGood news: x@y.com is interested and is waiting for an answer.\nThey wrote on Oct 8, 2026.\n\nYou can answer")).toBe(true);
     expect(bare.text).toContain("It adds their email in To:");
   });
 });
@@ -201,7 +215,7 @@ describe("the reply quoting the thread (Doug, prod 2026-10-08)", () => {
   };
   const content = renderAnswerRequest({
     clientFirstName: "David", leadEmail: "drdoug@prohealthdoc.com", leadFullName: "Doug Arvanitis",
-    leadFirstName: "Doug", company: "Pro Health", summaryLine: null, reply: quoting, earlier: [sent1, sent2, quoting],
+    leadFirstName: "Doug", company: "Pro Health", summaryLine: null, brandName: "Shockwavecenters", reply: quoting, earlier: [sent1, sent2, quoting],
   });
 
   it("shows the conversation ONCE: their words on top, every earlier email once below", () => {
@@ -251,10 +265,11 @@ describe("maybeAskClientToAnswer", () => {
     });
     mockComplete.mockResolvedValue({ content: "Doug asked how the clinical protocols at Pro Health compare with yours." });
     mockSendEmail.mockResolvedValue(undefined);
+    mockBrand.mockResolvedValue({ name: "Shockwavecenters", rep: { email: null, firstName: null, role: null } });
   });
 
   it("no responder running: asks every member, Reply-To = the prospect, subject Re: <thread>", async () => {
-    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com");
+    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { asOf: DOUG_NOW });
 
     expect(outcome.sent).toBe(true);
     expect(mockResponders).toHaveBeenCalledWith({ orgId: "org-uuid", brandId: campaign.brandIds[0], offerId: "offer-1" });
@@ -277,7 +292,7 @@ describe("maybeAskClientToAnswer", () => {
   });
 
   it("once the client is asked, the thread is HANDED in lead-service: no responder switched on later answers it", async () => {
-    await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com");
+    await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { asOf: DOUG_NOW });
     expect(mockHandThread).toHaveBeenCalledTimes(1);
     expect(mockHandThread.mock.calls[0][0]).toMatchObject({
       orgId: "org-uuid",
@@ -289,7 +304,7 @@ describe("maybeAskClientToAnswer", () => {
 
   it("a responder running: sends nothing and takes no claim", async () => {
     mockResponders.mockResolvedValue(["responder-campaign"]);
-    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com");
+    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { asOf: DOUG_NOW });
     expect(outcome).toEqual({ sent: false, reason: "responder_running" });
     expect(mockSendEmail).not.toHaveBeenCalled();
     expect(mockReturning).not.toHaveBeenCalled();
@@ -298,31 +313,222 @@ describe("maybeAskClientToAnswer", () => {
 
   it("once per thread: a taken claim sends nothing", async () => {
     mockReturning.mockResolvedValue([]);
-    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com");
+    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { asOf: DOUG_NOW });
     expect(outcome).toEqual({ sent: false, reason: "already_asked" });
     expect(mockSendEmail).not.toHaveBeenCalled();
   });
 
   it("an unreadable responder answer sends nothing (never read as 'nobody answers')", async () => {
     mockResponders.mockRejectedValue(new Error("campaign-service 503"));
-    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com");
+    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { asOf: DOUG_NOW });
     expect(outcome).toEqual({ sent: false, reason: "responder_read_failed" });
     expect(mockSendEmail).not.toHaveBeenCalled();
   });
 
   it("the summary line is dropped, not invented, when the model fails", async () => {
     mockComplete.mockRejectedValue(new Error("chat down"));
-    await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com");
+    await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { asOf: DOUG_NOW });
     const [params] = mockSendEmail.mock.calls[0];
-    expect(params.metadata.text).toContain("is waiting for an answer.\n\nYou can answer");
+    expect(params.metadata.text).toContain("They wrote on Oct 8, 2026.\n\nYou can answer");
   });
 
   it("no member could be emailed: the claim is released", async () => {
     mockSendEmail.mockRejectedValue(new Error("postmark down"));
-    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com");
+    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { asOf: DOUG_NOW });
     expect(outcome).toEqual({ sent: false, reason: "send_failed" });
     expect(mockSet).toHaveBeenLastCalledWith(expect.objectContaining({ clientAnswerRequestedAt: null }));
     // Nobody was told, so nobody owns it: the thread is NOT handed.
     expect(mockHandThread).not.toHaveBeenCalled();
+  });
+});
+
+// ─── The two threads that confused the owner (2026-10-11) ────────────────────
+
+/** Dr. Gallego, Doc Dinners: our cold email, our follow-up, HER question, then OUR manual bump. */
+const gallego = {
+  cold: { direction: "outbound", from: "fallon@agileconsultco.com", to: "drgallego@shinwellness.com", date: "2026-07-28T13:02:35.000Z", subject: "Doctor dinners in Phoenix", bodyText: "Hi Dr. Gallego, first email." },
+  followUp: { direction: "outbound", from: "fallon@agileconsultco.com", to: "drgallego@shinwellness.com", date: "2026-07-31T13:13:42.000Z", subject: "Re: Doctor dinners in Phoenix", bodyText: "Hi Dr. Gallego, follow-up." },
+  question: { direction: "inbound", from: "drgallego@shinwellness.com", to: "fallon@agileconsultco.com", date: "2026-08-02T15:38:55.000Z", subject: "Re: Doctor dinners in Phoenix", bodyText: "Yes can you please send me more info please?\n\nOn Fri, Jul 31, 2026 Fallon wrote:\n> Hi Dr. Gallego, follow-up." },
+  bump: { direction: "outbound", from: "fallon@agileconsultco.com", to: "drgallego@shinwellness.com", date: "2026-09-04T17:14:04.000Z", subject: "Re: Doctor dinners in Phoenix", bodyText: "Hello Dr. Gallego, Just checking if you had news from the DocDinners team..." },
+} satisfies Record<string, ThreadMessage>;
+const gallegoThread: ThreadMessage[] = [gallego.cold, gallego.followUp, gallego.question, gallego.bump];
+
+/** Américo Vargas, ObraCam: our emails, HIS question, nothing after. */
+const vargas = {
+  cold: { direction: "outbound", from: "Kevin <kevin@growdistribute.com>", to: "ava@befco-sa.cl", date: "2026-09-22T12:00:00.000Z", subject: "Cámaras para obras", bodyText: "Hola Américo, primer correo." },
+  question: { direction: "inbound", from: "Américo Vargas <ava@befco-sa.cl>", to: "kevin@growdistribute.com", date: "2026-09-29T11:20:36.000Z", subject: "Re: Cámaras para obras", bodyText: "Hola, envíame el informe de muestra y los costos." },
+} satisfies Record<string, ThreadMessage>;
+const vargasThread: ThreadMessage[] = [vargas.cold, vargas.question];
+
+describe("AC1: they wrote = the prospect's own latest message, dated when THEY wrote", () => {
+  it("Gallego: our Sep 4 bump is never quoted as her question", () => {
+    expect(latestProspectMessage(gallegoThread)).toBe(gallego.question);
+  });
+  it("Gallego: even when our bump is filed INBOUND (a copy into the thread), it is ours", () => {
+    const bumpFiledInbound = { ...gallego.bump, direction: "inbound" as const };
+    expect(latestProspectMessage([gallego.cold, gallego.followUp, gallego.question, bumpFiledInbound])).toBe(gallego.question);
+  });
+  it("Vargas: his Sep 29 question", () => {
+    expect(latestProspectMessage(vargasThread)).toBe(vargas.question);
+  });
+});
+
+describe("AC2: a message from us after their question = a person handled it", () => {
+  it("Gallego: Fallon's Unibox bump on Sep 4 answers the Aug 2 question", () => {
+    expect(ourAnswerAfter(gallegoThread, gallego.question)).toBe(gallego.bump);
+  });
+  it("Gallego: counted even when filed inbound", () => {
+    const bumpFiledInbound = { ...gallego.bump, direction: "inbound" as const };
+    expect(ourAnswerAfter([gallego.cold, gallego.question, bumpFiledInbound], gallego.question)).toBe(bumpFiledInbound);
+  });
+  it("Vargas: nothing from us after his question", () => {
+    expect(ourAnswerAfter(vargasThread, vargas.question)).toBeNull();
+  });
+});
+
+describe("AC3 + AC4: the staff check-in for an OLD question (Vargas, 12 days)", () => {
+  const content = renderStaffCheckIn({
+    brandName: "ObraCam",
+    leadEmail: "ava@befco-sa.cl",
+    leadFullName: "Américo Vargas",
+    company: "Befco",
+    question: vargas.question,
+    earlier: vargasThread,
+    senderAddress: "kevin@growdistribute.com",
+    checkIn: "Hola Américo,\n\nTe escribo para saber si pudiste hablar con ObraCam sobre el informe y los costos. Si no, puedo organizar la presentación esta semana.\n\nKevin",
+  });
+
+  it("opens with one line naming the client and the prospect, then what to do", () => {
+    expect(content.text.startsWith(
+      [
+        "Client: ObraCam · Prospect: Américo Vargas (Befco)",
+        "",
+        "Américo Vargas asked a question on Sep 29, 2026.",
+        "Nobody answered in this thread.",
+        "Someone may have answered another way, so check in first.",
+        "",
+        "Send this in the thread, from kevin@growdistribute.com:",
+        "",
+        "Hola Américo,",
+      ].join("\n"),
+    )).toBe(true);
+    expect(content.subject).toBe("Check in with Américo Vargas (ObraCam)");
+  });
+
+  it("names the brand, never 'The client'; no dashes", () => {
+    expect(content.text).toContain("ObraCam was not emailed about this.");
+    expect(content.text).not.toMatch(/the client/i);
+    expect(content.text.split("\n---\n")[0]).not.toMatch(/[—–]/);
+    expect(content.subject).not.toMatch(/[—–]/);
+  });
+
+  it("quotes his words, dated Sep 29, below the line", () => {
+    const below = content.text.split("\n---\n")[1];
+    expect(below.startsWith("From: Américo Vargas <ava@befco-sa.cl>\nDate: Sep 29, 2026")).toBe(true);
+    expect(below).toContain("envíame el informe de muestra y los costos");
+  });
+
+  it("the template check-in (model down) is short, names the brand, signed as the thread's sender", () => {
+    expect(threadSender(vargasThread)).toEqual({ address: "kevin@growdistribute.com", firstName: "Kevin" });
+    expect(threadSender(gallegoThread)).toEqual({ address: "fallon@agileconsultco.com", firstName: "Fallon" });
+    expect(templateCheckIn({ leadFirstName: "Américo", brandName: "ObraCam", senderFirstName: "Kevin" })).toBe(
+      "Hi Américo,\n\nFollowing up on this. Did you get to talk with ObraCam? If not, I can set up the intro this week.\n\nKevin",
+    );
+  });
+});
+
+describe("maybeAskClientToAnswer on the two real threads", () => {
+  const vargasCampaign = { ...campaign, instantlyCampaignId: "self:45edbc68-1608-4b5a-90a1-4b3d1eb437ee" };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.ADMIN_NOTIFICATION_EMAIL = "growth@distribute.you";
+    mockReturning.mockResolvedValue([{ id: "row" }]);
+    mockMembers.mockResolvedValue([{ email: "owner@obracam.cl", firstName: "Rodrigo" }]);
+    mockSendEmail.mockResolvedValue(undefined);
+  });
+
+  it("Gallego (question, then our manual bump): nothing sent, claim released, thread not handed", async () => {
+    mockFindLead.mockResolvedValue({ id: "l", firstName: "Dr.", lastName: "Gallego", company: "Shin Wellness" });
+    mockBrand.mockResolvedValue({ name: "Doc Dinners", rep: { email: null, firstName: null, role: null } });
+    mockHistory.mockResolvedValue({
+      history: { items: gallegoThread.map((message) => ({ type: "message", message })), notes: [] },
+      latestReply: gallego.question,
+    });
+    const outcome = await maybeAskClientToAnswer(campaign, "drgallego@shinwellness.com", {
+      because: "overdue",
+      asOf: new Date("2026-10-11T10:26:00Z"),
+    });
+    expect(outcome).toEqual({ sent: false, reason: "answered_in_thread" });
+    expect(mockSendEmail).not.toHaveBeenCalled();
+    expect(mockSet).toHaveBeenLastCalledWith(expect.objectContaining({ clientAnswerRequestedAt: null }));
+    expect(mockHandThread).not.toHaveBeenCalled();
+  });
+
+  it("Vargas, 12 days later: staff only, a check-in in his language; the client is NOT emailed", async () => {
+    mockFindLead.mockResolvedValue({ id: "l", firstName: "Américo", lastName: "Vargas", company: "Befco" });
+    mockBrand.mockResolvedValue({ name: "ObraCam", rep: { email: null, firstName: null, role: null } });
+    mockHistory.mockResolvedValue({
+      history: { items: vargasThread.map((message) => ({ type: "message", message })), notes: [] },
+      latestReply: vargas.question,
+    });
+    mockComplete.mockResolvedValue({
+      content: "Hola Américo,\n\nTe escribo para saber si pudiste hablar con ObraCam sobre el informe y los costos. Si no, puedo organizar la presentación esta semana.\n\nKevin",
+    });
+    const outcome = await maybeAskClientToAnswer(vargasCampaign, "ava@befco-sa.cl", {
+      because: "overdue",
+      asOf: new Date("2026-10-11T10:12:00Z"),
+    });
+    expect(outcome).toMatchObject({ sent: true, to: "staff", recipients: ["growth@distribute.you"] });
+    expect(mockSendEmail).toHaveBeenCalledTimes(1);
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.eventType).toBe("unanswered-question-check-in");
+    expect(params.recipientEmail).toBe("growth@distribute.you");
+    expect(params.ccEmails).toBeUndefined();
+    expect(params.replyToEmail).toBeUndefined();
+    expect(mockMembers).not.toHaveBeenCalled();
+    expect(params.metadata.text.split("\n")[0]).toBe("Client: ObraCam · Prospect: Américo Vargas (Befco)");
+    expect(params.metadata.text).toContain("Américo Vargas asked a question on Sep 29, 2026.");
+    expect(params.metadata.text).toContain("Hola Américo,\n\nTe escribo para saber si pudiste hablar con ObraCam");
+    // the model is told his own words, never haiku, no sampling parameter
+    const [completeParams] = mockComplete.mock.calls[0];
+    expect(completeParams.message).toContain("envíame el informe de muestra y los costos");
+    expect(completeParams.systemPrompt).toContain("language the prospect wrote in");
+    expect(completeParams.model).not.toBe("haiku");
+    expect(completeParams).not.toHaveProperty("temperature");
+    // follow-ups handed to a person, once per thread (the claim is kept)
+    expect(mockHandThread).toHaveBeenCalledTimes(1);
+    expect(mockSet).not.toHaveBeenCalledWith(expect.objectContaining({ clientAnswerRequestedAt: null }));
+  });
+
+  it("Vargas, model down: the English template check-in, still staff only", async () => {
+    mockFindLead.mockResolvedValue({ id: "l", firstName: "Américo", lastName: "Vargas", company: "Befco" });
+    mockBrand.mockResolvedValue({ name: "ObraCam", rep: { email: null, firstName: null, role: null } });
+    mockHistory.mockResolvedValue({
+      history: { items: vargasThread.map((message) => ({ type: "message", message })), notes: [] },
+      latestReply: vargas.question,
+    });
+    mockComplete.mockRejectedValue(new Error("chat down"));
+    await maybeAskClientToAnswer(vargasCampaign, "ava@befco-sa.cl", { because: "overdue", asOf: new Date("2026-10-11T10:12:00Z") });
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.recipientEmail).toBe("growth@distribute.you");
+    expect(params.metadata.text).toContain("Did you get to talk with ObraCam? If not, I can set up the intro this week.\n\nKevin");
+  });
+
+  it("Vargas, the day after he wrote: the client is asked (staff in Cc), and the email names ObraCam and him first", async () => {
+    mockFindLead.mockResolvedValue({ id: "l", firstName: "Américo", lastName: "Vargas", company: "Befco" });
+    mockBrand.mockResolvedValue({ name: "ObraCam", rep: { email: null, firstName: null, role: null } });
+    mockHistory.mockResolvedValue({
+      history: { items: vargasThread.map((message) => ({ type: "message", message })), notes: [] },
+      latestReply: vargas.question,
+    });
+    mockComplete.mockResolvedValue({ content: "Américo asked for the sample report and the costs." });
+    const outcome = await maybeAskClientToAnswer(vargasCampaign, "ava@befco-sa.cl", { because: "overdue", asOf: new Date("2026-09-30T12:00:00Z") });
+    expect(outcome).toMatchObject({ sent: true, to: "client" });
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.eventType).toBe("positive-reply-answer-request");
+    expect(params.recipientEmail).toBe("owner@obracam.cl");
+    expect(params.ccEmails).toEqual(["growth@distribute.you"]);
+    expect(params.metadata.text.startsWith("Client: ObraCam · Prospect: Américo Vargas (Befco)\n\nHi Rodrigo,")).toBe(true);
+    expect(params.metadata.text).toContain("They wrote on Sep 29, 2026.");
   });
 });
