@@ -34,6 +34,7 @@ import {
   type AccountCapacity,
 } from "./account-sending-stats";
 import { capForAccount } from "./account-lifecycle";
+import { keepSelfSendCapable } from "./self-send/capability";
 import { dateKeyUTC } from "./sending-forecast";
 import { sequenceFootprintDays } from "./sending-window";
 import { tagColdEmailLinks } from "./cold-email-utm";
@@ -820,7 +821,12 @@ export interface SelectAccountOptions {
 export async function selectSendingAccount(
   opts: SelectAccountOptions = {},
 ): Promise<PooledAccount | null> {
-  const accounts = await fetchInProductionAccounts(opts.featureSlug ?? null);
+  // Only mailboxes we can send from ourselves: the Instantly plan is gone, so a
+  // mailbox without a credential would take the lead and never send it.
+  const accounts = await keepSelfSendCapable(
+    await fetchInProductionAccounts(opts.featureSlug ?? null),
+    { method: "POST", path: "/orgs/send" },
+  );
   if (accounts.length === 0) return null;
 
   // The footprint is anchored on the lead's OWN next open window, not on a

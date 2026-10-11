@@ -20,7 +20,16 @@ const mockDbExecute = vi.fn();
 // Hoisted because `vi.mock` factories run before the module body.
 const credentialedMailboxes = vi.hoisted(() => new Set<string>());
 
+// The pool filter (only mailboxes we hold a password for) has its own guard in
+// self-send-capability.test.ts; here it passes the pool through unless a test
+// says otherwise, so every selection test keeps the pool it built.
+const mockKeepSelfSendCapable = vi.hoisted(() =>
+  vi.fn(async (accounts: readonly { email: string }[]) => [...accounts]),
+);
+
 vi.mock("../../src/lib/self-send/capability", () => ({
+  keepSelfSendCapable: (accounts: readonly { email: string }[]) =>
+    mockKeepSelfSendCapable(accounts),
   isSelfSendCapable: async (email: string) =>
     credentialedMailboxes.has(email.trim().toLowerCase()),
   resolveTransportForNewSequence: async (account: { email: string }) =>
@@ -1493,6 +1502,23 @@ describe("POST /send", () => {
     expect(res.status).toBe(500);
     expect(res.body.details).toContain("No active Instantly accounts available");
     expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+
+  // The Instantly Email Outreach plan is cancelled: a mailbox we hold no
+  // password for (the DFY pool) can no longer send anything, so it must never
+  // receive a new sequence. In production a pool of ONLY such mailboxes is an
+  // empty pool, refused before any Instantly call.
+  it("never hands a new sequence to a mailbox we cannot send from ourselves", async () => {
+    mockNewCampaignFlow();
+    mockKeepSelfSendCapable.mockImplementationOnce(async () => []);
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(mockKeepSelfSendCapable).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(500);
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(mockAddLeads).not.toHaveBeenCalled();
   });
 
   it("should reject the old email format", async () => {
