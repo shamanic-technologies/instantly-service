@@ -11,9 +11,13 @@
  * So this sweep reads the OUTCOME: every positive reply (interested, question,
  * meeting request) we learned of more than `UNANSWERED_REPLY_DEADLINE_MS` ago
  * (and less than `UNANSWERED_REPLY_LOOKBACK` ago), whose thread is still that
- * kind, with no answer sent into it since (our dispatcher's step 0, or an
- * Instantly Unibox message), not escalated to staff, and not asked yet, gets the
- * answer request. Same once-per-thread claim as the live path.
+ * kind, with no answer sent into it since THEY wrote (our dispatcher's step 0,
+ * or an Instantly Unibox message, dated against the prospect's own message, not
+ * against when we labeled it), not escalated to staff, and not asked yet, gets
+ * the answer request. Same once-per-thread claim as the live path. The ask
+ * itself re-reads the whole thread: any message of ours after their question
+ * sends nothing, and a question older than a few days goes to staff as a
+ * check-in (lib/ask-client-to-answer).
  *
  * ⚠️ Threads staff were alerted about on 2026-10-11 (the retired staff-only
  * alert, `metadata.infoRequestUnansweredAlert`) are left with staff: one of the
@@ -72,6 +76,20 @@ export async function findUnansweredReplies(asOf: Date = new Date()): Promise<Un
     FROM q
     JOIN instantly_campaigns c ON c.instantly_campaign_id = q.instantly_campaign_id
     JOIN instantly_lead_status_current g ON g.instantly_campaign_id = c.instantly_campaign_id
+    -- When THEY wrote, not when we learned: a reply relabeled weeks later
+    -- (Dr. Gallego: wrote Aug 2, labeled Oct 8) was answered in between.
+    CROSS JOIN LATERAL (
+      SELECT LEAST(
+        q.known_at,
+        COALESCE((
+          SELECT max((m.payload->>'timestamp_email')::timestamptz) AT TIME ZONE 'UTC'
+          FROM instantly_emails_raw m
+          WHERE m.instantly_campaign_id = c.instantly_campaign_id
+            AND m.payload->>'ue_type' = '2'
+            AND lower(m.payload->>'from_address_email') = lower(c.lead_email)
+        ), q.known_at)
+      ) AS asked_at
+    ) a
     WHERE q.known_at <= ${cutoff}::timestamp
       AND g.reply_kind IN (${kindsSql})
       AND c.org_id IS NOT NULL AND c.user_id IS NOT NULL AND c.run_id IS NOT NULL
@@ -82,13 +100,13 @@ export async function findUnansweredReplies(asOf: Date = new Date()): Promise<Un
         SELECT 1 FROM smtp_dispatch_raw d
         WHERE d.instantly_campaign_id = c.instantly_campaign_id
           AND d.step = 0
-          AND d.dispatched_at >= q.known_at
+          AND d.dispatched_at >= a.asked_at
       )
       AND NOT EXISTS (
         SELECT 1 FROM instantly_emails_raw m
         WHERE m.instantly_campaign_id = c.instantly_campaign_id
           AND m.payload->>'ue_type' = '3'
-          AND (m.payload->>'timestamp_email')::timestamptz >= q.known_at AT TIME ZONE 'UTC'
+          AND (m.payload->>'timestamp_email')::timestamptz >= a.asked_at AT TIME ZONE 'UTC'
       )
     ORDER BY q.known_at
   `);
