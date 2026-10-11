@@ -46,7 +46,13 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
 }
 
 /** Pure: why a person must answer, per responder reading. */
-export function unansweredWhy(reading: "none" | "unknown_scope" | "unreadable", detail?: string): string {
+export function unansweredWhy(
+  reading: "none" | "unknown_scope" | "unreadable" | "overdue",
+  detail?: string,
+): string {
+  if (reading === "overdue") {
+    return `They asked a question ${detail ?? "over a day ago"} and nobody has answered it yet (an AI responder may be on, but it did not reply: out of budget, stopped or stuck). Please answer it. The client was not told.`;
+  }
   if (reading === "none") {
     return "They asked a question. No AI responder runs on this brand's offer, so nobody will answer it unless a person does. The client was not told (info requests are never announced to them).";
   }
@@ -85,6 +91,7 @@ export async function maybeAlertUnansweredInfoRequest(
   campaign: ForwardPositiveReplyCampaign,
   leadEmail: string,
   eventType: string,
+  options: { overdueSince?: string } = {},
 ): Promise<InfoRequestAlertOutcome> {
   if (eventType !== INFO_REQUEST_KIND) return { sent: false, reason: "not_info_request" };
   const tag = `campaign=${campaign.instantlyCampaignId} lead=${leadEmail}`;
@@ -96,15 +103,21 @@ export async function maybeAlertUnansweredInfoRequest(
   }
 
   let why: string;
-  try {
-    const runs = await responderRuns(campaign);
-    if (runs === true) {
-      console.log(`[instantly-service] info-request-alert: a responder runs for ${tag}; it answers, no alert`);
-      return { sent: false, reason: "responder_running" };
+  if (options.overdueSince) {
+    // The deadline sweep (lib/info-request-deadline) already knows nobody
+    // answered: the responder's status is not asked, its OUTCOME was.
+    why = unansweredWhy("overdue", options.overdueSince);
+  } else {
+    try {
+      const runs = await responderRuns(campaign);
+      if (runs === true) {
+        console.log(`[instantly-service] info-request-alert: a responder runs for ${tag}; it answers, no alert`);
+        return { sent: false, reason: "responder_running" };
+      }
+      why = unansweredWhy(runs === false ? "none" : "unknown_scope");
+    } catch (error) {
+      why = unansweredWhy("unreadable", error instanceof Error ? error.message.slice(0, 200) : String(error));
     }
-    why = unansweredWhy(runs === false ? "none" : "unknown_scope");
-  } catch (error) {
-    why = unansweredWhy("unreadable", error instanceof Error ? error.message.slice(0, 200) : String(error));
   }
 
   try {
