@@ -66,6 +66,26 @@ export async function isSelfSendCapable(
 }
 
 /**
+ * The mailboxes a NEW sequence may be assigned to: only the ones we hold a
+ * credential for.
+ *
+ * The Instantly Email Outreach plan is cancelled (2026-10-12), so a mailbox we
+ * cannot log into (the Instantly DFY pool) has no pipe left at all: handing it a
+ * sequence would book a lead, bill it, and never send it. It is dropped from the
+ * pool here rather than routed to Instantly, so an empty result is the honest
+ * `no_healthy_accounts_available`, never a silent Instantly campaign.
+ */
+export async function keepSelfSendCapable<T extends { email: string }>(
+  accounts: readonly T[],
+  caller: CallerInfo,
+): Promise<T[]> {
+  const addresses = await getOrSetCachedStats(CREDENTIALED_MAILBOXES_CACHE_KEY, () =>
+    loadCredentialedMailboxes(caller),
+  );
+  return accounts.filter((a) => addresses.has(a.email.trim().toLowerCase()));
+}
+
+/**
  * The transport a NEW sequence should use on this mailbox.
  *
  * Note what is absent: the account's stored `send_transport`. It used to take

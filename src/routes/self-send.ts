@@ -17,6 +17,7 @@ import { runPoll } from "../lib/self-send/imap-poller";
 import { runOrphanReplySweep } from "../lib/self-send/orphan-reply-sweep";
 import { promotePendingClicks } from "../lib/self-send/click-promotion";
 import { sweepStalledFirstEmails } from "../lib/self-send/stalled-first-emails";
+import { retireInstantlySequences } from "../lib/self-send/retire-instantly-sequences";
 
 const router = Router();
 
@@ -182,6 +183,36 @@ router.post("/stalled-first-emails", async (req: Request, res: Response) => {
   sweepStalledFirstEmails({ limit }).catch((error) => {
     console.error(
       `[instantly-service] stalled-first-emails failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  });
+});
+
+/**
+ * Close every open Instantly-transport sequence and refund its unsent steps
+ * (`retire-instantly-sequences.ts`): the Instantly Email Outreach plan is
+ * cancelled. One-shot, run while the Instantly API still answers.
+ *
+ * Body `{ dryRun?: boolean (default TRUE), limit?: number }`. A dry run answers
+ * synchronously with the counts; a real run answers 202 and logs
+ * `retire-instantly-sequences: done`.
+ */
+router.post("/retire-instantly-sequences", async (req: Request, res: Response) => {
+  const dryRun = req.body?.dryRun !== false;
+  const limit =
+    typeof req.body?.limit === "number" && Number.isFinite(req.body.limit)
+      ? req.body.limit
+      : undefined;
+
+  if (dryRun) {
+    res.json(await retireInstantlySequences({ dryRun: true }));
+    return;
+  }
+  res.status(202).json({ accepted: true });
+  retireInstantlySequences({ dryRun: false, limit }).catch((error) => {
+    console.error(
+      `[instantly-service] retire-instantly-sequences failed: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
