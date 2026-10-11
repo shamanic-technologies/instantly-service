@@ -125,4 +125,18 @@ export const EMAIL_TEMPLATES: TemplateItem[] = [
         '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{thread}}</pre>',
       ].join("\n"),
     },
+    {
+      // An info request no AI responder will answer
+      // (lib/alert-unanswered-info-request): staff only, never the client.
+      // `question` states why, then quotes their words under "They wrote:".
+      name: "info-request-unanswered",
+      layout: "none",
+      subject: "Needs you: {{leadEmail}} asked a question and no AI responder will answer it",
+      htmlBody: [
+        "<p><strong>Why this needs a person:</strong></p>",
+        '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{question}}</pre>',
+        "<p>&nbsp;</p>",
+        '<pre style="font-family:inherit;white-space:pre-wrap;word-break:break-word;margin:0">{{thread}}</pre>',
+      ].join("\n"),
+    },
 ];
