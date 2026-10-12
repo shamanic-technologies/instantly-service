@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm";
 import { StatusRequestSchema } from "../schemas";
 import { getOrSetCachedStats, statsCacheKey } from "../lib/stats-cache";
 import { isDisqualifyingReplyKind, isReplyKind } from "../lib/reply-kind";
+import { findSendRefusals } from "../lib/send-refusal";
 
 const router = Router();
 
@@ -408,6 +409,11 @@ router.post("/", async (req: Request, res: Response) => {
   const orgId = String(res.locals.orgId ?? "");
   const isBrandMode = !!brandId && !campaignId;
   const isCampaignMode = !!campaignId;
+  // The brands the send gates would check: the send route reads `x-brand-id`,
+  // so the status read does too, and falls back to the body's brandId (the
+  // scope the caller is asking about) when the header is absent.
+  const headerBrandIds = (res.locals.headerBrandIds as string[] | undefined) ?? [];
+  const refusalBrandIds = headerBrandIds.length > 0 ? headerBrandIds : brandId ? [brandId] : [];
 
   // Short-TTL cache + in-flight dedup (src/lib/stats-cache.ts), same mitigation as
   // GET /orgs/stats. This route live-aggregates over the silver event log on every
@@ -422,6 +428,7 @@ router.post("/", async (req: Request, res: Response) => {
     orgId,
     brandId: brandId ?? "",
     campaignId: campaignId ?? "",
+    refusalBrandIds: [...refusalBrandIds].sort().join(","),
     emails: [...emails].sort().join(","),
   });
 
@@ -456,11 +463,18 @@ router.post("/", async (req: Request, res: Response) => {
       campPromise = scopedQueryByEmail(orgId, campFilter, emails);
     }
 
-    const [globalEmailResult, brandBreakdownResult, campResult] =
+    // What the send route would REFUSE (opt-out, re-contact window, not a
+    // prospect), stated on the scope a consumer decides a re-serve from. Only
+    // when a scope is asked about: the global-only read has no scope object.
+    const refusalsPromise =
+      isBrandMode || isCampaignMode ? findSendRefusals(orgId, refusalBrandIds, emails) : null;
+
+    const [globalEmailResult, brandBreakdownResult, campResult, refusals] =
       await Promise.all([
         globalEmailPromise,
         brandBreakdownPromise ?? Promise.resolve(null),
         campPromise ?? Promise.resolve(null),
+        refusalsPromise ?? Promise.resolve(null),
       ]);
 
     const globalEmailMap = new Map(extractRows(globalEmailResult).map((r) => [r.key, r]));
@@ -502,12 +516,18 @@ router.post("/", async (req: Request, res: Response) => {
           }
         }
         result.byCampaign = byCampaign;
-        result.brand = aggregateBrandStatus(rows);
+        const brandScope: Record<string, unknown> = aggregateBrandStatus(rows);
+        const refusal = refusals?.get(item.email);
+        if (refusal) brandScope.sendRefusal = refusal;
+        result.brand = brandScope;
       }
 
       if (isCampaignMode && campMap) {
         const campRow = campMap.get(item.email);
-        result.campaign = buildScopedStatus(campRow);
+        const campaignScope: Record<string, unknown> = buildScopedStatus(campRow);
+        const refusal = refusals?.get(item.email);
+        if (refusal) campaignScope.sendRefusal = refusal;
+        result.campaign = campaignScope;
       }
 
       return result;
