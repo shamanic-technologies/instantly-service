@@ -92,6 +92,7 @@ import {
   QUOTED_BODY_MAX_CHARS,
   QUOTED_EARLIER_MAX,
   isQuestionKind,
+  brandHeader,
   checkInSystemPrompt,
   webhookReplyFromRow,
 } from "../../src/lib/ask-client-to-answer";
@@ -1004,6 +1005,15 @@ describe("the quoted conversation stays small (a long thread 413'd the check-in)
     expect(content.text).toContain(`email ${QUOTED_EARLIER_MAX + 2}`);
     expect(content.text).not.toContain("email 0\n");
     expect(content.text).toContain("[3 older emails in this thread not shown]");
+  });
+});
+
+describe("every call carries ALL the thread's brands (a two-brand run 409'd a one-brand child)", () => {
+  it("CSV of every brand; none = no header", () => {
+    expect(brandHeader({ brandIds: ["85289c56", "2a02f2ca"] })).toBe("85289c56,2a02f2ca");
+    expect(brandHeader({ brandIds: ["85289c56"] })).toBe("85289c56");
+    expect(brandHeader({ brandIds: [] })).toBeUndefined();
+    expect(brandHeader({ brandIds: null })).toBeUndefined();
   });
 });
 

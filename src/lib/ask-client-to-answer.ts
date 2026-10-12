@@ -169,6 +169,16 @@ export function isQuestionKind(replyKind: string | null | undefined): boolean {
   return !replyKind || replyKind === "lead_info_requested";
 }
 
+/**
+ * Pure: the `x-brand-id` of every call this thread makes: ALL its brands, CSV,
+ * the fleet's multi-brand form. The first brand alone 409'd against a run that
+ * carries two (runs-service parent-child conflict on brandIds, 2026-10-13).
+ */
+export function brandHeader(campaign: { brandIds?: string[] | null }): string | undefined {
+  const ids = (campaign.brandIds ?? []).filter((id) => id && id.trim());
+  return ids.length > 0 ? ids.join(",") : undefined;
+}
+
 /** Pure: "Aug 2, 2026" (UTC). */
 export function shortDate(iso: string): string {
   const d = new Date(iso);
@@ -464,7 +474,7 @@ async function summaryLineOrNull(
         // reasoning-first models (400), which silently dropped the line.
         maxTokens: 120,
       },
-      { orgId: campaign.orgId, userId: campaign.userId, runId: campaign.runId, brandId: campaign.brandIds?.[0] },
+      { orgId: campaign.orgId, userId: campaign.userId, runId: campaign.runId, brandId: brandHeader(campaign) },
     );
     return cleanSummaryLine(result.content);
   } catch (error) {
@@ -540,7 +550,7 @@ export async function checkInText(
           // 2026-10-12) came back EMPTY and the template went out instead.
           maxTokens: 1200,
         },
-        { orgId: campaign.orgId, userId: campaign.userId, runId: campaign.runId, brandId: campaign.brandIds?.[0] },
+        { orgId: campaign.orgId, userId: campaign.userId, runId: campaign.runId, brandId: brandHeader(campaign) },
       );
       const cleaned = cleanCheckIn(result.content);
       if (cleaned) return cleaned;
@@ -886,7 +896,7 @@ export async function maybeAskClientToAnswer(
               orgId: orgId,
               userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
               runId: campaign.runId || undefined,
-              tracking: { campaignId: campaign.campaignId ?? undefined, brandId: campaign.brandIds?.[0] },
+              tracking: { campaignId: campaign.campaignId ?? undefined, brandId: brandHeader(campaign) },
             },
           );
           sentTo.push(r.email);
@@ -1006,7 +1016,7 @@ async function sendStaffCheckIn(args: {
       orgId: campaign.orgId!,
       userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
       runId: campaign.runId || undefined,
-      tracking: { campaignId: campaign.campaignId ?? undefined, brandId: campaign.brandIds?.[0] },
+      tracking: { campaignId: campaign.campaignId ?? undefined, brandId: brandHeader(campaign) },
     },
   );
   console.log(
