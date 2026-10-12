@@ -2107,6 +2107,92 @@ registry.registerPath({
   },
 });
 
+export const EmailSequencesQuerySchema = z
+  .object({
+    brandId: z.string().uuid().describe("The brand whose sequences to list (required)"),
+    limit: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(2000)
+      .optional()
+      .describe("Sequences per page, 1-2000. Omitted = 500."),
+    cursor: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("The previous page's `nextCursor`, verbatim. Omitted = first page."),
+  })
+  .openapi("EmailSequencesQuery");
+
+const EmailSequenceStepSchema = z
+  .object({
+    step: z.number().int().describe("1-based position in the sequence. Step 1 is the first email."),
+    kind: z.enum(["first_email", "follow_up"]),
+    status: z
+      .enum(["sent", "queued", "stopped"])
+      .describe(
+        "`sent`: it went out (see `sentAt`). `queued`: not sent yet, it goes out in the prospect's business hours. `stopped`: it will not go out (the prospect replied, bounced, opted out or booked, or the sequence was stopped).",
+      ),
+    sentAt: z.string().nullable().describe("When it went out (ISO 8601 UTC). Null unless `sent`."),
+  })
+  .openapi("EmailSequenceStep");
+
+const EmailSequenceSchema = z
+  .object({
+    leadId: z
+      .string()
+      .nullable()
+      .describe("The lead id, the same `leadId` content-generation-service carries on the generated email"),
+    leadEmail: z.string(),
+    campaignId: z.string().nullable().describe("The campaign this sequence belongs to"),
+    steps: z.array(EmailSequenceStepSchema).describe("Ordered by `step`"),
+  })
+  .openapi("EmailSequence");
+
+export const EmailSequencesResponseSchema = z
+  .object({
+    brandId: z.string(),
+    count: z.number().int().describe("Sequences on THIS page"),
+    sequences: z.array(EmailSequenceSchema),
+    nextCursor: z
+      .string()
+      .nullable()
+      .describe("Pass as `cursor` for the next page. Null = this was the last page."),
+  })
+  .openapi("EmailSequencesResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/email-sequences",
+  summary: "A brand's email sequences, each email sent or queued (paged)",
+  description:
+    "Every sequence we run for one brand of the org: one row per sequence (a prospect emailed again after the re-contact window has two), with every step (first email + follow-ups) and what happened to it: `sent` with `sentAt`, `queued`, or `stopped`. Read from our own send records (send holds, self-send steps, real `email_sent` events), so the counts match our dispatch log.\n\n" +
+    "**Join** with the generated email bodies (content-generation-service, `GET /v1/emails?brandId=`) on `leadId`.\n\n" +
+    "**Paging.** Keyset, opaque cursor. Read until `nextCursor` is null. Default page 500, max 2000.\n\n" +
+    "**Scope.** Org-scoped on `x-org-id`: a brand of another org lists nothing.\n\n" +
+    "**Cost:** none. It sends nothing and declares nothing.",
+  request: {
+    headers: TrackingHeadersSchema,
+    query: EmailSequencesQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "One page of sequences (possibly empty)",
+      content: { "application/json": { schema: EmailSequencesResponseSchema } },
+    },
+    400: {
+      description: "Missing/invalid brandId, invalid limit or cursor",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+    500: {
+      description: "The sequences could not be read",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 export const ReplyVerdictsQuerySchema = z
   .object({
     emails: z
