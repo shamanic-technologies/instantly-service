@@ -2781,6 +2781,98 @@ registry.registerPath({
   },
 });
 
+// ─── Follow-up cuts (leads emailed in error) ─────────────────────────────────
+
+export const FollowupCutsBodySchema = z
+  .object({
+    campaignId: z.string().min(1).describe("The campaign (campaign-service id) that emailed these leads"),
+    leadEmails: z
+      .array(z.string().email())
+      .min(1)
+      .max(500)
+      .describe("The leads of that campaign whose queued follow-ups stop. Every other lead keeps its follow-ups."),
+    reason: z.string().min(1).max(2000).describe("Why: stored on the audit row"),
+  })
+  .openapi("FollowupCutsBody", {
+    example: {
+      campaignId: "fb201499-4f90-40da-9cc3-f612392664f2",
+      leadEmails: ["alice@example.com"],
+      reason: "Sourcing bug handed this campaign people it was not meant to write to",
+    },
+  });
+
+export const FollowupCutsListQuerySchema = z.object({
+  campaignId: z.string().min(1).describe("The campaign whose cuts to list"),
+});
+
+const FollowupCutLeadSchema = z.object({
+  email: z.string(),
+  outcome: z.enum(["cut", "already_cut", "failed"]),
+  holdsCancelled: z.number().int().describe("Queued follow-up steps refunded by this call"),
+  cutAt: z.string().nullable(),
+  cutBy: z.string().nullable(),
+  error: z.string().optional(),
+});
+
+export const FollowupCutsResponseSchema = z
+  .object({
+    campaignId: z.string(),
+    cut: z.number().int(),
+    alreadyCut: z.number().int(),
+    failed: z.number().int(),
+    leads: z.array(FollowupCutLeadSchema),
+  })
+  .openapi("FollowupCutsResponse");
+
+export const FollowupCutsListResponseSchema = z
+  .object({
+    cuts: z.array(
+      z.object({
+        campaignId: z.string(),
+        email: z.string(),
+        reason: z.string(),
+        cutBy: z.string(),
+        holdsCancelled: z.number().int(),
+        cutAt: z.string(),
+      }),
+    ),
+  })
+  .openapi("FollowupCutsListResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/followup-cuts",
+  summary: "Stop the queued follow-ups of named leads a campaign emailed in error",
+  description:
+    "For leads a campaign should never have written to (a sourcing mistake): the rest of their sequence will not go out. Every other lead of the campaign keeps its follow-ups.\n\n" +
+    "**Not an opt-out.** Nothing is recorded as unsubscribe, opt-out or suppression: those people never asked to stop. Their queued steps are refunded and the sequence is marked stopped, exactly like any other stop.\n\n" +
+    "**All or nothing on names:** an email the campaign never wrote to answers 404 `leads_not_in_campaign` and nothing is cut. **Idempotent:** a lead already cut answers `already_cut`. **Audited:** who (x-user-id), when, why, steps refunded (`GET /orgs/followup-cuts`). **Fail loud:** a lead whose queued steps could not all be cancelled is `failed` and the call answers 502 (retry re-runs only those).",
+  request: {
+    headers: TrackingHeadersSchema,
+    body: { content: { "application/json": { schema: FollowupCutsBodySchema } } },
+  },
+  responses: {
+    200: { description: "Every named lead is cut (or already was)", content: { "application/json": { schema: FollowupCutsResponseSchema } } },
+    400: { description: "Invalid body or missing x-user-id", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    404: { description: "A named email has no sequence in this campaign; nothing cut", content: { "application/json": { schema: ErrorSchema } } },
+    502: { description: "At least one lead could not be cut", content: { "application/json": { schema: FollowupCutsResponseSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/followup-cuts",
+  summary: "The follow-up cuts of a campaign (audit)",
+  description: "Every lead whose follow-ups were cut in this campaign, with who, when, why and steps refunded.",
+  request: { query: FollowupCutsListQuerySchema, headers: TrackingHeadersSchema },
+  responses: {
+    200: { description: "Cuts", content: { "application/json": { schema: FollowupCutsListResponseSchema } } },
+    400: { description: "Invalid query", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+  },
+});
+
 // ─── Audit — sending forecast (staff ops) ───────────────────────────────────
 
 const ForecastDaySchema = z

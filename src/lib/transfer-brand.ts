@@ -89,6 +89,7 @@ export const CAMPAIGN_CHILD_TABLES = [
   "instantly_manual_qualifications_raw",
   "instantly_manual_qualification_withdrawals",
   "scheduled_replies",
+  "instantly_followup_cuts",
 ] as const;
 
 function rowCount(result: unknown): number {

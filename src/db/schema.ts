@@ -1053,6 +1053,31 @@ export const instantlyLeadOptoutWithdrawals = pgTable(
   ],
 );
 
+// A campaign cut the queued follow-ups of a lead it emailed IN ERROR
+// (lib/followup-cuts.ts). Audit of who/when/why. NOT an opt-out: the person
+// never asked to stop, and no read treats this row as consent or suppression.
+// Unique per sequence, so a second cut of the same lead is a no-op.
+export const instantlyFollowupCuts = pgTable(
+  "instantly_followup_cuts",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id").notNull(),
+    campaignId: text("campaign_id").notNull(),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    reason: text("reason").notNull(),
+    /** x-user-id of whoever asked for the cut. */
+    cutBy: text("cut_by").notNull(),
+    /** Queued steps refunded by this cut (0 when nothing was still queued). */
+    holdsCancelled: integer("holds_cancelled").notNull(),
+    cutAt: timestamp("cut_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("instantly_followup_cuts_sequence_idx").on(table.instantlyCampaignId),
+    index("instantly_followup_cuts_org_campaign_idx").on(table.orgId, table.campaignId),
+  ],
+);
+
 // ─── Inbox-placement (deliverability) — Bronze / Silver ─────────────────────
 // Instantly inbox-placement TESTS are the only source of real per-account inbox
 // vs spam vs missing data (the V2 API exposes no standing per-account placement
