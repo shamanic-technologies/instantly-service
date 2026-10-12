@@ -36,7 +36,7 @@
  * "nobody answers"). Never throws.
  */
 
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { instantlyCampaigns } from "../db/schema";
 import { agencyInbox } from "./agency-inbox";
@@ -577,24 +577,57 @@ async function webhookReplyMessage(instantlyCampaignId: string, leadEmail: strin
   return webhookReplyFromRow(row, leadEmail);
 }
 
+/**
+ * A claim whose send never finished is re-claimable after this long. A deploy
+ * recreates the container mid-ask (a backlog pass runs for minutes): the
+ * claim was kept and nobody was ever asked (jfigueroa, 2026-10-13).
+ */
+export const STALE_ANSWER_CLAIM_MS = 30 * 60 * 1000;
+/** `metadata` key present while a claim's send is in flight. Claims taken before it existed never carry it. */
+export const ANSWER_CLAIM_PENDING_KEY = "answerRequestPendingSince";
+
+/**
+ * SQL: this thread can be claimed: never claimed, or claimed by a send that
+ * never finished (still pending past STALE_ANSWER_CLAIM_MS). Shared by the
+ * claim and the sweep's read so both agree.
+ */
+export function answerClaimOpenSql(asOf: Date = new Date()) {
+  const staleBefore = new Date(asOf.getTime() - STALE_ANSWER_CLAIM_MS).toISOString();
+  return sql`(${instantlyCampaigns.clientAnswerRequestedAt} IS NULL OR (
+    (${instantlyCampaigns.metadata}->>${ANSWER_CLAIM_PENDING_KEY}) IS NOT NULL
+    AND ${instantlyCampaigns.clientAnswerRequestedAt} < ${staleBefore}::timestamp
+  ))`;
+}
+
 async function claimAnswerRequest(instantlyCampaignId: string): Promise<boolean> {
+  const now = new Date();
   const claimed = await db
     .update(instantlyCampaigns)
-    .set({ clientAnswerRequestedAt: new Date(), updatedAt: new Date() })
-    .where(
-      and(
-        eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId),
-        isNull(instantlyCampaigns.clientAnswerRequestedAt),
-      ),
-    )
+    .set({
+      clientAnswerRequestedAt: now,
+      metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object(${ANSWER_CLAIM_PENDING_KEY}::text, ${now.toISOString()}::text)`,
+      updatedAt: now,
+    })
+    .where(and(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId), answerClaimOpenSql(now)))
     .returning({ id: instantlyCampaigns.id });
   return claimed.length > 0;
+}
+
+async function settleAnswerRequest(instantlyCampaignId: string): Promise<void> {
+  await db
+    .update(instantlyCampaigns)
+    .set({ metadata: sql`${instantlyCampaigns.metadata} - ${ANSWER_CLAIM_PENDING_KEY}::text`, updatedAt: new Date() })
+    .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
 }
 
 async function releaseAnswerRequest(instantlyCampaignId: string): Promise<void> {
   await db
     .update(instantlyCampaigns)
-    .set({ clientAnswerRequestedAt: null, updatedAt: new Date() })
+    .set({
+      clientAnswerRequestedAt: null,
+      metadata: sql`${instantlyCampaigns.metadata} - ${ANSWER_CLAIM_PENDING_KEY}::text`,
+      updatedAt: new Date(),
+    })
     .where(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId));
 }
 
@@ -681,158 +714,172 @@ export async function maybeAskClientToAnswer(
   }
   if (!claimed) return { sent: false, reason: "already_asked" };
 
-  try {
-    const { loadHistoryWithLatestReply, REPLY_WAIT_SHORT_MS } = await import("./prospect-history");
-    const { history } = await loadHistoryWithLatestReply(campaign, leadEmail, {
-      waitsMs: options.waitsMs ?? REPLY_WAIT_SHORT_MS,
-    });
-    const earlier = history.items
-      .filter((i): i is Extract<HistoryItem, { type: "message" }> => i.type === "message")
-      .map((i) => i.message);
-    // Their own words, never one of ours (a manual bump is not their question).
-    // No copy of the thread holds them: Instantly's own webhook copy of the
-    // reply (its words as Instantly delivered them) is still theirs.
-    const latestReply = latestProspectMessage(earlier) ?? (await webhookReplyMessage(campaign.instantlyCampaignId, leadEmail));
-    const asOf = options.asOf ?? new Date();
-    const isQuestion = isQuestionKind(options.replyKind);
-    if (!latestReply) {
-      // An OLD reply nobody can read any more still reaches a person: staff get
-      // a check-in that says so. A fresh one may still land in a copy: retry.
-      if (!options.repliedAt || asOf.getTime() - options.repliedAt.getTime() <= QUESTION_STALE_AFTER_MS) {
-        throw new Error("the prospect's reply is not readable yet");
-      }
-      const brand = await brandContextOrNull(campaign.brandIds?.[0], campaign.orgId);
-      return await sendStaffCheckIn({
-        campaign,
-        leadEmail,
-        tag,
-        callerId: campaign.conversationCampaignId ?? campaign.campaignId,
-        brandName: brand?.name ?? null,
-        fullName: null,
-        firstName: null,
-        company: null,
-        question: null,
-        repliedAt: options.repliedAt.toISOString(),
-        isQuestion,
-        earlier,
+  const orgId: string = campaign.orgId;
+  const outcome = await (async (): Promise<AnswerRequestOutcome> => {
+    try {
+      const { loadHistoryWithLatestReply, REPLY_WAIT_SHORT_MS } = await import("./prospect-history");
+      const { history } = await loadHistoryWithLatestReply(campaign, leadEmail, {
+        waitsMs: options.waitsMs ?? REPLY_WAIT_SHORT_MS,
       });
-    }
+      const earlier = history.items
+        .filter((i): i is Extract<HistoryItem, { type: "message" }> => i.type === "message")
+        .map((i) => i.message);
+      // Their own words, never one of ours (a manual bump is not their question).
+      // No copy of the thread holds them: Instantly's own webhook copy of the
+      // reply (its words as Instantly delivered them) is still theirs.
+      const latestReply = latestProspectMessage(earlier) ?? (await webhookReplyMessage(campaign.instantlyCampaignId, leadEmail));
+      const asOf = options.asOf ?? new Date();
+      const isQuestion = isQuestionKind(options.replyKind);
+      if (!latestReply) {
+        // An OLD reply nobody can read any more still reaches a person: staff get
+        // a check-in that says so. A fresh one may still land in a copy: retry.
+        if (!options.repliedAt || asOf.getTime() - options.repliedAt.getTime() <= QUESTION_STALE_AFTER_MS) {
+          throw new Error("the prospect's reply is not readable yet");
+        }
+        const brand = await brandContextOrNull(campaign.brandIds?.[0], orgId);
+        return await sendStaffCheckIn({
+          campaign,
+          leadEmail,
+          tag,
+          callerId: campaign.conversationCampaignId ?? campaign.campaignId,
+          brandName: brand?.name ?? null,
+          fullName: null,
+          firstName: null,
+          company: null,
+          question: null,
+          repliedAt: options.repliedAt.toISOString(),
+          isQuestion,
+          earlier,
+        });
+      }
 
-    // We wrote after their question (a manual reply from the Unibox, the
-    // responder): a person handled the thread, nobody is asked.
-    const answered = ourAnswerAfter(earlier, latestReply);
-    if (answered) {
-      await releaseAnswerRequest(campaign.instantlyCampaignId).catch(() => {});
+      // We wrote after their question (a manual reply from the Unibox, the
+      // responder): a person handled the thread, nobody is asked.
+      const answered = ourAnswerAfter(earlier, latestReply);
+      if (answered) {
+        await releaseAnswerRequest(campaign.instantlyCampaignId).catch(() => {});
+        console.log(
+          `[instantly-service] ask-client-to-answer: ${tag} answered in the thread on ${answered.date} by ${answered.from} (question ${latestReply.date}); nothing sent`,
+        );
+        return { sent: false, reason: "answered_in_thread" };
+      }
+
+      const callerId = campaign.conversationCampaignId ?? campaign.campaignId;
+      const lead = callerId
+        ? await findLeadOnCampaignByEmail({ orgId: orgId, campaignId: callerId, email: leadEmail }).catch(
+            (error: unknown) => {
+              console.warn(
+                `[instantly-service] ask-client-to-answer: lead row unreadable for ${tag} — ${error instanceof Error ? error.message : String(error)}; naming them from their email`,
+              );
+              return null;
+            },
+          )
+        : null;
+      const fromName = prospectLabel(leadEmail, latestReply);
+      const fullName =
+        [lead?.firstName, lead?.lastName].filter((p) => p && p.trim()).join(" ") ||
+        lead?.name?.trim() ||
+        (fromName !== leadEmail ? fromName : null);
+      const firstName = lead?.firstName?.trim() || (fullName ? fullName.split(/\s+/)[0] : null);
+      const company = lead?.company?.trim() || null;
+      const brand = await brandContextOrNull(campaign.brandIds?.[0], orgId);
+      const brandName = brand?.name ?? null;
+
+      if (asOf.getTime() - timeOf(latestReply) > QUESTION_STALE_AFTER_MS) {
+        return await sendStaffCheckIn({
+          campaign,
+          leadEmail,
+          tag,
+          callerId,
+          brandName,
+          fullName,
+          firstName,
+          company,
+          question: latestReply,
+          repliedAt: latestReply.date,
+          isQuestion,
+          earlier,
+        });
+      }
+
+      const summaryLine = await summaryLineOrNull(campaign, latestReply, firstName, company);
+
+      const members = await listOrgMembers(orgId);
+      const recipients = answerRequestRecipients(members, agencyInbox());
+
+      const sentTo: string[] = [];
+      const ccSent: string[] = [];
+      let content: AnswerRequestContent | null = null;
+      for (const r of recipients) {
+        content = renderAnswerRequest({
+          clientFirstName: r.firstName,
+          leadEmail,
+          leadFullName: fullName,
+          leadFirstName: firstName,
+          company,
+          summaryLine,
+          brandName,
+          reply: latestReply,
+          earlier,
+        });
+        try {
+          await sendEmail(
+            {
+              appId: "instantly-service",
+              eventType: CLIENT_ANSWER_EVENT_TYPE,
+              recipientEmail: r.email,
+              ...(r.cc.length > 0 ? { ccEmails: r.cc } : {}),
+              replyToEmail: leadEmail,
+              metadata: { subject: content.subject, html: content.html, text: content.text },
+            },
+            {
+              orgId: orgId,
+              userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
+              runId: campaign.runId || undefined,
+              tracking: { campaignId: campaign.campaignId ?? undefined, brandId: campaign.brandIds?.[0] },
+            },
+          );
+          sentTo.push(r.email);
+          ccSent.push(...r.cc);
+        } catch (error) {
+          console.error(
+            `[instantly-service] ask-client-to-answer: send to ${r.email} FAILED for ${tag} — ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      if (sentTo.length === 0 || !content) throw new Error("no member could be emailed");
+
       console.log(
-        `[instantly-service] ask-client-to-answer: ${tag} answered in the thread on ${answered.date} by ${answered.from} (question ${latestReply.date}); nothing sent`,
+        `[instantly-service] ask-client-to-answer: sent for ${tag} → ${sentTo.join(",")}${ccSent.length ? ` cc=${ccSent.join(",")}` : ""} replyTo=${leadEmail} subject="${content.subject}" summary=${summaryLine ? "yes" : "dropped"} because=${options.because ?? "no_responder_running"}`,
       );
-      return { sent: false, reason: "answered_in_thread" };
-    }
-
-    const callerId = campaign.conversationCampaignId ?? campaign.campaignId;
-    const lead = callerId
-      ? await findLeadOnCampaignByEmail({ orgId: campaign.orgId, campaignId: callerId, email: leadEmail }).catch(
-          (error: unknown) => {
-            console.warn(
-              `[instantly-service] ask-client-to-answer: lead row unreadable for ${tag} — ${error instanceof Error ? error.message : String(error)}; naming them from their email`,
-            );
-            return null;
-          },
-        )
-      : null;
-    const fromName = prospectLabel(leadEmail, latestReply);
-    const fullName =
-      [lead?.firstName, lead?.lastName].filter((p) => p && p.trim()).join(" ") ||
-      lead?.name?.trim() ||
-      (fromName !== leadEmail ? fromName : null);
-    const firstName = lead?.firstName?.trim() || (fullName ? fullName.split(/\s+/)[0] : null);
-    const company = lead?.company?.trim() || null;
-    const brand = await brandContextOrNull(campaign.brandIds?.[0], campaign.orgId);
-    const brandName = brand?.name ?? null;
-
-    if (asOf.getTime() - timeOf(latestReply) > QUESTION_STALE_AFTER_MS) {
-      return await sendStaffCheckIn({
-        campaign,
+      // The client now owns this thread: no responder switched on later may answer it.
+      await handThreadFollowupsToHuman({
+        orgId: orgId,
+        campaignId: callerId,
         leadEmail,
-        tag,
-        callerId,
-        brandName,
-        fullName,
-        firstName,
-        company,
-        question: latestReply,
-        repliedAt: latestReply.date,
-        isQuestion,
-        earlier,
+        reason: `Client asked to answer (${sentTo.join(", ")}): no AI responder ran when the reply arrived.`,
+        tag: "ask-client-to-answer",
       });
+      return { sent: true, to: "client", recipients: sentTo, cc: ccSent, subject: content.subject, text: content.text };
+    } catch (error) {
+      await releaseAnswerRequest(campaign.instantlyCampaignId).catch(() => {});
+      console.error(
+        `[instantly-service] ask-client-to-answer: FAILED for ${tag}, claim released — ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { sent: false, reason: "send_failed" };
     }
-
-    const summaryLine = await summaryLineOrNull(campaign, latestReply, firstName, company);
-
-    const members = await listOrgMembers(campaign.orgId);
-    const recipients = answerRequestRecipients(members, agencyInbox());
-
-    const sentTo: string[] = [];
-    const ccSent: string[] = [];
-    let content: AnswerRequestContent | null = null;
-    for (const r of recipients) {
-      content = renderAnswerRequest({
-        clientFirstName: r.firstName,
-        leadEmail,
-        leadFullName: fullName,
-        leadFirstName: firstName,
-        company,
-        summaryLine,
-        brandName,
-        reply: latestReply,
-        earlier,
-      });
-      try {
-        await sendEmail(
-          {
-            appId: "instantly-service",
-            eventType: CLIENT_ANSWER_EVENT_TYPE,
-            recipientEmail: r.email,
-            ...(r.cc.length > 0 ? { ccEmails: r.cc } : {}),
-            replyToEmail: leadEmail,
-            metadata: { subject: content.subject, html: content.html, text: content.text },
-          },
-          {
-            orgId: campaign.orgId,
-            userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
-            runId: campaign.runId || undefined,
-            tracking: { campaignId: campaign.campaignId ?? undefined, brandId: campaign.brandIds?.[0] },
-          },
-        );
-        sentTo.push(r.email);
-        ccSent.push(...r.cc);
-      } catch (error) {
-        console.error(
-          `[instantly-service] ask-client-to-answer: send to ${r.email} FAILED for ${tag} — ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    if (sentTo.length === 0 || !content) throw new Error("no member could be emailed");
-
-    console.log(
-      `[instantly-service] ask-client-to-answer: sent for ${tag} → ${sentTo.join(",")}${ccSent.length ? ` cc=${ccSent.join(",")}` : ""} replyTo=${leadEmail} subject="${content.subject}" summary=${summaryLine ? "yes" : "dropped"} because=${options.because ?? "no_responder_running"}`,
-    );
-    // The client now owns this thread: no responder switched on later may answer it.
-    await handThreadFollowupsToHuman({
-      orgId: campaign.orgId,
-      campaignId: callerId,
-      leadEmail,
-      reason: `Client asked to answer (${sentTo.join(", ")}): no AI responder ran when the reply arrived.`,
-      tag: "ask-client-to-answer",
+  })();
+  // Done: the claim stops being pending (a pending claim is a send in flight,
+  // re-claimable once stale). A failure here leaves it pending: at worst the
+  // thread is asked twice, never zero times.
+  if (outcome.sent) {
+    await settleAnswerRequest(campaign.instantlyCampaignId).catch((error: unknown) => {
+      console.warn(
+        `[instantly-service] ask-client-to-answer: sent for ${tag} but the claim could not be settled — ${error instanceof Error ? error.message : String(error)}`,
+      );
     });
-    return { sent: true, to: "client", recipients: sentTo, cc: ccSent, subject: content.subject, text: content.text };
-  } catch (error) {
-    await releaseAnswerRequest(campaign.instantlyCampaignId).catch(() => {});
-    console.error(
-      `[instantly-service] ask-client-to-answer: FAILED for ${tag}, claim released — ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return { sent: false, reason: "send_failed" };
   }
+  return outcome;
 }
 
 /**
