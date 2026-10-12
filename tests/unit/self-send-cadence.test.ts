@@ -46,6 +46,10 @@ vi.mock("../../src/db/schema", () => ({
   scheduledReplies: { id: "id", scheduledFor: "scheduled_for" },
 }));
 
+vi.mock("../../src/lib/self-send/inbound-blindness", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/lib/self-send/inbound-blindness")>()),
+  loadInboundBlindMailboxes: vi.fn(async () => new Set<string>()),
+}));
 vi.mock("../../src/lib/self-send/imap-poller", () => ({
   runPoll: (...args: unknown[]) => mockRunPoll(...args),
 }));

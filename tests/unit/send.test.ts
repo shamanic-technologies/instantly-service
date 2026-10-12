@@ -38,6 +38,10 @@ vi.mock("../../src/lib/self-send/capability", () => ({
       : "instantly",
 }));
 
+vi.mock("../../src/lib/self-send/inbound-blindness", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/lib/self-send/inbound-blindness")>()),
+  dropInboundBlind: vi.fn(async (accounts: unknown[]) => accounts),
+}));
 vi.mock("../../src/db", () => ({
   db: {
     select: () => ({ from: (table: unknown) => ({ where: (...args: unknown[]) => { const result = mockDbWhere(...args); return Object.assign(result, { limit: () => result }); } }) }),
