@@ -435,6 +435,7 @@ const CHECK_IN_SYSTEM_PROMPT = [
   "- No longer working with us: do not keep the conversation going for the brand; point the prospect to the brand directly for anything they still need.",
   "- Unknown: treat it like no longer working with us.",
   "If the prospect raised a doubt or an objection, acknowledge it in a few plain words, without arguing or making a claim about the brand.",
+  "What you are told about the brand is for you, not for the prospect: never say whether the brand works with us, never mention our arrangement with it, and never explain what the rep does or does not hold. Just say who they should turn to.",
   "Rules:",
   "- Write in the language the prospect wrote in.",
   "- First line: a greeting with the prospect's first name when given, else a plain greeting.",
@@ -468,13 +469,17 @@ export async function checkInText(
           systemPrompt: CHECK_IN_SYSTEM_PROMPT,
           provider: "anthropic",
           model: "sonnet",
-          maxTokens: 300,
+          // Sonnet reasons before it writes: at 300 a long objection (Dr. Gallego,
+          // 2026-10-12) came back EMPTY and the template went out instead.
+          maxTokens: 1200,
         },
         { orgId: campaign.orgId, userId: campaign.userId, runId: campaign.runId, brandId: campaign.brandIds?.[0] },
       );
       const cleaned = cleanCheckIn(result.content);
       if (cleaned) return cleaned;
-      console.warn(`[instantly-service] ask-client-to-answer: check-in unusable for campaign=${campaign.instantlyCampaignId}, English template used`);
+      console.warn(
+        `[instantly-service] ask-client-to-answer: check-in unusable for campaign=${campaign.instantlyCampaignId}, English template used — draft was: ${JSON.stringify((result.content ?? "").slice(0, 800))}`,
+      );
     } catch (error) {
       console.warn(
         `[instantly-service] ask-client-to-answer: check-in unavailable for campaign=${campaign.instantlyCampaignId}, English template used — ${error instanceof Error ? error.message : String(error)}`,

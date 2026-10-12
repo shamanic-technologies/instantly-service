@@ -685,6 +685,10 @@ describe("maybeAskClientToAnswer: the check-in adapts to the brand's status", ()
     expect(completeParams.systemPrompt).toContain("point the prospect to the brand directly");
     expect(completeParams.systemPrompt).toContain("Never promise");
     expect(completeParams.systemPrompt).not.toMatch(/this week|set it up|set up the intro|sending the info/i);
+    // the status is for the model, never for the prospect (a live draft said "ObraCam ya no trabaja con nosotros")
+    expect(completeParams.systemPrompt).toContain("never say whether the brand works with us");
+    // room to reason before writing: at 300 a long objection came back empty
+    expect(completeParams.maxTokens).toBeGreaterThanOrEqual(1200);
     const [params] = mockSendEmail.mock.calls[0];
     expect(params.metadata.text).toContain("escribe directamente a ObraCam");
   });
