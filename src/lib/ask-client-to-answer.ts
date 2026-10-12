@@ -36,7 +36,7 @@
  * "nobody answers"). Never throws.
  */
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db";
 import { instantlyCampaigns } from "../db/schema";
 import { agencyInbox } from "./agency-inbox";
@@ -155,6 +155,17 @@ export function threadSender(messages: ThreadMessage[]): { address: string | nul
   const local = address?.split("@")[0] ?? "";
   const word = local.split(/[._+-]/)[0];
   return { address, firstName: /^[a-z]{2,}$/i.test(word) ? word.charAt(0).toUpperCase() + word.slice(1).toLowerCase() : null };
+}
+
+/**
+ * Pure: does this reply kind ASK something? The thread's persisted reply kind
+ * is the judgment (`lead_info_requested` = a question); unknown (a staff hand
+ * run, a live caller) reads as a question, the wording these emails always had.
+ * Any other positive kind ("I'll take a look at it. Thanks", Robert, Sep 18)
+ * is a reply, not a question: never told it "asked a question".
+ */
+export function isQuestionKind(replyKind: string | null | undefined): boolean {
+  return !replyKind || replyKind === "lead_info_requested";
 }
 
 /** Pure: "Aug 2, 2026" (UTC). */
@@ -277,8 +288,12 @@ export interface StaffCheckInInput {
   leadEmail: string;
   leadFullName: string | null;
   company: string | null;
-  /** Their question (their latest message, never ours). */
-  question: ThreadMessage;
+  /** Their latest message, never ours. Null = their words could not be read (stated, never invented). */
+  question: ThreadMessage | null;
+  /** When they wrote; absent = their message's date. Required when `question` is null. */
+  repliedAt?: string;
+  /** False = a positive reply that asks nothing ("I'll take a look"): worded as a reply. Default true. */
+  isQuestion?: boolean;
   earlier: ThreadMessage[];
   /** The mailbox the thread was sent from; the check-in goes from there. */
   senderAddress: string | null;
@@ -294,10 +309,14 @@ export interface StaffCheckInInput {
 export function renderStaffCheckIn(input: StaffCheckInInput): AnswerRequestContent {
   const brand = input.brandName?.trim() || "the client";
   const who = input.leadFullName?.trim() || input.leadEmail;
+  const repliedAt = input.repliedAt ?? input.question?.date ?? "";
   const lines = [
     whoLine(input),
     ``,
-    `${who} asked a question on ${shortDate(input.question.date)}.`,
+    input.isQuestion === false
+      ? `${who} replied on ${shortDate(repliedAt)}.`
+      : `${who} asked a question on ${shortDate(repliedAt)}.`,
+    ...(input.question ? [] : [`Their words could not be read, only that they replied.`]),
     `Nobody answered in this thread.`,
     `Someone may have answered another way, so check in first.`,
     ``,
@@ -309,7 +328,10 @@ export function renderStaffCheckIn(input: StaffCheckInInput): AnswerRequestConte
     ``,
     `---`,
   ];
-  const text = `${lines.join("\n")}\n${conversationBelow(input.question, input.earlier)}`;
+  const below = input.question
+    ? conversationBelow(input.question, input.earlier)
+    : [...input.earlier].sort(byDateDesc).map(messageBlock).join("\n\n");
+  const text = `${lines.join("\n")}\n${below}`;
   const html = `<div style="white-space:pre-wrap;word-break:break-word;">${escapeHtml(text)}</div>`;
   return { subject: `Check in with ${who} (${input.brandName?.trim() || "unknown brand"})`, text, html };
 }
@@ -325,12 +347,15 @@ export function templateCheckIn(input: {
   brandName: string | null;
   senderFirstName: string | null;
   relationship: BrandRelationship;
+  /** False = they replied without asking: "Following up on your reply." Default true. */
+  isQuestion?: boolean;
 }): string {
   const brand = input.brandName?.trim() || "the team";
+  const opener = input.isQuestion === false ? "Following up on your reply." : "Following up on your question.";
   const body =
     input.relationship === "working_with_us"
-      ? `Following up on your question. Did you get what you needed from ${brand}? They can follow up with you directly.`
-      : `Following up on your question. Did you get what you needed? For anything else, please reach ${brand} directly.`;
+      ? `${opener} Did you get what you needed from ${brand}? They can follow up with you directly.`
+      : `${opener} Did you get what you needed? For anything else, please reach ${brand} directly.`;
   return [
     input.leadFirstName?.trim() ? `Hi ${input.leadFirstName.trim()},` : "Hi,",
     ``,
@@ -426,10 +451,15 @@ async function summaryLineOrNull(
   }
 }
 
+const QUESTION_SITUATION =
+  "The prospect asked the brand something a while ago. Someone may have answered them another way (a call, the brand's own inbox). So the rep does not answer the question and does not promise anything. The rep only checks whether they got what they needed, and makes sure they know who to turn to.";
+const REPLY_SITUATION =
+  "The prospect replied to the brand a while ago and showed interest, without asking anything. Someone may have followed up with them another way (a call, the brand's own inbox). So the rep does not speak for the brand and does not promise anything. The rep only checks whether they got what they needed, and makes sure they know who to turn to.";
+
 const CHECK_IN_SYSTEM_PROMPT = [
   "You write a short check-in email that a sales rep sends in an old email thread.",
   "The situation: the rep found this prospect and introduced them to a business (the brand). The rep is only the go-between. The rep holds none of the brand's documents, reports, prices or calendar, so the rep can deliver nothing for the brand and cannot speak for its timing.",
-  "The prospect asked the brand something a while ago. Someone may have answered them another way (a call, the brand's own inbox). So the rep does not answer the question and does not promise anything. The rep only checks whether they got what they needed, and makes sure they know who to turn to.",
+  QUESTION_SITUATION,
   "You are told whether the brand still works with us. Use it to decide who the prospect should turn to:",
   "- Still working with us: the brand can follow up with them; leave that door open.",
   "- No longer working with us: do not keep the conversation going for the brand; point the prospect to the brand directly for anything they still need.",
@@ -445,13 +475,26 @@ const CHECK_IN_SYSTEM_PROMPT = [
   "- No dashes, no quotes, no subject line, no placeholders.",
 ].join("\n");
 
+/** The system prompt for a question (unchanged) or for a positive reply that asks nothing. */
+export function checkInSystemPrompt(isQuestion: boolean): string {
+  return isQuestion ? CHECK_IN_SYSTEM_PROMPT : CHECK_IN_SYSTEM_PROMPT.replace(QUESTION_SITUATION, REPLY_SITUATION);
+}
+
 /** Exported for staff render scripts (prints a draft, sends nothing). */
 export async function checkInText(
   campaign: ForwardPositiveReplyCampaign,
   question: ThreadMessage,
-  input: { leadFirstName: string | null; brandName: string | null; senderFirstName: string | null; brandStatus: BrandAccountStatus | null },
+  input: {
+    leadFirstName: string | null;
+    brandName: string | null;
+    senderFirstName: string | null;
+    brandStatus: BrandAccountStatus | null;
+    /** Default true. */
+    isQuestion?: boolean;
+  },
 ): Promise<string> {
   const relationship = input.brandStatus?.relationship ?? "unknown";
+  const isQuestion = input.isQuestion !== false;
   if (campaign.orgId && campaign.runId && campaign.userId) {
     try {
       const result = await orgComplete(
@@ -466,7 +509,7 @@ export async function checkInText(
             replyWordsOnly(question.bodyText, stripQuotedHistory),
             `"""`,
           ].join("\n"),
-          systemPrompt: CHECK_IN_SYSTEM_PROMPT,
+          systemPrompt: checkInSystemPrompt(isQuestion),
           provider: "anthropic",
           model: "sonnet",
           // Sonnet reasons before it writes: at 300 a long objection (Dr. Gallego,
@@ -486,7 +529,7 @@ export async function checkInText(
       );
     }
   }
-  return templateCheckIn({ ...input, relationship });
+  return templateCheckIn({ ...input, relationship, isQuestion });
 }
 
 function relationshipWords(relationship: BrandRelationship): string {
@@ -496,6 +539,43 @@ function relationshipWords(relationship: BrandRelationship): string {
 }
 
 // ─── IO ──────────────────────────────────────────────────────────────────────
+
+/** Pure: Instantly's webhook copy of a reply as a thread message, or null when it carries no words. */
+export function webhookReplyFromRow(
+  row: { reply_text?: unknown; reply_subject?: unknown; timestamp?: unknown } | undefined,
+  leadEmail: string,
+): ThreadMessage | null {
+  if (!row) return null;
+  const text = typeof row.reply_text === "string" ? row.reply_text.trim() : "";
+  if (!text) return null;
+  const at = row.timestamp instanceof Date ? row.timestamp : new Date(`${String(row.timestamp).replace(" ", "T")}Z`);
+  if (Number.isNaN(at.getTime())) return null;
+  return {
+    direction: "inbound",
+    from: leadEmail,
+    to: "",
+    date: at.toISOString(),
+    subject: typeof row.reply_subject === "string" ? row.reply_subject : "",
+    bodyText: text,
+  };
+}
+
+/** The newest reply Instantly's webhook delivered on this sequence, words included, or null. Throws on a failed read. */
+async function webhookReplyMessage(instantlyCampaignId: string, leadEmail: string): Promise<ThreadMessage | null> {
+  const result = await db.execute(sql`
+    SELECT e.raw_payload->>'reply_text' AS reply_text, e.raw_payload->>'reply_subject' AS reply_subject, e."timestamp"
+    FROM instantly_events e
+    WHERE e.campaign_id = ${instantlyCampaignId}
+      AND e.inferred = false
+      AND e.withdrawn_at IS NULL
+      AND COALESCE(e.raw_payload->>'reply_text', '') <> ''
+    ORDER BY e."timestamp" DESC
+    LIMIT 1
+  `);
+  const rows = (result as { rows?: unknown }).rows;
+  const row = Array.isArray(rows) ? (rows[0] as Record<string, unknown> | undefined) : undefined;
+  return webhookReplyFromRow(row, leadEmail);
+}
 
 async function claimAnswerRequest(instantlyCampaignId: string): Promise<boolean> {
   const claimed = await db
@@ -558,6 +638,14 @@ export async function maybeAskClientToAnswer(
      * responder's status is read here.
      */
     because?: "no_responder" | "overdue";
+    /** The thread's reply kind (lib/unanswered-reply-deadline); absent = worded as a question, as always. */
+    replyKind?: string;
+    /**
+     * When they wrote, as the sweep dated it. Lets an OLD reply whose words no
+     * copy holds still reach staff (Instantly's plan ended 2026-10-12: its
+     * threads can no longer be re-read); absent = an unreadable reply fails.
+     */
+    repliedAt?: Date;
     /** The clock (tests). */
     asOf?: Date;
   } = {},
@@ -602,8 +690,33 @@ export async function maybeAskClientToAnswer(
       .filter((i): i is Extract<HistoryItem, { type: "message" }> => i.type === "message")
       .map((i) => i.message);
     // Their own words, never one of ours (a manual bump is not their question).
-    const latestReply = latestProspectMessage(earlier);
-    if (!latestReply) throw new Error("the prospect's reply is not readable yet");
+    // No copy of the thread holds them: Instantly's own webhook copy of the
+    // reply (its words as Instantly delivered them) is still theirs.
+    const latestReply = latestProspectMessage(earlier) ?? (await webhookReplyMessage(campaign.instantlyCampaignId, leadEmail));
+    const asOf = options.asOf ?? new Date();
+    const isQuestion = isQuestionKind(options.replyKind);
+    if (!latestReply) {
+      // An OLD reply nobody can read any more still reaches a person: staff get
+      // a check-in that says so. A fresh one may still land in a copy: retry.
+      if (!options.repliedAt || asOf.getTime() - options.repliedAt.getTime() <= QUESTION_STALE_AFTER_MS) {
+        throw new Error("the prospect's reply is not readable yet");
+      }
+      const brand = await brandContextOrNull(campaign.brandIds?.[0], campaign.orgId);
+      return await sendStaffCheckIn({
+        campaign,
+        leadEmail,
+        tag,
+        callerId: campaign.conversationCampaignId ?? campaign.campaignId,
+        brandName: brand?.name ?? null,
+        fullName: null,
+        firstName: null,
+        company: null,
+        question: null,
+        repliedAt: options.repliedAt.toISOString(),
+        isQuestion,
+        earlier,
+      });
+    }
 
     // We wrote after their question (a manual reply from the Unibox, the
     // responder): a person handled the thread, nobody is asked.
@@ -637,9 +750,21 @@ export async function maybeAskClientToAnswer(
     const brand = await brandContextOrNull(campaign.brandIds?.[0], campaign.orgId);
     const brandName = brand?.name ?? null;
 
-    const asOf = options.asOf ?? new Date();
     if (asOf.getTime() - timeOf(latestReply) > QUESTION_STALE_AFTER_MS) {
-      return await sendStaffCheckIn({ campaign, leadEmail, tag, callerId, brandName, fullName, firstName, company, question: latestReply, earlier });
+      return await sendStaffCheckIn({
+        campaign,
+        leadEmail,
+        tag,
+        callerId,
+        brandName,
+        fullName,
+        firstName,
+        company,
+        question: latestReply,
+        repliedAt: latestReply.date,
+        isQuestion,
+        earlier,
+      });
     }
 
     const summaryLine = await summaryLineOrNull(campaign, latestReply, firstName, company);
@@ -725,7 +850,9 @@ async function sendStaffCheckIn(args: {
   fullName: string | null;
   firstName: string | null;
   company: string | null;
-  question: ThreadMessage;
+  question: ThreadMessage | null;
+  repliedAt: string;
+  isQuestion: boolean;
   earlier: ThreadMessage[];
 }): Promise<AnswerRequestOutcome> {
   const { campaign, leadEmail, tag, question, earlier } = args;
@@ -742,18 +869,30 @@ async function sendStaffCheckIn(args: {
         return null;
       })
     : null;
-  const checkIn = await checkInText(campaign, question, {
-    leadFirstName: args.firstName,
-    brandName: args.brandName,
-    senderFirstName: sender.firstName,
-    brandStatus,
-  });
+  // No words to read: the model has nothing to work from, the template goes out.
+  const checkIn = question
+    ? await checkInText(campaign, question, {
+        leadFirstName: args.firstName,
+        brandName: args.brandName,
+        senderFirstName: sender.firstName,
+        brandStatus,
+        isQuestion: args.isQuestion,
+      })
+    : templateCheckIn({
+        leadFirstName: args.firstName,
+        brandName: args.brandName,
+        senderFirstName: sender.firstName,
+        relationship: brandStatus?.relationship ?? "unknown",
+        isQuestion: args.isQuestion,
+      });
   const content = renderStaffCheckIn({
     brandName: args.brandName,
     leadEmail,
     leadFullName: args.fullName,
     company: args.company,
     question,
+    repliedAt: args.repliedAt,
+    isQuestion: args.isQuestion,
     earlier,
     senderAddress: sender.address,
     checkIn,
@@ -774,13 +913,13 @@ async function sendStaffCheckIn(args: {
     },
   );
   console.log(
-    `[instantly-service] ask-client-to-answer: question from ${shortDate(question.date)} is old, staff check-in sent for ${tag} → ${agency} subject="${content.subject}"`,
+    `[instantly-service] ask-client-to-answer: ${args.isQuestion ? "question" : "reply"} from ${shortDate(args.repliedAt)} is old, staff check-in sent for ${tag} → ${agency} subject="${content.subject}"${question ? "" : " words=unreadable"}`,
   );
   await handThreadFollowupsToHuman({
     orgId: campaign.orgId!,
     campaignId: args.callerId,
     leadEmail,
-    reason: `Staff asked to check in (${agency}): the question dates from ${shortDate(question.date)}, it may have been answered elsewhere.`,
+    reason: `Staff asked to check in (${agency}): the ${args.isQuestion ? "question" : "reply"} dates from ${shortDate(args.repliedAt)}, it may have been answered elsewhere.`,
     tag: "ask-client-to-answer",
   });
   return { sent: true, to: "staff", recipients: [agency], cc: [], subject: content.subject, text: content.text };
