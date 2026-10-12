@@ -139,6 +139,7 @@ export class ReplyToLeadError extends Error {
   constructor(
     public readonly code:
       | "campaign_not_found"
+      | "ambiguous_thread"
       | "no_reply_to_thread"
       | "sending_account_unresolved"
       | "mailbox_credential_unavailable"

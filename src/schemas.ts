@@ -1434,8 +1434,14 @@ export const ReplyToLeadBodySchema = z
     campaign_id: z
       .string()
       .min(1)
-      .describe("Logical campaign id — the same key manual qualifications and opt-outs use"),
-    email: z.string().email().describe("The lead who replied"),
+      .optional()
+      .describe(
+        "Logical campaign id — the same key manual qualifications and opt-outs use. OPTIONAL: omit it and the thread is found from `email` alone. A thread is a campaign of this org in which the prospect wrote back. Exactly one → the reply goes into it. Several → 409 `ambiguous_thread` listing each candidate (`campaign_id` + `last_message_at`); call again naming one. None but we did email them → 409 `no_reply_to_thread`. Never emailed by this org → 404 `campaign_not_found`. When given, it is used as-is.",
+      ),
+    email: z
+      .string()
+      .email()
+      .describe("The prospect who replied. Matched case-insensitively. Enough on its own to find the thread when `campaign_id` is omitted."),
     body_html: z
       .string()
       .min(1)
@@ -1494,6 +1500,7 @@ const ReplyToLeadErrorSchema = z
     code: z
       .enum([
         "campaign_not_found",
+        "ambiguous_thread",
         "no_reply_to_thread",
         "sending_account_unresolved",
         "mailbox_credential_unavailable",
@@ -1501,8 +1508,20 @@ const ReplyToLeadErrorSchema = z
         "reply_dispatch_failed",
       ])
       .describe(
-        "campaign_not_found: no campaign in this org for the given email. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. human_took_over: a person already answered this thread since the prospect last wrote, so an automated reply is refused. reply_dispatch_failed: the transport refused the send.",
+        "campaign_not_found: no campaign in this org for the given email. ambiguous_thread: `campaign_id` was omitted and the prospect wrote back in several campaigns; `candidates` lists them, name one. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. human_took_over: a person already answered this thread since the prospect last wrote, so an automated reply is refused. reply_dispatch_failed: the transport refused the send.",
       ),
+    candidates: z
+      .array(
+        z.object({
+          campaign_id: z.string().describe("Pass this back as `campaign_id` to reply in that thread"),
+          last_message_at: z
+            .string()
+            .nullable()
+            .describe("ISO time of the newest email in that thread, either direction"),
+        }),
+      )
+      .optional()
+      .describe("Only on `ambiguous_thread`: every thread the prospect wrote back in, newest first"),
   })
   .openapi("ReplyToLeadError");
 
@@ -1513,6 +1532,7 @@ registry.registerPath({
   description:
     "Answer a prospect who wrote back, in the SAME email thread, from the SAME mailbox that originally contacted them, under the SAME persona they have been corresponding with.\n\n" +
     "**The sending identity is resolved here, never supplied.** Which mailbox answers comes from `instantly_campaigns.account_email` (persisted at send time), with the mailbox recorded on the inbound message as the fallback for a historical row. The display name and signature follow that account. A caller-supplied from-address would let a reply arrive from a mailbox this prospect has never heard from — the exact failure this endpoint exists to prevent.\n\n" +
+    "**Finding the thread from the address alone.** `campaign_id` is optional: with only `email`, the thread is the one campaign of this org where that prospect wrote back. Several such campaigns → `409 ambiguous_thread` with the `candidates` (campaign + last message date) so the caller can name one; never answered → `409 no_reply_to_thread`; never emailed → `404 campaign_not_found`. Naming the campaign behaves exactly as before.\n\n" +
     "**Threaded or nothing.** On the Instantly transport the reply goes out through `POST /emails/reply`, threaded onto the prospect's latest inbound message; on the self-send transport we dispatch it ourselves with `In-Reply-To` / `References` over the conversation we already hold in bronze. There is NO fallback to a fresh email: if the thread cannot be found the call fails with `code: \"no_reply_to_thread\"`.\n\n" +
     "**The agency inbox is CC'd, visibly.** Every reply carries it as a CC (never a BCC) so a human can read the exchange and be pulled into it by a reply-all. Cold sequence sends carry no CC — this applies only to the one-to-one answer.\n\n" +
     "**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail.\n\n" +
@@ -1539,7 +1559,7 @@ registry.registerPath({
     },
     409: {
       description:
-        "Refused, nothing sent: `no_reply_to_thread`, `sending_account_unresolved`, `mailbox_credential_unavailable`, or `human_took_over` (a person already answered this thread).",
+        "Refused, nothing sent: `ambiguous_thread` (several threads, see `candidates`), `no_reply_to_thread`, `sending_account_unresolved`, `mailbox_credential_unavailable`, or `human_took_over` (a person already answered this thread).",
       content: { "application/json": { schema: ReplyToLeadErrorSchema } },
     },
     502: {
