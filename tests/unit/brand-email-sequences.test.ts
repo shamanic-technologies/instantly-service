@@ -116,6 +116,35 @@ describe("fetchBrandEmailSequences", () => {
     expect(page.sequences[0].steps[0].status).toBe("queued");
   });
 
+  it("a step it cannot place is left out of THAT sequence, never fails the page", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockDbExecute.mockResolvedValue(
+      pgResult([
+        seqRow({
+          sequenceKey: "bad",
+          steps: [
+            { step: 0, sentAt: "2026-03-01T10:00:00", held: false, anyHold: false },
+            { step: 2, sentAt: "2026-03-04T10:00:00", held: false, anyHold: true },
+          ],
+        }),
+        seqRow({ sequenceKey: "good" }),
+      ]),
+    );
+    const page = await fetchBrandEmailSequences({ orgId: "org-1", brandId: BRAND });
+    expect(page.sequences).toHaveLength(2);
+    expect(page.sequences[0].steps.map((s) => s.step)).toEqual([2]);
+    expect(page.sequences[1].steps).toHaveLength(3);
+    expect(spy.mock.calls.join(" ")).toContain("sequence bad");
+    spy.mockRestore();
+  });
+
+  it("remaps Instantly /emails sends stored at step 0 from their bronze step ('0_<n>_0' = n+1)", async () => {
+    await fetchBrandEmailSequences({ orgId: "org-1", brandId: BRAND });
+    const text = extractSqlText(mockDbExecute.mock.calls[0][0]);
+    expect(text).toContain("LEFT JOIN instantly_emails_raw r");
+    expect(text).toContain("split_part(r.payload->>'step', '_', 2)::int + 1");
+  });
+
   it("exposes no internal sequence id", async () => {
     mockDbExecute.mockResolvedValue(pgResult([seqRow()]));
     const page = await fetchBrandEmailSequences({ orgId: "org-1", brandId: BRAND });
