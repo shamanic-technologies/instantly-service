@@ -31,6 +31,7 @@ import { maybeHandleNotAProspect } from "./not-a-prospect";
 import { maybeMirrorCampaignEmails } from "./mirror-emails";
 import { maybeRecordOptOutFromReply } from "./reply-opt-out";
 import { refineInstantlyInterest } from "./refine-interest-kind";
+import { parseInstantlySequenceStep } from "./self-send/instantly-sends";
 import {
   DEAL_PROGRESS_TO_REPLY_KIND,
   REPLY_KIND_CLASSIFICATION,
@@ -815,6 +816,10 @@ export async function promoteFromWebhookPayload(params: {
  */
 function parseInstantlyStep(raw: string | null | undefined): number | null {
   if (!raw) return null;
+  // Instantly's /emails records carry `<subsequence>_<0-based step>_<variant>`
+  // ("0_1_0" = the 2nd email). The digit scan below read every one as step 0:
+  // 5,698 real sends promoted at step 0, 2026-02 to 2026-08.
+  if (/^\d+_\d+_\d+$/.test(raw)) return parseInstantlySequenceStep(raw);
   // Instantly's `step` is "step-1", "step-2", etc. Strip non-digit prefix, then
   // parse positive integer. Do NOT use `/(-?\d+)/` — the hyphen in "step-2"
   // would be matched as negative sign yielding -2 instead of 2.

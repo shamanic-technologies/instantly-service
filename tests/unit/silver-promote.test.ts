@@ -854,6 +854,42 @@ describe("promoteFromEmailRecord", () => {
     );
   });
 
+  it("reads Instantly's real /emails step shape '0_1_0' as the 2nd email, never step 0", async () => {
+    mockCampaign();
+    mockNewSilverRow();
+    mockProvisions({
+      id: "sc-1",
+      campaignId: "camp-1",
+      leadEmail: "lead@test.com",
+      step: 2,
+      runId: "step-run-2",
+      costId: "cost-2",
+      status: "provisioned",
+    });
+
+    const result = await promoteFromEmailRecord({
+      bronzeRowId: "bronze-email-1",
+      email: {
+        id: "email-1",
+        campaign_id: "inst-camp-1",
+        lead: "lead@test.com",
+        lead_id: "lead-id-1",
+        eaccount: "sender@test.com",
+        ue_type: 1,
+        step: "0_1_0",
+        timestamp_email: "2026-05-01T10:00:00Z",
+      },
+    });
+
+    expect(result.promoted).toBe(true);
+    expect(mockUpdateCostStatus).toHaveBeenCalledWith(
+      "step-run-2",
+      "cost-2",
+      "actual",
+      expect.any(Object),
+    );
+  });
+
   it("maps ue_type=2 to reply_received and cancels provisions", async () => {
     mockCampaign();
     mockNewSilverRow();
