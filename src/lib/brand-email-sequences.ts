@@ -157,11 +157,13 @@ function toSteps(raw: unknown, sequenceActive: boolean, sequenceKey: string): Se
     .sort((a, b) => a.step - b.step);
 }
 
-export function toEmailSequence(row: SequenceRow): EmailSequence {
+/** Null when the row cannot be placed: it is reported and left out, never fails the page. */
+export function toEmailSequence(row: SequenceRow): EmailSequence | null {
   if (!row.leadEmail) {
-    throw new Error(
-      `[instantly-service] email-sequences: sequence ${row.sequenceKey} has no lead email`,
+    console.error(
+      `[instantly-service] email-sequences: sequence ${row.sequenceKey} has no single lead email; left out`,
     );
+    return null;
   }
   return {
     leadId: row.leadId,
@@ -182,7 +184,19 @@ export async function fetchBrandEmailSequences(filters: {
 
   const result = await db.execute(sql`
     WITH page AS (
-      SELECT c.instantly_campaign_id, c.lead_id, c.lead_email, c.campaign_id, c.status
+      -- 23 campaign rows from 2026-02 predate the lead_email column: recover the
+      -- address when the sequence holds exactly ONE lead (a legacy multi-lead
+      -- campaign stays null and is reported, never attributed to one person).
+      SELECT c.instantly_campaign_id, c.lead_id, c.campaign_id, c.status,
+             COALESCE(
+               c.lead_email,
+               (SELECT CASE WHEN COUNT(DISTINCT lower(l.email)) = 1 THEN MIN(l.email) END
+                  FROM instantly_leads l
+                 WHERE l.instantly_campaign_id = c.instantly_campaign_id),
+               (SELECT CASE WHEN COUNT(DISTINCT lower(e.lead_email)) = 1 THEN MIN(e.lead_email) END
+                  FROM instantly_events e
+                 WHERE e.campaign_id = c.instantly_campaign_id)
+             ) AS lead_email
       FROM instantly_campaigns c
       WHERE c.org_id = ${filters.orgId}
         AND ${filters.brandId} = ANY(c.brand_ids)
@@ -266,7 +280,9 @@ export async function fetchBrandEmailSequences(filters: {
   const hasMore = rows.length > limit;
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
   return {
-    sequences: pageRows.map(toEmailSequence),
+    sequences: pageRows
+      .map(toEmailSequence)
+      .filter((s): s is EmailSequence => s !== null),
     nextCursor: hasMore ? encodeSequenceCursor(pageRows[pageRows.length - 1].sequenceKey) : null,
   };
 }
