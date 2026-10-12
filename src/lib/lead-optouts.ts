@@ -157,6 +157,41 @@ export async function findStandingOptOut(
   return row ? toRow(row.o) : null;
 }
 
+/**
+ * The same lookup for many addresses at once (the status read states the
+ * refusal the send gate would give): the standing opt-out per NORMALIZED
+ * address of this org. Same tables, same withdrawal rule, same normalization as
+ * `findStandingOptOut`; an address absent from the map has none.
+ */
+export async function findStandingOptOuts(
+  orgId: string,
+  leadEmails: string[],
+): Promise<Map<string, LeadOptOutRow>> {
+  const out = new Map<string, LeadOptOutRow>();
+  const normalized = [...new Set(leadEmails.map(normalizeLeadEmail).filter(Boolean))];
+  if (!orgId || normalized.length === 0) return out;
+  const rows = await db
+    .select({ o: instantlyLeadOptoutsRaw })
+    .from(instantlyLeadOptoutsRaw)
+    .leftJoin(
+      instantlyLeadOptoutWithdrawals,
+      eq(instantlyLeadOptoutWithdrawals.optoutId, instantlyLeadOptoutsRaw.id),
+    )
+    .where(
+      and(
+        eq(instantlyLeadOptoutsRaw.orgId, orgId),
+        sql`lower(${instantlyLeadOptoutsRaw.leadEmail}) = ANY(${sql.param(normalized)}::text[])`,
+        isNull(instantlyLeadOptoutWithdrawals.id),
+      ),
+    )
+    .orderBy(desc(instantlyLeadOptoutsRaw.statedAt));
+  for (const row of rows) {
+    const key = normalizeLeadEmail(row.o.leadEmail);
+    if (!out.has(key)) out.set(key, toRow(row.o));
+  }
+  return out;
+}
+
 /** Every campaign this org holds for this address. Reservation sentinels are
  *  excluded: an in-flight claim is not a campaign, and asking Instantly about
  *  one 400s on the uuid format. */
