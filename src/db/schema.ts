@@ -746,7 +746,9 @@ export const imapMessagesRaw = pgTable(
 // kept in `event`, so undoing is `INSERT INTO instantly_events SELECT
 // (jsonb_populate_record(NULL::instantly_events, event)).*` — nothing is lost.
 // `action` = 'retracted' (row deleted) | 'reattributed' (row kept, source moved
-// to the permanent-failure DSN that later arrived for the same send).
+// to the permanent-failure DSN that later arrived for the same send) |
+// 'restepped' (row kept and changed by migration 0070: an Instantly /emails
+// event stored at step 0 put at its real step, or the twin that absorbed it).
 export const instantlyEventsRetracted = pgTable(
   "instantly_events_retracted",
   {
