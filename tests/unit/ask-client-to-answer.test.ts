@@ -11,6 +11,7 @@ const mockComplete = vi.fn();
 const mockSendEmail = vi.fn();
 const mockFindLead = vi.fn();
 const mockHistory = vi.fn();
+const mockExecute = vi.fn();
 
 const whereObj = {
   returning: (...a: unknown[]) => mockReturning(...a),
@@ -19,6 +20,7 @@ const whereObj = {
 
 vi.mock("../../src/db", () => ({
   db: {
+    execute: (...a: unknown[]) => mockExecute(...a),
     update: () => ({
       set: (v: unknown) => {
         mockSet(v);
@@ -74,6 +76,9 @@ import {
   replySubject,
   replyWordsOnly,
   tidyBody,
+  isQuestionKind,
+  checkInSystemPrompt,
+  webhookReplyFromRow,
 } from "../../src/lib/ask-client-to-answer";
 import { isResponderCampaign } from "../../src/lib/campaign-client";
 import { relationshipForStatus } from "../../src/lib/brand-account-status";
@@ -721,5 +726,155 @@ describe("maybeAskClientToAnswer: the check-in adapts to the brand's status", ()
     await maybeAskClientToAnswer(vargasCampaign, "ava@befco-sa.cl", { because: "overdue", asOf: new Date("2026-10-12T10:00:00Z") });
     const [params] = mockSendEmail.mock.calls[0];
     expect(params.metadata.text).toContain("please reach ObraCam directly");
+  });
+});
+
+// ─── UNANSWERED-POSITIVE-1013: a positive reply that asks nothing (Robert, Sep 18) ───
+
+describe("a positive reply that asks nothing still reaches a person, worded as a reply", () => {
+  const robertCampaign = {
+    ...campaign,
+    instantlyCampaignId: "af2d522f-3d3a-4c02-acdf-9a22368f5579",
+    campaignId: "53ff8069-c95b-44cf-8acc-38ae04a70113",
+  };
+  const joshSent: ThreadMessage = {
+    direction: "outbound",
+    from: "Joshua <joshua@truealignharmony.com>",
+    to: "robert@acupunctureconnections.com",
+    date: "2026-09-18T12:02:26.000Z",
+    subject: "Re: Shockwave therapy ROI at Restore Lab",
+    bodyText: "Hi Robert, last note from me.",
+  };
+  const robertReply: ThreadMessage = {
+    direction: "inbound",
+    from: "admin@acupunctureconnections.com",
+    to: "joshua@truealignharmony.com",
+    date: "2026-09-18T12:16:49.000Z",
+    subject: "Re: Shockwave therapy ROI at Restore Lab",
+    bodyText: "Hi Josh, I'll take a look at it. Thanks",
+  };
+  const NOW = new Date("2026-10-13T12:00:00Z");
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.ADMIN_NOTIFICATION_EMAIL = "growth@distribute.you";
+    mockReturning.mockResolvedValue([{ id: "row" }]);
+    mockSendEmail.mockResolvedValue(undefined);
+    mockFindLead.mockResolvedValue({ id: "l", firstName: "Robert", lastName: null, company: "Acupuncture Connections" });
+    mockBrand.mockResolvedValue({ name: "Shockwave Centers", rep: { email: null, firstName: null, role: null } });
+    mockBrandStatus.mockResolvedValue(null);
+    mockExecute.mockResolvedValue({ rows: [] });
+  });
+
+  it("the persisted reply kind decides the wording: only an info request is a question; unknown stays a question", () => {
+    expect(isQuestionKind("lead_info_requested")).toBe(true);
+    expect(isQuestionKind(undefined)).toBe(true);
+    expect(isQuestionKind("lead_interested")).toBe(false);
+    expect(isQuestionKind("lead_meeting_requested")).toBe(false);
+  });
+
+  it("the question prompt is unchanged; the reply prompt never speaks of a question and keeps every rule", () => {
+    expect(checkInSystemPrompt(true)).toContain("The prospect asked the brand something a while ago.");
+    const replyPrompt = checkInSystemPrompt(false);
+    expect(replyPrompt).toContain("without asking anything");
+    expect(replyPrompt).not.toContain("asked the brand something");
+    expect(replyPrompt).toContain("Never promise a document");
+    expect(replyPrompt).toContain("never mention our arrangement");
+  });
+
+  it("Robert, 25 days later: staff get a check-in that says he REPLIED on Sep 18, never 'asked a question'", async () => {
+    mockHistory.mockResolvedValue({
+      history: { items: [joshSent, robertReply].map((message) => ({ type: "message", message })), notes: [] },
+      latestReply: robertReply,
+    });
+    mockComplete.mockResolvedValue({ content: "Hi Robert,\n\nChecking in. Did you get what you needed? For anything else, please reach Shockwave Centers directly.\n\nJoshua" });
+    const outcome = await maybeAskClientToAnswer(robertCampaign, "robert@acupunctureconnections.com", {
+      because: "overdue",
+      replyKind: "lead_interested",
+      repliedAt: new Date("2026-09-18T12:17:12Z"),
+      asOf: NOW,
+    });
+    expect(outcome).toMatchObject({ sent: true, to: "staff", recipients: ["growth@distribute.you"] });
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.eventType).toBe("unanswered-question-check-in");
+    expect(params.metadata.text).toContain("\nRobert replied on Sep 18, 2026.\n");
+    expect(params.metadata.text).not.toContain("asked a question");
+    expect(params.metadata.text).toContain("I'll take a look at it. Thanks");
+    expect(mockComplete.mock.calls[0][0].systemPrompt).toContain("without asking anything");
+    expect(mockMembers).not.toHaveBeenCalled();
+    expect(mockHandThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("Robert, model down: the template follows up on his REPLY", async () => {
+    mockHistory.mockResolvedValue({
+      history: { items: [joshSent, robertReply].map((message) => ({ type: "message", message })), notes: [] },
+      latestReply: robertReply,
+    });
+    mockComplete.mockRejectedValue(new Error("chat down"));
+    await maybeAskClientToAnswer(robertCampaign, "robert@acupunctureconnections.com", {
+      because: "overdue",
+      replyKind: "lead_interested",
+      repliedAt: new Date("2026-09-18T12:17:12Z"),
+      asOf: NOW,
+    });
+    expect(mockSendEmail.mock.calls[0][0].metadata.text).toContain("Following up on your reply. Did you get what you needed?");
+  });
+
+  it("no copy of the thread holds the reply: Instantly's webhook copy of his words is used", async () => {
+    mockHistory.mockResolvedValue({ history: { items: [{ type: "message", message: joshSent }], notes: [] }, latestReply: null });
+    mockExecute.mockResolvedValue({
+      rows: [{ reply_text: "Hi Josh, I'll take a look at it. Thanks", reply_subject: "Re: Shockwave therapy ROI at Restore Lab", timestamp: new Date("2026-09-18T12:17:07Z") }],
+    });
+    mockComplete.mockRejectedValue(new Error("chat down"));
+    const outcome = await maybeAskClientToAnswer(robertCampaign, "robert@acupunctureconnections.com", {
+      because: "overdue",
+      replyKind: "lead_interested",
+      repliedAt: new Date("2026-09-18T12:17:12Z"),
+      asOf: NOW,
+    });
+    expect(outcome).toMatchObject({ sent: true, to: "staff" });
+    expect(mockSendEmail.mock.calls[0][0].metadata.text).toContain("I'll take a look at it. Thanks");
+    expect(mockSendEmail.mock.calls[0][0].metadata.text).not.toContain("could not be read");
+  });
+
+  it("an OLD reply nobody can read any more still reaches staff, saying so; the words are never invented", async () => {
+    mockHistory.mockResolvedValue({ history: { items: [{ type: "message", message: joshSent }], notes: [] }, latestReply: null });
+    const outcome = await maybeAskClientToAnswer(robertCampaign, "robert@acupunctureconnections.com", {
+      because: "overdue",
+      replyKind: "lead_interested",
+      repliedAt: new Date("2026-09-18T12:17:12Z"),
+      asOf: NOW,
+    });
+    expect(outcome).toMatchObject({ sent: true, to: "staff" });
+    const text = mockSendEmail.mock.calls[0][0].metadata.text as string;
+    expect(text).toContain("replied on Sep 18, 2026.");
+    expect(text).toContain("Their words could not be read, only that they replied.");
+    expect(text).toContain("Following up on your reply.");
+    expect(text).toContain("last note from me");
+    expect(mockComplete).not.toHaveBeenCalled();
+  });
+
+  it("a FRESH unreadable reply is not sent around: it fails and the claim is released for the next tick", async () => {
+    mockHistory.mockResolvedValue({ history: { items: [{ type: "message", message: joshSent }], notes: [] }, latestReply: null });
+    const outcome = await maybeAskClientToAnswer(robertCampaign, "robert@acupunctureconnections.com", {
+      because: "overdue",
+      replyKind: "lead_interested",
+      repliedAt: new Date("2026-10-12T10:00:00Z"),
+      asOf: NOW,
+    });
+    expect(outcome).toEqual({ sent: false, reason: "send_failed" });
+    expect(mockSendEmail).not.toHaveBeenCalled();
+    expect(mockSet).toHaveBeenLastCalledWith(expect.objectContaining({ clientAnswerRequestedAt: null }));
+  });
+
+  it("webhookReplyFromRow: words or nothing", () => {
+    expect(webhookReplyFromRow(undefined, "r@x.com")).toBeNull();
+    expect(webhookReplyFromRow({ reply_text: "  ", timestamp: new Date() }, "r@x.com")).toBeNull();
+    expect(webhookReplyFromRow({ reply_text: "ok", reply_subject: "Re: x", timestamp: "2026-09-18 12:17:07.745" }, "r@x.com")).toMatchObject({
+      direction: "inbound",
+      from: "r@x.com",
+      date: "2026-09-18T12:17:07.745Z",
+      bodyText: "ok",
+    });
   });
 });
