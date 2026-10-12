@@ -145,6 +145,25 @@ describe("fetchBrandEmailSequences", () => {
     expect(text).toContain("split_part(r.payload->>'step', '_', 2)::int + 1");
   });
 
+  it("a sequence with no single lead email is left out and reported; the page and its cursor stand", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockDbExecute.mockResolvedValue(
+      pgResult([seqRow({ sequenceKey: "a" }), seqRow({ sequenceKey: "b", leadEmail: null }), seqRow({ sequenceKey: "c" })]),
+    );
+    const page = await fetchBrandEmailSequences({ orgId: "org-1", brandId: BRAND, limit: 2 });
+    expect(page.sequences).toHaveLength(1);
+    expect(page.nextCursor).toBe(encodeSequenceCursor("b"));
+    expect(spy.mock.calls.join(" ")).toContain("sequence b");
+    spy.mockRestore();
+  });
+
+  it("recovers a legacy row's lead email only from a single-lead sequence", async () => {
+    await fetchBrandEmailSequences({ orgId: "org-1", brandId: BRAND });
+    const text = extractSqlText(mockDbExecute.mock.calls[0][0]);
+    expect(text).toContain("COUNT(DISTINCT lower(l.email)) = 1");
+    expect(text).toContain("COUNT(DISTINCT lower(e.lead_email)) = 1");
+  });
+
   it("exposes no internal sequence id", async () => {
     mockDbExecute.mockResolvedValue(pgResult([seqRow()]));
     const page = await fetchBrandEmailSequences({ orgId: "org-1", brandId: BRAND });
