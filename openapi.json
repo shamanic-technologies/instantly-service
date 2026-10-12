@@ -1708,13 +1708,36 @@
             "type": "string",
             "enum": [
               "campaign_not_found",
+              "ambiguous_thread",
               "no_reply_to_thread",
               "sending_account_unresolved",
               "mailbox_credential_unavailable",
               "human_took_over",
               "reply_dispatch_failed"
             ],
-            "description": "campaign_not_found: no campaign in this org for the given email. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. human_took_over: a person already answered this thread since the prospect last wrote, so an automated reply is refused. reply_dispatch_failed: the transport refused the send."
+            "description": "campaign_not_found: no campaign in this org for the given email. ambiguous_thread: `campaign_id` was omitted and the prospect wrote back in several campaigns; `candidates` lists them, name one. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. human_took_over: a person already answered this thread since the prospect last wrote, so an automated reply is refused. reply_dispatch_failed: the transport refused the send."
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "campaign_id": {
+                  "type": "string",
+                  "description": "Pass this back as `campaign_id` to reply in that thread"
+                },
+                "last_message_at": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "ISO time of the newest email in that thread, either direction"
+                }
+              },
+              "required": [
+                "campaign_id",
+                "last_message_at"
+              ]
+            },
+            "description": "Only on `ambiguous_thread`: every thread the prospect wrote back in, newest first"
           }
         },
         "required": [
@@ -1728,12 +1751,12 @@
           "campaign_id": {
             "type": "string",
             "minLength": 1,
-            "description": "Logical campaign id — the same key manual qualifications and opt-outs use"
+            "description": "Logical campaign id — the same key manual qualifications and opt-outs use. OPTIONAL: omit it and the thread is found from `email` alone. A thread is a campaign of this org in which the prospect wrote back. Exactly one → the reply goes into it. Several → 409 `ambiguous_thread` listing each candidate (`campaign_id` + `last_message_at`); call again naming one. None but we did email them → 409 `no_reply_to_thread`. Never emailed by this org → 404 `campaign_not_found`. When given, it is used as-is."
           },
           "email": {
             "type": "string",
             "format": "email",
-            "description": "The lead who replied"
+            "description": "The prospect who replied. Matched case-insensitively. Enough on its own to find the thread when `campaign_id` is omitted."
           },
           "body_html": {
             "type": "string",
@@ -1750,7 +1773,6 @@
           }
         },
         "required": [
-          "campaign_id",
           "email",
           "body_html"
         ],
@@ -7874,7 +7896,7 @@
     "/orgs/replies": {
       "post": {
         "summary": "Reply to a lead who replied, in their existing thread",
-        "description": "Answer a prospect who wrote back, in the SAME email thread, from the SAME mailbox that originally contacted them, under the SAME persona they have been corresponding with.\n\n**The sending identity is resolved here, never supplied.** Which mailbox answers comes from `instantly_campaigns.account_email` (persisted at send time), with the mailbox recorded on the inbound message as the fallback for a historical row. The display name and signature follow that account. A caller-supplied from-address would let a reply arrive from a mailbox this prospect has never heard from — the exact failure this endpoint exists to prevent.\n\n**Threaded or nothing.** On the Instantly transport the reply goes out through `POST /emails/reply`, threaded onto the prospect's latest inbound message; on the self-send transport we dispatch it ourselves with `In-Reply-To` / `References` over the conversation we already hold in bronze. There is NO fallback to a fresh email: if the thread cannot be found the call fails with `code: \"no_reply_to_thread\"`.\n\n**The agency inbox is CC'd, visibly.** Every reply carries it as a CC (never a BCC) so a human can read the exchange and be pulled into it by a reply-all. Cold sequence sends carry no CC — this applies only to the one-to-one answer.\n\n**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail.\n\n**The answer goes out immediately, at any hour, on any day.** A prospect who just wrote to us is at their inbox now, so a one-to-one answer is never held for their business hours (cold sequence steps still are). It is still NOT a sequence step: no hold, no step number, no capacity consumed.\n\n**A human takeover stops the automated responder.** When `sent_by` is `automation` (the default), the reply is refused with `409 human_took_over` if a PERSON has answered this thread since the prospect last wrote — read from what actually went out, both from this service and from Instantly's own inbox. A `human` reply is never gated. Nothing is prepared or sent on a refusal.\n\n**Cost:** none declared. The mailbox estate is a fixed cost we absorb rather than rebill, so a reply is priced exactly like the sequence sends themselves.",
+        "description": "Answer a prospect who wrote back, in the SAME email thread, from the SAME mailbox that originally contacted them, under the SAME persona they have been corresponding with.\n\n**The sending identity is resolved here, never supplied.** Which mailbox answers comes from `instantly_campaigns.account_email` (persisted at send time), with the mailbox recorded on the inbound message as the fallback for a historical row. The display name and signature follow that account. A caller-supplied from-address would let a reply arrive from a mailbox this prospect has never heard from — the exact failure this endpoint exists to prevent.\n\n**Finding the thread from the address alone.** `campaign_id` is optional: with only `email`, the thread is the one campaign of this org where that prospect wrote back. Several such campaigns → `409 ambiguous_thread` with the `candidates` (campaign + last message date) so the caller can name one; never answered → `409 no_reply_to_thread`; never emailed → `404 campaign_not_found`. Naming the campaign behaves exactly as before.\n\n**Threaded or nothing.** On the Instantly transport the reply goes out through `POST /emails/reply`, threaded onto the prospect's latest inbound message; on the self-send transport we dispatch it ourselves with `In-Reply-To` / `References` over the conversation we already hold in bronze. There is NO fallback to a fresh email: if the thread cannot be found the call fails with `code: \"no_reply_to_thread\"`.\n\n**The agency inbox is CC'd, visibly.** Every reply carries it as a CC (never a BCC) so a human can read the exchange and be pulled into it by a reply-all. Cold sequence sends carry no CC — this applies only to the one-to-one answer.\n\n**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail.\n\n**The answer goes out immediately, at any hour, on any day.** A prospect who just wrote to us is at their inbox now, so a one-to-one answer is never held for their business hours (cold sequence steps still are). It is still NOT a sequence step: no hold, no step number, no capacity consumed.\n\n**A human takeover stops the automated responder.** When `sent_by` is `automation` (the default), the reply is refused with `409 human_took_over` if a PERSON has answered this thread since the prospect last wrote — read from what actually went out, both from this service and from Instantly's own inbox. A `human` reply is never gated. Nothing is prepared or sent on a refusal.\n\n**Cost:** none declared. The mailbox estate is a fixed cost we absorb rather than rebill, so a reply is priced exactly like the sequence sends themselves.",
         "parameters": [
           {
             "schema": {
@@ -7991,7 +8013,7 @@
             }
           },
           "409": {
-            "description": "Refused, nothing sent: `no_reply_to_thread`, `sending_account_unresolved`, `mailbox_credential_unavailable`, or `human_took_over` (a person already answered this thread).",
+            "description": "Refused, nothing sent: `ambiguous_thread` (several threads, see `candidates`), `no_reply_to_thread`, `sending_account_unresolved`, `mailbox_credential_unavailable`, or `human_took_over` (a person already answered this thread).",
             "content": {
               "application/json": {
                 "schema": {

@@ -33,6 +33,11 @@ vi.mock("../../src/lib/escalate-reply", () => ({
   EscalateReplyError: FakeEscalateReplyError,
 }));
 
+const mockDbExecute = vi.fn();
+vi.mock("../../src/db", () => ({
+  db: { execute: (...a: unknown[]) => mockDbExecute(...a) },
+}));
+
 const mockHandThread = vi.fn();
 vi.mock("../../src/lib/hand-followups-to-human", () => ({
   handThreadFollowupsToHuman: (...a: unknown[]) => mockHandThread(...a),
@@ -123,6 +128,63 @@ describe("POST /orgs/replies — who asked reaches the gate", () => {
     );
     await request(app()).post("/orgs/replies").send(REPLY_BODY).expect(409);
     expect(mockHandThread).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /orgs/replies — the prospect's address alone finds the thread", () => {
+  const BY_EMAIL = { email: "alice@media.com", body_html: "<p>Thursday works.</p>", sent_by: "human" };
+  const row = (campaignId: string, replied: boolean, at: string | null) => ({
+    campaignId,
+    replied,
+    lastMessageAt: at === null ? null : new Date(at),
+  });
+
+  it("replies in the one thread the prospect wrote back in", async () => {
+    // Emailed in two campaigns, answered in one: that one is the thread.
+    mockDbExecute.mockResolvedValue({
+      rows: [row("camp-old", false, "2026-10-01T09:00:00Z"), row("camp-9", true, "2026-10-10T09:00:00Z")],
+    });
+
+    await request(app()).post("/orgs/replies").send(BY_EMAIL).expect(200);
+
+    expect(mockReplyToLead).toHaveBeenCalledWith(
+      expect.objectContaining({ campaignId: "camp-9", leadEmail: "alice@media.com", sentBy: "human" }),
+    );
+  });
+
+  it("refuses several threads and lists them, newest first", async () => {
+    mockDbExecute.mockResolvedValue({
+      rows: [row("camp-b", true, "2026-10-11T09:00:00Z"), row("camp-a", true, "2026-10-02T09:00:00Z")],
+    });
+
+    const res = await request(app()).post("/orgs/replies").send(BY_EMAIL).expect(409);
+
+    expect(res.body.code).toBe("ambiguous_thread");
+    expect(res.body.candidates).toEqual([
+      { campaign_id: "camp-b", last_message_at: "2026-10-11T09:00:00.000Z" },
+      { campaign_id: "camp-a", last_message_at: "2026-10-02T09:00:00.000Z" },
+    ]);
+    expect(mockReplyToLead).not.toHaveBeenCalled();
+  });
+
+  it("a prospect we never emailed is a legible 404", async () => {
+    mockDbExecute.mockResolvedValue({ rows: [] });
+    const res = await request(app()).post("/orgs/replies").send(BY_EMAIL).expect(404);
+    expect(res.body.code).toBe("campaign_not_found");
+    expect(mockReplyToLead).not.toHaveBeenCalled();
+  });
+
+  it("a prospect who never wrote back has no thread", async () => {
+    mockDbExecute.mockResolvedValue({ rows: [row("camp-1", false, "2026-10-01T09:00:00Z")] });
+    const res = await request(app()).post("/orgs/replies").send(BY_EMAIL).expect(409);
+    expect(res.body.code).toBe("no_reply_to_thread");
+    expect(mockReplyToLead).not.toHaveBeenCalled();
+  });
+
+  it("a named campaign is used as-is, no lookup", async () => {
+    await request(app()).post("/orgs/replies").send(REPLY_BODY).expect(200);
+    expect(mockDbExecute).not.toHaveBeenCalled();
+    expect(mockReplyToLead).toHaveBeenCalledWith(expect.objectContaining({ campaignId: "camp-1" }));
   });
 });
 

@@ -5,7 +5,8 @@
  * additionally required, because the reply is sent under the org's own Instantly
  * key and key-service resolves it per user.
  *
- * The caller names WHO replied and on WHICH campaign, and supplies the words.
+ * The caller names WHO replied (and optionally WHICH campaign), and supplies the
+ * words. Without a campaign the prospect's one thread is found here.
  * Everything about the sending identity — which mailbox, which persona, which
  * thread — is resolved by this service from what already happened. See
  * lib/reply-to-lead.
@@ -16,6 +17,10 @@ import { EscalateReplyBodySchema, ReplyToLeadBodySchema } from "../schemas";
 import { escalateReply, EscalateReplyError } from "../lib/escalate-reply";
 import { resolveReplySender } from "../lib/human-takeover";
 import { replyToLead, ReplyToLeadError } from "../lib/reply-to-lead";
+import {
+  AmbiguousReplyThreadError,
+  resolveReplyCampaignId,
+} from "../lib/resolve-reply-thread";
 import { handThreadFollowupsToHuman } from "../lib/hand-followups-to-human";
 
 const router = Router();
@@ -31,9 +36,12 @@ router.post("/", async (req: Request, res: Response) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.message });
   }
-  const { campaign_id, email, body_html, sent_by } = parsed.data;
+  const { email, body_html, sent_by } = parsed.data;
+  // Named campaign wins; else the prospect's one thread (lib/resolve-reply-thread).
+  let campaign_id = parsed.data.campaign_id;
 
   try {
+    campaign_id = await resolveReplyCampaignId(orgId, email, campaign_id);
     const outcome = await replyToLead({
       orgId,
       userId,
@@ -54,7 +62,17 @@ router.post("/", async (req: Request, res: Response) => {
     if (error instanceof ReplyToLeadError) {
       // A person already answered this thread: it is theirs. Say so to the queue,
       // or the responder claims it again at its next due date and is refused again.
-      if (error.code === "human_took_over") {
+      if (error instanceof AmbiguousReplyThreadError) {
+        return res.status(error.status).json({
+          error: error.message,
+          code: error.code,
+          candidates: error.candidates.map((c) => ({
+            campaign_id: c.campaignId,
+            last_message_at: c.lastMessageAt,
+          })),
+        });
+      }
+      if (error.code === "human_took_over" && campaign_id) {
         await handThreadFollowupsToHuman({
           orgId,
           campaignId: campaign_id,
