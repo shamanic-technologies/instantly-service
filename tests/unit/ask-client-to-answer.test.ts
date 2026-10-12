@@ -47,6 +47,11 @@ const mockHandThread = vi.fn();
 vi.mock("../../src/lib/hand-followups-to-human", () => ({
   handThreadFollowupsToHuman: (...a: unknown[]) => mockHandThread(...a),
 }));
+const mockBrandStatus = vi.fn();
+vi.mock("../../src/lib/brand-account-status", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  fetchBrandAccountStatus: (...a: unknown[]) => mockBrandStatus(...a),
+}));
 const mockBrand = vi.fn();
 vi.mock("../../src/lib/brand-client", () => ({ getBrandHandoffContext: (...a: unknown[]) => mockBrand(...a) }));
 vi.mock("../../src/lib/prospect-history", () => ({
@@ -60,6 +65,8 @@ import {
   ourAnswerAfter,
   renderStaffCheckIn,
   templateCheckIn,
+  cleanCheckIn,
+  CHECK_IN_PROMISE_WORDING,
   threadSender,
   cleanSummaryLine,
   maybeAskClientToAnswer,
@@ -69,6 +76,7 @@ import {
   tidyBody,
 } from "../../src/lib/ask-client-to-answer";
 import { isResponderCampaign } from "../../src/lib/campaign-client";
+import { relationshipForStatus } from "../../src/lib/brand-account-status";
 import type { ThreadMessage } from "../../src/lib/forward-positive-reply";
 import { stripQuotedHistory } from "../../src/lib/self-send/qualify-reply";
 
@@ -395,7 +403,7 @@ describe("AC3 + AC4: the staff check-in for an OLD question (Vargas, 12 days)", 
     question: vargas.question,
     earlier: vargasThread,
     senderAddress: "kevin@growdistribute.com",
-    checkIn: "Hola Américo,\n\nTe escribo para saber si pudiste hablar con ObraCam sobre el informe y los costos. Si no, puedo organizar la presentación esta semana.\n\nKevin",
+    checkIn: "Hola Américo,\n\nTe escribo para saber si pudiste hablar con ObraCam sobre el informe y los costos. Para cualquier otra cosa, escribe directamente a ObraCam.\n\nKevin",
   });
 
   it("opens with one line naming the client and the prospect, then what to do", () => {
@@ -431,8 +439,8 @@ describe("AC3 + AC4: the staff check-in for an OLD question (Vargas, 12 days)", 
   it("the template check-in (model down) is short, names the brand, signed as the thread's sender", () => {
     expect(threadSender(vargasThread)).toEqual({ address: "kevin@growdistribute.com", firstName: "Kevin" });
     expect(threadSender(gallegoThread)).toEqual({ address: "fallon@agileconsultco.com", firstName: "Fallon" });
-    expect(templateCheckIn({ leadFirstName: "Américo", brandName: "ObraCam", senderFirstName: "Kevin" })).toBe(
-      "Hi Américo,\n\nFollowing up on this. Did you get to talk with ObraCam? If not, I can set up the intro this week.\n\nKevin",
+    expect(templateCheckIn({ leadFirstName: "Américo", brandName: "ObraCam", senderFirstName: "Kevin", relationship: "not_working_with_us" })).toBe(
+      "Hi Américo,\n\nFollowing up on your question. Did you get what you needed? For anything else, please reach ObraCam directly.\n\nKevin",
     );
   });
 });
@@ -472,7 +480,7 @@ describe("maybeAskClientToAnswer on the two real threads", () => {
       latestReply: vargas.question,
     });
     mockComplete.mockResolvedValue({
-      content: "Hola Américo,\n\nTe escribo para saber si pudiste hablar con ObraCam sobre el informe y los costos. Si no, puedo organizar la presentación esta semana.\n\nKevin",
+      content: "Hola Américo,\n\nTe escribo para saber si pudiste hablar con ObraCam sobre el informe y los costos. Para cualquier otra cosa, escribe directamente a ObraCam.\n\nKevin",
     });
     const outcome = await maybeAskClientToAnswer(vargasCampaign, "ava@befco-sa.cl", {
       because: "overdue",
@@ -511,7 +519,7 @@ describe("maybeAskClientToAnswer on the two real threads", () => {
     await maybeAskClientToAnswer(vargasCampaign, "ava@befco-sa.cl", { because: "overdue", asOf: new Date("2026-10-11T10:12:00Z") });
     const [params] = mockSendEmail.mock.calls[0];
     expect(params.recipientEmail).toBe("growth@distribute.you");
-    expect(params.metadata.text).toContain("Did you get to talk with ObraCam? If not, I can set up the intro this week.\n\nKevin");
+    expect(params.metadata.text).toContain("Did you get what you needed? For anything else, please reach ObraCam directly.\n\nKevin");
   });
 
   it("Vargas, the day after he wrote: the client is asked (staff in Cc), and the email names ObraCam and him first", async () => {
@@ -609,4 +617,105 @@ describe("maybeAskClientToAnswer on Gallego's real thread (Sep 14 objection unan
       expect(completeParams.message).toContain("the ROI wasn't great");
     });
   }
+});
+
+// ─── Follow-up 2026-10-12: the check-in promises nothing, and knows if the brand churned ──
+
+describe("the staff check-in never promises what only the brand can deliver", () => {
+  const PROMISES = ["this week", "I will send", "I can set up", "esta semana", "te los hago llegar", "cette semaine", "je te les fais parvenir"];
+
+  it("the template promises nothing, for an active brand and a churned one", () => {
+    for (const relationship of ["working_with_us", "not_working_with_us", "unknown"] as const) {
+      const text = templateCheckIn({ leadFirstName: "Wendy", brandName: "Doc Dinners", senderFirstName: "Fallon", relationship });
+      expect(CHECK_IN_PROMISE_WORDING.test(text)).toBe(false);
+      for (const p of PROMISES) expect(text.toLowerCase()).not.toContain(p.toLowerCase());
+    }
+  });
+
+  it("active brand: the door stays open for the brand; churned or unknown: the prospect is pointed to the brand", () => {
+    expect(templateCheckIn({ leadFirstName: "Wendy", brandName: "Doc Dinners", senderFirstName: "Fallon", relationship: "working_with_us" })).toBe(
+      "Hi Wendy,\n\nFollowing up on your question. Did you get what you needed from Doc Dinners? They can follow up with you directly.\n\nFallon",
+    );
+    expect(templateCheckIn({ leadFirstName: "Américo", brandName: "ObraCam", senderFirstName: "Kevin", relationship: "unknown" })).toContain(
+      "please reach ObraCam directly",
+    );
+  });
+
+  it("a model draft that promises a deliverable or a time frame is dropped for the template (the owner's own example included)", () => {
+    expect(cleanCheckIn("Hola Américo,\n\nSinon je te les fais parvenir cette semaine.\n\nKevin")).toBeNull();
+    expect(cleanCheckIn("Hola Américo,\n\n¿Pudiste hablar con ObraCam? Si no, te los hago llegar esta semana.\n\nKevin")).toBeNull();
+    expect(cleanCheckIn("Hi Doug,\n\nIf not, I can set up the intro this week.\n\nScott")).toBeNull();
+    expect(cleanCheckIn("Hi Wendy,\n\nDid you get what you needed from Doc Dinners? They can follow up with you directly.\n\nFallon")).not.toBeNull();
+  });
+
+  it("the account status is read as the producer states it", () => {
+    expect(relationshipForStatus("active")).toBe("working_with_us");
+    expect(relationshipForStatus("reactive_only")).toBe("working_with_us");
+    expect(relationshipForStatus("out_of_credit")).toBe("working_with_us");
+    expect(relationshipForStatus("paused")).toBe("not_working_with_us");
+    expect(relationshipForStatus("inactive")).toBe("not_working_with_us");
+    expect(relationshipForStatus("no_payment_method")).toBe("not_working_with_us");
+    expect(relationshipForStatus("unknown")).toBe("unknown");
+    expect(relationshipForStatus(undefined)).toBe("unknown");
+  });
+});
+
+describe("maybeAskClientToAnswer: the check-in adapts to the brand's status", () => {
+  const vargasCampaign = { ...campaign, instantlyCampaignId: "self:45edbc68-1608-4b5a-90a1-4b3d1eb437ee" };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.ADMIN_NOTIFICATION_EMAIL = "growth@distribute.you";
+    mockReturning.mockResolvedValue([{ id: "row" }]);
+    mockSendEmail.mockResolvedValue(undefined);
+  });
+
+  it("churned brand (ObraCam paused): the model is told it no longer works with us, and never told to promise", async () => {
+    mockFindLead.mockResolvedValue({ id: "l", firstName: "Américo", lastName: "Vargas", company: "Befco" });
+    mockBrand.mockResolvedValue({ name: "ObraCam", rep: { email: null, firstName: null, role: null } });
+    mockBrandStatus.mockResolvedValue({ status: "paused", relationship: "not_working_with_us" });
+    mockHistory.mockResolvedValue({
+      history: { items: vargasThread.map((message) => ({ type: "message", message })), notes: [] },
+      latestReply: vargas.question,
+    });
+    mockComplete.mockResolvedValue({ content: "Hola Américo,\n\n¿Recibiste lo que necesitabas? Para cualquier otra cosa, escribe directamente a ObraCam.\n\nKevin" });
+    await maybeAskClientToAnswer(vargasCampaign, "ava@befco-sa.cl", { because: "overdue", asOf: new Date("2026-10-12T10:00:00Z") });
+    expect(mockBrandStatus).toHaveBeenCalledWith("org-uuid", campaign.brandIds[0]);
+    const [completeParams] = mockComplete.mock.calls[0];
+    expect(completeParams.message).toContain("Brand still works with us: no (account status: paused)");
+    expect(completeParams.systemPrompt).toContain("point the prospect to the brand directly");
+    expect(completeParams.systemPrompt).toContain("Never promise");
+    expect(completeParams.systemPrompt).not.toMatch(/this week|set it up|set up the intro|sending the info/i);
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.metadata.text).toContain("escribe directamente a ObraCam");
+  });
+
+  it("active brand (Doc Dinners): the model is told the brand still works with us", async () => {
+    mockFindLead.mockResolvedValue({ id: "l", firstName: "Wendy", lastName: "Gallego", company: "Shin Wellness" });
+    mockBrand.mockResolvedValue({ name: "Doc Dinners", rep: { email: null, firstName: null, role: null } });
+    mockBrandStatus.mockResolvedValue({ status: "active", relationship: "working_with_us" });
+    mockHistory.mockResolvedValue({
+      history: { items: gallegoFullThread.map((message) => ({ type: "message", message })), notes: [] },
+      latestReply: gallegoObjection,
+    });
+    mockComplete.mockResolvedValue({ content: "Hi Wendy,\n\nI hear you on the ROI. Doc Dinners can follow up with you directly.\n\nFallon" });
+    await maybeAskClientToAnswer(campaign, "drgallego@shinwellness.com", { because: "overdue", asOf: new Date("2026-10-12T12:00:00Z") });
+    const [completeParams] = mockComplete.mock.calls[0];
+    expect(completeParams.message).toContain("Brand still works with us: yes (account status: active)");
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.metadata.text).toContain("Doc Dinners can follow up with you directly.");
+  });
+
+  it("an unreadable status is 'unknown': nothing is invented, the template points to the brand", async () => {
+    mockFindLead.mockResolvedValue({ id: "l", firstName: "Américo", lastName: "Vargas", company: "Befco" });
+    mockBrand.mockResolvedValue({ name: "ObraCam", rep: { email: null, firstName: null, role: null } });
+    mockBrandStatus.mockRejectedValue(new Error("features-service 503"));
+    mockHistory.mockResolvedValue({
+      history: { items: vargasThread.map((message) => ({ type: "message", message })), notes: [] },
+      latestReply: vargas.question,
+    });
+    mockComplete.mockRejectedValue(new Error("chat down"));
+    await maybeAskClientToAnswer(vargasCampaign, "ava@befco-sa.cl", { because: "overdue", asOf: new Date("2026-10-12T10:00:00Z") });
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.metadata.text).toContain("please reach ObraCam directly");
+  });
 });

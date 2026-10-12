@@ -52,6 +52,7 @@ import { handThreadFollowupsToHuman } from "./hand-followups-to-human";
 import type { HistoryItem } from "./prospect-history";
 import { stripQuotedHistory } from "./self-send/qualify-reply";
 import { bareAddress } from "./staff-senders";
+import { fetchBrandAccountStatus, type BrandAccountStatus, type BrandRelationship } from "./brand-account-status";
 
 /** The transactional-email template this module sends (deployed at startup). */
 export const CLIENT_ANSWER_EVENT_TYPE = "positive-reply-answer-request";
@@ -313,17 +314,39 @@ export function renderStaffCheckIn(input: StaffCheckInInput): AnswerRequestConte
   return { subject: `Check in with ${who} (${input.brandName?.trim() || "unknown brand"})`, text, html };
 }
 
-/** Pure: the check-in written from a template (English), when the model cannot write one. */
-export function templateCheckIn(input: { leadFirstName: string | null; brandName: string | null; senderFirstName: string | null }): string {
+/**
+ * Pure: the check-in written from a template (English), when the model cannot
+ * write one. Promises nothing: we hold neither the brand's documents, prices nor
+ * calendar (owner 2026-10-12). A brand still working with us can follow up
+ * itself; otherwise (or unknown) the prospect is pointed to the brand directly.
+ */
+export function templateCheckIn(input: {
+  leadFirstName: string | null;
+  brandName: string | null;
+  senderFirstName: string | null;
+  relationship: BrandRelationship;
+}): string {
   const brand = input.brandName?.trim() || "the team";
+  const body =
+    input.relationship === "working_with_us"
+      ? `Following up on your question. Did you get what you needed from ${brand}? They can follow up with you directly.`
+      : `Following up on your question. Did you get what you needed? For anything else, please reach ${brand} directly.`;
   return [
     input.leadFirstName?.trim() ? `Hi ${input.leadFirstName.trim()},` : "Hi,",
     ``,
-    `Following up on this. Did you get to talk with ${brand}? If not, I can set up the intro this week.`,
+    body,
     ``,
     input.senderFirstName?.trim() || "Thanks",
   ].join("\n");
 }
+
+/**
+ * Wording that promises a deliverable or a time frame only the brand could keep
+ * ("Sinon je te les fais parvenir cette semaine", owner 2026-10-12: never legit
+ * from us). A last guard on the model's output; the prompt does the real work.
+ */
+export const CHECK_IN_PROMISE_WORDING =
+  /\b(this week|next week|tomorrow|I will send|I'll send|I can send|I can set up|I'll set up|I will set up|I can arrange|I'll arrange|esta semana|la pr[oó]xima semana|ma[nñ]ana|te (lo|la|los|las) (hago llegar|env[ií]o|mando)|puedo organizar|puedo enviar|cette semaine|la semaine prochaine|demain|je (te|vous) (les |le |la )?(fais parvenir|envoie|enverrai)|je peux organiser)\b/i;
 
 /** Pure: a model-written check-in made safe to send, or null to use the template. */
 export function cleanCheckIn(raw: string | null | undefined): string | null {
@@ -335,6 +358,7 @@ export function cleanCheckIn(raw: string | null | undefined): string | null {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   if (!text || /^none\.?$/i.test(text) || text.length > 600) return null;
+  if (CHECK_IN_PROMISE_WORDING.test(text)) return null;
   return text;
 }
 
@@ -404,22 +428,29 @@ async function summaryLineOrNull(
 
 const CHECK_IN_SYSTEM_PROMPT = [
   "You write a short check-in email that a sales rep sends in an old email thread.",
-  "The prospect asked something a while ago. Someone may have answered them another way, so the rep does not answer the question: the rep checks whether they got what they needed, and offers to set it up this week.",
-  "The rep introduced the prospect to a business (the brand). Name the brand and what they asked about, in a few words.",
+  "The situation: the rep found this prospect and introduced them to a business (the brand). The rep is only the go-between. The rep holds none of the brand's documents, reports, prices or calendar, so the rep can deliver nothing for the brand and cannot speak for its timing.",
+  "The prospect asked the brand something a while ago. Someone may have answered them another way (a call, the brand's own inbox). So the rep does not answer the question and does not promise anything. The rep only checks whether they got what they needed, and makes sure they know who to turn to.",
+  "You are told whether the brand still works with us. Use it to decide who the prospect should turn to:",
+  "- Still working with us: the brand can follow up with them; leave that door open.",
+  "- No longer working with us: do not keep the conversation going for the brand; point the prospect to the brand directly for anything they still need.",
+  "- Unknown: treat it like no longer working with us.",
+  "If the prospect raised a doubt or an objection, acknowledge it in a few plain words, without arguing or making a claim about the brand.",
   "Rules:",
   "- Write in the language the prospect wrote in.",
   "- First line: a greeting with the prospect's first name when given, else a plain greeting.",
-  "- Then two or three short sentences. One idea per sentence. Plain words.",
+  "- Then two or three short sentences. One idea per sentence. Plain words. Name the brand.",
   "- Last line: the rep's first name alone.",
-  "- No dashes, no quotes, no subject line, no placeholders, no promises beyond setting up the intro or sending the info.",
-  "Example: Hi Doug,\n\nFollowing up on this. Did you get to talk with Shockwavecenters about their protocols? If not, I can set up the intro this week.\n\nScott",
+  "- Never promise a document, a price, a call, an intro, a meeting, a date or a time frame, and never say the rep will send or set up anything. Only the brand can deliver those.",
+  "- No dashes, no quotes, no subject line, no placeholders.",
 ].join("\n");
 
-async function checkInText(
+/** Exported for staff render scripts (prints a draft, sends nothing). */
+export async function checkInText(
   campaign: ForwardPositiveReplyCampaign,
   question: ThreadMessage,
-  input: { leadFirstName: string | null; brandName: string | null; senderFirstName: string | null },
+  input: { leadFirstName: string | null; brandName: string | null; senderFirstName: string | null; brandStatus: BrandAccountStatus | null },
 ): Promise<string> {
+  const relationship = input.brandStatus?.relationship ?? "unknown";
   if (campaign.orgId && campaign.runId && campaign.userId) {
     try {
       const result = await orgComplete(
@@ -427,6 +458,7 @@ async function checkInText(
           message: [
             `Prospect first name: ${input.leadFirstName ?? "unknown"}`,
             `Brand: ${input.brandName ?? "unknown"}`,
+            `Brand still works with us: ${relationshipWords(relationship)}${input.brandStatus ? ` (account status: ${input.brandStatus.status})` : ""}`,
             `Rep first name: ${input.senderFirstName ?? "unknown"}`,
             `What the prospect wrote on ${shortDate(question.date)}, verbatim:`,
             `"""`,
@@ -449,7 +481,13 @@ async function checkInText(
       );
     }
   }
-  return templateCheckIn(input);
+  return templateCheckIn({ ...input, relationship });
+}
+
+function relationshipWords(relationship: BrandRelationship): string {
+  if (relationship === "working_with_us") return "yes";
+  if (relationship === "not_working_with_us") return "no";
+  return "unknown";
 }
 
 // ─── IO ──────────────────────────────────────────────────────────────────────
@@ -687,10 +725,23 @@ async function sendStaffCheckIn(args: {
 }): Promise<AnswerRequestOutcome> {
   const { campaign, leadEmail, tag, question, earlier } = args;
   const sender = threadSender(earlier);
+  const brandId = campaign.brandIds?.[0];
+  const brandStatus = brandId
+    ? await Promise.resolve()
+        .then(() => fetchBrandAccountStatus(campaign.orgId!, brandId))
+        .then((status) => status ?? null)
+        .catch((error: unknown) => {
+        console.warn(
+          `[instantly-service] ask-client-to-answer: brand status unreadable for ${tag}, check-in written as if the brand no longer works with us — ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return null;
+      })
+    : null;
   const checkIn = await checkInText(campaign, question, {
     leadFirstName: args.firstName,
     brandName: args.brandName,
     senderFirstName: sender.firstName,
+    brandStatus,
   });
   const content = renderStaffCheckIn({
     brandName: args.brandName,
