@@ -9,9 +9,8 @@
  * days of positive replies: median answer 5 h, p90 7 days, 12 of 28 never.
  *
  * So this sweep reads the OUTCOME: every positive reply (interested, question,
- * meeting request) we learned of more than `UNANSWERED_REPLY_DEADLINE_MS` ago
- * (and less than `UNANSWERED_REPLY_LOOKBACK` ago), whose thread is still that
- * kind, with no answer sent into it since THEY LAST wrote (our dispatcher's
+ * meeting request) we learned of more than `UNANSWERED_REPLY_DEADLINE_MS` ago,
+ * however long ago, whose thread is still that kind, with no answer sent into it since THEY LAST wrote (our dispatcher's
  * step 0, an Instantly Unibox message, or a staff answer our IMAP poller filed;
  * dated against the prospect's NEWEST message from the Instantly mirror or our
  * IMAP copy, not against when we labeled it), not escalated to staff, and not
@@ -20,6 +19,13 @@
  * itself re-reads the whole thread: any message of ours after their question
  * sends nothing, and a question older than a few days goes to staff as a
  * check-in (lib/ask-client-to-answer).
+ *
+ * ⚠️ NO LOOKBACK (UNANSWERED-POSITIVE-1013). A 14-day window left every
+ * positive reply older than two weeks with nobody asked, forever: Robert at
+ * acupunctureconnections.com wrote "I'll take a look at it. Thanks" on Sep 18
+ * and never heard from us (48 such threads on 2026-10-13, Feb to Sep). The
+ * once-per-thread claim makes the backlog a one-time pass; an old thread goes
+ * to staff as a check-in, never to the client.
  *
  * ⚠️ Threads staff were alerted about on 2026-10-11 (the retired staff-only
  * alert, `metadata.infoRequestUnansweredAlert`) are left with staff: one of the
@@ -36,8 +42,6 @@ import { maybeAskClientToAnswer } from "./ask-client-to-answer";
 
 /** A working day: past the responder's normal answer time (median 5 h). */
 export const UNANSWERED_REPLY_DEADLINE_MS = 24 * 60 * 60 * 1000;
-/** How far back a still-open reply is chased. */
-export const UNANSWERED_REPLY_LOOKBACK = "14 days";
 /** The reply kinds a responder is asked to answer and the client may be asked about. */
 export const ANSWERABLE_REPLY_KINDS = ["lead_interested", "lead_info_requested", "lead_meeting_requested"] as const;
 
@@ -49,6 +53,10 @@ export interface UnansweredReply {
   userId: string;
   runId: string;
   brandIds: string[] | null;
+  /** The thread's reply kind now (one of ANSWERABLE_REPLY_KINDS). */
+  replyKind: string;
+  /** When THEY last wrote (their newest message, else when we learned of the reply). */
+  repliedAt: Date;
 }
 
 function rowsOf(result: unknown): Record<string, unknown>[] {
@@ -71,10 +79,10 @@ export async function findUnansweredReplies(asOf: Date = new Date()): Promise<Un
       WHERE e.event_type IN (${kindsSql})
         AND e.inferred = false
         AND e.withdrawn_at IS NULL
-        AND e.created_at > now() - ${UNANSWERED_REPLY_LOOKBACK}::interval
       GROUP BY e.campaign_id
     )
-    SELECT c.instantly_campaign_id, c.lead_email, c.campaign_id, c.org_id, c.user_id, c.run_id, c.brand_ids
+    SELECT c.instantly_campaign_id, c.lead_email, c.campaign_id, c.org_id, c.user_id, c.run_id, c.brand_ids,
+           g.reply_kind, a.asked_at
     FROM q
     JOIN instantly_campaigns c ON c.instantly_campaign_id = q.instantly_campaign_id
     JOIN instantly_lead_status_current g ON g.instantly_campaign_id = c.instantly_campaign_id
@@ -137,7 +145,16 @@ export async function findUnansweredReplies(asOf: Date = new Date()): Promise<Un
     userId: String(r.user_id),
     runId: String(r.run_id),
     brandIds: Array.isArray(r.brand_ids) ? (r.brand_ids as string[]) : null,
+    replyKind: String(r.reply_kind),
+    repliedAt: asUtcDate(r.asked_at),
   }));
+}
+
+/** `timestamp without time zone` columns hold UTC; node-postgres would read them as local time. */
+function asUtcDate(value: unknown): Date {
+  if (value instanceof Date) return value;
+  const text = String(value);
+  return new Date(/[zZ]|[+-]\d{2}(:?\d{2})?$/.test(text) ? text : `${text.replace(" ", "T")}Z`);
 }
 
 let inFlight: Promise<{ unanswered: number; asked: number }> | null = null;
@@ -161,7 +178,7 @@ export function askClientsAboutUnansweredReplies(
           brandIds: u.brandIds,
         },
         u.leadEmail,
-        { because: "overdue" },
+        { because: "overdue", replyKind: u.replyKind, repliedAt: u.repliedAt },
       );
       if (outcome.sent) asked += 1;
     }

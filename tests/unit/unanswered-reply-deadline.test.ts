@@ -22,6 +22,8 @@ const row = {
   user_id: "u-1",
   run_id: "r-1",
   brand_ids: ["b-1"],
+  reply_kind: "lead_interested",
+  asked_at: new Date("2026-09-18T12:17:12Z"),
 };
 
 /** Every literal string and bound value of a drizzle sql`` object, flattened. */
@@ -49,7 +51,7 @@ describe("a reply a responder took but never answered → client asked after 24 
     const [campaign, lead, options] = mockAsk.mock.calls[0];
     expect(campaign).toMatchObject({ instantlyCampaignId: "ic-1", orgId: "org-1", runId: "r-1", brandIds: ["b-1"] });
     expect(lead).toBe("steve@kaizen.com");
-    expect(options).toEqual({ because: "overdue" });
+    expect(options).toEqual({ because: "overdue", replyKind: "lead_interested", repliedAt: new Date("2026-09-18T12:17:12Z") });
   });
 
   it("the read keys on the OUTCOME and skips threads already asked, escalated or left with staff", async () => {
@@ -101,5 +103,14 @@ describe("a reply a responder took but never answered → client asked after 24 
     const [a, b] = await Promise.all([askClientsAboutUnansweredReplies(), askClientsAboutUnansweredReplies()]);
     expect(a).toBe(b);
     expect(mockExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("NO lookback: a positive reply from weeks ago is still chased (Robert, Sep 18; the claim makes the backlog one pass)", async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+    await askClientsAboutUnansweredReplies(new Date("2026-10-13T12:00:00Z"));
+    const q = sqlText(mockExecute.mock.calls[0][0]);
+    expect(q).not.toContain("::interval");
+    expect(q).not.toContain("14 days");
+    expect(q).toContain("g.reply_kind, a.asked_at");
   });
 });
