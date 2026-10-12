@@ -19,6 +19,7 @@ import transferBrandRoutes from "./routes/transfer-brand";
 import bouncedEmailsRoutes from "./routes/bounced-emails";
 import manualQualificationsRoutes from "./routes/manual-qualifications";
 import leadOptOutsRoutes from "./routes/lead-optouts";
+import followupCutsRoutes from "./routes/followup-cuts";
 import repliesRoutes from "./routes/replies";
 import leadConversationsRoutes from "./routes/lead-conversations";
 import engagedLeadsRoutes from "./routes/engaged-leads";
@@ -97,6 +98,7 @@ app.use("/orgs/campaigns", serviceAuth, requireOrgId, leadsRoutes);
 app.use("/orgs/accounts", serviceAuth, requireOrgId, accountsRoutes);
 app.use("/orgs/manual-qualifications", serviceAuth, requireOrgId, manualQualificationsRoutes);
 app.use("/orgs/opt-outs", serviceAuth, requireOrgId, leadOptOutsRoutes);
+app.use("/orgs/followup-cuts", serviceAuth, requireOrgId, followupCutsRoutes); // stop the rest of a sequence for leads emailed in error (not an opt-out)
 app.use("/orgs/replies", serviceAuth, requireOrgId, repliesRoutes);
 app.use("/orgs/conversations", serviceAuth, requireOrgId, leadConversationsRoutes);
 app.use("/orgs/engaged-leads", serviceAuth, requireOrgId, engagedLeadsRoutes);
