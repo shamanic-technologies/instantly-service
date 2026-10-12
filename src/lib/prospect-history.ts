@@ -36,6 +36,7 @@ import { db } from "../db";
 import {
   formatThreadDate,
   selectThreadMessages,
+  withImapMessages,
   type ForwardPositiveReplyCampaign,
   type ThreadMessage,
 } from "./forward-positive-reply";
@@ -43,7 +44,7 @@ import { fetchLeadConversation } from "./lead-conversation";
 import { resolveInstantlyApiKey } from "./key-client";
 import { listEmails } from "./instantly-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
-import { fetchSelfSendThread } from "./self-send/thread";
+import { fetchImapThreadMessages, fetchSelfSendThread } from "./self-send/thread";
 import { subjectForStep } from "./self-send/message";
 
 const NIL_USER_ID = "00000000-0000-0000-0000-000000000000";
@@ -314,7 +315,10 @@ async function loadSingleSequenceThread(
     method: "POST",
     path: "/internal/forward-positive-reply",
   });
-  return selectThreadMessages(await listEmails(key, { campaignId: campaign.instantlyCampaignId }));
+  const records = await listEmails(key, { campaignId: campaign.instantlyCampaignId });
+  // A reply only our IMAP poller saw is still theirs (Dr. Gallego, 2026-09-14).
+  const imap = await fetchImapThreadMessages(campaign.instantlyCampaignId);
+  return withImapMessages(selectThreadMessages(records), records, imap);
 }
 
 function errorMessage(error: unknown): string {

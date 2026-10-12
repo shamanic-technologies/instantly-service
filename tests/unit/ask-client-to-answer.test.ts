@@ -532,3 +532,81 @@ describe("maybeAskClientToAnswer on the two real threads", () => {
     expect(params.metadata.text).toContain("They wrote on Sep 29, 2026.");
   });
 });
+
+// ─── Follow-up 2026-10-12: she wrote AGAIN after our bump (prospect, us, prospect) ──
+
+/** Dr. Gallego's Sep 14 objection: filed by our IMAP poller, after Fallon's Sep 4 bump. */
+const gallegoObjection: ThreadMessage = {
+  direction: "inbound",
+  from: "\"Dr. Wendy Gallego\" <drgallego@shinwellness.com>",
+  to: "fallon@agileconsultco.com",
+  date: "2026-09-14T22:51:09.000Z",
+  subject: "Re: Doctor dinners in Phoenix",
+  bodyText: "If this is the same company I spoke to, the ROI wasn't great... You can let me know if this is something different?",
+};
+const gallegoFullThread: ThreadMessage[] = [...gallegoThread, gallegoObjection];
+
+/** The same shape on our own sender: our dispatches, her replies from IMAP. */
+const selfSendCampaign = { ...campaign, instantlyCampaignId: "self:7d1b6a10-0000-4000-8000-000000000001" };
+const selfSendThread: ThreadMessage[] = [
+  { ...gallego.cold, from: "fallon@agileconsultco.com" },
+  { ...gallego.question, from: "\"Dr. Wendy Gallego\" <drgallego@shinwellness.com>" },
+  { ...gallego.bump, from: "fallon@agileconsultco.com" },
+  gallegoObjection,
+];
+
+describe("prospect, us, prospect: her NEWEST message counts, our earlier bump does not answer it", () => {
+  for (const [transport, thread] of [
+    ["Instantly (mirror + IMAP copy)", gallegoFullThread],
+    ["self-send (dispatch log + IMAP)", selfSendThread],
+  ] as const) {
+    it(`${transport}: the Sep 14 objection is her latest message and nobody answered it`, () => {
+      const latest = latestProspectMessage(thread);
+      expect(latest).toBe(gallegoObjection);
+      expect(ourAnswerAfter(thread, latest!)).toBeNull();
+    });
+  }
+});
+
+describe("maybeAskClientToAnswer on Gallego's real thread (Sep 14 objection unanswered)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.ADMIN_NOTIFICATION_EMAIL = "growth@distribute.you";
+    mockReturning.mockResolvedValue([{ id: "row" }]);
+    mockSendEmail.mockResolvedValue(undefined);
+    mockFindLead.mockResolvedValue({ id: "l", firstName: "Wendy", lastName: "Gallego", company: "Shin Wellness" });
+    mockBrand.mockResolvedValue({ name: "Doc Dinners", rep: { email: null, firstName: null, role: null } });
+    mockComplete.mockResolvedValue({ content: "Hi Wendy,\n\nThis is a different team. Happy to share what changed.\n\nFallon" });
+  });
+
+  for (const [transport, camp, thread] of [
+    ["Instantly", campaign, gallegoFullThread],
+    ["self-send", selfSendCampaign, selfSendThread],
+  ] as const) {
+    it(`${transport}: staff get a check-in quoting HER Sep 14 words, dated Sep 14; the client is not emailed`, async () => {
+      mockHistory.mockResolvedValue({
+        history: { items: thread.map((message) => ({ type: "message", message })), notes: [] },
+        latestReply: gallegoObjection,
+      });
+      const outcome = await maybeAskClientToAnswer(camp, "drgallego@shinwellness.com", {
+        because: "overdue",
+        asOf: new Date("2026-10-12T12:00:00Z"),
+      });
+      expect(outcome).toMatchObject({ sent: true, to: "staff", recipients: ["growth@distribute.you"] });
+      expect(mockSendEmail).toHaveBeenCalledTimes(1);
+      const [params] = mockSendEmail.mock.calls[0];
+      expect(params.eventType).toBe("unanswered-question-check-in");
+      expect(params.recipientEmail).toBe("growth@distribute.you");
+      expect(mockMembers).not.toHaveBeenCalled();
+      const text: string = params.metadata.text;
+      expect(text.split("\n")[0]).toBe("Client: Doc Dinners · Prospect: Wendy Gallego (Shin Wellness)");
+      expect(text).toContain("asked a question on Sep 14, 2026.");
+      const below = text.split("\n---\n")[1];
+      expect(below).toContain("Date: Sep 14, 2026");
+      expect(below.indexOf("the ROI wasn't great")).toBeLessThan(below.indexOf("Just checking if you had news"));
+      // the model drafts the check-in from HER newest words, never Fallon's bump
+      const [completeParams] = mockComplete.mock.calls[0];
+      expect(completeParams.message).toContain("the ROI wasn't great");
+    });
+  }
+});

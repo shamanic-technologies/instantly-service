@@ -25,7 +25,7 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
-import { htmlToText, type ThreadMessage } from "../forward-positive-reply";
+import { htmlToText, type ImapThreadMessage, type ThreadMessage } from "../forward-positive-reply";
 
 /**
  * Every message of one self-dispatched conversation, oldest first.
@@ -165,6 +165,40 @@ export async function fetchOwnDispatchedMessages(
       typeof row.instantlyEmailId === "string" && row.instantlyEmailId.length > 0
         ? row.instantlyEmailId
         : null,
+    message: toThreadMessage(row),
+  }));
+}
+
+/**
+ * Every message our IMAP poller correlated to this sequence, oldest first, on
+ * EITHER transport.
+ *
+ * ⚠️ THE IMAP POLLER READS INSTANTLY-TRANSPORT MAILBOXES TOO (any mailbox we
+ * hold a credential for), and a prospect's reply can land there and nowhere
+ * else: Instantly no longer mirrors anything once a mailbox is off its plan.
+ * Dr. Gallego (Doc Dinners) wrote again on 2026-09-14, after our Sep 4 bump;
+ * that message existed only in `imap_messages_raw`, so a thread read from the
+ * Instantly mirror alone ended on our bump and her objection read as answered.
+ */
+export async function fetchImapThreadMessages(
+  instantlyCampaignId: string,
+): Promise<ImapThreadMessage[]> {
+  const result = await db.execute(sql`
+    SELECT
+      CASE WHEN m.kind = 'staff_reply' THEN 'outbound' ELSE 'inbound' END AS "direction",
+      COALESCE(m.from_address, m.account_email)        AS "from",
+      CASE WHEN m.kind = 'staff_reply' THEN '' ELSE m.account_email END AS "to",
+      COALESCE(m.subject, '')                          AS "subject",
+      COALESCE(m.payload->>'textSnippet', '')          AS "bodyHtml",
+      COALESCE(m.received_at, m.polled_at)             AS "at",
+      m.message_id                                     AS "messageId"
+    FROM imap_messages_raw m
+    WHERE m.instantly_campaign_id = ${instantlyCampaignId}
+      AND m.kind IN ('reply', 'auto_reply', 'staff_reply')
+    ORDER BY "at"
+  `);
+  return (result.rows as Record<string, unknown>[]).map((row) => ({
+    messageId: String(row.messageId ?? ""),
     message: toThreadMessage(row),
   }));
 }

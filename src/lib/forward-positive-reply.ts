@@ -227,6 +227,62 @@ export function selectThreadMessages(records: EmailRecord[]): ThreadMessage[] {
     }));
 }
 
+/** One message our IMAP poller filed for a sequence, beside its RFC Message-ID. */
+export interface ImapThreadMessage {
+  /** The RFC 5322 Message-ID: the same id Instantly's mirror stores as `message_id`. */
+  messageId: string;
+  message: ThreadMessage;
+}
+
+/**
+ * Oldest first, the order every reader of this shape already relies on. An
+ * undatable message sorts last rather than being dropped: we hold it.
+ */
+export function byDate(messages: ThreadMessage[]): ThreadMessage[] {
+  return messages.sort((a, b) => {
+    const at = Date.parse(a.date);
+    const bt = Date.parse(b.date);
+    if (Number.isNaN(at) !== Number.isNaN(bt)) return Number.isNaN(at) ? 1 : -1;
+    if (Number.isNaN(at)) return 0;
+    return at - bt;
+  });
+}
+
+function normalizedMessageId(id: unknown): string | null {
+  if (typeof id !== "string") return null;
+  const bare = id.trim().replace(/^<|>$/g, "").toLowerCase();
+  return bare || null;
+}
+
+/**
+ * Pure: fold the messages our IMAP poller filed into a thread read from
+ * Instantly's copy. The prospect's newest message counts wherever it was
+ * ingested (owner 2026-10-12, Dr. Gallego's Sep 14 reply).
+ *
+ * ⚠️ DEDUP ON THE RFC Message-ID, never on time or body. A reply both pipes saw
+ * (5 of 7 in prod on 2026-10-12) is in the mirror as `message_id` and in
+ * `imap_messages_raw.message_id`; Instantly's copy wins. An IMAP row with no
+ * Message-ID cannot be matched, so it is kept: we hold it.
+ */
+export function withImapMessages(
+  thread: ThreadMessage[],
+  records: EmailRecord[],
+  imap: ImapThreadMessage[],
+): ThreadMessage[] {
+  if (imap.length === 0) return thread;
+  const mirrored = new Set(
+    records.map((r) => normalizedMessageId(r.message_id)).filter((id): id is string => id !== null),
+  );
+  const missing = imap
+    .filter((m) => {
+      const id = normalizedMessageId(m.messageId);
+      return id === null || !mirrored.has(id);
+    })
+    .map((m) => m.message);
+  if (missing.length === 0) return thread;
+  return byDate([...thread, ...missing]);
+}
+
 /** Format an ISO timestamp as a readable email date, e.g. "Jul 13, 2026, 5:57 PM UTC". */
 export function formatThreadDate(iso: string): string {
   const d = new Date(iso);
