@@ -62,7 +62,10 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../db";
 import {
+  byDate,
   selectThreadMessages,
+  withImapMessages,
+  type ImapThreadMessage,
   type ThreadMessage,
 } from "./forward-positive-reply";
 import { insertEmailsBatch } from "./bronze";
@@ -75,6 +78,7 @@ import {
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { loadCampaignSequences, type CampaignRow } from "./reply-to-lead";
 import {
+  fetchImapThreadMessages,
   fetchOwnDispatchedMessages,
   fetchSelfSendThread,
   type OwnDispatchedMessage,
@@ -421,9 +425,18 @@ async function fetchInstantlyConversation(
   } catch (error: unknown) {
     throw unreadable(campaign, "our mirror of the", error);
   }
+  // What our IMAP poller filed for this sequence: a reply landing in a mailbox
+  // Instantly no longer mirrors exists nowhere else (see fetchImapThreadMessages).
+  let imap: ImapThreadMessage[];
+  try {
+    imap = await fetchImapThreadMessages(campaign.instantlyCampaignId);
+  } catch (error: unknown) {
+    throw unreadable(campaign, "our IMAP copy of the", error);
+  }
+
   if (mirrored.length > 0) {
     return {
-      thread: withOwnReplies(selectThreadMessages(mirrored), mirrored, own),
+      thread: withImapMessages(withOwnReplies(selectThreadMessages(mirrored), mirrored, own), mirrored, imap),
       source: "mirror",
     };
   }
@@ -441,9 +454,9 @@ async function fetchInstantlyConversation(
   // An answer we dispatched is itself proof the sequence exchanged mail, so a
   // reply sent on a sequence whose events we somehow hold none of is still a
   // conversation and must not read as an empty one.
-  if (!exchanged && own.length === 0) return { thread: [], source: "mirror" };
+  if (!exchanged && own.length === 0 && imap.length === 0) return { thread: [], source: "mirror" };
   if (!exchanged) {
-    return { thread: withOwnReplies([], [], own), source: "mirror" };
+    return { thread: withImapMessages(withOwnReplies([], [], own), [], imap), source: "mirror" };
   }
 
   // The mirror is INCOMPLETE for a sequence that did exchange mail. Ask the
@@ -475,7 +488,7 @@ async function fetchInstantlyConversation(
   });
 
   return {
-    thread: withOwnReplies(selectThreadMessages(records), records, own),
+    thread: withImapMessages(withOwnReplies(selectThreadMessages(records), records, own), records, imap),
     source: "provider",
   };
 }
@@ -504,17 +517,10 @@ function withOwnReplies(
     .filter((o) => o.instantlyEmailId === null || !alreadyRendered.has(o.instantlyEmailId))
     .map((o) => o.message);
   if (missing.length === 0) return thread;
-
-  // Oldest first, the order every reader of this shape already relies on. An
-  // undatable message sorts last rather than being dropped — we know we sent it.
-  return [...thread, ...missing].sort((a, b) => {
-    const at = Date.parse(a.date);
-    const bt = Date.parse(b.date);
-    if (Number.isNaN(at) !== Number.isNaN(bt)) return Number.isNaN(at) ? 1 : -1;
-    if (Number.isNaN(at)) return 0;
-    return at - bt;
-  });
+  return byDate([...thread, ...missing]);
 }
+
+
 
 /** We hold the thread; read both halves out of bronze. */
 async function fetchSelfSendConversation(

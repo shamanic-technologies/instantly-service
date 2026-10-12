@@ -11,9 +11,11 @@
  * So this sweep reads the OUTCOME: every positive reply (interested, question,
  * meeting request) we learned of more than `UNANSWERED_REPLY_DEADLINE_MS` ago
  * (and less than `UNANSWERED_REPLY_LOOKBACK` ago), whose thread is still that
- * kind, with no answer sent into it since THEY wrote (our dispatcher's step 0,
- * or an Instantly Unibox message, dated against the prospect's own message, not
- * against when we labeled it), not escalated to staff, and not asked yet, gets
+ * kind, with no answer sent into it since THEY LAST wrote (our dispatcher's
+ * step 0, an Instantly Unibox message, or a staff answer our IMAP poller filed;
+ * dated against the prospect's NEWEST message from the Instantly mirror or our
+ * IMAP copy, not against when we labeled it), not escalated to staff, and not
+ * asked yet, gets
  * the answer request. Same once-per-thread claim as the live path. The ask
  * itself re-reads the whole thread: any message of ours after their question
  * sends nothing, and a question older than a few days goes to staff as a
@@ -76,18 +78,29 @@ export async function findUnansweredReplies(asOf: Date = new Date()): Promise<Un
     FROM q
     JOIN instantly_campaigns c ON c.instantly_campaign_id = q.instantly_campaign_id
     JOIN instantly_lead_status_current g ON g.instantly_campaign_id = c.instantly_campaign_id
-    -- When THEY wrote, not when we learned: a reply relabeled weeks later
-    -- (Dr. Gallego: wrote Aug 2, labeled Oct 8) was answered in between.
+    -- When THEY LAST wrote, not when we learned: a reply relabeled weeks later
+    -- (Dr. Gallego: labeled Oct 8) is dated by her newest message, WHEREVER it
+    -- was ingested. Her Sep 14 objection exists only in our IMAP copy; reading
+    -- the Instantly mirror alone dated the thread Aug 2 and our Sep 4 bump read
+    -- as the answer (2026-10-12). GREATEST skips a source with nothing.
     CROSS JOIN LATERAL (
-      SELECT LEAST(
-        q.known_at,
-        COALESCE((
-          SELECT max((m.payload->>'timestamp_email')::timestamptz) AT TIME ZONE 'UTC'
-          FROM instantly_emails_raw m
-          WHERE m.instantly_campaign_id = c.instantly_campaign_id
-            AND m.payload->>'ue_type' = '2'
-            AND lower(m.payload->>'from_address_email') = lower(c.lead_email)
-        ), q.known_at)
+      SELECT COALESCE(
+        GREATEST(
+          (
+            SELECT max((m.payload->>'timestamp_email')::timestamptz) AT TIME ZONE 'UTC'
+            FROM instantly_emails_raw m
+            WHERE m.instantly_campaign_id = c.instantly_campaign_id
+              AND m.payload->>'ue_type' = '2'
+              AND lower(m.payload->>'from_address_email') = lower(c.lead_email)
+          ),
+          (
+            SELECT max(COALESCE(i.received_at, i.polled_at))
+            FROM imap_messages_raw i
+            WHERE i.instantly_campaign_id = c.instantly_campaign_id
+              AND i.kind = 'reply'
+          )
+        ),
+        q.known_at
       ) AS asked_at
     ) a
     WHERE q.known_at <= ${cutoff}::timestamp
@@ -107,6 +120,12 @@ export async function findUnansweredReplies(asOf: Date = new Date()): Promise<Un
         WHERE m.instantly_campaign_id = c.instantly_campaign_id
           AND m.payload->>'ue_type' = '3'
           AND (m.payload->>'timestamp_email')::timestamptz >= a.asked_at AT TIME ZONE 'UTC'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM imap_messages_raw i
+        WHERE i.instantly_campaign_id = c.instantly_campaign_id
+          AND i.kind = 'staff_reply'
+          AND COALESCE(i.received_at, i.polled_at) >= a.asked_at
       )
     ORDER BY q.known_at
   `);
