@@ -82,8 +82,13 @@ export async function findUnansweredReplies(asOf: Date = new Date()): Promise<Un
         AND e.withdrawn_at IS NULL
       GROUP BY e.campaign_id
     )
-    SELECT c.instantly_campaign_id, c.lead_email, c.campaign_id, c.org_id, c.user_id, c.run_id, c.brand_ids,
-           g.reply_kind, a.asked_at
+    SELECT * FROM (
+    -- ONE ask per person and brand: a prospect we wrote to on several
+    -- sequences is one conversation (caroline@sixtyandme.com got three staff
+    -- check-ins, 2026-10-13). The sequence they wrote on last carries it.
+    SELECT DISTINCT ON (c.org_id, lower(c.lead_email), c.brand_ids)
+           c.instantly_campaign_id, c.lead_email, c.campaign_id, c.org_id, c.user_id, c.run_id, c.brand_ids,
+           g.reply_kind, a.asked_at, q.known_at
     FROM q
     JOIN instantly_campaigns c ON c.instantly_campaign_id = q.instantly_campaign_id
     JOIN instantly_lead_status_current g ON g.instantly_campaign_id = c.instantly_campaign_id
@@ -141,7 +146,19 @@ export async function findUnansweredReplies(asOf: Date = new Date()): Promise<Un
           AND i.kind = 'staff_reply'
           AND COALESCE(i.received_at, i.polled_at) >= a.asked_at
       )
-    ORDER BY q.known_at
+      -- Another sequence of this person and brand was already asked about
+      -- since they wrote: the conversation has its ask.
+      AND NOT EXISTS (
+        SELECT 1 FROM instantly_campaigns s
+        WHERE s.org_id = c.org_id
+          AND lower(s.lead_email) = lower(c.lead_email)
+          AND s.instantly_campaign_id <> c.instantly_campaign_id
+          AND COALESCE(s.brand_ids, '{}') = COALESCE(c.brand_ids, '{}')
+          AND s.client_answer_requested_at >= a.asked_at
+      )
+    ORDER BY c.org_id, lower(c.lead_email), c.brand_ids, a.asked_at DESC
+    ) x
+    ORDER BY x.known_at
   `);
   return rowsOf(result).map((r) => ({
     instantlyCampaignId: String(r.instantly_campaign_id),
