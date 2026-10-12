@@ -4702,6 +4702,151 @@
           "optOuts"
         ]
       },
+      "FollowupCutsResponse": {
+        "type": "object",
+        "properties": {
+          "campaignId": {
+            "type": "string"
+          },
+          "cut": {
+            "type": "integer"
+          },
+          "alreadyCut": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "leads": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "email": {
+                  "type": "string"
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "cut",
+                    "already_cut",
+                    "failed"
+                  ]
+                },
+                "holdsCancelled": {
+                  "type": "integer",
+                  "description": "Queued follow-up steps refunded by this call"
+                },
+                "cutAt": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "cutBy": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "email",
+                "outcome",
+                "holdsCancelled",
+                "cutAt",
+                "cutBy"
+              ]
+            }
+          }
+        },
+        "required": [
+          "campaignId",
+          "cut",
+          "alreadyCut",
+          "failed",
+          "leads"
+        ]
+      },
+      "FollowupCutsBody": {
+        "type": "object",
+        "properties": {
+          "campaignId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The campaign (campaign-service id) that emailed these leads"
+          },
+          "leadEmails": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "email"
+            },
+            "minItems": 1,
+            "maxItems": 500,
+            "description": "The leads of that campaign whose queued follow-ups stop. Every other lead keeps its follow-ups."
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "Why: stored on the audit row"
+          }
+        },
+        "required": [
+          "campaignId",
+          "leadEmails",
+          "reason"
+        ],
+        "example": {
+          "campaignId": "fb201499-4f90-40da-9cc3-f612392664f2",
+          "leadEmails": [
+            "alice@example.com"
+          ],
+          "reason": "Sourcing bug handed this campaign people it was not meant to write to"
+        }
+      },
+      "FollowupCutsListResponse": {
+        "type": "object",
+        "properties": {
+          "cuts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "campaignId": {
+                  "type": "string"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "cutBy": {
+                  "type": "string"
+                },
+                "holdsCancelled": {
+                  "type": "integer"
+                },
+                "cutAt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "campaignId",
+                "email",
+                "reason",
+                "cutBy",
+                "holdsCancelled",
+                "cutAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "cuts"
+        ]
+      },
       "SendingForecastResponse": {
         "type": "object",
         "properties": {
@@ -10043,6 +10188,250 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/orgs/followup-cuts": {
+      "post": {
+        "summary": "Stop the queued follow-ups of named leads a campaign emailed in error",
+        "description": "For leads a campaign should never have written to (a sourcing mistake): the rest of their sequence will not go out. Every other lead of the campaign keeps its follow-ups.\n\n**Not an opt-out.** Nothing is recorded as unsubscribe, opt-out or suppression: those people never asked to stop. Their queued steps are refunded and the sequence is marked stopped, exactly like any other stop.\n\n**All or nothing on names:** an email the campaign never wrote to answers 404 `leads_not_in_campaign` and nothing is cut. **Idempotent:** a lead already cut answers `already_cut`. **Audited:** who (x-user-id), when, why, steps refunded (`GET /orgs/followup-cuts`). **Fail loud:** a lead whose queued steps could not all be cancelled is `failed` and the call answers 502 (retry re-runs only those).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FollowupCutsBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Every named lead is cut (or already was)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FollowupCutsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body or missing x-user-id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "A named email has no sequence in this campaign; nothing cut",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "At least one lead could not be cut",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FollowupCutsResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "The follow-up cuts of a campaign (audit)",
+        "description": "Every lead whose follow-ups were cut in this campaign, with who, when, why and steps refunded.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The campaign whose cuts to list"
+            },
+            "required": true,
+            "description": "The campaign whose cuts to list",
+            "name": "campaignId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cuts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FollowupCutsListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         }
       }
