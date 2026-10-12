@@ -42,6 +42,10 @@ vi.mock("../../src/db/schema", () => ({
 // here keeps these assertions about SEQUENCE dispatch, and keeps the queued
 // `db.execute` reads below aligned with the reads the step path actually makes.
 const mockDispatchScheduledReplies = vi.fn();
+vi.mock("../../src/lib/self-send/inbound-blindness", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/lib/self-send/inbound-blindness")>()),
+  loadInboundBlindMailboxes: vi.fn(async () => new Set<string>()),
+}));
 vi.mock("../../src/lib/scheduled-replies-worker", () => ({
   dispatchScheduledReplies: (...args: unknown[]) =>
     mockDispatchScheduledReplies(...args),

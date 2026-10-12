@@ -2906,7 +2906,12 @@ const AccountHealthSchema = z
       .string()
       .nullable()
       .describe(
-        "Short reason when blocked — the account's lifecycle_status (in_recovery / deactivated_by_instantly / deactivated_by_user), or 'unclassified' when the lifecycle has not yet run; null when in_production.",
+        "Short reason when blocked — 'inbound_unreadable' when we send from this mailbox but never read its replies (see inboundUnreadable), else the account's lifecycle_status (in_recovery / deactivated_by_instantly / deactivated_by_user), or 'unclassified' when the lifecycle has not yet run; null when send-eligible.",
+      ),
+    inboundUnreadable: z
+      .boolean()
+      .describe(
+        "True when this mailbox sent at least 20 emails in the last 14 days and not one inbound message was ingested from it: prospects' replies there are invisible. Such a mailbox gets no new sequence and the dispatcher sends nothing from it until a message is read again.",
       ),
     lifecycleStatus: z
       .enum([

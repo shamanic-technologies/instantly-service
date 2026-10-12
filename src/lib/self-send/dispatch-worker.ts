@@ -41,6 +41,11 @@ import {
   type SmtpSenderHealth,
 } from "./sender-health";
 import { SEND_TRANSPORT_SMTP } from "./transport";
+import {
+  INBOUND_BLIND_MIN_SENT,
+  INBOUND_BLIND_WINDOW_DAYS,
+  loadInboundBlindMailboxes,
+} from "./inbound-blindness";
 import { dispatchScheduledReplies } from "../scheduled-replies-worker";
 import { stopQueuedSequencesOfStoppedCampaigns } from "../stopped-campaigns";
 import { stopQueuedSequencesOfBookedPeople } from "../booked-stops-cold";
@@ -76,7 +81,8 @@ export interface DispatchSummary {
    *
    * Distinct from `blockedNoCapacityRow`: there we hold no credential, here we
    * hold one and it is being refused. A non-zero value that persists means a
-   * mailbox needs fixing or retiring — see `sender-health.ts`.
+   * mailbox needs fixing or retiring — see `sender-health.ts`. Also counts the
+   * steps of a BLIND mailbox (`inbound-blindness.ts`: we send, we never read).
    */
   skippedSilenced: number;
   /**
@@ -661,6 +667,19 @@ async function runDispatchExclusive(
     );
   }
 
+  // Which mailboxes we send from but never read (`inbound-blindness.ts`): their
+  // prospects' replies are invisible, so a follow-up there may go to someone who
+  // already answered. Skipped exactly like a silenced mailbox (first emails are
+  // rehomed, follow-ups wait for the mailbox to be readable again), and counted
+  // under `skippedSilenced`. Loud on every tick until fixed.
+  const blindMailboxes = await loadInboundBlindMailboxes(mailboxLogins);
+  if (blindMailboxes.size > 0) {
+    console.error(
+      `[instantly-service] self-send-dispatch: ${blindMailboxes.size} mailbox(es) BLIND — sent >= ${INBOUND_BLIND_MIN_SENT} emails in ${INBOUND_BLIND_WINDOW_DAYS} days and not one inbound message ingested; nothing sent from them until their replies can be read: ${[...blindMailboxes].join(", ")}`,
+    );
+  }
+  const skippedMailboxes = new Set<string>([...silencedMailboxes, ...blindMailboxes]);
+
   const plan = async () => {
     // A stopped campaign's sequence the sweep has not reached yet is never sent.
     const sequences = (await loadPendingSequences()).filter(
@@ -670,7 +689,7 @@ async function runDispatchExclusive(
     return {
       sequences,
       accounts,
-      selection: selectDueSteps(sequences, capacities, asOf, silencedMailboxes),
+      selection: selectDueSteps(sequences, capacities, asOf, skippedMailboxes),
     };
   };
 
