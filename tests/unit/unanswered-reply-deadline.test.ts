@@ -141,4 +141,13 @@ describe("a reply a responder took but never answered → client asked after 24 
     expect(log.mock.calls.some((c) => String(c[0]).includes("0 unanswered, 0 asked"))).toBe(true);
     log.mockRestore();
   });
+
+  it("one ask per person and brand: several sequences of one prospect are one conversation (caroline@sixtyandme.com, 3 check-ins)", async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+    await askClientsAboutUnansweredReplies(new Date("2026-10-13T12:00:00Z"));
+    const q = sqlText(mockExecute.mock.calls[0][0]);
+    expect(q).toContain("DISTINCT ON (c.org_id, lower(c.lead_email), c.brand_ids)");
+    expect(q).toContain("s.client_answer_requested_at >= a.asked_at");
+  });
 });
+
