@@ -50,6 +50,67 @@ export interface RecentBrandContact {
   lastEmailedAt: Date;
 }
 
+/** The status read also states WHEN the refusal lapses. */
+export interface RecentBrandContactRefusal extends RecentBrandContact {
+  /**
+   * The first instant at which this rule lets a send through again, computed by
+   * Postgres from the SAME predicate the gate evaluates (`ts > now() - window`).
+   * Usually `lastEmailedAt + window`; when that lands on a day the target month
+   * does not have (emailed Aug 31 → "Nov 31"), Postgres clamps `now() - window`
+   * and the gate keeps refusing until the first instant of the next month, so
+   * the lapse is that instant. Stating the earlier date would hand the person
+   * back into a refusal.
+   */
+  lapsesAt: Date;
+}
+
+/**
+ * The one query behind the re-contact window, for one address (the send gate)
+ * or many (the status read). ONE statement, so the send answer and the status
+ * answer cannot disagree: per normalized address, the brand of `brandIds` with
+ * the most recent real email inside the window.
+ *
+ * Driven from `instantly_campaigns` (a handful of rows per person) and only
+ * then joined to the event log, so the scan is bounded by the people asked
+ * about, not by the fleet's event log. `lower(lead_email)` is served by the
+ * expression index added in migration 0040.
+ */
+async function queryRecentBrandContacts(normalizedEmails: string[], brandIds: string[]) {
+  const brandList = sql.join(
+    brandIds.map((b) => sql`${b}`),
+    sql`, `,
+  );
+  const window = sql.raw(`interval '${RECONTACT_WINDOW_INTERVAL}'`);
+  const result = await db.execute(sql`
+    SELECT DISTINCT ON (lower(c.lead_email))
+           lower(c.lead_email) AS lead_email,
+           b.brand_id AS brand_id,
+           MAX(e.timestamp) AS last_emailed_at,
+           CASE
+             WHEN EXTRACT(day FROM MAX(e.timestamp) + ${window}) = EXTRACT(day FROM MAX(e.timestamp))
+               THEN MAX(e.timestamp) + ${window}
+             ELSE date_trunc('month', MAX(e.timestamp) + ${window}) + interval '1 month'
+           END AS lapses_at
+    FROM instantly_campaigns c
+    CROSS JOIN LATERAL unnest(c.brand_ids) AS b(brand_id)
+    JOIN instantly_events e
+      ON e.campaign_id = c.instantly_campaign_id
+     AND e.event_type = 'email_sent'
+     AND e.inferred = false
+    WHERE lower(c.lead_email) = ANY(${sql.param(normalizedEmails)}::text[])
+      AND b.brand_id IN (${brandList})
+      AND e.timestamp > now() - ${window}
+    GROUP BY lower(c.lead_email), b.brand_id
+    ORDER BY lower(c.lead_email), MAX(e.timestamp) DESC
+  `);
+  return result.rows as {
+    lead_email: string;
+    brand_id: string;
+    last_emailed_at: string | Date;
+    lapses_at: string | Date;
+  }[];
+}
+
 /**
  * The most recent real email this service sent to `leadEmail` for any of
  * `brandIds`, inside the window. `null` = never, or outside the window.
@@ -78,39 +139,30 @@ export async function findRecentBrandContact(
   const normalized = normalizeLeadEmail(leadEmail);
   if (!normalized) return null;
 
-  const brandList = sql.join(
-    brandIds.map((b) => sql`${b}`),
-    sql`, `,
-  );
+  const [row] = await queryRecentBrandContacts([normalized], brandIds);
+  return row ? { brandId: row.brand_id, lastEmailedAt: new Date(row.last_emailed_at) } : null;
+}
 
-  // Driven from `instantly_campaigns` (a handful of rows for one person) and
-  // only then joined to the event log, so the scan is bounded by the person,
-  // not by the fleet's ~88k events. `lower(lead_email)` is served by the
-  // expression index added in migration 0040.
-  const result = await db.execute(sql`
-    SELECT b.brand_id AS brand_id,
-           MAX(e.timestamp) AS last_emailed_at
-    FROM instantly_campaigns c
-    CROSS JOIN LATERAL unnest(c.brand_ids) AS b(brand_id)
-    JOIN instantly_events e
-      ON e.campaign_id = c.instantly_campaign_id
-     AND e.event_type = 'email_sent'
-     AND e.inferred = false
-    WHERE lower(c.lead_email) = ${normalized}
-      AND b.brand_id IN (${brandList})
-      AND e.timestamp > now() - ${sql.raw(`interval '${RECONTACT_WINDOW_INTERVAL}'`)}
-    GROUP BY b.brand_id
-    ORDER BY MAX(e.timestamp) DESC
-    LIMIT 1
-  `);
-
-  const row = (result.rows as { brand_id: string; last_emailed_at: string | Date }[])[0];
-  if (!row) return null;
-
-  return {
-    brandId: row.brand_id,
-    lastEmailedAt: new Date(row.last_emailed_at),
-  };
+/**
+ * The same lookup for many addresses at once (the status read), keyed by the
+ * NORMALIZED address. An address absent from the map has no recent contact.
+ */
+export async function findRecentBrandContacts(
+  leadEmails: string[],
+  brandIds: string[],
+): Promise<Map<string, RecentBrandContactRefusal>> {
+  const out = new Map<string, RecentBrandContactRefusal>();
+  if (brandIds.length === 0) return out;
+  const normalized = [...new Set(leadEmails.map(normalizeLeadEmail).filter(Boolean))];
+  if (normalized.length === 0) return out;
+  for (const row of await queryRecentBrandContacts(normalized, brandIds)) {
+    out.set(row.lead_email, {
+      brandId: row.brand_id,
+      lastEmailedAt: new Date(row.last_emailed_at),
+      lapsesAt: new Date(row.lapses_at),
+    });
+  }
+  return out;
 }
 
 /**

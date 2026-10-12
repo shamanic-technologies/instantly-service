@@ -304,13 +304,11 @@ export interface NotAProspectRecord {
  * which already applies the manual-statement precedence and skips a withdrawn
  * statement, so a person who corrects the kind releases the gate.
  */
-export async function findNotAProspect(
-  leadEmail: string,
-  brandIds: string[],
-): Promise<NotAProspectRecord | null> {
-  if (brandIds.length === 0) return null;
-  const normalized = normalizeLeadEmail(leadEmail);
-  if (!normalized) return null;
+/**
+ * The one query behind the not-a-prospect gate, for one address (the send
+ * gate) or many (the status read), so the two answers cannot disagree.
+ */
+async function queryNotAProspect(normalizedEmails: string[], brandIds: string[]) {
   const brandList = sql.join(
     brandIds.map((b) => sql`${b}`),
     sql`, `,
@@ -320,16 +318,41 @@ export async function findNotAProspect(
     sql`, `,
   );
   const result = await db.execute(sql`
-    SELECT b.brand_id AS brand_id, g.reply_kind AS reply_kind
+    SELECT DISTINCT ON (lower(g.lead_email))
+           lower(g.lead_email) AS lead_email, b.brand_id AS brand_id, g.reply_kind AS reply_kind
     FROM instantly_lead_status_current g
     CROSS JOIN LATERAL unnest(g.brand_ids) AS b(brand_id)
-    WHERE lower(g.lead_email) = ${normalized}
+    WHERE lower(g.lead_email) = ANY(${sql.param(normalizedEmails)}::text[])
       AND g.reply_kind IN (${kinds})
       AND b.brand_id IN (${brandList})
-    LIMIT 1
   `);
-  const row = ((result as { rows?: Record<string, unknown>[] }).rows ?? [])[0];
+  return (result as { rows?: Record<string, unknown>[] }).rows ?? [];
+}
+
+export async function findNotAProspect(
+  leadEmail: string,
+  brandIds: string[],
+): Promise<NotAProspectRecord | null> {
+  if (brandIds.length === 0) return null;
+  const normalized = normalizeLeadEmail(leadEmail);
+  if (!normalized) return null;
+  const [row] = await queryNotAProspect([normalized], brandIds);
   return row ? { brandId: String(row.brand_id), replyKind: String(row.reply_kind) } : null;
+}
+
+/** Many addresses at once, keyed by NORMALIZED address (absent = none). */
+export async function findNotAProspects(
+  leadEmails: string[],
+  brandIds: string[],
+): Promise<Map<string, NotAProspectRecord>> {
+  const out = new Map<string, NotAProspectRecord>();
+  if (brandIds.length === 0) return out;
+  const normalized = [...new Set(leadEmails.map(normalizeLeadEmail).filter(Boolean))];
+  if (normalized.length === 0) return out;
+  for (const row of await queryNotAProspect(normalized, brandIds)) {
+    out.set(String(row.lead_email), { brandId: String(row.brand_id), replyKind: String(row.reply_kind) });
+  }
+  return out;
 }
 
 export function notAProspectRefusal(leadEmail: string, record: NotAProspectRecord) {

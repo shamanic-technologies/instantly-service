@@ -16,6 +16,15 @@ vi.mock("../../src/db/schema", () => ({
   instantlyCampaigns: {},
 }));
 
+// The refusal lookups run their own queries (see send-refusal.test.ts); here
+// they answer "no refusal" unless a test states one, so the per-mode query
+// sequences below stay the status read's own.
+const noRefusals = async () => new Map();
+const mockFindSendRefusals = vi.fn(noRefusals);
+vi.mock("../../src/lib/send-refusal", () => ({
+  findSendRefusals: (...args: unknown[]) => mockFindSendRefusals(...args),
+}));
+
 async function createStatusApp() {
   const statusRouter = (await import("../../src/routes/status")).default;
   const app = express();
@@ -47,6 +56,7 @@ function chunkText(query: unknown): string {
 describe("POST /status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockFindSendRefusals.mockImplementation(noRefusals);
     // Cross-test isolation: the route uses the in-process stats cache; a hit from a
     // prior test would skip the DB and break call-count / shape assertions.
     clearStatsCache();
@@ -990,6 +1000,87 @@ describe("POST /status — batch size never overflows the Postgres bind limit", 
 
     expect(res.status).toBe(500);
     expect(spy.mock.calls.map((c) => String(c[0])).join("\n")).toContain("08P01 bind message has 4838");
+    spy.mockRestore();
+  });
+});
+
+describe("POST /status — what the send route would refuse (RECONTACT-LOOP-1011)", () => {
+  beforeEach(() => {
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValue({ rows: [] });
+    mockFindSendRefusals.mockReset();
+    mockFindSendRefusals.mockImplementation(noRefusals);
+    clearStatsCache();
+  });
+
+  const UNTIL = "2026-10-13T13:03:53.417Z";
+
+  it("states the refusal on the campaign scope, keyed by the address as asked", async () => {
+    mockFindSendRefusals.mockResolvedValue(
+      new Map([["jjohnson@purewellchiro.com", { code: "recent_brand_contact", until: UNTIL }]]),
+    );
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({
+      brandId: "75d7e3e8-6926-4f85-a557-976895400666",
+      campaignId: "d359c832-b9dd-49c3-847c-60400b18f6ef",
+      items: [{ email: "jjohnson@purewellchiro.com" }, { email: "clean@x.com" }],
+    });
+    expect(res.status).toBe(200);
+    expect(mockFindSendRefusals).toHaveBeenCalledWith(
+      "",
+      ["75d7e3e8-6926-4f85-a557-976895400666"],
+      ["jjohnson@purewellchiro.com", "clean@x.com"],
+    );
+    expect(res.body.results[0].campaign.sendRefusal).toEqual({ code: "recent_brand_contact", until: UNTIL });
+    // No refusal = the scope is byte-identical to before: the field is ABSENT.
+    expect(res.body.results[1].campaign).toEqual(emptyScoped);
+    expect("sendRefusal" in res.body.results[1].campaign).toBe(false);
+  });
+
+  it("an opt-out never lapses (until: null)", async () => {
+    mockFindSendRefusals.mockResolvedValue(new Map([["a@b.com", { code: "lead_opted_out", until: null }]]));
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({ campaignId: "c1", items: [{ email: "a@b.com" }] });
+    expect(res.body.results[0].campaign.sendRefusal).toEqual({ code: "lead_opted_out", until: null });
+  });
+
+  it("states it on the brand scope too, never on byCampaign entries", async () => {
+    mockFindSendRefusals.mockResolvedValue(new Map([["a@b.com", { code: "lead_opted_out", until: null }]]));
+    mockExecute.mockResolvedValueOnce({ rows: [] }); // global
+    mockExecute.mockResolvedValueOnce({
+      rows: [{ key: "a@b.com", campaignId: "c1", contacted: true, sent: true }],
+    });
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({ brandId: "b1", items: [{ email: "a@b.com" }] });
+    expect(res.body.results[0].brand.sendRefusal).toEqual({ code: "lead_opted_out", until: null });
+    expect(res.body.results[0].byCampaign.c1.sendRefusal).toBeUndefined();
+  });
+
+  it("checks the brands the SEND route checks: x-brand-id wins over the body brandId", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use((_req, res, next) => {
+      res.locals.orgId = "org-1";
+      res.locals.headerBrandIds = ["hb1", "hb2"];
+      next();
+    });
+    app.use((await import("../../src/routes/status")).default);
+    await request(app).post("/").send({ brandId: "body-b", campaignId: "c1", items: [{ email: "a@b.com" }] });
+    expect(mockFindSendRefusals).toHaveBeenCalledWith("org-1", ["hb1", "hb2"], ["a@b.com"]);
+  });
+
+  it("the global-only read asks nothing (it has no scope to state it on)", async () => {
+    const app = await createStatusApp();
+    await request(app).post("/").send({ items: [{ email: "a@b.com" }] });
+    expect(mockFindSendRefusals).not.toHaveBeenCalled();
+  });
+
+  it("FAILS LOUD when the refusal lookup errors — an unreadable refusal must not read as none", async () => {
+    mockFindSendRefusals.mockRejectedValue(new Error("db down"));
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const app = await createStatusApp();
+    const res = await request(app).post("/").send({ campaignId: "c1", items: [{ email: "a@b.com" }] });
+    expect(res.status).toBe(500);
     spy.mockRestore();
   });
 });

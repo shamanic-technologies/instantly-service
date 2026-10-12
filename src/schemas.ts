@@ -1175,7 +1175,7 @@ export const StatusRequestSchema = z
     campaignId: z
       .string()
       .optional()
-      .describe("Campaign ID — when provided, returns campaign-scoped status (brandId is ignored)"),
+      .describe("Campaign ID — when provided, returns campaign-scoped status (brandId only scopes `sendRefusal`)"),
     items: z
       .array(StatusItemSchema)
       .min(1)
@@ -1233,6 +1233,19 @@ const ScopedStatusSchema = StatusScopeSchema.extend({
     .boolean()
     .describe(
       "True iff we hold this lead's claim in this scope and are DONE with it: the sequence ended, was stopped or was cancelled, and nothing is left to send. A repeat `POST /orgs/send` for the same (campaign, email) returns `duplicate: true` with `held.state: \"finished\"` and sends nothing, so re-serving the lead can never produce an email here — whatever its age. Never true while `queued` is true. Brand scope: true only when every campaign of the brand is finished with the lead. False when nothing is held.",
+    ),  sendRefusal: z
+    .object({
+      code: z
+        .string()
+        .describe("The 409 `code` `POST /orgs/send` would answer: `lead_opted_out`, `lead_not_a_prospect` or `recent_brand_contact`."),
+      until: z
+        .string()
+        .nullable()
+        .describe("ISO 8601 instant the refusal lapses (the re-contact window: the moment the send gate lets the send through again). Null = never lapses on its own (opt-out, not a prospect)."),
+    })
+    .optional()
+    .describe(
+      "Present only on the `campaign` and `brand` scopes, and only when `POST /orgs/send` would REFUSE this person for this org and brand (`x-brand-id`, else the body's `brandId`). Read from the same lookups the send gates run, so the two answers cannot disagree. When several rules stand, the one that lasts longest is stated. Absent = no refusal.",
     ),
 });
 
