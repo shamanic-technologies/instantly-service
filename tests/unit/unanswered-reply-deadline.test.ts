@@ -6,6 +6,8 @@ const mockAsk = vi.fn();
 vi.mock("../../src/db", () => ({ db: { execute: (...a: unknown[]) => mockExecute(...a) } }));
 vi.mock("../../src/lib/ask-client-to-answer", () => ({
   maybeAskClientToAnswer: (...a: unknown[]) => mockAsk(...a),
+  ANSWER_CLAIM_PENDING_KEY: "answerRequestPendingSince",
+  STALE_ANSWER_CLAIM_MS: 30 * 60 * 1000,
 }));
 
 import {
@@ -47,11 +49,11 @@ describe("a reply a responder took but never answered → client asked after 24 
   it("asks the client (staff in Cc is the ask's own job) with because=overdue", async () => {
     mockExecute.mockResolvedValue({ rows: [row] });
     const out = await askClientsAboutUnansweredReplies(new Date("2026-10-11T12:00:00Z"));
-    expect(out).toEqual({ unanswered: 1, asked: 1 });
+    expect(out).toEqual({ unanswered: 1, asked: 1, skipped: {} });
     const [campaign, lead, options] = mockAsk.mock.calls[0];
     expect(campaign).toMatchObject({ instantlyCampaignId: "ic-1", orgId: "org-1", runId: "r-1", brandIds: ["b-1"] });
     expect(lead).toBe("steve@kaizen.com");
-    expect(options).toEqual({ because: "overdue", replyKind: "lead_interested", repliedAt: new Date("2026-09-18T12:17:12Z") });
+    expect(options).toEqual({ because: "overdue", replyKind: "lead_interested", repliedAt: new Date("2026-09-18T12:17:12Z"), waitsMs: [] });
   });
 
   it("the read keys on the OUTCOME and skips threads already asked, escalated or left with staff", async () => {
@@ -112,5 +114,31 @@ describe("a reply a responder took but never answered → client asked after 24 
     expect(q).not.toContain("::interval");
     expect(q).not.toContain("14 days");
     expect(q).toContain("g.reply_kind, a.asked_at");
+  });
+
+  it("one summary line per pass, skips counted by reason; a claim a deploy killed mid-send is chased again", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    mockExecute.mockResolvedValue({ rows: [row, { ...row, instantly_campaign_id: "ic-2" }, { ...row, instantly_campaign_id: "ic-3" }] });
+    mockAsk
+      .mockResolvedValueOnce({ sent: true })
+      .mockResolvedValueOnce({ sent: false, reason: "answered_in_thread" })
+      .mockResolvedValueOnce({ sent: false, reason: "answered_in_thread" });
+    const out = await askClientsAboutUnansweredReplies(new Date("2026-10-13T12:00:00Z"));
+    expect(out).toEqual({ unanswered: 3, asked: 1, skipped: { answered_in_thread: 2 } });
+    expect(log.mock.calls.map((c) => String(c[0])).find((l) => l.includes("pass done"))).toContain(
+      '3 unanswered, 1 asked, skipped {"answered_in_thread":2}',
+    );
+    const q = sqlText(mockExecute.mock.calls[0][0]);
+    expect(q).toContain("answerRequestPendingSince");
+    expect(q).toContain("c.client_answer_requested_at <");
+    log.mockRestore();
+  });
+
+  it("an empty pass still logs its line", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    mockExecute.mockResolvedValue({ rows: [] });
+    await askClientsAboutUnansweredReplies(new Date("2026-10-13T12:00:00Z"));
+    expect(log.mock.calls.some((c) => String(c[0]).includes("0 unanswered, 0 asked"))).toBe(true);
+    log.mockRestore();
   });
 });

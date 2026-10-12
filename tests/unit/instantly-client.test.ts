@@ -846,3 +846,33 @@ describe("instantly-client", () => {
     expect(orders).toEqual([]);
   });
 });
+
+describe("a workspace with no paid plan fails fast (plan cancelled 2026-10-12)", () => {
+  beforeEach(async () => {
+    mockFetch.mockReset();
+    (await import("../../src/lib/instantly-client")).resetPlanInactiveMemo();
+  });
+
+  it("one 402 'no active paid plan': no retry, and the next call throws at once without calling Instantly", async () => {
+    const { listEmails, getCampaign } = await import("../../src/lib/instantly-client");
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 402,
+      text: async () => '{"statusCode":402,"error":"Payment Required","message":"Workspace does not have an active paid plan"}',
+      headers: new Headers(),
+    });
+    await expect(listEmails("key-dead", { campaignId: "c-1" })).rejects.toThrow(/402/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    await expect(getCampaign("key-dead", "c-2")).rejects.toThrow(/active paid plan.*remembered/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("another key, or another 402, is not remembered", async () => {
+    const { getCampaign, isPlanInactiveRefusal } = await import("../../src/lib/instantly-client");
+    expect(isPlanInactiveRefusal(402, "Insufficient credits for this feature")).toBe(false);
+    expect(isPlanInactiveRefusal(404, "Workspace does not have an active paid plan")).toBe(false);
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: "c-2" }), headers: new Headers() });
+    await expect(getCampaign("key-alive", "c-2")).resolves.toEqual({ id: "c-2" });
+  });
+});
+

@@ -38,7 +38,7 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
-import { maybeAskClientToAnswer } from "./ask-client-to-answer";
+import { ANSWER_CLAIM_PENDING_KEY, maybeAskClientToAnswer, STALE_ANSWER_CLAIM_MS } from "./ask-client-to-answer";
 
 /** A working day: past the responder's normal answer time (median 5 h). */
 export const UNANSWERED_REPLY_DEADLINE_MS = 24 * 60 * 60 * 1000;
@@ -72,6 +72,7 @@ const kindsSql = sql.join(
 /** Positive replies nobody answered within the deadline and the client was not asked about. */
 export async function findUnansweredReplies(asOf: Date = new Date()): Promise<UnansweredReply[]> {
   const cutoff = new Date(asOf.getTime() - UNANSWERED_REPLY_DEADLINE_MS).toISOString();
+  const staleClaimBefore = new Date(asOf.getTime() - STALE_ANSWER_CLAIM_MS).toISOString();
   const result = await db.execute(sql`
     WITH q AS (
       SELECT e.campaign_id AS instantly_campaign_id, max(e.created_at) AS known_at
@@ -114,7 +115,12 @@ export async function findUnansweredReplies(asOf: Date = new Date()): Promise<Un
     WHERE q.known_at <= ${cutoff}::timestamp
       AND g.reply_kind IN (${kindsSql})
       AND c.org_id IS NOT NULL AND c.user_id IS NOT NULL AND c.run_id IS NOT NULL
-      AND c.client_answer_requested_at IS NULL
+      -- Never claimed, or claimed by an ask a deploy killed mid-send (same
+      -- predicate as the claim itself, lib/ask-client-to-answer).
+      AND (c.client_answer_requested_at IS NULL OR (
+        (c.metadata->>${ANSWER_CLAIM_PENDING_KEY}) IS NOT NULL
+        AND c.client_answer_requested_at < ${staleClaimBefore}::timestamp
+      ))
       AND c.escalated_at IS NULL
       AND (c.metadata->'infoRequestUnansweredAlert') IS NULL
       AND NOT EXISTS (
@@ -157,16 +163,23 @@ function asUtcDate(value: unknown): Date {
   return new Date(/[zZ]|[+-]\d{2}(:?\d{2})?$/.test(text) ? text : `${text.replace(" ", "T")}Z`);
 }
 
-let inFlight: Promise<{ unanswered: number; asked: number }> | null = null;
+export interface SweepSummary {
+  unanswered: number;
+  asked: number;
+  /** Threads not asked this pass, by the ask's own reason. */
+  skipped: Record<string, number>;
+}
+
+let inFlight: Promise<SweepSummary> | null = null;
 
 /** One sweep. Concurrent calls join the one in flight. Throws when the read fails. */
-export function askClientsAboutUnansweredReplies(
-  asOf: Date = new Date(),
-): Promise<{ unanswered: number; asked: number }> {
+export function askClientsAboutUnansweredReplies(asOf: Date = new Date()): Promise<SweepSummary> {
   if (inFlight) return inFlight;
   inFlight = (async () => {
+    const startedAt = Date.now();
     const unanswered = await findUnansweredReplies(asOf);
     let asked = 0;
+    const skipped: Record<string, number> = {};
     for (const u of unanswered) {
       const outcome = await maybeAskClientToAnswer(
         {
@@ -178,14 +191,17 @@ export function askClientsAboutUnansweredReplies(
           brandIds: u.brandIds,
         },
         u.leadEmail,
-        { because: "overdue", replyKind: u.replyKind, repliedAt: u.repliedAt },
+        // The reply is a day old at least: no point waiting for a copy to land.
+        { because: "overdue", replyKind: u.replyKind, repliedAt: u.repliedAt, waitsMs: [] },
       );
       if (outcome.sent) asked += 1;
+      else skipped[outcome.reason] = (skipped[outcome.reason] ?? 0) + 1;
     }
-    if (unanswered.length > 0) {
-      console.log(`[instantly-service] unanswered-reply-deadline: ${unanswered.length} unanswered, ${asked} clients asked`);
-    }
-    return { unanswered: unanswered.length, asked };
+    // One line per pass, an empty one included: a silent pass is never ambiguous.
+    console.log(
+      `[instantly-service] unanswered-reply-deadline: pass done in ${Math.round((Date.now() - startedAt) / 1000)}s: ${unanswered.length} unanswered, ${asked} asked, skipped ${JSON.stringify(skipped)}`,
+    );
+    return { unanswered: unanswered.length, asked, skipped };
   })().finally(() => {
     inFlight = null;
   });
