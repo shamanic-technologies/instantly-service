@@ -135,9 +135,9 @@ function toSteps(raw: unknown, sequenceActive: boolean, sequenceKey: string): Se
       const step = Number(r.step);
       if (!Number.isInteger(step) || step < 1) {
         // One unreadable step never fails the page: that step is left out and
-        // reported by row. (Instantly /emails sends promoted before the
-        // `0_<n>_0` parser fix sit at step 0; the read remaps them from bronze,
-        // so reaching here means a record we cannot place.)
+        // reported by row. (The Instantly /emails sends once stored at step 0
+        // were re-stepped in silver by migration 0070, so reaching here means
+        // a record we cannot place.)
         console.error(
           `[instantly-service] email-sequences: step ${String(r.step)} on sequence ${sequenceKey} cannot be placed; left out`,
         );
@@ -224,19 +224,9 @@ export async function fetchBrandEmailSequences(filters: {
       GROUP BY 1, 2
     ),
     sends AS (
-      SELECT e.campaign_id AS instantly_campaign_id,
-             CASE
-               WHEN e.step = 0
-                AND e.source = 'poll_emails'
-                AND r.payload->>'step' ~ '^[0-9]+_[0-9]+_[0-9]+$'
-               THEN split_part(r.payload->>'step', '_', 2)::int + 1
-               ELSE e.step
-             END AS step,
-             MIN(e."timestamp") AS sent_at
+      SELECT e.campaign_id AS instantly_campaign_id, e.step, MIN(e."timestamp") AS sent_at
       FROM instantly_events e
       JOIN page p ON p.instantly_campaign_id = e.campaign_id
-      LEFT JOIN instantly_emails_raw r
-        ON e.source = 'poll_emails' AND r.id = e.source_row_id
       WHERE e.event_type = 'email_sent'
         AND e.inferred = false
         AND e.withdrawn_at IS NULL

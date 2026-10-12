@@ -138,11 +138,15 @@ describe("fetchBrandEmailSequences", () => {
     spy.mockRestore();
   });
 
-  it("remaps Instantly /emails sends stored at step 0 from their bronze step ('0_<n>_0' = n+1)", async () => {
+  it("reads the step stored in silver, with no read-time re-derivation from bronze", async () => {
+    // Migration 0070 re-stepped the Instantly /emails sends once stored at
+    // step 0; silver is the one source of truth for the step, as for every
+    // other per-step reader.
     await fetchBrandEmailSequences({ orgId: "org-1", brandId: BRAND });
     const text = extractSqlText(mockDbExecute.mock.calls[0][0]);
-    expect(text).toContain("LEFT JOIN instantly_emails_raw r");
-    expect(text).toContain("split_part(r.payload->>'step', '_', 2)::int + 1");
+    expect(text).toContain('SELECT e.campaign_id AS instantly_campaign_id, e.step, MIN(e."timestamp") AS sent_at');
+    expect(text).not.toContain("instantly_emails_raw");
+    expect(text).not.toContain("split_part");
   });
 
   it("a sequence with no single lead email is left out and reported; the page and its cursor stand", async () => {
