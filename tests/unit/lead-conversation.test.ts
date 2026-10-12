@@ -30,9 +30,11 @@ vi.mock("../../src/lib/bronze", () => ({
 
 const mockFetchSelfSendThread = vi.fn();
 const mockFetchOwnDispatched = vi.fn();
+const mockFetchImap = vi.fn();
 vi.mock("../../src/lib/self-send/thread", () => ({
   fetchSelfSendThread: (...a: unknown[]) => mockFetchSelfSendThread(...a),
   fetchOwnDispatchedMessages: (...a: unknown[]) => mockFetchOwnDispatched(...a),
+  fetchImapThreadMessages: (...a: unknown[]) => mockFetchImap(...a),
 }));
 
 vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({
@@ -130,6 +132,8 @@ beforeEach(() => {
   // Default: we answered nothing ourselves, so every pre-existing case reads
   // exactly the provider's copy and nothing else.
   mockFetchOwnDispatched.mockResolvedValue([]);
+  // Default: our IMAP poller filed nothing for this sequence.
+  mockFetchImap.mockResolvedValue([]);
 });
 
 describe("fetchLeadConversation — Instantly transport", () => {
@@ -858,5 +862,75 @@ describe("fetchLeadConversation — which email_sent fact each message IS (UNIBO
       .mockRejectedValueOnce(new Error("db down"));
 
     await expect(fetchLeadConversation(INPUT)).rejects.toMatchObject({ code: "thread_unavailable", status: 502 });
+  });
+});
+
+// ─── Follow-up 2026-10-12: a reply only our IMAP poller saw (Dr. Gallego) ────
+
+describe("fetchLeadConversation — a prospect message our IMAP poller filed on the Instantly transport", () => {
+  const cold = email({ id: "g1", ue_type: 1, from_address_email: "fallon@agileconsultco.com", timestamp_email: "2026-07-28T13:02:35.000Z", body: { text: "first email" } } as Partial<EmailRecord>);
+  const question = email({
+    id: "g2",
+    ue_type: 2,
+    from_address_email: "alice@media.com",
+    timestamp_email: "2026-08-02T15:38:55.000Z",
+    body: { text: "Yes can you please send me more info please?" },
+    message_id: "<CAD61C52Q2pc@mail.gmail.com>",
+  } as Partial<EmailRecord>);
+  const bump = email({ id: "g3", ue_type: 3, from_address_email: "fallon@agileconsultco.com", timestamp_email: "2026-09-04T17:14:04.000Z", body: { text: "Just checking if you had news" } } as Partial<EmailRecord>);
+  const objection = {
+    messageId: "<CAD61C52-4tYv@mail.gmail.com>",
+    message: {
+      direction: "inbound" as const,
+      from: "\"Dr. Wendy Gallego\" <alice@media.com>",
+      to: "fallon@agileconsultco.com",
+      date: "2026-09-14T22:51:09.000Z",
+      subject: "Re: Doctor dinners",
+      bodyText: "the ROI wasn't great",
+    },
+  };
+
+  it("prospect, us, prospect: her Sep 14 message is in the thread, LAST, after our Sep 4 bump", async () => {
+    queueDb([campaignRow()], [mirrorRow(cold), mirrorRow(question), mirrorRow(bump)]);
+    mockFetchImap.mockResolvedValue([objection]);
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(mockFetchImap).toHaveBeenCalledWith("ic-1");
+    expect(conv.messages.map((m) => [m.direction, m.at])).toEqual([
+      ["outbound", "2026-07-28T13:02:35.000Z"],
+      ["inbound", "2026-08-02T15:38:55.000Z"],
+      ["outbound", "2026-09-04T17:14:04.000Z"],
+      ["inbound", "2026-09-14T22:51:09.000Z"],
+    ]);
+    expect(conv.messages[3].text).toBe("the ROI wasn't great");
+  });
+
+  it("a reply both pipes saw is shown ONCE (same RFC Message-ID, Instantly's copy wins)", async () => {
+    queueDb([campaignRow()], [mirrorRow(cold), mirrorRow(question)]);
+    mockFetchImap.mockResolvedValue([
+      { messageId: "<cad61c52q2pc@MAIL.gmail.com>", message: { ...objection.message, date: "2026-08-02T15:38:57.000Z", bodyText: "imap copy" } },
+    ]);
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messageCount).toBe(2);
+    expect(conv.messages[1].text).toBe("Yes can you please send me more info please?");
+  });
+
+  it("an empty mirror with only an IMAP reply is still a conversation, never an empty one", async () => {
+    queueDb([campaignRow()], []);
+    mockFetchImap.mockResolvedValue([objection]);
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messages.map((m) => m.text)).toEqual(["the ROI wasn't great"]);
+  });
+
+  it("fails loud when our IMAP copy cannot be read: never a thread that ends on our bump", async () => {
+    queueDb([campaignRow()], [mirrorRow(cold), mirrorRow(question), mirrorRow(bump)]);
+    mockFetchImap.mockRejectedValue(new Error("pool exhausted"));
+
+    await expect(fetchLeadConversation(INPUT)).rejects.toBeInstanceOf(LeadConversationError);
   });
 });

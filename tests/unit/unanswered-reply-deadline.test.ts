@@ -69,12 +69,25 @@ describe("a reply a responder took but never answered → client asked after 24 
     mockExecute.mockResolvedValue({ rows: [] });
     await askClientsAboutUnansweredReplies(new Date("2026-10-11T12:00:00Z"));
     const q = sqlText(mockExecute.mock.calls[0][0]);
-    expect(q).toContain("LEAST(");
     expect(q).toContain("ue_type' = '2'");
     expect(q).toContain("lower(c.lead_email)");
     expect(q).toContain("d.dispatched_at >= a.asked_at");
     expect(q).toContain(">= a.asked_at AT TIME ZONE 'UTC'");
     expect(q).not.toContain(">= q.known_at");
+  });
+
+  it("dated from her NEWEST message wherever it was ingested (Gallego: Sep 14 reply only in our IMAP copy, after our Sep 4 bump)", async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+    await askClientsAboutUnansweredReplies(new Date("2026-10-12T12:00:00Z"));
+    const q = sqlText(mockExecute.mock.calls[0][0]);
+    // newest of the Instantly mirror and our IMAP copy, the label time only when neither has one
+    expect(q).toContain("GREATEST(");
+    expect(q).toContain("FROM imap_messages_raw i");
+    expect(q).toContain("i.kind = 'reply'");
+    expect(q).not.toContain("LEAST(");
+    // a staff answer our IMAP poller filed after her message counts as answered
+    expect(q).toContain("i.kind = 'staff_reply'");
+    expect(q).toContain("COALESCE(i.received_at, i.polled_at) >= a.asked_at");
   });
 
   it("a failed read throws (the worker logs it loud), nobody is asked", async () => {
