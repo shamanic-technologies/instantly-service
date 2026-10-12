@@ -878,3 +878,46 @@ describe("a positive reply that asks nothing still reaches a person, worded as a
     });
   });
 });
+
+/** Does this drizzle sql`` bind the value (without walking its circular table refs)? */
+function bindsValue(fragment: unknown, value: string): boolean {
+  const chunks = (fragment as { queryChunks?: unknown[] } | undefined)?.queryChunks ?? [];
+  return chunks.some((c) => (c as { value?: unknown })?.value === value || (typeof c === "string" && c === value));
+}
+
+describe("a claim a deploy kills mid-send is not lost (jfigueroa, 2026-10-13)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.ADMIN_NOTIFICATION_EMAIL = "growth@distribute.you";
+    mockReturning.mockResolvedValue([{ id: "row" }]);
+    mockSendEmail.mockResolvedValue(undefined);
+    mockMembers.mockResolvedValue([{ email: "owner@shockwave.com", firstName: "Sam" }]);
+    mockFindLead.mockResolvedValue({ id: "l", firstName: "Doug", lastName: "Arvanitis", company: "Pro Health" });
+    mockBrand.mockResolvedValue({ name: "Shockwave Centers", rep: { email: null, firstName: null, role: null } });
+    mockComplete.mockResolvedValue({ content: "NONE" });
+    mockHistory.mockResolvedValue({
+      history: { items: [sent1, sent2, reply].map((message) => ({ type: "message", message })), notes: [] },
+      latestReply: reply,
+    });
+  });
+
+  it("the claim is marked pending, and the mark is cleared once the email is sent", async () => {
+    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { because: "no_responder", asOf: DOUG_NOW });
+    expect(outcome).toMatchObject({ sent: true });
+    const sets = mockSet.mock.calls.map((c) => c[0] as Record<string, unknown>);
+    expect(sets[0]).toHaveProperty("clientAnswerRequestedAt");
+    expect(bindsValue(sets[0].metadata, "answerRequestPendingSince")).toBe(true);
+    const last = sets[sets.length - 1];
+    expect(last).not.toHaveProperty("clientAnswerRequestedAt");
+    expect(bindsValue(last.metadata, "answerRequestPendingSince")).toBe(true);
+  });
+
+  it("a send that fails releases the claim and its mark together", async () => {
+    mockSendEmail.mockRejectedValue(new Error("postmark down"));
+    await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { because: "no_responder", asOf: DOUG_NOW });
+    const last = mockSet.mock.calls[mockSet.mock.calls.length - 1][0] as Record<string, unknown>;
+    expect(last.clientAnswerRequestedAt).toBeNull();
+    expect(bindsValue(last.metadata, "answerRequestPendingSince")).toBe(true);
+  });
+});
+

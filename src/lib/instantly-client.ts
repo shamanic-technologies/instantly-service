@@ -278,6 +278,25 @@ function parseRetryAfter(header: string | null): number | null {
   return null;
 }
 
+/**
+ * How long a "no active paid plan" 402 is remembered per key. The plan was
+ * cancelled 2026-10-12: every call still queued behind the 3.5 s `/emails`
+ * slot only to 402, and one backlog thread read took minutes. Remembered, the
+ * call throws the same error at once, without taking a throttle slot.
+ */
+export const PLAN_INACTIVE_MEMO_MS = 10 * 60 * 1000;
+const planInactiveUntil = new Map<string, { until: number; message: string }>();
+
+/** Pure: is this a "workspace has no paid plan" refusal (not a per-route payment error)? */
+export function isPlanInactiveRefusal(status: number, body: string): boolean {
+  return status === 402 && /active paid plan/i.test(body);
+}
+
+/** Tests: forget every remembered refusal. */
+export function resetPlanInactiveMemo(): void {
+  planInactiveUntil.clear();
+}
+
 async function instantlyRequest<T>(
   apiKey: string,
   path: string,
@@ -291,6 +310,11 @@ async function instantlyRequest<T>(
 
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
+  }
+
+  const known = planInactiveUntil.get(apiKey);
+  if (known && known.until > Date.now()) {
+    throw new Error(`instantly-api ${method} ${path} failed: 402 - ${known.message} (remembered)`);
   }
 
   let lastError: Error | null = null;
@@ -328,6 +352,9 @@ async function instantlyRequest<T>(
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`[instantly-api] ${method} ${path} → ${response.status}: ${errorText}`);
+        if (isPlanInactiveRefusal(response.status, errorText)) {
+          planInactiveUntil.set(apiKey, { until: Date.now() + PLAN_INACTIVE_MEMO_MS, message: errorText.slice(0, 300) });
+        }
         throw new Error(
           `instantly-api ${method} ${path} failed: ${response.status} - ${errorText}`
         );
@@ -336,6 +363,8 @@ async function instantlyRequest<T>(
       return (await response.json()) as T;
     } catch (error) {
       lastError = error as Error;
+      // A workspace with no plan answers the same on every retry.
+      if ((planInactiveUntil.get(apiKey)?.until ?? 0) > Date.now()) break;
       if (attempt < retries - 1) {
         const delay = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 10000);
         await sleep(delay);
