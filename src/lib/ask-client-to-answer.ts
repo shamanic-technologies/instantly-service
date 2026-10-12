@@ -52,6 +52,7 @@ import { handThreadFollowupsToHuman } from "./hand-followups-to-human";
 import type { HistoryItem } from "./prospect-history";
 import { stripQuotedHistory } from "./self-send/qualify-reply";
 import { bareAddress } from "./staff-senders";
+import { createRun, getRun } from "./runs-client";
 import { fetchBrandAccountStatus, type BrandAccountStatus, type BrandRelationship } from "./brand-account-status";
 
 /** The transactional-email template this module sends (deployed at startup). */
@@ -239,10 +240,33 @@ export function replyWordsOnly(body: string, stripShared: (t: string) => string)
   return words || body;
 }
 
+/**
+ * The quoted conversation stays well under the email service's body limit
+ * (a long thread 413'd the staff check-in, 2026-10-13): each email is cut at
+ * QUOTED_BODY_MAX_CHARS with a note, and at most QUOTED_EARLIER_MAX earlier
+ * emails are quoted, the rest counted.
+ */
+export const QUOTED_BODY_MAX_CHARS = 3000;
+export const QUOTED_EARLIER_MAX = 12;
+
+/** Pure: a body cut to `max` characters, saying how much was left out. */
+export function capBody(body: string, max: number = QUOTED_BODY_MAX_CHARS): string {
+  if (body.length <= max) return body;
+  return `${body.slice(0, max).trimEnd()}\n[... ${body.length - max} more characters not shown]`;
+}
+
 function messageBlock(m: ThreadMessage): string {
-  return [`From: ${m.from}`, `Date: ${formatThreadDate(m.date)}`, `Subject: ${m.subject}`, ``, tidyBody(m.bodyText)].join(
+  return [`From: ${m.from}`, `Date: ${formatThreadDate(m.date)}`, `Subject: ${m.subject}`, ``, capBody(tidyBody(m.bodyText))].join(
     "\n",
   );
+}
+
+/** Pure: the newest earlier emails, capped, plus a line counting the older ones left out. */
+function earlierBlocks(earlier: ThreadMessage[]): string[] {
+  const sorted = [...earlier].sort(byDateDesc);
+  const shown = sorted.slice(0, QUOTED_EARLIER_MAX).map(messageBlock);
+  const left = sorted.length - QUOTED_EARLIER_MAX;
+  return left > 0 ? [...shown, `[${left} older email${left === 1 ? "" : "s"} in this thread not shown]`] : shown;
 }
 
 function byDateDesc(a: ThreadMessage, b: ThreadMessage): number {
@@ -251,7 +275,7 @@ function byDateDesc(a: ThreadMessage, b: ThreadMessage): number {
 
 function conversationBelow(reply: ThreadMessage, earlier: ThreadMessage[]): string {
   const words = { ...reply, bodyText: replyWordsOnly(reply.bodyText, stripQuotedHistory) };
-  return [words, ...earlier.filter((m) => m !== reply).sort(byDateDesc)].map(messageBlock).join("\n\n");
+  return [messageBlock(words), ...earlierBlocks(earlier.filter((m) => m !== reply))].join("\n\n");
 }
 
 /**
@@ -330,7 +354,7 @@ export function renderStaffCheckIn(input: StaffCheckInInput): AnswerRequestConte
   ];
   const below = input.question
     ? conversationBelow(input.question, input.earlier)
-    : [...input.earlier].sort(byDateDesc).map(messageBlock).join("\n\n");
+    : earlierBlocks(input.earlier).join("\n\n");
   const text = `${lines.join("\n")}\n${below}`;
   const html = `<div style="white-space:pre-wrap;word-break:break-word;">${escapeHtml(text)}</div>`;
   return { subject: `Check in with ${who} (${input.brandName?.trim() || "unknown brand"})`, text, html };
@@ -578,6 +602,29 @@ async function webhookReplyMessage(instantlyCampaignId: string, leadEmail: strin
 }
 
 /**
+ * The run this thread's calls hang under: its own run when that run belongs to
+ * the thread's org and user, else a fresh root run there. A brand moved to
+ * another org keeps its old runs (lib/transfer-brand moves history, runs-service
+ * does not): runs-service refused every child of such a run with a 409
+ * parent-child conflict, and the staff check-in never went out (2026-10-13).
+ * Throws when runs-service cannot answer.
+ */
+export async function runInThreadOrg(campaign: ForwardPositiveReplyCampaign, orgId: string): Promise<string> {
+  const identity = { orgId, userId: campaign.userId || "00000000-0000-0000-0000-000000000000" };
+  if (campaign.runId) {
+    const run = await getRun(campaign.runId, identity);
+    if (run && run.organizationId === orgId && (!campaign.userId || !run.userId || run.userId === campaign.userId)) {
+      return campaign.runId;
+    }
+  }
+  const created = await createRun({ serviceName: "instantly-service", taskName: "ask-client-to-answer" }, identity);
+  console.log(
+    `[instantly-service] ask-client-to-answer: run ${campaign.runId ?? "(none)"} is not this thread's org ${orgId}; new run ${created.id}`,
+  );
+  return created.id;
+}
+
+/**
  * A claim whose send never finished is re-claimable after this long. A deploy
  * recreates the container mid-ask (a backlog pass runs for minutes): the
  * claim was kept and nobody was ever asked (jfigueroa, 2026-10-13).
@@ -717,6 +764,9 @@ export async function maybeAskClientToAnswer(
   const orgId: string = campaign.orgId;
   const outcome = await (async (): Promise<AnswerRequestOutcome> => {
     try {
+      // Every call below (model, email) runs as a child of this run, so it
+      // must belong to the thread's org now.
+      campaign = { ...campaign, runId: await runInThreadOrg(campaign, orgId) };
       const { loadHistoryWithLatestReply, REPLY_WAIT_SHORT_MS } = await import("./prospect-history");
       const { history } = await loadHistoryWithLatestReply(campaign, leadEmail, {
         waitsMs: options.waitsMs ?? REPLY_WAIT_SHORT_MS,

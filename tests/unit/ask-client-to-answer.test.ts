@@ -56,6 +56,18 @@ vi.mock("../../src/lib/brand-account-status", async (importOriginal) => ({
 }));
 const mockBrand = vi.fn();
 vi.mock("../../src/lib/brand-client", () => ({ getBrandHandoffContext: (...a: unknown[]) => mockBrand(...a) }));
+const mockGetRun = vi.fn();
+const mockCreateRun = vi.fn();
+// By default the thread's own run belongs to the org asking.
+mockGetRun.mockImplementation(async (id: string, identity: { orgId: string; userId: string }) => ({
+  id,
+  organizationId: identity.orgId,
+  userId: identity.userId,
+}));
+vi.mock("../../src/lib/runs-client", () => ({
+  getRun: (...a: unknown[]) => mockGetRun(...a),
+  createRun: (...a: unknown[]) => mockCreateRun(...a),
+}));
 vi.mock("../../src/lib/prospect-history", () => ({
   loadHistoryWithLatestReply: (...a: unknown[]) => mockHistory(...a),
   REPLY_WAIT_SHORT_MS: [],
@@ -76,6 +88,9 @@ import {
   replySubject,
   replyWordsOnly,
   tidyBody,
+  capBody,
+  QUOTED_BODY_MAX_CHARS,
+  QUOTED_EARLIER_MAX,
   isQuestionKind,
   checkInSystemPrompt,
   webhookReplyFromRow,
@@ -918,6 +933,77 @@ describe("a claim a deploy kills mid-send is not lost (jfigueroa, 2026-10-13)", 
     const last = mockSet.mock.calls[mockSet.mock.calls.length - 1][0] as Record<string, unknown>;
     expect(last.clientAnswerRequestedAt).toBeNull();
     expect(bindsValue(last.metadata, "answerRequestPendingSince")).toBe(true);
+  });
+});
+
+describe("the calls hang under a run of the thread's own org (a moved brand keeps its old runs)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.ADMIN_NOTIFICATION_EMAIL = "growth@distribute.you";
+    mockReturning.mockResolvedValue([{ id: "row" }]);
+    mockSendEmail.mockResolvedValue(undefined);
+    mockMembers.mockResolvedValue([{ email: "owner@shockwave.com", firstName: "Sam" }]);
+    mockFindLead.mockResolvedValue({ id: "l", firstName: "Doug", lastName: "Arvanitis", company: "Pro Health" });
+    mockBrand.mockResolvedValue({ name: "Shockwave Centers", rep: { email: null, firstName: null, role: null } });
+    mockComplete.mockResolvedValue({ content: "NONE" });
+    mockHistory.mockResolvedValue({
+      history: { items: [sent1, sent2, reply].map((message) => ({ type: "message", message })), notes: [] },
+      latestReply: reply,
+    });
+  });
+
+  it("the thread's own run, when it belongs to the thread's org: kept", async () => {
+    mockGetRun.mockResolvedValueOnce({ id: "run-uuid", organizationId: "org-uuid", userId: "user-uuid" });
+    await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { because: "no_responder", asOf: DOUG_NOW });
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockSendEmail.mock.calls[0][1].runId).toBe("run-uuid");
+  });
+
+  it("a run of ANOTHER org (unreadable from this one): a fresh root run in the thread's org carries the email", async () => {
+    mockGetRun.mockResolvedValueOnce(null);
+    mockCreateRun.mockResolvedValueOnce({ id: "run-new" });
+    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { because: "no_responder", asOf: DOUG_NOW });
+    expect(outcome).toMatchObject({ sent: true });
+    const [, identity] = mockCreateRun.mock.calls[0];
+    expect(identity).toEqual({ orgId: "org-uuid", userId: "user-uuid" });
+    expect(mockSendEmail.mock.calls[0][1]).toMatchObject({ orgId: "org-uuid", runId: "run-new" });
+    expect(mockComplete.mock.calls[0][1]).toMatchObject({ runId: "run-new" });
+  });
+
+  it("runs-service down: nothing sent, the claim is released", async () => {
+    mockGetRun.mockRejectedValueOnce(new Error("runs-service 503"));
+    const outcome = await maybeAskClientToAnswer(campaign, "drdoug@prohealthdoc.com", { because: "no_responder", asOf: DOUG_NOW });
+    expect(outcome).toEqual({ sent: false, reason: "send_failed" });
+    expect(mockSendEmail).not.toHaveBeenCalled();
+  });
+});
+
+describe("the quoted conversation stays small (a long thread 413'd the check-in)", () => {
+  it("cuts a long body and says so; a short one is untouched", () => {
+    expect(capBody("short")).toBe("short");
+    const long = "x".repeat(QUOTED_BODY_MAX_CHARS + 500);
+    expect(capBody(long)).toBe(`${"x".repeat(QUOTED_BODY_MAX_CHARS)}\n[... 500 more characters not shown]`);
+  });
+
+  it("quotes at most the newest earlier emails and counts the rest", () => {
+    const earlier: ThreadMessage[] = Array.from({ length: QUOTED_EARLIER_MAX + 3 }, (_, i) => ({
+      ...sent1,
+      date: new Date(Date.UTC(2026, 8, 1 + i)).toISOString(),
+      bodyText: `email ${i}`,
+    }));
+    const content = renderStaffCheckIn({
+      brandName: "Shockwave Centers",
+      leadEmail: "drdoug@prohealthdoc.com",
+      leadFullName: "Doug Arvanitis",
+      company: null,
+      question: reply,
+      earlier,
+      senderAddress: null,
+      checkIn: "Hi Doug,\n\nChecking in.\n\nKevin",
+    });
+    expect(content.text).toContain(`email ${QUOTED_EARLIER_MAX + 2}`);
+    expect(content.text).not.toContain("email 0\n");
+    expect(content.text).toContain("[3 older emails in this thread not shown]");
   });
 });
 
