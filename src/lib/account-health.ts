@@ -22,6 +22,7 @@
  * (never in a test yet) gets `null`, never a silent 0%.
  */
 
+import { INBOUND_UNREADABLE_REASON } from "./self-send/inbound-blindness";
 import type { Account } from "./instantly-client";
 import type { LifecycleStatus } from "./account-lifecycle";
 import type { LifecycleView } from "./account-lifecycle-sync";
@@ -58,6 +59,13 @@ export interface SelectionView {
    * `fetchNewSequencesTodayByAccount`. Absent = none today.
    */
   newSequencesTodayByEmail?: Map<string, number>;
+  /**
+   * Lowercased addresses whose real mailbox is BLIND (`inbound-blindness.ts`):
+   * we send from it and never read a reply. Shown blocked with reason
+   * `inbound_unreadable`, whatever the lifecycle says, because the selector and
+   * the dispatcher both refuse it.
+   */
+  inboundBlindAddresses?: ReadonlySet<string>;
 }
 
 /**
@@ -134,6 +142,8 @@ export interface AccountHealth {
    * deactivated_by_user), or "unclassified" when the lifecycle has not yet run.
    */
   blockReason: string | null;
+  /** True when we send from this mailbox but never read its replies (`inbound-blindness.ts`). */
+  inboundUnreadable: boolean;
   /** Auto-derived lifecycle state (null until reconcileLifecycle first runs). */
   lifecycleStatus: LifecycleStatus | null;
   /** Snapshot reason on the latest lifecycle transition (null until classified). */
@@ -316,11 +326,17 @@ export function buildAccountHealth(
   const fillRankByEmail = selection.fillRankByEmail ?? new Map<string, number>();
   const recentSustainedByEmail = selection.recentSustainedByEmail ?? new Map<string, number>();
   const newSequencesTodayByEmail = selection.newSequencesTodayByEmail ?? new Map<string, number>();
+  const inboundBlindAddresses = selection.inboundBlindAddresses ?? new Set<string>();
   return accounts.map((a) => {
     const lifecycle = lifecycleByEmail.get(a.email) ?? null;
     const lifecycleStatus = lifecycle?.status ?? null;
-    const blocked = lifecycleStatus !== "in_production";
-    const blockReason = blocked ? (lifecycleStatus ?? "unclassified") : null;
+    const inboundUnreadable = inboundBlindAddresses.has(a.email.trim().toLowerCase());
+    const blocked = lifecycleStatus !== "in_production" || inboundUnreadable;
+    const blockReason = inboundUnreadable
+      ? INBOUND_UNREADABLE_REASON
+      : blocked
+        ? (lifecycleStatus ?? "unclassified")
+        : null;
     const breakdown = queueBreakdownByEmail.get(a.email) ?? null;
     return {
       email: a.email,
@@ -353,6 +369,7 @@ export function buildAccountHealth(
       warmupLimit: a.warmup?.limit ?? null,
       blocked,
       blockReason,
+      inboundUnreadable,
       lifecycleStatus,
       lifecycleReason: lifecycle?.reason ?? null,
       lifecycleUpdatedAt: lifecycle?.updatedAt ?? null,

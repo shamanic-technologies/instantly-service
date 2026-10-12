@@ -81,6 +81,7 @@ describe("buildAccountHealth", () => {
       warmupLimit: null,
       blocked: false,
       blockReason: null,
+      inboundUnreadable: false,
       lifecycleStatus: "in_production",
       lifecycleReason: "passed",
       lifecycleUpdatedAt: "2026-07-05T00:00:00.000Z",
@@ -168,6 +169,29 @@ describe("buildAccountHealth", () => {
     expect(row.lifecycleStatus).toBeNull();
     expect(row.lifecycleReason).toBeNull();
     expect(row.lifecycleUpdatedAt).toBeNull();
+  });
+
+  it("a BLIND mailbox (we send, we never read) is blocked 'inbound_unreadable', even in_production", () => {
+    const [blind, read] = buildAccountHealth(
+      [acc({ email: "KLourd@pressbeat.ai" }), acc({ email: "a@good.com" })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([
+        ["KLourd@pressbeat.ai", lifecycle("in_production", "passed")],
+        ["a@good.com", lifecycle("in_production", "passed")],
+      ]),
+      new Map(),
+      new Map(),
+      { inboundBlindAddresses: new Set(["klourd@pressbeat.ai"]) },
+    );
+    expect(blind.blocked).toBe(true);
+    expect(blind.blockReason).toBe("inbound_unreadable");
+    expect(blind.inboundUnreadable).toBe(true);
+    expect(blind.lifecycleStatus).toBe("in_production");
+    // Control: a mailbox we DO read is untouched by the rule.
+    expect(read.blocked).toBe(false);
+    expect(read.inboundUnreadable).toBe(false);
   });
 
   it("no lifecycle map at all → every account blocked 'unclassified'", () => {

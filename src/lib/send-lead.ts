@@ -35,6 +35,7 @@ import {
 } from "./account-sending-stats";
 import { capForAccount } from "./account-lifecycle";
 import { keepSelfSendCapable } from "./self-send/capability";
+import { dropInboundBlind } from "./self-send/inbound-blindness";
 import { dateKeyUTC } from "./sending-forecast";
 import { sequenceFootprintDays } from "./sending-window";
 import { tagColdEmailLinks } from "./cold-email-utm";
@@ -823,9 +824,12 @@ export async function selectSendingAccount(
 ): Promise<PooledAccount | null> {
   // Only mailboxes we can send from ourselves: the Instantly plan is gone, so a
   // mailbox without a credential would take the lead and never send it.
-  const accounts = await keepSelfSendCapable(
-    await fetchInProductionAccounts(opts.featureSlug ?? null),
-    { method: "POST", path: "/orgs/send" },
+  // … and never a mailbox whose replies we cannot read (`inbound-blindness.ts`):
+  // a prospect who answers there is invisible and keeps getting follow-ups.
+  const caller = { method: "POST", path: "/orgs/send" };
+  const accounts = await dropInboundBlind(
+    await keepSelfSendCapable(await fetchInProductionAccounts(opts.featureSlug ?? null), caller),
+    caller,
   );
   if (accounts.length === 0) return null;
 
