@@ -1,7 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const mockExecute = vi.fn();
+vi.mock("../../src/db", () => ({
+  db: { execute: (...args: unknown[]) => mockExecute(...args) },
+}));
 
 import {
   INBOUND_BLIND_MIN_SENT,
+  loadAddressInboundRows,
   mailboxResolver,
   selectInboundBlindMailboxes,
 } from "../../src/lib/self-send/inbound-blindness";
@@ -53,5 +59,32 @@ describe("selectInboundBlindMailboxes", () => {
       mailboxOf,
     );
     expect([...blind]).toEqual(["kevin@growthagency.ch"]);
+  });
+});
+
+// Prod 2026-10-13: a correlated EXISTS per sending address re-walked the whole
+// 14-day inbound window 120 times (87 s) on the POST /orgs/send path; every send
+// took minutes and the gateway gave up. The read must be ONE pass, joined.
+describe("loadAddressInboundRows", () => {
+  it("reads the inbound window ONCE and joins it, never a correlated EXISTS per address", async () => {
+    mockExecute.mockReset().mockResolvedValue({
+      rows: [
+        { accountEmail: "klourd@pressbeat.ai", sent: 22, hasInbound: false },
+        { accountEmail: "paisley@ariacoreco.com", sent: 40, hasInbound: true },
+      ],
+    });
+
+    const rows = await loadAddressInboundRows();
+
+    expect(rows).toEqual([
+      { accountEmail: "klourd@pressbeat.ai", sent: 22, hasInbound: false },
+      { accountEmail: "paisley@ariacoreco.com", sent: 40, hasInbound: true },
+    ]);
+    const { PgDialect } = await import("drizzle-orm/pg-core");
+    const text = new PgDialect().sqlToQuery(mockExecute.mock.calls[0]![0] as never).sql;
+    expect(text).not.toMatch(/EXISTS/i);
+    expect(text).toMatch(/SELECT DISTINCT account_email\s+FROM imap_messages_raw/);
+    expect(text).toMatch(/LEFT JOIN inbound/);
+    expect(text).toMatch(/NOT \(payload \? 'recoveredFrom'\)/);
   });
 });
