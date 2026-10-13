@@ -343,6 +343,8 @@ export async function fileRow(input: {
   recoveredFrom?: string;
   /** Who it was written to, when that is not the mailbox it is filed under (shown in the thread). */
   to?: string[];
+  /** Our side's address in a conversation held from our own mailbox (where an answer must leave from). */
+  ourAddress?: string;
 }): Promise<string | null> {
   const [row] = await db
     .insert(imapMessagesRaw)
@@ -362,6 +364,7 @@ export async function fileRow(input: {
         ...(input.headers ? { headers: input.headers } : {}),
         recoveredFrom: input.recoveredFrom ?? RECOVERED_FROM_STAFF_MIRROR,
         ...(input.to && input.to.length > 0 ? { to: input.to.join(", ") } : {}),
+        ...(input.ourAddress ? { ourAddress: input.ourAddress } : {}),
         mirrorMessageId: input.mirrorId,
       },
       receivedAt: input.date,
