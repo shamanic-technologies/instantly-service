@@ -117,10 +117,12 @@ export function planMirroredMessage(
   message: MirroredMessage,
   aliases: ReadonlySet<string>,
   knownSends: ReadonlyMap<string, AliasedSend>,
+  /** `knownSends`' keys, built ONCE per mailbox by the caller (10k messages x 5k ids otherwise). */
+  knownIds: ReadonlySet<string> = new Set(knownSends.keys()),
 ): ForwardedPlan {
   if (!message.messageId) return { action: "skip", reason: "no_message_id" };
   const headers = headersOf(message);
-  const classified = classifyInbound(headers, message.text, new Set(knownSends.keys()));
+  const classified = classifyInbound(headers, message.text, knownIds);
   if (classified.kind === "unrelated") return { action: "skip", reason: "unrelated" };
   const correlation = correlateSend(classified.referencedMessageIds, knownSends);
   if (correlation.outcome === "ambiguous") return { action: "skip", reason: "ambiguous" };
@@ -235,10 +237,12 @@ async function campaignIdentity(instantlyCampaignId: string): Promise<GoogleCall
   return row ? { orgId: String(row.orgId), userId: String(row.userId), runId: String(row.runId) } : null;
 }
 
-async function instantlyMirrorHolds(messageId: string): Promise<boolean> {
+/** Instantly's mirror already holds this message on that sequence (indexed on the campaign). */
+async function instantlyMirrorHolds(instantlyCampaignId: string, messageId: string): Promise<boolean> {
   const result = await db.execute(sql`
     SELECT 1 FROM instantly_emails_raw
-    WHERE payload->>'message_id' = ${messageId} AND payload->>'ue_type' <> '1'
+    WHERE instantly_campaign_id = ${instantlyCampaignId}
+      AND payload->>'message_id' = ${messageId} AND payload->>'ue_type' <> '1'
     LIMIT 1
   `);
   return rowsOf(result).length > 0;
@@ -335,7 +339,8 @@ async function recoverMailbox(
   summary.messagesRead += messages.length;
 
   // Our own answers first, so a prospect already answered is never asked about.
-  const plans = messages.map((message) => ({ message, plan: planMirroredMessage(message, aliases, knownSends) }));
+  const knownIds = new Set(knownSends.keys());
+  const plans = messages.map((message) => ({ message, plan: planMirroredMessage(message, aliases, knownSends, knownIds) }));
   const ordered = [
     ...plans.filter((p) => p.plan.action === "file" && p.plan.kind === STAFF_REPLY_KIND),
     ...plans.filter((p) => !(p.plan.action === "file" && p.plan.kind === STAFF_REPLY_KIND)),
@@ -348,7 +353,7 @@ async function recoverMailbox(
       continue;
     }
     const messageId = message.messageId as string;
-    if (await instantlyMirrorHolds(messageId)) {
+    if (await instantlyMirrorHolds(plan.send.instantlyCampaignId, messageId)) {
       summary.alreadyIngested += 1;
       continue;
     }
