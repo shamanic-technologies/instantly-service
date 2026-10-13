@@ -90,6 +90,9 @@ export async function loadAddressInboundRows(): Promise<AddressInboundRow[]> {
              SELECT 1 FROM imap_messages_raw i
              WHERE i.account_email = s.account_email
                AND i.polled_at > now() - make_interval(days => ${INBOUND_BLIND_WINDOW_DAYS})
+               -- A reply RECOVERED from elsewhere (forwarded-replies.ts) is not
+               -- evidence that this mailbox is read: it is the opposite.
+               AND NOT (i.payload ? 'recoveredFrom')
            )               AS "hasInbound"
     FROM (
       SELECT account_email, COUNT(*)::int AS sent
