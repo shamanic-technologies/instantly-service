@@ -60,9 +60,10 @@ vi.mock("../../src/lib/stop-followups-on-decline", () => ({
 vi.mock("../../src/lib/reply-opt-out", () => ({
   maybeRecordOptOutFromReply: (...a: unknown[]) => optOut(...a),
 }));
+const mirror = vi.fn();
 vi.mock("../../src/lib/mirror-emails", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
-  maybeMirrorCampaignEmails: vi.fn(),
+  maybeMirrorCampaignEmails: (...a: unknown[]) => mirror(...a),
 }));
 vi.mock("../../src/lib/refine-interest-kind", () => ({
   refineInstantlyInterest: (_c: unknown, input: { eventType: string }) =>
@@ -108,6 +109,7 @@ describe("promoteEvent: a reply delivered late", () => {
     const result = await promoteEvent({ ...base, deliveredLate: true });
     expect(result.promoted).toBe(true);
     for (const fn of Object.values(live)) expect(fn).not.toHaveBeenCalled();
+    expect(mirror).not.toHaveBeenCalled();
     expect(decline).toHaveBeenCalled();
     expect(optOut).toHaveBeenCalled();
   });
@@ -119,5 +121,6 @@ describe("promoteEvent: a reply delivered late", () => {
     expect(live.enqueue).toHaveBeenCalled();
     expect(live.forward).toHaveBeenCalled();
     expect(live.ringRep).toHaveBeenCalled();
+    expect(mirror).toHaveBeenCalled();
   });
 });
