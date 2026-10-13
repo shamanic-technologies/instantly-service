@@ -7,6 +7,11 @@ vi.mock("../../src/lib/lead-client", async (importOriginal) => ({
   scheduleFollowupByEmail: (...args: unknown[]) => mockScheduleFollowupByEmail(...args),
 }));
 
+const mockLift = vi.fn();
+vi.mock("../../src/lib/lift-wrong-handoff", () => ({
+  liftWrongEscalationHandoff: (...args: unknown[]) => mockLift(...args),
+}));
+
 const { maybeEnqueueFollowupOnInterest } = await import(
   "../../src/lib/enqueue-followup-on-interest"
 );
@@ -41,6 +46,37 @@ const RESULT = {
 beforeEach(() => {
   vi.resetAllMocks();
   mockScheduleFollowupByEmail.mockResolvedValue(RESULT);
+  mockLift.mockResolvedValue("nothing_to_lift");
+});
+
+describe("a buyer an earlier wrong verdict handed to a person", () => {
+  it("lifts our escalation hand-over BEFORE scheduling, so the schedule re-enters them", async () => {
+    const order: string[] = [];
+    mockLift.mockImplementation(async () => {
+      order.push("lift");
+      return "lifted";
+    });
+    mockScheduleFollowupByEmail.mockImplementation(async () => {
+      order.push("schedule");
+      return RESULT;
+    });
+
+    await maybeEnqueueFollowupOnInterest(CAMPAIGN, "prospect@example.com", "lead_meeting_requested", NOW);
+
+    expect(mockLift).toHaveBeenCalledWith(CAMPAIGN, "prospect@example.com");
+    expect(order).toEqual(["lift", "schedule"]);
+  });
+
+  it("still schedules when the lift fails (fail-soft, loud)", async () => {
+    mockLift.mockRejectedValue(new Error("lead-service down"));
+    await maybeEnqueueFollowupOnInterest(CAMPAIGN, "prospect@example.com", "lead_interested", NOW);
+    expect(mockScheduleFollowupByEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("never lifts on a reply that is not a sales interest", async () => {
+    await maybeEnqueueFollowupOnInterest(CAMPAIGN, "prospect@example.com", "lead_off_topic", NOW);
+    expect(mockLift).not.toHaveBeenCalled();
+  });
 });
 
 describe("maybeEnqueueFollowupOnInterest", () => {

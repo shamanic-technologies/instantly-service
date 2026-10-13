@@ -692,13 +692,18 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
         live && isSalesInterestQualification(input.eventType)
           ? await isHeldInOwnMailbox(input.instantlyCampaignId)
           : false;
-      if (live && !heldByPerson) await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
-
-      // ...and enter that same buyer into lead-service's follow-up queue, owed an
-      // answer now. Without this the campaign above runs and finds nobody: the
-      // queue and its draining sweep both existed, and nothing had ever written a
-      // due date into them. Same gate as the trigger, fail-soft, never throws.
+      // Enter that buyer into lead-service's follow-up queue, owed an answer
+      // now (lifting a hand-over a wrong earlier verdict wrote), BEFORE the
+      // campaign below is asked to run: the run claims at once, and a claim
+      // ahead of the schedule finds nothing due (prod 2026-10-13, DefiniteJobs:
+      // the responder claimed at the same second and answered nobody). Without
+      // the schedule the campaign runs and finds nobody: the queue and its
+      // draining sweep both existed, and nothing had ever written a due date
+      // into them. Same gate as the trigger, fail-soft, never throws.
       if (live && !heldByPerson) await maybeEnqueueFollowupOnInterest(campaign, input.leadEmail, input.eventType);
+
+      // ...then ask campaign-service to run the campaign bought for that leg.
+      if (live && !heldByPerson) await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
 
       // ...and the reverse: a reply that declines, asks to stop, or hands us
       // somebody else takes the person back OUT of that queue. Without it a
