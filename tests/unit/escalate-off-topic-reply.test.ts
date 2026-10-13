@@ -6,26 +6,20 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const mockDbExecute = vi.fn();
-vi.mock("../../src/db", () => ({
-  db: { execute: (...a: unknown[]) => mockDbExecute(...a) },
-}));
 
 const mockHandThreadToHuman = vi.fn();
 vi.mock("../../src/lib/escalate-reply", () => ({
   handThreadToHuman: (...a: unknown[]) => mockHandThreadToHuman(...a),
 }));
 
-const mockFetchLatestMirroredInbound = vi.fn();
-vi.mock("../../src/lib/reply-opt-out", () => ({
-  fetchLatestMirroredInbound: (...a: unknown[]) => mockFetchLatestMirroredInbound(...a),
+const mockScope = vi.fn();
+const mockResponders = vi.fn();
+vi.mock("../../src/lib/campaign-client", () => ({
+  getCampaignTriggerScope: (...a: unknown[]) => mockScope(...a),
+  findOngoingResponderCampaigns: (...a: unknown[]) => mockResponders(...a),
 }));
 
-import {
-  maybeEscalateOffTopicReply,
-  offTopicQuestion,
-  WORDS_UNAVAILABLE,
-} from "../../src/lib/escalate-off-topic-reply";
+import { maybeEscalateOffTopicReply } from "../../src/lib/escalate-off-topic-reply";
 import { isSalesInterestQualification } from "../../src/lib/trigger-sales-interest-campaign";
 import {
   REPLY_KIND_CLASSIFICATION,
@@ -34,10 +28,6 @@ import {
   isDisqualifyingReplyKind,
   POSITIVE_REPLY_KINDS,
 } from "../../src/lib/reply-kind";
-
-function pgResult<T>(rows: T[]) {
-  return { command: "SELECT", rowCount: rows.length, oid: null, fields: [], rows };
-}
 
 const JAKUB = {
   instantlyCampaignId: "self:61642f1a-7171-4d9f-be7b-ef3c96f1bbde",
@@ -56,6 +46,8 @@ beforeEach(() => {
     threadMessages: 4,
     followupsStopped: true,
   });
+  mockScope.mockResolvedValue({ brandId: JAKUB.brandIds[0], offerId: "offer-1" });
+  mockResponders.mockResolvedValue([]);
 });
 
 describe("the lead_off_topic reply kind", () => {
@@ -74,11 +66,9 @@ describe("the lead_off_topic reply kind", () => {
 });
 
 describe("maybeEscalateOffTopicReply", () => {
-  it("hands Jakub's reply to a person, their words first, on the campaign's own identity", async () => {
-    mockDbExecute.mockResolvedValueOnce(
-      pgResult([{ text: "can you explain?\n\nOn Mon, Sep 28, 2026 at 4:05 PM Kevin Lourd wrote:\n> Totally understand" }]),
-    );
-
+  // REPLY-NOTIFS-1013: no AI answers bought = the client reads it in the
+  // Unibox; nobody is emailed, staff never.
+  it("stops Jakub's ladder and emails NOBODY when the brand pays for no AI answers", async () => {
     await maybeEscalateOffTopicReply(JAKUB, "jakub@marktize.com", "lead_off_topic");
 
     expect(mockHandThreadToHuman).toHaveBeenCalledTimes(1);
@@ -91,20 +81,21 @@ describe("maybeEscalateOffTopicReply", () => {
       orgId: JAKUB.orgId,
       userId: JAKUB.userId,
       runId: JAKUB.runId,
+      notifyTeam: null,
     });
-    expect(input.question).toContain("They wrote: can you explain?");
-    expect(input.question).not.toContain("Totally understand");
+    expect(mockScope).toHaveBeenCalledWith(JAKUB.campaignId, JAKUB.orgId);
   });
 
-  it("reads the Instantly mirror on an Instantly-transport thread", async () => {
-    mockFetchLatestMirroredInbound.mockResolvedValueOnce({ instantlyEmailId: "e1", text: "We are hiring?", subject: null });
-    await maybeEscalateOffTopicReply(
-      { ...JAKUB, instantlyCampaignId: "e3c917a5-83fe-460f-a5da-49125ad0fa0b" },
-      "x@y.com",
-      "lead_off_topic",
-    );
-    expect(mockFetchLatestMirroredInbound).toHaveBeenCalledWith("e3c917a5-83fe-460f-a5da-49125ad0fa0b");
-    expect(mockHandThreadToHuman.mock.calls[0][0].question).toContain("They wrote: We are hiring?");
+  it("tells the brand's team when an AI responder runs on the offer", async () => {
+    mockResponders.mockResolvedValueOnce([{ id: "responder-1" }]);
+    await maybeEscalateOffTopicReply(JAKUB, "jakub@marktize.com", "lead_off_topic");
+    expect(mockHandThreadToHuman.mock.calls[0][0].notifyTeam).toBe("off_topic");
+  });
+
+  it("emails nobody (and still stops the ladder) when the responder read fails", async () => {
+    mockScope.mockRejectedValueOnce(new Error("campaign-service down"));
+    await maybeEscalateOffTopicReply(JAKUB, "jakub@marktize.com", "lead_off_topic");
+    expect(mockHandThreadToHuman.mock.calls[0][0].notifyTeam).toBeNull();
   });
 
   it("does NOTHING on a normal interested reply", async () => {
@@ -112,7 +103,7 @@ describe("maybeEscalateOffTopicReply", () => {
       await maybeEscalateOffTopicReply(JAKUB, "jakub@marktize.com", kind);
     }
     expect(mockHandThreadToHuman).not.toHaveBeenCalled();
-    expect(mockDbExecute).not.toHaveBeenCalled();
+    expect(mockScope).not.toHaveBeenCalled();
   });
 
   it("never escalates on a made-up identity", async () => {
@@ -121,16 +112,12 @@ describe("maybeEscalateOffTopicReply", () => {
   });
 
   it("is fail-soft: a failed hand-over never throws into promotion", async () => {
-    mockDbExecute.mockResolvedValueOnce(pgResult([]));
     mockHandThreadToHuman.mockRejectedValueOnce(new Error("postmark down"));
     await expect(
       maybeEscalateOffTopicReply(JAKUB, "jakub@marktize.com", "lead_off_topic"),
     ).resolves.toBeUndefined();
   });
 
-  it("says so when their words cannot be read, rather than inventing them", () => {
-    expect(offTopicQuestion(null)).toContain(WORDS_UNAVAILABLE);
-  });
 });
 
 describe("a referral is handed to a person too", () => {
@@ -144,17 +131,13 @@ describe("a referral is handed to a person too", () => {
   };
 
   it("escalates Elena's referral with its own reason, and forwards nothing as a positive", async () => {
-    mockFetchLatestMirroredInbound.mockResolvedValueOnce({
-      instantlyEmailId: "e1",
-      text: "Hoi Joshua, danke für deine Anfrage. Solltet ihr daran interessiert sein, eure Bio-Flohsamenschalen über uns zu vertreiben, darfst du dich gerne direkt an sortimente@biopartner.ch wenden.",
-      subject: null,
-    });
+    mockScope.mockResolvedValueOnce({ brandId: ELENA.brandIds[0], offerId: "offer-2" });
+    mockResponders.mockResolvedValueOnce([{ id: "responder-2" }]);
 
     await maybeEscalateOffTopicReply(ELENA, "elena.staeheli@biopartner.ch", "lead_referral");
 
     const [input] = mockHandThreadToHuman.mock.calls[0];
-    expect(input.question).toContain("point you at someone else");
-    expect(input.question).toContain("sortimente@biopartner.ch");
+    expect(input.notifyTeam).toBe("referral");
     expect(input.stopReason).toContain("referred us to someone else");
     expect(input.brandId).toBe("f2408cfb-4f02-4910-acec-e61fc8edb9cf");
   });

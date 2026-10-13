@@ -9,10 +9,13 @@
  * human. Measured 2026-09-28: jakub@marktize.com asked "can you explain?" on a
  * partnership thread and was never answered.
  *
- * The exit is the one the responder itself uses when it cannot answer
- * (`handThreadToHuman`, lib/escalate-reply): the thread is forwarded to the
- * agency inbox with their words first, and the follow-up ladder is stopped so
- * nothing automated writes to them meanwhile. The prospect is sent nothing.
+ * The follow-up ladder is stopped so nothing automated writes to them
+ * meanwhile (`handThreadToHuman`, lib/escalate-reply); the prospect is sent
+ * nothing. Who is told follows the owner's model (2026-10-13): a brand that
+ * pays for AI answers (a responder runs on its offer) gets the reply in its
+ * team's inbox (lib/notify-brand-team), like any reply the AI cannot answer; a
+ * brand that does not answers it by hand in the Unibox, and nobody is emailed.
+ * Staff are never emailed.
  *
  * Fired from `promoteEvent` on the FIRST promotion of a real `lead_off_topic`
  * event — so a webhook retry or a re-read does not escalate twice. Fail-soft:
@@ -20,15 +23,10 @@
  * the path that promoted it.
  */
 
-import { sql } from "drizzle-orm";
-
-import { db } from "../db";
+import { findOngoingResponderCampaigns, getCampaignTriggerScope } from "./campaign-client";
 import { handThreadToHuman } from "./escalate-reply";
-import { htmlToText } from "./forward-positive-reply";
+import type { TeamEscalationReason } from "./notify-brand-team";
 import { isEscalatedReplyKind } from "./reply-kind";
-import { fetchLatestMirroredInbound } from "./reply-opt-out";
-import { stripQuotedHistory } from "./self-send/qualify-reply";
-import { isSelfSendCampaignId } from "./self-send/transport";
 
 /** The subset of a campaign row this needs. */
 export interface OffTopicCampaign {
@@ -40,60 +38,40 @@ export interface OffTopicCampaign {
   brandIds?: string[] | null;
 }
 
-/** Stated when their words cannot be read — the forwarded thread still carries them. */
-export const WORDS_UNAVAILABLE = "(their words could not be read here — see the thread below)";
-
-/** Why a person is needed, per escalated kind. */
-const WHY: Record<string, { lead: string; stopReason: string }> = {
+/** Why the ladder stops, and what the brand's team is told, per escalated kind. */
+const WHY: Record<string, { reason: Exclude<TeamEscalationReason, "question">; stopReason: string }> = {
   lead_off_topic: {
-    lead: "This reply is about something other than the offer (a partnership, hiring, investors, a vendor or the press). The automated responder only handles sales conversations, so it will not answer it.",
+    reason: "off_topic",
     stopReason:
       "The reply is about something other than the offer; handed to a person, the automated responder does not answer it",
   },
   lead_referral: {
-    lead: "They are not the right person and point you at someone else. We do not write to a referred address ourselves yet, so a person has to follow this up.",
+    reason: "referral",
     stopReason:
       "The prospect referred us to someone else; handed to a person, the automated responder does not answer it",
   },
 };
 
-/** What the notification leads with: why a person is needed, then their words. */
-export function offTopicQuestion(replyText: string | null, kind = "lead_off_topic"): string {
-  const words = replyText ? stripQuotedHistory(replyText).slice(0, 2000) : "";
-  return [WHY[kind]?.lead ?? WHY.lead_off_topic.lead, "", `They wrote: ${words || WORDS_UNAVAILABLE}`].join(
-    "\n",
-  );
-}
-
-function rowsOf(result: unknown): Record<string, unknown>[] {
-  const rows = (result as { rows?: unknown }).rows;
-  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
-}
-
-/** The prospect's latest reply on this thread, whichever pipe carried it. */
-export async function fetchLatestReplyText(instantlyCampaignId: string): Promise<string | null> {
-  if (!isSelfSendCampaignId(instantlyCampaignId)) {
-    return (await fetchLatestMirroredInbound(instantlyCampaignId))?.text ?? null;
-  }
-  const result = await db.execute(sql`
-    SELECT m.payload->>'textSnippet' AS text
-    FROM imap_messages_raw m
-    WHERE m.instantly_campaign_id = ${instantlyCampaignId}
-      AND m.kind = 'reply'
-    ORDER BY COALESCE(m.received_at, m.polled_at) DESC
-    LIMIT 1
-  `);
-  const text = rowsOf(result)[0]?.text;
-  return typeof text === "string" && text.trim() ? htmlToText(text) : null;
+/**
+ * Does the brand pay for AI answers on this thread's offer (an ongoing
+ * responder campaign on its brand and offer)? Null when it cannot be said (no
+ * caller campaign, no brand). Throws when campaign-service cannot be read.
+ */
+export async function responderRuns(orgId: string, callerCampaignId: string | null): Promise<boolean | null> {
+  if (!callerCampaignId) return null;
+  const scope = await getCampaignTriggerScope(callerCampaignId, orgId);
+  if (!scope || !scope.brandId) return null;
+  if (!scope.offerId) return false;
+  const responders = await findOngoingResponderCampaigns({ orgId, brandId: scope.brandId, offerId: scope.offerId });
+  return responders.length > 0;
 }
 
 /**
  * Hand an escalated reply (off-topic, referral — `ESCALATED_REPLY_KINDS`) to a
  * person. No-op on any other event.
  *
- * Works for ANY brand: the hand-over is an email to the agency inbox on the
- * campaign row's own identity, and stopping the follow-up ladder is skipped when
- * lead-service holds no row — no responder campaign is needed.
+ * Works for ANY brand: stopping the follow-up ladder is skipped when
+ * lead-service holds no row; the team email needs a responder on the offer.
  *
  * Needs an org-scoped campaign carrying its run and user: the notification is a
  * child of that run (org-billed, the same identity the positive-reply forward
@@ -115,7 +93,13 @@ export async function maybeEscalateOffTopicReply(
   }
 
   try {
-    const replyText = await fetchLatestReplyText(campaign.instantlyCampaignId);
+    const why = WHY[eventType] ?? WHY.lead_off_topic;
+    const paysForAiAnswers = await responderRuns(campaign.orgId, campaign.campaignId).catch((error: unknown) => {
+      console.error(
+        `[instantly-service] off-topic-escalation: responder read FAILED for campaign=${campaign.instantlyCampaignId} lead=${leadEmail}, the brand's team is NOT emailed — ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    });
     const result = await handThreadToHuman({
       instantlyCampaignId: campaign.instantlyCampaignId,
       campaignId: campaign.campaignId,
@@ -124,16 +108,16 @@ export async function maybeEscalateOffTopicReply(
       orgId: campaign.orgId,
       userId: campaign.userId,
       runId: campaign.runId,
-      question: offTopicQuestion(replyText, eventType),
-      stopReason: (WHY[eventType] ?? WHY.lead_off_topic).stopReason,
+      notifyTeam: paysForAiAnswers ? why.reason : null,
+      stopReason: why.stopReason,
     });
     console.log(
-      `[instantly-service] off-topic-escalation: campaign=${campaign.instantlyCampaignId} lead=${leadEmail} handed to a human (${result.threadMessages} msg, followupsStopped=${result.followupsStopped})`,
+      `[instantly-service] off-topic-escalation: campaign=${campaign.instantlyCampaignId} lead=${leadEmail} handed to a human (team told: ${result.handedTo ?? "nobody"}, followupsStopped=${result.followupsStopped})`,
     );
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(
-      `[instantly-service] off-topic-escalation FAILED for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${message}; the reply is classified but NOBODY WAS TOLD`,
+      `[instantly-service] off-topic-escalation FAILED for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${message}; the reply is classified, its ladder may still run`,
     );
   }
 }

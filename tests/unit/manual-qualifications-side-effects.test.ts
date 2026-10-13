@@ -355,7 +355,7 @@ describe("applyManualQualificationSideEffects", () => {
  * nobody. Observed in prod on a real `lead_interested` statement whose
  * `positive_reply_forwarded_at` stayed null.
  */
-describe("applyManualQualificationSideEffects — a POSITIVE manual statement reaches the agency inbox", () => {
+describe("applyManualQualificationSideEffects — a POSITIVE manual statement reaches the client", () => {
   it("forwards the thread and asks the funded campaign to run", async () => {
     await applyManualQualificationSideEffects({
       bronzeRowId: "bronze-1",
@@ -372,7 +372,6 @@ describe("applyManualQualificationSideEffects — a POSITIVE manual statement re
       expect.objectContaining({ instantlyCampaignId: "inst-1", campaignId: "camp-1" }),
       "lead@test.com",
       "lead_interested",
-      { responder: undefined },
     );
     expect(mockTriggerSalesInterest).toHaveBeenCalledWith(
       expect.objectContaining({ instantlyCampaignId: "inst-1", campaignId: "camp-1" }),
@@ -418,7 +417,6 @@ describe("applyManualQualificationSideEffects — a POSITIVE manual statement re
       expect.anything(),
       "lead@test.com",
       "lead_interested",
-      { responder: undefined },
     );
   });
 
@@ -440,7 +438,6 @@ describe("applyManualQualificationSideEffects — a POSITIVE manual statement re
       expect.anything(),
       "lead@test.com",
       "lead_not_interested",
-      { responder: undefined },
     );
   });
 });

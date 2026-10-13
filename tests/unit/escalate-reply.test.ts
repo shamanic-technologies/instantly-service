@@ -20,11 +20,15 @@ vi.mock("../../src/lib/reply-to-lead", () => ({
   ReplyToLeadError: FakeReplyToLeadError,
 }));
 
-const mockSendThreadForward = vi.fn();
 vi.mock("../../src/lib/forward-positive-reply", () => ({
-  sendThreadForward: (...a: unknown[]) => mockSendThreadForward(...a),
-  threadSubject: () => "Re: Doc Dinners for your clinic",
   formatThreadDate: (iso: string) => iso,
+}));
+
+const mockListMembers = vi.fn();
+const mockExternalOrgId = vi.fn();
+vi.mock("../../src/lib/client-org-client", () => ({
+  listOrgMembers: (...a: unknown[]) => mockListMembers(...a),
+  getExternalOrgId: (...a: unknown[]) => mockExternalOrgId(...a),
 }));
 
 const mockLoadHistory = vi.fn();
@@ -41,7 +45,7 @@ vi.mock("../../src/lib/celebrate-positive-reply", async () => {
     "../../src/lib/celebrate-positive-reply",
   );
   return {
-    escapeHtml: actual.escapeHtml,
+    ...actual,
     brandContextOrNull: (...a: unknown[]) => mockBrand(...a),
     celebrateOnce: (...a: unknown[]) => mockCelebrate(...a),
   };
@@ -64,6 +68,7 @@ import {
   colleagueLine,
   escalateReply,
   EscalateReplyError,
+  handThreadToHuman,
   handoffTextToHtml,
   HANDOFF_SYSTEM_PROMPT,
   renderQuotedHistory,
@@ -134,6 +139,11 @@ beforeEach(() => {
   mockSendEmail.mockResolvedValue(undefined);
   mockFindLead.mockResolvedValue({ id: "lead-row-1", email: "michael@clinic.com" });
   mockHandFollowups.mockResolvedValue(undefined);
+  mockListMembers.mockResolvedValue([
+    { email: "owner@docdinners.com", firstName: "Ana" },
+    { email: "sales@docdinners.com", firstName: null },
+  ]);
+  mockExternalOrgId.mockResolvedValue("org_2abc");
 });
 
 // ─── The hand-over to the client's rep ───────────────────────────────────────
@@ -164,7 +174,6 @@ describe("escalating a reply when the brand names a rep", () => {
   it("sends the agency NO second email and celebrates exactly through the shared claim", async () => {
     await escalateReply(INPUT);
     expect(mockSendEmail).not.toHaveBeenCalled();
-    expect(mockSendThreadForward).not.toHaveBeenCalled();
     expect(mockCelebrate).toHaveBeenCalledTimes(1);
     const [thread] = mockCelebrate.mock.calls[0];
     expect(thread).toMatchObject({ runId: "run-1", campaignId: null, conversationCampaignId: "camp-1" });
@@ -213,54 +222,115 @@ describe("a repeated escalation of the same thread", () => {
   });
 });
 
-// ─── No rep: the agency inbox answers ────────────────────────────────────────
+// ─── No rep: the brand's own team is told (REPLY-NOTIFS-1013) ──────────────────
+
+const UNIBOX = "https://dashboard.distribute.you/v2/orgs/org_2abc/brands/brand-1/unibox";
 
 describe("escalating when the brand names no rep", () => {
   beforeEach(() => {
     mockBrand.mockResolvedValue({ name: "Doc Dinners", rep: { email: null, firstName: null, role: null } });
   });
 
-  it("sends the prospect nothing and the agency the thread under its own subject", async () => {
+  it("emails EVERY member of the brand's org, never staff, with their words and the Unibox link", async () => {
     const result = await escalateReply(INPUT);
     expect(mockReplyToLead).not.toHaveBeenCalled();
     expect(mockComplete).not.toHaveBeenCalled();
-    expect(mockSendEmail).toHaveBeenCalledTimes(1);
+    expect(mockListMembers).toHaveBeenCalledWith("org-1");
+    expect(mockSendEmail).toHaveBeenCalledTimes(2);
+    const recipients = mockSendEmail.mock.calls.map(([p]) => p.recipientEmail);
+    expect(recipients).toEqual(["owner@docdinners.com", "sales@docdinners.com"]);
+    expect(recipients).not.toContain("kevin@distribute.you");
     const [params, identity] = mockSendEmail.mock.calls[0];
     expect(params.eventType).toBe("reply-escalation");
-    expect(params.recipientEmail).toBe("kevin@distribute.you");
     expect(params.ccEmails).toBeUndefined();
-    expect(params.metadata.subject).toBe("Re: Doc Dinners for your clinic");
+    expect(params.bccEmails).toBeUndefined();
+    expect(params.metadata.subject).toBe("michael@clinic.com asked your Doc Dinners team a question");
+    expect(params.metadata.text).toContain("Hi Ana,");
+    expect(params.metadata.text).toContain("1. Comparable clinic results?");
+    expect(params.metadata.text).toContain(UNIBOX);
+    expect(params.metadata.html).toContain(UNIBOX);
     // escaped: the template interpolates raw
-    expect(params.metadata.thread).toContain("1. Results? &lt;b&gt;");
+    expect(params.metadata.html).toContain("1. Results? &lt;b&gt;");
     // the model's paraphrase is shown to nobody
     expect(JSON.stringify(params.metadata)).not.toContain("patient privacy...");
+    expect(mockSendEmail.mock.calls[1][0].metadata.text).toContain("Hi,\n");
     expect(identity).toMatchObject({ orgId: "org-1", userId: "user-1", runId: "run-1" });
-    expect(result).toMatchObject({ handoff: "agency", handedTo: "kevin@distribute.you" });
+    expect(result).toMatchObject({
+      handoff: "team",
+      handedTo: "owner@docdinners.com, sales@docdinners.com",
+      followupsStopped: true,
+    });
+    expect(mockHandFollowups.mock.calls[0][0].reason).toContain("Handed to the brand's team");
   });
 
-  it("releases the claim and fails loud when nothing reached anyone", async () => {
+  it("releases the claim and fails loud when no member could be emailed", async () => {
     mockSendEmail.mockRejectedValue(new Error("postmark down"));
-    await expect(escalateReply(INPUT)).rejects.toThrow("postmark down");
+    await expect(escalateReply(INPUT)).rejects.toThrow("no member of org org-1 could be emailed");
     const released = mockExecute.mock.calls.some(([q]) => JSON.stringify(q).includes("escalated_at = NULL"));
     expect(released).toBe(true);
     expect(mockHandFollowups).not.toHaveBeenCalled();
   });
+
+  it("fails loud, never falls back to staff, when the org has no member", async () => {
+    mockListMembers.mockResolvedValue([]);
+    await expect(escalateReply(INPUT)).rejects.toThrow("no member with an email address");
+    expect(mockSendEmail).not.toHaveBeenCalled();
+  });
+
+  it("links the dashboard home when the org's dashboard id is unknown", async () => {
+    mockExternalOrgId.mockRejectedValue(new Error("client-service down"));
+    await escalateReply(INPUT);
+    expect(mockSendEmail.mock.calls[0][0].metadata.text).toContain("https://dashboard.distribute.you/v2\n");
+  });
 });
 
 describe("a hand-over that cannot go out", () => {
-  it("falls back to the agency inbox when the in-thread reply is refused", async () => {
+  it("falls back to the brand's team when the in-thread reply is refused", async () => {
     mockReplyToLead.mockRejectedValue(new FakeReplyToLeadError("human_took_over", 409, "a person answered"));
     const result = await escalateReply(INPUT);
-    expect(mockSendEmail).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ handoff: "agency" });
+    expect(mockSendEmail).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ handoff: "team" });
   });
 
-  it("falls back to the agency inbox when the reply is unreadable (nothing to draft against)", async () => {
+  it("falls back to the brand's team when the reply is unreadable, and says so", async () => {
     mockLoadHistory.mockResolvedValue({ history: { ...HISTORY, notes: ["unreadable"] }, latestReply: null });
     const result = await escalateReply(INPUT);
     expect(mockComplete).not.toHaveBeenCalled();
     expect(mockReplyToLead).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ handoff: "agency", replyRead: false });
+    expect(mockSendEmail.mock.calls[0][0].metadata.text).toContain("Their reply could not be read");
+    expect(result).toMatchObject({ handoff: "team", replyRead: false });
+  });
+});
+
+// ─── A reply the responder never answers (off-topic, referral) ──────────────
+
+describe("handThreadToHuman", () => {
+  const THREAD = {
+    instantlyCampaignId: "ic-1",
+    campaignId: "camp-1",
+    leadEmail: "jakub@marktize.com",
+    brandId: "brand-1",
+    orgId: "org-1",
+    userId: "user-1",
+    runId: "run-1",
+    stopReason: "off topic",
+  };
+
+  it("stops the ladder and emails NOBODY when the brand pays for no AI answers", async () => {
+    const result = await handThreadToHuman({ ...THREAD, notifyTeam: null });
+    expect(mockSendEmail).not.toHaveBeenCalled();
+    expect(mockListMembers).not.toHaveBeenCalled();
+    expect(mockHandFollowups).toHaveBeenCalledWith({ orgId: "org-1", leadRowId: "lead-row-1", reason: "off topic" });
+    expect(result).toMatchObject({ handoff: "none", handedTo: null, followupsStopped: true });
+  });
+
+  it("tells the brand's team, in off-topic words, when it pays for AI answers", async () => {
+    const result = await handThreadToHuman({ ...THREAD, notifyTeam: "off_topic" });
+    expect(mockSendEmail).toHaveBeenCalledTimes(2);
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.recipientEmail).toBe("owner@docdinners.com");
+    expect(params.metadata.text).toContain("about something other than your offer");
+    expect(result).toMatchObject({ handoff: "team", followupsStopped: true });
   });
 });
 

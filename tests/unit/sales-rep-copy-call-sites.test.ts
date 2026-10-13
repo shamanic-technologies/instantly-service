@@ -30,26 +30,9 @@ function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
-const FORWARD = read("forward-positive-reply.ts");
 const REPLY = read("reply-to-lead.ts");
 const RING = read("ring-rep-on-sales-interest.ts");
 const CLIENT = read("brand-client.ts");
-
-describe("the forward copies the rep", () => {
-  it("asks the shared resolver, and passes the answer to the send", () => {
-    expect(FORWARD).toContain('import { salesRepCopyList } from "./sales-rep-copy"');
-    expect(FORWARD).toContain("salesRepCopyList(campaign.brandIds?.[0], campaign.orgId)");
-    expect(FORWARD).toContain("ccEmails");
-  });
-
-  it("sends NO copy key at all when there is nobody to copy — byte-identical to before", () => {
-    expect(FORWARD).toContain("...(ccEmails.length > 0 ? { ccEmails } : {})");
-  });
-
-  it("copies VISIBLY — a blind copy is never used for the rep", () => {
-    expect(FORWARD).not.toContain("bccEmails");
-  });
-});
 
 describe("the one-to-one reply copies the rep", () => {
   it("asks the shared resolver on BOTH transports and on the answer from our person's own address", () => {

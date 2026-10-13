@@ -22,9 +22,9 @@ vi.mock("../../src/lib/silver-promote", () => ({
   promoteEvent: (...a: unknown[]) => mockPromote(...a),
 }));
 
-const mockAlert = vi.fn();
-vi.mock("../../src/lib/unclassified-reply-alert", () => ({
-  alertUnclassifiedReply: (...a: unknown[]) => mockAlert(...a),
+const mockSendEmail = vi.fn();
+vi.mock("../../src/lib/email-client", () => ({
+  sendEmail: (...a: unknown[]) => mockSendEmail(...a),
 }));
 
 const mockQualify = vi.fn();
@@ -296,8 +296,9 @@ describe("runReplyQualificationFallback — the sweep", () => {
     expect(summary.classified).toBe(1);
   });
 
-  // Prod 2026-10-01: a "STOP!" the sweep could not label aged out unseen.
-  it("tells a person about a reply it gives up on, with what it read", async () => {
+  // REPLY-NOTIFS-1013: a reply it gives up on is counted, and nobody is
+  // emailed about it (it is in the client's Unibox).
+  it("counts a reply it gives up on and emails nobody", async () => {
     mockDbExecute.mockResolvedValue(
       pgResult([
         {
@@ -312,46 +313,12 @@ describe("runReplyQualificationFallback — the sweep", () => {
     );
     mockFetchInbound.mockResolvedValue({ instantlyEmailId: "e-1", text: "> our pitch" });
     mockQualify.mockResolvedValue(null);
-    mockAlert.mockResolvedValue("sent");
-    const asOf = new Date("2026-09-21T16:00:00.000Z");
 
-    const summary = await runReplyQualificationFallback({ asOf });
+    const summary = await runReplyQualificationFallback({ asOf: new Date("2026-09-21T16:00:00.000Z") });
 
     expect(summary.unqualified).toBe(1);
-    expect(summary.alerted).toBe(1);
-    expect(mockAlert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        instantlyCampaignId: "ic-1",
-        leadEmail: "a@b.com",
-        reason: "unqualified",
-        bodyText: "> our pitch",
-      }),
-      asOf,
-    );
-    expect(mockPromote).not.toHaveBeenCalled();
-  });
-
-  it("a failed alert does not fail the sweep", async () => {
-    mockDbExecute.mockResolvedValue(
-      pgResult([
-        {
-          instantly_campaign_id: "ic-1",
-          lead_email: "a@b.com",
-          account_email: null,
-          org_id: "org-1",
-          user_id: null,
-          replied_at: "2026-09-21T13:50:00.000Z",
-        },
-      ]),
-    );
-    mockFetchInbound.mockResolvedValue(null);
-    mockAlert.mockRejectedValue(new Error("email gateway down"));
-
-    const summary = await runReplyQualificationFallback();
-
-    expect(summary.noBody).toBe(1);
     expect(summary.failed).toBe(0);
-    expect(summary.alerted).toBe(0);
-    expect(mockAlert.mock.calls[0][0]).toMatchObject({ reason: "no_body", bodyText: null });
+    expect(mockSendEmail).not.toHaveBeenCalled();
+    expect(mockPromote).not.toHaveBeenCalled();
   });
 });

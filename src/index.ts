@@ -234,15 +234,6 @@ async function start() {
         console.error(`[instantly-service] failed to start booked-stops-cold worker: ${message}`);
       });
 
-    // A prospect's reply a responder took but never answered: a day later the
-    // client is asked to answer it themselves. Armed after listen.
-    import("./lib/unanswered-reply-deadline-worker")
-      .then(({ startUnansweredReplyDeadlineWorker }) => startUnansweredReplyDeadlineWorker())
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[instantly-service] failed to start unanswered-reply-deadline worker: ${message}`);
-      });
-
     // A conversation one of our people holds with a lead from their own Gmail:
     // folded into the lead's thread on the mirror's own cadence. Armed after listen.
     import("./lib/self-send/gmail-threads-worker")

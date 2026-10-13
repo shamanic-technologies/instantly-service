@@ -1668,18 +1668,18 @@ const EscalateReplyResultSchema = z
     threadMessages: z
       .number()
       .int()
-      .describe("How many messages of the exchange went to the agency inbox"),
+      .describe("How many messages of the exchange the brand's team was sent (0 when the rep hand-over went out or on a repeat)"),
     followupsStopped: z
       .boolean()
       .describe(
         "Whether the follow-up ladder was emptied. False when lead-service holds no row for this person on this campaign — a real state, not a failure; the human was still told.",
       ),
     handoff: z
-      .enum(["rep", "agency", "already_escalated"])
+      .enum(["rep", "team", "none", "already_escalated"])
       .describe(
-        "rep: the prospect got an immediate hand-over in their own thread, the brand's rep in Cc and the agency inbox in Bcc. agency: the brand names no rep (or the hand-over could not go out), so the prospect got nothing and the agency inbox got the thread. already_escalated: this thread was escalated before; nothing was sent and nothing stopped.",
+        "rep: the prospect got an immediate hand-over in their own thread, the brand's rep in Cc and the agency inbox in Bcc. team: the brand names no rep (or the hand-over could not go out), so the prospect got nothing and every member of the org that owns the brand got the prospect's reply with a link to the brand's Unibox (staff are never the recipient). none: nobody was emailed (an off-topic reply on a brand with no AI responder: the client answers it in the Unibox). already_escalated: this thread was escalated before; nothing was sent and nothing stopped.",
       ),
-    handedTo: z.string().nullable().describe("Who now owns the thread (the rep's address, or the agency inbox)."),
+    handedTo: z.string().nullable().describe("Who now owns the thread: the rep's address, or the team members emailed (comma-separated). Null when nobody was emailed."),
     replyRead: z
       .boolean()
       .nullable()
@@ -1707,7 +1707,7 @@ registry.registerPath({
   path: "/orgs/replies/escalate",
   summary: "Hand a thread to a human and stop the automated follow-ups",
   description:
-    "The automated responder cannot answer what this prospect asked. EXACTLY ONCE per thread: the client is told in the positive-reply celebration; when the brand names a sales rep the prospect gets an immediate hand-over in their own thread (the rep in Cc, the agency inbox in Bcc, the history quoted, nothing answered or promised), otherwise the prospect gets nothing and the agency inbox gets the thread under its own subject; the follow-up ladder stops once. Afterwards the automated responder never writes on that thread again (`handed_over`). The `question` is a hint for the hand-over draft and is shown to nobody.\n\n" +
+    "The automated responder cannot answer what this prospect asked. EXACTLY ONCE per thread: the client is told in the positive-reply celebration; when the brand names a sales rep the prospect gets an immediate hand-over in their own thread (the rep in Cc, the agency inbox in Bcc, the history quoted, nothing answered or promised), otherwise the prospect gets nothing and every member of the org that owns the brand gets the prospect's reply verbatim with a link to the brand's Unibox (staff are never the recipient); the follow-up ladder stops once. Afterwards the automated responder never writes on that thread again (`handed_over`). The `question` is a hint for the hand-over draft and is shown to nobody.\n\n" +
     "**The decision is the caller's, not this service's.** Whether a question is answerable is a judgement about the draft and can only be made where the draft is made. This endpoint owns the two halves the drafter does not have: the mailbox and thread to forward, and the campaign identity that names the lead row whose schedule stops. There is no content heuristic here.\n\n" +
     "**Not permanent.** A stop is not a tombstone: if the prospect writes again they are re-enqueued and qualification re-decides. A new message is a new decision.\n\n" +
     "**Order is forward-then-stop.** A failure between the two leaves a human informed on a thread still scheduled, which is visible and undoable; the reverse would stop the ladder silently and the prospect would never hear from anyone.\n\n" +
