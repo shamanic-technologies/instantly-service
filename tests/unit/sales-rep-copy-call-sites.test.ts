@@ -35,10 +35,10 @@ const RING = read("ring-rep-on-sales-interest.ts");
 const CLIENT = read("brand-client.ts");
 
 describe("the one-to-one reply copies the rep", () => {
-  it("asks the shared resolver on BOTH transports", () => {
+  it("asks the shared resolver on BOTH transports and on the answer from our person's own address", () => {
     expect(REPLY).toContain('import { salesRepCopyList } from "./sales-rep-copy"');
     const asks = REPLY.match(/salesRepCopyList\(campaign\.brandId, input\.orgId\)/g) ?? [];
-    expect(asks).toHaveLength(2);
+    expect(asks).toHaveLength(3);
   });
 
   it("puts the rep on the same VISIBLE cc the agency inbox already rides, on both transports", () => {

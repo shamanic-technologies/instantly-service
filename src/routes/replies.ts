@@ -72,12 +72,15 @@ router.post("/", async (req: Request, res: Response) => {
           })),
         });
       }
-      if (error.code === "human_took_over" && campaign_id) {
+      if ((error.code === "human_took_over" || error.code === "prospect_wrote_elsewhere") && campaign_id) {
         await handThreadFollowupsToHuman({
           orgId,
           campaignId: campaign_id,
           leadEmail: email,
-          reason: "A person answered this thread after the prospect last wrote (human_took_over).",
+          reason:
+            error.code === "human_took_over"
+              ? "A person answered this thread after the prospect last wrote (human_took_over)."
+              : "The prospect last wrote to one of our people's own mailbox (prospect_wrote_elsewhere).",
           tag: "reply-to-lead",
         });
       }

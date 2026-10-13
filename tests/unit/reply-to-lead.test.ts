@@ -35,6 +35,10 @@ vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({
 }));
 
 const mockDispatchMessage = vi.fn();
+const mockWroteElsewhere = vi.fn();
+vi.mock("../../src/lib/reply-destination", () => ({
+  findProspectWroteElsewhere: (...a: unknown[]) => mockWroteElsewhere(...a),
+}));
 vi.mock("../../src/lib/self-send/smtp", () => ({
   dispatchMessage: (...a: unknown[]) => mockDispatchMessage(...a),
 }));
@@ -135,6 +139,8 @@ async function sendNow(input = INPUT) {
 }
 
 beforeEach(() => {
+  mockWroteElsewhere.mockReset();
+  mockWroteElsewhere.mockResolvedValue(null);
   vi.resetAllMocks();
   mockResolveKey.mockResolvedValue({ key: "k", keySource: "platform" });
   mockGetAccount.mockResolvedValue(ACCOUNT);
@@ -807,5 +813,107 @@ describe("a thread handed to a person (escalation)", () => {
     const [, message] = mockDispatchMessage.mock.calls[0];
     expect(message.cc).toBe("rep@docdinners.com");
     expect(message.bcc).toBe("kevin@distribute.you");
+  });
+});
+
+// ─── Where the prospect wrote last ───────────────────────────────────────────
+
+describe("an answer goes where the prospect wrote last (owner 2026-10-13)", () => {
+  // Lukas's real sequence: cold emails from allie@leansignalio.com, then he
+  // wrote last to kevin@distribute.you in Kevin's own Gmail thread. An answer
+  // went out from Allie into the old thread: never again.
+  const LUKAS = {
+    ...INPUT,
+    orgId: "f0420eb5-8f72-4f0a-a150-f473746df1e6",
+    campaignId: "ecc9c920-7f0c-4085-91a1-c3d378103065",
+    leadEmail: "lukas@stankamera.com",
+  };
+  const lukasSequence = campaignRow({
+    instantlyCampaignId: "self:47b9db4d-0ce6-4da2-b0d6-4d1c13b71163",
+    leadEmail: "lukas@stankamera.com",
+    accountEmail: "allie@leansignalio.com",
+    sendTransport: "smtp",
+  });
+  const toKevin = {
+    ownAddress: "kevin@distribute.you",
+    to: "kevin@distribute.you",
+    at: "2026-10-13T15:24:38.000Z",
+    messageId: "<CAJNVWfyOhOrWkCVFnpAZmjFBsGwfhx9Edd=iMRN+H9PLsbPDWQ@mail.gmail.com>",
+    references: [
+      "<46c4e5ef-0636-4efd-be22-6187bc86a9bf@mtasv.net>",
+      "<CAF9A4-9TrSVPJoDFLJFdSOEskHphhjOETrG9NvvwkuVJYfQLPw@mail.gmail.com>",
+      "<CAJNVWfyOhOrWkCVFnpAZmjFBsGwfhx9Edd=iMRN+H9PLsbPDWQ@mail.gmail.com>",
+    ],
+    subject: "Re: Following up on Allie",
+  };
+  const KEVIN_CREDENTIAL = {
+    address: "kevin@distribute.you",
+    appPassword: "pw",
+    smtpHost: "mail.gandi.net",
+    imapHost: "mail.gandi.net",
+  };
+
+  it("answers from kevin@distribute.you, in Kevin's name, in Kevin's thread — never from Allie", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([lukasSequence]))
+      .mockResolvedValueOnce(pgResult([{ email: "kevin@distribute.you", firstName: "Kevin", lastName: "Lourd" }]));
+    mockWroteElsewhere.mockResolvedValueOnce(toKevin);
+    mockResolveCredential.mockResolvedValue(KEVIN_CREDENTIAL);
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<kevin-2@distribute.you>",
+      response: "250 OK",
+      accepted: ["lukas@stankamera.com"],
+      rejected: [],
+    });
+
+    const result = await replyToLead(LUKAS);
+
+    expect(mockWroteElsewhere).toHaveBeenCalledWith(LUKAS.orgId, "lukas@stankamera.com");
+    expect(mockResolveCredential).toHaveBeenCalledWith("kevin@distribute.you", expect.anything());
+    expect(mockResolveCredential).not.toHaveBeenCalledWith("allie@leansignalio.com", expect.anything());
+    const [credential, message] = mockDispatchMessage.mock.calls[0];
+    expect(credential).toBe(KEVIN_CREDENTIAL);
+    expect(message.from).toBe('"Kevin Lourd" <kevin@distribute.you>');
+    expect(message.to).toBe("lukas@stankamera.com");
+    expect(message.inReplyTo).toBe(toKevin.messageId);
+    expect(message.references).toEqual(toKevin.references);
+    expect(message.subject).toBe("Re: Following up on Allie");
+    expect(JSON.stringify(message)).not.toContain("allie@leansignalio.com");
+    expect(result).toMatchObject({ status: "sent", reply: { accountEmail: "kevin@distribute.you", inReplyTo: toKevin.messageId } });
+    expect(mockInsertValues.mock.calls[0][0]).toMatchObject({
+      instantlyCampaignId: lukasSequence.instantlyCampaignId,
+      accountEmail: "kevin@distribute.you",
+      step: 0,
+      outcome: "sent",
+    });
+  });
+
+  it("refuses loudly, sends nothing, when we cannot send as the address they wrote to", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([lukasSequence]));
+    mockWroteElsewhere.mockResolvedValueOnce({ ...toKevin, ownAddress: "kevin.lourd@gmail.com", to: "kevin.lourd@gmail.com" });
+    mockResolveCredential.mockRejectedValue(new Error("no mailbox"));
+
+    await expect(replyToLead(LUKAS)).rejects.toMatchObject({
+      code: "prospect_wrote_elsewhere",
+      status: 409,
+      message: expect.stringMatching(/kevin\.lourd@gmail\.com/),
+    });
+    expect(mockDispatchMessage).not.toHaveBeenCalled();
+    expect(mockReplyToEmail).not.toHaveBeenCalled();
+    expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("control: their last message went to the sending mailbox, the answer leaves from it as before", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([lukasSequence]))
+      .mockResolvedValueOnce(pgResult([{ messageId: "<lukas-1@mail>", subject: "Re: hi", at: "2026-10-06" }]))
+      .mockResolvedValueOnce(pgResult([{ messageId: "<allie-1@mail>" }, { messageId: "<lukas-1@mail>" }]))
+      .mockResolvedValueOnce(pgResult([{ email: "allie@leansignalio.com", firstName: "Allie", lastName: "M" }]));
+    mockResolveCredential.mockResolvedValue({ ...KEVIN_CREDENTIAL, address: "allie@leansignalio.com" });
+    mockDispatchMessage.mockResolvedValue({ messageId: "<a-2@mail>", response: "250", accepted: [], rejected: [] });
+
+    await replyToLead(LUKAS);
+    expect(mockResolveCredential).toHaveBeenCalledWith("allie@leansignalio.com", expect.anything());
+    expect(mockDispatchMessage.mock.calls[0][1].inReplyTo).toBe("<lukas-1@mail>");
   });
 });

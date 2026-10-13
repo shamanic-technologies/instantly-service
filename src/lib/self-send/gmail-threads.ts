@@ -48,6 +48,7 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
+import { OWN_MAILBOX_THREAD } from "../reply-destination";
 import type { CallerInfo } from "../key-client";
 import { bareAddress, isStaffSender } from "../staff-senders";
 import { fetchMirroredMailForAddresses, type GoogleCallerIdentity, type MirroredMessage } from "../google-client";
@@ -66,8 +67,8 @@ import {
 
 export const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/gmail-threads" };
 
-/** Provenance tag on every bronze row this module files. */
-export const OWN_MAILBOX_THREAD = "own_mailbox_thread";
+/** Provenance tag on every bronze row this module files (defined in the leaf `reply-destination`). */
+export { OWN_MAILBOX_THREAD };
 
 /** The routine window: what the mirror may have learned since the last passes (it lags ~15 min). */
 export const GMAIL_THREADS_LOOKBACK_MS = LATE_AFTER_MS;
