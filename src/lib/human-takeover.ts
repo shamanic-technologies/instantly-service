@@ -32,6 +32,7 @@ import { db } from "../db";
 import { MANUAL_REPLY_STEP } from "./manual-reply-step";
 import { staffSenderSql } from "./staff-senders";
 import { STAFF_REPLY_KIND } from "./self-send/inbound";
+import { OWN_MAILBOX_THREAD } from "./reply-destination";
 
 function toSource(value: unknown): HumanAnswer["source"] {
   const s = String(value);
@@ -105,7 +106,7 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
  * asked to answer instead (silver-promote: no responder for a held thread).
  */
 export function ownMailboxAnswerSql(alias: SQL): SQL {
-  return sql`(${alias}.payload ? 'recoveredFrom' AND ${staffSenderSql(sql`lower(${alias}.from_address)`)})`;
+  return sql`(${alias}.payload->>'recoveredFrom' = ${OWN_MAILBOX_THREAD} OR (${alias}.payload ? 'recoveredFrom' AND ${staffSenderSql(sql`lower(${alias}.from_address)`)}))`;
 }
 
 /** A person holds this thread from their own mailbox (see {@link ownMailboxAnswerSql}). Fails loud. */

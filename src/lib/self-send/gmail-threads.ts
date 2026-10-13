@@ -51,7 +51,12 @@ import { db } from "../../db";
 import { OWN_MAILBOX_THREAD } from "../reply-destination";
 import type { CallerInfo } from "../key-client";
 import { bareAddress, isStaffSender } from "../staff-senders";
-import { fetchMirroredMailForAddresses, type GoogleCallerIdentity, type MirroredMessage } from "../google-client";
+import {
+  fetchMirroredMailForAddresses,
+  fetchOrgMailForAddresses,
+  type GoogleCallerIdentity,
+  type MirroredMessage,
+} from "../google-client";
 import { isAutoReply, isDeliveryStatusNotification, STAFF_REPLY_KIND, type InboundKind } from "./inbound";
 import { emptyPollSummary, type PollSummary } from "./imap-poller";
 import {
@@ -174,6 +179,23 @@ async function loadLeadAddresses(): Promise<string[]> {
     .filter((e) => e.includes("@") && !isStaffSender(e));
 }
 
+/** Each org's lead addresses (lowercased), for that org's own connected Gmail. */
+async function loadLeadsByOrg(): Promise<Map<string, string[]>> {
+  const result = await db.execute(sql`
+    SELECT org_id AS "orgId", array_agg(DISTINCT lower(trim(lead_email))) AS emails
+    FROM instantly_campaigns
+    WHERE lead_email IS NOT NULL AND org_id IS NOT NULL
+      AND instantly_campaign_id NOT LIKE 'reserving:%'
+    GROUP BY org_id
+  `);
+  const out = new Map<string, string[]>();
+  for (const r of rowsOf(result)) {
+    const emails = Array.isArray(r.emails) ? (r.emails as unknown[]).map(String) : [];
+    out.set(String(r.orgId), emails.filter((e) => e.includes("@")));
+  }
+  return out;
+}
+
 async function loadCandidates(leadEmail: string, at: Date): Promise<SequenceCandidate[]> {
   const result = await db.execute(sql`
     SELECT c.instantly_campaign_id AS "instantlyCampaignId",
@@ -229,11 +251,12 @@ function referencesOf(message: MirroredMessage): string[] {
 }
 
 /** A real identity of the fleet's own work, for google-service's request log. */
-async function readerIdentity(): Promise<GoogleCallerIdentity | null> {
+async function readerIdentity(orgId?: string): Promise<GoogleCallerIdentity | null> {
   const result = await db.execute(sql`
     SELECT org_id AS "orgId", user_id AS "userId", run_id AS "runId"
     FROM instantly_campaigns
     WHERE org_id IS NOT NULL AND user_id IS NOT NULL AND run_id IS NOT NULL
+      ${orgId ? sql`AND org_id = ${orgId}` : sql``}
     ORDER BY created_at DESC
     LIMIT 1
   `);
@@ -303,47 +326,101 @@ export async function foldInGmailThreads(
   };
   if (leads.length === 0) return summary;
 
+  // SOURCE 1: the staff mirrors, for every lead of every org.
   const identity = await readerIdentity();
   if (!identity) throw new Error("no campaign carries an identity to read the Gmail mirror with");
+  await foldSource(
+    {
+      label: "staff",
+      leads,
+      isOurs: (address) => isStaffSender(address),
+      orgId: null,
+      read: (batch) => fetchMirroredMailForAddresses(batch, identity, since),
+    },
+    asOf,
+    summary,
+  );
 
+  // SOURCE 2: each org's OWN connected Gmail, for that org's leads (same
+  // mechanism, "ours" = the org's own addresses). An org that connected none
+  // answers 404 on its first batch and is skipped.
   const leadSet = new Set(leads);
-  const isOurs = (address: string): boolean => isStaffSender(address);
+  for (const [orgId, orgLeads] of await loadLeadsByOrg()) {
+    const scoped = orgLeads.filter((l) => leadSet.has(l));
+    if (scoped.length === 0) continue;
+    const orgIdentity = await readerIdentity(orgId);
+    if (!orgIdentity) continue;
+    let owner: Set<string> | null = new Set();
+    await foldSource(
+      {
+        label: `org ${orgId}`,
+        leads: scoped,
+        isOurs: (address) => owner?.has(address) ?? false,
+        orgId,
+        read: async (batch) => {
+          if (owner === null) return [];
+          const page = await fetchOrgMailForAddresses(batch, orgIdentity, since);
+          if (!page) {
+            owner = null;
+            return [];
+          }
+          for (const a of page.ownerAddresses) owner.add(a);
+          return page.messages;
+        },
+      },
+      asOf,
+      summary,
+    );
+  }
+  return summary;
+}
 
+/** Where a pass reads: which leads, how, and whose addresses are "ours". */
+interface FoldSource {
+  label: string;
+  leads: string[];
+  isOurs: (address: string) => boolean;
+  /** Only this org's sequences may receive the exchange (null = any org). */
+  orgId: string | null;
+  read: (batch: string[]) => Promise<MirroredMessage[]>;
+}
+
+async function foldSource(source: FoldSource, asOf: Date, summary: GmailThreadsSummary): Promise<void> {
+  const leadSet = new Set(source.leads);
   // Read every batch first, then act in DATE order: our answer is filed before
   // the reply that follows it, so the thread is already held when the reply's
   // side effects ask who answers it.
   const messages = new Map<string, MirroredMessage>();
-  for (let i = 0; i < leads.length; i += ADDRESS_BATCH) {
-    const batch = leads.slice(i, i + ADDRESS_BATCH);
+  for (let i = 0; i < source.leads.length; i += ADDRESS_BATCH) {
+    const batch = source.leads.slice(i, i + ADDRESS_BATCH);
     try {
-      for (const m of await fetchMirroredMailForAddresses(batch, identity, since)) {
-        messages.set(m.gmailMessageId ?? m.mirrorId, m);
-      }
+      for (const m of await source.read(batch)) messages.set(m.gmailMessageId ?? m.mirrorId, m);
     } catch (error) {
       summary.batchesFailed += 1;
       console.error(
-        `[instantly-service] gmail-threads: mirror read FAILED for batch ${i / ADDRESS_BATCH + 1}: ${
+        `[instantly-service] gmail-threads: ${source.label} mirror read FAILED for batch ${i / ADDRESS_BATCH + 1}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
     }
   }
-  summary.messagesRead = messages.size;
-  const ordered = [...messages.values()].sort(
-    (a, b) => (a.date?.getTime() ?? 0) - (b.date?.getTime() ?? 0),
-  );
+  summary.messagesRead += messages.size;
+  const ordered = [...messages.values()].sort((a, b) => (a.date?.getTime() ?? 0) - (b.date?.getTime() ?? 0));
 
   for (const message of ordered) {
-    const parts = planExchange(message, leadSet, isOurs);
+    const parts = planExchange(message, leadSet, source.isOurs);
     if (parts.length === 0 || !message.date) {
       summary.notAnExchange += 1;
       continue;
     }
     for (const part of parts) {
-      await foldOne(message, part, asOf, summary);
+      const ourAddress =
+        part.side === "lead"
+          ? ([...message.to, ...message.cc].map((r) => lower(r)).find((r) => r && source.isOurs(r)) ?? null)
+          : lower(message.from) || null;
+      await foldOne(message, part, asOf, summary, source.orgId, ourAddress);
     }
   }
-  return summary;
 }
 
 async function foldOne(
@@ -351,6 +428,9 @@ async function foldOne(
   part: ExchangePart,
   asOf: Date,
   summary: GmailThreadsSummary,
+  orgId: string | null,
+  /** Our side's address in this exchange (who they wrote to / who wrote to them). */
+  ourAddress: string | null,
 ): Promise<void> {
   const date = message.date as Date;
   const kind: InboundKind | null = part.side === "ours" ? STAFF_REPLY_KIND : leadMessageKind(message);
@@ -358,7 +438,7 @@ async function foldOne(
     summary.notAnExchange += 1;
     return;
   }
-  const candidates = await loadCandidates(part.leadEmail, date);
+  const candidates = (await loadCandidates(part.leadEmail, date)).filter((c) => orgId === null || c.orgId === orgId);
   const needsReferences =
     candidates.length > 1 && new Set(candidates.map((c) => c.orgId ?? "")).size > 1;
   const choice = chooseSequence(
@@ -430,6 +510,7 @@ async function foldOne(
     headers: headersOf(message),
     recoveredFrom: OWN_MAILBOX_THREAD,
     to: [...message.to, ...message.cc],
+    ...(ourAddress ? { ourAddress } : {}),
   });
   if (!rowId) {
     summary.alreadyIngested += 1;

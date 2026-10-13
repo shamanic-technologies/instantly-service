@@ -36,7 +36,8 @@ vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({
 
 const mockDispatchMessage = vi.fn();
 const mockWroteElsewhere = vi.fn();
-vi.mock("../../src/lib/reply-destination", () => ({
+vi.mock("../../src/lib/reply-destination", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
   findProspectWroteElsewhere: (...a: unknown[]) => mockWroteElsewhere(...a),
 }));
 vi.mock("../../src/lib/self-send/smtp", () => ({
