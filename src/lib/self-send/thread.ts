@@ -49,7 +49,8 @@ export async function fetchSelfSendThread(
       COALESCE(s.subject, d.payload->>'subject', '')     AS "subject",
       COALESCE(s.body_html, d.payload->>'bodyHtml', '')  AS "bodyHtml",
       d.dispatched_at                     AS "at",
-      d.id                                AS "dispatchId"
+      d.id                                AS "dispatchId",
+      (d.step > 0)                        AS "sequenceStep"
     FROM smtp_dispatch_raw d
     LEFT JOIN sequence_steps s
       ON s.instantly_campaign_id = d.instantly_campaign_id AND s.step = d.step
@@ -65,7 +66,8 @@ export async function fetchSelfSendThread(
       COALESCE(m.subject, '')                          AS "subject",
       COALESCE(m.payload->>'textSnippet', '')          AS "bodyHtml",
       COALESCE(m.received_at, m.polled_at)             AS "at",
-      NULL                                             AS "dispatchId"
+      NULL                                             AS "dispatchId",
+      false                                            AS "sequenceStep"
     FROM imap_messages_raw m
     WHERE m.instantly_campaign_id = ${instantlyCampaignId}
       AND m.kind IN ('reply', 'auto_reply')
@@ -81,7 +83,8 @@ export async function fetchSelfSendThread(
       COALESCE(m.subject, '')                          AS "subject",
       COALESCE(m.payload->>'textSnippet', '')          AS "bodyHtml",
       COALESCE(m.received_at, m.polled_at)             AS "at",
-      NULL                                             AS "dispatchId"
+      NULL                                             AS "dispatchId",
+      false                                            AS "sequenceStep"
     FROM imap_messages_raw m
     WHERE m.instantly_campaign_id = ${instantlyCampaignId}
       AND m.kind = 'staff_reply'
@@ -114,6 +117,7 @@ function toThreadMessage(row: Record<string, unknown>): ThreadMessage {
     ...(typeof row.dispatchId === "string" && row.dispatchId.length > 0
       ? { sourceRef: { dispatchId: row.dispatchId } }
       : {}),
+    ...(row.sequenceStep === true ? { sequenceStep: true } : {}),
   };
 }
 
@@ -151,6 +155,7 @@ export async function fetchOwnDispatchedMessages(
       COALESCE(s.body_html, d.payload->>'bodyHtml', '')  AS "bodyHtml",
       d.dispatched_at                                    AS "at",
       d.id                                               AS "dispatchId",
+      (d.step > 0)                                       AS "sequenceStep",
       d.payload->>'instantlyEmailId'                     AS "instantlyEmailId"
     FROM smtp_dispatch_raw d
     LEFT JOIN sequence_steps s

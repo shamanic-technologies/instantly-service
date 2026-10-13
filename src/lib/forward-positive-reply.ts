@@ -110,6 +110,12 @@ export interface ThreadMessage {
    * `email_sent` event that recorded it by IDENTITY, never by time.
    */
   sourceRef?: { instantlyEmailId?: string; dispatchId?: string };
+  /**
+   * An automated step of the cold sequence (Instantly `ue_type 1`, our dispatch
+   * at step > 0), never a person writing. A follow-up that went out after the
+   * prospect wrote because nobody saw their reply is NOT an answer to it.
+   */
+  sequenceStep?: boolean;
 }
 
 /**
@@ -224,6 +230,7 @@ export function selectThreadMessages(records: EmailRecord[]): ThreadMessage[] {
       subject: r.subject || "(no subject)",
       bodyText: bodyToText(r),
       ...(r.id ? { sourceRef: { instantlyEmailId: r.id } } : {}),
+      ...(r.ue_type === 1 ? { sequenceStep: true } : {}),
     }));
 }
 

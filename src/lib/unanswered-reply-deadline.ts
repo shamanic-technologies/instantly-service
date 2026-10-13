@@ -117,7 +117,14 @@ export async function findUnansweredReplies(asOf: Date = new Date()): Promise<Un
         q.known_at
       ) AS asked_at
     ) a
-    WHERE q.known_at <= ${cutoff}::timestamp
+    -- The deadline is the responder's time to answer. A reply RECOVERED from
+    -- a mailbox we could not read (self-send/forwarded-replies.ts) was never
+    -- given to a responder: it is overdue the moment we hold it.
+    WHERE (q.known_at <= ${cutoff}::timestamp OR EXISTS (
+      SELECT 1 FROM imap_messages_raw r
+      WHERE r.instantly_campaign_id = c.instantly_campaign_id
+        AND r.kind = 'reply' AND r.payload ? 'recoveredFrom'
+    ))
       AND g.reply_kind IN (${kindsSql})
       AND c.org_id IS NOT NULL AND c.user_id IS NOT NULL AND c.run_id IS NOT NULL
       -- Never claimed, or claimed by an ask a deploy killed mid-send (same

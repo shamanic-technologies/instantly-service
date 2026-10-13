@@ -76,6 +76,33 @@ describe("planMirroredMessage: the poll's own correlation, on a forwarded copy",
     expect(plan).toMatchObject({ action: "file", kind: "staff_reply" });
   });
 
+  it("the client's own address writing TO the lead on our thread is our side's answer, not their reply", () => {
+    const plan = planMirroredMessage(
+      msg({ from: "info@docdinners.com", to: ["laura@fusionmedcare.com"], cc: ["klourd@pressbeat.ai"], text: "Hi, I'm Dev with DocDinners." }),
+      aliases,
+      known,
+    );
+    expect(plan).toMatchObject({ action: "file", kind: "staff_reply" });
+  });
+
+  it("a colleague at the lead's own company answering is still their side (filed as a reply)", () => {
+    const plan = planMirroredMessage(
+      msg({ from: "office@fusionmedcare.com", to: ["klourd@pressbeat.ai", "laura@fusionmedcare.com"] }),
+      aliases,
+      known,
+    );
+    expect(plan).toMatchObject({ action: "file", kind: "reply" });
+  });
+
+  it("an Exchange out-of-office (null return-path) is an auto_reply, never a bounce", () => {
+    const plan = planMirroredMessage(
+      msg({ headers: { "return-path": "<>", "auto-submitted": "auto-generated", "x-auto-response-suppress": "All" }, text: "I'll be out of the office today." }),
+      aliases,
+      known,
+    );
+    expect(plan).toMatchObject({ action: "file", kind: "auto_reply" });
+  });
+
   it("our alias writing on the thread to someone else is not an answer to the lead", () => {
     const plan = planMirroredMessage(msg({ from: "klourd@pressbeat.ai", to: ["someone@else.com"] }), aliases, known);
     expect(plan).toEqual({ action: "skip", reason: "not_to_the_lead" });
