@@ -15,6 +15,8 @@ import { Router, type Request, type Response } from "express";
 import { runDispatch } from "../lib/self-send/dispatch-worker";
 import { runPoll } from "../lib/self-send/imap-poller";
 import { runOrphanReplySweep } from "../lib/self-send/orphan-reply-sweep";
+import { recoverForwardedReplies } from "../lib/self-send/forwarded-replies";
+import { ForwardedRepliesRequestSchema } from "../schemas";
 import { promotePendingClicks } from "../lib/self-send/click-promotion";
 import { sweepStalledFirstEmails } from "../lib/self-send/stalled-first-emails";
 import { retireInstantlySequences } from "../lib/self-send/retire-instantly-sequences";
@@ -127,6 +129,33 @@ router.post("/orphan-replies", async (req: Request, res: Response) => {
       }`,
     );
   });
+});
+
+/**
+ * Recover the replies a mailbox forwarded away into a staff Gmail
+ * (`forwarded-replies.ts`). Body `{ dryRun?: boolean (default TRUE),
+ * mailboxes?: string[], domains?: string[] }`; no target = every mailbox blind
+ * now. 202, then `forwarded-replies: done` with the summary.
+ */
+router.post("/forwarded-replies", async (req: Request, res: Response) => {
+  const parsed = ForwardedRepliesRequestSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
+    return;
+  }
+  const dryRun = parsed.data.dryRun !== false;
+  res.status(202).json({ accepted: true });
+  recoverForwardedReplies({ dryRun, mailboxes: parsed.data.mailboxes, domains: parsed.data.domains })
+    .then((summary) => {
+      console.log(`[instantly-service] forwarded-replies: done ${JSON.stringify(summary)}`);
+    })
+    .catch((error) => {
+      console.error(
+        `[instantly-service] forwarded-replies failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
 });
 
 /**

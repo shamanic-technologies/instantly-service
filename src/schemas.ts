@@ -363,6 +363,40 @@ registry.registerPath({
   },
 });
 
+export const ForwardedRepliesRequestSchema = z
+  .object({
+    dryRun: z.boolean().optional(),
+    mailboxes: z.array(z.string().email()).max(500).optional(),
+    domains: z.array(z.string().min(3)).max(100).optional(),
+  })
+  .openapi("ForwardedRepliesRequest");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/self-send/forwarded-replies",
+  summary: "Recover prospect replies a mailbox forwarded away into a staff Gmail",
+  description:
+    "Platform-scoped ops sweep for mailboxes we sent from but could not read (a forward " +
+    "without a copy): reads the staff Gmail mirrors (google-service) for mail to or from " +
+    "the mailbox's addresses, correlates each message on the Message-Id of one of our " +
+    "sends exactly like the IMAP poll, files it in the inbound bronze and promotes it " +
+    "(reply, stop, classification, opt-out). Our staff's own answers are recorded first. " +
+    "A reply older than 3 days records its fact without acting as if it were fresh. " +
+    "Targets: `mailboxes`/`domains`, else every mailbox currently blind. `dryRun` " +
+    "(default TRUE) plans and writes nothing. Returns 202; watch for `forwarded-replies: done`.",
+  request: {
+    body: {
+      content: { "application/json": { schema: ForwardedRepliesRequestSchema } },
+    },
+  },
+  responses: {
+    202: {
+      description: "Sweep accepted; runs in the background",
+      content: { "application/json": { schema: AcceptedResponseSchema } },
+    },
+  },
+});
+
 // ─── Send ───────────────────────────────────────────────────────────────────
 
 export const SequenceStepSchema = z.object({
