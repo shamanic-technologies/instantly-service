@@ -151,7 +151,7 @@ export interface PromoteEventInput {
    * from a mailbox we could not read, `self-send/forwarded-replies.ts`). The
    * FACT is recorded like any other (stats, stop, opt-out, decline), but the
    * side effects that act as if they had just written are skipped: no
-   * celebration to the client, no responder run, no follow-up queue, no
+   * Instantly mirror fetch (Instantly never saw it), no celebration to the client, no responder run, no follow-up queue, no
    * off-topic hand-over, no apology, no call to the rep. The unanswered-reply
    * sweep then treats it as the old reply it is (a staff check-in).
    */
@@ -707,7 +707,10 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // body — the common case was the one never mirrored. Cancelling the plan
       // deletes those words permanently, so they are copied at the moment we
       // learn they exist. Fail-soft, never throws. No-op on any other event.
-      await maybeMirrorCampaignEmails(campaign, input.eventType);
+      // A late-delivered message (recovered from a staff Gmail) is one Instantly
+      // never saw, so its mirror cannot hold it: asking is pointless (and 402s
+      // since the plan was cancelled, one error line per recovered event).
+      if (live) await maybeMirrorCampaignEmails(campaign, input.eventType);
 
       // Celebrate a positive reply to the client (the brand's rep, the agency
       // inbox in Bcc), with their reply shown word for word. AFTER the mirror,
