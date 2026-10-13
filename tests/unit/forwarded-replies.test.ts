@@ -131,3 +131,14 @@ describe("toMirroredMessage: google-service's wire shape", () => {
     expect(m.date?.toISOString()).toBe("2026-08-18T16:42:16.000Z");
   });
 });
+
+describe("planMirroredMessage at mailbox scale", () => {
+  it("plans 10,000 messages against 6,000 known sends in well under a second (ids built once)", () => {
+    const many = new Map<string, AliasedSend>();
+    for (let i = 0; i < 6000; i++) many.set(`<s${i}@pressbeat.ai>`, { ...lauraSend, instantlyCampaignId: `c${i}` });
+    const ids = new Set(many.keys());
+    const started = Date.now();
+    for (let i = 0; i < 10000; i++) planMirroredMessage(msg({ inReplyTo: `<s${i % 7000}@pressbeat.ai>`, references: null }), aliases, many, ids);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+});
