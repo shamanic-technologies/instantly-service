@@ -1757,9 +1757,10 @@
               "sending_account_unresolved",
               "mailbox_credential_unavailable",
               "human_took_over",
+              "prospect_wrote_elsewhere",
               "reply_dispatch_failed"
             ],
-            "description": "campaign_not_found: no campaign in this org for the given email. ambiguous_thread: `campaign_id` was omitted and the prospect wrote back in several campaigns; `candidates` lists them, name one. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. human_took_over: a person already answered this thread since the prospect last wrote, so an automated reply is refused. reply_dispatch_failed: the transport refused the send."
+            "description": "campaign_not_found: no campaign in this org for the given email. ambiguous_thread: `campaign_id` was omitted and the prospect wrote back in several campaigns; `candidates` lists them, name one. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. human_took_over: a person already answered this thread since the prospect last wrote, so an automated reply is refused. prospect_wrote_elsewhere: the prospect's newest message went to one of our people's own mailbox (their Gmail), which we cannot send from; refused for every sender, answer from that mailbox. reply_dispatch_failed: the transport refused the send."
           },
           "candidates": {
             "type": "array",
