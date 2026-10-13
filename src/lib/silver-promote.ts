@@ -146,6 +146,16 @@ export interface PromoteEventInput {
   inferred?: boolean;
   inferredFromEventId?: string | null;
   inferredRule?: string | null;
+  /**
+   * The message reached us long after the prospect wrote it (a reply recovered
+   * from a mailbox we could not read, `self-send/forwarded-replies.ts`). The
+   * FACT is recorded like any other (stats, stop, opt-out, decline), but the
+   * side effects that act as if they had just written are skipped: no
+   * celebration to the client, no responder run, no follow-up queue, no
+   * off-topic hand-over, no apology, no call to the rep. The unanswered-reply
+   * sweep then treats it as the old reply it is (a staff check-in).
+   */
+  deliveredLate?: boolean;
 }
 
 export interface PromoteEventResult {
@@ -671,13 +681,19 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // bought for the leg OUT of that step now, rather than on its next tick.
       // Fail-soft — the qualification above is the primary job and stands
       // whatever this does. No-op on any other event.
-      const responder = await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
+      // A reply recovered long after it was written (`deliveredLate`) records
+      // its fact but acts as if nobody were waiting on a live answer: every
+      // conversation side effect below is skipped for it.
+      const live = !input.deliveredLate;
+      const responder = live
+        ? await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType)
+        : undefined;
 
       // ...and enter that same buyer into lead-service's follow-up queue, owed an
       // answer now. Without this the campaign above runs and finds nobody: the
       // queue and its draining sweep both existed, and nothing had ever written a
       // due date into them. Same gate as the trigger, fail-soft, never throws.
-      await maybeEnqueueFollowupOnInterest(campaign, input.leadEmail, input.eventType);
+      if (live) await maybeEnqueueFollowupOnInterest(campaign, input.leadEmail, input.eventType);
 
       // ...and the reverse: a reply that declines, asks to stop, or hands us
       // somebody else takes the person back OUT of that queue. Without it a
@@ -702,7 +718,7 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // Never throws. No-op on any other event.
       // When the trigger above says no responder will answer, the client is
       // also asked to answer it themselves (staff in Cc).
-      await maybeForwardPositiveReply(campaign, input.leadEmail, input.eventType, { responder });
+      if (live) await maybeForwardPositiveReply(campaign, input.leadEmail, input.eventType, { responder });
 
       // A reply about something other than the offer (a partnership, hiring,
       // investors, a vendor, the press): the automated responder only handles
@@ -712,13 +728,13 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // other event.
       // Detached: the hand-over waits (seconds, bounded) for the reply's words,
       // and this runs inside Instantly's webhook. It never throws.
-      void maybeEscalateOffTopicReply(campaign, input.leadEmail, input.eventType);
+      if (live) void maybeEscalateOffTopicReply(campaign, input.leadEmail, input.eventType);
 
       // Not a prospect at all (already a customer of the client, or the
       // client's own team): stop every sequence of the brand to them and, unless
       // a person stated it, apologize in their thread. Detached for the same
       // reason as above (it waits for the words). Never throws.
-      void maybeHandleNotAProspect(campaign, input.leadEmail, input.eventType, input.source);
+      if (live) void maybeHandleNotAProspect(campaign, input.leadEmail, input.eventType, input.source);
 
       // ...then read what they wrote. A prospect who asks to STOP in the body of
       // a reply ("please remove me from your list") is classified by Instantly as
@@ -748,10 +764,12 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // answers immediately; it claims its own at-most-once column and swallows
       // every failure itself. Placed AFTER the mirror on purpose: the mirror is
       // what puts the prospect's words in bronze, and the call reads them out.
-      void maybeRingRepOnSalesInterest(campaign, input.leadEmail, input.eventType).catch(
-        (error: unknown) =>
-          console.warn("[instantly-service] ring-rep: detached run failed —", error),
-      );
+      if (live) {
+        void maybeRingRepOnSalesInterest(campaign, input.leadEmail, input.eventType).catch(
+          (error: unknown) =>
+            console.warn("[instantly-service] ring-rep: detached run failed —", error),
+        );
+      }
     }
   }
 

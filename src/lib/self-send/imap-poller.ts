@@ -258,6 +258,8 @@ export async function actOnInboundReply(input: {
   messageId: string | null;
   timestamp: Date;
   summary: PollSummary;
+  /** Recovered long after it was written: see `PromoteEventInput.deliveredLate`. */
+  deliveredLate?: boolean;
 }): Promise<void> {
   const { send, accountEmail, rowId, text, subject, messageId, timestamp, summary } = input;
   summary.replies += 1;
@@ -312,6 +314,7 @@ export async function actOnInboundReply(input: {
         timestamp,
         source: "self_send",
         sourceRowId: rowId,
+        ...(input.deliveredLate ? { deliveredLate: true } : {}),
       });
       summary.qualified += 1;
 

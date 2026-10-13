@@ -172,6 +172,30 @@
           }
         }
       },
+      "ForwardedRepliesRequest": {
+        "type": "object",
+        "properties": {
+          "dryRun": {
+            "type": "boolean"
+          },
+          "mailboxes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "email"
+            },
+            "maxItems": 500
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 3
+            },
+            "maxItems": 100
+          }
+        }
+      },
       "SendResponse": {
         "type": "object",
         "properties": {
@@ -6394,6 +6418,33 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/OrphanRepliesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Sweep accepted; runs in the background",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelfSendDispatchAccepted"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/self-send/forwarded-replies": {
+      "post": {
+        "summary": "Recover prospect replies a mailbox forwarded away into a staff Gmail",
+        "description": "Platform-scoped ops sweep for mailboxes we sent from but could not read (a forward without a copy): reads the staff Gmail mirrors (google-service) for mail to or from the mailbox's addresses, correlates each message on the Message-Id of one of our sends exactly like the IMAP poll, files it in the inbound bronze and promotes it (reply, stop, classification, opt-out). Our staff's own answers are recorded first. A reply older than 3 days records its fact without acting as if it were fresh. Targets: `mailboxes`/`domains`, else every mailbox currently blind. `dryRun` (default TRUE) plans and writes nothing. Returns 202; watch for `forwarded-replies: done`.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForwardedRepliesRequest"
               }
             }
           }
