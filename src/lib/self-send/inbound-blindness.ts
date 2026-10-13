@@ -78,29 +78,37 @@ export function selectInboundBlindMailboxes(
 }
 
 /**
- * Every sending address with its window. The inbound side is an EXISTS on the
- * `(account_email, message_id)` unique index, so it costs one index probe per
- * sending address, never a scan of the bronze table.
+ * Every sending address with its window.
+ *
+ * ⚠️ The inbound side is ONE pass over the window, hash-joined, NEVER a
+ * correlated `EXISTS` per sending address. The planner served the EXISTS from
+ * the `polled_at` index and re-walked the whole 14-day window (~174k rows, each
+ * `payload` detoasted for the `?` test) once per address: 120 loops, 26M buffer
+ * hits, 87 s (prod 2026-10-13). It sits on the `POST /orgs/send` path, so every
+ * send took 1.5 to 4 min and the gateway gave up on them. One pass: 1.5 s.
  */
 export async function loadAddressInboundRows(): Promise<AddressInboundRow[]> {
   const result = await db.execute(sql`
-    SELECT s.account_email AS "accountEmail",
-           s.sent          AS "sent",
-           EXISTS (
-             SELECT 1 FROM imap_messages_raw i
-             WHERE i.account_email = s.account_email
-               AND i.polled_at > now() - make_interval(days => ${INBOUND_BLIND_WINDOW_DAYS})
-               -- A reply RECOVERED from elsewhere (forwarded-replies.ts) is not
-               -- evidence that this mailbox is read: it is the opposite.
-               AND NOT (i.payload ? 'recoveredFrom')
-           )               AS "hasInbound"
-    FROM (
+    WITH inbound AS (
+      SELECT DISTINCT account_email
+      FROM imap_messages_raw
+      WHERE polled_at > now() - make_interval(days => ${INBOUND_BLIND_WINDOW_DAYS})
+        -- A reply RECOVERED from elsewhere (forwarded-replies.ts) is not
+        -- evidence that this mailbox is read: it is the opposite.
+        AND NOT (payload ? 'recoveredFrom')
+    ),
+    sent AS (
       SELECT account_email, COUNT(*)::int AS sent
       FROM smtp_dispatch_raw
       WHERE outcome = 'sent'
         AND dispatched_at > now() - make_interval(days => ${INBOUND_BLIND_WINDOW_DAYS})
       GROUP BY 1
-    ) s
+    )
+    SELECT s.account_email                  AS "accountEmail",
+           s.sent                           AS "sent",
+           (inb.account_email IS NOT NULL)  AS "hasInbound"
+    FROM sent s
+    LEFT JOIN inbound inb ON inb.account_email = s.account_email
   `);
   return (result.rows as Record<string, unknown>[]).map((row) => ({
     accountEmail: String(row.accountEmail),
