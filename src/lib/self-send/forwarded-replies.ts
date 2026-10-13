@@ -262,7 +262,7 @@ async function campaignIdentity(instantlyCampaignId: string): Promise<GoogleCall
 }
 
 /** Instantly's mirror already holds this message on that sequence (indexed on the campaign). */
-async function instantlyMirrorHolds(instantlyCampaignId: string, messageId: string): Promise<boolean> {
+export async function instantlyMirrorHolds(instantlyCampaignId: string, messageId: string): Promise<boolean> {
   const result = await db.execute(sql`
     SELECT 1 FROM instantly_emails_raw
     WHERE instantly_campaign_id = ${instantlyCampaignId}
@@ -329,7 +329,7 @@ async function retractRowEvents(rowId: string, reason: string): Promise<void> {
 }
 
 /** File one row in bronze. Null = already there (re-run, or the poll read it). */
-async function fileRow(input: {
+export async function fileRow(input: {
   accountEmail: string;
   messageId: string;
   from: string | null;
@@ -341,6 +341,10 @@ async function fileRow(input: {
   date: Date | null;
   mirrorId: string;
   headers?: InboundHeaders;
+  /** Provenance tag; defaults to the blind-mailbox recovery's. */
+  recoveredFrom?: string;
+  /** Who it was written to, when that is not the mailbox it is filed under (shown in the thread). */
+  to?: string[];
 }): Promise<string | null> {
   const [row] = await db
     .insert(imapMessagesRaw)
@@ -358,7 +362,8 @@ async function fileRow(input: {
         referencedMessageIds: input.referencedMessageIds,
         textSnippet: input.text.slice(0, 4000),
         ...(input.headers ? { headers: input.headers } : {}),
-        recoveredFrom: RECOVERED_FROM_STAFF_MIRROR,
+        recoveredFrom: input.recoveredFrom ?? RECOVERED_FROM_STAFF_MIRROR,
+        ...(input.to && input.to.length > 0 ? { to: input.to.join(", ") } : {}),
         mirrorMessageId: input.mirrorId,
       },
       receivedAt: input.date,
@@ -369,7 +374,7 @@ async function fileRow(input: {
 }
 
 /** A row on this sequence already holds the Gmail message `gmailId` (either read's id form). */
-async function mirrorMessageFiled(instantlyCampaignId: string, gmailId: string): Promise<boolean> {
+export async function mirrorMessageFiled(instantlyCampaignId: string, gmailId: string): Promise<boolean> {
   const result = await db.execute(sql`
     SELECT 1 FROM imap_messages_raw
     WHERE instantly_campaign_id = ${instantlyCampaignId}
@@ -521,14 +526,14 @@ async function recoverMailbox(
 }
 
 /** Promote one filed row through the poll's own path. */
-async function promoteFiled(
+export async function promoteFiled(
   rowId: string,
   plan: Extract<ForwardedPlan, { action: "file" }>,
   message: MirroredMessage,
   messageId: string,
   deliveredLate: boolean,
   asOf: Date,
-  summary: ForwardedRepliesSummary,
+  summary: Pick<ForwardedRepliesSummary, "staffAnswers" | "poll">,
 ): Promise<void> {
   if (plan.kind === STAFF_REPLY_KIND) {
     summary.staffAnswers += 1;

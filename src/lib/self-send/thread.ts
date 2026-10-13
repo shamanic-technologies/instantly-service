@@ -62,7 +62,7 @@ export async function fetchSelfSendThread(
     SELECT
       'inbound'                                        AS "direction",
       COALESCE(m.from_address, m.account_email)        AS "from",
-      m.account_email                                  AS "to",
+      COALESCE(m.payload->>'to', m.account_email)      AS "to",
       COALESCE(m.subject, '')                          AS "subject",
       COALESCE(m.payload->>'textSnippet', '')          AS "bodyHtml",
       COALESCE(m.received_at, m.polled_at)             AS "at",
@@ -79,7 +79,7 @@ export async function fetchSelfSendThread(
     SELECT
       'outbound'                                       AS "direction",
       COALESCE(m.from_address, m.account_email)        AS "from",
-      ''                                               AS "to",
+      COALESCE(m.payload->>'to', '')                   AS "to",
       COALESCE(m.subject, '')                          AS "subject",
       COALESCE(m.payload->>'textSnippet', '')          AS "bodyHtml",
       COALESCE(m.received_at, m.polled_at)             AS "at",
@@ -192,7 +192,7 @@ export async function fetchImapThreadMessages(
     SELECT
       CASE WHEN m.kind = 'staff_reply' THEN 'outbound' ELSE 'inbound' END AS "direction",
       COALESCE(m.from_address, m.account_email)        AS "from",
-      CASE WHEN m.kind = 'staff_reply' THEN '' ELSE m.account_email END AS "to",
+      COALESCE(m.payload->>'to', CASE WHEN m.kind = 'staff_reply' THEN '' ELSE m.account_email END) AS "to",
       COALESCE(m.subject, '')                          AS "subject",
       COALESCE(m.payload->>'textSnippet', '')          AS "bodyHtml",
       COALESCE(m.received_at, m.polled_at)             AS "at",

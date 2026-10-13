@@ -30,6 +30,7 @@ const aliases = new Set(["kevin@pressbeat.ai", "klourd@pressbeat.ai", "lourd@pre
 function msg(extra: Partial<MirroredMessage> = {}): MirroredMessage {
   return {
     mirrorId: "g1",
+    gmailMessageId: "g1",
     messageId: "<laura-1@fusionmedcare.com>",
     inReplyTo: OUR_ID,
     references: OUR_ID,

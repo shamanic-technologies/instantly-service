@@ -243,6 +243,15 @@ async function start() {
         console.error(`[instantly-service] failed to start unanswered-reply-deadline worker: ${message}`);
       });
 
+    // A conversation one of our people holds with a lead from their own Gmail:
+    // folded into the lead's thread on the mirror's own cadence. Armed after listen.
+    import("./lib/self-send/gmail-threads-worker")
+      .then(({ startGmailThreadsWorker }) => startGmailThreadsWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start gmail-threads worker: ${message}`);
+      });
+
     // Read a prospect's reply the moment it lands: one IMAP IDLE session per
     // self-send mailbox, independent of whether anything is due to send.
     // Armed after the port is bound — ~123 logins must never block listen.
