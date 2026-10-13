@@ -353,6 +353,8 @@ export async function loadProspectHistory(
         date: m.at,
         subject: m.subject,
         bodyText: m.text,
+        // A served `email_sent` fact IS a step of the sequence, never a person.
+        ...(m.outreachFact ? { sequenceStep: true } : {}),
       }));
       for (const s of conversation.sequences) sequenceIds.add(s.instantlyCampaignId);
     } catch (error) {

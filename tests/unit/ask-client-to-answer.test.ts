@@ -413,6 +413,15 @@ describe("AC2: a message from us after their question = a person handled it", ()
   it("Vargas: nothing from us after his question", () => {
     expect(ourAnswerAfter(vargasThread, vargas.question)).toBeNull();
   });
+  it("an automated follow-up step sent after their reply (nobody saw it) is NOT an answer", () => {
+    const scheduledFollowUp: ThreadMessage = {
+      ...vargas.cold,
+      date: "2026-10-02T12:00:00.000Z",
+      bodyText: "Hola Américo, sigo por aquí.",
+      sequenceStep: true,
+    };
+    expect(ourAnswerAfter([vargas.cold, vargas.question, scheduledFollowUp], vargas.question)).toBeNull();
+  });
 });
 
 describe("AC3 + AC4: the staff check-in for an OLD question (Vargas, 12 days)", () => {
