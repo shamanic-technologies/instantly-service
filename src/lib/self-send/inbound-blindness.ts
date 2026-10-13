@@ -2,8 +2,8 @@
  * A mailbox we SEND from but whose inbound we never see is BLIND, and a blind
  * mailbox sends no more cold email.
  *
- * ⚠️ WHY. Every reply surface (the Unibox, positive-reply alerts, the stop on
- * reply, the unanswered-question check-ins) is fed by the IMAP poll reading the
+ * ⚠️ WHY. Every reply surface (the Unibox, positive-reply celebration, the stop on
+ * reply, the AI escalation) is fed by the IMAP poll reading the
  * sending mailbox. When nothing ever lands there, every prospect's answer is
  * lost AND their follow-ups keep going out, to someone who already wrote back.
  * Prod 2026-10-13 (PRESSBEAT-INBOUND-1013): six Gandi domains (pressbeat.ai,

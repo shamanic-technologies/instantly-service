@@ -8,30 +8,25 @@ describe("registered email templates", () => {
     for (const t of EMAIL_TEMPLATES) expect(t.layout, t.name).toMatch(/^(brand|none)$/);
   });
 
-  it("the answer-request is a plain email, never wrapped in the brand layout", () => {
-    expect(layoutOf("positive-reply-answer-request")).toBe("none");
+  it("the campaign-error alert is plain", () => {
+    expect(layoutOf("campaign-error")).toBe("none");
   });
 
-  it("the client-forwardable thread is plain too", () => {
-    expect(layoutOf("positive-reply-forward")).toBe("none");
+  it("the client emails (celebration, AI escalation to the brand's team) wear the brand layout", () => {
+    for (const n of ["positive-reply-celebration", "reply-escalation"]) expect(layoutOf(n), n).toBe("brand");
   });
 
-  it("agency-inbox alerts are plain", () => {
-    for (const n of ["campaign-error", "reply-escalation", "reply-handover", "reply-unclassified", "unanswered-question-check-in"]) {
-      expect(layoutOf(n), n).toBe("none");
+  // REPLY-NOTIFS-1013: no staff or client nudge about a reply outside a campaign.
+  it("the retired reply nudges are not registered", () => {
+    for (const n of [
+      "positive-reply-forward",
+      "positive-reply-answer-request",
+      "reply-handover",
+      "reply-unclassified",
+      "unanswered-question-check-in",
+    ]) {
+      expect(layoutOf(n), n).toBeUndefined();
     }
-  });
-
-  it("the answer-request and the forwardable thread go person-to-person (no unsubscribe)", () => {
-    for (const n of ["positive-reply-answer-request", "positive-reply-forward"]) {
-      expect(EMAIL_TEMPLATES.find((t) => t.name === n)?.stream, n).toBe("transactional");
-    }
-  });
-
-  it("the answer-request comes from Kevin, as signed", () => {
-    expect(EMAIL_TEMPLATES.find((t) => t.name === "positive-reply-answer-request")?.from).toBe(
-      "Kevin Lourd <growth@distribute.you>",
-    );
   });
 
   it("names are unique", () => {

@@ -152,8 +152,7 @@ export interface PromoteEventInput {
    * FACT is recorded like any other (stats, stop, opt-out, decline), but the
    * side effects that act as if they had just written are skipped: no
    * Instantly mirror fetch (Instantly never saw it), no celebration to the client, no responder run, no follow-up queue, no
-   * off-topic hand-over, no apology, no call to the rep. The unanswered-reply
-   * sweep then treats it as the old reply it is (a staff check-in).
+   * off-topic hand-over, no apology, no call to the rep. The client reads it in the Unibox.
    */
   deliveredLate?: boolean;
 }
@@ -685,9 +684,7 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // its fact but acts as if nobody were waiting on a live answer: every
       // conversation side effect below is skipped for it.
       const live = !input.deliveredLate;
-      const responder = live
-        ? await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType)
-        : undefined;
+      if (live) await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
 
       // ...and enter that same buyer into lead-service's follow-up queue, owed an
       // answer now. Without this the campaign above runs and finds nobody: the
@@ -719,9 +716,7 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // (2026-09-29). Exactly-once per thread; the claim is taken here and the
       // send finishes in the background (it waits, bounded, for the words).
       // Never throws. No-op on any other event.
-      // When the trigger above says no responder will answer, the client is
-      // also asked to answer it themselves (staff in Cc).
-      if (live) await maybeForwardPositiveReply(campaign, input.leadEmail, input.eventType, { responder });
+      if (live) await maybeForwardPositiveReply(campaign, input.leadEmail, input.eventType);
 
       // A reply about something other than the offer (a partnership, hiring,
       // investors, a vendor, the press): the automated responder only handles

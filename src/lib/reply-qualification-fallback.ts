@@ -2,7 +2,7 @@
  * A reply Instantly never gave a verdict on.
  *
  * Everything this service does with a reply hangs off the reply KIND, not off
- * `reply_received`: the forward to the agency inbox, the trigger of the campaign
+ * `reply_received`: the celebration to the client, the trigger of the campaign
  * bought to answer a buyer, the follow-up debt, and the call to the brand's rep
  * all gate on `isSalesInterestQualification` or on a sibling of it. Instantly
  * normally emits its own qualification seconds after the reply — measured over
@@ -29,7 +29,6 @@ import { maybeMirrorCampaignEmails } from "./mirror-emails";
 import { fetchLatestMirroredInbound } from "./reply-opt-out";
 import { promoteEvent } from "./silver-promote";
 import { QUALIFICATION_EVENT_TYPES, qualifyReply } from "./self-send/qualify-reply";
-import { alertUnclassifiedReply } from "./unclassified-reply-alert";
 
 /**
  * How long Instantly gets to speak before we classify the reply ourselves.
@@ -291,8 +290,6 @@ export interface QualificationFallbackSummary {
   noBody: number;
   unqualified: number;
   failed: number;
-  /** Replies still unclassified past the alert delay, told to the agency inbox this tick. */
-  alerted: number;
 }
 
 /**
@@ -314,7 +311,6 @@ export async function runReplyQualificationFallback(
     noBody: 0,
     unqualified: 0,
     failed: 0,
-    alerted: 0,
   };
 
   for (const reply of candidates) {
@@ -328,29 +324,8 @@ export async function runReplyQualificationFallback(
       } else {
         if (outcome.reason === "no_body") summary.noBody += 1;
         else summary.unqualified += 1;
-        // Giving up silently is how a "STOP!" sat unrecorded for a week: a reply
-        // still without a kind an hour in is told to a person, once.
-        try {
-          const alert = await alertUnclassifiedReply(
-            {
-              ...reply,
-              reason: outcome.reason,
-              bodyText: outcome.reason === "unqualified" ? outcome.bodyText : null,
-            },
-            opts.asOf,
-          );
-          if (alert === "sent") {
-            summary.alerted += 1;
-            console.warn(
-              `[instantly-service] qualification-fallback: reply still unclassified (${outcome.reason}), agency inbox told — lead=${reply.leadEmail} campaign=${reply.instantlyCampaignId}`,
-            );
-          }
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn(
-            `[instantly-service] qualification-fallback: unclassified-reply alert NOT delivered lead=${reply.leadEmail} campaign=${reply.instantlyCampaignId}: ${message}`,
-          );
-        }
+        // No staff email (owner 2026-10-13): the reply is in the Unibox, read
+        // there by the client; the counts above trace it.
       }
     } catch (error: unknown) {
       summary.failed += 1;

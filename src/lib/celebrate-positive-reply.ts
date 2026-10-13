@@ -399,7 +399,7 @@ async function leadOrNull(
 }
 
 /** The org's Clerk id for the dashboard link, or null (logged; the link degrades). */
-async function externalOrgIdOrNull(orgId: string): Promise<string | null> {
+export async function externalOrgIdOrNull(orgId: string): Promise<string | null> {
   try {
     return await getExternalOrgId(orgId);
   } catch (error) {

@@ -119,8 +119,7 @@ function logOutcome(
  *   client's money is out (`unfunded`, `global_sales_budget_reached`,
  *   `item_budget_reached`), run by the client's own team, refused. A run taken
  *   by a PHONE leg (AI Instant Call) answers no email, so it is not counted.
- * - `unknown`: the question could not be asked or read. Nothing is decided on
- *   it; the 24 h deadline (lib/unanswered-reply-deadline) still catches it.
+ * - `unknown`: the question could not be asked or read. Nothing is decided on it.
  */
 export type ResponderVerdict = "answers" | "nobody" | "unknown";
 
@@ -157,7 +156,7 @@ export async function triggerSalesInterestLeg(
   leadEmail: string,
 ): Promise<ResponderVerdict> {
   // A platform send belongs to no org and no caller campaign: nobody to ask,
-  // and nobody to tell either (the answer request needs an org).
+  // so nothing to trigger.
   if (!campaign.orgId) return "unknown";
   if (!campaign.campaignId) return "unknown";
 

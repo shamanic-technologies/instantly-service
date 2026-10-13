@@ -1,55 +1,22 @@
 /**
- * ⚠️ 2026-09-29: a positive reply is now CELEBRATED to the client
- * (lib/celebrate-positive-reply) — `maybeForwardPositiveReply` delegates there.
- * This module keeps the thread helpers and `sendThreadForward` (the manual
- * re-forward and the off-topic hand-over). The history below still describes
- * the claim and the positive set, which are unchanged.
+ * A positive reply is CELEBRATED to the client (lib/celebrate-positive-reply):
+ * `maybeForwardPositiveReply` delegates there, exactly once per thread. This
+ * module also keeps the thread helpers (reading and rendering the exchange)
+ * other modules share.
  *
- * Forward a positive reply's full email thread to the agency inbox.
- *
- * The agency (distribute) runs cold outreach from Instantly. Instantly now
- * paywalls its Unibox/CRM, so a positive reply can no longer be seen or acted on
- * from the Instantly UI without paying. But the V2 API still exposes the replies
- * AND Instantly's OWN qualification of them. This side effect closes the loop:
- * when Instantly ITSELF marks an inbound reply positive/interested, we fetch the
- * whole conversation thread from the V2 API and email it to kevin@distribute.you
- * via the production transactional-email path (Postmark under the hood) — zero
- * dependency on the paid Instantly CRM.
- *
- * We trust Instantly's qualification as-is — NO separate sentiment classifier.
- * "Positive" here is `POSITIVE_REPLY_KINDS`, i.e. what is worth READING. It is
- * deliberately NOT the same set as the 'positive' entries of
- * REPLY_CLASSIFICATION_MAP any more: `lead_referral` is forwarded (a name to
- * talk to is worth reading) while it reports as `neutral` (it is not this
- * person's buying interest). See the divergence note on
- * REPLY_KIND_CLASSIFICATION in lib/reply-kind.
- *
- * Placement: fired as a fail-soft side effect from `promoteEvent` in
- * silver-promote.ts, on REAL (non-inferred) events only. Both the webhook path
- * (event_type=lead_interested…) and the reconcile poll path (lt_interest_status
- * → the same event types) converge here.
- *
- * Idempotency: exactly-once via an atomic claim on
- * `instantly_campaigns.positive_reply_forwarded_at` (migration 0028). The first
- * positive event for a lead claims the column (UPDATE … WHERE … IS NULL
- * RETURNING) and sends; every later positive event (webhook retry, reconcile
- * re-poll, re-qualification interested→meeting_booked→closed) finds it non-null
- * and no-ops. On a send FAILURE the claim is released back to NULL so a later
- * retry re-attempts — at-most-once send, biased against duplicates (the explicit
- * no-go) while still self-healing a transient failure.
+ * The bare thread forward to the agency inbox, the "answer it yourself" email
+ * and the staff check-ins are GONE (owner 2026-10-13): a message sent because
+ * of a fact is a campaign on a trigger, never a staff email from this service.
+ * A client answers a reply by hand in the Unibox; a client paying for AI
+ * answers is told by the AI's own escalation (lib/notify-brand-team).
  *
  * Fail-soft: never throws into the webhook promote path (a 5xx would make
- * Instantly auto-pause the webhook). Any brand/key/Instantly/email error is
- * swallowed + logged; the claim is released so the forward is retried later.
+ * Instantly auto-pause the webhook).
  */
 
 import type { EmailRecord } from "./instantly-client";
-import { sendEmail } from "./email-client";
 import { isEscalatedReplyKind, POSITIVE_REPLY_KINDS } from "./reply-kind";
-import { agencyInbox } from "./agency-inbox";
-import { salesRepCopyList } from "./sales-rep-copy";
 import { isStaffSender } from "./staff-senders";
-import type { ResponderVerdict } from "./trigger-sales-interest-campaign";
 
 /**
  * The reply kinds that mean "worth forwarding to the agency inbox". We forward
@@ -317,84 +284,6 @@ export function threadSubject(messages: ThreadMessage[]): string {
   return messages.length > 0 ? messages[messages.length - 1].subject : "(no subject)";
 }
 
-/**
- * Forward the prospect's WHOLE history to the agency inbox — every email we
- * sent, every reply, every action they took (visits, bounces, unsubscribes),
- * oldest first (see lib/prospect-history) — as a CLEAN, client-forwardable
- * email. Shared by the positive-reply forward, both escalations and the manual
- * re-forward endpoint. Returns the message count.
- *
- * ⚠️ It no longer starts at the prospect's first reply: a reply does not always
- * quote what it answers, so the reader could not see what we had sent. A part
- * of the history that cannot be read is STATED in the email and never stops
- * it; only the send itself throws (the caller decides whether to swallow it).
- */
-export interface ThreadForwardTemplate {
-  /**
-   * The transactional-email template to render. Defaults to the positive-reply
-   * forward; the escalation path names its own, because "your prospect said
-   * something good" and "the responder could not answer this" are different
-   * things to walk into an inbox.
-   */
-  eventType?: string;
-  /** Extra template variables, merged over `subject` / `thread`. */
-  metadata?: Record<string, string>;
-}
-
-export async function sendThreadForward(
-  campaign: ForwardPositiveReplyCampaign,
-  leadEmail: string,
-  template: ThreadForwardTemplate = {},
-): Promise<number> {
-  if (!campaign.orgId) {
-    throw new Error("forward-thread requires an org-scoped campaign (orgId is null)");
-  }
-  // Dynamic import: prospect-history reads the thread through modules that
-  // import this one, so a static import would be a load-time cycle.
-  const { loadHistoryWithLatestReply, renderProspectHistory } = await import("./prospect-history");
-  // Waited on until it holds the prospect's reply (or says it could not): the
-  // reply is announced before our copy of its words is written.
-  const { history } = await loadHistoryWithLatestReply(campaign, leadEmail);
-  const messages = history.messages;
-
-  // The client's own rep is copied on the thread their prospect just wrote,
-  // seconds before their phone rings. VISIBLY, never blind: a blind-copied rep
-  // receives a message addressed to the agency, which reads as mis-sent, and a
-  // reply-all from them would reach nobody on our side.
-  //
-  // Resolved HERE from the campaign's own brand, never handed in by a caller —
-  // the same reasoning that makes the one-to-one reply resolve its sending
-  // identity rather than accept one. A brand that stated no rep, or a rep with
-  // no email, sends exactly what it sent before this existed.
-  const ccEmails = await salesRepCopyList(campaign.brandIds?.[0], campaign.orgId);
-
-  await sendEmail(
-    {
-      appId: "instantly-service",
-      eventType: template.eventType ?? "positive-reply-forward",
-      recipientEmail: agencyInbox(),
-      ...(ccEmails.length > 0 ? { ccEmails } : {}),
-      metadata: {
-        subject: threadSubject(messages),
-        thread: renderProspectHistory(history, leadEmail),
-        ...(template.metadata ?? {}),
-      },
-    },
-    {
-      orgId: campaign.orgId,
-      userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
-      runId: campaign.runId || undefined,
-      tracking: {
-        campaignId: campaign.campaignId ?? undefined,
-        brandId: campaign.brandIds?.[0],
-      },
-    },
-  );
-  console.log(
-    `[instantly-service] ${template.eventType ?? "forward-positive-reply"}: sent history (${messages.length} msg, ${history.items.length - messages.length} action${history.notes.length > 0 ? `, ${history.notes.length} unreadable part(s)` : ""}) for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${agencyInbox()}${ccEmails.length > 0 ? ` cc=${ccEmails.join(",")}` : ""}`,
-  );
-  return messages.length;
-}
 
 /**
  * Celebrate a positively-qualified reply to the client — exactly once per
@@ -412,32 +301,13 @@ export async function maybeForwardPositiveReply(
   campaign: ForwardPositiveReplyCampaign,
   leadEmail: string,
   eventType: string,
-  options: {
-    background?: boolean;
-    waitsMs?: number[];
-    /**
-     * What campaign-service answered when the responder was asked to take this
-     * reply (lib/trigger-sales-interest-campaign). `nobody` = the client is
-     * asked to answer it themselves, right away. Anything else asks nothing
-     * here; the 24 h deadline (lib/unanswered-reply-deadline) catches a
-     * responder that took it and never answered.
-     */
-    responder?: ResponderVerdict;
-  } = {},
+  options: { background?: boolean; waitsMs?: number[] } = {},
 ): Promise<void> {
   if (!isPositiveQualification(eventType)) return;
   if (!campaign.orgId) return;
 
   const { celebrateOnce } = await import("./celebrate-positive-reply");
-  // The celebration (never for an info request) goes first; when NO responder
-  // will answer, a second email asks the client to answer it themselves
-  // (lib/ask-client-to-answer), staff in Cc. Owner 2026-10-11: a prospect's
-  // reply never sits unseen, and the client is the one asked.
-  const run = celebrateOnce(campaign, leadEmail, { waitsMs: options.waitsMs, kind: eventType }).then(async () => {
-    if (options.responder !== "nobody") return;
-    const { maybeAskClientToAnswer } = await import("./ask-client-to-answer");
-    await maybeAskClientToAnswer(campaign, leadEmail, { because: "no_responder" });
-  });
+  const run = celebrateOnce(campaign, leadEmail, { waitsMs: options.waitsMs, kind: eventType });
   if (options.background === false) {
     await run;
   } else {

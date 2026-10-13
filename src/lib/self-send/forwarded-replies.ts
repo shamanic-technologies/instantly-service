@@ -28,8 +28,7 @@
  *    `actOnInboundReply`): stop, classification, opt-out. A reply older than
  *    {@link LATE_AFTER_MS} is `deliveredLate`: its fact is recorded but nothing
  *    acts as if they had just written (no celebration, no responder, no rep
- *    call); the unanswered-reply sweep then gives it the staff check-in an old
- *    reply gets.
+ *    call); the client reads it in the Unibox.
  *  - an answer our staff already sent is recorded first, as `staff_reply`, so
  *    nobody is asked about a prospect who was answered: one sent from Gmail AS
  *    the sending alias (it is in the same mirror read) and one sent from the
@@ -48,7 +47,6 @@ import { refreshLeadStatusCurrent } from "../status-gold";
 import { promoteEvent } from "../silver-promote";
 import type { CallerInfo } from "../key-client";
 import { isStaffSender } from "../staff-senders";
-import { QUESTION_STALE_AFTER_MS } from "../ask-client-to-answer";
 import {
   fetchMirroredMailForAddresses,
   fetchStaffConversation,
@@ -73,8 +71,8 @@ const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/forwarde
 /** The provenance tag on every recovered bronze row. */
 export const RECOVERED_FROM_STAFF_MIRROR = "staff_gmail_mirror";
 
-/** Older than this, a recovered reply is `deliveredLate` (same bar as a stale question). */
-export const LATE_AFTER_MS = QUESTION_STALE_AFTER_MS;
+/** Older than this, a recovered reply is `deliveredLate` . */
+export const LATE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
 
 /** A known send of the mailbox, with the alias that sent it. */
 export interface AliasedSend extends KnownSend {

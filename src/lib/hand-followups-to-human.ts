@@ -2,10 +2,8 @@
  * A thread became a PERSON's: tell lead-service so no automated responder ever
  * claims it again (owner 2026-10-11, Shockwavecenters).
  *
- * Every place this service hands a thread to a human states it here: the client
- * is asked to answer (lib/ask-client-to-answer), the responder escalates
- * (lib/escalate-reply), and a person already answered in the thread
- * (`human_took_over` on POST /orgs/replies). lead-service owns the queue and the
+ * Stated here when a person already answered in the thread (`human_took_over`
+ * on POST /orgs/replies); the escalation states it through lead-client. lead-service owns the queue and the
  * claim; we own the fact, so we state it (the queue's model: whoever OBSERVES
  * says so). The 409 gates in lib/reply-to-lead stay as the last line.
  *
