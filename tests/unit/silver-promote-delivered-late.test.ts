@@ -36,8 +36,13 @@ const live = {
 const decline = vi.fn();
 const optOut = vi.fn();
 
-vi.mock("../../src/lib/trigger-sales-interest-campaign", () => ({
+vi.mock("../../src/lib/trigger-sales-interest-campaign", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
   maybeTriggerSalesInterestCampaign: (...a: unknown[]) => live.trigger(...a),
+}));
+const heldInOwnMailbox = vi.fn();
+vi.mock("../../src/lib/human-takeover", () => ({
+  isHeldInOwnMailbox: (...a: unknown[]) => heldInOwnMailbox(...a),
 }));
 vi.mock("../../src/lib/enqueue-followup-on-interest", () => ({
   maybeEnqueueFollowupOnInterest: (...a: unknown[]) => live.enqueue(...a),
@@ -102,6 +107,7 @@ describe("promoteEvent: a reply delivered late", () => {
     for (const fn of Object.values(live)) fn.mockResolvedValue(undefined);
     decline.mockResolvedValue(undefined);
     optOut.mockResolvedValue(undefined);
+    heldInOwnMailbox.mockResolvedValue(false);
   });
 
   it("records the fact without acting as if they had just written", async () => {
@@ -122,5 +128,29 @@ describe("promoteEvent: a reply delivered late", () => {
     expect(live.forward).toHaveBeenCalled();
     expect(live.ringRep).toHaveBeenCalled();
     expect(mirror).toHaveBeenCalled();
+  });
+
+  it("a thread a person holds from their own mailbox: the responder is not asked, the client is celebrated", async () => {
+    // STAFF-GMAIL-THREAD-1013: Lukas answered Kevin's own Gmail "Thurs/Fri?".
+    // The responder would answer from the sending alias on another thread, so
+    // it is not asked and nothing is queued; the person holding it answers
+    // (REPLY-NOTIFS-1013: no email asks them).
+    arrange();
+    heldInOwnMailbox.mockResolvedValueOnce(true);
+    await promoteEvent(base);
+    expect(heldInOwnMailbox).toHaveBeenCalledWith("inst-1");
+    expect(live.trigger).not.toHaveBeenCalled();
+    expect(live.enqueue).not.toHaveBeenCalled();
+    expect(live.forward).toHaveBeenCalledWith(
+      expect.objectContaining({ instantlyCampaignId: "inst-1" }),
+      "laura@fusionmedcare.com",
+      "lead_interested",
+    );
+  });
+
+  it("a reply that opens no conversation never reads the hold", async () => {
+    arrange();
+    await promoteEvent({ ...base, eventType: "lead_not_interested" });
+    expect(heldInOwnMailbox).not.toHaveBeenCalled();
   });
 });

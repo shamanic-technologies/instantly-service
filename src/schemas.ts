@@ -397,6 +397,41 @@ registry.registerPath({
   },
 });
 
+export const GmailThreadsRequestSchema = z
+  .object({
+    dryRun: z.boolean().optional(),
+    since: z.string().datetime({ offset: true }).optional(),
+    leads: z.array(z.string().email()).max(1000).optional(),
+  })
+  .openapi("GmailThreadsRequest");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/self-send/gmail-threads",
+  summary: "Fold the conversations our people hold with leads from their own Gmail into the leads' threads",
+  description:
+    "Platform-scoped ops sweep (also run by an in-process worker every 15 minutes, commit mode, " +
+    "last 3 days): reads the Gmail mirrors (google-service) for mail between a lead we hold a " +
+    "sequence with and one of our own addresses, both directions, files it on the lead's " +
+    "sequence (our side as a staff answer, theirs as a reply) and promotes it like any reply " +
+    "(stop, classification, side effects). A thread a person holds from their own mailbox is " +
+    "never answered by the automated responder; the person is asked instead. A message older " +
+    "than 3 days records its fact without acting as if it were fresh. `since` (default 3 days " +
+    "ago), `leads` (default every lead). `dryRun` (default TRUE) plans and writes nothing. " +
+    "Returns 202; watch for `gmail-threads: done`.",
+  request: {
+    body: {
+      content: { "application/json": { schema: GmailThreadsRequestSchema } },
+    },
+  },
+  responses: {
+    202: {
+      description: "Sweep accepted; runs in the background",
+      content: { "application/json": { schema: AcceptedResponseSchema } },
+    },
+  },
+});
+
 // ─── Send ───────────────────────────────────────────────────────────────────
 
 export const SequenceStepSchema = z.object({

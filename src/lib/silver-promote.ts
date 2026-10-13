@@ -24,7 +24,8 @@ import { maybeStopOnClickForLeg } from "./stop-on-click";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
 import { maybeEnqueueFollowupOnInterest } from "./enqueue-followup-on-interest";
 import { maybeStopFollowupsOnDecline } from "./stop-followups-on-decline";
-import { maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
+import { isSalesInterestQualification, maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
+import { isHeldInOwnMailbox } from "./human-takeover";
 import { maybeRingRepOnSalesInterest } from "./ring-rep-on-sales-interest";
 import { maybeEscalateOffTopicReply } from "./escalate-off-topic-reply";
 import { maybeHandleNotAProspect } from "./not-a-prospect";
@@ -684,13 +685,20 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // its fact but acts as if nobody were waiting on a live answer: every
       // conversation side effect below is skipped for it.
       const live = !input.deliveredLate;
-      if (live) await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
+      // A thread one of our people holds from their own mailbox is theirs
+      // (human-takeover `own_mailbox`): the responder would be refused on it,
+      // so it is not asked to take the reply; the person answers it.
+      const heldByPerson =
+        live && isSalesInterestQualification(input.eventType)
+          ? await isHeldInOwnMailbox(input.instantlyCampaignId)
+          : false;
+      if (live && !heldByPerson) await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
 
       // ...and enter that same buyer into lead-service's follow-up queue, owed an
       // answer now. Without this the campaign above runs and finds nobody: the
       // queue and its draining sweep both existed, and nothing had ever written a
       // due date into them. Same gate as the trigger, fail-soft, never throws.
-      if (live) await maybeEnqueueFollowupOnInterest(campaign, input.leadEmail, input.eventType);
+      if (live && !heldByPerson) await maybeEnqueueFollowupOnInterest(campaign, input.leadEmail, input.eventType);
 
       // ...and the reverse: a reply that declines, asks to stop, or hands us
       // somebody else takes the person back OUT of that queue. Without it a

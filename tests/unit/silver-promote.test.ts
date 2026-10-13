@@ -82,6 +82,8 @@ vi.mock("../../src/lib/runs-client", () => ({
     /failed: 404\b/.test(error instanceof Error ? error.message : String(error)),
 }));
 
+// A thread held by a person from their own mailbox: none here (gmail-threads).
+vi.mock("../../src/lib/human-takeover", () => ({ isHeldInOwnMailbox: () => Promise.resolve(false) }));
 vi.mock("../../src/lib/status-gold", () => ({
   refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
 }));
