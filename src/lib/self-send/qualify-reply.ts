@@ -14,6 +14,7 @@
  */
 
 import { platformComplete } from "../chat-client";
+import { loadOurOutreach } from "./our-outreach";
 import type { ShadowJudgmentContext } from "../shadow-judgment";
 
 /**
@@ -64,8 +65,8 @@ Labels, and what each one means:
 - lead_changed_job — they say they have left the role or the company, so the role we wrote to is no longer theirs
 - lead_out_of_office — they are away and will return; the message says nothing about the offer
 - lead_neutral — anything else, including a bare acknowledgement or an unclear reply
-- lead_off_topic — the conversation is about something OTHER than them buying what we sell: a partnership or reseller proposal, a job or hiring enquiry, investors or fundraising, a vendor pitching their own product to us, or press and media. Pick this over lead_interested, lead_info_requested, lead_meeting_requested and lead_neutral whenever the exchange is about one of those rather than a purchase; the subject line tells you what the conversation is about
-- lead_already_customer — they say they ALREADY buy, use or own what we offer from this company: "I already have your unit", "we're already one of your clinics", "we've been a customer for years". Pick this over every other label when they say so, even if they also ask a question
+- lead_off_topic — the conversation is about something OTHER than them buying what we sell: a partnership or reseller proposal, a job application or hiring enquiry, investors or fundraising, a vendor pitching their own product to us, or press and media. Pick this over lead_interested, lead_info_requested, lead_meeting_requested and lead_neutral whenever the exchange is about one of those rather than a purchase; our email and the subject line tell you what the conversation is about, and when our email itself offers what the reply talks about (hiring help, a partnership program, a media placement), the reply is about buying it and is NOT lead_off_topic
+- lead_already_customer — they say they ALREADY buy, use or own what we offer from this company: "I already have your unit", "we're already one of your clinics", "we've been a customer for years". Pick this over every other label when they say so, even if they also ask a question. Using the same kind of product bought from ANOTHER company is not this: that is a decline
 - lead_is_client — they say they ARE the company we are writing on behalf of, or work for it: "this is our own company", "I'm on the team", "you're emailing your own client"
 
 Judge only what the reply says. Do not infer enthusiasm from politeness, and do
@@ -74,6 +75,10 @@ not treat a question about how you got their address as interest.
 When the message starts with "Subject:", that is the thread's subject line. Use
 it only to know what the conversation is about — never classify the subject
 itself as something they wrote.
+
+When the message carries an "Our email:" section, that is what we sent them: it
+tells you what we sell. Use it only to know what the conversation is about —
+never classify our words as something they wrote. Their reply is under "Their reply:".
 
 The reply may quote our own email beneath it, and older emails of ours ended with
 the words "Not relevant? Reply "stop" and I won't email you again." or "Don't want
@@ -89,7 +94,9 @@ Worked examples, from real replies:
 - "No interest" -> lead_not_interested (declining is not asking to be taken off the list)
 - Subject "Re: Acme + Beta partnership?", reply "can you explain?" -> lead_off_topic (the conversation is a partnership proposal, not a purchase)
 - "Are you hiring? I'd love to join your team" -> lead_off_topic (a job enquiry)
+- Our email offers job listings to employers, reply "Yes we are hiring two warehouse operatives. A free first listing sounds good. How does it work?" -> lead_info_requested (hiring is what we sell here, so this is a purchase conversation)
 - "I actually am a Shockwave Centers of America clinic. I have the OTG unit. Is this email meant for those who don't have shockwave units?" -> lead_already_customer (they already own the product; the question does not make it interest)
+- "We're using another brand's unit and have no need for another one" -> lead_not_interested (they bought from someone else, not from us)
 - "Ha, I work at Acme, this is our own campaign" -> lead_is_client`;
 
 /**
@@ -137,11 +144,11 @@ export const REPLY_KIND_CRITERIA: Record<
     "they are away and will return; the message says nothing about the offer",
   lead_neutral: "anything else, including a bare acknowledgement or an unclear reply",
   lead_off_topic: {
-    what: "the conversation is about something OTHER than them buying what we sell: a partnership or reseller proposal, a job or hiring enquiry, investors or fundraising, a vendor pitching their own product to us, or press and media. Pick this over lead_interested, lead_info_requested, lead_meeting_requested and lead_neutral whenever the exchange is about one of those rather than a purchase; the subject line tells you what the conversation is about",
+    what: "the conversation is about something OTHER than them buying what we sell: a partnership or reseller proposal, a job application or hiring enquiry, investors or fundraising, a vendor pitching their own product to us, or press and media. Pick this over lead_interested, lead_info_requested, lead_meeting_requested and lead_neutral whenever the exchange is about one of those rather than a purchase; our email and the subject line tell you what the conversation is about, and when our email itself offers what the reply talks about (hiring help, a partnership program, a media placement), the reply is about buying it and is NOT lead_off_topic",
     examples: ["Are you hiring? I'd love to join your team"],
   },
   lead_already_customer: {
-    what: `they say they ALREADY buy, use or own what we offer from this company: "I already have your unit", "we're already one of your clinics", "we've been a customer for years". Pick this over every other label when they say so, even if they also ask a question`,
+    what: `they say they ALREADY buy, use or own what we offer from this company: "I already have your unit", "we're already one of your clinics", "we've been a customer for years". Pick this over every other label when they say so, even if they also ask a question. Using the same kind of product bought from ANOTHER company is not this: that is a decline`,
     examples: [
       "I actually am a Shockwave Centers of America clinic. I have the OTG unit. Is this email meant for those who don't have shockwave units?",
     ],
@@ -162,6 +169,8 @@ export const REPLY_KIND_JUDGMENT_INSTRUCTIONS = `Classify a single reply to a co
 
 Judge only what the reply says. Do not infer enthusiasm from politeness, and do not treat a question about how you got their address as interest.
 
+When the message carries an "Our email:" section, that is what we sent them: it tells you what we sell. Use it only to know what the conversation is about — never classify our words as something they wrote.
+
 The reply may quote our own email beneath it, and older emails of ours ended with the words "Not relevant? Reply "stop" and I won't email you again." or "Don't want to hear from me again? unsubscribe". That is OUR footer, not their request — only a removal request THEY wrote is lead_opt_out_requested.`;
 
 /**
@@ -172,6 +181,15 @@ The reply may quote our own email beneath it, and older emails of ours ended wit
  */
 export interface QualifyReplyContext extends ShadowJudgmentContext {
   subject?: string | null;
+}
+
+/**
+ * Frame their reply with what we sent them, when known — see `our-outreach`.
+ * Without it the message is the reply alone, byte-identical to before.
+ */
+export function withOurOutreach(reply: string, ourOutreach: string | null | undefined): string {
+  const ours = ourOutreach?.trim();
+  return ours ? `Our email:\n${ours}\n\nTheir reply:\n${reply}` : reply;
 }
 
 /** Prefix the thread's subject line, when known — see `QualifyReplyContext`. */
@@ -321,7 +339,13 @@ export async function qualifyReply(
   const typedSubject = body ? null : subjectTheyTyped(subject);
   const stripped = body || typedSubject || "";
   if (!stripped) return null;
-  const message = typedSubject ? stripped : withSubject(stripped, subject);
+  // What we sold them decides whether the reply is about buying it: "yes we
+  // are hiring" is off topic to a marketing offer and a purchase to a job board.
+  const ourOutreach = shadowContext.instantlyCampaignId
+    ? await loadOurOutreach(shadowContext.instantlyCampaignId)
+    : null;
+  const framed = withOurOutreach(stripped, ourOutreach);
+  const message = typedSubject ? framed : withSubject(framed, subject);
 
   const result = await platformComplete({
     message,
