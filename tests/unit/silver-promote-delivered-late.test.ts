@@ -130,10 +130,11 @@ describe("promoteEvent: a reply delivered late", () => {
     expect(mirror).toHaveBeenCalled();
   });
 
-  it("a thread a person holds from their own mailbox: the person is asked, the responder is not", async () => {
+  it("a thread a person holds from their own mailbox: the responder is not asked, the client is celebrated", async () => {
     // STAFF-GMAIL-THREAD-1013: Lukas answered Kevin's own Gmail "Thurs/Fri?".
     // The responder would answer from the sending alias on another thread, so
-    // it is not asked, nothing is queued for it, and the person is asked.
+    // it is not asked and nothing is queued; the person holding it answers
+    // (REPLY-NOTIFS-1013: no email asks them).
     arrange();
     heldInOwnMailbox.mockResolvedValueOnce(true);
     await promoteEvent(base);
@@ -144,7 +145,6 @@ describe("promoteEvent: a reply delivered late", () => {
       expect.objectContaining({ instantlyCampaignId: "inst-1" }),
       "laura@fusionmedcare.com",
       "lead_interested",
-      { responder: "nobody", repliedAt: base.timestamp },
     );
   });
 

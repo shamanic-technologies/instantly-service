@@ -17,8 +17,11 @@
  *      what they asked, says the client's team is copied and will answer, and
  *      answers nothing. The rep is in Cc, the agency inbox in Bcc, the history
  *      quoted below. The rep replies-all from their own inbox;
- *   3. when the brand names NO rep, the prospect gets nothing and the agency
- *      inbox gets the thread under its own subject, quoted as a forward;
+ *   3. when the brand names NO rep (or the hand-over could not go out), the
+ *      prospect gets nothing and every member of the org that owns the brand
+ *      gets the prospect's reply, word for word, with a button into the brand's
+ *      Unibox (lib/notify-brand-team). Staff are never the recipient (owner
+ *      2026-10-13: the AI escalates to the brand's own users);
  *   4. the follow-up ladder stops, once.
  *
  * Our job stops at the hand-over: no reminder, no follow-up, and the responder
@@ -48,20 +51,14 @@ import { db } from "../db";
 import { agencyInbox } from "./agency-inbox";
 import { brandContextOrNull, celebrateOnce, escapeHtml } from "./celebrate-positive-reply";
 import { orgComplete } from "./chat-client";
-import { sendEmail } from "./email-client";
 import {
   formatThreadDate,
-  sendThreadForward,
-  threadSubject,
   type ForwardPositiveReplyCampaign,
   type ThreadMessage,
 } from "./forward-positive-reply";
 import { findLeadOnCampaignByEmail, handFollowupsToHuman } from "./lead-client";
-import {
-  loadHistoryWithLatestReply,
-  renderProspectHistory,
-  REPLY_WAIT_SHORT_MS,
-} from "./prospect-history";
+import { emailBrandTeam, type TeamEscalationReason } from "./notify-brand-team";
+import { loadHistoryWithLatestReply, REPLY_WAIT_SHORT_MS } from "./prospect-history";
 import { loadCampaign, replyToLead, ReplyToLeadError } from "./reply-to-lead";
 import { stripQuotedHistory } from "./self-send/qualify-reply";
 import type { BrandHandoffContext } from "./brand-client";
@@ -100,7 +97,8 @@ export interface EscalateReplyInput {
   question: string;
 }
 
-export type EscalationHandoff = "rep" | "agency" | "already_escalated";
+/** rep: hand-over in the thread; team: the brand's org members were emailed; none: nobody was emailed. */
+export type EscalationHandoff = "rep" | "team" | "none" | "already_escalated";
 
 export interface EscalateReplyResult {
   instantlyCampaignId: string;
@@ -304,7 +302,7 @@ export async function escalateReply(
     conversationCampaignId: campaign.campaignId,
   };
 
-  let handoff: "rep" | "agency" | null = null;
+  let handoff: "rep" | "team" | null = null;
   let handedTo: string | null = null;
   let threadMessages = 0;
   let replyRead = false;
@@ -350,7 +348,7 @@ export async function escalateReply(
         handedTo = repEmail;
       } catch (error) {
         // The hand-over could not go out (a person already answered, no thread,
-        // the model or the mailbox refused). The agency inbox takes it instead:
+        // the model or the mailbox refused). The brand's team takes it instead:
         // somebody must still be told.
         const why =
           error instanceof ReplyToLeadError
@@ -359,37 +357,29 @@ export async function escalateReply(
               ? error.message
               : String(error);
         console.error(
-          `[instantly-service] reply-escalation: hand-over to rep ${repEmail} FAILED for campaign=${campaign.instantlyCampaignId} lead=${campaign.leadEmail} — ${why}; handing to the agency inbox instead`,
+          `[instantly-service] reply-escalation: hand-over to rep ${repEmail} FAILED for campaign=${campaign.instantlyCampaignId} lead=${campaign.leadEmail} — ${why}; emailing the brand's team instead`,
         );
       }
     } else if (repEmail) {
       console.error(
-        `[instantly-service] reply-escalation: brand names rep ${repEmail} but the reply from ${campaign.leadEmail} is unreadable; nothing can be drafted against it, so the agency inbox takes it`,
+        `[instantly-service] reply-escalation: brand names rep ${repEmail} but the reply from ${campaign.leadEmail} is unreadable; nothing can be drafted against it, so the brand's team takes it`,
       );
     }
 
     if (!handoff) {
-      await sendEmail(
-        {
-          appId: "instantly-service",
-          eventType: "reply-escalation",
-          recipientEmail: agencyInbox(),
-          metadata: {
-            subject: threadSubject(history.messages),
-            leadEmail: campaign.leadEmail,
-            brandName: escapeHtml(brand?.name ?? "This brand"),
-            thread: escapeHtml(renderProspectHistory(history, campaign.leadEmail)),
-          },
-        },
-        {
-          orgId: input.orgId,
-          userId: input.userId,
-          runId: input.runId,
-          tracking: { brandId: campaign.brandId ?? undefined },
-        },
-      );
-      handoff = "agency";
-      handedTo = agencyInbox();
+      const reached = await emailBrandTeam({
+        reason: "question",
+        orgId: input.orgId,
+        userId: input.userId,
+        runId: input.runId,
+        brandId: campaign.brandId,
+        brandName: brand?.name ?? null,
+        leadEmail: campaign.leadEmail,
+        history,
+        latestReply,
+      });
+      handoff = "team";
+      handedTo = reached.join(", ");
     }
   } catch (error) {
     // Nothing reached anyone: give the claim back so a retry can.
@@ -411,7 +401,7 @@ export async function escalateReply(
     reason:
       handoff === "rep"
         ? `Handed to ${handedTo}: the automated responder could not answer this reply.`
-        : "Handed to the agency inbox: the automated responder could not answer this reply.",
+        : `Handed to the brand's team (${handedTo}): the automated responder could not answer this reply.`,
   });
 
   console.log(
@@ -477,93 +467,88 @@ export interface HandThreadToHumanInput {
   userId: string;
   /** Forwarded as `x-run-id` — transactional-email-service refuses a send without it. */
   runId: string;
-  /** What the human has to act on; rendered first in the notification. */
-  question: string;
+  /**
+   * Why the brand's team is told, or null when nobody is: a brand that pays for
+   * no AI responder answers its replies by hand in the Unibox, nothing is sent.
+   */
+  notifyTeam: Exclude<TeamEscalationReason, "question"> | null;
   /** Recorded on lead-service's stop, so the lead timeline says why. */
   stopReason: string;
 }
 
 /**
- * Forward the thread to the agency inbox, then stop the follow-up ladder.
- *
- * The shared core of every hand-over: the responder giving up on a question
- * (`escalateReply`) and a reply about something other than the offer
- * (`maybeEscalateOffTopicReply`). One path, so both reach the same inbox in the
- * same shape and stop the same row.
+ * Stop the follow-up ladder of a reply the responder does not handle and, when
+ * the brand pays for AI answers, tell the brand's team (lib/notify-brand-team).
+ * Throws when the team could not be told or the ladder could not be stopped.
  */
 export async function handThreadToHuman(
   input: HandThreadToHumanInput,
 ): Promise<EscalateReplyResult> {
-  const campaign = input;
-  const question = input.question;
-  const threadMessages = await sendThreadForward(
-    {
-      instantlyCampaignId: campaign.instantlyCampaignId,
-      // The notification is a child of the CALLER's run, and runs-service 409s a
-      // child whose campaign differs from its parent's. The caller is the
-      // responder campaign; the lead's row belongs to the outreach campaign that
-      // first wrote to them — two different ids for the same thread. The parent
-      // run already carries the right attribution, so none is restated here.
+  let handedTo: string | null = null;
+  let threadMessages = 0;
+  let replyRead: boolean | null = null;
+
+  if (input.notifyTeam) {
+    const thread: ForwardPositiveReplyCampaign = {
+      instantlyCampaignId: input.instantlyCampaignId,
+      // The notification is a child of the CALLER's run; restating the lead
+      // row's campaign made runs-service 409 the child.
       campaignId: null,
       orgId: input.orgId,
       userId: input.userId,
       runId: input.runId,
-      brandIds: campaign.brandId ? [campaign.brandId] : null,
-      // The history the email tells IS the lead's row's campaign, whole.
-      conversationCampaignId: campaign.campaignId,
-    },
-    campaign.leadEmail,
-    {
-      eventType: "reply-handover",
-      metadata: { leadEmail: campaign.leadEmail, question },
-    },
-  );
-
-  // The ladder stops only if lead-service holds this person on this campaign.
-  // It is the SAME narrowing-plus-exact-match the rep call uses, so the two
-  // cannot disagree about which row a lead is; anything other than exactly one
-  // match resolves to null and the schedule is left alone rather than a
-  // stranger's being emptied.
-  const lead = campaign.campaignId
-    ? await findLeadOnCampaignByEmail({
-        orgId: input.orgId,
-        campaignId: campaign.campaignId,
-        email: campaign.leadEmail,
-      })
-    : null;
-
-  if (!lead) {
-    console.warn(
-      `[instantly-service] reply-escalation: forwarded campaign=${campaign.instantlyCampaignId} lead=${campaign.leadEmail} but lead-service holds no row for them, so the follow-up ladder is UNCHANGED`,
-    );
-    return {
-      instantlyCampaignId: campaign.instantlyCampaignId,
-      leadEmail: campaign.leadEmail,
-      threadMessages,
-      followupsStopped: false,
-      handoff: "agency",
-      handedTo: agencyInbox(),
-      replyRead: null,
+      brandIds: input.brandId ? [input.brandId] : null,
+      conversationCampaignId: input.campaignId,
     };
+    const { history, latestReply } = await loadHistoryWithLatestReply(thread, input.leadEmail, {
+      waitsMs: REPLY_WAIT_SHORT_MS,
+    });
+    const brand = await brandContextOrNull(input.brandId, input.orgId);
+    const reached = await emailBrandTeam({
+      reason: input.notifyTeam,
+      orgId: input.orgId,
+      userId: input.userId,
+      runId: input.runId,
+      brandId: input.brandId,
+      brandName: brand?.name ?? null,
+      leadEmail: input.leadEmail,
+      history,
+      latestReply,
+    });
+    handedTo = reached.join(", ");
+    threadMessages = history.messages.length;
+    replyRead = latestReply !== null;
   }
 
-  await handFollowupsToHuman({
-    orgId: input.orgId,
-    leadRowId: lead.id,
-    reason: input.stopReason,
-  });
+  // The ladder stops only if lead-service holds this person on this campaign.
+  // Anything other than exactly one match resolves to null and the schedule is
+  // left alone rather than a stranger's being emptied.
+  const lead = input.campaignId
+    ? await findLeadOnCampaignByEmail({
+        orgId: input.orgId,
+        campaignId: input.campaignId,
+        email: input.leadEmail,
+      })
+    : null;
+  if (lead) {
+    await handFollowupsToHuman({ orgId: input.orgId, leadRowId: lead.id, reason: input.stopReason });
+  } else {
+    console.warn(
+      `[instantly-service] reply-escalation: campaign=${input.instantlyCampaignId} lead=${input.leadEmail} has no lead-service row, so the follow-up ladder is UNCHANGED`,
+    );
+  }
 
   console.log(
-    `[instantly-service] reply-escalation: campaign=${campaign.instantlyCampaignId} lead=${campaign.leadEmail} handed to a human, follow-up ladder stopped`,
+    `[instantly-service] reply-escalation: campaign=${input.instantlyCampaignId} lead=${input.leadEmail} handed to a human (team told: ${handedTo ?? "nobody, no AI responder"}), followupsStopped=${lead !== null}`,
   );
 
   return {
-    instantlyCampaignId: campaign.instantlyCampaignId,
-    leadEmail: campaign.leadEmail,
+    instantlyCampaignId: input.instantlyCampaignId,
+    leadEmail: input.leadEmail,
     threadMessages,
-    followupsStopped: true,
-    handoff: "agency",
-    handedTo: agencyInbox(),
-    replyRead: null,
+    followupsStopped: lead !== null,
+    handoff: handedTo ? "team" : "none",
+    handedTo,
+    replyRead,
   };
 }

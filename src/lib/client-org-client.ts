@@ -13,7 +13,7 @@
  * org that has no Clerk id. Do not grow this into a general org mirror.
  *
  * Second read: `listOrgMembers`, who to tell when a reply needs the client
- * (lib/ask-client-to-answer).
+ * (lib/notify-brand-team: the AI's escalation to the brand's own users).
  */
 
 export async function getExternalOrgId(orgId: string): Promise<string | null> {

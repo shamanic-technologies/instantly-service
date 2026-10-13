@@ -84,10 +84,8 @@ export const instantlyCampaigns = pgTable(
     // request on the same thread still gets its email; a meeting request that
     // arrives first takes `positive_reply_forwarded_at` too, in the same UPDATE.
     meetingRequestCelebratedAt: timestamp("meeting_request_celebrated_at"),
-    // Exactly-once claim for the "answer this reply yourself" email to the
-    // client's org members (lib/ask-client-to-answer.ts, migration 0068): a
-    // celebrated positive reply on a brand with NO AI responder running at that
-    // moment. Released only when no member could be emailed.
+    // HISTORY ONLY (migration 0068): the claim of the retired "answer this
+    // reply yourself" email (REPLY-NOTIFS-1013). Nothing writes it any more.
     clientAnswerRequestedAt: timestamp("client_answer_requested_at"),
     // Exactly-once claim for the "ring the brand's sales rep when a sales
     // interest lands" side effect (lib/ring-rep-on-sales-interest.ts). Set

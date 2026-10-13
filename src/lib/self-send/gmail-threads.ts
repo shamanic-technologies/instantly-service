@@ -41,9 +41,8 @@
  * their own mailbox STAYS theirs. The prospect now writes to that person; an
  * automated answer from the sending alias would arrive from someone else, on
  * another thread. So `human-takeover.ts` holds such a thread for good
- * (`own_mailbox`), the responder is not asked to take a new reply on it, and the
- * person is asked to answer instead (the no-responder path of
- * `ask-client-to-answer.ts`).
+ * (`own_mailbox`) and the responder is not asked to take a new reply on it: the
+ * person who holds it answers (no email asks them, REPLY-NOTIFS-1013).
  */
 
 import { sql } from "drizzle-orm";
