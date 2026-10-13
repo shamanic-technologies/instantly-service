@@ -48,15 +48,23 @@ export interface OrgMember {
  * The org's members with an email address, oldest first. Membership is
  * client-service's own reading (`GET /internal/users?orgId=`, the same rows its
  * member check reads). Rows without an address are dropped. Fails LOUD.
+ *
+ * `allMembers`: every member Clerk holds for the org, people in several orgs
+ * included (`&allMembers=true`, client-service v0.27.18). Opt-in: staff are
+ * Clerk members of the client orgs they set up, so this list names them too.
  */
-export async function listOrgMembers(orgId: string): Promise<OrgMember[]> {
+export async function listOrgMembers(
+  orgId: string,
+  options: { allMembers?: boolean } = {},
+): Promise<OrgMember[]> {
   const url = process.env.CLIENT_SERVICE_URL;
   const apiKey = process.env.CLIENT_SERVICE_API_KEY;
   if (!url || !apiKey) {
     throw new Error("CLIENT_SERVICE_URL or CLIENT_SERVICE_API_KEY is not set");
   }
 
-  const response = await fetch(`${url}/internal/users?orgId=${encodeURIComponent(orgId)}`, {
+  const query = `orgId=${encodeURIComponent(orgId)}${options.allMembers ? "&allMembers=true" : ""}`;
+  const response = await fetch(`${url}/internal/users?${query}`, {
     headers: { "x-api-key": apiKey },
   });
   if (!response.ok) {

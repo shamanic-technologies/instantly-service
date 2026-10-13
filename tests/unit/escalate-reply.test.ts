@@ -271,10 +271,28 @@ describe("escalating when the brand names no rep", () => {
     expect(mockHandFollowups).not.toHaveBeenCalled();
   });
 
-  it("fails loud, never falls back to staff, when the org has no member", async () => {
+  it("fails loud, never falls back to staff, when the org has no member at all", async () => {
     mockListMembers.mockResolvedValue([]);
     await expect(escalateReply(INPUT)).rejects.toThrow("no member with an email address");
     expect(mockSendEmail).not.toHaveBeenCalled();
+  });
+
+  it("emails only the org's OWN people: Clerk's whole membership (staff included) is not read", async () => {
+    await escalateReply(INPUT);
+    expect(mockListMembers).toHaveBeenCalledTimes(1);
+    expect(mockListMembers).toHaveBeenCalledWith("org-1");
+  });
+
+  // ORG-MEMBERS-1013: our own distribute.you org has no user of its own (Kevin's
+  // user row points at another org); its Clerk members are its people.
+  it("reads Clerk's whole membership only when the org has no people of its own", async () => {
+    mockListMembers.mockImplementation(async (_org: string, opts?: { allMembers?: boolean }) =>
+      opts?.allMembers ? [{ email: "kevin.lourd@gmail.com", firstName: "Kevin" }] : [],
+    );
+    const result = await escalateReply(INPUT);
+    expect(mockListMembers).toHaveBeenLastCalledWith("org-1", { allMembers: true });
+    expect(mockSendEmail.mock.calls.map(([p]) => p.recipientEmail)).toEqual(["kevin.lourd@gmail.com"]);
+    expect(result).toMatchObject({ handoff: "team", handedTo: "kevin.lourd@gmail.com" });
   });
 
   it("links the dashboard home when the org's dashboard id is unknown", async () => {

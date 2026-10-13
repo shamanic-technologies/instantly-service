@@ -18,7 +18,7 @@
  */
 
 import { externalOrgIdOrNull, DASHBOARD_ORIGIN, escapeHtml, prospectLabel } from "./celebrate-positive-reply";
-import { listOrgMembers } from "./client-org-client";
+import { listOrgMembers, type OrgMember } from "./client-org-client";
 import { sendEmail } from "./email-client";
 import { formatThreadDate, type ThreadMessage } from "./forward-positive-reply";
 import type { ProspectHistory } from "./prospect-history";
@@ -149,11 +149,25 @@ export interface EmailBrandTeamInput {
 }
 
 /**
- * Email every member of the brand's org. Returns the addresses reached; throws
- * when none was (no member with an address, or every send failed).
+ * Who of the org is told. The org's OWN people first (the users whose org it
+ * is): on a client brand that is the client, never the staff who also sit in
+ * its Clerk org (Kevin is a member of 64 of 228 orgs). Only an org with none of
+ * its own (people who belong to several orgs, like our own distribute.you
+ * brand) reads Clerk's whole membership.
+ */
+export async function brandTeamMembers(orgId: string): Promise<OrgMember[]> {
+  const own = await listOrgMembers(orgId);
+  if (own.length > 0) return own;
+  return listOrgMembers(orgId, { allMembers: true });
+}
+
+/**
+ * Email every member of the brand's org (`brandTeamMembers`). Returns the
+ * addresses reached; throws when none was (no member with an address, or every
+ * send failed).
  */
 export async function emailBrandTeam(input: EmailBrandTeamInput): Promise<string[]> {
-  const members = await listOrgMembers(input.orgId);
+  const members = await brandTeamMembers(input.orgId);
   if (members.length === 0) {
     throw new Error(`org ${input.orgId} has no member with an email address: nobody of the brand's team can be told`);
   }
