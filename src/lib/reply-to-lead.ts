@@ -929,7 +929,9 @@ export async function replyToLead(
       throw new ReplyToLeadError(
         "human_took_over",
         409,
-        `A person answered ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} at ${takeover.at} (${takeover.source}), after their last message — the automated responder does not write over a human conversation`,
+        takeover.source === "own_mailbox"
+          ? `A person holds the conversation with ${campaign.leadEmail} (sequence ${campaign.instantlyCampaignId}) from their own mailbox since ${takeover.at} — the automated responder does not write into it`
+          : `A person answered ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} at ${takeover.at} (${takeover.source}), after their last message — the automated responder does not write over a human conversation`,
       );
     }
   }

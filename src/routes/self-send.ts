@@ -16,7 +16,8 @@ import { runDispatch } from "../lib/self-send/dispatch-worker";
 import { runPoll } from "../lib/self-send/imap-poller";
 import { runOrphanReplySweep } from "../lib/self-send/orphan-reply-sweep";
 import { recoverForwardedReplies } from "../lib/self-send/forwarded-replies";
-import { ForwardedRepliesRequestSchema } from "../schemas";
+import { ForwardedRepliesRequestSchema, GmailThreadsRequestSchema } from "../schemas";
+import { foldInGmailThreads } from "../lib/self-send/gmail-threads";
 import { promotePendingClicks } from "../lib/self-send/click-promotion";
 import { sweepStalledFirstEmails } from "../lib/self-send/stalled-first-emails";
 import { retireInstantlySequences } from "../lib/self-send/retire-instantly-sequences";
@@ -129,6 +130,35 @@ router.post("/orphan-replies", async (req: Request, res: Response) => {
       }`,
     );
   });
+});
+
+/**
+ * Fold the conversations our people hold with leads from their own Gmail into
+ * the leads' threads (`gmail-threads.ts`; the worker runs it every 15 min).
+ * Body `{ dryRun?: boolean (default TRUE), since?: ISO, leads?: string[] }`.
+ * 202, then `gmail-threads: done` with the summary.
+ */
+router.post("/gmail-threads", async (req: Request, res: Response) => {
+  const parsed = GmailThreadsRequestSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
+    return;
+  }
+  const dryRun = parsed.data.dryRun !== false;
+  res.status(202).json({ accepted: true });
+  foldInGmailThreads({
+    dryRun,
+    since: parsed.data.since ? new Date(parsed.data.since) : undefined,
+    leads: parsed.data.leads,
+  })
+    .then((summary) => {
+      console.log(`[instantly-service] gmail-threads: done ${JSON.stringify(summary)}`);
+    })
+    .catch((error) => {
+      console.error(
+        `[instantly-service] gmail-threads failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
 });
 
 /**

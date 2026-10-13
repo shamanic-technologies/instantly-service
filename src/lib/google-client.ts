@@ -18,6 +18,8 @@ const GOOGLE_SERVICE_API_KEY = process.env.GOOGLE_SERVICE_API_KEY;
 export interface MirroredMessage {
   /** google-service's own id for the message (idempotent re-reads). */
   mirrorId: string;
+  /** Gmail's id of the message (the same message under every read's id form). */
+  gmailMessageId: string | null;
   /** RFC 5322 Message-ID, angle brackets included when the sender put them. */
   messageId: string | null;
   inReplyTo: string | null;
@@ -115,6 +117,7 @@ export async function fetchStaffConversation(
 /** One message as google-service's `addressed-messages` read serves it. */
 interface AddressedMessageWire {
   id: string;
+  gmailMessageId?: string | null;
   messageId: string | null;
   inReplyTo: string | null;
   references: string[] | null;
@@ -153,6 +156,7 @@ export function toMirroredMessage(wire: AddressedMessageWire): MirroredMessage {
   if (!headers["content-type"] && wire.mimeType) headers["content-type"] = wire.mimeType;
   return {
     mirrorId: wire.id,
+    gmailMessageId: wire.gmailMessageId ?? null,
     messageId: wire.messageId,
     inReplyTo: wire.inReplyTo,
     references: wire.references && wire.references.length > 0 ? wire.references.join(" ") : null,
@@ -174,6 +178,8 @@ export function toMirroredMessage(wire: AddressedMessageWire): MirroredMessage {
 export async function fetchMirroredMailForAddresses(
   addresses: readonly string[],
   identity: GoogleCallerIdentity,
+  /** Only messages dated at or after this instant (google-service filters on the message date). */
+  since?: Date,
 ): Promise<MirroredMessage[]> {
   const { url, key } = config();
   const out: MirroredMessage[] = [];
@@ -182,7 +188,12 @@ export async function fetchMirroredMailForAddresses(
     const response: Response = await fetch(`${url}/internal/staff-mailboxes/addressed-messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": key, ...identityHeaders(identity) },
-      body: JSON.stringify({ addresses, limit: 500, ...(cursor ? { cursor } : {}) }),
+      body: JSON.stringify({
+        addresses,
+        limit: 500,
+        ...(since ? { since: since.toISOString() } : {}),
+        ...(cursor ? { cursor } : {}),
+      }),
     });
     if (response.status === 404) return out;
     if (!response.ok) {

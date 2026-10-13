@@ -26,7 +26,7 @@
  * to catch.
  */
 
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 
 import { db } from "../db";
 import { MANUAL_REPLY_STEP } from "./manual-reply-step";
@@ -35,7 +35,7 @@ import { STAFF_REPLY_KIND } from "./self-send/inbound";
 
 function toSource(value: unknown): HumanAnswer["source"] {
   const s = String(value);
-  return s === "dispatched" || s === "staff_cc" ? s : "instantly_unibox";
+  return s === "dispatched" || s === "staff_cc" || s === "own_mailbox" ? s : "instantly_unibox";
 }
 
 /**
@@ -79,14 +79,45 @@ export interface HumanAnswer {
    * `instantly_unibox` — sent by hand from Instantly's own inbox.
    * `staff_cc` — one of our own people answered from their own mail client and
    *   CC'd the sending mailbox, so it arrived INBOUND on it (staff-senders).
+   * `own_mailbox` — one of our own people answered the prospect from their OWN
+   *   mailbox, read from the Gmail mirror (self-send/gmail-threads,
+   *   self-send/forwarded-replies). The thread is theirs for good: see
+   *   {@link isHeldInOwnMailbox}.
    */
-  source: "dispatched" | "instantly_unibox" | "staff_cc";
+  source: "dispatched" | "instantly_unibox" | "staff_cc" | "own_mailbox";
 }
 
 function rowsOf(result: unknown): Record<string, unknown>[] {
   const r = result as { rows?: unknown };
   if (Array.isArray(r?.rows)) return r.rows as Record<string, unknown>[];
   return Array.isArray(result) ? (result as Record<string, unknown>[]) : [];
+}
+
+/**
+ * SQL: this `imap_messages_raw` row (alias `m`, kind `staff_reply`) is an answer
+ * one of our people sent the prospect from their OWN mailbox (read from the Gmail
+ * mirror, sent from a staff address, not from the sending alias via send-as).
+ *
+ * ⚠️ SUCH A THREAD IS HELD FOR GOOD, not only until the prospect writes again.
+ * The prospect now writes to that person, on that person's thread: an automated
+ * answer from the sending alias would come from somebody else, somewhere else
+ * (STAFF-GMAIL-THREAD-1013, Lukas answered Kevin "Thurs/Fri?"). The person is
+ * asked to answer instead (silver-promote: no responder for a held thread).
+ */
+export function ownMailboxAnswerSql(alias: SQL): SQL {
+  return sql`(${alias}.payload ? 'recoveredFrom' AND ${staffSenderSql(sql`lower(${alias}.from_address)`)})`;
+}
+
+/** A person holds this thread from their own mailbox (see {@link ownMailboxAnswerSql}). Fails loud. */
+export async function isHeldInOwnMailbox(instantlyCampaignId: string): Promise<boolean> {
+  const result = await db.execute(sql`
+    SELECT 1 FROM imap_messages_raw m
+    WHERE m.instantly_campaign_id = ${instantlyCampaignId}
+      AND m.kind = ${STAFF_REPLY_KIND}
+      AND ${ownMailboxAnswerSql(sql`m`)}
+    LIMIT 1
+  `);
+  return rowsOf(result).length > 0;
 }
 
 /**
@@ -156,7 +187,8 @@ export async function findHumanTakeover(
     ),
     human_answers AS (
       SELECT d.dispatched_at AT TIME ZONE 'UTC' AS at,
-             'dispatched' AS source
+             'dispatched' AS source,
+             false AS held
       FROM smtp_dispatch_raw d
       WHERE d.instantly_campaign_id = ${instantlyCampaignId}
         AND d.step = ${MANUAL_REPLY_STEP}
@@ -166,7 +198,8 @@ export async function findHumanTakeover(
       UNION ALL
 
       SELECT (e.payload->>'timestamp_email')::timestamptz AS at,
-             'instantly_unibox' AS source
+             'instantly_unibox' AS source,
+             false AS held
       FROM instantly_emails_raw e
       WHERE e.instantly_campaign_id = ${instantlyCampaignId}
         AND e.payload->>'ue_type' IN ('3', '4')
@@ -181,7 +214,8 @@ export async function findHumanTakeover(
       UNION ALL
 
       SELECT (e.payload->>'timestamp_email')::timestamptz AS at,
-             'staff_cc' AS source
+             'staff_cc' AS source,
+             false AS held
       FROM instantly_emails_raw e
       WHERE e.instantly_campaign_id = ${instantlyCampaignId}
         AND e.payload->>'ue_type' = '2'
@@ -190,7 +224,8 @@ export async function findHumanTakeover(
       UNION ALL
 
       SELECT COALESCE(m.received_at, m.polled_at) AT TIME ZONE 'UTC' AS at,
-             'staff_cc' AS source
+             CASE WHEN ${ownMailboxAnswerSql(sql`m`)} THEN 'own_mailbox' ELSE 'staff_cc' END AS source,
+             ${ownMailboxAnswerSql(sql`m`)} AS held
       FROM imap_messages_raw m
       WHERE m.instantly_campaign_id = ${instantlyCampaignId}
         AND m.kind = ${STAFF_REPLY_KIND}
@@ -198,8 +233,8 @@ export async function findHumanTakeover(
     SELECT h.at AS "at", h.source AS "source"
     FROM human_answers h, latest_inbound li
     WHERE h.at IS NOT NULL
-      AND (li.at IS NULL OR h.at > li.at)
-    ORDER BY h.at DESC
+      AND (li.at IS NULL OR h.at > li.at OR h.held)
+    ORDER BY h.held DESC, h.at DESC
     LIMIT 1
   `);
 

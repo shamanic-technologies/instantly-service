@@ -658,8 +658,18 @@ export function answerClaimOpenSql(asOf: Date = new Date()) {
   ))`;
 }
 
-async function claimAnswerRequest(instantlyCampaignId: string): Promise<boolean> {
+/**
+ * Take the thread's claim. Open when never claimed, when a send never finished,
+ * or when the claim is OLDER than the reply now asked about (`writtenAt`): one
+ * claim answers one message, and a prospect who writes again after it is a new
+ * question (STAFF-GMAIL-THREAD-1013: Lukas wrote again two days after Kevin's
+ * answer).
+ */
+async function claimAnswerRequest(instantlyCampaignId: string, writtenAt?: Date): Promise<boolean> {
   const now = new Date();
+  const open = writtenAt
+    ? sql`(${answerClaimOpenSql(now)} OR ${instantlyCampaigns.clientAnswerRequestedAt} < ${writtenAt.toISOString()}::timestamp)`
+    : answerClaimOpenSql(now);
   const claimed = await db
     .update(instantlyCampaigns)
     .set({
@@ -667,7 +677,7 @@ async function claimAnswerRequest(instantlyCampaignId: string): Promise<boolean>
       metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object(${ANSWER_CLAIM_PENDING_KEY}::text, ${now.toISOString()}::text)`,
       updatedAt: now,
     })
-    .where(and(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId), answerClaimOpenSql(now)))
+    .where(and(eq(instantlyCampaigns.instantlyCampaignId, instantlyCampaignId), open))
     .returning({ id: instantlyCampaigns.id });
   return claimed.length > 0;
 }
@@ -764,7 +774,7 @@ export async function maybeAskClientToAnswer(
 
   let claimed: boolean;
   try {
-    claimed = await claimAnswerRequest(campaign.instantlyCampaignId);
+    claimed = await claimAnswerRequest(campaign.instantlyCampaignId, options.repliedAt);
   } catch (error) {
     console.warn(
       `[instantly-service] ask-client-to-answer: claim failed for ${tag} — ${error instanceof Error ? error.message : String(error)}`,
