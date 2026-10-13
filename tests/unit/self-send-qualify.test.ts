@@ -13,11 +13,18 @@ vi.mock("../../src/lib/shadow-judgment", () => ({
   shadowJudgeReply: (...a: unknown[]) => mockShadowJudgeReply(...a),
 }));
 
+// What we sent them is read from the DB; mocked so each test states it.
+const mockLoadOurOutreach = vi.fn();
+vi.mock("../../src/lib/self-send/our-outreach", () => ({
+  loadOurOutreach: (...a: unknown[]) => mockLoadOurOutreach(...a),
+}));
+
 import {
   QUALIFICATION_EVENT_TYPES,
   isQualificationEventType,
   parseQualification,
   stripQuotedHistory,
+  SYSTEM_PROMPT,
 } from "../../src/lib/self-send/qualify-reply";
 import { REPLY_CLASSIFICATION_MAP } from "../../src/lib/silver-promote";
 import { qualifyReply } from "../../src/lib/self-send/qualify-reply";
@@ -401,5 +408,69 @@ describe("a reply whose only words are its subject", () => {
     const kind = await qualifyReply("> quoted only", { subject: "Re: More patients for your clinic" });
     expect(kind).toBeNull();
     expect(mockPlatformComplete).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * prod 2026-10-13, DefiniteJobs: our email offered free job listings to an
+ * employer under "Hiring at Carter & Co this month?", the reply "yes we are
+ * hiring two warehouse operatives, a free first listing sounds good, can we
+ * have a quick call this week?" was judged a job enquiry (lead_off_topic)
+ * because the classifier saw the subject and the reply, never what we sell.
+ */
+describe("the classifier reads what we sent them", () => {
+  const OUR_EMAIL =
+    "Hi Sam,\n\nDefiniteJobs puts UK vacancies in front of local job seekers.\n\nWould a free first listing help?";
+
+  it("frames their reply with our email, read for THIS sequence", async () => {
+    mockLoadOurOutreach.mockResolvedValue(OUR_EMAIL);
+    mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_meeting_requested" } });
+
+    const kind = await qualifyReply("Hi, yes we are hiring two warehouse operatives in Leeds. A quick call this week?", {
+      instantlyCampaignId: "self:abc",
+      leadEmail: "sam@carter.co",
+      subject: "Re: Hiring at Carter & Co this month?",
+    });
+
+    expect(kind).toBe("lead_meeting_requested");
+    expect(mockLoadOurOutreach).toHaveBeenCalledWith("self:abc");
+    const [{ message, systemPrompt }] = mockPlatformComplete.mock.calls[0];
+    expect(message).toBe(
+      `Subject: Re: Hiring at Carter & Co this month?\n\nOur email:\n${OUR_EMAIL}\n\nTheir reply:\nHi, yes we are hiring two warehouse operatives in Leeds. A quick call this week?`,
+    );
+    expect(systemPrompt).toContain('When the message carries an "Our email:" section');
+    // "Off topic" is judged against what we sell, not against a fixed topic list.
+    expect(systemPrompt).toContain("when our email itself offers what the reply talks about");
+  });
+
+  it("sends the reply exactly as before when we hold no email for the thread", async () => {
+    mockLoadOurOutreach.mockResolvedValue(null);
+    mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_interested" } });
+    await qualifyReply("I would be interested", { instantlyCampaignId: "inst-1", subject: "Re: x" });
+    expect(mockPlatformComplete.mock.calls[0][0].message).toBe("Subject: Re: x\n\nI would be interested");
+  });
+
+  it("does not read the DB when no sequence is named", async () => {
+    mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_interested" } });
+    await qualifyReply("I would be interested");
+    expect(mockLoadOurOutreach).not.toHaveBeenCalled();
+  });
+
+  it("fails loud when our email cannot be read, rather than judging blind", async () => {
+    mockLoadOurOutreach.mockRejectedValue(new Error("db down"));
+    await expect(qualifyReply("yes please", { instantlyCampaignId: "self:abc" })).rejects.toThrow("db down");
+    expect(mockPlatformComplete).not.toHaveBeenCalled();
+  });
+
+  it("frames the subject THEY typed with our email too", async () => {
+    mockLoadOurOutreach.mockResolvedValue(OUR_EMAIL);
+    mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_opt_out_requested" } });
+    await qualifyReply("> quoted only", { instantlyCampaignId: "self:abc", subject: "Stop" });
+    expect(mockPlatformComplete.mock.calls[0][0].message).toBe(`Our email:\n${OUR_EMAIL}\n\nTheir reply:\nStop`);
+  });
+
+  it("knows a competitor's customer is a decline, not one of ours", () => {
+    const prompt = SYSTEM_PROMPT;
+    expect(prompt).toContain("Using the same kind of product bought from ANOTHER company is not this");
   });
 });
