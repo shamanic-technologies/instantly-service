@@ -27,6 +27,7 @@ import { findOngoingResponderCampaigns, getCampaignTriggerScope } from "./campai
 import { handThreadToHuman } from "./escalate-reply";
 import type { TeamEscalationReason } from "./notify-brand-team";
 import { isEscalatedReplyKind } from "./reply-kind";
+import { OFF_TOPIC_HANDOFF_REASON, REFERRAL_HANDOFF_REASON } from "./escalation-handoff-reasons";
 
 /** The subset of a campaign row this needs. */
 export interface OffTopicCampaign {
@@ -42,13 +43,11 @@ export interface OffTopicCampaign {
 const WHY: Record<string, { reason: Exclude<TeamEscalationReason, "question">; stopReason: string }> = {
   lead_off_topic: {
     reason: "off_topic",
-    stopReason:
-      "The reply is about something other than the offer; handed to a person, the automated responder does not answer it",
+    stopReason: OFF_TOPIC_HANDOFF_REASON,
   },
   lead_referral: {
     reason: "referral",
-    stopReason:
-      "The prospect referred us to someone else; handed to a person, the automated responder does not answer it",
+    stopReason: REFERRAL_HANDOFF_REASON,
   },
 };
 

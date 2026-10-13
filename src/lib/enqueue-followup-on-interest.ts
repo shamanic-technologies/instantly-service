@@ -50,6 +50,7 @@
  */
 
 import { scheduleFollowupByEmail } from "./lead-client";
+import { liftWrongEscalationHandoff } from "./lift-wrong-handoff";
 import {
   isSalesInterestQualification,
   type SalesInterestTriggerCampaign,
@@ -75,6 +76,24 @@ export async function maybeEnqueueFollowupOnInterest(
   // A platform send belongs to no caller campaign, so there is no campaign for a
   // debt to be owed on and no worker that would ever claim it.
   if (!campaign.campaignId) return;
+
+  // A hand-over an earlier off-topic / referral verdict wrote would keep this
+  // buyer out of the queue for good; the verdict it rested on is gone. Lifted
+  // before the schedule so the schedule re-enters them (lib/lift-wrong-handoff).
+  try {
+    const lift = await liftWrongEscalationHandoff(campaign, leadEmail);
+    if (lift === "lifted" || lift === "person_answered") {
+      console.log(
+        `[instantly-service] followup-enqueue: campaign=${campaign.instantlyCampaignId} lead=${leadEmail} ` +
+          `escalation hand-over ${lift === "lifted" ? "LIFTED, the reply is now a sales interest" : "kept, a person answered on the thread"}`,
+      );
+    }
+  } catch (error: unknown) {
+    console.warn(
+      `[instantly-service] followup-enqueue: hand-over lift FAILED for campaign=${campaign.instantlyCampaignId} ` +
+        `lead=${leadEmail} — ${error instanceof Error ? error.message : String(error)}; a thread an earlier verdict handed to a person stays handed`,
+    );
+  }
 
   try {
     const result = await scheduleFollowupByEmail({

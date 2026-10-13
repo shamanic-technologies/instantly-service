@@ -477,6 +477,53 @@ export async function listBookedPeople(brandId: string): Promise<BookedPeople> {
 }
 
 /**
+ * Withdraw a hand-over WE stated, because the verdict behind it was wrong
+ * (lib/lift-wrong-handoff). lead-service lifts the row only when every
+ * hand-over on it carries `handedReason` EXACTLY; a hand-over anyone else
+ * stated is never lifted. Nothing is due afterwards until a `scheduled`.
+ *
+ * Returns true when the row was lifted, false when there was nothing to lift
+ * (not handed, or handed for another reason). FAILS LOUD on anything else.
+ */
+export async function withdrawHandoff(params: {
+  orgId: string;
+  /** lead-service's `leads_campaigns` row id — from `findLeadOnCampaignByEmail`. */
+  leadRowId: string;
+  /** The reason the hand-over was stated with, verbatim. */
+  handedReason: string;
+  /** Why it is withdrawn (kept as history). */
+  reason: string;
+}): Promise<boolean> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+
+  const response = await fetch(
+    `${LEAD_SERVICE_URL}/orgs/leads/${encodeURIComponent(params.leadRowId)}/followups/handover/withdraw`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": LEAD_SERVICE_API_KEY,
+        "x-org-id": params.orgId,
+      },
+      body: JSON.stringify({ handedReason: params.handedReason, reason: params.reason }),
+    },
+  );
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(
+      `lead-service POST /orgs/leads/{id}/followups/handover/withdraw failed: ${response.status} - ${detail.slice(0, 200)}`,
+    );
+  }
+  const body = (await response.json()) as { outcome?: unknown };
+  if (body.outcome === "lifted") return true;
+  if (body.outcome === "nothing_to_lift") return false;
+  throw new Error(`lead-service handover/withdraw answered an unknown outcome: ${JSON.stringify(body.outcome)}`);
+}
+
+/**
  * Give a person's thread to a HUMAN for good: lead-service `kind: "handed"`
  * (owner 2026-10-11). No automated responder claims the row again, and unlike a
  * stop a later `scheduled` (the prospect writes again) does NOT re-enter it, so
