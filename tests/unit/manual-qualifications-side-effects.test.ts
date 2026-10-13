@@ -79,7 +79,8 @@ vi.mock("../../src/lib/forward-positive-reply", () => ({
   maybeForwardPositiveReply: (...args: unknown[]) => mockForwardPositiveReply(...args),
 }));
 
-vi.mock("../../src/lib/trigger-sales-interest-campaign", () => ({
+vi.mock("../../src/lib/trigger-sales-interest-campaign", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
   maybeTriggerSalesInterestCampaign: (...args: unknown[]) => mockTriggerSalesInterest(...args),
 }));
 

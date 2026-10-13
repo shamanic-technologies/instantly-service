@@ -423,6 +423,12 @@ export async function maybeForwardPositiveReply(
      * responder that took it and never answered.
      */
     responder?: ResponderVerdict;
+    /**
+     * When the prospect wrote this reply. An earlier ask on the thread was about
+     * an EARLIER message: a prospect writing again after it is asked about anew
+     * (lib/ask-client-to-answer).
+     */
+    repliedAt?: Date;
   } = {},
 ): Promise<void> {
   if (!isPositiveQualification(eventType)) return;
@@ -436,7 +442,10 @@ export async function maybeForwardPositiveReply(
   const run = celebrateOnce(campaign, leadEmail, { waitsMs: options.waitsMs, kind: eventType }).then(async () => {
     if (options.responder !== "nobody") return;
     const { maybeAskClientToAnswer } = await import("./ask-client-to-answer");
-    await maybeAskClientToAnswer(campaign, leadEmail, { because: "no_responder" });
+    await maybeAskClientToAnswer(campaign, leadEmail, {
+      because: "no_responder",
+      ...(options.repliedAt ? { repliedAt: options.repliedAt } : {}),
+    });
   });
   if (options.background === false) {
     await run;
