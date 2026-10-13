@@ -129,7 +129,8 @@ export function latestProspectMessage(messages: ThreadMessage[]): ThreadMessage 
 
 /**
  * Pure: our first message sent AFTER the prospect's question, or null. Any
- * message from us counts, a manual reply from the Instantly Unibox included,
+ * message a PERSON on our side wrote counts (never an automated sequence step:
+ * recovered May replies were each followed by our own scheduled follow-ups), a manual reply from the Instantly Unibox included,
  * and one of our mailboxes filed inbound (a copy landing in the thread): a
  * person handled the thread, so nobody is asked to answer it.
  */
@@ -138,7 +139,8 @@ export function ourAnswerAfter(messages: ThreadMessage[], question: ThreadMessag
   if (!Number.isFinite(asked)) return null;
   const ours = ourAddresses(messages);
   const fromUs = (m: ThreadMessage) => {
-    if (m.direction === "outbound") return true;
+    // An automated follow-up of the sequence is not a person answering them.
+    if (m.direction === "outbound") return !m.sequenceStep;
     const from = bareAddress(m.from);
     return Boolean(from && ours.has(from));
   };

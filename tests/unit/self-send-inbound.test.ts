@@ -60,6 +60,18 @@ describe("isDeliveryStatusNotification", () => {
     ).toBe(true);
   });
 
+  it("an Exchange out-of-office (null return-path + Auto-Submitted) is NOT a report", () => {
+    const ooo = {
+      "return-path": "<>",
+      "auto-submitted": "auto-generated",
+      "x-auto-response-suppress": "All",
+      "content-type": "multipart/alternative; boundary=x",
+      from: "jerry.kieffer@ialpov.us",
+    };
+    expect(isDeliveryStatusNotification(ooo)).toBe(false);
+    expect(classifyInbound({ ...ooo, "in-reply-to": OURS }, "I'll be out of the office today.", KNOWN).kind).toBe("auto_reply");
+  });
+
   it("detects the null return-path marker", () => {
     expect(isDeliveryStatusNotification({ "return-path": "<>" })).toBe(true);
   });

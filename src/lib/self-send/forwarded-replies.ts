@@ -43,7 +43,8 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
-import { imapMessagesRaw } from "../../db/schema";
+import { imapMessagesRaw, instantlyEventsRetracted } from "../../db/schema";
+import { refreshLeadStatusCurrent } from "../status-gold";
 import { promoteEvent } from "../silver-promote";
 import type { CallerInfo } from "../key-client";
 import { isStaffSender } from "../staff-senders";
@@ -135,12 +136,33 @@ export function planMirroredMessage(
     return { action: "file", kind: STAFF_REPLY_KIND, send, referencedMessageIds: classified.referencedMessageIds };
   }
 
+  // Someone outside the prospect's own company writing TO the prospect on our
+  // thread is our side answering them (the client's own address, a colleague
+  // of ours), never the prospect's reply: Doc Dinners' info@docdinners.com
+  // answered Dr. Curran and Dr. Matt in May, and filing that as their reply
+  // made the thread read as a question nobody answered (2026-10-13).
+  if (classified.kind === "reply" && isOurSideAnswer(message, send.leadEmail)) {
+    return { action: "file", kind: STAFF_REPLY_KIND, send, referencedMessageIds: classified.referencedMessageIds };
+  }
+
   return {
     action: "file",
     kind: refileStaffReply(classified.kind, isStaffSender(message.from ?? headers["from"], send.leadEmail)),
     send,
     referencedMessageIds: classified.referencedMessageIds,
   };
+}
+
+function domainOf(address: string): string {
+  return address.split("@")[1] ?? "";
+}
+
+/** Pure: written TO the lead by someone who is neither the lead nor at the lead's domain. */
+export function isOurSideAnswer(message: MirroredMessage, leadEmail: string): boolean {
+  const from = lower(message.from);
+  const lead = lower(leadEmail);
+  if (!from || from === lead || domainOf(from) === domainOf(lead)) return false;
+  return [...message.to, ...message.cc].map(lower).includes(lead);
 }
 
 /** Pure: is a reply dated `date` late as of `asOf`? Undated = late (never act as if fresh). */
@@ -161,6 +183,8 @@ export interface RecoveredMessage {
 
 export interface ForwardedRepliesSummary {
   dryRun: boolean;
+  /** Already-filed rows whose kind a better reading changed (events retracted, refiled). */
+  reclassified: number;
   mailboxes: string[];
   messagesRead: number;
   /** Correlated to one of our sends and filed (or, dry run, would be). */
@@ -248,6 +272,62 @@ async function instantlyMirrorHolds(instantlyCampaignId: string, messageId: stri
   return rowsOf(result).length > 0;
 }
 
+/** An already-filed bronze row for this message, when it is one WE recovered. */
+async function recoveredRowOf(accountEmail: string, messageId: string): Promise<{ id: string; kind: string } | null> {
+  const result = await db.execute(sql`
+    SELECT id, kind FROM imap_messages_raw
+    WHERE account_email = ${accountEmail} AND message_id = ${messageId}
+      AND payload ? 'recoveredFrom'
+  `);
+  const row = rowsOf(result)[0];
+  return row ? { id: String(row.id), kind: String(row.kind) } : null;
+}
+
+/**
+ * Take back every silver event a recovered row promoted: archived whole in
+ * `instantly_events_retracted` (undo = re-insert), deleted, and the campaign's
+ * delivery status put back to `sent` when nothing else still says bounced or
+ * replied. Same archive the delayed-DSN backfill uses.
+ */
+async function retractRowEvents(rowId: string, reason: string): Promise<void> {
+  const events = rowsOf(
+    await db.execute(sql`
+      SELECT to_jsonb(e.*) AS event, e.id, e.campaign_id, c.delivery_status
+      FROM instantly_events e
+      LEFT JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+      WHERE e.source = 'self_send' AND e.source_row_id = ${rowId}
+    `),
+  );
+  for (const e of events) {
+    await db
+      .insert(instantlyEventsRetracted)
+      .values({
+        eventId: String(e.id),
+        action: "retracted",
+        reason,
+        event: e.event as Record<string, unknown>,
+        priorDeliveryStatus: (e.delivery_status as string | null) ?? null,
+        replacementSourceRowId: null,
+      })
+      .onConflictDoNothing({ target: instantlyEventsRetracted.eventId });
+    await db.execute(sql`DELETE FROM instantly_events WHERE id = ${String(e.id)}`);
+  }
+  const campaignIds = [...new Set(events.map((e) => String(e.campaign_id)))];
+  for (const campaignId of campaignIds) {
+    await db.execute(sql`
+      UPDATE instantly_campaigns
+      SET delivery_status = 'sent', updated_at = now()
+      WHERE instantly_campaign_id = ${campaignId}
+        AND (
+          (delivery_status = 'bounced' AND NOT EXISTS (
+            SELECT 1 FROM instantly_events b WHERE b.campaign_id = ${campaignId} AND b.event_type = 'email_bounced'))
+          OR (delivery_status = 'replied' AND NOT EXISTS (
+            SELECT 1 FROM instantly_events r WHERE r.campaign_id = ${campaignId} AND r.event_type = 'reply_received'))
+        )
+    `);
+  }
+}
+
 /** File one row in bronze. Null = already there (re-run, or the poll read it). */
 async function fileRow(input: {
   accountEmail: string;
@@ -260,6 +340,7 @@ async function fileRow(input: {
   text: string;
   date: Date | null;
   mirrorId: string;
+  headers?: InboundHeaders;
 }): Promise<string | null> {
   const [row] = await db
     .insert(imapMessagesRaw)
@@ -276,6 +357,7 @@ async function fileRow(input: {
         from: input.from,
         referencedMessageIds: input.referencedMessageIds,
         textSnippet: input.text.slice(0, 4000),
+        ...(input.headers ? { headers: input.headers } : {}),
         recoveredFrom: RECOVERED_FROM_STAFF_MIRROR,
         mirrorMessageId: input.mirrorId,
       },
@@ -364,6 +446,12 @@ async function recoverMailbox(
     }
 
     if (summary.dryRun) {
+      const existing = await recoveredRowOf(plan.send.accountEmail, messageId);
+      if (existing) {
+        if (existing.kind === plan.kind) summary.alreadyIngested += 1;
+        else summary.reclassified += 1;
+        continue;
+      }
       summary.filed += 1;
       if (plan.kind === STAFF_REPLY_KIND) summary.staffAnswers += 1;
       summary.recovered.push(reportOf(plan.send, plan.kind, message, deliveredLate));
@@ -381,48 +469,86 @@ async function recoverMailbox(
       text: message.text,
       date: message.date,
       mirrorId: message.mirrorId,
+      headers: headersOf(message),
     });
     if (!rowId) {
-      summary.alreadyIngested += 1;
+      const existing = await recoveredRowOf(plan.send.accountEmail, messageId);
+      if (!existing || existing.kind === plan.kind) {
+        summary.alreadyIngested += 1;
+        continue;
+      }
+      // A better reading changed what this already-filed message is (an
+      // out-of-office once read as a bounce, the client's answer once read as
+      // the prospect's reply): take back what the old kind promoted, refile.
+      await retractRowEvents(existing.id, `recovered-reclassified:${existing.kind}->${plan.kind}`);
+      await db.execute(sql`
+        UPDATE imap_messages_raw
+        SET kind = ${plan.kind},
+            payload = payload || jsonb_build_object(
+              'headers', ${JSON.stringify(headersOf(message))}::jsonb,
+              'reclassifiedFrom', ${existing.kind}::text,
+              'reclassifiedAt', now())
+        WHERE id = ${existing.id}
+      `);
+      await db.execute(sql`
+        UPDATE messages SET kind = ${plan.kind}
+        WHERE source_table = 'imap_messages_raw' AND source_row_id = ${existing.id}
+      `);
+      summary.reclassified += 1;
+      await promoteFiled(existing.id, plan, message, messageId, deliveredLate, asOf, summary);
+      await refreshLeadStatusCurrent(plan.send.instantlyCampaignId, plan.send.leadEmail);
       continue;
     }
     summary.filed += 1;
     summary.recovered.push(reportOf(plan.send, plan.kind, message, deliveredLate));
-    if (plan.kind === STAFF_REPLY_KIND) {
-      summary.staffAnswers += 1;
-      continue;
-    }
-
-    const eventType = eventTypeForInbound(plan.kind);
-    if (!eventType) continue;
-    const timestamp = message.date ?? asOf;
-    await promoteEvent({
-      eventType,
-      instantlyCampaignId: plan.send.instantlyCampaignId,
-      leadEmail: plan.send.leadEmail,
-      accountEmail: plan.send.accountEmail,
-      step: plan.send.step,
-      variant: null,
-      timestamp,
-      source: "self_send",
-      sourceRowId: rowId,
-      ...(deliveredLate ? { deliveredLate: true } : {}),
-    });
-    if (plan.kind === "reply") {
-      await actOnInboundReply({
-        send: plan.send,
-        accountEmail: plan.send.accountEmail,
-        rowId,
-        text: message.text,
-        subject: message.subject,
-        messageId,
-        timestamp,
-        summary: summary.poll,
-        deliveredLate,
-      });
-    } else if (plan.kind === "auto_reply") summary.poll.autoReplies += 1;
-    else if (plan.kind === "bounce") summary.poll.bounces += 1;
+    await promoteFiled(rowId, plan, message, messageId, deliveredLate, asOf, summary);
   }
+}
+
+/** Promote one filed row through the poll's own path. */
+async function promoteFiled(
+  rowId: string,
+  plan: Extract<ForwardedPlan, { action: "file" }>,
+  message: MirroredMessage,
+  messageId: string,
+  deliveredLate: boolean,
+  asOf: Date,
+  summary: ForwardedRepliesSummary,
+): Promise<void> {
+  if (plan.kind === STAFF_REPLY_KIND) {
+    summary.staffAnswers += 1;
+    return;
+  }
+
+  const eventType = eventTypeForInbound(plan.kind);
+  if (!eventType) return;
+  const timestamp = message.date ?? asOf;
+  await promoteEvent({
+    eventType,
+    instantlyCampaignId: plan.send.instantlyCampaignId,
+    leadEmail: plan.send.leadEmail,
+    accountEmail: plan.send.accountEmail,
+    step: plan.send.step,
+    variant: null,
+    timestamp,
+    source: "self_send",
+    sourceRowId: rowId,
+    ...(deliveredLate ? { deliveredLate: true } : {}),
+  });
+  if (plan.kind === "reply") {
+    await actOnInboundReply({
+      send: plan.send,
+      accountEmail: plan.send.accountEmail,
+      rowId,
+      text: message.text,
+      subject: message.subject,
+      messageId,
+      timestamp,
+      summary: summary.poll,
+      deliveredLate,
+    });
+  } else if (plan.kind === "auto_reply") summary.poll.autoReplies += 1;
+  else if (plan.kind === "bounce") summary.poll.bounces += 1;
 }
 
 function reportOf(send: AliasedSend, kind: string, message: MirroredMessage, deliveredLate: boolean): RecoveredMessage {
@@ -462,6 +588,7 @@ export async function recoverForwardedReplies(
     unrelated: 0,
     ambiguous: 0,
     staffAnswers: 0,
+    reclassified: 0,
     mailboxesFailed: 0,
     poll: emptyPollSummary(),
     recovered: [],

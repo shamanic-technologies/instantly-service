@@ -109,7 +109,12 @@ export function isDeliveryStatusNotification(headers: InboundHeaders): boolean {
   const contentType = headers["content-type"]?.toLowerCase() ?? "";
   if (contentType.includes("report-type=delivery-status")) return true;
 
-  if (headers["return-path"]?.trim() === "<>") return true;
+  // A null return-path alone is NOT a report: RFC 3834 asks autoresponders for
+  // it too, and every Exchange out-of-office carries it (`Auto-Submitted:
+  // auto-generated`, `X-Auto-Response-Suppress: All`). 24 recovered OOOs were
+  // filed as bounces on it (2026-10-13). A real report is caught above by its
+  // MIME type, or below by its sender.
+  if (headers["return-path"]?.trim() === "<>" && !isAutoReply(headers)) return true;
 
   const from = headers["from"]?.toLowerCase() ?? "";
   return from.includes("mailer-daemon") || from.includes("postmaster@");
