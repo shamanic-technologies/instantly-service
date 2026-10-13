@@ -73,6 +73,7 @@ import {
   type SendTransport,
 } from "./self-send/transport";
 import { MANUAL_REPLY_STEP } from "./manual-reply-step";
+import { findProspectWroteElsewhere, type ElsewhereDestination } from "./reply-destination";
 import {
   findHumanTakeover,
   type ReplySender,
@@ -144,6 +145,7 @@ export class ReplyToLeadError extends Error {
       | "sending_account_unresolved"
       | "mailbox_credential_unavailable"
       | "human_took_over"
+      | "prospect_wrote_elsewhere"
       | "handed_over"
       | "reply_dispatch_failed",
     public readonly status: number,
@@ -790,6 +792,66 @@ async function prepareSmtpReply(
   };
 }
 
+/**
+ * The answer to a prospect whose newest message went to one of our people's own
+ * address (lib/reply-destination): from THAT address, in that person's name,
+ * through our own sender, threaded on their message. No credential for that
+ * address (a personal Gmail) = refused loudly, never sent from anywhere else.
+ */
+async function prepareOwnAddressReply(
+  campaign: CampaignRow,
+  input: ReplyToLeadInput,
+  elsewhere: ElsewhereDestination,
+): Promise<PreparedSmtpReply> {
+  const refuse = (why: string): never => {
+    throw new ReplyToLeadError(
+      "prospect_wrote_elsewhere",
+      409,
+      `${campaign.leadEmail} last wrote to ${elsewhere.to} at ${elsewhere.at}, not to a mailbox the outreach sent from, and ${why}; answer them from that mailbox, in that thread`,
+    );
+  };
+  const address = elsewhere.ownAddress;
+  if (!address) return refuse("none of those addresses is one of ours");
+  if (!elsewhere.messageId.startsWith("<")) return refuse("their message carries no Message-ID to thread on");
+
+  let credential: MailboxCredential;
+  try {
+    credential = await resolveMailboxCredential(address, CALLER);
+  } catch (error: unknown) {
+    return refuse(
+      `we hold no credential to send as ${address} (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+
+  const salesRepCopy = await salesRepCopyList(campaign.brandId, input.orgId);
+  const account = await loadSelfSendAccount(address);
+  const copy = replyCopy(input, salesRepCopy);
+  const notSelf = (list: string): string =>
+    list
+      .split(",")
+      .map((a) => a.trim())
+      .filter((a) => a && a.toLowerCase() !== address)
+      .join(", ");
+
+  return {
+    transport: SEND_TRANSPORT_SMTP,
+    sentBy: input.sentBy,
+    anchor: {
+      inReplyTo: elsewhere.messageId,
+      subject: elsewhere.subject,
+      references: elsewhere.references,
+    },
+    accountEmail: address,
+    credential,
+    account,
+    subject: replySubject(elsewhere.subject),
+    bodyHtml: signedBody(input, account),
+    from: buildFromHeader(account),
+    cc: notSelf(copy.cc),
+    bcc: notSelf(copy.bcc),
+  };
+}
+
 /** Send the prepared reply ourselves and record what happened. */
 async function deliverSmtpReply(
   campaign: CampaignRow,
@@ -951,8 +1013,15 @@ export async function replyToLead(
     }
   }
 
-  const prepared =
-    campaign.sendTransport === SEND_TRANSPORT_SMTP
+  // ⚠️ ANY ANSWER GOES WHERE THEY WROTE LAST (owner 2026-10-13, caps). Their
+  // newest message went to one of our people's own address: the answer leaves
+  // in that person's name, from that address, threaded on that message, never
+  // from the sending alias into the old thread (lib/reply-destination).
+  const elsewhere = await findProspectWroteElsewhere(input.orgId, campaign.leadEmail);
+
+  const prepared = elsewhere
+    ? await prepareOwnAddressReply(campaign, input, elsewhere)
+    : campaign.sendTransport === SEND_TRANSPORT_SMTP
       ? await prepareSmtpReply(campaign, input)
       : await prepareInstantlyReply(campaign, input);
 
