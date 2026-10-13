@@ -48,6 +48,7 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
+import { createRun } from "../runs-client";
 import { OWN_MAILBOX_THREAD } from "../reply-destination";
 import type { CallerInfo } from "../key-client";
 import { bareAddress, isStaffSender } from "../staff-senders";
@@ -250,18 +251,26 @@ function referencesOf(message: MirroredMessage): string[] {
   return [...new Set(raw.match(/<[^<>\s]+>/g) ?? [])];
 }
 
-/** A real identity of the fleet's own work, for google-service's request log. */
+/**
+ * A real identity to read the mirror with: an org and user of real campaign
+ * rows, under a FRESH run of this pass. A campaign row's own `run_id` can be
+ * gone from runs-service (15 orgs on 2026-10-13: google-service's run tracking
+ * refused it as a parent, 502), so it is never reused as one.
+ */
 async function readerIdentity(orgId?: string): Promise<GoogleCallerIdentity | null> {
   const result = await db.execute(sql`
-    SELECT org_id AS "orgId", user_id AS "userId", run_id AS "runId"
+    SELECT org_id AS "orgId", user_id AS "userId"
     FROM instantly_campaigns
-    WHERE org_id IS NOT NULL AND user_id IS NOT NULL AND run_id IS NOT NULL
+    WHERE org_id IS NOT NULL AND user_id IS NOT NULL
       ${orgId ? sql`AND org_id = ${orgId}` : sql``}
     ORDER BY created_at DESC
     LIMIT 1
   `);
   const row = rowsOf(result)[0];
-  return row ? { orgId: String(row.orgId), userId: String(row.userId), runId: String(row.runId) } : null;
+  if (!row) return null;
+  const identity = { orgId: String(row.orgId), userId: String(row.userId) };
+  const run = await createRun({ serviceName: "instantly-service", taskName: "gmail-threads" }, identity);
+  return { ...identity, runId: run.id };
 }
 
 /** One message folded in, as reported. */
@@ -348,7 +357,20 @@ export async function foldInGmailThreads(
   for (const [orgId, orgLeads] of await loadLeadsByOrg()) {
     const scoped = orgLeads.filter((l) => leadSet.has(l));
     if (scoped.length === 0) continue;
-    const orgIdentity = await readerIdentity(orgId);
+    const notConnectedAt = orgsWithoutGmail.get(orgId);
+    if (notConnectedAt !== undefined && asOf.getTime() - notConnectedAt < NOT_CONNECTED_RECHECK_MS) continue;
+    let orgIdentity: GoogleCallerIdentity | null;
+    try {
+      orgIdentity = await readerIdentity(orgId);
+    } catch (error) {
+      summary.batchesFailed += 1;
+      console.error(
+        `[instantly-service] gmail-threads: org ${orgId} has no usable identity to read its Gmail with: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      continue;
+    }
     if (!orgIdentity) continue;
     let owner: Set<string> | null = new Set();
     await foldSource(
@@ -362,8 +384,10 @@ export async function foldInGmailThreads(
           const page = await fetchOrgMailForAddresses(batch, orgIdentity, since);
           if (!page) {
             owner = null;
+            orgsWithoutGmail.set(orgId, asOf.getTime());
             return [];
           }
+          orgsWithoutGmail.delete(orgId);
           for (const a of page.ownerAddresses) owner.add(a);
           return page.messages;
         },
@@ -374,6 +398,14 @@ export async function foldInGmailThreads(
   }
   return summary;
 }
+
+/**
+ * Orgs google-service said connected no Gmail, and when (per replica). Re-asked
+ * after {@link NOT_CONNECTED_RECHECK_MS}: each ask mints a run, and most orgs
+ * never connect one.
+ */
+const orgsWithoutGmail = new Map<string, number>();
+export const NOT_CONNECTED_RECHECK_MS = 60 * 60 * 1000;
 
 /** Where a pass reads: which leads, how, and whose addresses are "ours". */
 interface FoldSource {
