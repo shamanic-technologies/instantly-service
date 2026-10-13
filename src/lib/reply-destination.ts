@@ -70,10 +70,10 @@ export async function findProspectWroteElsewhere(
       FROM instantly_campaigns
       WHERE org_id = ${orgId} AND lower(lead_email) = ${lead}
     )
-    SELECT at, own, "to", message_id AS "messageId", subject, refs
+    SELECT at, own, "to", "ourAddress", message_id AS "messageId", subject, refs
     FROM (
       SELECT (e.payload->>'timestamp_email')::timestamptz AS at, false AS own,
-             NULL::text AS "to", NULL::text AS message_id, NULL::text AS subject, NULL::jsonb AS refs
+             NULL::text AS "to", NULL::text AS "ourAddress", NULL::text AS message_id, NULL::text AS subject, NULL::jsonb AS refs
       FROM instantly_emails_raw e
       WHERE e.instantly_campaign_id IN (SELECT instantly_campaign_id FROM seqs)
         AND e.payload->>'ue_type' = '2'
@@ -84,6 +84,7 @@ export async function findProspectWroteElsewhere(
       SELECT COALESCE(m.received_at, m.polled_at) AT TIME ZONE 'UTC' AS at,
              (m.payload->>'recoveredFrom') IS NOT DISTINCT FROM ${OWN_MAILBOX_THREAD} AS own,
              m.payload->>'to' AS "to",
+             m.payload->>'ourAddress' AS "ourAddress",
              m.message_id,
              m.subject,
              m.payload->'referencedMessageIds' AS refs
@@ -102,7 +103,8 @@ export async function findProspectWroteElsewhere(
   const messageId = String(row.messageId ?? "");
   const refs = Array.isArray(row.refs) ? (row.refs as unknown[]).map(String) : [];
   return {
-    ownAddress: ownRecipient(to, lead),
+    // Recorded at fold-in (any org's own address); else read off the recipients (our staff).
+    ownAddress: typeof row.ourAddress === "string" && row.ourAddress ? row.ourAddress : ownRecipient(to, lead),
     to: to || "one of our people's own mailbox",
     at: at.toISOString(),
     messageId,

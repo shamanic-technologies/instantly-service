@@ -63,3 +63,24 @@ describe("ownRecipient", () => {
     expect(ownRecipient("allie@leansignalio.com", "lukas@stankamera.com")).toBeNull();
   });
 });
+
+describe("a client's own address recorded at fold-in", () => {
+  it("names the address the prospect wrote to, whoever's it is", async () => {
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        {
+          at: new Date("2026-10-13T10:00:00Z"),
+          own: true,
+          to: "john@client.com",
+          ourAddress: "john@client.com",
+          messageId: "<p-2@mail>",
+          subject: "Re: hi",
+          refs: [],
+        },
+      ]),
+    );
+    const out = await findProspectWroteElsewhere("org-2", "prospect@x.com");
+    expect(out?.ownAddress).toBe("john@client.com");
+    expect(out?.references).toEqual(["<p-2@mail>"]);
+  });
+});

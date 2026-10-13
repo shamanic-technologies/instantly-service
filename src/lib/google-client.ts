@@ -207,3 +207,56 @@ export async function fetchMirroredMailForAddresses(
     if (!cursor) return out;
   }
 }
+
+/** One org's own connected Gmail, read for its prospects (google-service `POST /orgs/google/addressed-messages`). */
+export interface OrgMirroredMail {
+  /** The org's own addresses (connected accounts + send-as aliases): "ours" for this org. */
+  ownerAddresses: string[];
+  messages: MirroredMessage[];
+}
+
+/**
+ * Every message in THIS org's connected Gmail sent TO/Cc or FROM any of
+ * `addresses`, paged to the end. Null = the org connected no Google account
+ * (google-service 404 `no_google_account_connected`). Same message shape as the
+ * staff read. Fails loud on anything else.
+ */
+export async function fetchOrgMailForAddresses(
+  addresses: readonly string[],
+  identity: GoogleCallerIdentity,
+  since?: Date,
+): Promise<OrgMirroredMail | null> {
+  const { url, key } = config();
+  const out: OrgMirroredMail = { ownerAddresses: [], messages: [] };
+  let cursor: string | null = null;
+  for (;;) {
+    const response: Response = await fetch(`${url}/orgs/google/addressed-messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": key, ...identityHeaders(identity) },
+      body: JSON.stringify({
+        addresses,
+        limit: 500,
+        ...(since ? { since: since.toISOString() } : {}),
+        ...(cursor ? { cursor } : {}),
+      }),
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw new Error(
+        `google-service POST /orgs/google/addressed-messages failed: ${response.status} - ${(await response.text()).slice(0, 200)}`,
+      );
+    }
+    const page = (await response.json()) as {
+      ownerAddresses?: string[];
+      messages?: AddressedMessageWire[];
+      nextCursor?: string | null;
+    };
+    for (const a of page.ownerAddresses ?? []) {
+      const lowered = a.trim().toLowerCase();
+      if (!out.ownerAddresses.includes(lowered)) out.ownerAddresses.push(lowered);
+    }
+    for (const wire of page.messages ?? []) out.messages.push(toMirroredMessage(wire));
+    cursor = page.nextCursor ?? null;
+    if (!cursor) return out;
+  }
+}
