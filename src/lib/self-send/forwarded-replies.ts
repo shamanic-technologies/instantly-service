@@ -368,6 +368,18 @@ async function fileRow(input: {
   return row?.id ?? null;
 }
 
+/** A row on this sequence already holds the Gmail message `gmailId` (either read's id form). */
+async function mirrorMessageFiled(instantlyCampaignId: string, gmailId: string): Promise<boolean> {
+  const result = await db.execute(sql`
+    SELECT 1 FROM imap_messages_raw
+    WHERE instantly_campaign_id = ${instantlyCampaignId}
+      AND message_id <> ${`gmail-mirror:${gmailId}`}
+      AND (payload->>'mirrorMessageId' = ${gmailId} OR payload->>'mirrorMessageId' LIKE ${`%:${gmailId}`})
+    LIMIT 1
+  `);
+  return rowsOf(result).length > 0;
+}
+
 /**
  * Answers our staff sent the lead from the staff address itself, after `after`,
  * filed as `staff_reply` on the lead's sequence. Returns how many were new.
@@ -384,6 +396,9 @@ async function fileStaffAddressAnswers(
     if (m.direction !== "outbound") continue;
     if (!m.to.map(lower).includes(lower(send.leadEmail))) continue;
     if (after && m.date && m.date.getTime() < after.getTime()) continue;
+    // The same Gmail message may already be filed through its copy to one of
+    // our aliases (the addressed-messages read keys it `<mailbox>:<gmail id>`).
+    if (await mirrorMessageFiled(send.instantlyCampaignId, m.mirrorId)) continue;
     if (summary.dryRun) {
       summary.staffAnswers += 1;
       continue;
