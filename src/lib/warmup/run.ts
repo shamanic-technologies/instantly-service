@@ -125,15 +125,19 @@ async function loadRoom(
     SELECT
       a.email                AS "accountEmail",
       a.daily_limit          AS "dailyLimit",
-      COALESCE((
-        SELECT COUNT(*) FROM instantly_events e
-        WHERE e.account_email = a.email
-          AND e.event_type = 'email_sent'
-          AND e.inferred = false
-          AND e.timestamp >= date_trunc('day', now() AT TIME ZONE 'UTC')
-      ), 0)                  AS "sentToday",
+      COALESCE(st.n, 0)      AS "sentToday",
       a.lifecycle_status     AS "lifecycleStatus"
     FROM instantly_accounts a
+    -- Aggregated once and joined, never correlated per mailbox (21 s per run
+    -- on the shared box, DB-LOAD-1014; same as the dispatch worker).
+    LEFT JOIN (
+      SELECT e.account_email, COUNT(*) AS n
+      FROM instantly_events e
+      WHERE e.event_type = 'email_sent'
+        AND e.inferred = false
+        AND e.timestamp >= date_trunc('day', now() AT TIME ZONE 'UTC')
+      GROUP BY e.account_email
+    ) st ON st.account_email = a.email
   `);
   const volume = await fetchRecentDailyVolume();
 
