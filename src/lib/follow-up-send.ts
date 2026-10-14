@@ -14,11 +14,15 @@
 //   follow-up would race it (two of our emails in a few days): refused with its
 //   own code, `brand_sequence_queued`. The SAME send retried (same run) is not a
 //   race and is left to the reservation, which answers it `200 duplicate`.
-// - which thread does it continue? The brand's latest sequence with a REAL
-//   `email_sent` to the person. The follow-up lands in THAT thread (same
-//   mailbox, `Re:` its subject, In-Reply-To/References its messages) when that
-//   mailbox can still send; otherwise it starts a new thread from the mailbox
-//   the fill order picks. Generic: no branch on a tag, a workflow or a brand.
+// - which thread does it continue? The thread holding the person's LATEST
+//   message to the brand (their last real reply), from the mailbox they wrote
+//   to (RIGHT-MOMENT-OR-LATER-1014, owner 2026-10-14: the follow-up is a reply
+//   in the thread they wrote in last). Only when they never wrote back: the
+//   brand's latest sequence with a REAL `email_sent` to them. The follow-up
+//   lands in THAT thread (same mailbox, `Re:` its subject, In-Reply-To/
+//   References its messages) when that mailbox can still send; otherwise it
+//   starts a new thread from the mailbox the fill order picks. Generic: no
+//   branch on a tag, a workflow or a brand.
 
 import { sql } from "drizzle-orm";
 import { db } from "../db";
@@ -39,6 +43,26 @@ export interface FollowUpThread {
   accountEmail: string | null;
   /** Its first email's subject (null = we never stored one: no thread). */
   subject: string | null;
+  /**
+   * Why this thread: `their_last_reply` = the person wrote in it last;
+   * `our_last_email` = they never wrote back, it is where we wrote last.
+   */
+  reason: FollowUpThreadReason;
+}
+
+export type FollowUpThreadReason = "their_last_reply" | "our_last_email";
+
+/** One sequence of the brand to the person with a real email sent. */
+export interface FollowUpThreadCandidate {
+  instantlyCampaignId: string;
+  /** The mailbox that sent the sequence. */
+  accountEmail: string | null;
+  subject: string | null;
+  lastSentAt: Date;
+  /** The person's latest real reply in it (null = they never wrote in it). */
+  lastReplyAt: Date | null;
+  /** The mailbox that reply reached (null = unknown: the sequence's own). */
+  replyAccountEmail: string | null;
 }
 
 function rowsOf<T>(result: unknown): T[] {
@@ -83,9 +107,53 @@ export async function findQueuedBrandSequence(
 }
 
 /**
- * The brand's latest sequence to this person with a REAL email sent (inferred
- * rows assert a send nobody witnessed). Null = we never wrote to them for this
- * brand in this org: the follow-up simply starts a thread. Fail loud.
+ * Pure: the thread a follow-up continues. The one holding the person's latest
+ * reply wins, from the mailbox that reply reached; only when they never wrote
+ * back, the sequence where we wrote last. Null = no candidate.
+ */
+export function pickFollowUpThread(
+  candidates: FollowUpThreadCandidate[],
+): FollowUpThread | null {
+  const time = (d: Date | null) => (d ? d.getTime() : Number.NEGATIVE_INFINITY);
+  const replied = candidates.filter((c) => c.lastReplyAt !== null);
+  const pick =
+    replied.length > 0
+      ? replied.reduce((a, b) => (time(b.lastReplyAt) > time(a.lastReplyAt) ? b : a))
+      : candidates.length > 0
+        ? candidates.reduce((a, b) => (time(b.lastSentAt) > time(a.lastSentAt) ? b : a))
+        : null;
+  if (!pick) return null;
+  const subject =
+    typeof pick.subject === "string" && pick.subject.trim() !== "" ? pick.subject : null;
+  return replied.length > 0
+    ? {
+        instantlyCampaignId: pick.instantlyCampaignId,
+        accountEmail: pick.replyAccountEmail ?? pick.accountEmail ?? null,
+        subject,
+        reason: "their_last_reply",
+      }
+    : {
+        instantlyCampaignId: pick.instantlyCampaignId,
+        accountEmail: pick.accountEmail ?? null,
+        subject,
+        reason: "our_last_email",
+      };
+}
+
+function toDate(v: unknown): Date | null {
+  if (v === null || v === undefined) return null;
+  const d = v instanceof Date ? v : new Date(String(v));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Every sequence of this org + brand to the person with a REAL email sent
+ * (inferred rows assert a send nobody witnessed), with the person's latest
+ * real reply in it: a `reply_received` we witnessed (not inferred, not a
+ * staff statement `source='manual'`, whose time is when staff spoke). An
+ * autoreply is not the person writing. Then `pickFollowUpThread`. Null = we
+ * never wrote to them for this brand in this org: the follow-up simply starts
+ * a thread. Fail loud.
  */
 export async function findFollowUpThread(
   orgId: string,
@@ -98,7 +166,10 @@ export async function findFollowUpThread(
     SELECT c.instantly_campaign_id AS "instantlyCampaignId",
            c.account_email AS "accountEmail",
            (SELECT s.subject FROM sequence_steps s
-             WHERE s.instantly_campaign_id = c.instantly_campaign_id AND s.step = 1) AS "subject"
+             WHERE s.instantly_campaign_id = c.instantly_campaign_id AND s.step = 1) AS "subject",
+           sent.last_sent AS "lastSentAt",
+           reply.last_reply AS "lastReplyAt",
+           reply.account_email AS "replyAccountEmail"
     FROM instantly_campaigns c
     JOIN LATERAL (
       SELECT MAX(e.timestamp) AS last_sent
@@ -107,19 +178,38 @@ export async function findFollowUpThread(
         AND e.event_type = 'email_sent'
         AND e.inferred = false
     ) sent ON sent.last_sent IS NOT NULL
+    LEFT JOIN LATERAL (
+      SELECT e.timestamp AS last_reply, e.account_email
+      FROM instantly_events e
+      WHERE e.campaign_id = c.instantly_campaign_id
+        AND e.event_type = 'reply_received'
+        AND e.inferred = false
+        AND e.source <> 'manual'
+      ORDER BY e.timestamp DESC
+      LIMIT 1
+    ) reply ON true
     WHERE c.org_id = ${orgId}
       AND lower(c.lead_email) = ${email}
       AND c.brand_ids && ${sql.param(brandIds)}::text[]
-    ORDER BY sent.last_sent DESC
-    LIMIT 1
   `);
-  const [row] = rowsOf<FollowUpThread>(result);
-  if (!row) return null;
-  return {
-    instantlyCampaignId: row.instantlyCampaignId,
-    accountEmail: row.accountEmail ?? null,
-    subject: typeof row.subject === "string" && row.subject.trim() !== "" ? row.subject : null,
-  };
+  const candidates = rowsOf<Record<string, unknown>>(result).flatMap((row) => {
+    const lastSentAt = toDate(row.lastSentAt);
+    if (!lastSentAt) return [];
+    return [
+      {
+        instantlyCampaignId: String(row.instantlyCampaignId),
+        accountEmail: typeof row.accountEmail === "string" ? row.accountEmail : null,
+        subject: typeof row.subject === "string" ? row.subject : null,
+        lastSentAt,
+        lastReplyAt: toDate(row.lastReplyAt),
+        replyAccountEmail:
+          typeof row.replyAccountEmail === "string" && row.replyAccountEmail.trim() !== ""
+            ? row.replyAccountEmail
+            : null,
+      },
+    ];
+  });
+  return pickFollowUpThread(candidates);
 }
 
 /**

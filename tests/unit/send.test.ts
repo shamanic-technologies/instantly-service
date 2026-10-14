@@ -3348,6 +3348,7 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
       instantlyCampaignId: "ss-thread",
       accountEmail: "thread@example.com",
       subject: "Quick idea for TestCo",
+      reason: "their_last_reply",
     });
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(followUpBody);
@@ -3374,6 +3375,7 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
       instantlyCampaignId: "ss-thread",
       accountEmail: "gone@example.com",
       subject: "Quick idea for TestCo",
+      reason: "their_last_reply",
     });
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(followUpBody);
