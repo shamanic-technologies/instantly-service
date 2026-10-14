@@ -293,6 +293,107 @@ describe("fetchLeadConversation — an INCOMPLETE mirror", () => {
   });
 });
 
+describe("fetchLeadConversation — a sequence the mirror never copied (THREAD-READ-502-BLOCKS-FOLLOWUPS-1014)", () => {
+  // Tom-shaped: three cold emails in March, no reply, so nothing was ever mirrored.
+  // Instantly is gone (plan cancelled 2026-10-12); the webhook events hold every body.
+  const sent = (step: number, at: string, id: string) => ({
+    event_type: "email_sent",
+    source: "webhook",
+    timestamp: at,
+    raw_payload: {
+      step,
+      email_id: id,
+      email_account: "amy@boostdistribute.com",
+      lead_email: "alice@media.com",
+      email_subject: step === 1 ? "quick question" : "Re: quick question",
+      email_html: `<p>Hi Alice, step ${step}</p>`,
+      timestamp: at,
+    },
+  });
+
+  it("rebuilds the thread from our webhook events, with Instantly unreachable", async () => {
+    queueDb(
+      [campaignRow()],
+      [],
+      [{ present: 1 }],
+      [
+        sent(1, "2026-03-27T15:22:23.637Z", "m1"),
+        sent(2, "2026-03-30T05:28:18.905Z", "m2"),
+        sent(2, "2026-03-30T05:28:18.905Z", "m2"), // a retried webhook
+        sent(3, "2026-04-10T00:02:49.791Z", "m3"),
+      ],
+    );
+    mockListEmails.mockRejectedValue(new Error("Instantly 401 plan cancelled"));
+    mockResolveKey.mockRejectedValue(new Error("key-service 404"));
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.source).toBe("mirror");
+    expect(conv.messageCount).toBe(3);
+    expect(conv.messages.map((m) => m.direction)).toEqual(["outbound", "outbound", "outbound"]);
+    expect(conv.messages[0].text).toContain("step 1");
+    expect(conv.messages[0].text).not.toContain("<p>");
+    expect(conv.messages[0].from).toBe("amy@boostdistribute.com");
+    expect(conv.messages[0].to).toBe("alice@media.com");
+    expect(conv.messages[0].subject).toBe("quick question");
+    expect(mockListEmails).not.toHaveBeenCalled();
+    expect(mockInsertEmailsBatch).not.toHaveBeenCalled();
+  });
+
+  it("carries the prospect's reply as written", async () => {
+    queueDb([campaignRow()], [], [{ present: 1 }], [
+      sent(1, "2026-03-27T15:22:23.637Z", "m1"),
+      {
+        event_type: "reply_received",
+        source: "webhook",
+        timestamp: "2026-03-28T09:00:00.000Z",
+        raw_payload: {
+          email_id: "r1",
+          email_account: "amy@boostdistribute.com",
+          lead_email: "alice@media.com",
+          reply_subject: "Re: quick question",
+          reply_text: "Not now, try me in June.",
+          timestamp: "2026-03-28T09:00:00.000Z",
+        },
+      },
+    ]);
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(conv.messages.map((m) => m.direction)).toEqual(["outbound", "inbound"]);
+    expect(conv.messages[1].text).toBe("Not now, try me in June.");
+    expect(conv.messages[1].from).toBe("alice@media.com");
+  });
+
+  it("a reply recorded WITHOUT its words is not a thread: asks the provider, 502 when gone", async () => {
+    queueDb([campaignRow()], [], [{ present: 1 }], [
+      sent(1, "2026-03-27T15:22:23.637Z", "m1"),
+      { event_type: "reply_received", source: "manual", timestamp: "2026-03-28T09:00:00.000Z", raw_payload: {} },
+    ]);
+    mockListEmails.mockRejectedValue(new Error("Instantly 401 plan cancelled"));
+
+    const err = await fetchLeadConversation(INPUT).catch((e) => e);
+    expect(err).toBeInstanceOf(LeadConversationError);
+    expect(err.status).toBe(502);
+    expect(mockListEmails).toHaveBeenCalledTimes(1);
+  });
+
+  it("an event record it cannot read is a 502, never an empty thread", async () => {
+    mockDbExecute.mockReset();
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow()]))
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([{ present: 1 }]))
+      .mockRejectedValueOnce(new Error("connection reset"));
+
+    await expect(fetchLeadConversation(INPUT)).rejects.toMatchObject({
+      code: "thread_unavailable",
+      status: 502,
+    });
+    expect(mockListEmails).not.toHaveBeenCalled();
+  });
+});
+
 describe("fetchLeadConversation — self-send transport", () => {
   it("reads the thread out of bronze, in the same shape", async () => {
     queueDb([campaignRow({ instantlyCampaignId: "self:abc", sendTransport: "smtp" })]);
