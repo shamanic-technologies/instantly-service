@@ -85,7 +85,16 @@ vi.mock("../../src/lib/self-send/smtp", async (importOriginal) => ({
 process.env.SELF_SEND_UNSUBSCRIBE_SECRET = "worker-test-secret";
 process.env.SELF_SEND_PUBLIC_URL = "https://opt.test";
 
-const { runDispatch } = await import("../../src/lib/self-send/dispatch-worker");
+// An answer sent at once never reads the mailboxes (a new thread has no reply
+// to find); the sweeps here never ask it to either.
+const mockRunPoll = vi.hoisted(() => vi.fn());
+vi.mock("../../src/lib/self-send/imap-poller", () => ({
+  runPoll: (...args: unknown[]) => mockRunPoll(...args),
+}));
+
+const { runDispatch, dispatchAnswerNow, __resetDispatchInFlight } = await import(
+  "../../src/lib/self-send/dispatch-worker"
+);
 const { SmtpDispatchError } = await import("../../src/lib/self-send/smtp");
 
 // A MONDAY. The earlier fixture was a Sunday, so these tests were exercising a
@@ -160,6 +169,7 @@ function primeReads(options: { hasBody?: boolean; signatureHtml?: string | null 
 
 beforeEach(() => {
   vi.resetAllMocks();
+  __resetDispatchInFlight();
   mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   mockStopBooked.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   mockVerifyQueued.mockResolvedValue({ summary: {}, notCleared: new Set<string>() });
@@ -533,5 +543,100 @@ describe("runDispatch — waiting replies ride the same run", () => {
     // A queue problem must not stop the fleet's sending for the hour.
     expect(summary.sent).toBe(1);
     expect(summary).toMatchObject({ repliesDue: 0, repliesSent: 0 });
+  });
+});
+
+describe("dispatchAnswerNow — an answer to a person leaves at once (FORM-ANSWER-LATENCY-1014)", () => {
+  // Sunday 23:00 UTC: no sweep would send a cold step now (rest day, window
+  // shut). The answer still goes, through the same selection and send path.
+  const SUNDAY_NIGHT = new Date("2026-08-16T23:00:00Z");
+
+  function primeAnswerReads(pending: Record<string, unknown>[]) {
+    mockExecute
+      // sender health: sends, permanent failures
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      // the ONE sequence asked for
+      .mockResolvedValueOnce({ rows: pending })
+      // sending accounts, then the ramp volume
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            accountEmail: "amy@saviolabsco.com",
+            firstName: "Amy",
+            lastName: "Moore",
+            dailyLimit: 45,
+            lifecycleStatus: "in_production",
+            sentToday: 0,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [{ accountEmail: "amy@saviolabsco.com", peak: 45 }] })
+      // step content
+      .mockResolvedValueOnce({
+        rows: [{ bodyHtml: "<p>Thanks for your form</p>", subject: "Your listing", priorMessageIds: [], signatureHtml: null }],
+      });
+  }
+
+  beforeEach(() => __resetDispatchInFlight());
+
+  it("sends the answer's first email now, on a Sunday night, without reading the mailboxes", async () => {
+    primeAnswerReads([
+      {
+        instantlyCampaignId: "self:answer",
+        leadEmail: "kevin+form@distribute.you",
+        accountEmail: "amy@saviolabsco.com",
+        provisionedSteps: [1],
+        lastSentStep: null,
+        lastSentAt: null,
+        stepDelays: [null],
+        timezone: "Europe/London",
+        answersPerson: true,
+      },
+    ]);
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<a1@mail>",
+      response: "250 OK",
+      accepted: ["kevin+form@distribute.you"],
+      rejected: [],
+    });
+
+    const summary = await dispatchAnswerNow("self:answer", SUNDAY_NIGHT);
+
+    expect(summary.sent).toBe(1);
+    expect(mockDispatchMessage).toHaveBeenCalledTimes(1);
+    expect(mockPromoteEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "email_sent", instantlyCampaignId: "self:answer", step: 1 }),
+    );
+    expect(mockRunPoll).not.toHaveBeenCalled();
+    // The queue read is scoped to the one sequence.
+    const pendingSql = JSON.stringify(mockExecute.mock.calls[2]![0]);
+    expect(pendingSql).toContain("self:answer");
+  });
+
+  it("sends nothing for a cold sequence handed to it (only an answer is owed now)", async () => {
+    mockExecute
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            instantlyCampaignId: "self:cold",
+            leadEmail: "prospect@example.com",
+            accountEmail: "amy@saviolabsco.com",
+            provisionedSteps: [1, 2],
+            lastSentStep: null,
+            lastSentAt: null,
+            stepDelays: [2, null],
+            answersPerson: false,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const summary = await dispatchAnswerNow("self:cold", SUNDAY_NIGHT);
+    expect(summary.sent).toBe(0);
+    expect(mockDispatchMessage).not.toHaveBeenCalled();
   });
 });

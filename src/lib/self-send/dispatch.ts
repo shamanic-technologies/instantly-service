@@ -49,6 +49,20 @@ export interface PendingSequence {
    * old behaviour.
    */
   queuedAt?: Date | null;
+  /**
+   * The sequence ANSWERS a person's own action (a form they filled, an email a
+   * client pushed for someone who asked): its campaign runs a REACTIVE leg in
+   * campaign-service's vocabulary, stamped on the row at `POST /orgs/send`
+   * (`answer-now.ts`). Its FIRST email is owed now, like a reply: no business-hours
+   * or Sunday wait, and it goes out ahead of other due steps. Caps, mailbox health
+   * and every refusal still apply. Absent = a cold (proactive) sequence.
+   */
+  answersPerson?: boolean;
+}
+
+/** The first email of a sequence that answers a person: owed now, like a reply. */
+export function isAnswerOwed(sequence: PendingSequence): boolean {
+  return sequence.answersPerson === true && sequence.lastSentStep === null;
 }
 
 export interface DueStep {
@@ -243,7 +257,13 @@ export function selectDueSteps(
   // step's due date: `sending-calendar` is scoped to send selection, and snapping
   // due dates here would drift this module away from the ops projections, which
   // bucket on the raw nominal day on purpose.
-  if (!isSendingDay(asOf))
+  //
+  // The one exception is an answer owed to a person who just acted (see
+  // `isAnswerOwed`): a reply already goes out on any day and hour, and the
+  // first email answering a form fill is the same kind of message. A handful of
+  // answers is not the volume the Saturday/Sunday slots protect.
+  const sendingDay = isSendingDay(asOf);
+  if (!sendingDay && !sequences.some(isAnswerOwed))
     return {
       selected: [],
       dueBeforeCapacity: 0,
@@ -302,6 +322,11 @@ export function selectDueSteps(
     sequences.map((sequence) => [sequence.instantlyCampaignId, sequence]),
   );
 
+  const answerOwed = (step: DueStep): boolean => {
+    const sequence = sequenceByCampaign.get(step.instantlyCampaignId);
+    return sequence !== undefined && isAnswerOwed(sequence);
+  };
+
   const due = sequences
     // A step due by cadence still waits for its prospect's business hours. The
     // Instantly transport gets this from the campaign schedule it dispatches
@@ -315,11 +340,22 @@ export function selectDueSteps(
     // UTC sending day. Capacity books the earlier of the two, so such a send can
     // arrive on its booked day or after it, never before — the same one-sided
     // slip the nominal-cadence projection already carries.
-    .filter((sequence) => isWithinLocalSendWindow(asOf, sequence.timezone))
+    //
+    // An answer owed to a person is not held to the window (nor to the sending
+    // day): it answers something they did minutes ago.
+    .filter(
+      (sequence) =>
+        isAnswerOwed(sequence) ||
+        (sendingDay && isWithinLocalSendWindow(asOf, sequence.timezone)),
+    )
     .map((sequence) => nextDueStep(sequence, asOf))
     .filter((step): step is DueStep => step !== null)
     .sort(
       (a, b) =>
+        // Answers owed to a person first: they are the only steps whose value
+        // decays in minutes, and a busy mailbox must not spend its room on
+        // overdue cold steps ahead of them.
+        Number(answerOwed(b)) - Number(answerOwed(a)) ||
         a.dueAt.getTime() - b.dueAt.getTime() ||
         a.instantlyCampaignId.localeCompare(b.instantlyCampaignId),
     );

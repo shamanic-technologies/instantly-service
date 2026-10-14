@@ -38,6 +38,18 @@ vi.mock("../../src/lib/self-send/capability", () => ({
       : "instantly",
 }));
 
+// FORM-ANSWER-LATENCY-1014: after a self-send enrolment the route hands the
+// sequence to answer-now (detached), which sends it at once only when its
+// campaign is REACTIVE. Its own tests are answer-now.test.ts.
+const mockSendAnswerNowIfOwed = vi.hoisted(() =>
+  vi.fn(async () => ({ answersPerson: false, summary: null })),
+);
+vi.mock("../../src/lib/self-send/answer-now", () => ({
+  sendAnswerNowIfOwed: (params: unknown) =>
+    mockSendAnswerNowIfOwed(params as never) ??
+    Promise.resolve({ answersPerson: false, summary: null }),
+}));
+
 vi.mock("../../src/lib/self-send/inbound-blindness", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/lib/self-send/inbound-blindness")>()),
   dropInboundBlind: vi.fn(async (accounts: unknown[]) => accounts),
@@ -1990,6 +2002,37 @@ describe("POST /send", () => {
     expect(res.status).toBe(200);
     expect(mockCreateCampaign).not.toHaveBeenCalled();
     expect(mockAddLeads).not.toHaveBeenCalled();
+  });
+
+  // An answer to a person's action must not wait for the next sweep: every
+  // self-send enrolment is offered to answer-now, which asks campaign-service
+  // whether the campaign is reactive (cold = proactive = left to the sweep).
+  it("offers every self-send enrolment to answer-now, after answering the caller", async () => {
+    mockSendAnswerNowIfOwed.mockClear();
+    credentialedMailboxes.add("smtp@saviolabsco.com");
+    mockNewCampaignFlow();
+    mockFetchInProductionAccounts.mockResolvedValueOnce([
+      { email: "smtp@saviolabsco.com", warmup_status: 1, status: 1, sendTransport: "smtp", infraProvider: "primeforge" },
+    ]);
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockSendAnswerNowIfOwed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: identityHeadersObj["x-org-id"],
+        instantlyCampaignId: expect.stringMatching(/^self:/),
+      }),
+    );
+  });
+
+  it("does not offer an Instantly-transport enrolment to answer-now", async () => {
+    mockSendAnswerNowIfOwed.mockClear();
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+    expect(mockSendAnswerNowIfOwed).not.toHaveBeenCalled();
   });
 
   it("stores a local self: id when the account is on smtp", async () => {
