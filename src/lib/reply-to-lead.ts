@@ -50,6 +50,13 @@ import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { smtpDispatchRaw } from "../db/schema";
 import { agencyInbox } from "./agency-inbox";
+import { ReplyToLeadError } from "./reply-to-lead-error";
+import {
+  describeAttachment,
+  resolveReplyAttachments,
+  type ResolvedAttachment,
+  type SentAttachment,
+} from "./offer-documents";
 import { salesRepCopyList } from "./sales-rep-copy";
 import { isStaffSender } from "./staff-senders";
 import {
@@ -135,26 +142,7 @@ function signedBody(input: ReplyToLeadInput, account: Account): string {
  */
 export { MANUAL_REPLY_STEP };
 
-/** A refusal a caller can act on, rather than a bare 500. */
-export class ReplyToLeadError extends Error {
-  constructor(
-    public readonly code:
-      | "campaign_not_found"
-      | "ambiguous_thread"
-      | "no_reply_to_thread"
-      | "sending_account_unresolved"
-      | "mailbox_credential_unavailable"
-      | "human_took_over"
-      | "prospect_wrote_elsewhere"
-      | "handed_over"
-      | "reply_dispatch_failed",
-    public readonly status: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = "ReplyToLeadError";
-  }
-}
+export { ReplyToLeadError };
 
 export interface ReplyToLeadInput {
   orgId: string;
@@ -189,6 +177,12 @@ export interface ReplyToLeadInput {
    * refused (`handed_over`).
    */
   handoff?: boolean;
+  /**
+   * Offer documents (brand-service ids) to attach as real files. Resolved here,
+   * bytes included, before anything leaves; absent or empty = a reply exactly
+   * as before. See lib/offer-documents.
+   */
+  attachmentDocumentIds?: string[];
 }
 
 export interface ReplyToLeadResult {
@@ -208,6 +202,8 @@ export interface ReplyToLeadResult {
   messageId: string;
   /** The message this one threads onto. Never null — a reply without one fails. */
   inReplyTo: string;
+  /** The files this reply carried. Absent when it carried none. */
+  attachments?: SentAttachment[];
 }
 
 /**
@@ -856,6 +852,7 @@ async function prepareOwnAddressReply(
 async function deliverSmtpReply(
   campaign: CampaignRow,
   prepared: PreparedSmtpReply,
+  attachments: ResolvedAttachment[],
 ): Promise<ReplyToLeadResult> {
   const { sentBy, anchor, accountEmail, credential, subject, bodyHtml, from, cc, bcc } =
     prepared;
@@ -872,7 +869,20 @@ async function deliverSmtpReply(
     headers: {} as Record<string, string>,
     inReplyTo: anchor.inReplyTo,
     references: anchor.references,
+    ...(attachments.length > 0
+      ? {
+          attachments: attachments.map((a) => ({
+            filename: a.filename,
+            content: a.content,
+            contentType: a.contentType,
+          })),
+        }
+      : {}),
   };
+  // What we keep about the files: everything but the bytes (brand-service
+  // holds those). Absent when none, so a plain reply's row is unchanged.
+  const sentAttachments =
+    attachments.length > 0 ? attachments.map(describeAttachment) : undefined;
 
   try {
     const sent = await dispatchMessage(credential, message);
@@ -899,6 +909,7 @@ async function deliverSmtpReply(
         inReplyTo: anchor.inReplyTo,
         references: anchor.references,
         accepted: sent.accepted,
+        ...(sentAttachments ? { attachments: sentAttachments } : {}),
       },
     });
 
@@ -913,6 +924,7 @@ async function deliverSmtpReply(
       bcc,
       messageId: sent.messageId,
       inReplyTo: anchor.inReplyTo,
+      ...(sentAttachments ? { attachments: sentAttachments } : {}),
     };
   } catch (error: unknown) {
     // The attempt is recorded whether or not it went out — the same evidence
@@ -935,6 +947,7 @@ async function deliverSmtpReply(
           subject,
           cc,
           inReplyTo: anchor.inReplyTo,
+          ...(sentAttachments ? { attachments: sentAttachments } : {}),
           error: error instanceof Error ? error.message : String(error),
         },
       })
@@ -1019,6 +1032,22 @@ export async function replyToLead(
   // from the sending alias into the old thread (lib/reply-destination).
   const elsewhere = await findProspectWroteElsewhere(input.orgId, campaign.leadEmail);
 
+  // ⚠️ FILES ONLY LEAVE THROUGH OUR OWN SENDER. Instantly's reply endpoint takes
+  // no attachment (and the plan is cancelled), so a reply naming a document on
+  // that pipe is refused, never sent without the file. Checked before any
+  // document is read; every document is then resolved before anything is
+  // prepared or sent (lib/offer-documents).
+  const documentIds = input.attachmentDocumentIds ?? [];
+  const viaOwnSender = !!elsewhere || campaign.sendTransport === SEND_TRANSPORT_SMTP;
+  if (documentIds.length > 0 && !viaOwnSender) {
+    throw new ReplyToLeadError(
+      "attachments_unsupported_on_transport",
+      422,
+      `The thread with ${campaign.leadEmail} (sequence ${campaign.instantlyCampaignId}) runs on Instantly, whose reply endpoint carries no attachment; nothing was sent`,
+    );
+  }
+  const attachments = await resolveReplyAttachments(input.orgId, documentIds);
+
   const prepared = elsewhere
     ? await prepareOwnAddressReply(campaign, input, elsewhere)
     : campaign.sendTransport === SEND_TRANSPORT_SMTP
@@ -1027,7 +1056,7 @@ export async function replyToLead(
 
   const reply =
     prepared.transport === SEND_TRANSPORT_SMTP
-      ? await deliverSmtpReply(campaign, prepared)
+      ? await deliverSmtpReply(campaign, prepared, attachments)
       : await deliverInstantlyReply(campaign, prepared);
 
   return { status: "sent", reply };
