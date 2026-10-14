@@ -563,3 +563,56 @@ export async function handFollowupsToHuman(params: {
     );
   }
 }
+
+/**
+ * The timezone lead-service holds for the one person on this campaign at this address, or
+ * null when it holds none (or the address does not resolve to exactly one row).
+ *
+ * The person's zone is lead-service's fact (stated by the client, enriched, or inferred from
+ * their phone / location / domain). A sender that forgot to pass it on `POST /orgs/send` left
+ * the sequence on the fleet default zone; this read is how the queue heals that
+ * (lib/queued-sequence-timezone). Same campaign-scoped narrowing + exact case-folded match as
+ * `findLeadOnCampaignByEmail`, but on the FULL view: the slim `view=basic` projection carries
+ * no timezone.
+ *
+ * FAILS LOUD on a non-2xx.
+ */
+export async function findLeadTimezoneOnCampaignByEmail(params: {
+  orgId: string;
+  campaignId: string;
+  email: string;
+}): Promise<string | null> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+
+  const query = new URLSearchParams({
+    campaignId: params.campaignId,
+    q: params.email,
+    status: "all",
+    limit: "25",
+  });
+
+  const response = await fetch(`${LEAD_SERVICE_URL}/orgs/leads?${query}`, {
+    headers: {
+      "x-api-key": LEAD_SERVICE_API_KEY,
+      "x-org-id": params.orgId,
+    },
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(
+      `lead-service GET /orgs/leads failed: ${response.status} - ${detail.slice(0, 200)}`,
+    );
+  }
+
+  const body = (await response.json()) as {
+    leads?: Array<{ email?: string; lead?: { timezone?: string | null } | null }>;
+  };
+  const rows = Array.isArray(body.leads) ? body.leads : [];
+  const exact = rows.filter((r) => sameAddress(r.email, params.email));
+  if (exact.length !== 1) return null;
+  const zone = exact[0].lead?.timezone;
+  return typeof zone === "string" && zone.trim() ? zone.trim() : null;
+}
