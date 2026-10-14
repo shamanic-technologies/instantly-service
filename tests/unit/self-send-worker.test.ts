@@ -22,6 +22,11 @@ vi.mock("../../src/lib/booked-stops-cold", () => ({
   stopQueuedSequencesOfBookedPeople: (...args: unknown[]) => mockStopBooked(...args),
 }));
 
+const mockHealZones = vi.fn();
+vi.mock("../../src/lib/queued-sequence-timezone", () => ({
+  healQueuedSequenceTimezones: (...args: unknown[]) => mockHealZones(...args),
+}));
+
 vi.mock("../../src/db", () => ({
   db: {
     execute: (...args: unknown[]) => mockExecute(...args),
@@ -147,6 +152,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   mockStopBooked.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+  mockHealZones.mockResolvedValue({ candidates: 0, resolved: 0, unknown: 0, failed: 0 });
   // Credentialed, and each address IS its own SMTP login.
   mockLoadMailboxLogins.mockImplementation(async () =>
     new Map([
@@ -250,6 +256,42 @@ describe("runDispatch — a person who booked a meeting gets no more cold email"
     await expect(runDispatch({ asOf: NOW })).rejects.toThrow(/converted-leads/);
     expect(mockExecute).not.toHaveBeenCalled();
     expect(mockDispatchMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("runDispatch — a queued sequence with no zone takes the person's zone first", () => {
+  it("heals zones before the first queue read", async () => {
+    primeReads();
+    mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<m1@mail>",
+      response: "250 OK",
+      accepted: ["prospect@example.com"],
+      rejected: [],
+    });
+
+    await runDispatch({ asOf: NOW });
+
+    expect(mockHealZones).toHaveBeenCalledTimes(1);
+    expect(mockHealZones.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockExecute.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("still dispatches on the zones held when the heal fails", async () => {
+    primeReads();
+    mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+    mockHealZones.mockRejectedValue(new Error("lead-service down"));
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<m1@mail>",
+      response: "250 OK",
+      accepted: ["prospect@example.com"],
+      rejected: [],
+    });
+
+    await runDispatch({ asOf: NOW });
+
+    expect(mockExecute).toHaveBeenCalled();
   });
 });
 

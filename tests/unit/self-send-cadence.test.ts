@@ -32,6 +32,11 @@ vi.mock("../../src/lib/booked-stops-cold", () => ({
   stopQueuedSequencesOfBookedPeople: (...args: unknown[]) => mockStopBooked(...args),
 }));
 
+const mockHealZones = vi.fn();
+vi.mock("../../src/lib/queued-sequence-timezone", () => ({
+  healQueuedSequenceTimezones: (...args: unknown[]) => mockHealZones(...args),
+}));
+
 vi.mock("../../src/db", () => ({
   db: {
     execute: (...args: unknown[]) => mockExecute(...args),
@@ -150,6 +155,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   mockStopBooked.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+  mockHealZones.mockResolvedValue({ candidates: 0, resolved: 0, unknown: 0, failed: 0 });
   __resetDispatchInFlight();
   mockLoadMailboxLogins.mockResolvedValue(
     new Map([["amy@saviolabsco.com", "amy@saviolabsco.com"]]),

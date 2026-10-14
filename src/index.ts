@@ -234,6 +234,15 @@ async function start() {
         console.error(`[instantly-service] failed to start booked-stops-cold worker: ${message}`);
       });
 
+    // A queued sequence the caller sent with no zone takes the person's zone from
+    // lead-service, so it is emailed in THEIR business hours. Armed after listen.
+    import("./lib/queued-sequence-timezone-worker")
+      .then(({ startTimezoneHealWorker }) => startTimezoneHealWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start queued-sequence-timezone worker: ${message}`);
+      });
+
     // A conversation one of our people holds with a lead from their own Gmail:
     // folded into the lead's thread on the mirror's own cadence. Armed after listen.
     import("./lib/self-send/gmail-threads-worker")
