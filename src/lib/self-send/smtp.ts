@@ -123,6 +123,9 @@ export async function dispatchMessage(
       headers: message.headers,
       ...(message.inReplyTo ? { inReplyTo: message.inReplyTo } : {}),
       ...(message.references ? { references: message.references } : {}),
+      ...(message.attachments && message.attachments.length > 0
+        ? { attachments: message.attachments }
+        : {}),
     });
 
     const rejected = (info.rejected ?? []).map(String);

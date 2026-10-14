@@ -39,6 +39,7 @@
  *
  * A projection, never a hot-path write: nothing in ingestion changed.
  */
+import { sentAttachmentsOf, type SentAttachment } from "./offer-documents";
 import { createHash } from "node:crypto";
 
 import { sql, type SQL } from "drizzle-orm";
@@ -228,12 +229,14 @@ export function replySentFactsInsertSql(sinceDays: number | null): SQL {
            COALESCE(x.transport, c.send_transport, 'instantly'),
            jsonb_build_object('via', x.via, 'sentBy', x.sent_by, 'accountEmail', x.account_email,
                               'subject', x.subject)
+             || CASE WHEN x.attachments IS NULL THEN '{}'::jsonb
+                     ELSE jsonb_build_object('attachments', x.attachments) END
     FROM (
       SELECT 'rsent:' || d.id AS subject_key, d.dispatched_at AT TIME ZONE 'UTC' AS occurred_at,
              d.lead_email, d.instantly_campaign_id,
              CASE WHEN d.payload->>'transport' = 'instantly' THEN 'instantly' ELSE 'smtp' END AS transport,
              'replies_route' AS via, d.payload->>'sentBy' AS sent_by, d.account_email,
-             d.payload->>'subject' AS subject
+             d.payload->>'subject' AS subject, d.payload->'attachments' AS attachments
       FROM smtp_dispatch_raw d
       WHERE d.step = 0 AND d.outcome = 'sent'
 
@@ -241,7 +244,8 @@ export function replySentFactsInsertSql(sinceDays: number | null): SQL {
 
       SELECT 'rsent:imap:' || m.id, COALESCE(m.received_at, m.polled_at) AT TIME ZONE 'UTC',
              NULL, m.instantly_campaign_id, NULL,
-             'staff_client', 'human', COALESCE(m.from_address, m.account_email), m.subject
+             'staff_client', 'human', COALESCE(m.from_address, m.account_email), m.subject,
+             NULL::jsonb
       FROM imap_messages_raw m
       WHERE m.kind = 'staff_reply' AND m.instantly_campaign_id IS NOT NULL
         ${imapWindow}
@@ -250,7 +254,8 @@ export function replySentFactsInsertSql(sinceDays: number | null): SQL {
 
       SELECT 'rsent:iem:' || r.instantly_email_id, (r.payload->>'timestamp_email')::timestamptz,
              r.payload->>'lead', r.instantly_campaign_id, 'instantly',
-             'provider_unibox', 'human', r.payload->>'eaccount', r.payload->>'subject'
+             'provider_unibox', 'human', r.payload->>'eaccount', r.payload->>'subject',
+             NULL::jsonb
       FROM instantly_emails_raw r
       WHERE r.payload->>'ue_type' = '3'
         AND r.instantly_campaign_id IS NOT NULL
@@ -475,7 +480,7 @@ export interface OutreachFact {
   bounce: { step: number | null } | null;
   unsubscribe: { step: number | null; via: "link" | "recorded" } | null;
   reply: ReplyVerdictView | null;
-  replySent: { via: ReplySentVia; sentBy: "human" | "automation" | null; accountEmail: string | null; subject: string | null } | null;
+  replySent: { via: ReplySentVia; sentBy: "human" | "automation" | null; accountEmail: string | null; subject: string | null; attachments?: SentAttachment[] } | null;
   withdrawal: { withdrawnSeq: string; withdrawnType: string; reason: "source_removed" | "statement_withdrawn" } | null;
 }
 
@@ -517,6 +522,7 @@ export function toOutreachFact(row: Record<string, unknown>): OutreachFact {
             sentBy: p.sentBy === "human" || p.sentBy === "automation" ? p.sentBy : null,
             accountEmail: (p.accountEmail as string | null) ?? null,
             subject: (p.subject as string | null) ?? null,
+            ...replySentAttachments(p.attachments),
           }
         : null,
     withdrawal:
@@ -552,4 +558,10 @@ export async function readOutreachFacts(args: {
   const hasMore = rows.length > args.limit;
   const facts = rows.slice(0, args.limit).map(toOutreachFact);
   return { facts, nextCursor: facts.length ? facts[facts.length - 1].seq : String(args.since), hasMore };
+}
+
+/** The files a `reply_sent` fact's answer carried. Absent when none. */
+function replySentAttachments(value: unknown): { attachments?: SentAttachment[] } {
+  const attachments = sentAttachmentsOf(value);
+  return attachments ? { attachments } : {};
 }

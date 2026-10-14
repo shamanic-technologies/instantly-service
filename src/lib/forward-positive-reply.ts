@@ -14,6 +14,7 @@
  * Instantly auto-pause the webhook).
  */
 
+import type { SentAttachment } from "./offer-documents";
 import type { EmailRecord } from "./instantly-client";
 import { isEscalatedReplyKind, POSITIVE_REPLY_KINDS } from "./reply-kind";
 import { isStaffSender } from "./staff-senders";
@@ -83,6 +84,8 @@ export interface ThreadMessage {
    * prospect wrote because nobody saw their reply is NOT an answer to it.
    */
   sequenceStep?: boolean;
+  /** Offer documents an answer of ours carried as files. Absent when none. */
+  attachments?: SentAttachment[];
 }
 
 /**
