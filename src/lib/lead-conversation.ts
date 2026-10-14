@@ -49,8 +49,10 @@
  * kept current by the side effect in lib/mirror-emails) is therefore the source,
  * and it costs no Instantly quota per page view.
  *
- * The live provider is consulted in exactly ONE case: the mirror holds nothing
- * for a sequence our own event log says exchanged mail. That is a mirror we know
+ * When the mirror holds nothing for a sequence our event log says exchanged
+ * mail, the thread is rebuilt from our own webhook events (they carry each
+ * email's body and each reply's words). The live provider is consulted in
+ * exactly ONE case: one of those events lacks its words. That is a mirror we know
  * to be incomplete, it is rare, and what it fetches is stored so the next read
  * is local. Once the plan is gone that call fails, which is a 502 — never an
  * empty conversation.
@@ -73,8 +75,10 @@ import { insertEmailsBatch } from "./bronze";
 import { getCampaignFamily } from "./campaign-client";
 import { listEmails, type EmailRecord } from "./instantly-client";
 import {
+  fetchEventEmailRecords,
   fetchMirroredEmailRecords,
   hasExchangedMailEvidence,
+  type EventThread,
 } from "./mirror-emails";
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { loadCampaignSequences, type CampaignRow } from "./reply-to-lead";
@@ -148,7 +152,8 @@ function unreadable(
 
 /**
  * Where the messages came from. `mirror` = our bronze copy of the Instantly
- * Unibox (the normal case, and the one that survives the plan being cancelled);
+ * Unibox (the normal case, and the one that survives the plan being cancelled),
+ * or, for a sequence never mirrored, our own copy as the webhook events recorded it;
  * `self_send` = the sequence we dispatched ourselves; `provider` = read live
  * from Instantly because the mirror was incomplete.
  */
@@ -463,8 +468,25 @@ async function fetchInstantlyConversation(
     return { thread: withImapMessages(withOwnReplies([], [], own), [], imap), source: "mirror" };
   }
 
-  // The mirror is INCOMPLETE for a sequence that did exchange mail. Ask the
-  // provider once — and store what comes back, so this costs nothing next time.
+  // The mirror never copied this sequence (it only fills once someone writes
+  // back), but our own webhook events carry every email as sent and every reply
+  // as written. When they hold the WHOLE exchange, that is the thread: no live
+  // call, and it reads the same after the plan is gone (see fetchEventEmailRecords).
+  let fromEvents: EventThread;
+  try {
+    fromEvents = await fetchEventEmailRecords(campaign.instantlyCampaignId);
+  } catch (error: unknown) {
+    throw unreadable(campaign, "our event record of the", error);
+  }
+  if (fromEvents.complete) {
+    const records = fromEvents.records;
+    return {
+      thread: withImapMessages(withOwnReplies(selectThreadMessages(records), records, own), records, imap),
+      source: "mirror",
+    };
+  }
+
+  // Some message of it is recorded without its words: ask the provider once — and store what comes back, so this costs nothing next time.
   // After the plan is cancelled this throws, which is exactly right: an
   // unreadable thread must never be returned as an empty one.
   let records: EmailRecord[];
