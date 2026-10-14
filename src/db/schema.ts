@@ -578,6 +578,11 @@ export const instantlyLeadStatusCurrent = pgTable(
       table.leadEmail,
     ),
     index("instantly_lead_status_current_brand_ids_idx").using("gin", table.brandIds),
+    // NOTE: a hand-written PARTIAL expression index on `lower(lead_email)`
+    // WHERE reply_kind is a not-a-prospect kind (migration 0076,
+    // `instantly_lead_status_current_not_a_prospect_idx`) serves the
+    // not-a-prospect gate; drizzle has no expression form, do NOT drop it on a
+    // `db:generate` diff.
   ],
 );
 

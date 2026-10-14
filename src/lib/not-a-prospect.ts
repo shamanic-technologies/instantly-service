@@ -313,10 +313,13 @@ async function queryNotAProspect(normalizedEmails: string[], brandIds: string[])
     brandIds.map((b) => sql`${b}`),
     sql`, `,
   );
-  const kinds = sql.join(
-    NOT_A_PROSPECT_REPLY_KINDS.map((k) => sql`${k}`),
-    sql`, `,
-  );
+  // The kinds are inlined as LITERALS, not bound: they are the predicate of the
+  // partial index `instantly_lead_status_current_not_a_prospect_idx`
+  // (migration 0076), and the planner only proves a partial index usable
+  // against constants. Bound, this query seq-scanned the whole gold table on
+  // every status read (DB-LOAD-1014: the busiest instantly statement on the
+  // shared Postgres). Code constants of `[a-z_]`, so no quoting hazard.
+  const kinds = sql.raw(NOT_A_PROSPECT_REPLY_KINDS.map((k) => `'${k}'`).join(", "));
   const result = await db.execute(sql`
     SELECT DISTINCT ON (lower(g.lead_email))
            lower(g.lead_email) AS lead_email, b.brand_id AS brand_id, g.reply_kind AS reply_kind
