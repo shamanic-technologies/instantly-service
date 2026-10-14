@@ -471,6 +471,17 @@ export const SendRequestSchema = z
       .array(SequenceStepSchema)
       .min(1)
       .describe("Ordered email steps — at least one required"),
+    followUp: z
+      .boolean()
+      .optional()
+      .describe(
+        "`true` = this email CONTINUES the brand's own earlier outreach to this person (a follow-up), it is not a new cold pitch. " +
+          "The per-brand 3-month re-contact window (409 `recent_brand_contact`) does not apply to it; every other gate still does " +
+          "(409 `lead_opted_out` org-wide, 409 `lead_not_a_prospect`, the address verifier, 402 `insufficient_credits`). " +
+          "Refused 409 `brand_sequence_queued` while a step of this brand's sequence to the person is still waiting to leave (two of our emails would race). " +
+          "Lands in the SAME thread as the brand's latest email to the person (same mailbox, `Re:` that subject, In-Reply-To/References) when that mailbox can still send; else a new thread with this `subject`. " +
+          "Each follow-up is its own send keyed on the caller's `x-run-id` (a retry with the same run = `200 duplicate`; the next follow-up of the same campaign = a new run). Billed like any send. Absent/false = a normal send.",
+      ),
   })
   .openapi("SendRequest");
 

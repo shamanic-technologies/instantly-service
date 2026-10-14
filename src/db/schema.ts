@@ -133,6 +133,13 @@ export const instantlyCampaigns = pgTable(
     // the thread (follow-ups, retry-stuck, AI and human replies) so a thread
     // never changes signature mid-way, even if the client edits it afterwards.
     signatureHtml: text("signature_html"),
+    // NEVER-NO-FOLLOWUP-1014 (migration 0075): this row is a FOLLOW-UP of the
+    // brand's own earlier outreach to the person (`POST /orgs/send`
+    // `followUp: true`). It reserves on (run_id, lead_email) instead of
+    // (campaign_id, lead_email), so the NEXT follow-up of the same campaign is a
+    // new row, not a duplicate. The thread it continues, when it does, is
+    // `metadata.followUpOf` (see src/lib/follow-up-send.ts).
+    followUp: boolean("follow_up").notNull().default(false),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -140,10 +147,13 @@ export const instantlyCampaigns = pgTable(
   (table) => [
     // Reservation arbiter for NON-platform sends — see POST /send. campaignId is
     // non-null here, so (campaignId, leadEmail) collides on a timeout-retry.
-    uniqueIndex("instantly_campaigns_campaign_lead_idx").on(
-      table.campaignId,
-      table.leadEmail,
-    ),
+    // Partial on `follow_up = false` (migration 0075): a follow-up row reserves
+    // on `instantly_campaigns_follow_up_run_lead_idx` (run_id, lead_email)
+    // WHERE follow_up = true, hand-written there. The three arbiters are
+    // disjoint so an insert conflicts only on the one it targets.
+    uniqueIndex("instantly_campaigns_campaign_lead_idx")
+      .on(table.campaignId, table.leadEmail)
+      .where(sql`${table.followUp} = false`),
     // Reservation arbiter for PLATFORM sends (campaignId IS NULL). Postgres treats
     // NULLs as DISTINCT in a unique index, so (campaignId, leadEmail) NEVER
     // collides when campaignId is null → every email-gateway timeout-retry used to
@@ -156,7 +166,7 @@ export const instantlyCampaigns = pgTable(
     // same convention as instantly_events_one_shot_dedupe_idx); send.ts targets it
     // via onConflictDoUpdate when campaignId is null. Do NOT drop it on a
     // db:generate diff.
-    //   UNIQUE (run_id, lead_email) WHERE campaign_id IS NULL AND status = 'active'
+    //   UNIQUE (run_id, lead_email) WHERE campaign_id IS NULL AND status = 'active' AND follow_up = false (0075)
     index("instantly_campaigns_campaign_id_idx").on(table.campaignId),
     index("instantly_campaigns_lead_id_idx").on(table.leadId),
     index("instantly_campaigns_lead_email_idx").on(table.leadEmail),
