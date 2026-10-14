@@ -49,6 +49,7 @@ import {
 import { dispatchScheduledReplies } from "../scheduled-replies-worker";
 import { stopQueuedSequencesOfStoppedCampaigns } from "../stopped-campaigns";
 import { stopQueuedSequencesOfBookedPeople } from "../booked-stops-cold";
+import { healQueuedSequenceTimezones } from "../queued-sequence-timezone";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/dispatch" };
 
@@ -635,6 +636,15 @@ async function runDispatchExclusive(
   // unreadable ledger is not "nobody booked", so the run sends nothing.
   const { notYetStopped: bookedLeft } = await stopQueuedSequencesOfBookedPeople(CALLER);
   const notYetStopped = new Set<string>([...stoppedCampaignLeft, ...bookedLeft]);
+
+  // A sequence the caller queued with no zone takes the person's zone from lead-service BEFORE
+  // selection, so its step is judged against THEIR business hours. Fail-soft per sequence
+  // (lib/queued-sequence-timezone); a failed pass is loud and sends on the zones already held.
+  await healQueuedSequenceTimezones(asOf).catch((error: unknown) => {
+    console.error(
+      `[instantly-service] self-send-dispatch: zone heal failed, dispatching on the zones already held — ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
 
   // Read the mailboxes BEFORE deciding what to send, in the same run and
   // awaited. A prospect who replied since the last sweep has their sequence
