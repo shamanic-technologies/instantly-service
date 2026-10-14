@@ -50,6 +50,7 @@ import { dispatchScheduledReplies } from "../scheduled-replies-worker";
 import { stopQueuedSequencesOfStoppedCampaigns } from "../stopped-campaigns";
 import { stopQueuedSequencesOfBookedPeople } from "../booked-stops-cold";
 import { healQueuedSequenceTimezones } from "../queued-sequence-timezone";
+import { verifyQueuedSequences } from "../queued-verification";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/dispatch" };
 
@@ -635,7 +636,11 @@ async function runDispatchExclusive(
   // transport: ask lead-service's ledger and stop their queued sequences. Fails LOUD — an
   // unreadable ledger is not "nobody booked", so the run sends nothing.
   const { notYetStopped: bookedLeft } = await stopQueuedSequencesOfBookedPeople(CALLER);
-  const notYetStopped = new Set<string>([...stoppedCampaignLeft, ...bookedLeft]);
+  // No email leaves for an address without a verdict from our verifier: a queued
+  // sequence with no accepted verdict is verified now (refused = stopped and
+  // refunded; no verdict = held). Fails LOUD on an unreadable queue.
+  const { notCleared: unverifiedLeft } = await verifyQueuedSequences(CALLER);
+  const notYetStopped = new Set<string>([...stoppedCampaignLeft, ...bookedLeft, ...unverifiedLeft]);
 
   // A sequence the caller queued with no zone takes the person's zone from lead-service BEFORE
   // selection, so its step is judged against THEIR business hours. Fail-soft per sequence

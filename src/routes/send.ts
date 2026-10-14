@@ -15,6 +15,7 @@ import { stepRowsFromSendPayload } from "../lib/self-send/sequence-steps";
 import { findRecentBrandContact, recontactRefusal } from "../lib/recontact-window";
 import { findNotAProspect, notAProspectRefusal } from "../lib/not-a-prospect";
 import { findStandingOptOut, optOutRefusal } from "../lib/lead-optouts";
+import { emailNotVerifiedRefusal, gateAddressForSend } from "../lib/email-verification-gate";
 import { resolveTransportForNewSequence } from "../lib/self-send/capability";
 import {
   SEND_TRANSPORT_INSTANTLY,
@@ -318,6 +319,52 @@ router.post("/", async (req: Request, res: Response) => {
       const notAProspect = await findNotAProspect(body.to, brandIds);
       if (notAProspect) {
         const refusal = notAProspectRefusal(body.to, notAProspect);
+        console.warn(`[send] Refused — ${refusal.details}`);
+        return res.status(409).json(refusal);
+      }
+
+      // 3d. VERIFIED ADDRESS — no email leaves our shared mailboxes for an
+      //     address without a verdict from our verifier, whatever the source
+      //     (cold, CRM, waterfall, pushed). Verified now when needed, billed on
+      //     this send's run. Same placement as the gates above: a refused send
+      //     creates no reservation, no run, no cost row. See
+      //     src/lib/email-verification-gate.ts.
+      const verification = await gateAddressForSend(body.to, {
+        orgId,
+        userId,
+        runId: res.locals.runId as string,
+        brandIds,
+        campaignId,
+        featureSlug: tracking.featureSlug ?? null,
+        workflowSlug: tracking.workflowSlug ?? null,
+      });
+      if (!verification.accepted) {
+        traceEvent(
+          res.locals.runId as string,
+          {
+            service: "instantly-service",
+            event: "send-refused-email-not-verified",
+            detail: `to=${body.to}, verdict=${verification.verdict ?? "none"}, reason=${verification.reason}`,
+          },
+          req.headers,
+        ).catch(() => {});
+        if (verification.reason === "insufficient_credits") {
+          console.warn(`[send] Refused — org ${orgId} cannot pay to verify ${body.to}`);
+          return res.status(402).json({
+            error: "Insufficient credits",
+            code: "insufficient_credits",
+            details: `the address ${body.to} must be verified before it is emailed and the org's balance cannot pay for it`,
+          });
+        }
+        if (verification.reason === "verifier_failed") {
+          console.error(`[send] NOT SENT — no verdict could be obtained for ${body.to} (verifier unavailable)`);
+          return res.status(502).json({
+            error: "Email verification unavailable",
+            code: "email_verification_unavailable",
+            details: `no verdict could be obtained for ${body.to}; nothing was sent or billed for the email`,
+          });
+        }
+        const refusal = emailNotVerifiedRefusal(body.to, verification);
         console.warn(`[send] Refused — ${refusal.details}`);
         return res.status(409).json(refusal);
       }

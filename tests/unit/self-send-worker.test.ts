@@ -18,6 +18,15 @@ vi.mock("../../src/lib/stopped-campaigns", () => ({
 // The booked-meeting sweep asks lead-service on every run; its own tests are
 // booked-stops-cold.test.ts. Defaults to "nobody booked".
 const mockStopBooked = vi.fn();
+// The verification sweep has its own tests (queued-verification.test.ts); here
+// every queued sequence is already verified, so it holds nothing back.
+const mockVerifyQueued = vi.hoisted(() =>
+  vi.fn(async () => ({ summary: {}, notCleared: new Set<string>() })),
+);
+vi.mock("../../src/lib/queued-verification", () => ({
+  verifyQueuedSequences: (...args: unknown[]) => mockVerifyQueued(...(args as [])),
+}));
+
 vi.mock("../../src/lib/booked-stops-cold", () => ({
   stopQueuedSequencesOfBookedPeople: (...args: unknown[]) => mockStopBooked(...args),
 }));
@@ -152,6 +161,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   mockStopBooked.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+  mockVerifyQueued.mockResolvedValue({ summary: {}, notCleared: new Set<string>() });
   mockHealZones.mockResolvedValue({ candidates: 0, resolved: 0, unknown: 0, failed: 0 });
   // Credentialed, and each address IS its own SMTP login.
   mockLoadMailboxLogins.mockImplementation(async () =>
@@ -255,6 +265,27 @@ describe("runDispatch — a person who booked a meeting gets no more cold email"
 
     await expect(runDispatch({ asOf: NOW })).rejects.toThrow(/converted-leads/);
     expect(mockExecute).not.toHaveBeenCalled();
+    expect(mockDispatchMessage).not.toHaveBeenCalled();
+  });
+
+  it("never sends a queued sequence whose address has no accepted verdict yet", async () => {
+    primeReads();
+    mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+    mockVerifyQueued.mockResolvedValue({ summary: {}, notCleared: new Set(["camp-1"]) });
+
+    const summary = await runDispatch({ asOf: NOW });
+
+    expect(mockVerifyQueued).toHaveBeenCalledTimes(1);
+    expect(summary.sent).toBe(0);
+    expect(mockDispatchMessage).not.toHaveBeenCalled();
+  });
+
+  it("sends NOTHING when the unverified queue cannot be read", async () => {
+    primeReads();
+    mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+    mockVerifyQueued.mockRejectedValue(new Error("relation email_send_verifications does not exist"));
+
+    await expect(runDispatch({ asOf: NOW })).rejects.toThrow(/email_send_verifications/);
     expect(mockDispatchMessage).not.toHaveBeenCalled();
   });
 });

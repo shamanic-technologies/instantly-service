@@ -16,6 +16,12 @@ vi.mock("../../src/lib/not-a-prospect", () => ({
   findNotAProspects: (...a: unknown[]) => mockNotAProspects(...a),
 }));
 
+const mockNotVerified = vi.fn();
+vi.mock("../../src/lib/email-verification-gate", () => ({
+  EMAIL_NOT_VERIFIED_REFUSAL_CODE: "email_not_verified",
+  findEmailNotVerifiedRefusals: (...a: unknown[]) => mockNotVerified(...a),
+}));
+
 import { findSendRefusals } from "../../src/lib/send-refusal";
 import { findRecentBrandContact, findRecentBrandContacts } from "../../src/lib/recontact-window";
 
@@ -39,6 +45,28 @@ describe("findSendRefusals — what POST /orgs/send would refuse", () => {
     mockExecute.mockReset();
     mockOptOuts.mockReset().mockResolvedValue(new Map());
     mockNotAProspects.mockReset().mockResolvedValue(new Map());
+    mockNotVerified.mockReset().mockResolvedValue(new Map());
+  });
+
+  it("an address our verifier called invalid: email_not_verified until the verdict may be re-asked", async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+    mockNotVerified.mockResolvedValue(new Map([["bad@x.com", new Date("2026-11-13T00:00:00.000Z")]]));
+    const out = await findSendRefusals("org-1", ["b1"], ["Bad@X.com", "ok@x.com"]);
+    expect(out.get("Bad@X.com")).toEqual({ code: "email_not_verified", until: "2026-11-13T00:00:00.000Z" });
+    expect(out.has("ok@x.com")).toBe(false);
+  });
+
+  it("an unverifiable address inside a re-contact window: the LATER lapse wins", async () => {
+    mockExecute.mockResolvedValue({
+      rows: [{ lead_email: "a@b.com", brand_id: "b1", last_emailed_at: LAST, lapses_at: LAPSE }],
+    });
+    mockNotVerified.mockResolvedValue(new Map([["a@b.com", new Date("2026-12-01T00:00:00.000Z")]]));
+    const later = await findSendRefusals("org-1", ["b1"], ["a@b.com"]);
+    expect(later.get("a@b.com")).toEqual({ code: "email_not_verified", until: "2026-12-01T00:00:00.000Z" });
+
+    mockNotVerified.mockResolvedValue(new Map([["a@b.com", new Date("2026-10-01T00:00:00.000Z")]]));
+    const earlier = await findSendRefusals("org-1", ["b1"], ["a@b.com"]);
+    expect(earlier.get("a@b.com")).toEqual({ code: "recent_brand_contact", until: LAPSE });
   });
 
   it("a person emailed for the brand inside the window: recent_brand_contact until the lapse Postgres computed", async () => {

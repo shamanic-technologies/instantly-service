@@ -28,6 +28,15 @@ vi.mock("../../src/lib/stopped-campaigns", () => ({
 // The booked-meeting sweep asks lead-service on every run; its own tests are
 // booked-stops-cold.test.ts. Defaults to "nobody booked".
 const mockStopBooked = vi.fn();
+// The verification sweep has its own tests (queued-verification.test.ts); here
+// every queued sequence is already verified, so it holds nothing back.
+const mockVerifyQueued = vi.hoisted(() =>
+  vi.fn(async () => ({ summary: {}, notCleared: new Set<string>() })),
+);
+vi.mock("../../src/lib/queued-verification", () => ({
+  verifyQueuedSequences: (...args: unknown[]) => mockVerifyQueued(...(args as [])),
+}));
+
 vi.mock("../../src/lib/booked-stops-cold", () => ({
   stopQueuedSequencesOfBookedPeople: (...args: unknown[]) => mockStopBooked(...args),
 }));
@@ -155,6 +164,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   mockStopBooked.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+  mockVerifyQueued.mockResolvedValue({ summary: {}, notCleared: new Set<string>() });
   mockHealZones.mockResolvedValue({ candidates: 0, resolved: 0, unknown: 0, failed: 0 });
   __resetDispatchInFlight();
   mockLoadMailboxLogins.mockResolvedValue(
