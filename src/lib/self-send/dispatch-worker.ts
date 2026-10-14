@@ -374,27 +374,33 @@ async function loadSendingAccounts(
       a.last_name                               AS "lastName",
       a.daily_limit                             AS "dailyLimit",
       a.lifecycle_status                        AS "lifecycleStatus",
-      COALESCE((
-        SELECT COUNT(*)
-        FROM instantly_events e
-        WHERE e.account_email = a.email
-          AND e.event_type = 'email_sent'
-          AND e.inferred = false
-          AND e.timestamp >= date_trunc('day', now() AT TIME ZONE 'UTC')
-      ), 0)                                     AS "sentToday",
+      COALESCE(st.n, 0)                         AS "sentToday",
       -- Warmup mail comes out of the SAME Gmail per-user quota as outreach, so
       -- it has to be counted here or the two jobs each spend the full cap and
       -- the mailbox is pushed into the 550-5.4.5 daily-user-sending-limit
       -- refusal the age ramp exists to respect. The mesh applies
       -- the mirror of this rule (it takes what is left AFTER outreach).
-      COALESCE((
-        SELECT COUNT(*)
-        FROM warmup_dispatches w
-        WHERE w.sender_email = a.email
-          AND w.outcome = 'sent'
-          AND w.dispatched_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
-      ), 0)                                     AS "warmupToday"
+      COALESCE(wt.n, 0)                         AS "warmupToday"
     FROM instantly_accounts a
+    -- Today's counts are aggregated ONCE and joined, never a correlated
+    -- subquery per mailbox: per mailbox, Postgres walked every email_sent
+    -- index entry of the day (~67 ms x ~300 mailboxes = 21 s per tick on the
+    -- shared box, DB-LOAD-1014). Same counts, same equality on the address.
+    LEFT JOIN (
+      SELECT e.account_email, COUNT(*) AS n
+      FROM instantly_events e
+      WHERE e.event_type = 'email_sent'
+        AND e.inferred = false
+        AND e.timestamp >= date_trunc('day', now() AT TIME ZONE 'UTC')
+      GROUP BY e.account_email
+    ) st ON st.account_email = a.email
+    LEFT JOIN (
+      SELECT w.sender_email, COUNT(*) AS n
+      FROM warmup_dispatches w
+      WHERE w.outcome = 'sent'
+        AND w.dispatched_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+      GROUP BY w.sender_email
+    ) wt ON wt.sender_email = a.email
     WHERE a.absent_since IS NULL
   `),
     fetchRecentDailyVolume(),
