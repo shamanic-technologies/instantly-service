@@ -10,6 +10,13 @@ const mockAuthorize = vi.fn();
 const mockResolveKey = vi.fn();
 const mockUpdateCampaignStatus = vi.fn();
 
+// The verdict that prices the re-queued emails (email-verification-gate.test.ts
+// covers the gate). "valid" unless a test says otherwise.
+const mockRequireSendableVerdict = vi.hoisted(() => vi.fn(async () => "valid"));
+vi.mock("../../src/lib/email-verification-gate", () => ({
+  requireSendableVerdict: (...a: unknown[]) => mockRequireSendableVerdict(...(a as [])),
+}));
+
 vi.mock("../../src/db", () => ({
   db: {
     execute: (...args: unknown[]) => mockExecute(...args),
@@ -59,6 +66,7 @@ function candidate(instantlyCampaignId: string, steps = [2, 3]) {
 let runSeq = 0;
 beforeEach(() => {
   vi.resetAllMocks();
+  mockRequireSendableVerdict.mockResolvedValue("valid");
   runSeq = 0;
   mockResolveKey.mockResolvedValue({ key: "k", keySource: "platform" });
   mockCreateRun.mockImplementation(async () => ({ id: `run-${++runSeq}` }));
@@ -123,7 +131,7 @@ describe("restoreOne — the cut follow-ups go back through the normal cost path
     mockResolveKey.mockResolvedValue({ key: "k", keySource: "org" });
     await restoreOne(candidate("self:aaa"), CALLER);
     expect(mockAuthorize).not.toHaveBeenCalled();
-    expect(mockProvision).toHaveBeenCalledWith("run-1", "org", expect.anything());
+    expect(mockProvision).toHaveBeenCalledWith("run-1", "org", expect.anything(), "valid");
   });
 
   it("a failed Instantly resume gives the holds back and throws", async () => {

@@ -209,6 +209,26 @@ export async function gateAddressForSend(
   return decision;
 }
 
+/**
+ * For a path that RE-QUEUES an existing sequence (restore, redispatch): the
+ * address's verdict, verified now if needed (context `queued`), so the new
+ * holds carry the price of that verdict. Throws when mail may not leave for
+ * it: the caller must not queue anything.
+ */
+export async function requireSendableVerdict(
+  email: string,
+  identity: VerificationIdentity,
+): Promise<"valid" | "catch_all" | "unknown"> {
+  const decisions = await gateAddresses([email], identity, "queued");
+  const decision = decisions.get(normalizeLeadEmail(email));
+  if (!decision || !decision.accepted || !decision.verdict) {
+    throw new Error(
+      `email-verification-gate: ${email} may not be emailed (${decision?.reason ?? "no decision"}, verdict ${decision?.verdict ?? "none"})`,
+    );
+  }
+  return decision.verdict as "valid" | "catch_all" | "unknown";
+}
+
 /** The 409 body for an address whose verdict the door refuses. */
 export function emailNotVerifiedRefusal(email: string, decision: GateDecision) {
   const until = refusalUntil(decision);
