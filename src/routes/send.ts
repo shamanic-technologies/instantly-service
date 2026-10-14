@@ -730,8 +730,8 @@ router.post("/", async (req: Request, res: Response) => {
         console.log(
           `[send] Follow-up to ${body.to}: ${
             threadSubject
-              ? `continues thread ${followUpThread!.instantlyCampaignId} from ${sendResult.value.account.email}`
-              : `new thread (${followUpThread ? `thread mailbox ${followUpThread.accountEmail ?? "unknown"} not usable` : "no earlier email for this brand"})`
+              ? `continues thread ${followUpThread!.instantlyCampaignId} from ${sendResult.value.account.email} (${followUpThread!.reason === "their_last_reply" ? "the thread they wrote in last" : "they never wrote back: our latest thread"})`
+              : `new thread (${followUpThread ? `${followUpThread.reason === "their_last_reply" ? "the thread they wrote in last" : "our latest thread"} ${followUpThread.instantlyCampaignId}: mailbox ${followUpThread.accountEmail ?? "unknown"} not usable${followUpThread.subject ? "" : ", no subject"}` : "no earlier email for this brand"})`
           }`,
         );
       }
