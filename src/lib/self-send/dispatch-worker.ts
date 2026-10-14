@@ -501,9 +501,16 @@ async function rehomeFirstEmail(
 async function loadStepContent(
   instantlyCampaignId: string,
   step: number,
-): Promise<{ subject: string; bodyHtml: string; priorMessageIds: string[] } | null> {
+): Promise<{
+  subject: string;
+  bodyHtml: string;
+  priorMessageIds: string[];
+  signatureHtml: string | null;
+} | null> {
   const content = await db.execute(sql`
     SELECT
+      (SELECT c.signature_html FROM instantly_campaigns c
+        WHERE c.instantly_campaign_id = ${instantlyCampaignId}) AS "signatureHtml",
       (SELECT s.body_html FROM sequence_steps s
         WHERE s.instantly_campaign_id = ${instantlyCampaignId} AND s.step = ${step}) AS "bodyHtml",
       (SELECT s.subject FROM sequence_steps s
@@ -523,6 +530,8 @@ async function loadStepContent(
   return {
     bodyHtml: row.bodyHtml,
     subject: typeof row.subject === "string" ? row.subject : "",
+    // The client's signature pinned on this thread at send; null = ours.
+    signatureHtml: typeof row.signatureHtml === "string" ? row.signatureHtml : null,
     priorMessageIds: Array.isArray(row.priorMessageIds)
       ? (row.priorMessageIds as string[])
       : [],
@@ -887,6 +896,7 @@ async function runDispatchExclusive(
 
       const message = buildMessage({
         account,
+        signatureHtml: content.signatureHtml,
         leadEmail: step.leadEmail,
         subject: content.subject,
         bodyHtml: content.bodyHtml,

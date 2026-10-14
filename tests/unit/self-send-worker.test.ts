@@ -103,7 +103,7 @@ const NOW = new Date("2026-08-17T15:00:00Z");
  * mailboxes for — it runs on EVERY sweep, before the poll, and its answer is
  * "there is a step to send OR a reply owed".
  */
-function primeReads(options: { hasBody?: boolean } = {}) {
+function primeReads(options: { hasBody?: boolean; signatureHtml?: string | null } = {}) {
   const { hasBody = true } = options;
 
   mockExecute
@@ -152,6 +152,7 @@ function primeReads(options: { hasBody?: boolean } = {}) {
           bodyHtml: hasBody ? "<p>Hi there</p>" : "",
           subject: "Quick question",
           priorMessageIds: [],
+          signatureHtml: options.signatureHtml ?? null,
         },
       ],
     });
@@ -367,6 +368,24 @@ describe("runDispatch — success", () => {
     const message = mockDispatchMessage.mock.calls[0]![1] as Record<string, unknown>;
     expect(message.from).toBe('"Amy Moore" <amy@saviolabsco.com>');
     expect(message.html).toContain("Amy Moore");
+  });
+});
+
+describe("runDispatch — the client's signature pinned on the thread", () => {
+  it("every self-sent step ends with it, not ours", async () => {
+    primeReads({ signatureHtml: "<p>Jane Doe<br>Acme Corp</p>" });
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<m1@mail>",
+      response: "250 OK",
+      accepted: ["prospect@example.com"],
+      rejected: [],
+    });
+
+    await runDispatch({ asOf: NOW });
+
+    const message = mockDispatchMessage.mock.calls[0]![1] as Record<string, unknown>;
+    expect(message.html).toContain("<p>--</p><p>Jane Doe<br>Acme Corp</p>");
+    expect(message.html).not.toContain("Distribute.you | Marketing Agency");
   });
 });
 

@@ -37,6 +37,10 @@ import { traceEvent } from "../lib/trace-event";
 import { refreshLeadStatusCurrent } from "../lib/status-gold";
 import { announceEvidenceChanged } from "../lib/evidence-changed";
 import { readHeldLead, type HeldLead } from "../lib/held-lead";
+import {
+  EmailSignatureConflictError,
+  resolveSignatureHtmlForSend,
+} from "../lib/brand-email-signature";
 
 /** Extract tracking headers from res.locals (set by requireOrgId middleware) */
 function getTracking(res: Response): TrackingHeaders {
@@ -254,6 +258,28 @@ router.post("/", async (req: Request, res: Response) => {
         }
       }
 
+      // 3a-sig. SIGNATURE — the block every email of this NEW thread ends
+      //     with: the client's own for this brand (PUT /orgs/email-signature),
+      //     else null = ours. Resolved once and pinned on the row below, so
+      //     follow-ups and replies never change it mid-thread. Two brands of
+      //     the send stating different signatures = 409, before anything is
+      //     reserved or billed. Fail loud on a DB error.
+      let signatureHtml: string | null;
+      try {
+        signatureHtml = await resolveSignatureHtmlForSend(orgId, brandIds);
+      } catch (error: unknown) {
+        if (error instanceof EmailSignatureConflictError) {
+          console.warn(`[send] Refused — ${error.message}`);
+          return res.status(409).json({
+            error: "Conflicting email signatures",
+            code: error.code,
+            brandIds: error.brandIds,
+            details: error.message,
+          });
+        }
+        throw error;
+      }
+
       // 3a-bis. OPT-OUT — refuse outright if this person asked this org to stop.
       //
       //     Checked BEFORE the re-contact window because the two say different
@@ -417,6 +443,7 @@ router.post("/", async (req: Request, res: Response) => {
           workflowSlug,
           featureSlug: tracking.featureSlug,
           runId: res.locals.runId as string,
+          signatureHtml,
           metadata: attributionMetadata,
         })
         .onConflictDoUpdate({
@@ -439,6 +466,7 @@ router.post("/", async (req: Request, res: Response) => {
             workflowSlug: sql`excluded.workflow_slug`,
             featureSlug: sql`excluded.feature_slug`,
             runId: sql`excluded.run_id`,
+            signatureHtml: sql`excluded.signature_html`,
             metadata: sql`CASE
               WHEN excluded.metadata IS NULL THEN ${instantlyCampaigns.metadata}
               ELSE COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || excluded.metadata
@@ -613,6 +641,7 @@ router.post("/", async (req: Request, res: Response) => {
               timezone: body.timezone,
               featureSlug: tracking.featureSlug ?? null,
               account,
+              signatureHtml,
             });
 
       if (!sendResult.ok) {

@@ -41,6 +41,8 @@ export interface BuiltMessage {
 
 export interface BuildMessageInput {
   account: Account;
+  /** The client's signature pinned on the thread; null/absent = ours. */
+  signatureHtml?: string | null;
   leadEmail: string;
   /** Subject of step 1. Followups reuse it under `Re:`, matching Instantly. */
   subject: string;
@@ -104,7 +106,11 @@ export function buildFromHeader(account: Account): string {
 export function buildMessage(input: BuildMessageInput): BuiltMessage {
   const url = input.unsubscribeUrl ?? buildUnsubscribeUrl(input.identity);
 
-  const withSignature = buildEmailBodyWithSignature(input.bodyHtml, input.account);
+  const withSignature = buildEmailBodyWithSignature(
+    input.bodyHtml,
+    input.account,
+    input.signatureHtml ?? null,
+  );
   const withOptOut = resolveUnsubscribePlaceholder(withSignature, url);
 
   // Route every OUTBOUND link through our own redirect so clicks are observable.
