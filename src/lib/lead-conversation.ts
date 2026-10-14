@@ -58,6 +58,7 @@
  * Declares NO cost and sends nothing — it is a read of what already happened.
  */
 
+import type { SentAttachment } from "./offer-documents";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -177,6 +178,8 @@ export interface ConversationMessage {
    * younger than the feed's next emission tick).
    */
   outreachFact: ConversationSendFact | null;
+  /** Offer documents this answer of ours carried as files. Absent when none. */
+  attachments?: SentAttachment[];
 }
 
 /** The served `email_sent` fact an outbound message is, in the feed's own words. */
@@ -271,6 +274,7 @@ function toConversationMessage(
     campaignId: sequence.campaignId,
     instantlyCampaignId: sequence.instantlyCampaignId,
     outreachFact: sendFactOf(m, facts),
+    ...(m.attachments ? { attachments: m.attachments } : {}),
   };
 }
 

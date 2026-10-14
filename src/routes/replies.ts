@@ -36,7 +36,7 @@ router.post("/", async (req: Request, res: Response) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.message });
   }
-  const { email, body_html, sent_by } = parsed.data;
+  const { email, body_html, sent_by, attachments } = parsed.data;
   // Named campaign wins; else the prospect's one thread (lib/resolve-reply-thread).
   let campaign_id = parsed.data.campaign_id;
 
@@ -52,6 +52,9 @@ router.post("/", async (req: Request, res: Response) => {
       // today, so the takeover gate is live without waiting on anyone to
       // declare. See `DEFAULT_REPLY_SENDER`.
       sentBy: resolveReplySender(sent_by),
+      ...(attachments && attachments.length > 0
+        ? { attachmentDocumentIds: attachments.map((a) => a.document_id) }
+        : {}),
     });
 
     return res

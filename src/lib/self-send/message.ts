@@ -35,6 +35,8 @@ export interface BuiltMessage {
   /** Set on a followup so the thread stays collapsed in the client. */
   inReplyTo?: string;
   references?: string[];
+  /** Real MIME attachments. Only a one-to-one reply carries any (offer documents). */
+  attachments?: { filename: string; content: Buffer; contentType: string }[];
 }
 
 export interface BuildMessageInput {

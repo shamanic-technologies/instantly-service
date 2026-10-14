@@ -26,6 +26,7 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
 import { htmlToText, type ImapThreadMessage, type ThreadMessage } from "../forward-positive-reply";
+import { sentAttachmentsOf, type SentAttachment } from "../offer-documents";
 
 /**
  * Every message of one self-dispatched conversation, oldest first.
@@ -50,7 +51,8 @@ export async function fetchSelfSendThread(
       COALESCE(s.body_html, d.payload->>'bodyHtml', '')  AS "bodyHtml",
       d.dispatched_at                     AS "at",
       d.id                                AS "dispatchId",
-      (d.step > 0)                        AS "sequenceStep"
+      (d.step > 0)                        AS "sequenceStep",
+      d.payload->'attachments'            AS "attachments"
     FROM smtp_dispatch_raw d
     LEFT JOIN sequence_steps s
       ON s.instantly_campaign_id = d.instantly_campaign_id AND s.step = d.step
@@ -67,7 +69,8 @@ export async function fetchSelfSendThread(
       COALESCE(m.payload->>'textSnippet', '')          AS "bodyHtml",
       COALESCE(m.received_at, m.polled_at)             AS "at",
       NULL                                             AS "dispatchId",
-      false                                            AS "sequenceStep"
+      false                                            AS "sequenceStep",
+      NULL::jsonb                                      AS "attachments"
     FROM imap_messages_raw m
     WHERE m.instantly_campaign_id = ${instantlyCampaignId}
       AND m.kind IN ('reply', 'auto_reply')
@@ -84,7 +87,8 @@ export async function fetchSelfSendThread(
       COALESCE(m.payload->>'textSnippet', '')          AS "bodyHtml",
       COALESCE(m.received_at, m.polled_at)             AS "at",
       NULL                                             AS "dispatchId",
-      false                                            AS "sequenceStep"
+      false                                            AS "sequenceStep",
+      NULL::jsonb                                      AS "attachments"
     FROM imap_messages_raw m
     WHERE m.instantly_campaign_id = ${instantlyCampaignId}
       AND m.kind = 'staff_reply'
@@ -118,7 +122,14 @@ function toThreadMessage(row: Record<string, unknown>): ThreadMessage {
       ? { sourceRef: { dispatchId: row.dispatchId } }
       : {}),
     ...(row.sequenceStep === true ? { sequenceStep: true } : {}),
+    ...attachmentsField(row.attachments),
   };
+}
+
+/** The files a dispatched answer carried, as stored on its bronze row. */
+function attachmentsField(value: unknown): { attachments?: SentAttachment[] } {
+  const attachments = sentAttachmentsOf(value);
+  return attachments ? { attachments } : {};
 }
 
 /** One answer we dispatched, beside the provider id that would duplicate it. */
@@ -156,7 +167,8 @@ export async function fetchOwnDispatchedMessages(
       d.dispatched_at                                    AS "at",
       d.id                                               AS "dispatchId",
       (d.step > 0)                                       AS "sequenceStep",
-      d.payload->>'instantlyEmailId'                     AS "instantlyEmailId"
+      d.payload->>'instantlyEmailId'                     AS "instantlyEmailId",
+      d.payload->'attachments'                           AS "attachments"
     FROM smtp_dispatch_raw d
     LEFT JOIN sequence_steps s
       ON s.instantly_campaign_id = d.instantly_campaign_id AND s.step = d.step

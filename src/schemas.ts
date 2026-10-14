@@ -1523,6 +1523,20 @@ export const ReplyToLeadBodySchema = z
       .describe(
         "Who asked for this answer to be sent. It decides ONE thing: whether the human-takeover gate applies. An `automation` reply is refused (409 `human_took_over`) once a person has answered the thread since the prospect last wrote; a `human` reply is never gated. Absent resolves to `automation` — the automated responder is the only caller today, so the gate is live without waiting on it, and a human surface declares `human` explicitly.",
       ),
+    attachments: z
+      .array(
+        z.object({
+          document_id: z
+            .string()
+            .uuid()
+            .describe("An offer document id (UUID) from brand-service, of THIS org (x-org-id)."),
+        }),
+      )
+      .max(5)
+      .optional()
+      .describe(
+        "Offer documents to attach to the reply as real files (a case study, a one-pager). This service reads each one from brand-service, bytes included, as this org, and attaches it under brand-service's filename and type. Up to 5, 10 MB together. FAIL LOUD, nothing sent: unknown or another org's document = 404 `attachment_not_found`; over the limits = 422 `attachment_too_large`; brand-service unreadable = 502 `attachment_unavailable`; a thread on the Instantly pipe (no attachment support) = 422 `attachments_unsupported_on_transport`. Absent or empty = the reply exactly as before. Replies only: cold sequence steps never carry a file.",
+      ),
   })
   .openapi("ReplyToLeadBody", {
     example: {
@@ -1532,6 +1546,16 @@ export const ReplyToLeadBodySchema = z
       sent_by: "automation",
     },
   });
+
+const SentAttachmentSchema = z
+  .object({
+    documentId: z.string().describe("The brand-service offer document id"),
+    filename: z.string(),
+    contentType: z.string(),
+    sizeBytes: z.number().int(),
+    md5: z.string().describe("Hex md5 of the exact bytes attached"),
+  })
+  .openapi("SentAttachment");
 
 const ReplyToLeadResultSchema = z
   .object({
@@ -1552,6 +1576,10 @@ const ReplyToLeadResultSchema = z
       ),
     messageId: z.string().describe("Instantly's email id, or the RFC 5322 Message-Id we sent"),
     inReplyTo: z.string().describe("The prospect message this reply threads onto"),
+    attachments: z
+      .array(SentAttachmentSchema)
+      .optional()
+      .describe("The files this reply carried. Absent when it carried none."),
   })
   .openapi("ReplyToLeadResult");
 
@@ -1576,9 +1604,13 @@ const ReplyToLeadErrorSchema = z
         "human_took_over",
         "prospect_wrote_elsewhere",
         "reply_dispatch_failed",
+        "attachment_not_found",
+        "attachment_too_large",
+        "attachment_unavailable",
+        "attachments_unsupported_on_transport",
       ])
       .describe(
-        "campaign_not_found: no campaign in this org for the given email. ambiguous_thread: `campaign_id` was omitted and the prospect wrote back in several campaigns; `candidates` lists them, name one. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. human_took_over: a person already answered this thread since the prospect last wrote, so an automated reply is refused. prospect_wrote_elsewhere: the prospect's newest message went to one of our people's own mailbox (their Gmail), which we cannot send from; refused for every sender, answer from that mailbox. reply_dispatch_failed: the transport refused the send.",
+        "campaign_not_found: no campaign in this org for the given email. ambiguous_thread: `campaign_id` was omitted and the prospect wrote back in several campaigns; `candidates` lists them, name one. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. human_took_over: a person already answered this thread since the prospect last wrote, so an automated reply is refused. prospect_wrote_elsewhere: the prospect's newest message went to one of our people's own mailbox (their Gmail), which we cannot send from; refused for every sender, answer from that mailbox. reply_dispatch_failed: the transport refused the send. attachment_not_found: a named offer document does not exist in this org (or is another org's). attachment_too_large: more than 5 documents, or over 10 MB together. attachment_unavailable: brand-service could not serve a document. attachments_unsupported_on_transport: the thread runs on Instantly, which cannot carry a file. Every attachment refusal sends nothing.",
       ),
     candidates: z
       .array(
@@ -1624,7 +1656,12 @@ registry.registerPath({
     },
     401: { description: "Unauthorized" },
     404: {
-      description: "No campaign in this org for the given email",
+      description: "No campaign in this org for the given email (`campaign_not_found`), or a named offer document is not this org's (`attachment_not_found`)",
+      content: { "application/json": { schema: ReplyToLeadErrorSchema } },
+    },
+    422: {
+      description:
+        "An attachment cannot be carried, nothing sent: `attachment_too_large` or `attachments_unsupported_on_transport`",
       content: { "application/json": { schema: ReplyToLeadErrorSchema } },
     },
     409: {
@@ -1633,7 +1670,7 @@ registry.registerPath({
       content: { "application/json": { schema: ReplyToLeadErrorSchema } },
     },
     502: {
-      description: "The transport refused the send (`reply_dispatch_failed`)",
+      description: "The transport refused the send (`reply_dispatch_failed`), or brand-service could not serve a named document (`attachment_unavailable`)",
       content: { "application/json": { schema: ReplyToLeadErrorSchema } },
     },
   },
@@ -1784,6 +1821,10 @@ const ConversationMessageSchema = z
       .describe(
         "WHICH served `email_sent` outreach fact this outbound message is, tied by the stored email's identity (never by time). Null on every inbound message, and on an outbound one no served fact recorded (a manual answer, a send the event stream never saw, a send younger than the feed's ~2 min emission tick).",
       ),
+    attachments: z
+      .array(SentAttachmentSchema)
+      .optional()
+      .describe("Offer documents this answer of ours carried as files (POST /orgs/replies `attachments`). Absent when none."),
   })
   .openapi("ConversationMessage");
 
@@ -2475,6 +2516,10 @@ const OutreachFactSchema = z
         sentBy: z.enum(["human", "automation"]).nullable().describe("Who wrote it; null when the record does not say"),
         accountEmail: z.string().nullable().describe("The mailbox (or person) that sent it"),
         subject: z.string().nullable(),
+        attachments: z
+          .array(SentAttachmentSchema)
+          .optional()
+          .describe("Offer documents the answer carried as files. Absent when none."),
       })
       .nullable()
       .describe("An email WE sent into the prospect's thread outside the sequence (an answer, a follow-up to their reply). Its `occurredAt` is when it went out. Stated once, never corrected."),
