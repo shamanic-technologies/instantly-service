@@ -13,6 +13,13 @@ import {
 import { selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
 import { stepRowsFromSendPayload } from "../lib/self-send/sequence-steps";
 import { findRecentBrandContact, recontactRefusal } from "../lib/recontact-window";
+import {
+  findFollowUpThread,
+  findQueuedBrandSequence,
+  followUpQueuedRefusal,
+  threadSubjectFor,
+  type FollowUpThread,
+} from "../lib/follow-up-send";
 import { findNotAProspect, notAProspectRefusal } from "../lib/not-a-prospect";
 import { findStandingOptOut, optOutRefusal } from "../lib/lead-optouts";
 import { emailNotVerifiedRefusal, gateAddressForSend } from "../lib/email-verification-gate";
@@ -177,6 +184,18 @@ router.post("/", async (req: Request, res: Response) => {
   const workflowSlug = tracking.workflowSlug;
   const attributionMetadata = buildAttributionMetadata(tracking);
 
+  const isFollowUp = body.followUp === true;
+  const sendRunId = (res.locals.runId as string | undefined) ?? null;
+  if (isFollowUp && !sendRunId) {
+    // A follow-up is keyed on its run (several follow-ups per campaign and
+    // person); without one a retry could not be told from the next follow-up.
+    return res.status(400).json({
+      error: "Invalid request",
+      code: "follow_up_requires_run_id",
+      details: "a send with followUp: true must carry x-run-id",
+    });
+  }
+
   console.log(`[send] POST /send to=${body.to} campaignId=${campaignId ?? "none"} brandIds=${brandIds.join(",")} subject="${body.subject}" steps=${body.sequence.length}`);
   traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-start", detail: `to=${body.to}, campaignId=${campaignId ?? "none"}, steps=${body.sequence.length}` }, req.headers).catch(() => {});
 
@@ -323,7 +342,23 @@ router.post("/", async (req: Request, res: Response) => {
       //
       //     See src/lib/recontact-window.ts for why this half of the rule can
       //     only live in this service.
-      const recentContact = await findRecentBrandContact(body.to, brandIds);
+      //
+      //     A FOLLOW-UP (`followUp: true`) continues the brand's own thread with
+      //     the person, it is not a second cold pitch: the window does not apply
+      //     (src/lib/follow-up-send.ts). It is refused instead while a step of
+      //     the brand's sequence to them is still queued (two of our emails
+      //     would race), with its own code.
+      let followUpThread: FollowUpThread | null = null;
+      if (isFollowUp) {
+        const queued = await findQueuedBrandSequence(orgId, body.to, brandIds, sendRunId);
+        if (queued) {
+          const refusal = followUpQueuedRefusal(body.to, queued);
+          console.warn(`[send] Refused — ${refusal.details}`);
+          return res.status(409).json(refusal);
+        }
+        followUpThread = await findFollowUpThread(orgId, body.to, brandIds);
+      }
+      const recentContact = isFollowUp ? null : await findRecentBrandContact(body.to, brandIds);
       if (recentContact) {
         const refusal = recontactRefusal(body.to, recentContact);
         console.warn(`[send] Refused — ${refusal.details}`);
@@ -445,16 +480,23 @@ router.post("/", async (req: Request, res: Response) => {
           featureSlug: tracking.featureSlug,
           runId: res.locals.runId as string,
           signatureHtml,
+          followUp: isFollowUp,
           metadata: attributionMetadata,
         })
         .onConflictDoUpdate({
-          target: isPlatformSend
+          // Three DISJOINT arbiters (migration 0075): a follow-up reserves on
+          // (run_id, lead_email) among follow-up rows, so the next follow-up of
+          // the same campaign is a new row while a retry (same x-run-id) is a
+          // duplicate.
+          target: isFollowUp || isPlatformSend
             ? [instantlyCampaigns.runId, instantlyCampaigns.leadEmail]
             : [instantlyCampaigns.campaignId, instantlyCampaigns.leadEmail],
-          // Must match the partial index predicate for the platform arbiter.
-          targetWhere: isPlatformSend
-            ? sql`${instantlyCampaigns.campaignId} IS NULL AND ${instantlyCampaigns.status} = 'active'`
-            : undefined,
+          // Must match each partial index predicate.
+          targetWhere: isFollowUp
+            ? sql`${instantlyCampaigns.followUp} = true`
+            : isPlatformSend
+              ? sql`${instantlyCampaigns.campaignId} IS NULL AND ${instantlyCampaigns.status} = 'active' AND ${instantlyCampaigns.followUp} = false`
+              : sql`${instantlyCampaigns.followUp} = false`,
           // Stale-reservation reclaim only: take ownership for this caller (new
           // sentinel from excluded) and refresh the freshness clock.
           set: {
@@ -495,6 +537,7 @@ router.post("/", async (req: Request, res: Response) => {
               campaignId,
               runId: (res.locals.runId as string | undefined) ?? null,
               leadEmail: body.to,
+              followUp: isFollowUp,
             },
             RESERVATION_PREFIX,
           );
@@ -604,6 +647,8 @@ router.post("/", async (req: Request, res: Response) => {
         featureSlug: tracking.featureSlug ?? null,
         timezone: body.timezone ?? null,
         sequence: sortedSequence,
+        // A follow-up stays with the mailbox that wrote the thread when it can.
+        preferAccountEmail: followUpThread?.accountEmail ?? null,
       });
       // The pipe for a NEW sequence. With the A/B off this is exactly the
       // account's own policy; with it on, a credentialed mailbox alternates so
@@ -672,6 +717,25 @@ router.post("/", async (req: Request, res: Response) => {
 
       added = sendResult.value.added;
 
+      // A follow-up lands in the thread it continues when it leaves from the
+      // SAME mailbox on our own sender (we set In-Reply-To/References there):
+      // every step carries `Re: <thread subject>` and the row points at the
+      // thread, which the dispatcher reads for the headers. Otherwise a new
+      // thread with the caller's subject.
+      const threadSubject =
+        transport === SEND_TRANSPORT_SMTP
+          ? threadSubjectFor(followUpThread, sendResult.value.account.email)
+          : null;
+      if (isFollowUp) {
+        console.log(
+          `[send] Follow-up to ${body.to}: ${
+            threadSubject
+              ? `continues thread ${followUpThread!.instantlyCampaignId} from ${sendResult.value.account.email}`
+              : `new thread (${followUpThread ? `thread mailbox ${followUpThread.accountEmail ?? "unknown"} not usable` : "no earlier email for this brand"})`
+          }`,
+        );
+      }
+
       // 6. Phase-2: attach the real Instantly campaign id to the reserved row.
       //    From here on the row is a committed campaign — release is a no-op.
       //
@@ -695,6 +759,11 @@ router.post("/", async (req: Request, res: Response) => {
           // The SAME value the branch above acted on, not a re-resolution:
           // the frozen column and the pipe actually taken can never disagree.
           sendTransport: transport,
+          ...(threadSubject
+            ? {
+                metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object('followUpOf', ${followUpThread!.instantlyCampaignId}::text)`,
+              }
+            : {}),
           updatedAt: new Date(),
         })
         .where(eq(instantlyCampaigns.id, reservedId));
@@ -709,7 +778,7 @@ router.post("/", async (req: Request, res: Response) => {
       //     there is what makes a later flip a data change rather than a
       //     migration. Idempotent on (campaign, step), so a redispatch re-upserts
       //     instead of stacking a duplicate the scheduler would send twice.
-      const stepRows = stepRowsFromSendPayload(body.subject, sortedSequence);
+      const stepRows = stepRowsFromSendPayload(threadSubject ?? body.subject, sortedSequence);
       if (stepRows.length > 0) {
         await db
           .insert(sequenceSteps)
