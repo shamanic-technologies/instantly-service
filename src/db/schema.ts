@@ -1110,6 +1110,30 @@ export const emailSendVerifications = pgTable(
   ],
 );
 
+// Mirror of apollo-service's verification history (migration 0073): every
+// BounceVerify call, every org, every source, copied through its feed by
+// lib/verification-history-mirror.ts. `verdict` null = the call returned none.
+export const emailVerificationHistory = pgTable(
+  "email_verification_history",
+  {
+    verificationId: text("verification_id").primaryKey(),
+    /** lower(trim(address)) */
+    email: text("email").notNull(),
+    verdict: text("verdict"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }).notNull(),
+    mirroredAt: timestamp("mirrored_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("email_verification_history_email_at_idx").on(table.email, table.verifiedAt)],
+);
+
+/** Where each mirrored feed resumes, and when the copy last reached the feed's end. */
+export const emailVerificationHistorySync = pgTable("email_verification_history_sync", {
+  feed: text("feed").primaryKey(),
+  cursor: text("cursor"),
+  caughtUpAt: timestamp("caught_up_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 // ─── Inbox-placement (deliverability) — Bronze / Silver ─────────────────────
 // Instantly inbox-placement TESTS are the only source of real per-account inbox
 // vs spam vs missing data (the V2 API exposes no standing per-account placement
