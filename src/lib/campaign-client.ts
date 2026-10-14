@@ -403,3 +403,66 @@ export async function listCampaignStatuses(): Promise<CampaignStatusRow[]> {
   }
   return body.campaigns;
 }
+
+/**
+ * campaign-service's own word for what a campaign does, per its leg (features-service
+ * catalogue): `proactive` = it goes and contacts people on its own budget (cold email),
+ * `reactive` = it runs because a person did something (filled a form, a client pushed an
+ * email for someone who asked, a prospect replied). Null = campaign-service cannot say
+ * (no leg stated, leg not published) or the campaign is not this org's.
+ */
+export type CampaignKind = "proactive" | "reactive";
+
+/**
+ * The kind of ONE campaign, read from `GET /internal/campaigns/recurring-status?orgId=`
+ * (the org's campaigns with `kind`). The kind of a campaign follows its leg, which never
+ * changes, so the answer is cached per campaign for 10 minutes.
+ *
+ * ⚠️ FAILS LOUD (throws) when campaign-service cannot answer; the caller decides what a
+ * missing answer costs.
+ */
+const CAMPAIGN_KIND_TTL_MS = 10 * 60_000;
+const campaignKindCache = new Map<string, { kind: CampaignKind | null; at: number }>();
+
+export function __clearCampaignKindCache(): void {
+  campaignKindCache.clear();
+}
+
+export async function getCampaignKind(
+  orgId: string,
+  campaignId: string,
+): Promise<CampaignKind | null> {
+  const cached = campaignKindCache.get(campaignId);
+  if (cached && Date.now() - cached.at < CAMPAIGN_KIND_TTL_MS) return cached.kind;
+
+  if (!CAMPAIGN_SERVICE_URL || !CAMPAIGN_SERVICE_API_KEY) {
+    throw new Error("CAMPAIGN_SERVICE_URL or CAMPAIGN_SERVICE_API_KEY is not set");
+  }
+  const response = await fetch(
+    `${CAMPAIGN_SERVICE_URL}/internal/campaigns/recurring-status?orgId=${encodeURIComponent(orgId)}`,
+    { headers: { "x-api-key": CAMPAIGN_SERVICE_API_KEY } },
+  );
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `campaign-service GET /internal/campaigns/recurring-status failed: ${response.status} - ${body.slice(0, 200)}`,
+    );
+  }
+  const body = (await response.json()) as {
+    campaigns?: Array<{ campaignId?: unknown; kind?: unknown }>;
+  };
+  if (!Array.isArray(body.campaigns)) {
+    throw new Error("campaign-service GET /internal/campaigns/recurring-status returned no campaigns array");
+  }
+
+  const now = Date.now();
+  let found: CampaignKind | null = null;
+  for (const row of body.campaigns) {
+    if (typeof row.campaignId !== "string") continue;
+    const kind = row.kind === "proactive" || row.kind === "reactive" ? row.kind : null;
+    campaignKindCache.set(row.campaignId, { kind, at: now });
+    if (row.campaignId === campaignId) found = kind;
+  }
+  campaignKindCache.set(campaignId, { kind: found, at: now });
+  return found;
+}

@@ -31,8 +31,10 @@ import { runOrphanReplySweep } from "./orphan-reply-sweep";
 import { dispatchMessage, SmtpDispatchError } from "./smtp";
 import {
   classifyPermanentFailure,
+  isAnswerOwed,
   selectDueSteps,
   type AccountCapacity,
+  type DueStep,
   type PendingSequence,
 } from "./dispatch";
 import {
@@ -145,7 +147,9 @@ export interface DispatchSummary {
  * `?? []`, and then throws on `.map`. This exact trap took down the whole fleet
  * forecast once (v0.59.1).
  */
-async function loadPendingSequences(): Promise<PendingSequence[]> {
+async function loadPendingSequences(
+  onlyInstantlyCampaignId: string | null = null,
+): Promise<PendingSequence[]> {
   const result = await db.execute(sql`
     WITH pending AS (
       SELECT
@@ -159,7 +163,8 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
         MAX(sc.step) FILTER (WHERE sc.status = 'actual') AS last_sent_step,
         MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at,
         MIN(c.timezone) AS timezone,
-        MIN(c.created_at) AS queued_at
+        MIN(c.created_at) AS queued_at,
+        COALESCE(bool_or(c.metadata->>'answersPerson' = 'true'), false) AS answers_person
       FROM sequence_costs sc
       JOIN instantly_campaigns c
         ON c.instantly_campaign_id = sc.instantly_campaign_id
@@ -167,6 +172,7 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
         AND c.status = 'active'
         AND c.delivery_status IN ('contacted', 'sent')
         AND c.account_email IS NOT NULL
+        AND (${onlyInstantlyCampaignId}::text IS NULL OR c.instantly_campaign_id = ${onlyInstantlyCampaignId})
       GROUP BY c.instantly_campaign_id, c.lead_email, c.account_email
       HAVING COUNT(*) FILTER (WHERE sc.status = 'provisioned') > 0
     )
@@ -179,6 +185,7 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
       p.last_sent_at          AS "lastSentAt",
       p.timezone              AS "timezone",
       p.queued_at             AS "queuedAt",
+      p.answers_person        AS "answersPerson",
       (
         SELECT COALESCE(jsonb_agg(s.delay_days ORDER BY s.step), '[]'::jsonb)
         FROM sequence_steps s
@@ -207,6 +214,9 @@ async function loadPendingSequences(): Promise<PendingSequence[]> {
     timezone: row.timezone === null || row.timezone === undefined ? null : String(row.timezone),
     // When the lead was handed to us: what a never-sent first email is due from.
     queuedAt: toDate(row.queuedAt),
+    // A sequence answering a person's own action (`answer-now.ts`): its first
+    // email is owed now, like a reply.
+    answersPerson: row.answersPerson === true,
   }));
 }
 
@@ -586,9 +596,46 @@ async function recordDispatch(values: {
  */
 let dispatchInFlight = false;
 
+/**
+ * The SEND LOCK: selecting steps and sending them happen under it, for a sweep
+ * and for an answer sent at once (`dispatchAnswerNow`). The room a selection
+ * counts on a mailbox is only true until somebody else sends from it; holding
+ * the lock from the count to the last send is what keeps a mailbox under its
+ * cap when the two paths run together. A promise chain: callers queue, none is
+ * skipped (unlike `dispatchInFlight`, which skips a second SWEEP outright).
+ */
+let sendLockTail: Promise<unknown> = Promise.resolve();
+
+function withSendLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = sendLockTail.then(fn, fn);
+  sendLockTail = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * Steps this process sent in the last half hour. A sweep whose selection was
+ * taken before an answer went out would otherwise send that answer a second
+ * time; the ledger only says so on its NEXT selection.
+ */
+const RECENTLY_SENT_TTL_MS = 30 * 60_000;
+const recentlySent = new Map<string, number>();
+
+function sentKey(step: { instantlyCampaignId: string; step: number }): string {
+  return `${step.instantlyCampaignId}:${step.step}`;
+}
+
+function rememberSent(step: { instantlyCampaignId: string; step: number }): void {
+  const now = Date.now();
+  for (const [key, at] of recentlySent) {
+    if (now - at > RECENTLY_SENT_TTL_MS) recentlySent.delete(key);
+  }
+  recentlySent.set(sentKey(step), now);
+}
+
 /** Exposed for tests only; never call this from application code. */
 export function __resetDispatchInFlight(): void {
   dispatchInFlight = false;
+  recentlySent.clear();
 }
 
 function emptySummary(): DispatchSummary {
@@ -797,211 +844,303 @@ async function runDispatchExclusive(
         }`,
       );
     });
-
-    // Re-select against what the poll just learned. The probe above is only a
-    // "is this run worth waking for" read; the selection we ACT on is taken
-    // after the mailboxes have been read, so a sequence the poll stopped is
-    // already gone from it.
-    current = await plan();
   }
 
-  const { sequences, accounts, selection } = current;
-  const due = selection.selected;
-  const batch = options.limit ? due.slice(0, options.limit) : due;
-
-  const summary: DispatchSummary = {
-    ...emptySummary(),
-    sequencesRead: sequences.length,
-    due: due.length,
-    dueBeforeCapacity: selection.dueBeforeCapacity,
-    blockedNoCapacityRow: selection.blockedNoCapacityRow,
-    skippedSilenced: selection.skippedSilenced,
-    rehomed: selection.rehomed,
-    polled,
-  };
-
-  // Answer the prospects who are owed one FIRST. A waiting reply has already
-  // had its refusals checked and its moment chosen; a sequence step behind it
-  // has not. Fail-soft as a whole (each reply already fails loud on its own
-  // row): a queue problem here must not stop the fleet's sending for the hour.
-  try {
-    const replies = await dispatchScheduledReplies(asOf);
-    summary.repliesDue = replies.due;
-    summary.repliesSent = replies.sent;
-    summary.repliesRedrafted = replies.redrafted;
-    summary.repliesFailed = replies.failed;
-  } catch (error) {
-    console.error(
-      `[instantly-service] self-send: scheduled-reply drain failed, sending anyway: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-
-  // One credential lookup per mailbox per run, not per send: the vendor call
-  // returns the whole fleet, so paying it per message would be dozens of
-  // identical round-trips for a single sweep.
-  const credentials = new Map<string, MailboxCredential>();
-
-  for (const step of batch) {
-    try {
-      const content = await loadStepContent(step.instantlyCampaignId, step.step);
-      if (!content) {
-        // No body persisted for this step. Fail loud and leave the hold — sending
-        // an empty email, or guessing at content, is worse than not sending.
-        console.error(
-          `[instantly-service] self-send: no body for campaign=${step.instantlyCampaignId} step=${step.step} — skipped`,
-        );
-        summary.failed += 1;
-        continue;
-      }
-
-      if (step.rehomedFrom !== undefined) {
-        // Persist the move BEFORE the send, guarded on the row still being where
-        // we found it and on nothing having gone out yet — a first email is the
-        // only step that may change mailbox, and only while there is no thread.
-        // The reason is recorded on the row so nobody reads the move as drift.
-        const moved = await rehomeFirstEmail(
-          step.instantlyCampaignId,
-          step.rehomedFrom,
-          step.accountEmail,
-          asOf,
-        );
-        if (!moved) {
-          console.warn(
-            `[instantly-service] self-send: rehome of campaign=${step.instantlyCampaignId} from ${step.rehomedFrom} to ${step.accountEmail} lost its guard — skipped`,
-          );
-          continue;
-        }
-      }
-
-      let credential = credentials.get(step.accountEmail);
-      if (!credential) {
-        credential = await resolveMailboxCredential(step.accountEmail, CALLER);
-        credentials.set(step.accountEmail, credential);
-      }
-
-      const account = accounts.get(step.accountEmail);
-      if (!account) {
-        // The step's account is not an eligible sender right now (demoted, gone
-        // absent, off the smtp transport). Selection should already have skipped
-        // it for want of a capacity row; failing loud here rather than
-        // fabricating an account keeps the two in agreement.
-        console.error(
-          `[instantly-service] self-send: no sending account for ${step.accountEmail} — skipped`,
-        );
-        summary.failed += 1;
-        continue;
-      }
-
-      const message = buildMessage({
-        account,
-        signatureHtml: content.signatureHtml,
-        leadEmail: step.leadEmail,
-        subject: content.subject,
-        bodyHtml: content.bodyHtml,
-        step: step.step,
-        identity: {
-          instantlyCampaignId: step.instantlyCampaignId,
-          leadEmail: step.leadEmail,
-        },
-        previousMessageId: content.priorMessageIds.at(-1) ?? null,
-        priorMessageIds: content.priorMessageIds,
-      });
-
-      const result = await dispatchMessage(credential, message);
-
-      const sourceRowId = await recordDispatch({
-        instantlyCampaignId: step.instantlyCampaignId,
-        leadEmail: step.leadEmail,
-        accountEmail: step.accountEmail,
-        step: step.step,
-        outcome: "sent",
-        messageId: result.messageId,
-        response: result.response,
-        payload: result,
-      });
-
-      // Real, not inferred — this is what actualizes the hold via handleEmailSent.
-      await promoteEvent({
-        eventType: "email_sent",
-        instantlyCampaignId: step.instantlyCampaignId,
-        leadEmail: step.leadEmail,
-        accountEmail: step.accountEmail,
-        step: step.step,
-        variant: null,
-        timestamp: new Date(),
-        source: "self_send",
-        sourceRowId,
-      });
-
-      summary.sent += 1;
-    } catch (error) {
-      if (!(error instanceof SmtpDispatchError)) {
-        console.error(
-          `[instantly-service] self-send: campaign=${step.instantlyCampaignId} step=${step.step} failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        summary.failed += 1;
-        continue;
-      }
-
-      const sourceRowId = await recordDispatch({
-        instantlyCampaignId: step.instantlyCampaignId,
-        leadEmail: step.leadEmail,
-        accountEmail: step.accountEmail,
-        step: step.step,
-        outcome: error.kind,
-        responseCode: error.responseCode,
-        response: error.response,
-        payload: { kind: error.kind, responseCode: error.responseCode, response: error.response },
-      });
-
-      if (error.kind === "transient") {
-        console.warn(
-          `[instantly-service] self-send: transient refusal campaign=${step.instantlyCampaignId} step=${step.step} — retried next run: ${error.response}`,
-        );
-        summary.transient += 1;
-        continue;
-      }
-
-      const subject = classifyPermanentFailure(error.response, error.responseCode);
-
-      if (subject === "sender") {
-        // Refused because of US, not the prospect. Promoting a bounce here would
-        // record a fact about our own mailbox on a perfectly reachable lead, and
-        // mark them undeliverable forever. The hold stays; account health owns
-        // the mailbox side of this.
-        console.warn(
-          `[instantly-service] self-send: SENDER blocked account=${step.accountEmail} campaign=${step.instantlyCampaignId} step=${step.step} — lead untouched: ${error.response}`,
-        );
-        summary.senderBlocked += 1;
-        continue;
-      }
-
-      await promoteEvent({
-        eventType: "email_bounced",
-        instantlyCampaignId: step.instantlyCampaignId,
-        leadEmail: step.leadEmail,
-        accountEmail: step.accountEmail,
-        step: step.step,
-        variant: null,
-        timestamp: new Date(),
-        source: "self_send",
-        sourceRowId,
-      });
-
-      console.warn(
-        `[instantly-service] self-send: bounced campaign=${step.instantlyCampaignId} step=${step.step}: ${error.response}`,
-      );
-      summary.bounced += 1;
+  // Selecting and sending happen under the SEND LOCK, shared with the answer
+  // path (`dispatchAnswerNow`): the mailbox room this selection counts must not
+  // be spent by an answer between the count and the sends. The poll above stays
+  // OUTSIDE it on purpose — it takes minutes, and an answer owed to a person who
+  // just acted must not wait behind it.
+  return withSendLock(async () => {
+    if (options.pollFirst) {
+      // Re-select against what the poll just learned. The probe above is only a
+      // "is this run worth waking for" read; the selection we ACT on is taken
+      // after the mailboxes have been read, so a sequence the poll stopped is
+      // already gone from it.
+      current = await plan();
     }
+
+    const { sequences, accounts, selection } = current;
+    const due = selection.selected;
+    const batch = options.limit ? due.slice(0, options.limit) : due;
+
+    const summary: DispatchSummary = {
+      ...emptySummary(),
+      sequencesRead: sequences.length,
+      due: due.length,
+      dueBeforeCapacity: selection.dueBeforeCapacity,
+      blockedNoCapacityRow: selection.blockedNoCapacityRow,
+      skippedSilenced: selection.skippedSilenced,
+      rehomed: selection.rehomed,
+      polled,
+    };
+
+    // Answer the prospects who are owed one FIRST. A waiting reply has already
+    // had its refusals checked and its moment chosen; a sequence step behind it
+    // has not. Fail-soft as a whole (each reply already fails loud on its own
+    // row): a queue problem here must not stop the fleet's sending for the hour.
+    try {
+      const replies = await dispatchScheduledReplies(asOf);
+      summary.repliesDue = replies.due;
+      summary.repliesSent = replies.sent;
+      summary.repliesRedrafted = replies.redrafted;
+      summary.repliesFailed = replies.failed;
+    } catch (error) {
+      console.error(
+        `[instantly-service] self-send: scheduled-reply drain failed, sending anyway: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    // One credential lookup per mailbox per run, not per send: the vendor call
+    // returns the whole fleet, so paying it per message would be dozens of
+    // identical round-trips for a single sweep.
+    const credentials = new Map<string, MailboxCredential>();
+
+    for (const step of batch) {
+      await sendDueStep(step, { accounts, credentials, summary, asOf });
+    }
+
+    console.log(
+      `[instantly-service] self-send-dispatch: done ${JSON.stringify(summary)}`,
+    );
+
+    return summary;
+  });
+}
+
+/**
+ * Send ONE selected step: body, optional rehome, SMTP, bronze, silver.
+ *
+ * Fail-loud per step: every outcome is counted on `summary` and lands in bronze;
+ * nothing thrown here stops the caller's loop.
+ */
+async function sendDueStep(
+  step: DueStep,
+  ctx: {
+    accounts: Map<string, Account>;
+    credentials: Map<string, MailboxCredential>;
+    summary: DispatchSummary;
+    asOf: Date;
+  },
+): Promise<void> {
+  const { accounts, credentials, summary, asOf } = ctx;
+  // Already sent by the other path in this process (a sweep whose selection was
+  // taken before an answer went out). The DB stops it on the next selection;
+  // this stops it in the window between the two.
+  if (recentlySent.has(sentKey(step))) {
+    console.warn(
+      `[instantly-service] self-send: campaign=${step.instantlyCampaignId} step=${step.step} already sent by this process — not sent twice`,
+    );
+    return;
   }
+  try {
+    const content = await loadStepContent(step.instantlyCampaignId, step.step);
+    if (!content) {
+      // No body persisted for this step. Fail loud and leave the hold — sending
+      // an empty email, or guessing at content, is worse than not sending.
+      console.error(
+        `[instantly-service] self-send: no body for campaign=${step.instantlyCampaignId} step=${step.step} — skipped`,
+      );
+      summary.failed += 1;
+      return;
+    }
 
-  console.log(
-    `[instantly-service] self-send-dispatch: done ${JSON.stringify(summary)}`,
+    if (step.rehomedFrom !== undefined) {
+      // Persist the move BEFORE the send, guarded on the row still being where
+      // we found it and on nothing having gone out yet — a first email is the
+      // only step that may change mailbox, and only while there is no thread.
+      // The reason is recorded on the row so nobody reads the move as drift.
+      const moved = await rehomeFirstEmail(
+        step.instantlyCampaignId,
+        step.rehomedFrom,
+        step.accountEmail,
+        asOf,
+      );
+      if (!moved) {
+        console.warn(
+          `[instantly-service] self-send: rehome of campaign=${step.instantlyCampaignId} from ${step.rehomedFrom} to ${step.accountEmail} lost its guard — skipped`,
+        );
+        return;
+      }
+    }
+
+    let credential = credentials.get(step.accountEmail);
+    if (!credential) {
+      credential = await resolveMailboxCredential(step.accountEmail, CALLER);
+      credentials.set(step.accountEmail, credential);
+    }
+
+    const account = accounts.get(step.accountEmail);
+    if (!account) {
+      // The step's account is not an eligible sender right now (demoted, gone
+      // absent, off the smtp transport). Selection should already have skipped
+      // it for want of a capacity row; failing loud here rather than
+      // fabricating an account keeps the two in agreement.
+      console.error(
+        `[instantly-service] self-send: no sending account for ${step.accountEmail} — skipped`,
+      );
+      summary.failed += 1;
+      return;
+    }
+
+    const message = buildMessage({
+      account,
+      signatureHtml: content.signatureHtml,
+      leadEmail: step.leadEmail,
+      subject: content.subject,
+      bodyHtml: content.bodyHtml,
+      step: step.step,
+      identity: {
+        instantlyCampaignId: step.instantlyCampaignId,
+        leadEmail: step.leadEmail,
+      },
+      previousMessageId: content.priorMessageIds.at(-1) ?? null,
+      priorMessageIds: content.priorMessageIds,
+    });
+
+    const result = await dispatchMessage(credential, message);
+    rememberSent(step);
+
+    const sourceRowId = await recordDispatch({
+      instantlyCampaignId: step.instantlyCampaignId,
+      leadEmail: step.leadEmail,
+      accountEmail: step.accountEmail,
+      step: step.step,
+      outcome: "sent",
+      messageId: result.messageId,
+      response: result.response,
+      payload: result,
+    });
+
+    // Real, not inferred — this is what actualizes the hold via handleEmailSent.
+    await promoteEvent({
+      eventType: "email_sent",
+      instantlyCampaignId: step.instantlyCampaignId,
+      leadEmail: step.leadEmail,
+      accountEmail: step.accountEmail,
+      step: step.step,
+      variant: null,
+      timestamp: new Date(),
+      source: "self_send",
+      sourceRowId,
+    });
+
+    summary.sent += 1;
+  } catch (error) {
+    if (!(error instanceof SmtpDispatchError)) {
+      console.error(
+        `[instantly-service] self-send: campaign=${step.instantlyCampaignId} step=${step.step} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      summary.failed += 1;
+      return;
+    }
+
+    const sourceRowId = await recordDispatch({
+      instantlyCampaignId: step.instantlyCampaignId,
+      leadEmail: step.leadEmail,
+      accountEmail: step.accountEmail,
+      step: step.step,
+      outcome: error.kind,
+      responseCode: error.responseCode,
+      response: error.response,
+      payload: { kind: error.kind, responseCode: error.responseCode, response: error.response },
+    });
+
+    if (error.kind === "transient") {
+      console.warn(
+        `[instantly-service] self-send: transient refusal campaign=${step.instantlyCampaignId} step=${step.step} — retried next run: ${error.response}`,
+      );
+      summary.transient += 1;
+      return;
+    }
+
+    const subject = classifyPermanentFailure(error.response, error.responseCode);
+
+    if (subject === "sender") {
+      // Refused because of US, not the prospect. Promoting a bounce here would
+      // record a fact about our own mailbox on a perfectly reachable lead, and
+      // mark them undeliverable forever. The hold stays; account health owns
+      // the mailbox side of this.
+      console.warn(
+        `[instantly-service] self-send: SENDER blocked account=${step.accountEmail} campaign=${step.instantlyCampaignId} step=${step.step} — lead untouched: ${error.response}`,
+      );
+      summary.senderBlocked += 1;
+      return;
+    }
+
+    await promoteEvent({
+      eventType: "email_bounced",
+      instantlyCampaignId: step.instantlyCampaignId,
+      leadEmail: step.leadEmail,
+      accountEmail: step.accountEmail,
+      step: step.step,
+      variant: null,
+      timestamp: new Date(),
+      source: "self_send",
+      sourceRowId,
+    });
+
+    console.warn(
+      `[instantly-service] self-send: bounced campaign=${step.instantlyCampaignId} step=${step.step}: ${error.response}`,
+    );
+    summary.bounced += 1;
+  }
+}
+
+/**
+ * Send NOW the first email of ONE sequence that answers a person's own action
+ * (a form they filled, an email pushed for someone who asked: `answer-now.ts`).
+ *
+ * Without it the answer waited for the next sweep: the 10-minute interval plus
+ * the sweep's own mailbox read (~5 minutes over ~250 mailboxes), 6.5 to 13.5
+ * minutes measured on 2026-10-14 for a person who had just filled a form.
+ *
+ * Every protection of a sweep still applies, through the SAME selection: the
+ * mailbox's cap and ramp (a mailbox with no room hands the first email to a
+ * production mailbox with room), silenced and blind mailboxes, the credential.
+ * What it skips is the mailbox read: a brand-new thread has no reply to find.
+ * Business hours and the Sunday gate do not hold an answer (`isAnswerOwed`),
+ * exactly as they do not hold a reply. Runs under the send lock, so it never
+ * spends room a sweep has already counted. Nothing sent here (no room anywhere)
+ * = the next sweep sends it, still first in line.
+ */
+export async function dispatchAnswerNow(
+  instantlyCampaignId: string,
+  asOf: Date = new Date(),
+): Promise<DispatchSummary> {
+  const mailboxLogins = await loadMailboxLogins(CALLER);
+  const silencedMailboxes = selectSilencedSmtpSenders(
+    await loadSmtpSenderHealth(mailboxLogins),
   );
+  const blindMailboxes = await loadInboundBlindMailboxes(mailboxLogins);
+  const skippedMailboxes = new Set<string>([...silencedMailboxes, ...blindMailboxes]);
 
-  return summary;
+  return withSendLock(async () => {
+    const sequences = (await loadPendingSequences(instantlyCampaignId)).filter(isAnswerOwed);
+    const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
+    const selection = selectDueSteps(sequences, capacities, asOf, skippedMailboxes);
+
+    const summary: DispatchSummary = {
+      ...emptySummary(),
+      sequencesRead: sequences.length,
+      due: selection.selected.length,
+      dueBeforeCapacity: selection.dueBeforeCapacity,
+      blockedNoCapacityRow: selection.blockedNoCapacityRow,
+      skippedSilenced: selection.skippedSilenced,
+      rehomed: selection.rehomed,
+    };
+    const credentials = new Map<string, MailboxCredential>();
+    for (const step of selection.selected) {
+      await sendDueStep(step, { accounts, credentials, summary, asOf });
+    }
+
+    console.log(
+      `[instantly-service] self-send-answer: done campaign=${instantlyCampaignId} ${JSON.stringify(summary)}`,
+    );
+    return summary;
+  });
 }

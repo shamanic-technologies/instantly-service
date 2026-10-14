@@ -17,6 +17,7 @@ import { findNotAProspect, notAProspectRefusal } from "../lib/not-a-prospect";
 import { findStandingOptOut, optOutRefusal } from "../lib/lead-optouts";
 import { emailNotVerifiedRefusal, gateAddressForSend } from "../lib/email-verification-gate";
 import { resolveTransportForNewSequence } from "../lib/self-send/capability";
+import { sendAnswerNowIfOwed } from "../lib/self-send/answer-now";
 import {
   SEND_TRANSPORT_INSTANTLY,
   SEND_TRANSPORT_SMTP,
@@ -793,6 +794,34 @@ router.post("/", async (req: Request, res: Response) => {
         added,
         stepRuns: stepRuns.length > 0 ? stepRuns : undefined,
       });
+
+      // 8. An email answering a person's own action (its campaign runs a
+      //    REACTIVE leg: a form fill, a pushed email, a reply) leaves NOW, not on
+      //    the next sweep (lib/self-send/answer-now.ts). Cold (proactive)
+      //    sequences are untouched. Detached: the caller already has its answer,
+      //    and a failure only means the email waits for the next sweep.
+      if (transport === SEND_TRANSPORT_SMTP) {
+        const queuedId = sendResult.value.instantlyCampaignId;
+        void sendAnswerNowIfOwed({
+          orgId,
+          campaignId: campaignId ?? null,
+          instantlyCampaignId: queuedId,
+        })
+          .then((outcome) => {
+            if (outcome.answersPerson) {
+              console.log(
+                `[send] Answer sent at once — to=${body.to} campaignId=${campaignId} instantlyCampaignId=${queuedId} sent=${outcome.summary?.sent ?? 0}`,
+              );
+            }
+          })
+          .catch((error: unknown) => {
+            console.error(
+              `[send] answer-now FAILED for instantlyCampaignId=${queuedId} (it goes out with the next sweep): ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          });
+      }
     } catch (error: any) {
       // Give back steps provisioned but never queued (no queue row will ever
       // settle them), then fail any step runs that were already queued.
