@@ -512,6 +512,13 @@
       "when": 1791600000000,
       "tag": "0072_email_send_verifications",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1791700000000,
+      "tag": "0073_brand_email_signatures",
+      "breakpoints": true
     }
   ]
 }

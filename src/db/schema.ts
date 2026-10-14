@@ -126,6 +126,13 @@ export const instantlyCampaigns = pgTable(
     // written before migration 0046; the capacity loader falls back to the
     // schedule stored in bronze, which is what those rows are really sent on.
     timezone: text("timezone"),
+    // The signature block every email of THIS thread ends with, pinned at send
+    // time (migration 0073): the brand's own signature as the client stated it
+    // (`brand_email_signatures`), rendered to HTML. NULL = our default
+    // signature, built from the sending account. Read by every later email of
+    // the thread (follow-ups, retry-stuck, AI and human replies) so a thread
+    // never changes signature mid-way, even if the client edits it afterwards.
+    signatureHtml: text("signature_html"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -1768,4 +1775,21 @@ export const replyJudgments = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [uniqueIndex("reply_judgments_reply_question_idx").on(table.replyId, table.question)],
+);
+
+// Config: the email signature a client stated for one of its brands (migration
+// 0073; GET/PUT/DELETE /orgs/email-signature). Absent row = our default
+// signature. Plain text as the client wrote it; rendered at send time and
+// pinned onto the thread (`instantly_campaigns.signature_html`).
+export const brandEmailSignatures = pgTable(
+  "brand_email_signatures",
+  {
+    orgId: text("org_id").notNull(),
+    brandId: text("brand_id").notNull(),
+    signature: text("signature").notNull(),
+    updatedByUserId: text("updated_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.orgId, table.brandId] })],
 );
