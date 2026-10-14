@@ -39,6 +39,13 @@ function makeSelectChain() {
   };
 }
 
+// The verdict that prices the re-queued emails (email-verification-gate.test.ts
+// covers the gate). "valid" unless a test says otherwise.
+const mockRequireSendableVerdict = vi.hoisted(() => vi.fn(async () => "valid"));
+vi.mock("../../src/lib/email-verification-gate", () => ({
+  requireSendableVerdict: (...a: unknown[]) => mockRequireSendableVerdict(...(a as [])),
+}));
+
 vi.mock("../../src/db", () => ({
   db: {
     execute: (...args: unknown[]) => mockDbExecute(...args),
@@ -168,6 +175,7 @@ function queueSelectCosts(costs: unknown[] = []) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockRequireSendableVerdict.mockResolvedValue("valid");
   mockDbSelectQueue.length = 0;
   mockDbExecute.mockResolvedValue({ rows: [] });
   mockResolveKey.mockResolvedValue({ key: "fake-api-key", keySource: "platform" });

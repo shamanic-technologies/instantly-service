@@ -30,7 +30,7 @@ import {
   type TrackingHeaders,
 } from "../lib/runs-client";
 import { authorizeCreditSpend } from "../lib/billing-client";
-import { provisionStepEmailCosts, sendAuthorizeItems } from "../lib/send-costs";
+import { provisionStepEmailCosts, sendAuthorizeItems, type SendableVerdict } from "../lib/send-costs";
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { SendRequestSchema } from "../schemas";
 import { traceEvent } from "../lib/trace-event";
@@ -504,12 +504,13 @@ router.post("/", async (req: Request, res: Response) => {
         // Pushed before provisioning so a failed provision still fails the run.
         const hold: StepHold = { step: s.step, runId: stepRun.id, costId: "", domainCostId: "" };
         stepHolds.push(hold);
-        const ids = await provisionStepEmailCosts(stepRun.id, keySource, {
-          orgId,
-          userId,
-          runId: stepRun.id,
-          tracking,
-        });
+        const ids = await provisionStepEmailCosts(
+          stepRun.id,
+          keySource,
+          { orgId, userId, runId: stepRun.id, tracking },
+          // The email's price follows the address's verdict (step 3d).
+          verification.verdict as SendableVerdict,
+        );
         hold.costId = ids.costId;
         hold.domainCostId = ids.domainCostId;
       }
@@ -519,7 +520,7 @@ router.post("/", async (req: Request, res: Response) => {
       //     explicit 402, never a silent send.
       if (keySource === "platform") {
         const auth = await authorizeCreditSpend(
-          sendAuthorizeItems(sortedSequence.length),
+          sendAuthorizeItems(sortedSequence.length, verification.verdict as SendableVerdict),
           "instantly-send",
           { ...billingIdentity, runId: res.locals.runId as string },
         );
