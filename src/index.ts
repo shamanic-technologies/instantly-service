@@ -29,6 +29,7 @@ import emailSignatureRoutes from "./routes/email-signature";
 import leadSendingScheduleRoutes from "./routes/lead-sending-schedule";
 import replyVerdictsRoutes from "./routes/reply-verdicts";
 import auditRoutes from "./routes/audit";
+import deliveryByVerdictRoutes from "./routes/delivery-by-verdict";
 import infraRoutes from "./routes/infra";
 import opsRoutes from "./routes/ops";
 import outreachFactsRoutes from "./routes/outreach-facts";
@@ -86,6 +87,7 @@ app.use("/internal/accounts", serviceAuth, accountsRoutes);    // list all accou
 app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 app.use("/internal/bounced-emails", serviceAuth, bouncedEmailsRoutes); // fleet-wide bounce lookup (human-service serve gate)
 app.use("/internal/outreach-facts", serviceAuth, outreachFactsRoutes); // fleet fact feed lead-service copies by cursor
+app.use("/internal", serviceAuth, deliveryByVerdictRoutes);    // fleet delivery split by the verifier verdict at send (features-service)
 app.use("/internal/audit", serviceAuth, auditRoutes);          // staff sending forecast (capacity vs scheduled volume)
 app.use("/internal/infra", serviceAuth, infraRoutes);          // provider inventory sync (Gandi / Mailforge / Primeforge / DFY)
 app.use("/internal/ops", serviceAuth, opsRoutes);            // unified model: mailbox sync (PR 1), gold reads later
@@ -229,6 +231,15 @@ async function start() {
 
     // A person who booked a meeting gets no more cold email from that brand: its own
     // drive, because the dispatch interval restarts on every deploy. Armed after listen.
+    // Copy of apollo-service's verification history, read by GET
+    // /internal/delivery-by-verdict. Armed after listen.
+    import("./lib/verification-history-mirror-worker")
+      .then(({ startVerificationHistoryMirrorWorker }) => startVerificationHistoryMirrorWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start verification-history-mirror worker: ${message}`);
+      });
+
     import("./lib/booked-stops-cold-worker")
       .then(({ startBookedStopsWorker }) => startBookedStopsWorker())
       .catch((err: unknown) => {

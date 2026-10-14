@@ -2702,6 +2702,64 @@ registry.registerPath({
   },
 });
 
+const DeliveryFiguresShape = {
+  sent: z.number().int().describe("Sequences whose first real email left (one address emailed under one campaign)"),
+  delivered: z.number().int().describe("Of `sent`, sequences with no bounce on any step (sent AND NOT bounced, the gold `delivered` flag)"),
+  bounced: z.number().int().describe("Of `sent`, sequences where any step bounced. `delivered + bounced = sent`"),
+  deliveryRate: z.number().nullable().describe("delivered / sent, 0..1, 4 decimals. Null when `sent` is 0 (no rate over zero)"),
+  bounceRate: z.number().nullable().describe("bounced / sent, 0..1, 4 decimals. Null when `sent` is 0"),
+};
+
+const DeliveryByVerdictResponseSchema = z
+  .object({
+    basis: z.literal("sequences").describe("Unit counted: one SEQUENCE = one address emailed under one campaign, counted once its first real email left (Instantly and our own sender alike). Same population and flags as every gold stats read"),
+    since: z.string().nullable().describe("ISO: first real email of the earliest counted sequence (inception)"),
+    sentThrough: z.string().describe("ISO: sequences first sent after this instant are not counted yet (the mirror of the verifier's history is complete up to here)"),
+    verificationsSince: z.string().nullable().describe("ISO: earliest verification on record. Sequences sent before it can only be `never_verified`"),
+    buckets: z
+      .array(
+        z.object({
+          verdict: z
+            .enum(["valid", "catch_all", "unknown", "invalid", "risky", "no_verdict", "never_verified"])
+            .describe("Latest verdict our verifier (BounceVerify via apollo-service, any org, any source) returned for the address AT OR BEFORE the sequence's first email. `no_verdict` = only calls that returned no verdict before the send. `never_verified` = no verification before the send"),
+          ...DeliveryFiguresShape,
+        }),
+      )
+      .describe("All 7 buckets, always present (zero when empty), in this order. They partition the counted sequences"),
+    bucketsByLatestVerdict: z
+      .array(z.object({ verdict: z.enum(["valid", "catch_all", "unknown", "invalid", "risky", "no_verdict", "never_verified"]), ...DeliveryFiguresShape }))
+      .describe("The SAME sequences bucketed by the LATEST verdict on record today, INCLUDING verifications made after the send (most addresses were verified only after we emailed them). Answers 'how do addresses our verifier calls X fare', NOT 'what did we know when sending'. Same 7 buckets, same total"),
+    total: z.object(DeliveryFiguresShape).describe("Sum of the buckets; checked against an independent count of the same population (the read fails 500 if they differ)"),
+    sentAfterThrough: z.number().int().describe("Sequences first sent after `sentThrough`: counted once the mirror catches up"),
+  })
+  .openapi("DeliveryByVerdictResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/delivery-by-verdict",
+  summary: "Fleet delivery split by the verifier verdict the address had at send",
+  description:
+    "Platform-scoped (every org), since the first email we sent. For each verdict our verifier (BounceVerify, through apollo-service) held on the address when the sequence's first email left: how many sequences were sent, delivered (no bounce) and bounced, and the rates. Verdicts are read from this service's mirror of apollo-service's verification history (copied every few minutes); a verdict is never invented. Cached 10 min per replica (refresh-ahead at 5). 503 `verification_history_not_synced` until the mirror has reached the end of the history once.",
+  responses: {
+    200: { description: "The split", content: { "application/json": { schema: DeliveryByVerdictResponseSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "Could not be read, or buckets do not reconcile with the total", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Verification history not mirrored yet", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/delivery-by-verdict/sync",
+  summary: "Run one pass of the verification-history mirror by hand",
+  description: "Copies new rows of apollo-service's verification history from the saved cursor to the end of the feed. The in-process worker does the same every 5 minutes. Idempotent.",
+  responses: {
+    200: { description: "What the pass did: `pages`, `rows`, `caughtUp`, `cursor`" },
+    401: { description: "Unauthorized" },
+    500: { description: "The pass failed", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/orgs/manual-qualifications",

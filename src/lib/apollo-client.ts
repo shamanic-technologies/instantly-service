@@ -255,3 +255,55 @@ export async function verifyEmailAddresses(
   }
   return body.results as EmailVerification[];
 }
+
+/** One verification of apollo-service's history, as our mirror stores it. */
+export interface VerificationHistoryRow {
+  id: string;
+  email: string;
+  /** apollo's verdict; null when the call returned none (never invented). */
+  verdict: string | null;
+  verifiedAt: string;
+}
+
+export interface VerificationHistoryPage {
+  rows: VerificationHistoryRow[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+/** Rows per page asked of the feed (its max is 5000). */
+export const VERIFICATION_HISTORY_PAGE_SIZE = 5000;
+
+/**
+ * One page of apollo-service's verification history
+ * (`GET /internal/email-verifications/history?after=<cursor>&limit=`): every
+ * verification ever made, every org, in insertion order. `cursor` null = from the
+ * very first. The feed holds back rows younger than its settle window (60 s), so
+ * a consumer that passed a cursor never has a row appear behind it. FAILS LOUD on
+ * any non-2xx or a body that is not the documented page.
+ */
+export async function fetchVerificationHistoryPage(cursor: string | null): Promise<VerificationHistoryPage> {
+  if (!APOLLO_SERVICE_URL || !APOLLO_SERVICE_API_KEY) {
+    throw new Error("APOLLO_SERVICE_URL or APOLLO_SERVICE_API_KEY is not set");
+  }
+  const params = new URLSearchParams({ limit: String(VERIFICATION_HISTORY_PAGE_SIZE) });
+  if (cursor) params.set("after", cursor);
+  const url = `${APOLLO_SERVICE_URL}/internal/email-verifications/history?${params.toString()}`;
+  const response = await fetch(url, { headers: { "x-api-key": APOLLO_SERVICE_API_KEY } });
+  if (!response.ok) {
+    throw new Error(`apollo-service GET /internal/email-verifications/history ${response.status}: ${await response.text()}`);
+  }
+  const body = (await response.json()) as {
+    verifications?: Array<{ id: string; email: string; verdict: string | null; verifiedAt: string }>;
+    nextCursor?: string;
+    hasMore?: boolean;
+  };
+  if (!Array.isArray(body.verifications) || typeof body.nextCursor !== "string" || typeof body.hasMore !== "boolean") {
+    throw new Error("apollo-service verification history: unexpected page shape");
+  }
+  return {
+    rows: body.verifications.map((v) => ({ id: v.id, email: v.email, verdict: v.verdict ?? null, verifiedAt: v.verifiedAt })),
+    nextCursor: body.nextCursor,
+    hasMore: body.hasMore,
+  };
+}
