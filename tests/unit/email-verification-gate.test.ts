@@ -1,0 +1,137 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const mockInsertValues = vi.fn();
+const mockExecute = vi.fn();
+vi.mock("../../src/db", () => ({
+  db: {
+    insert: () => ({ values: (v: unknown) => mockInsertValues(v) }),
+    execute: (...a: unknown[]) => mockExecute(...a),
+  },
+}));
+
+const mockVerify = vi.fn();
+vi.mock("../../src/lib/apollo-client", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  verifyEmailAddresses: (...a: unknown[]) => mockVerify(...a),
+}));
+
+import {
+  findEmailNotVerifiedRefusals,
+  gateAddresses,
+  gateAddressForSend,
+  judgeVerdict,
+} from "../../src/lib/email-verification-gate";
+import { EmailVerifierError } from "../../src/lib/apollo-client";
+
+const IDENTITY = { orgId: "org-1", userId: "user-1", runId: "run-1" };
+
+function verdictRow(email: string, verdict: string, reused = false) {
+  return { email, verdict, verificationId: `ver-${email}`, verifiedAt: "2026-10-14T08:00:00.000Z", reused };
+}
+
+describe("judgeVerdict — what the send door does with a verdict", () => {
+  it.each(["valid", "catch_all", "unknown"])("%s is sent", (v) => {
+    expect(judgeVerdict(v)).toEqual({ accepted: true, reason: `verdict_${v}` });
+  });
+  it.each(["invalid", "risky"])("%s is never sent", (v) => {
+    expect(judgeVerdict(v)).toEqual({ accepted: false, reason: `verdict_${v}` });
+  });
+  it("a verdict the code does not know is never sent", () => {
+    expect(judgeVerdict("deliverable_maybe")).toEqual({ accepted: false, reason: "verdict_unrecognised" });
+  });
+});
+
+describe("gateAddresses — verify, decide, record", () => {
+  beforeEach(() => {
+    mockInsertValues.mockReset().mockResolvedValue(undefined);
+    mockVerify.mockReset();
+    mockExecute.mockReset();
+  });
+
+  it("asks apollo with the sending run's identity and records every decision with its reason", async () => {
+    mockVerify.mockResolvedValue([verdictRow("a@x.com", "valid", true), verdictRow("b@x.com", "invalid")]);
+    const out = await gateAddresses(["A@x.com", "b@x.com"], IDENTITY, "send");
+
+    expect(mockVerify).toHaveBeenCalledWith(["a@x.com", "b@x.com"], IDENTITY, "instantly-send-gate");
+    expect(out.get("a@x.com")).toMatchObject({ accepted: true, reason: "verdict_valid", reused: true });
+    expect(out.get("b@x.com")).toMatchObject({ accepted: false, reason: "verdict_invalid", reused: false });
+    const rows = mockInsertValues.mock.calls[0][0] as Record<string, unknown>[];
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({
+      orgId: "org-1",
+      email: "b@x.com",
+      verdict: "invalid",
+      accepted: false,
+      reason: "verdict_invalid",
+      context: "send",
+      runId: "run-1",
+    });
+  });
+
+  it("no verdict from the verifier is a RECORDED refusal, never a pass", async () => {
+    mockVerify.mockRejectedValue(new EmailVerifierError("502 email_verification", 502, false));
+    const d = await gateAddressForSend("a@x.com", IDENTITY);
+
+    expect(d).toMatchObject({ accepted: false, reason: "verifier_failed", verdict: null });
+    expect((mockInsertValues.mock.calls[0][0] as Record<string, unknown>[])[0]).toMatchObject({
+      accepted: false,
+      reason: "verifier_failed",
+    });
+  });
+
+  it("an org that cannot pay is told apart from an outage", async () => {
+    mockVerify.mockRejectedValue(new EmailVerifierError("insufficient balance", 502, true));
+    const d = await gateAddressForSend("a@x.com", IDENTITY);
+    expect(d.reason).toBe("insufficient_credits");
+  });
+
+  it("an address missing from apollo's answer is no verdict", async () => {
+    mockVerify.mockResolvedValue([]);
+    const d = await gateAddressForSend("a@x.com", IDENTITY);
+    expect(d).toMatchObject({ accepted: false, reason: "verifier_failed" });
+  });
+
+  it("a ledger that cannot be written fails LOUD (a decision we cannot record is not taken)", async () => {
+    mockVerify.mockResolvedValue([verdictRow("a@x.com", "valid")]);
+    mockInsertValues.mockRejectedValue(new Error("db down"));
+    await expect(gateAddressForSend("a@x.com", IDENTITY)).rejects.toThrow(/db down/);
+  });
+
+  it("a non-verifier error propagates", async () => {
+    mockVerify.mockRejectedValue(new TypeError("boom"));
+    await expect(gateAddressForSend("a@x.com", IDENTITY)).rejects.toThrow(/boom/);
+  });
+
+  it("splits into apollo's 50-address batches", async () => {
+    const emails = Array.from({ length: 120 }, (_, i) => `p${i}@x.com`);
+    mockVerify.mockImplementation(async (chunk: string[]) => chunk.map((e) => verdictRow(e, "valid")));
+    const out = await gateAddresses(emails, IDENTITY, "queued");
+    expect(mockVerify.mock.calls.map((c) => (c[0] as string[]).length)).toEqual([50, 50, 20]);
+    expect(out.size).toBe(120);
+  });
+});
+
+describe("findEmailNotVerifiedRefusals — the status read's refusal", () => {
+  beforeEach(() => mockExecute.mockReset());
+
+  it("states a standing refusal on a verdict, skips an accepted latest decision and a lapsed one", async () => {
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    const past = new Date(Date.now() - 86_400_000).toISOString();
+    mockExecute.mockResolvedValue({
+      rows: [
+        { email: "bad@x.com", accepted: false, reason: "verdict_invalid", until: future },
+        { email: "ok@x.com", accepted: true, reason: "verdict_valid", until: future },
+        { email: "old@x.com", accepted: false, reason: "verdict_risky", until: past },
+      ],
+    });
+    const out = await findEmailNotVerifiedRefusals("org-1", ["Bad@x.com", "ok@x.com", "old@x.com"]);
+    expect([...out.keys()]).toEqual(["bad@x.com"]);
+    expect(out.get("bad@x.com")!.toISOString()).toBe(future);
+  });
+
+  it("reads nothing for no addresses", async () => {
+    const out = await findEmailNotVerifiedRefusals("org-1", []);
+    expect(out.size).toBe(0);
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+});

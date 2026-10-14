@@ -147,3 +147,111 @@ export async function readPhoneReveal(
 
   return (await response.json()) as PhoneReveal;
 }
+
+// ─── Email verification (the send door's gate) ──────────────────────────────
+
+/** BounceVerify's verdict, as apollo-service states it. */
+export type EmailVerdict = "valid" | "invalid" | "catch_all" | "risky" | "unknown";
+
+/** One address's verdict from `POST /email-verifications`. */
+export interface EmailVerification {
+  email: string;
+  verdict: EmailVerdict;
+  verificationId: string;
+  verifiedAt: string;
+  /**
+   * true = apollo-service already held a decisive verdict under 30 days old and
+   * handed it back (nothing billed); false = verified now, billed to the org as a
+   * child run of x-run-id.
+   */
+  reused: boolean;
+}
+
+/**
+ * Why a verification could not be obtained. `insufficientCredits` = the org's
+ * balance cannot pay for it (apollo's authorize refused); anything else is the
+ * verifier, runs or billing being unreachable — no verdict either way.
+ */
+export class EmailVerifierError extends Error {
+  constructor(
+    message: string,
+    readonly status: number | null,
+    readonly insufficientCredits: boolean,
+  ) {
+    super(message);
+    this.name = "EmailVerifierError";
+  }
+}
+
+/** The identity a verification is billed to: the run of the campaign that sends. */
+export interface VerificationIdentity {
+  orgId: string;
+  userId: string;
+  runId: string;
+  brandIds?: string[];
+  campaignId?: string | null;
+  featureSlug?: string | null;
+  workflowSlug?: string | null;
+}
+
+/**
+ * Verdicts for up to 50 addresses (apollo-service `POST /email-verifications`).
+ *
+ * ALL OR NOTHING by the producer's contract: one address it cannot verify fails
+ * the whole call (502), so a caller never holds a partial answer. FAILS LOUD:
+ * any non-2xx throws an {@link EmailVerifierError}; nothing here reads a missing
+ * verdict as a good one.
+ */
+export async function verifyEmailAddresses(
+  emails: string[],
+  identity: VerificationIdentity,
+  source: string,
+): Promise<EmailVerification[]> {
+  if (!APOLLO_SERVICE_URL || !APOLLO_SERVICE_API_KEY) {
+    throw new EmailVerifierError("APOLLO_SERVICE_URL or APOLLO_SERVICE_API_KEY is not set", null, false);
+  }
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "x-api-key": APOLLO_SERVICE_API_KEY,
+    "x-org-id": identity.orgId,
+    "x-user-id": identity.userId,
+    "x-run-id": identity.runId,
+  };
+  if (identity.brandIds && identity.brandIds.length > 0) headers["x-brand-id"] = identity.brandIds.join(",");
+  if (identity.campaignId) headers["x-campaign-id"] = identity.campaignId;
+  if (identity.featureSlug) headers["x-feature-slug"] = identity.featureSlug;
+  if (identity.workflowSlug) headers["x-workflow-slug"] = identity.workflowSlug;
+
+  let response: Response;
+  try {
+    response = await fetch(`${APOLLO_SERVICE_URL}/email-verifications`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ emails, source }),
+    });
+  } catch (error: unknown) {
+    throw new EmailVerifierError(
+      `apollo-service POST /email-verifications unreachable: ${error instanceof Error ? error.message : String(error)}`,
+      null,
+      false,
+    );
+  }
+
+  if (!response.ok) {
+    const detail = await response.text();
+    // The 502 names an insufficient balance in its message; the 400 says it by type.
+    const insufficientCredits =
+      /credit_insufficient|insufficient balance/i.test(detail);
+    throw new EmailVerifierError(
+      `apollo-service POST /email-verifications failed: ${response.status} - ${detail.slice(0, 300)}`,
+      response.status,
+      insufficientCredits,
+    );
+  }
+
+  const body = (await response.json()) as { results?: unknown };
+  if (!Array.isArray(body.results)) {
+    throw new EmailVerifierError("apollo-service POST /email-verifications returned no results array", response.status, false);
+  }
+  return body.results as EmailVerification[];
+}
