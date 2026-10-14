@@ -92,6 +92,24 @@ vi.mock("../../src/lib/lead-optouts", async (importOriginal) => ({
   findStandingOptOut: (...a: unknown[]) => mockFindStandingOptOut(...a),
 }));
 
+// The verification gate has its own tests (email-verification-gate.test.ts).
+// Here every address is verified valid unless a test says otherwise; the
+// refusal body stays real.
+const VALID_DECISION = {
+  email: "x",
+  verdict: "valid",
+  accepted: true,
+  reason: "verdict_valid",
+  verificationId: "ver-1",
+  verifiedAt: "2026-10-14T08:00:00.000Z",
+  reused: true,
+};
+const mockGateAddressForSend = vi.hoisted(() => vi.fn());
+vi.mock("../../src/lib/email-verification-gate", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  gateAddressForSend: (...a: unknown[]) => mockGateAddressForSend(...a),
+}));
+
 vi.mock("../../src/lib/key-client", () => ({
   resolveInstantlyApiKey: (...args: unknown[]) => mockResolveInstantlyApiKey(...args),
   KeyServiceError: class KeyServiceError extends Error {
@@ -1342,6 +1360,7 @@ describe("POST /send", () => {
     credentialedMailboxes.clear();
 
     mockFindStandingOptOut.mockResolvedValue(null);
+    mockGateAddressForSend.mockResolvedValue(VALID_DECISION);
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
     mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: true, balance_cents: 1000 });
     // Re-contact-window lookup: no prior email to this person for this brand.
@@ -2741,6 +2760,7 @@ describe("POST /send — per-brand re-contact window", () => {
     runCounter = 0;
 
     mockFindStandingOptOut.mockResolvedValue(null);
+    mockGateAddressForSend.mockResolvedValue(VALID_DECISION);
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
     mockDbExecute.mockResolvedValue({ rows: [] });
     mockCreateRun.mockImplementation(() => {
@@ -2848,6 +2868,7 @@ describe("POST /send — a person who asked us to stop", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFindStandingOptOut.mockResolvedValue(null);
+    mockGateAddressForSend.mockResolvedValue(VALID_DECISION);
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
     mockDbExecute.mockResolvedValue({ rows: [] });
     mockCreateRun.mockResolvedValue({ id: "step-run-1" });
@@ -2920,6 +2941,7 @@ describe("POST /send — a person who asked us to stop", () => {
 
   it("lets a lead with NO standing opt-out through", async () => {
     mockFindStandingOptOut.mockResolvedValue(null);
+    mockGateAddressForSend.mockResolvedValue(VALID_DECISION);
     mockNewCampaignFlow();
 
     const app = await createSendApp();
@@ -2936,5 +2958,124 @@ describe("POST /send — a person who asked us to stop", () => {
 
     expect(res.status).toBe(500);
     expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /send — no email to an address without a verdict from our verifier", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFindStandingOptOut.mockResolvedValue(null);
+    mockGateAddressForSend.mockResolvedValue(VALID_DECISION);
+    mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
+    mockDbExecute.mockResolvedValue({ rows: [] });
+    mockCreateRun.mockResolvedValue({ id: "step-run-1" });
+    mockAddLeads.mockResolvedValue({ added: 1 });
+    mockListAccounts.mockResolvedValue([
+      acct({ email: "sender@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+    ]);
+    mockUpdateCampaign.mockResolvedValue({ id: "inst-camp-new", email_list: [], bcc_list: [], not_sending_status: null, status: "active" });
+    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-new", status: "draft" });
+    mockGetCampaign.mockResolvedValue({ email_list: ["sender@example.com"], not_sending_status: null });
+    mockUpdateCampaignStatus.mockResolvedValue({});
+    mockDbWhere.mockResolvedValue([]);
+    mockDbReturning.mockResolvedValue([{ id: "row-1" }]);
+  });
+
+  it("verifies the address on the run of the send, billed to the sending org", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockGateAddressForSend).toHaveBeenCalledTimes(1);
+    const [emailArg, identity] = mockGateAddressForSend.mock.calls[0];
+    expect(emailArg).toBe(validBody.to);
+    expect(identity.orgId).toBe(identityHeadersObj["x-org-id"]);
+    expect(identity.userId).toBe(identityHeadersObj["x-user-id"]);
+    expect(identity.runId).toBe(identityHeadersObj["x-run-id"]);
+  });
+
+  it.each(["catch_all", "unknown"])("a %s verdict is sent (priced by verdict, never refused)", async (verdict) => {
+    mockGateAddressForSend.mockResolvedValue({ ...VALID_DECISION, verdict, reason: `verdict_${verdict}` });
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+    expect(res.status).toBe(200);
+  });
+
+  it.each(["invalid", "risky"])("an %s verdict is refused 409 email_not_verified and nothing is created", async (verdict) => {
+    mockGateAddressForSend.mockResolvedValue({
+      ...VALID_DECISION,
+      verdict,
+      accepted: false,
+      reason: `verdict_${verdict}`,
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("email_not_verified");
+    expect(res.body.verdict).toBe(verdict);
+    expect(res.body.reason).toBe(`verdict_${verdict}`);
+    // a refusal on a verdict lapses when the verifier may be asked again (30 days)
+    expect(res.body.until).toBe("2026-11-13T08:00:00.000Z");
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("no verdict (verifier down) is NOT sent: 502, nothing created", async () => {
+    mockGateAddressForSend.mockResolvedValue({
+      ...VALID_DECISION,
+      verdict: null,
+      accepted: false,
+      reason: "verifier_failed",
+      verificationId: null,
+      verifiedAt: null,
+      reused: null,
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe("email_verification_unavailable");
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
+  });
+
+  it("an org that cannot pay for the verification gets 402, nothing sent", async () => {
+    mockGateAddressForSend.mockResolvedValue({
+      ...VALID_DECISION,
+      verdict: null,
+      accepted: false,
+      reason: "insufficient_credits",
+      verificationId: null,
+      verifiedAt: null,
+      reused: null,
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(402);
+    expect(res.body.code).toBe("insufficient_credits");
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+
+  it("an opted-out person is refused before anything is spent on verifying them", async () => {
+    mockFindStandingOptOut.mockResolvedValue({
+      id: "optout-1",
+      orgId: "org-1",
+      email: validBody.to,
+      channel: "email_reply",
+      notes: null,
+      statedAt: new Date("2026-08-01T10:00:00.000Z"),
+      withdrawnAt: null,
+      withdrawnBy: null,
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.body.code).toBe("lead_opted_out");
+    expect(mockGateAddressForSend).not.toHaveBeenCalled();
   });
 });

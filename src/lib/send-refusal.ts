@@ -1,7 +1,8 @@
 // The status read's statement that `POST /orgs/send` would REFUSE a person.
 //
 // Why it exists (RECONTACT-LOOP-1011, Perky 2026-10-11): the send route refuses
-// with 409 `recent_brand_contact`, `lead_opted_out` or `lead_not_a_prospect`,
+// with 409 `recent_brand_contact`, `lead_opted_out`, `lead_not_a_prospect` or
+// `email_not_verified` (our verifier called the address invalid / risky),
 // but none of that showed in `POST /orgs/status`. A refused person read
 // "not contacted, not queued, not finished" — exactly like a stranded one — so
 // lead-service's paid-pool retry handed them back every run, every send failed,
@@ -11,6 +12,10 @@
 // rule, shared by the single-address gate and the batch read here), so the
 // status answer and the send answer cannot disagree. Nothing is persisted.
 
+import {
+  EMAIL_NOT_VERIFIED_REFUSAL_CODE,
+  findEmailNotVerifiedRefusals,
+} from "./email-verification-gate";
 import { findStandingOptOuts, OPT_OUT_REFUSAL_CODE } from "./lead-optouts";
 import { findNotAProspects, NOT_A_PROSPECT_REFUSAL_CODE } from "./not-a-prospect";
 import {
@@ -41,10 +46,11 @@ export async function findSendRefusals(
   brandIds: string[],
   emails: string[],
 ): Promise<Map<string, SendRefusal>> {
-  const [optOuts, notAProspects, recentContacts] = await Promise.all([
+  const [optOuts, notAProspects, recentContacts, notVerified] = await Promise.all([
     findStandingOptOuts(orgId, emails),
     findNotAProspects(emails, brandIds),
     findRecentBrandContacts(emails, brandIds),
+    findEmailNotVerifiedRefusals(orgId, emails),
   ]);
 
   const out = new Map<string, SendRefusal>();
@@ -58,9 +64,13 @@ export async function findSendRefusals(
       out.set(email, { code: NOT_A_PROSPECT_REFUSAL_CODE, until: null });
       continue;
     }
+    // Two lapsing rules can stand at once: the later lapse is the answer.
     const recent = recentContacts.get(key);
-    if (recent) {
+    const unverifiedUntil = notVerified.get(key);
+    if (recent && (!unverifiedUntil || recent.lapsesAt >= unverifiedUntil)) {
       out.set(email, { code: RECONTACT_REFUSAL_CODE, until: recent.lapsesAt.toISOString() });
+    } else if (unverifiedUntil) {
+      out.set(email, { code: EMAIL_NOT_VERIFIED_REFUSAL_CODE, until: unverifiedUntil.toISOString() });
     }
   }
   return out;

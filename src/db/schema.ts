@@ -1076,6 +1076,40 @@ export const instantlyFollowupCuts = pgTable(
   ],
 );
 
+// The send door's verification ledger (lib/email-verification-gate.ts, migration
+// 0072). One row per time the gate asked apollo-service for an address's verdict
+// before letting mail leave for it: at `POST /orgs/send` (context `send`) and for
+// a queued sequence before dispatch (context `queued`). `accepted` is the gate's
+// decision, `reason` why (never silent). A refusal stated here is what
+// `POST /orgs/status` serves as `sendRefusal: email_not_verified`. No
+// `instantly_campaign_id` on purpose: the verdict belongs to the ADDRESS, not to
+// a sequence (a transferred brand re-verifies for free through apollo's reuse).
+export const emailSendVerifications = pgTable(
+  "email_send_verifications",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id").notNull(),
+    /** lower(trim(address)) */
+    email: text("email").notNull(),
+    /** apollo's verdict; null when none could be obtained. */
+    verdict: text("verdict"),
+    /** apollo `email_verifications.id` the verdict came from. */
+    verificationId: text("verification_id"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    /** apollo reused a verdict it already held (nothing billed). Null = no answer. */
+    reused: boolean("reused"),
+    accepted: boolean("accepted").notNull(),
+    reason: text("reason").notNull(),
+    context: text("context").notNull(),
+    runId: text("run_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("email_send_verifications_org_email_idx").on(table.orgId, table.email, table.createdAt),
+    index("email_send_verifications_verification_idx").on(table.verificationId),
+  ],
+);
+
 // ─── Inbox-placement (deliverability) — Bronze / Silver ─────────────────────
 // Instantly inbox-placement TESTS are the only source of real per-account inbox
 // vs spam vs missing data (the V2 API exposes no standing per-account placement

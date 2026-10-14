@@ -515,8 +515,21 @@ const SendResponseSchema = z
 const SendRefusalSchema = z
   .object({
     error: z.string(),
-    code: z.enum(["recent_brand_contact", "lead_opted_out"]),
+    code: z.enum(["recent_brand_contact", "lead_opted_out", "lead_not_a_prospect", "email_not_verified"]),
     details: z.string(),
+    verdict: z
+      .string()
+      .optional()
+      .describe("email_not_verified only — our verifier's (BounceVerify) verdict: `invalid` or `risky`"),
+    reason: z
+      .string()
+      .optional()
+      .describe("email_not_verified only — `verdict_invalid` | `verdict_risky` | `verdict_unrecognised`"),
+    until: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("email_not_verified only — when the verdict may be re-asked (verdict time + 30 days)"),
     brandId: z.string().optional().describe("recent_brand_contact only — the brand already contacted"),
     lastEmailedAt: z
       .string()
@@ -556,7 +569,8 @@ registry.registerPath({
         "Refused: the org cannot afford the sequence (every email sent to a lead is billed, " +
         "`instantly-account-email-sent` + `instantly-domain-email-sent` per step). No email was " +
         "sent, the provisioned costs were cancelled and nothing was queued. " +
-        "Body: `{ error, code: \"insufficient_credits\", balance_cents, required_cents }`.",
+        "Body: `{ error, code: \"insufficient_credits\", balance_cents, required_cents }`. " +
+        "Also answered (without the cents) when the org cannot pay to verify the address.",
       content: { "application/json": { schema: ErrorSchema } },
     },
     409: {
@@ -565,12 +579,23 @@ registry.registerPath({
         "`code: \"recent_brand_contact\"` = the recipient was already emailed for one of " +
         "this send's brands inside the 3-month re-contact window. " +
         "`code: \"lead_opted_out\"` = the recipient asked this org to stop. " +
+        "`code: \"lead_not_a_prospect\"` = the recipient told the brand they are not a prospect. " +
+        "`code: \"email_not_verified\"` = our verifier (BounceVerify, via apollo-service) calls the " +
+        "address `invalid` or `risky`: no email ever leaves our mailboxes for it. Every address is " +
+        "verified before its sequence is queued (a verdict under 30 days old is reused for free; " +
+        "otherwise verified now and billed to the org on this send's run). " +
         "A different lead_id for an address already on file is NOT refused: the email is the " +
         "identity and the stored rows are re-keyed onto the caller's lead_id.",
       content: { "application/json": { schema: SendRefusalSchema } },
     },
     500: {
       description: "Failed to send",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    502: {
+      description:
+        "No verdict could be obtained for the address (verifier, runs or billing unreachable): " +
+        "NOT sent, nothing queued or billed for the email. Body `{ error, code: \"email_verification_unavailable\", details }`. Retry later.",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -1306,7 +1331,7 @@ const ScopedStatusSchema = StatusScopeSchema.extend({
     .object({
       code: z
         .string()
-        .describe("The 409 `code` `POST /orgs/send` would answer: `lead_opted_out`, `lead_not_a_prospect` or `recent_brand_contact`."),
+        .describe("The 409 `code` `POST /orgs/send` would answer: `lead_opted_out`, `lead_not_a_prospect`, `recent_brand_contact` or `email_not_verified` (our verifier called the address invalid / risky; until = when it may be re-verified)."),
       until: z
         .string()
         .nullable()
