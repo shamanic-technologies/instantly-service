@@ -67,6 +67,7 @@ import {
   type IdentityContext,
 } from "./runs-client";
 import { settleHoldCost } from "./hold-settlement";
+import { requireSendableVerdict } from "./email-verification-gate";
 import { provisionStepEmailCosts } from "./send-costs";
 import { handleCampaignError } from "./campaign-error-handler";
 import { deleteLeadStatusCurrent, refreshLeadStatusCurrent } from "./status-gold";
@@ -288,6 +289,19 @@ async function provisionFreshCosts(
 ): Promise<void> {
   if (!row.campaignId || !row.leadEmail) return;
 
+  // The re-queued emails carry the price of the address's verdict, verified now
+  // if needed; an address that may not be emailed is never re-queued (throws).
+  if (!parentIdentity.runId || !parentIdentity.userId) {
+    throw new Error(`retry-stuck: no run/user to verify ${row.leadEmail} on`);
+  }
+  const verdict = await requireSendableVerdict(row.leadEmail, {
+    orgId: parentIdentity.orgId,
+    userId: parentIdentity.userId,
+    runId: parentIdentity.runId,
+    brandIds: row.brandIds ?? [],
+    campaignId: row.campaignId,
+  });
+
   for (let step = 1; step <= stepCount; step++) {
     const stepRun = await createRun(
       {
@@ -305,6 +319,7 @@ async function provisionFreshCosts(
       stepRun.id,
       keySource,
       stepIdentity,
+      verdict,
     );
 
     await db.insert(sequenceCosts).values({

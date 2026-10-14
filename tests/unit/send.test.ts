@@ -2964,6 +2964,9 @@ describe("POST /send — a person who asked us to stop", () => {
 describe("POST /send — no email to an address without a verdict from our verifier", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAddCosts.mockImplementation((runId: string, items: { costName: string }[]) =>
+      Promise.resolve({ costs: items.map((item) => ({ id: `cost-${runId}-${item.costName}`, costName: item.costName })) }),
+    );
     mockFindStandingOptOut.mockResolvedValue(null);
     mockGateAddressForSend.mockResolvedValue(VALID_DECISION);
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
@@ -2995,12 +2998,21 @@ describe("POST /send — no email to an address without a verdict from our verif
     expect(identity.runId).toBe(identityHeadersObj["x-run-id"]);
   });
 
-  it.each(["catch_all", "unknown"])("a %s verdict is sent (priced by verdict, never refused)", async (verdict) => {
+  it.each([
+    ["valid", "instantly-account-email-sent", "instantly-domain-email-sent"],
+    ["catch_all", "instantly-account-email-sent-catch-all", "instantly-domain-email-sent-catch-all"],
+    ["unknown", "instantly-account-email-sent-unknown", "instantly-domain-email-sent-unknown"],
+  ])("a %s verdict is sent, every step priced with its pair", async (verdict, account, domain) => {
     mockGateAddressForSend.mockResolvedValue({ ...VALID_DECISION, verdict, reason: `verdict_${verdict}` });
     mockNewCampaignFlow();
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
     expect(res.status).toBe(200);
+    const provisioned = mockAddCosts.mock.calls.flatMap((c) =>
+      (c[1] as { costName: string }[]).map((i) => i.costName),
+    );
+    expect(provisioned.length).toBe(validBody.sequence.length * 2);
+    expect(new Set(provisioned)).toEqual(new Set([account, domain]));
   });
 
   it.each(["invalid", "risky"])("an %s verdict is refused 409 email_not_verified and nothing is created", async (verdict) => {

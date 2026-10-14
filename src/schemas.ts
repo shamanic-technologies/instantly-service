@@ -567,7 +567,8 @@ registry.registerPath({
     402: {
       description:
         "Refused: the org cannot afford the sequence (every email sent to a lead is billed, " +
-        "`instantly-account-email-sent` + `instantly-domain-email-sent` per step). No email was " +
+        "`instantly-account-email-sent` + `instantly-domain-email-sent` per step for a `valid` address, " +
+        "their `-catch-all` (×2) / `-unknown` (×3) twins for those verdicts). No email was " +
         "sent, the provisioned costs were cancelled and nothing was queued. " +
         "Body: `{ error, code: \"insufficient_credits\", balance_cents, required_cents }`. " +
         "Also answered (without the cents) when the org cannot pay to verify the address.",

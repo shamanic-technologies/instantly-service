@@ -40,6 +40,7 @@ import { authorizeCreditSpend } from "./billing-client";
 import { updateCampaignStatus } from "./instantly-client";
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { createRun, updateCostStatus, updateRun, type IdentityContext } from "./runs-client";
+import { requireSendableVerdict } from "./email-verification-gate";
 import { provisionStepEmailCosts, sendAuthorizeItems } from "./send-costs";
 import { isSelfSendCampaignId } from "./self-send/transport";
 
@@ -229,6 +230,17 @@ export async function restoreOne(
   const parent: IdentityContext = { orgId: c.orgId, userId, runId: c.runId ?? undefined, tracking };
   const { key, keySource } = await resolveInstantlyApiKey(c.orgId, userId, caller);
 
+  // The re-queued emails carry the price of the address's verdict, verified now if
+  // needed; an address that may not be emailed is never re-queued (throws).
+  if (!parent.runId) throw new Error(`restore: no run to verify ${c.leadEmail} on`);
+  const verdict = await requireSendableVerdict(c.leadEmail, {
+    orgId: c.orgId,
+    userId,
+    runId: parent.runId,
+    brandIds: c.brandIds ?? [],
+    campaignId: c.campaignId,
+  });
+
   const holds: NewHold[] = [];
   try {
     for (const step of c.steps) {
@@ -243,17 +255,19 @@ export async function restoreOne(
       );
       const hold: NewHold = { step, runId: stepRun.id, costId: "", domainCostId: "" };
       holds.push(hold);
-      const ids = await provisionStepEmailCosts(stepRun.id, keySource, {
-        ...parent,
-        runId: stepRun.id,
-      });
+      const ids = await provisionStepEmailCosts(
+        stepRun.id,
+        keySource,
+        { ...parent, runId: stepRun.id },
+        verdict,
+      );
       hold.costId = ids.costId;
       hold.domainCostId = ids.domainCostId;
     }
 
     if (keySource === "platform") {
       const auth = await authorizeCreditSpend(
-        sendAuthorizeItems(c.steps.length),
+        sendAuthorizeItems(c.steps.length, verdict),
         "instantly-send",
         parent,
       );
