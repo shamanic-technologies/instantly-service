@@ -127,7 +127,7 @@ export const instantlyCampaigns = pgTable(
     // schedule stored in bronze, which is what those rows are really sent on.
     timezone: text("timezone"),
     // The signature block every email of THIS thread ends with, pinned at send
-    // time (migration 0073): the brand's own signature as the client stated it
+    // time (migration 0074): the brand's own signature as the client stated it
     // (`brand_email_signatures`), rendered to HTML. NULL = our default
     // signature, built from the sending account. Read by every later email of
     // the thread (follow-ups, retry-stuck, AI and human replies) so a thread
@@ -1116,6 +1116,30 @@ export const emailSendVerifications = pgTable(
     index("email_send_verifications_verification_idx").on(table.verificationId),
   ],
 );
+
+// Mirror of apollo-service's verification history (migration 0074): every
+// BounceVerify call, every org, every source, copied through its feed by
+// lib/verification-history-mirror.ts. `verdict` null = the call returned none.
+export const emailVerificationHistory = pgTable(
+  "email_verification_history",
+  {
+    verificationId: text("verification_id").primaryKey(),
+    /** lower(trim(address)) */
+    email: text("email").notNull(),
+    verdict: text("verdict"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }).notNull(),
+    mirroredAt: timestamp("mirrored_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("email_verification_history_email_at_idx").on(table.email, table.verifiedAt)],
+);
+
+/** Where each mirrored feed resumes, and when the copy last reached the feed's end. */
+export const emailVerificationHistorySync = pgTable("email_verification_history_sync", {
+  feed: text("feed").primaryKey(),
+  cursor: text("cursor"),
+  caughtUpAt: timestamp("caught_up_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
 
 // ─── Inbox-placement (deliverability) — Bronze / Silver ─────────────────────
 // Instantly inbox-placement TESTS are the only source of real per-account inbox
