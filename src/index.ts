@@ -25,6 +25,7 @@ import leadConversationsRoutes from "./routes/lead-conversations";
 import engagedLeadsRoutes from "./routes/engaged-leads";
 import writtenToLeadsRoutes from "./routes/written-to-leads";
 import emailSequencesRoutes from "./routes/email-sequences";
+import emailSignatureRoutes from "./routes/email-signature";
 import leadSendingScheduleRoutes from "./routes/lead-sending-schedule";
 import replyVerdictsRoutes from "./routes/reply-verdicts";
 import auditRoutes from "./routes/audit";
@@ -106,6 +107,7 @@ app.use("/orgs/conversations", serviceAuth, requireOrgId, leadConversationsRoute
 app.use("/orgs/engaged-leads", serviceAuth, requireOrgId, engagedLeadsRoutes);
 app.use("/orgs/written-to-leads", serviceAuth, requireOrgId, writtenToLeadsRoutes);
 app.use("/orgs/email-sequences", serviceAuth, requireOrgId, emailSequencesRoutes);
+app.use("/orgs/email-signature", serviceAuth, requireOrgId, emailSignatureRoutes);
 app.use("/orgs/sending-schedule", serviceAuth, requireOrgId, leadSendingScheduleRoutes);
 app.use("/orgs/reply-verdicts", serviceAuth, requireOrgId, replyVerdictsRoutes);
 app.use("/orgs", serviceAuth, requireOrgId, analyticsRoutes);

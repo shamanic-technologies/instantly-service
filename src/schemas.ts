@@ -581,6 +581,7 @@ registry.registerPath({
         "this send's brands inside the 3-month re-contact window. " +
         "`code: \"lead_opted_out\"` = the recipient asked this org to stop. " +
         "`code: \"lead_not_a_prospect\"` = the recipient told the brand they are not a prospect. " +
+        "`code: \"email_signature_conflict\"` = two brands of this send set different email signatures (PUT /orgs/email-signature). " +
         "`code: \"email_not_verified\"` = our verifier (BounceVerify, via apollo-service) calls the " +
         "address `invalid` or `risky`: no email ever leaves our mailboxes for it. Every address is " +
         "verified before its sequence is queued (a verdict under 30 days old is reused for free; " +
@@ -2347,6 +2348,105 @@ registry.registerPath({
       description: "The sequences could not be read",
       content: { "application/json": { schema: ErrorSchema } },
     },
+  },
+});
+
+// ─── Email signature (per brand) ────────────────────────────────────────────
+
+export const EmailSignatureQuerySchema = z
+  .object({
+    brandId: z.string().min(1).describe("The brand whose email signature to read or reset"),
+  })
+  .openapi("EmailSignatureQuery");
+
+export const EmailSignatureBodySchema = z
+  .object({
+    brandId: z.string().min(1).describe("The brand the signature is for"),
+    signature: z
+      .string()
+      .min(1)
+      .max(2000)
+      .describe(
+        "Your signature as plain text, one line per line (use \\n between lines), at most 1,000 characters and 12 lines. " +
+          "Example: `Jane Doe\\nHead of Sales, Acme\\nacme.com`. HTML is not interpreted (it is shown as written). " +
+          "Leave out the `--` line: it is added above the signature automatically.",
+      ),
+  })
+  .openapi("EmailSignatureBody");
+
+export const EmailSignatureResponseSchema = z
+  .object({
+    brandId: z.string(),
+    signature: z
+      .string()
+      .nullable()
+      .describe(
+        "The signature you set, as plain text. Null = you set none: emails end with our default signature (the sending mailbox's name, then `Distribute.you | Marketing Agency`).",
+      ),
+    updatedAt: z.string().nullable().describe("When you last set it (ISO 8601 UTC). Null when you set none."),
+  })
+  .openapi("EmailSignature");
+
+const EMAIL_SIGNATURE_RULES =
+  "**What it changes.** Every email we send for this brand ends with a signature. By default it is ours: the sending mailbox's name, then `Distribute.you | Marketing Agency`. " +
+  "Set your own and every NEW email thread for this brand ends with it instead: the email itself (a cold email, or an email you pushed through the API with the `email_pushed_via_api` trigger), every follow-up, and every reply we send in that thread (AI or human).\n\n" +
+  "**One signature per thread.** A thread keeps the signature it started with: changing or removing yours later applies to new threads only, so a conversation never switches signature halfway.\n\n" +
+  "**Several brands.** An email sent for several brands at once uses the signature they share; if two of them set different signatures, the send is refused (409 `email_signature_conflict`).\n\n" +
+  "**Scope.** Org-scoped on `x-org-id`. **Cost:** none.";
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/email-signature",
+  summary: "Read the email signature of a brand (yours, or our default)",
+  description: "The signature emails of this brand end with. `signature: null` = our default.\n\n" + EMAIL_SIGNATURE_RULES,
+  request: { headers: TrackingHeadersSchema, query: EmailSignatureQuerySchema },
+  responses: {
+    200: {
+      description: "The brand's signature (null = our default)",
+      content: { "application/json": { schema: EmailSignatureResponseSchema } },
+    },
+    400: { description: "Missing brandId", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/orgs/email-signature",
+  summary: "Change my email signature: replace our default signature with yours for a brand",
+  description:
+    "Replace the signature at the bottom of every email we send for this brand (cold emails, emails you push, follow-ups, AI replies) with your own. Idempotent: setting it again overwrites it.\n\n" +
+    EMAIL_SIGNATURE_RULES,
+  request: {
+    headers: TrackingHeadersSchema,
+    body: { content: { "application/json": { schema: EmailSignatureBodySchema } } },
+  },
+  responses: {
+    200: {
+      description: "Saved. New threads of this brand end with it.",
+      content: { "application/json": { schema: EmailSignatureResponseSchema } },
+    },
+    400: {
+      description: "Missing brandId, or a signature that is empty, too long, has too many lines, or contains a `--` line",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/orgs/email-signature",
+  summary: "Go back to our default email signature for a brand",
+  description: "Removes your signature: new threads of this brand end with our default signature again. Threads already started keep theirs. Idempotent.\n\n" + EMAIL_SIGNATURE_RULES,
+  request: { headers: TrackingHeadersSchema, query: EmailSignatureQuerySchema },
+  responses: {
+    200: {
+      description: "Back to our default (`signature: null`)",
+      content: { "application/json": { schema: EmailSignatureResponseSchema } },
+    },
+    400: { description: "Missing brandId", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
   },
 });
 

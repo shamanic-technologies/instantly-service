@@ -130,8 +130,14 @@ function replyCopy(
 }
 
 /** The signed body, with the quoted conversation (if any) after the signature. */
-function signedBody(input: ReplyToLeadInput, account: Account): string {
-  const signed = buildReplyBodyWithSignature(input.bodyHtml, account);
+function signedBody(
+  input: ReplyToLeadInput,
+  account: Account,
+  campaign: CampaignRow,
+): string {
+  // The thread's pinned signature (the client's own, or null = ours): a reply
+  // never changes the signature the prospect has been reading.
+  const signed = buildReplyBodyWithSignature(input.bodyHtml, account, campaign.signatureHtml);
   return input.quotedHtml ? `${signed}${input.quotedHtml}` : signed;
 }
 
@@ -278,6 +284,11 @@ export interface CampaignRow {
    * the reply goes out exactly as it did before the rep existed.
    */
   brandId: string | null;
+  /**
+   * The signature block this thread was sent with (migration 0073): the
+   * client's own, pinned at send. Null = our default, built from the account.
+   */
+  signatureHtml: string | null;
 }
 
 /**
@@ -317,6 +328,7 @@ export async function loadCampaignSequences(
       c.send_transport        AS "sendTransport",
       c.timezone              AS "timezone",
       c.brand_ids[1]          AS "brandId",
+      c.signature_html        AS "signatureHtml",
       c.created_at            AS "createdAt"
     FROM instantly_campaigns c
     WHERE c.org_id = ${orgId}
@@ -350,6 +362,10 @@ export async function loadCampaignSequences(
       row.brandId === null || row.brandId === undefined
         ? null
         : String(row.brandId),
+    signatureHtml:
+      row.signatureHtml === null || row.signatureHtml === undefined
+        ? null
+        : String(row.signatureHtml),
   }));
 }
 
@@ -646,7 +662,7 @@ async function prepareInstantlyReply(
     accountEmail,
     account,
     subject,
-    bodyHtml: signedBody(input, account),
+    bodyHtml: signedBody(input, account, campaign),
     ...replyCopy(input, salesRepCopy),
   };
 }
@@ -782,7 +798,7 @@ async function prepareSmtpReply(
     credential,
     account,
     subject: replySubject(anchor.subject),
-    bodyHtml: signedBody(input, account),
+    bodyHtml: signedBody(input, account, campaign),
     from: buildFromHeader(account),
     ...replyCopy(input, salesRepCopy),
   };
@@ -841,7 +857,7 @@ async function prepareOwnAddressReply(
     credential,
     account,
     subject: replySubject(elsewhere.subject),
-    bodyHtml: signedBody(input, account),
+    bodyHtml: signedBody(input, account, campaign),
     from: buildFromHeader(account),
     cc: notSelf(copy.cc),
     bcc: notSelf(copy.bcc),

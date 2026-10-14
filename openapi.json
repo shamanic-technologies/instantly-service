@@ -2639,6 +2639,49 @@
           "sentAt"
         ]
       },
+      "EmailSignature": {
+        "type": "object",
+        "properties": {
+          "brandId": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string",
+            "nullable": true,
+            "description": "The signature you set, as plain text. Null = you set none: emails end with our default signature (the sending mailbox's name, then `Distribute.you | Marketing Agency`)."
+          },
+          "updatedAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "When you last set it (ISO 8601 UTC). Null when you set none."
+          }
+        },
+        "required": [
+          "brandId",
+          "signature",
+          "updatedAt"
+        ]
+      },
+      "EmailSignatureBody": {
+        "type": "object",
+        "properties": {
+          "brandId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The brand the signature is for"
+          },
+          "signature": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "Your signature as plain text, one line per line (use \\n between lines), at most 1,000 characters and 12 lines. Example: `Jane Doe\\nHead of Sales, Acme\\nacme.com`. HTML is not interpreted (it is shown as written). Leave out the `--` line: it is added above the signature automatically."
+          }
+        },
+        "required": [
+          "brandId",
+          "signature"
+        ]
+      },
       "ReplyVerdictsResponse": {
         "type": "object",
         "properties": {
@@ -6897,7 +6940,7 @@
             }
           },
           "409": {
-            "description": "Refused, not a transport failure — no email was sent and nothing was billed. `code: \"recent_brand_contact\"` = the recipient was already emailed for one of this send's brands inside the 3-month re-contact window. `code: \"lead_opted_out\"` = the recipient asked this org to stop. `code: \"lead_not_a_prospect\"` = the recipient told the brand they are not a prospect. `code: \"email_not_verified\"` = our verifier (BounceVerify, via apollo-service) calls the address `invalid` or `risky`: no email ever leaves our mailboxes for it. Every address is verified before its sequence is queued (a verdict under 30 days old is reused for free; otherwise verified now and billed to the org on this send's run). A different lead_id for an address already on file is NOT refused: the email is the identity and the stored rows are re-keyed onto the caller's lead_id.",
+            "description": "Refused, not a transport failure — no email was sent and nothing was billed. `code: \"recent_brand_contact\"` = the recipient was already emailed for one of this send's brands inside the 3-month re-contact window. `code: \"lead_opted_out\"` = the recipient asked this org to stop. `code: \"lead_not_a_prospect\"` = the recipient told the brand they are not a prospect. `code: \"email_signature_conflict\"` = two brands of this send set different email signatures (PUT /orgs/email-signature). `code: \"email_not_verified\"` = our verifier (BounceVerify, via apollo-service) calls the address `invalid` or `risky`: no email ever leaves our mailboxes for it. Every address is verified before its sequence is queued (a verdict under 30 days old is reused for free; otherwise verified now and billed to the org on this send's run). A different lead_id for an address already on file is NOT refused: the email is the identity and the stored rows are re-keyed onto the caller's lead_id.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9443,6 +9486,342 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/orgs/email-signature": {
+      "get": {
+        "summary": "Read the email signature of a brand (yours, or our default)",
+        "description": "The signature emails of this brand end with. `signature: null` = our default.\n\n**What it changes.** Every email we send for this brand ends with a signature. By default it is ours: the sending mailbox's name, then `Distribute.you | Marketing Agency`. Set your own and every NEW email thread for this brand ends with it instead: the email itself (a cold email, or an email you pushed through the API with the `email_pushed_via_api` trigger), every follow-up, and every reply we send in that thread (AI or human).\n\n**One signature per thread.** A thread keeps the signature it started with: changing or removing yours later applies to new threads only, so a conversation never switches signature halfway.\n\n**Several brands.** An email sent for several brands at once uses the signature they share; if two of them set different signatures, the send is refused (409 `email_signature_conflict`).\n\n**Scope.** Org-scoped on `x-org-id`. **Cost:** none.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The brand whose email signature to read or reset"
+            },
+            "required": true,
+            "description": "The brand whose email signature to read or reset",
+            "name": "brandId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The brand's signature (null = our default)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailSignature"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing brandId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      },
+      "put": {
+        "summary": "Change my email signature: replace our default signature with yours for a brand",
+        "description": "Replace the signature at the bottom of every email we send for this brand (cold emails, emails you push, follow-ups, AI replies) with your own. Idempotent: setting it again overwrites it.\n\n**What it changes.** Every email we send for this brand ends with a signature. By default it is ours: the sending mailbox's name, then `Distribute.you | Marketing Agency`. Set your own and every NEW email thread for this brand ends with it instead: the email itself (a cold email, or an email you pushed through the API with the `email_pushed_via_api` trigger), every follow-up, and every reply we send in that thread (AI or human).\n\n**One signature per thread.** A thread keeps the signature it started with: changing or removing yours later applies to new threads only, so a conversation never switches signature halfway.\n\n**Several brands.** An email sent for several brands at once uses the signature they share; if two of them set different signatures, the send is refused (409 `email_signature_conflict`).\n\n**Scope.** Org-scoped on `x-org-id`. **Cost:** none.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailSignatureBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved. New threads of this brand end with it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailSignature"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing brandId, or a signature that is empty, too long, has too many lines, or contains a `--` line",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Go back to our default email signature for a brand",
+        "description": "Removes your signature: new threads of this brand end with our default signature again. Threads already started keep theirs. Idempotent.\n\n**What it changes.** Every email we send for this brand ends with a signature. By default it is ours: the sending mailbox's name, then `Distribute.you | Marketing Agency`. Set your own and every NEW email thread for this brand ends with it instead: the email itself (a cold email, or an email you pushed through the API with the `email_pushed_via_api` trigger), every follow-up, and every reply we send in that thread (AI or human).\n\n**One signature per thread.** A thread keeps the signature it started with: changing or removing yours later applies to new threads only, so a conversation never switches signature halfway.\n\n**Several brands.** An email sent for several brands at once uses the signature they share; if two of them set different signatures, the send is refused (409 `email_signature_conflict`).\n\n**Scope.** Org-scoped on `x-org-id`. **Cost:** none.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The brand whose email signature to read or reset"
+            },
+            "required": true,
+            "description": "The brand whose email signature to read or reset",
+            "name": "brandId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Back to our default (`signature: null`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailSignature"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing brandId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         }
       }

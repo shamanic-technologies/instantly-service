@@ -234,6 +234,32 @@ describe("replyToLead over Instantly", () => {
     expect(result.messageId).toBe("sent-1");
   });
 
+  it("signs with the CLIENT's signature pinned on the thread, never ours (one signature per thread)", async () => {
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([campaignRow({ signatureHtml: "<p>Jane Doe<br>Acme Corp</p>" })]),
+    );
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Quick question" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    await sendNow();
+
+    const body = mockReplyToEmail.mock.calls[0][1].bodyHtml as string;
+    expect(body.endsWith("<p>--</p><p>Jane Doe<br>Acme Corp</p>")).toBe(true);
+    expect(body).not.toContain("Distribute.you | Marketing Agency");
+    expect(body).not.toContain("Amy Moore");
+  });
+
+  it("keeps OUR signature on a thread that pinned none", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow({ signatureHtml: null })]));
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Quick question" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    await sendNow();
+
+    const body = mockReplyToEmail.mock.calls[0][1].bodyHtml as string;
+    expect(body).toContain("<p>--</p><p>Amy Moore<br>Distribute.you | Marketing Agency</p>");
+  });
+
   it("falls back to the mailbox on the inbound record when the row predates account_email", async () => {
     mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow({ accountEmail: null })]));
     mockListEmails.mockResolvedValue([

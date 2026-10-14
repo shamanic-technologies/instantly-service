@@ -124,6 +124,8 @@ export interface StuckCampaignRow {
   userId: string | null;
   runId: string | null;
   brandIds: string[] | null;
+  /** The client's signature pinned on this thread; null = ours. */
+  signatureHtml?: string | null;
   metadata: Record<string, unknown> | null;
 }
 
@@ -148,6 +150,7 @@ export async function selectOneStuckRow(): Promise<StuckCampaignRow | null> {
       user_id               AS "userId",
       run_id                AS "runId",
       brand_ids             AS "brandIds",
+      signature_html        AS "signatureHtml",
       metadata
     FROM instantly_campaigns c
     WHERE c.delivery_status = 'contacted'
@@ -555,6 +558,8 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
       subject: seq.subject,
       sortedSequence: seq.sortedSequence,
       lead,
+      // The thread keeps the signature it was sent with.
+      signatureHtml: row.signatureHtml ?? null,
     });
 
     if (!result.ok) {
