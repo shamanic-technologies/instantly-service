@@ -68,14 +68,19 @@ function toDate(value: unknown): Date | null {
  * found, which a caller reports as an absence rather than a guess.
  */
 export async function readHeldLead(
-  key: { campaignId: string | null; runId: string | null; leadEmail: string },
+  key: { campaignId: string | null; runId: string | null; leadEmail: string; followUp?: boolean },
   reservationPrefix: string,
 ): Promise<HeldLead | null> {
-  if (key.campaignId === null && key.runId === null) return null;
-  const match =
-    key.campaignId !== null
-      ? sql`c.campaign_id = ${key.campaignId}`
-      : sql`c.campaign_id IS NULL AND c.run_id = ${key.runId} AND c.status = 'active'`;
+  // A follow-up reserves on (run_id, lead_email) among follow-up rows
+  // (migration 0075), whatever its campaign.
+  if (key.followUp) {
+    if (key.runId === null) return null;
+  } else if (key.campaignId === null && key.runId === null) return null;
+  const match = key.followUp
+    ? sql`c.follow_up = true AND c.run_id = ${key.runId}`
+    : key.campaignId !== null
+      ? sql`c.follow_up = false AND c.campaign_id = ${key.campaignId}`
+      : sql`c.follow_up = false AND c.campaign_id IS NULL AND c.run_id = ${key.runId} AND c.status = 'active'`;
   const result = await db.execute(sql`
     SELECT
       c.instantly_campaign_id AS "instantlyCampaignId",

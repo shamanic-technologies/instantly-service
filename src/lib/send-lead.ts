@@ -847,6 +847,12 @@ export interface SelectAccountOptions {
   timezone?: string | null;
   /** The sequence about to be sent, so its whole footprint can be booked. */
   sequence?: readonly { step: number; daysSinceLastStep: number }[];
+  /**
+   * A follow-up continues a thread: the mailbox that wrote it is taken when it
+   * is still in the eligible pool (same gates as any send), before the fill
+   * order. Absent from the pool = the fill order decides, as for any send.
+   */
+  preferAccountEmail?: string | null;
 }
 
 export async function selectSendingAccount(
@@ -862,6 +868,12 @@ export async function selectSendingAccount(
     caller,
   );
   if (accounts.length === 0) return null;
+
+  if (opts.preferAccountEmail) {
+    const preferred = opts.preferAccountEmail.trim().toLowerCase();
+    const same = accounts.find((a) => a.email.trim().toLowerCase() === preferred);
+    if (same) return same;
+  }
 
   // The footprint is anchored on the lead's OWN next open window, not on a
   // fleet-wide weekday snap: a prospect whose local business hours have already

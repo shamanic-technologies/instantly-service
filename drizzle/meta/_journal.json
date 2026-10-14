@@ -526,6 +526,13 @@
       "when": 1791800000000,
       "tag": "0074_email_verification_history",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1791900000000,
+      "tag": "0075_follow_up_sends",
+      "breakpoints": true
     }
   ]
 }

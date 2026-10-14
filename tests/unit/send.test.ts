@@ -114,6 +114,19 @@ vi.mock("../../src/lib/brand-email-signature", async (importOriginal) => ({
     mockResolveSignatureHtml(...a) ?? Promise.resolve(null),
 }));
 
+// NEVER-NO-FOLLOWUP-1014: the follow-up reads (queued sequence, thread) are
+// only called on a `followUp: true` send; nothing queued and no thread unless a
+// test says otherwise. The pure helpers and the refusal body stay real.
+const mockFindQueuedBrandSequence = vi.hoisted(() => vi.fn());
+const mockFindFollowUpThread = vi.hoisted(() => vi.fn());
+vi.mock("../../src/lib/follow-up-send", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  findQueuedBrandSequence: (...a: unknown[]) =>
+    mockFindQueuedBrandSequence(...a) ?? Promise.resolve(null),
+  findFollowUpThread: (...a: unknown[]) =>
+    mockFindFollowUpThread(...a) ?? Promise.resolve(null),
+}));
+
 // The verification gate has its own tests (email-verification-gate.test.ts).
 // Here every address is verified valid unless a test says otherwise; the
 // refusal body stays real.
@@ -2337,7 +2350,8 @@ describe("POST /send", () => {
     expect(res.status).toBe(200);
     const cfg = mockOnConflictDoUpdate.mock.calls[0][0];
     expect(cfg.target).toEqual(["campaign_id", "lead_email"]);
-    expect(cfg.targetWhere).toBeUndefined(); // full unique index, no partial predicate
+    // Partial on follow_up = false since migration 0075 (follow-ups reserve on run).
+    expect(JSON.stringify(cfg.targetWhere)).toContain("= false");
   });
 
   it("platform retry (same leadEmail + same runId, campaignId null) is an idempotent duplicate — no 2nd campaign", async () => {
@@ -3199,5 +3213,179 @@ describe("POST /send — no email to an address without a verdict from our verif
 
     expect(res.body.code).toBe("lead_opted_out");
     expect(mockGateAddressForSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWUP-1014)", () => {
+  let runCounter: number;
+  const lastWeek = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+  const followUpBody = { ...validBody, followUp: true };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    credentialedMailboxes.clear();
+    runCounter = 0;
+    mockFindStandingOptOut.mockResolvedValue(null);
+    mockGateAddressForSend.mockResolvedValue(VALID_DECISION);
+    mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
+    // The re-contact window WOULD refuse: the brand emailed them last week.
+    // Only the window's query answers that row; every other read finds nothing.
+    mockDbExecute.mockImplementation(async (q: unknown) => {
+      let text = "";
+      try {
+        text = JSON.stringify(q);
+      } catch {
+        text = "";
+      }
+      return text.includes("3 months")
+        ? { rows: [{ brand_id: "brand-1", last_emailed_at: lastWeek.toISOString() }] }
+        : { rows: [] };
+    });
+    mockFindQueuedBrandSequence.mockResolvedValue(null);
+    mockFindFollowUpThread.mockResolvedValue(null);
+    mockCreateRun.mockImplementation(() => {
+      runCounter++;
+      return Promise.resolve({ id: `step-run-${runCounter}` });
+    });
+    mockAddCosts.mockImplementation((runId: string, items: { costName: string }[]) =>
+      Promise.resolve({
+        costs: items.map((item) => ({ id: `cost-${runId}-${item.costName}`, costName: item.costName })),
+      }),
+    );
+    mockUpdateRun.mockResolvedValue({});
+    mockUpdateCostStatus.mockResolvedValue({});
+    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: true, balance_cents: 10000 });
+    mockListAccounts.mockResolvedValue([
+      acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+      acct({ email: "thread@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+    ]);
+    mockDbWhere.mockResolvedValue([]);
+    mockDbReturning.mockResolvedValue([{ id: "row-1" }]);
+  });
+
+  it("control: the same send WITHOUT the declaration is still refused recent_brand_contact", async () => {
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("recent_brand_contact");
+    expect(mockFindQueuedBrandSequence).not.toHaveBeenCalled();
+  });
+
+  it("is sent (and billed) to a person the brand emailed last week", async () => {
+    credentialedMailboxes.add("first@example.com");
+    credentialedMailboxes.add("thread@example.com");
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(followUpBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.added).toBe(1);
+    // Billed like any send: one run per step, authorized once.
+    expect(mockCreateRun).toHaveBeenCalledTimes(3);
+    expect(mockAuthorizeCreditSpend).toHaveBeenCalledTimes(1);
+    expect(mockFindQueuedBrandSequence).toHaveBeenCalledWith("org-1", "test@example.com", ["brand-1"], "run-1");
+  });
+
+  it("reserves on its own key (run, email) so the NEXT follow-up of the same campaign is not a duplicate", async () => {
+    credentialedMailboxes.add("first@example.com");
+    const app = await createSendApp();
+    await request(app).post("/send").set(identityHeadersObj).send(followUpBody);
+
+    const reservation = mockDbInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(reservation.followUp).toBe(true);
+    const cfg = mockOnConflictDoUpdate.mock.calls[0][0] as { target: unknown[] };
+    expect(cfg.target).toEqual(["run_id", "lead_email"]);
+  });
+
+  it("a normal send reserves on (campaign, email) as before, marked not a follow-up", async () => {
+    mockDbExecute.mockResolvedValue({ rows: [] });
+    credentialedMailboxes.add("first@example.com");
+    const app = await createSendApp();
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    const reservation = mockDbInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(reservation.followUp).toBe(false);
+    const cfg = mockOnConflictDoUpdate.mock.calls[0][0] as { target: unknown[] };
+    expect(cfg.target).toEqual(["campaign_id", "lead_email"]);
+  });
+
+  it("an opted-out person is still refused, declaration or not", async () => {
+    mockFindStandingOptOut.mockResolvedValue({
+      optoutId: "o-1",
+      channel: "email",
+      statedAt: new Date("2026-10-01T00:00:00Z"),
+      source: "reply",
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(followUpBody);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("lead_opted_out");
+    expect(mockCreateRun).not.toHaveBeenCalled();
+  });
+
+  it("is refused brand_sequence_queued while a step of the brand's sequence still waits to leave", async () => {
+    mockFindQueuedBrandSequence.mockResolvedValue({ instantlyCampaignId: "ss-old", brandId: "brand-1" });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(followUpBody);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("brand_sequence_queued");
+    expect(res.body.brandId).toBe("brand-1");
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("requires x-run-id (its idempotency key)", async () => {
+    const { "x-run-id": _omit, ...noRun } = identityHeadersObj;
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(noRun).send(followUpBody);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("follow_up_requires_run_id");
+  });
+
+  it("lands in the SAME thread: same mailbox, Re: its subject, row points at the thread", async () => {
+    credentialedMailboxes.add("first@example.com");
+    credentialedMailboxes.add("thread@example.com");
+    mockFindFollowUpThread.mockResolvedValue({
+      instantlyCampaignId: "ss-thread",
+      accountEmail: "thread@example.com",
+      subject: "Quick idea for TestCo",
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(followUpBody);
+    expect(res.status).toBe(200);
+
+    const phase2 = mockDbUpdateSet.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((v) => "sendTransport" in v)!;
+    expect(phase2.accountEmail).toBe("thread@example.com");
+    expect(phase2.metadata).toBeDefined();
+    const steps = mockDbInsertValues.mock.calls
+      .map((c) => c[0])
+      .find((v) => Array.isArray(v) && (v as { subject?: string }[])[0]?.subject !== undefined) as { subject: string }[];
+    // Step 1 holds the thread's subject; later steps reuse it (subjectForStep).
+    expect(steps[0].subject).toBe("Re: Quick idea for TestCo");
+  });
+
+  it("starts a new thread with the caller's subject when the thread's mailbox can no longer send", async () => {
+    credentialedMailboxes.add("first@example.com");
+    mockListAccounts.mockResolvedValue([
+      acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+    ]);
+    mockFindFollowUpThread.mockResolvedValue({
+      instantlyCampaignId: "ss-thread",
+      accountEmail: "gone@example.com",
+      subject: "Quick idea for TestCo",
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(followUpBody);
+    expect(res.status).toBe(200);
+    const phase2 = mockDbUpdateSet.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((v) => "sendTransport" in v)!;
+    expect(phase2.accountEmail).toBe("first@example.com");
+    expect(phase2.metadata).toBeUndefined();
+    const steps = mockDbInsertValues.mock.calls
+      .map((c) => c[0])
+      .find((v) => Array.isArray(v) && (v as { subject?: string }[])[0]?.subject !== undefined) as { subject: string }[];
+    expect(steps[0].subject).toBe("Hello");
   });
 });

@@ -526,9 +526,20 @@ async function loadStepContent(
       (SELECT s.subject FROM sequence_steps s
         WHERE s.instantly_campaign_id = ${instantlyCampaignId} AND s.step = 1) AS "subject",
       COALESCE((
+        -- The thread = this sequence plus, for a FOLLOW-UP that continues an
+        -- earlier sequence (metadata.followUpOf, src/lib/follow-up-send.ts),
+        -- every sequence up its chain: its emails go In-Reply-To the last one.
+        WITH RECURSIVE chain(id, depth) AS (
+          SELECT ${instantlyCampaignId}::text, 0
+          UNION ALL
+          SELECT c.metadata->>'followUpOf', chain.depth + 1
+          FROM chain
+          JOIN instantly_campaigns c ON c.instantly_campaign_id = chain.id
+          WHERE c.metadata->>'followUpOf' IS NOT NULL AND chain.depth < 50
+        )
         SELECT jsonb_agg(d.message_id ORDER BY d.dispatched_at)
         FROM smtp_dispatch_raw d
-        WHERE d.instantly_campaign_id = ${instantlyCampaignId}
+        WHERE d.instantly_campaign_id IN (SELECT id FROM chain)
           AND d.outcome = 'sent'
           AND d.message_id IS NOT NULL
       ), '[]'::jsonb) AS "priorMessageIds"
