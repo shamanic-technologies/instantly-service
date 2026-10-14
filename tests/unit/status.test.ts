@@ -699,7 +699,7 @@ describe("POST /status", () => {
     expect(r.brand.sentCount).toBe(5); // SUM across campaigns
   });
 
-  it("SQL: scoped queries count distinct-step email_sent events, bounded by emails", async () => {
+  it("SQL: scoped queries count distinct-step email_sent events per gold row (LATERAL, DB-LOAD-1014)", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] }); // global
     mockExecute.mockResolvedValueOnce({ rows: [] }); // campaign
 
@@ -713,7 +713,9 @@ describe("POST /status", () => {
     const sqlText = chunkText(mockExecute.mock.calls[1][0]);
     expect(sqlText).toContain('COUNT(DISTINCT e.step) AS cnt');
     expect(sqlText).toContain("e.event_type = 'email_sent'");
-    expect(sqlText).toContain('sc.campaign_id = s.instantly_campaign_id');
+    expect(sqlText).toContain("LEFT JOIN LATERAL");
+    expect(sqlText).toContain("e.campaign_id = s.instantly_campaign_id");
+    expect(sqlText).toContain("e.lead_email = s.lead_email");
     expect(sqlText).toContain('COALESCE(SUM(sc.cnt), 0) AS "sentCount"');
   });
 

@@ -135,27 +135,29 @@ function emailArray(values: string[]) {
 }
 
 /**
- * Pre-aggregated send-count per (Instantly campaign, recipient), bounded by the
- * request's emails. `sentCount` (contract v1.2.0) = the number of distinct
- * sequence steps that produced an `email_sent` event for a recipient — i.e. how
- * many emails of the sequence actually went out (1 = initial, 2 = first
- * follow-up, ...). Counts inferred sends too: an inferred `email_sent` marks a
- * provably-dispatched predecessor (sequence cascade / lost-webhook backfill), so
- * including it yields the true sequence position rather than only webhook-observed
- * dispatches. `instantly_events.campaign_id` holds the Instantly campaign id, so
- * the caller joins `sc.campaign_id = s.instantly_campaign_id`. Emitted as a
- * subquery joined 1:1 with the status rows (no fan-out of the BOOL_OR/MIN/MAX
- * aggregates). Absent recipient → no `sc` row → COALESCE(SUM(...), 0) = 0.
+ * Send-count per gold row (one Instantly campaign x recipient). `sentCount`
+ * (contract v1.2.0) = the number of distinct sequence steps that produced an
+ * `email_sent` event for a recipient — i.e. how many emails of the sequence
+ * actually went out (1 = initial, 2 = first follow-up, ...). Counts inferred
+ * sends too: an inferred `email_sent` marks a provably-dispatched predecessor
+ * (sequence cascade / lost-webhook backfill), so including it yields the true
+ * sequence position rather than only webhook-observed dispatches.
+ * `instantly_events.campaign_id` holds the Instantly campaign id.
+ *
+ * A LATERAL per gold row (`LEFT JOIN LATERAL (...) sc ON true`), one count per
+ * row, so the BOOL_OR/MIN/MAX aggregates do not fan out; no event = 0.
+ * ⚠️ Keyed on the row's own (campaign, recipient), never on the request's
+ * address list: the list form read every event of those addresses across every
+ * org off the heap on each status read (DB-LOAD-1014); per row it is a handful
+ * of index probes. Same rows, same counts (prod diff 2026-10-14: 0 of 136).
  */
-function sentCountSubquery(emails: string[]) {
-  return sql`
-    SELECT e.campaign_id, e.lead_email, COUNT(DISTINCT e.step) AS cnt
+const sentCountLateral = sql`
+    SELECT COUNT(DISTINCT e.step) AS cnt
     FROM instantly_events e
-    WHERE e.event_type = 'email_sent'
-      AND e.lead_email = ANY(${emailArray(emails)})
-    GROUP BY e.campaign_id, e.lead_email
+    WHERE e.campaign_id = s.instantly_campaign_id
+      AND e.event_type = 'email_sent'
+      AND e.lead_email = s.lead_email
   `;
-}
 
 /**
  * The sequences we still HOLD for these recipients: an active campaign row with
@@ -246,8 +248,7 @@ function scopedQueryByEmail(orgId: string, filterClause: ReturnType<typeof sql>,
       BOOL_OR(q.instantly_campaign_id IS NOT NULL AND NOT s.sent) AS "awaitingFirstEmail",
       (BOOL_OR(f.instantly_campaign_id IS NOT NULL) AND NOT BOOL_OR(q.instantly_campaign_id IS NOT NULL)) AS "finished"
     FROM instantly_lead_status_current s
-    LEFT JOIN (${sentCountSubquery(emails)}) sc
-      ON sc.campaign_id = s.instantly_campaign_id AND sc.lead_email = s.lead_email
+    LEFT JOIN LATERAL (${sentCountLateral}) sc ON true
     LEFT JOIN (${queuedSubquery(emails)}) q
       ON q.instantly_campaign_id = s.instantly_campaign_id AND q.lead_email = s.lead_email
     LEFT JOIN (${finishedSubquery(emails)}) f
@@ -291,8 +292,7 @@ function brandBreakdownQuery(orgId: string, brandId: string, emails: string[]) {
       BOOL_OR(q.instantly_campaign_id IS NOT NULL AND NOT s.sent) AS "awaitingFirstEmail",
       (BOOL_OR(f.instantly_campaign_id IS NOT NULL) AND NOT BOOL_OR(q.instantly_campaign_id IS NOT NULL)) AS "finished"
     FROM instantly_lead_status_current s
-    LEFT JOIN (${sentCountSubquery(emails)}) sc
-      ON sc.campaign_id = s.instantly_campaign_id AND sc.lead_email = s.lead_email
+    LEFT JOIN LATERAL (${sentCountLateral}) sc ON true
     LEFT JOIN (${queuedSubquery(emails)}) q
       ON q.instantly_campaign_id = s.instantly_campaign_id AND q.lead_email = s.lead_email
     LEFT JOIN (${finishedSubquery(emails)}) f
