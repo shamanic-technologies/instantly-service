@@ -127,7 +127,7 @@ export const instantlyCampaigns = pgTable(
     // schedule stored in bronze, which is what those rows are really sent on.
     timezone: text("timezone"),
     // The signature block every email of THIS thread ends with, pinned at send
-    // time (migration 0073): the brand's own signature as the client stated it
+    // time (migration 0074): the brand's own signature as the client stated it
     // (`brand_email_signatures`), rendered to HTML. NULL = our default
     // signature, built from the sending account. Read by every later email of
     // the thread (follow-ups, retry-stuck, AI and human replies) so a thread
@@ -1117,7 +1117,7 @@ export const emailSendVerifications = pgTable(
   ],
 );
 
-// Mirror of apollo-service's verification history (migration 0073): every
+// Mirror of apollo-service's verification history (migration 0074): every
 // BounceVerify call, every org, every source, copied through its feed by
 // lib/verification-history-mirror.ts. `verdict` null = the call returned none.
 export const emailVerificationHistory = pgTable(
