@@ -206,3 +206,96 @@ export async function hasExchangedMailEvidence(
   `);
   return rowsOf(result).length > 0;
 }
+
+/**
+ * The thread as our own webhook events recorded it, for a sequence the mirror
+ * never copied.
+ *
+ * ⚠️ THE MIRROR STARTED LATE; THE EVENTS DID NOT. The mirror only fills when an
+ * inbound message arrives, so a sequence that went out and was never answered
+ * (the March 2026 cold outreach, 3,080 sequences on 2026-10-14) has no bronze
+ * copy at all. Reading it live worked until the Instantly plan was cancelled on
+ * 2026-10-12; since then every such read was a 502 and the follow-up writer
+ * could not decide anything for those people. Yet every webhook `email_sent`
+ * carries the email as sent (`email_html`, `email_subject`, `email_account`) and
+ * every webhook reply carries the prospect's words (`reply_text`/`reply_html`):
+ * we already hold the conversation.
+ *
+ * `complete` is false the moment ONE real message-bearing event lacks its words
+ * (a manual or poll-sourced reply records THAT they wrote, not what), and when no
+ * message-bearing event exists at all. A caller must then not present these
+ * records as the thread: half a conversation reads exactly like a whole one.
+ */
+export interface EventThread {
+  records: EmailRecord[];
+  complete: boolean;
+}
+
+function nonEmpty(v: unknown): string | null {
+  return typeof v === "string" && v.trim() !== "" ? v : null;
+}
+
+function isoOf(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v !== "string") return "";
+  const t = Date.parse(v.includes("T") || v.endsWith("Z") ? v : `${v.replace(" ", "T")}Z`);
+  return Number.isFinite(t) ? new Date(t).toISOString() : v;
+}
+
+/** Pure: real message events of ONE sequence -> Instantly-shaped email records. */
+export function eventsToEmailRecords(
+  instantlyCampaignId: string,
+  rows: Record<string, unknown>[],
+): EventThread {
+  const records: EmailRecord[] = [];
+  const seen = new Set<string>();
+  let complete = rows.length > 0;
+  for (const row of rows) {
+    const p = (row.raw_payload ?? {}) as Record<string, unknown>;
+    const inbound = row.event_type !== "email_sent";
+    const html = nonEmpty(inbound ? p.reply_html : p.email_html);
+    const text = inbound ? nonEmpty(p.reply_text) : null;
+    if (row.source !== "webhook" || (!html && !text)) {
+      complete = false;
+      continue;
+    }
+    const at = nonEmpty(p.timestamp) ?? isoOf(row.timestamp);
+    const emailId = nonEmpty(p.email_id);
+    // Instantly retries a webhook it thinks failed: one email, several events.
+    const key = `${inbound ? "in" : "out"}:${emailId ?? at}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const lead = nonEmpty(p.lead_email) ?? nonEmpty(p.email);
+    const account = nonEmpty(p.email_account) ?? "";
+    records.push({
+      id: emailId ?? `event:${instantlyCampaignId}:${key}`,
+      campaign_id: instantlyCampaignId,
+      lead,
+      lead_id: null,
+      eaccount: account,
+      ue_type: inbound ? 2 : 1,
+      step: p.step == null ? null : String(p.step),
+      subject: (inbound ? nonEmpty(p.reply_subject) : nonEmpty(p.email_subject)) ?? undefined,
+      timestamp_email: at,
+      body: { text, html },
+      from_address_email: inbound ? lead : account || null,
+      to_address_email_list: inbound ? account || null : lead,
+    });
+  }
+  return { records: complete ? records : [], complete: complete && records.length > 0 };
+}
+
+/** Read the real message events of one sequence and rebuild its thread. */
+export async function fetchEventEmailRecords(
+  instantlyCampaignId: string,
+): Promise<EventThread> {
+  const result = await db.execute(sql`
+    SELECT event_type, source, "timestamp", raw_payload
+    FROM instantly_events
+    WHERE campaign_id = ${instantlyCampaignId}
+      AND inferred = false
+      AND event_type IN ('email_sent', 'reply_received', 'auto_reply_received')
+    ORDER BY "timestamp" ASC
+  `);
+  return eventsToEmailRecords(instantlyCampaignId, rowsOf(result));
+}

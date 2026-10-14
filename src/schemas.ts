@@ -1869,7 +1869,7 @@ const ConversationMessageSchema = z
 const ConversationSourceSchema = z
   .enum(["mirror", "self_send", "provider"])
   .describe(
-    "Where the messages were read from. mirror: our own bronze copy of the Instantly Unibox — the normal case, and the one that survives the Instantly plan being cancelled. self_send: the sequence we dispatched ourselves. provider: read live from Instantly because our mirror held nothing for a sequence that did exchange mail.",
+    "Where the messages were read from. mirror: our own copy — the bronze mirror of the Instantly Unibox, or for a sequence never mirrored the emails and replies our webhook events recorded; the normal case, and the one that survives the Instantly plan being cancelled. self_send: the sequence we dispatched ourselves. provider: read live from Instantly because neither our mirror nor our event record held the words of a sequence that did exchange mail.",
   );
 
 const ConversationSequenceSchema = z
