@@ -92,6 +92,16 @@ vi.mock("../../src/lib/lead-optouts", async (importOriginal) => ({
   findStandingOptOut: (...a: unknown[]) => mockFindStandingOptOut(...a),
 }));
 
+// The brand signature lookup has its own tests (brand-email-signature.test.ts).
+// Here no brand states one (our default) unless a test says otherwise; the
+// conflict error class stays real.
+const mockResolveSignatureHtml = vi.hoisted(() => vi.fn());
+vi.mock("../../src/lib/brand-email-signature", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  resolveSignatureHtmlForSend: (...a: unknown[]) =>
+    mockResolveSignatureHtml(...a) ?? Promise.resolve(null),
+}));
+
 // The verification gate has its own tests (email-verification-gate.test.ts).
 // Here every address is verified valid unless a test says otherwise; the
 // refusal body stays real.
@@ -1588,6 +1598,63 @@ describe("POST /send", () => {
     for (const step of createCall.steps) {
       expect(step.bodyHtml).toContain("<p>Best,<br>Sender</p>");
     }
+  });
+
+  it("a brand with its OWN signature: every step ends with it, pinned on the thread", async () => {
+    mockResolveSignatureHtml.mockResolvedValueOnce("<p>Jane Doe<br>Acme Corp</p>");
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+    expect(res.status).toBe(200);
+
+    expect(mockResolveSignatureHtml).toHaveBeenCalledWith(
+      "org-1",
+      ["brand-1"],
+    );
+    const createCall = mockCreateCampaign.mock.calls[0][1];
+    for (const step of createCall.steps) {
+      expect(step.bodyHtml.endsWith("<p>--</p><p>Jane Doe<br>Acme Corp</p>")).toBe(true);
+      expect(step.bodyHtml).not.toContain("<p>Best,<br>Sender</p>");
+      expect(step.bodyHtml).not.toContain("Distribute.you | Marketing Agency");
+    }
+    const campaignInsert = mockDbInsertValues.mock.calls.find(
+      ([v]: [any]) => v.campaignId === "camp-1" && v.leadEmail === "test@example.com",
+    );
+    expect(campaignInsert![0]).toMatchObject({ signatureHtml: "<p>Jane Doe<br>Acme Corp</p>" });
+  });
+
+  it("no brand states a signature: ours, and the thread pins null (the default)", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    const campaignInsert = mockDbInsertValues.mock.calls.find(
+      ([v]: [any]) => v.campaignId === "camp-1" && v.leadEmail === "test@example.com",
+    );
+    expect(campaignInsert![0]).toMatchObject({ signatureHtml: null });
+    const createCall = mockCreateCampaign.mock.calls[0][1];
+    for (const step of createCall.steps) {
+      expect(step.bodyHtml).toContain("<p>Best,<br>Sender</p>");
+    }
+  });
+
+  it("two brands of the send state different signatures: 409, nothing reserved or sent", async () => {
+    const { EmailSignatureConflictError } = await import("../../src/lib/brand-email-signature");
+    mockResolveSignatureHtml.mockRejectedValueOnce(new EmailSignatureConflictError(["b1", "b2"]));
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("email_signature_conflict");
+    expect(res.body.brandIds).toEqual(["b1", "b2"]);
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(
+      mockDbInsertValues.mock.calls.some(([v]: [any]) => v.leadEmail === "test@example.com"),
+    ).toBe(false);
   });
 
   it("should enable stop_on_reply when patching campaign", async () => {

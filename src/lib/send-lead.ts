@@ -540,6 +540,24 @@ const SIG_SEPARATOR_HTML = "<p>--</p>";
  */
 
 /**
+ * The signature block an email ends with.
+ *
+ * `pinnedSignatureHtml` is the client's own signature pinned on the THREAD at
+ * send time (`instantly_campaigns.signature_html`, lib/brand-email-signature):
+ * when present it wins, on every email of that thread. Absent = ours, exactly
+ * as before: the Instantly UI override, else `buildDefaultSignature(account)`.
+ */
+export function resolveSignatureBlock(
+  account: Account,
+  pinnedSignatureHtml?: string | null,
+): string {
+  const pinned = pinnedSignatureHtml?.trim() || "";
+  if (pinned) return pinned;
+  const accountSig = account.signature?.trim() || "";
+  return accountSig || buildDefaultSignature(account);
+}
+
+/**
  * Inject the selected account's signature into the email body.
  *
  * `{{accountSignature}}` only resolves in the Instantly UI — campaigns created
@@ -564,9 +582,12 @@ const SIG_SEPARATOR_HTML = "<p>--</p>";
  * this docstring). A body stored with a retired
  * footer loses it here, since it sat inside the strip region.
  */
-export function buildEmailBodyWithSignature(body: string, account: Account): string {
-  const accountSig = account.signature?.trim() || "";
-  const signature = accountSig || buildDefaultSignature(account);
+export function buildEmailBodyWithSignature(
+  body: string,
+  account: Account,
+  pinnedSignatureHtml?: string | null,
+): string {
+  const signature = resolveSignatureBlock(account, pinnedSignatureHtml);
   const stripped = stripAccountSignature(body);
 
   const linkedBody = tagColdEmailLinks(autolinkifyHtml(stripped));
@@ -590,9 +611,12 @@ export function buildEmailBodyWithSignature(body: string, account: Account): str
  * separate because a reply carries no `{{accountSignature}}` placeholder and no
  * List-Unsubscribe header of its own.
  */
-export function buildReplyBodyWithSignature(body: string, account: Account): string {
-  const accountSig = account.signature?.trim() || "";
-  const signature = accountSig || buildDefaultSignature(account);
+export function buildReplyBodyWithSignature(
+  body: string,
+  account: Account,
+  pinnedSignatureHtml?: string | null,
+): string {
+  const signature = resolveSignatureBlock(account, pinnedSignatureHtml);
   const stripped = stripAccountSignature(body);
   const linkedBody = tagColdEmailLinks(autolinkifyHtml(stripped));
   return `${linkedBody}${SIG_SEPARATOR_HTML}${signature}`;
@@ -660,12 +684,13 @@ export function buildSequenceSteps(
   subject: string,
   sequence: SortedSequenceStep[],
   account: Account,
+  pinnedSignatureHtml?: string | null,
 ): SequenceStep[] {
   return [...sequence]
     .sort((a, b) => a.step - b.step)
     .map((s) => ({
       subject,
-      bodyHtml: buildEmailBodyWithSignature(s.bodyHtml, account),
+      bodyHtml: buildEmailBodyWithSignature(s.bodyHtml, account, pinnedSignatureHtml),
       daysSinceLastStep: s.daysSinceLastStep,
     }));
 }
@@ -742,6 +767,11 @@ export async function createAndActivateCampaign(
 
 export interface SendOptions {
   apiKey: string;
+  /**
+   * The client's signature pinned on this thread (lib/brand-email-signature).
+   * Null/absent = our default signature.
+   */
+  signatureHtml?: string | null;
   campaignName: string;
   subject: string;
   sortedSequence: SortedSequenceStep[];
@@ -865,7 +895,12 @@ export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult
     return { ok: false, reason: "no_healthy_accounts_available" };
   }
 
-  const steps = buildSequenceSteps(opts.subject, opts.sortedSequence, account);
+  const steps = buildSequenceSteps(
+    opts.subject,
+    opts.sortedSequence,
+    account,
+    opts.signatureHtml ?? null,
+  );
 
   console.log(
     `[send-lead] Sending "${opts.campaignName}" with account ${account.email}`,
