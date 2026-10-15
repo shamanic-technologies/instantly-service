@@ -32,6 +32,7 @@
  * so it is no longer a candidate. Dry-run by default.
  */
 
+import { fundingRefusalCause, isSalesFunnelCapReason } from "./funding-refusal";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -170,6 +171,8 @@ export interface RestoreSummary {
   restored: number;
   restoredSteps: number;
   refusedInsufficientCredits: number;
+  /** Refused because the sales funnel campaign reached its max budget (billing's `reason`), not the balance. */
+  refusedSalesFunnelMaxBudget: number;
   failed: number;
 }
 
@@ -190,6 +193,7 @@ function summarize(candidates: RestoreCandidate[], dryRun: boolean): RestoreSumm
     restored: 0,
     restoredSteps: 0,
     refusedInsufficientCredits: 0,
+    refusedSalesFunnelMaxBudget: 0,
     failed: 0,
   };
 }
@@ -217,13 +221,14 @@ async function abandon(holds: NewHold[], identity: IdentityContext): Promise<voi
 }
 
 /**
- * Re-queue ONE lead's cut follow-ups. Returns "restored" or "insufficient_credits".
+ * Re-queue ONE lead's cut follow-ups. Returns "restored", "insufficient_credits", or
+ * "sales_funnel_max_budget" (billing named the campaign's max budget, not the balance).
  * Throws on any other failure, after giving back what it provisioned.
  */
 export async function restoreOne(
   c: RestoreCandidate,
   caller: CallerInfo,
-): Promise<"restored" | "insufficient_credits"> {
+): Promise<"restored" | "insufficient_credits" | "sales_funnel_max_budget"> {
   const userId = c.userId ?? SYSTEM_USER_ID;
   const brandId = c.brandIds?.join(",") || undefined;
   const tracking = { campaignId: c.campaignId, ...(brandId ? { brandId } : {}) };
@@ -273,7 +278,8 @@ export async function restoreOne(
       );
       if (!auth.sufficient) {
         await abandon(holds, parent);
-        return "insufficient_credits";
+        const cause = fundingRefusalCause(auth);
+        return cause && isSalesFunnelCapReason(cause.reason) ? "sales_funnel_max_budget" : "insufficient_credits";
       }
     }
 
@@ -333,6 +339,11 @@ export async function restoreStoppedFollowups(options: {
       if (outcome === "restored") {
         summary.restored += 1;
         summary.restoredSteps += c.steps.length;
+      } else if (outcome === "sales_funnel_max_budget") {
+        summary.refusedSalesFunnelMaxBudget += 1;
+        console.warn(
+          `[instantly-service] restore-stopped-followups: refused, sales funnel max budget reached (raise campaign ${c.campaignId}'s max budget) org=${c.orgId} lead=${c.leadEmail}`,
+        );
       } else {
         summary.refusedInsufficientCredits += 1;
         console.warn(

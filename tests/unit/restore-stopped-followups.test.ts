@@ -127,6 +127,22 @@ describe("restoreOne — the cut follow-ups go back through the normal cost path
     expect(mockExecute).not.toHaveBeenCalled();
   });
 
+  it("a sales funnel max-budget refusal is counted as such, never as insufficient credits", async () => {
+    mockAuthorize.mockResolvedValue({
+      sufficient: false,
+      balance_cents: 9999,
+      required_cents: 4,
+      reason: "sales_funnel_max_budget_reached",
+      sales_funnel_cap: { salesFunnelId: "sf-1" },
+    });
+
+    const outcome = await restoreOne(candidate("self:aaa"), CALLER);
+
+    expect(outcome).toBe("sales_funnel_max_budget");
+    expect(mockUpdateCostStatus).toHaveBeenCalledTimes(4);
+    expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+
   it("BYOK: no authorize (the org pays its vendor), still provisioned", async () => {
     mockResolveKey.mockResolvedValue({ key: "k", keySource: "org" });
     await restoreOne(candidate("self:aaa"), CALLER);
