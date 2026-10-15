@@ -24,8 +24,11 @@
  * tokens in the pinned HTML and are filled per email from the account that
  * sends it ({@link fillSenderPlaceholders}, called by `resolveSignatureBlock`).
  * A thread keeps one mailbox, so it keeps one rendered signature. Any other
- * brace is refused at write; an unfillable token throws at send: never a
- * literal brace in an email.
+ * brace is refused at write. At send the fill is TOTAL, it never throws: a
+ * throw there was retried every dispatch tick with only a log line, so one
+ * mailbox without a name would have frozen every thread on it (owner
+ * 2026-10-15 « dangereux non? »). A missing value renders empty and the line
+ * is tidied (warned in the log); never a literal brace in an email.
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 
@@ -123,33 +126,51 @@ export function renderSignatureHtml(text: string): string {
 
 /**
  * Fill the sender placeholders of a pinned signature block with the mailbox
- * that sends THIS email (values HTML-escaped). A block without tokens is
- * returned unchanged. Throws when a token cannot be filled (a mailbox without
- * a first or last name) or a brace survives: never a literal brace in an
- * email. Pure.
+ * that sends THIS email (values HTML-escaped). A block without braces is
+ * returned unchanged. TOTAL, never throws (an email must not be blocked by its
+ * signature): a value the mailbox lacks (no last name) renders empty, its line
+ * is tidied (double spaces, a space before punctuation, dangling `,` `|` `-`,
+ * empty lines dropped) and a
+ * warning names the mailbox. No brace ever survives. Pure apart from the log.
  */
 export function fillSenderPlaceholders(html: string, sender: SignatureSender): string {
   if (!/[{}]/.test(html)) return html;
-  const first = sender.first_name?.trim() || "";
-  const last = sender.last_name?.trim() || "";
+  const clean = (v: string | null | undefined) => (v ?? "").replace(/[{}]/g, "").trim();
+  const first = clean(sender.first_name);
+  const last = clean(sender.last_name);
   const values: Record<SignaturePlaceholder, string> = {
     first_name: first,
     last_name: last,
     full_name: [first, last].filter(Boolean).join(" "),
-    sender_email: sender.email.trim(),
+    sender_email: clean(sender.email),
   };
-  const filled = html.replace(PLACEHOLDER_RE, (token, name: string) => {
-    if (!(SIGNATURE_PLACEHOLDERS as readonly string[]).includes(name)) {
-      throw new Error(`Signature placeholder ${token} is not supported (sender ${sender.email})`);
-    }
-    const value = values[name as SignaturePlaceholder];
-    if (!value) throw new Error(`Signature placeholder ${token} has no value for sender ${sender.email}`);
-    return escapeHtml(value);
-  });
-  if (/[{}]/.test(filled)) {
-    throw new Error(`Signature still holds a brace after filling placeholders (sender ${sender.email})`);
-  }
-  return filled;
+  const missing: string[] = [];
+  const filled = html
+    .replace(PLACEHOLDER_RE, (token, name: string) => {
+      const value = (SIGNATURE_PLACEHOLDERS as readonly string[]).includes(name)
+        ? values[name as SignaturePlaceholder]
+        : "";
+      if (!value) missing.push(token);
+      return escapeHtml(value);
+    })
+    .replace(/[{}]/g, "");
+  if (missing.length === 0) return filled;
+
+  console.warn(
+    `[instantly-service] signature: ${missing.join(", ")} empty for sender ${sender.email}; rendered without it`,
+  );
+  const inner = filled.replace(/^<p>/, "").replace(/<\/p>$/, "");
+  const lines = inner
+    .split("<br>")
+    .map((line) =>
+      line
+        .replace(/\s{2,}/g, " ")
+        .replace(/\s+([,.;:])/g, "$1")
+        .replace(/^[\s,|\-]+/, "")
+        .replace(/[\s,|\-]+$/, ""),
+    )
+    .filter((line) => line !== "");
+  return `<p>${lines.length > 0 ? lines.join("<br>") : escapeHtml(values.sender_email)}</p>`;
 }
 
 function toWire(row: typeof brandEmailSignatures.$inferSelect): BrandEmailSignature {
