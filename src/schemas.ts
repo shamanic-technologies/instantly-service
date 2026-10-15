@@ -2380,7 +2380,9 @@ export const EmailSignatureBodySchema = z
       .describe(
         "Your signature as plain text, one line per line (use \\n between lines), at most 1,000 characters and 12 lines. " +
           "Example: `Jane Doe\\nHead of Sales, Acme\\nacme.com`. HTML is not interpreted (it is shown as written). " +
-          "Leave out the `--` line: it is added above the signature automatically.",
+          "Leave out the `--` line: it is added above the signature automatically. " +
+          "Placeholders `{first_name}`, `{last_name}`, `{full_name}`, `{sender_email}` are filled with the mailbox that sends each email, so the signature matches the From name: " +
+          "`{first_name} {last_name}\\nDefiniteJobs` signs `Ruth Chandler` from ruth@ and `Fallon …` from fallon@. Any other `{…}` or stray brace is refused.",
       ),
   })
   .openapi("EmailSignatureBody");
@@ -2402,6 +2404,7 @@ const EMAIL_SIGNATURE_RULES =
   "**What it changes.** Every email we send for this brand ends with a signature. By default it is ours: the sending mailbox's name, then `Distribute.you | Marketing Agency`. " +
   "Set your own and every NEW email thread for this brand ends with it instead: the email itself (a cold email, or an email you pushed through the API with the `email_pushed_via_api` trigger), every follow-up, and every reply we send in that thread (AI or human).\n\n" +
   "**One signature per thread.** A thread keeps the signature it started with: changing or removing yours later applies to new threads only, so a conversation never switches signature halfway.\n\n" +
+  "**Sender placeholders.** We send from several mailboxes, each under its own name in the From line. Write `{first_name}`, `{last_name}`, `{full_name}` or `{sender_email}` in your signature and each email fills them with the mailbox that sends it, so the name you sign with always matches the From. A thread keeps one mailbox, so it keeps one signature.\n\n" +
   "**Several brands.** An email sent for several brands at once uses the signature they share; if two of them set different signatures, the send is refused (409 `email_signature_conflict`).\n\n" +
   "**Scope.** Org-scoped on `x-org-id`. **Cost:** none.";
 
@@ -2438,7 +2441,7 @@ registry.registerPath({
       content: { "application/json": { schema: EmailSignatureResponseSchema } },
     },
     400: {
-      description: "Missing brandId, or a signature that is empty, too long, has too many lines, or contains a `--` line",
+      description: "Missing brandId, or a signature that is empty, too long, has too many lines, contains a `--` line, an unknown `{placeholder}` or a stray brace",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: { description: "Unauthorized" },
