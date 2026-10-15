@@ -77,13 +77,16 @@ describe("planMirroredMessage: the poll's own correlation, on a forwarded copy",
     expect(plan).toMatchObject({ action: "file", kind: "staff_reply" });
   });
 
-  it("the client's own address writing TO the lead on our thread is our side's answer, not their reply", () => {
+  it("the planner places the thread; WHO wrote it is decided after, by our-side-sender (SENDER-NOT-PROSPECT-1015)", () => {
+    // info@docdinners.com writing to the lead is our side's answer, but the
+    // planner cannot know the brand's domain: recoverMailbox asks
+    // `senderIsOurSide` (tested in our-side-sender.test.ts) and refiles it.
     const plan = planMirroredMessage(
       msg({ from: "info@docdinners.com", to: ["laura@fusionmedcare.com"], cc: ["klourd@pressbeat.ai"], text: "Hi, I'm Dev with DocDinners." }),
       aliases,
       known,
     );
-    expect(plan).toMatchObject({ action: "file", kind: "staff_reply" });
+    expect(plan).toMatchObject({ action: "file", kind: "reply" });
   });
 
   it("a colleague at the lead's own company answering is still their side (filed as a reply)", () => {

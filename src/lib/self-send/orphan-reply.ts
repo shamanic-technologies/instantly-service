@@ -206,10 +206,22 @@ export const ORPHAN_REPLY_MAX_LEADS = 8;
  * to BEFORE the message arrived are eligible.
  */
 export function rankOrphanReplyLeads(
-  message: { fromAddress: string | null; subject: string | null; text: string | null; receivedAt: Date },
+  message: {
+    fromAddress: string | null;
+    subject: string | null;
+    text: string | null;
+    receivedAt: Date;
+    /**
+     * Who the message is addressed TO (To + Cc), lowercased. A lead it is
+     * written to is never its author: the client's rep writing a fresh email to
+     * the prospect is not the prospect answering (SENDER-NOT-PROSPECT-1015).
+     */
+    recipients?: readonly string[];
+  },
   leads: readonly OrphanReplyLead[],
 ): RankedOrphanReplyLead[] {
   const address = bareAddress(message.fromAddress) ?? "";
+  const recipients = new Set((message.recipients ?? []).map((r) => r.trim().toLowerCase()));
   const tokens = new Set<string>([
     ...words(message.fromAddress, 2),
     ...words(address.split("@")[0] ?? "", 2),
@@ -222,6 +234,7 @@ export function rankOrphanReplyLeads(
   const ranked: RankedOrphanReplyLead[] = [];
   for (const lead of leads) {
     if (lead.firstSentAt.getTime() > message.receivedAt.getTime()) continue;
+    if (recipients.has(lead.leadEmail.trim().toLowerCase())) continue;
     let score = 0;
     for (const { token, weight } of leadSignals(lead)) {
       if (tokens.has(token)) score += weight;
@@ -337,4 +350,37 @@ export function readOrphanReplyVerdict(
     return { outcome: "low_confidence", probability };
   }
   return { outcome: "matched", lead: ranked[index]!.lead, probability };
+}
+
+/**
+ * The To + Cc addresses of a stored inbound message. The poll stores each
+ * header either as raw text or as mailparser's address object serialized
+ * (`{"value":[{"address":...}],...}`); both are read.
+ */
+export function headerRecipients(headers: InboundHeaders): string[] {
+  const out: string[] = [];
+  for (const name of ["to", "cc"]) {
+    const raw = headers[name];
+    if (!raw) continue;
+    let values: unknown = null;
+    if (raw.trim().startsWith("{")) {
+      try {
+        values = (JSON.parse(raw) as { value?: unknown }).value;
+      } catch {
+        values = null;
+      }
+    }
+    if (Array.isArray(values)) {
+      for (const v of values) {
+        const address = bareAddress((v as { address?: string })?.address ?? null);
+        if (address) out.push(address);
+      }
+      continue;
+    }
+    for (const part of raw.split(/[,;]/)) {
+      const address = bareAddress(part);
+      if (address) out.push(address);
+    }
+  }
+  return out;
 }

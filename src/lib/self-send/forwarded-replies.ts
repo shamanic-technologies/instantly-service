@@ -65,6 +65,7 @@ import {
 import { actOnInboundReply, emptyPollSummary, loadKnownSends, type KnownSend, type PollSummary } from "./imap-poller";
 import { loadInboundBlindMailboxes } from "./inbound-blindness";
 import { loadMailboxLogins } from "./mailbox-credentials";
+import { senderIsOurSide } from "./our-side-sender";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/forwarded-replies" };
 
@@ -134,33 +135,12 @@ export function planMirroredMessage(
     return { action: "file", kind: STAFF_REPLY_KIND, send, referencedMessageIds: classified.referencedMessageIds };
   }
 
-  // Someone outside the prospect's own company writing TO the prospect on our
-  // thread is our side answering them (the client's own address, a colleague
-  // of ours), never the prospect's reply: Doc Dinners' info@docdinners.com
-  // answered Dr. Curran and Dr. Matt in May, and filing that as their reply
-  // made the thread read as a question nobody answered (2026-10-13).
-  if (classified.kind === "reply" && isOurSideAnswer(message, send.leadEmail)) {
-    return { action: "file", kind: STAFF_REPLY_KIND, send, referencedMessageIds: classified.referencedMessageIds };
-  }
-
   return {
     action: "file",
     kind: refileStaffReply(classified.kind, isStaffSender(message.from ?? headers["from"], send.leadEmail)),
     send,
     referencedMessageIds: classified.referencedMessageIds,
   };
-}
-
-function domainOf(address: string): string {
-  return address.split("@")[1] ?? "";
-}
-
-/** Pure: written TO the lead by someone who is neither the lead nor at the lead's domain. */
-export function isOurSideAnswer(message: MirroredMessage, leadEmail: string): boolean {
-  const from = lower(message.from);
-  const lead = lower(leadEmail);
-  if (!from || from === lead || domainOf(from) === domainOf(lead)) return false;
-  return [...message.to, ...message.cc].map(lower).includes(lead);
 }
 
 /** Pure: is a reply dated `date` late as of `asOf`? Undated = late (never act as if fresh). */
@@ -287,7 +267,7 @@ async function recoveredRowOf(accountEmail: string, messageId: string): Promise<
  * delivery status put back to `sent` when nothing else still says bounced or
  * replied. Same archive the delayed-DSN backfill uses.
  */
-async function retractRowEvents(rowId: string, reason: string): Promise<void> {
+export async function retractRowEvents(rowId: string, reason: string): Promise<void> {
   const events = rowsOf(
     await db.execute(sql`
       SELECT to_jsonb(e.*) AS event, e.id, e.campaign_id, c.delivery_status
@@ -443,7 +423,17 @@ async function recoverMailbox(
 
   // Our own answers first, so a prospect already answered is never asked about.
   const knownIds = new Set(knownSends.keys());
-  const plans = messages.map((message) => ({ message, plan: planMirroredMessage(message, aliases, knownSends, knownIds) }));
+  const plans: Array<{ message: MirroredMessage; plan: ForwardedPlan }> = [];
+  for (const message of messages) {
+    let plan = planMirroredMessage(message, aliases, knownSends, knownIds);
+    // The client's own address, the rep we handed them to: our side answering
+    // the prospect on our thread, never their reply (`our-side-sender.ts`;
+    // Doc Dinners' info@docdinners.com answered Dr. Curran and Dr. Matt in May).
+    if (plan.action === "file" && plan.kind === "reply" && (await senderIsOurSide(message.from, plan.send))) {
+      plan = { ...plan, kind: STAFF_REPLY_KIND };
+    }
+    plans.push({ message, plan });
+  }
   const ordered = [
     ...plans.filter((p) => p.plan.action === "file" && p.plan.kind === STAFF_REPLY_KIND),
     ...plans.filter((p) => !(p.plan.action === "file" && p.plan.kind === STAFF_REPLY_KIND)),
