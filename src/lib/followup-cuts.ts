@@ -34,7 +34,7 @@ import { updateCampaignStatus } from "./instantly-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { stopSelfSendSequence } from "./self-send/stop-sequence";
 import { refreshLeadStatusCurrent } from "./status-gold";
-import { normalizeLeadEmail } from "./recontact-window";
+import { normalizeLeadEmail } from "./lead-email";
 
 export class LeadsNotInCampaignError extends Error {
   constructor(public readonly emails: string[]) {

@@ -243,6 +243,5 @@ describe("findNotAProspect", () => {
   it("refuses with its own code", () => {
     const body = notAProspectRefusal("a@b.com", { brandId: "brand-1", replyKind: "lead_is_client" });
     expect(body.code).toBe(NOT_A_PROSPECT_REFUSAL_CODE);
-    expect(body.code).not.toBe("recent_brand_contact");
   });
 });

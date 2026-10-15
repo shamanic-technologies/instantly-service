@@ -10,7 +10,7 @@
  * la liste des emails envoyés").
  *
  * One row per SEQUENCE (per-lead campaign row), not per person: a person we
- * wrote to again after the re-contact window has two sequences, each with its
+ * wrote to again by a later campaign has two sequences, each with its
  * own steps.
  *
  * Per step, from our own records only:

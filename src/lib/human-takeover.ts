@@ -14,8 +14,7 @@
  * Instantly's Unibox across 11 threads, every one of them still claimable.
  *
  * ⚠️ THE GATE BELONGS HERE BECAUSE THIS SERVICE PERFORMED THE SEND. Nothing
- * else in the fleet knows what actually went out on a thread — the same reason
- * the per-brand re-contact window lives in this repo. Do NOT resolve this by
+ * else in the fleet knows what actually went out on a thread. Do NOT resolve this by
  * asking another service; the send evidence is ours.
  *
  * ⚠️ IT READS THE SOURCES, NEVER THE `messages` PROJECTION. That table unifies

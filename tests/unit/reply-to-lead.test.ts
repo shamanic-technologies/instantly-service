@@ -735,7 +735,7 @@ describe("a human took over, so the automated responder stops", () => {
   it("sends NOTHING and prepares NOTHING on a refusal", async () => {
     // The gate runs before anything is prepared, so a refused reply resolves no
     // credential, makes no Instantly read and writes no bronze row — the same
-    // placement as the opt-out and re-contact gates on POST /orgs/send.
+    // placement as the opt-out and not-a-prospect gates on POST /orgs/send.
     queueAutomationReply([{ at: "2026-09-04T17:51:31.000Z", source: "dispatched" }]);
 
     await expect(replyToLead(AUTOMATED)).rejects.toThrow();

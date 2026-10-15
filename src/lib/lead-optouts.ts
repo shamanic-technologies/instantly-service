@@ -55,7 +55,7 @@ import { resolveInstantlyApiKey } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { stopSelfSendSequence } from "./self-send/stop-sequence";
-import { normalizeLeadEmail } from "./recontact-window";
+import { normalizeLeadEmail } from "./lead-email";
 
 /**
  * How the person told us. Required on every record, and deliberately a closed
@@ -142,8 +142,8 @@ export async function findStandingOptOut(
     .where(
       and(
         eq(instantlyLeadOptoutsRaw.orgId, orgId),
-        // ⚠️ CASE-INSENSITIVE, the same normalization the re-contact window and
-        // the serve path apply. `Joe@X.com` and `joe@x.com` are one inbox, and
+        // ⚠️ CASE-INSENSITIVE, the same normalization every per-person
+        // lookup and the serve path apply. `Joe@X.com` and `joe@x.com` are one inbox, and
         // an exact match let a standing opt-out go unseen under the other
         // casing — which fails in the direction that emails somebody who asked
         // us to stop. The row keeps the casing the person used; only the
@@ -527,10 +527,9 @@ export async function listLeadOptOuts(
 /**
  * Machine-readable refusal code when a send is refused for a standing opt-out.
  *
- * Distinguishable from this route's other refusals: the re-contact window
- * (`recent_brand_contact` — a timing rule that expires). A caller must be
- * able to tell "come back in three months" from "never contact this person
- * again".
+ * Distinguishable from this route's other refusals (`email_not_verified` lapses
+ * when the address may be re-verified). A caller must be able to tell "come
+ * back later" from "never contact this person again".
  */
 export const OPT_OUT_REFUSAL_CODE = "lead_opted_out";
 
@@ -542,8 +541,7 @@ export const OPT_OUT_REFUSAL_CODE = "lead_opted_out";
  * keyed on (org, person). Honouring it for one brand while another brand of the
  * same org keeps writing is exactly the outcome the law cares about.
  *
- * ⚠️ IT NEVER EXPIRES. The re-contact window beside it is a three-month timing
- * rule that lapses; this one does not, because nothing about the passage of
+ * ⚠️ IT NEVER EXPIRES, because nothing about the passage of
  * time withdraws a consent statement. Only an explicit withdrawal does.
  */
 export function optOutRefusal(leadEmail: string, optOut: LeadOptOutRow) {
