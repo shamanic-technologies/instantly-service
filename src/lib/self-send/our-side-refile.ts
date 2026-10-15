@@ -31,6 +31,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../../db";
 import { POSITIVE_QUALIFICATION_EVENT_TYPES } from "../forward-positive-reply";
 import { refreshLeadStatusCurrent } from "../status-gold";
+import { reprojectImapMessage } from "../messages-sync";
 import { STAFF_REPLY_KIND } from "./inbound";
 import { retractRowEvents } from "./forwarded-replies";
 import { isOurSideSender, loadOurSide, quickSenderSide, type OurSide } from "./our-side-sender";
@@ -111,10 +112,7 @@ export async function refileOurSideReplies(
                                                   'reclassifiedReason', 'our_side_sender'::text)
       WHERE id = ${candidate.rowId} AND kind = 'reply'
     `);
-    await db.execute(sql`
-      UPDATE messages SET kind = ${STAFF_REPLY_KIND}
-      WHERE source_table = 'imap_messages_raw' AND source_row_id = ${candidate.rowId}
-    `);
+    await reprojectImapMessage(candidate.rowId);
     if (at) await releaseClaimsTakenBy(instantlyCampaignId, at);
     await refreshLeadStatusCurrent(instantlyCampaignId, leadEmail);
     console.log(
