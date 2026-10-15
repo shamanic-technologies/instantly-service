@@ -2,8 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // A reply recovered long after it was written (forwarded-replies.ts) records
 // its fact but must not act as if the prospect had just written: no
-// celebration, no responder run, no follow-up queue, no hand-over, no apology,
-// no call to the rep. The decline/opt-out halves still run.
+// celebration, no responder run, no follow-up queue, no hand-over, no apology. The decline/opt-out halves still run.
 
 const mockDbSelect = vi.fn();
 const mockDbInsertReturning = vi.fn();
@@ -31,7 +30,6 @@ const live = {
   forward: vi.fn(),
   escalate: vi.fn(),
   notAProspect: vi.fn(),
-  ringRep: vi.fn(),
 };
 const decline = vi.fn();
 const optOut = vi.fn();
@@ -55,9 +53,6 @@ vi.mock("../../src/lib/escalate-off-topic-reply", () => ({
 }));
 vi.mock("../../src/lib/not-a-prospect", () => ({
   maybeHandleNotAProspect: (...a: unknown[]) => live.notAProspect(...a),
-}));
-vi.mock("../../src/lib/ring-rep-on-sales-interest", () => ({
-  maybeRingRepOnSalesInterest: (...a: unknown[]) => live.ringRep(...a),
 }));
 vi.mock("../../src/lib/stop-followups-on-decline", () => ({
   maybeStopFollowupsOnDecline: (...a: unknown[]) => decline(...a),
@@ -126,7 +121,6 @@ describe("promoteEvent: a reply delivered late", () => {
     expect(live.trigger).toHaveBeenCalled();
     expect(live.enqueue).toHaveBeenCalled();
     expect(live.forward).toHaveBeenCalled();
-    expect(live.ringRep).toHaveBeenCalled();
     expect(mirror).toHaveBeenCalled();
   });
 
