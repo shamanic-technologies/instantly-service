@@ -10,6 +10,10 @@ const mockRefresh = vi.fn();
 vi.mock("../../src/lib/status-gold", () => ({
   refreshLeadStatusCurrent: (...a: unknown[]) => mockRefresh(...a),
 }));
+const mockReproject = vi.fn();
+vi.mock("../../src/lib/messages-sync", () => ({
+  reprojectImapMessage: (...a: unknown[]) => mockReproject(...a),
+}));
 const mockLoadOurSide = vi.fn();
 vi.mock("../../src/lib/self-send/our-side-sender", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -82,7 +86,9 @@ describe("refileOurSideReplies — taking back replies our side wrote", () => {
     expect(mockRetract).toHaveBeenCalledWith("464c89f2", "our-side-refiled:reply->staff_reply");
     const sqlText = mockDbExecute.mock.calls.map((c) => JSON.stringify(c[0])).join("\n");
     expect(sqlText).toContain("UPDATE imap_messages_raw");
-    expect(sqlText).toContain("UPDATE messages SET kind");
+    // The projection is re-mapped by the sync's own mapper (manual_reply / out), never hand-written.
+    expect(mockReproject).toHaveBeenCalledWith("464c89f2");
+    expect(sqlText).not.toContain("UPDATE messages");
     expect(sqlText).toContain("meeting_request_celebrated_at = NULL");
     // Never deleted: the message stays in the conversation.
     expect(sqlText).not.toMatch(/DELETE FROM imap_messages_raw|DELETE FROM messages/);
