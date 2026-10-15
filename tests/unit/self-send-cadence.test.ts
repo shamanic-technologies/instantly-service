@@ -60,6 +60,13 @@ vi.mock("../../src/db/schema", () => ({
   scheduledReplies: { id: "id", scheduledFor: "scheduled_for" },
 }));
 
+// The bounce budget's history read (bounce-budget.ts): an empty fleet, so the
+// db.execute sequence below stays the one the dispatcher made before it.
+vi.mock("../../src/lib/bounce-budget-history", () => ({
+  loadFleetBounceHistory: vi.fn(async () => new Map()),
+  loadFleetBounceHistoryCached: vi.fn(async () => new Map()),
+}));
+
 vi.mock("../../src/lib/self-send/inbound-blindness", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/lib/self-send/inbound-blindness")>()),
   loadInboundBlindMailboxes: vi.fn(async () => new Set<string>()),
@@ -113,6 +120,7 @@ const SEQUENCE_ROW = {
   leadEmail: "prospect@example.com",
   accountEmail: "amy@saviolabsco.com",
   provisionedSteps: [1],
+  verdict: "valid",
   lastSentStep: null,
   lastSentAt: null,
   stepDelays: [],

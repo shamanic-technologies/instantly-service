@@ -50,6 +50,13 @@ vi.mock("../../src/lib/self-send/answer-now", () => ({
     Promise.resolve({ answersPerson: false, summary: null }),
 }));
 
+// The bounce budget's history (bounce-budget.ts): an empty fleet, so the pool
+// preference is a no-op and each test's db.execute sequence is unchanged.
+vi.mock("../../src/lib/bounce-budget-history", () => ({
+  loadFleetBounceHistory: vi.fn(async () => new Map()),
+  loadFleetBounceHistoryCached: vi.fn(async () => new Map()),
+}));
+
 vi.mock("../../src/lib/self-send/inbound-blindness", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/lib/self-send/inbound-blindness")>()),
   dropInboundBlind: vi.fn(async (accounts: unknown[]) => accounts),
