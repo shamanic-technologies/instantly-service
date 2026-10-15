@@ -44,6 +44,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../../db";
 import { imapMessagesRaw, instantlyEventsRetracted } from "../../db/schema";
 import { refreshLeadStatusCurrent } from "../status-gold";
+import { reprojectImapMessage } from "../messages-sync";
 import { promoteEvent } from "../silver-promote";
 import type { CallerInfo } from "../key-client";
 import { isStaffSender } from "../staff-senders";
@@ -501,10 +502,7 @@ async function recoverMailbox(
               'reclassifiedAt', now())
         WHERE id = ${existing.id}
       `);
-      await db.execute(sql`
-        UPDATE messages SET kind = ${plan.kind}
-        WHERE source_table = 'imap_messages_raw' AND source_row_id = ${existing.id}
-      `);
+      await reprojectImapMessage(existing.id);
       summary.reclassified += 1;
       await promoteFiled(existing.id, plan, message, messageId, deliveredLate, asOf, summary);
       await refreshLeadStatusCurrent(plan.send.instantlyCampaignId, plan.send.leadEmail);
