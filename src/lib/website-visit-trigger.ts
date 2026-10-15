@@ -436,7 +436,7 @@ export async function noteWebsiteVisitFromClick(
   // This person already holds a fire for this outcome on this campaign: once.
   if (!fire) return;
 
-  void deliverOutcomeFire(fire, store);
+  void deliverOutcomeFire(fire, store, now);
 }
 
 /** Deliver every pending fire that is due, once each. Never throws per row. */

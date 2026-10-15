@@ -82,6 +82,11 @@ async function seedCampaign(ic: string, brands: string[]) {
     [SRC, ic, e],
   );
   await q(
+    `INSERT INTO instantly_followup_cuts (id, org_id, campaign_id, instantly_campaign_id, lead_email, reason, cut_by, holds_cancelled)
+     VALUES (gen_random_uuid()::text, $1, 'c', $2, $3, 'test', 'u', 0)`,
+    [SRC, ic, e],
+  );
+  await q(
     `INSERT INTO outcome_trigger_fires (id, outcome_key, org_id, campaign_id, instantly_campaign_id, lead_email, occurred_at)
      VALUES (gen_random_uuid()::text, 'website_visit', $1, $2, $2, $3, now())`,
     [SRC, ic, e],
