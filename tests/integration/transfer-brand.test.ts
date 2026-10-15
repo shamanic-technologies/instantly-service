@@ -81,6 +81,11 @@ async function seedCampaign(ic: string, brands: string[]) {
      VALUES (gen_random_uuid()::text, $1, 'u', 'c', $2, $3, '<p>x</p>', now())`,
     [SRC, ic, e],
   );
+  await q(
+    `INSERT INTO outcome_trigger_fires (id, outcome_key, org_id, campaign_id, instantly_campaign_id, lead_email, occurred_at)
+     VALUES (gen_random_uuid()::text, 'website_visit', $1, $2, $2, $3, now())`,
+    [SRC, ic, e],
+  );
 }
 
 async function seedOptout(email: string, withdrawn: boolean) {

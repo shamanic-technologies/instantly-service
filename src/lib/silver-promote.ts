@@ -21,6 +21,7 @@ import type { LeadFull, EmailRecord } from "./instantly-client";
 import { refreshLeadStatusCurrent } from "./status-gold";
 import { announceEvidenceChanged } from "./evidence-changed";
 import { maybeStopOnClickForLeg } from "./stop-on-click";
+import { noteWebsiteVisitFromClick } from "./website-visit-trigger";
 import { maybeForwardPositiveReply } from "./forward-positive-reply";
 import { maybeEnqueueFollowupOnInterest } from "./enqueue-followup-on-interest";
 import { maybeStopFollowupsOnDecline } from "./stop-followups-on-decline";
@@ -674,6 +675,13 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // sequence whatever its sentiment, conditioned on no leg at all.
       if (input.eventType === "email_link_clicked") {
         await maybeStopOnClickForLeg(campaign, input.leadEmail);
+        // A human click on a link we sent IS the person reaching the
+        // `website_visit` outcome: fire its trigger once per person
+        // (CLICK-FIRES-WEBSITE-VISIT-1015). Only a first promotion of a REAL
+        // click gets here (a replay dedupes above, a scanner is never promoted,
+        // an inferred click runs no side effect). Writes the fire, delivers it
+        // detached; never throws.
+        await noteWebsiteVisitFromClick(campaign, input.leadEmail, input.timestamp, result.silverEventId);
       }
 
       // A buyer opened a conversation: ask campaign-service to run the campaign
