@@ -22,6 +22,8 @@ import {
   resolveReplyCampaignId,
 } from "../lib/resolve-reply-thread";
 import { handThreadFollowupsToHuman } from "../lib/hand-followups-to-human";
+import { countHumanAnswerAsOurs } from "../lib/count-human-answer";
+import type { HumanTookOverError } from "../lib/reply-to-lead-error";
 
 const router = Router();
 
@@ -63,8 +65,6 @@ router.post("/", async (req: Request, res: Response) => {
   } catch (error: unknown) {
     // A named refusal the caller can branch on.
     if (error instanceof ReplyToLeadError) {
-      // A person already answered this thread: it is theirs. Say so to the queue,
-      // or the responder claims it again at its next due date and is refused again.
       if (error instanceof AmbiguousReplyThreadError) {
         return res.status(error.status).json({
           error: error.message,
@@ -75,14 +75,30 @@ router.post("/", async (req: Request, res: Response) => {
           })),
         });
       }
-      if ((error.code === "human_took_over" || error.code === "prospect_wrote_elsewhere") && campaign_id) {
+      // A person of the brand answered this thread by hand: one of our touches,
+      // the follow-ups go on from it (owner 2026-10-15, REPLY-ANY-LEAD-1015).
+      // Only a conversation held in a person's OWN mailbox (or the prospect
+      // writing to it) is theirs for good: nothing automated can write there.
+      const answer = (error as { answer?: HumanTookOverError["answer"] }).answer;
+      if (error.code === "human_took_over" && answer && !answer.heldInOwnMailbox) {
+        await countHumanAnswerAsOurs({
+          orgId,
+          campaignId: campaign_id,
+          leadEmail: email,
+          instantlyCampaignId: answer.instantlyCampaignId,
+          answeredAt: answer.at,
+        });
+      } else if (
+        (error.code === "prospect_wrote_elsewhere" || (error.code === "human_took_over" && answer?.heldInOwnMailbox)) &&
+        campaign_id
+      ) {
         await handThreadFollowupsToHuman({
           orgId,
           campaignId: campaign_id,
           leadEmail: email,
           reason:
             error.code === "human_took_over"
-              ? "A person answered this thread after the prospect last wrote (human_took_over)."
+              ? "A person holds this conversation from their own mailbox (human_took_over)."
               : "The prospect last wrote to one of our people's own mailbox (prospect_wrote_elsewhere).",
           tag: "reply-to-lead",
         });

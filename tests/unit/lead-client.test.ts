@@ -139,3 +139,29 @@ describe("handFollowupsToHuman", () => {
     ).rejects.toThrow(/400/);
   });
 });
+
+describe("recordFollowupActed", () => {
+  it("POSTs kind=acted with the next due date, no acting campaign", async () => {
+    const followup = { id: "row-1", dueAt: "2026-10-18T09:00:00.000Z", followupCount: 1 };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ followup }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { recordFollowupActed } = await import("../../src/lib/lead-client");
+    expect(
+      await recordFollowupActed({ orgId: "org-1", leadRowId: "row-1", nextDueAt: "2026-10-18T09:00:00.000Z" }),
+    ).toEqual(followup);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://lead.example/orgs/leads/row-1/followups");
+    expect(init.headers["x-campaign-id"]).toBeUndefined();
+    expect(JSON.parse(init.body)).toEqual({ kind: "acted", nextDueAt: "2026-10-18T09:00:00.000Z" });
+  });
+
+  it("fails loud on a refusal", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 400, text: async () => "due_date_in_past" }));
+    const { recordFollowupActed } = await import("../../src/lib/lead-client");
+    await expect(
+      recordFollowupActed({ orgId: "org-1", leadRowId: "row-1", nextDueAt: "x" }),
+    ).rejects.toThrow(/400/);
+  });
+});

@@ -127,6 +127,12 @@ export const instantlyCampaigns = pgTable(
     // the thread (follow-ups, retry-stuck, AI and human replies) so a thread
     // never changes signature mid-way, even if the client edits it afterwards.
     signatureHtml: text("signature_html"),
+    // REPLY-ANY-LEAD-1015 (migration 0078): the latest answer a PERSON of the
+    // brand typed on this thread that was counted as one of our touches
+    // (lead-service `acted`, lib/count-human-answer.ts). The takeover gate
+    // ignores human answers at or before it, so the follow-up due after it goes
+    // out. NULL = nothing counted.
+    humanAnswerCountedAt: timestamp("human_answer_counted_at", { withTimezone: true }),
     // NEVER-NO-FOLLOWUP-1014 (migration 0075): this row is a FOLLOW-UP of the
     // brand's own earlier outreach to the person (`POST /orgs/send`
     // `followUp: true`). It reserves on (run_id, lead_email) instead of

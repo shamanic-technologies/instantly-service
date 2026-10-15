@@ -455,6 +455,51 @@ export async function withdrawHandoff(params: {
 }
 
 /**
+ * State that we ACTED on this person and when the next answer is owed:
+ * lead-service `kind: "acted"` (count + 1, due date set, claim released).
+ *
+ * Stated by this service as the OBSERVER of a message the brand's own person
+ * typed by hand on the thread (owner 2026-10-15, REPLY-ANY-LEAD-1015): it counts
+ * as one of ours, the follow-ups go on. No `x-campaign-id` (an observer: anyone
+ * may claim the next date), so no campaign's worker is credited with it.
+ *
+ * FAILS LOUD; the caller is fail-soft.
+ */
+export async function recordFollowupActed(params: {
+  orgId: string;
+  /** lead-service's `leads_campaigns` row id — from `findLeadOnCampaignByEmail`. */
+  leadRowId: string;
+  nextDueAt: string;
+}): Promise<ScheduledFollowup["followup"]> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+
+  const response = await fetch(
+    `${LEAD_SERVICE_URL}/orgs/leads/${encodeURIComponent(params.leadRowId)}/followups`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": LEAD_SERVICE_API_KEY,
+        "x-org-id": params.orgId,
+      },
+      body: JSON.stringify({ kind: "acted", nextDueAt: params.nextDueAt }),
+    },
+  );
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(
+      `lead-service POST /orgs/leads/{id}/followups (acted) failed: ${response.status} - ${detail.slice(0, 200)}`,
+    );
+  }
+  const body = (await response.json()) as { followup?: ScheduledFollowup["followup"] };
+  if (!body.followup) throw new Error("lead-service POST /orgs/leads/{id}/followups (acted) answered no followup");
+  return body.followup;
+}
+
+/**
  * Give a person's thread to a HUMAN for good: lead-service `kind: "handed"`
  * (owner 2026-10-11). No automated responder claims the row again, and unlike a
  * stop a later `scheduled` (the prospect writes again) does NOT re-enter it, so
