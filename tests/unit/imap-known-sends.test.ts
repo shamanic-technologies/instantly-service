@@ -382,6 +382,94 @@ describe("runPoll body fetching", () => {
     expect((inserted[0]!.payload as { textSnippet: unknown }).textSnippet).toBe("body text");
   });
 
+  describe("who wrote it, not just which thread (SENDER-NOT-PROSPECT-1015)", () => {
+    const jerrySend = {
+      messageId: "<ours@live.com>",
+      instantlyCampaignId: "self:d1306a8c",
+      leadEmail: "jerryclark@alpinespinalrehab.com",
+      step: 1,
+      orgId: "org-docdinners",
+    };
+
+    function ourSideIs(addresses: string[], domains: string[]) {
+      vi.doMock("../../src/lib/self-send/our-side-sender", async (importOriginal) => {
+        const real = await importOriginal<typeof import("../../src/lib/self-send/our-side-sender")>();
+        const ourSide = { addresses: new Set(addresses), domains: new Set(domains) };
+        return {
+          ...real,
+          loadOurSide: async () => ourSide,
+          senderIsOurSide: async (from: string | null, send: { leadEmail: string }) =>
+            real.isOurSideSender(from, send.leadEmail, ourSide),
+        };
+      });
+    }
+
+    it("the rep we handed the prospect to answering in the thread is OUR answer: nothing promoted, still stored", async () => {
+      // Prod 2026-10-14, Doc Dinners: Dev (dev@docdinners.com), Cc'd at the
+      // hand-over, wrote to Jerry in the thread. It was filed as Jerry's meeting
+      // request and celebrated to Dev himself.
+      ourSideIs(["dev@docdinners.com"], ["docdinners.com"]);
+      const { summary, inserted } = await poll(
+        [
+          {
+            uid: 77,
+            headers:
+              'Message-ID: <dev@docdinners.com>\r\nFrom: "Dev-Raj Mandroop" <dev@docdinners.com>\r\nTo: hanna@gemkernelio.com\r\nCc: jerryclark@alpinespinalrehab.com, kevin@distribute.you\r\nIn-Reply-To: <ours@live.com>\r\nSubject: Re: Quick question for Alpine Spinal Rehab\r\n',
+          },
+        ],
+        [jerrySend],
+      );
+      vi.doUnmock("../../src/lib/self-send/our-side-sender");
+
+      expect(summary.replies).toBe(0);
+      expect(summary.qualified).toBe(0);
+      expect(summary.staffReplies).toBe(1);
+      expect(qualifyReplyMock).not.toHaveBeenCalled();
+      // Still in the conversation, on our side, with its words.
+      expect(inserted[0]).toMatchObject({ kind: "staff_reply", instantlyCampaignId: "self:d1306a8c" });
+    });
+
+    it("the prospect answering from a SECOND address of their own is still their reply", async () => {
+      // Prod 2026-04-09: jts@travelnewsgroup.com answered our email to
+      // jts@etn.travel and copied his other address.
+      ourSideIs(["dev@docdinners.com"], ["docdinners.com"]);
+      const { summary, inserted } = await poll(
+        [
+          {
+            uid: 78,
+            headers:
+              "Message-ID: <r@travelnewsgroup.com>\r\nFrom: jts@travelnewsgroup.com\r\nTo: hanna@gemkernelio.com, jts@etn.travel\r\nIn-Reply-To: <ours@live.com>\r\n",
+          },
+        ],
+        [{ ...jerrySend, leadEmail: "jts@etn.travel" }],
+      );
+      vi.doUnmock("../../src/lib/self-send/our-side-sender");
+
+      expect(summary.replies).toBe(1);
+      expect(summary.staffReplies).toBe(0);
+      expect(inserted[0]).toMatchObject({ kind: "reply" });
+    });
+
+    it("the prospect's own reply is still a reply (regression)", async () => {
+      ourSideIs(["dev@docdinners.com"], ["docdinners.com"]);
+      const { summary, inserted } = await poll(
+        [
+          {
+            uid: 79,
+            headers:
+              'Message-ID: <yes@alpinespinalrehab.com>\r\nFrom: "Alpine Spinal Rehab" <jerryclark@alpinespinalrehab.com>\r\nTo: hanna@gemkernelio.com\r\nIn-Reply-To: <ours@live.com>\r\n',
+          },
+        ],
+        [jerrySend],
+      );
+      vi.doUnmock("../../src/lib/self-send/our-side-sender");
+
+      expect(summary.replies).toBe(1);
+      expect(summary.staffReplies).toBe(0);
+      expect(inserted[0]).toMatchObject({ kind: "reply" });
+    });
+  });
+
   it("downloads a DSN's body, because that is where the bounced id is quoted", async () => {
     const { fetchOneCalls } = await poll([
       {

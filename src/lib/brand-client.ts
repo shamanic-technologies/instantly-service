@@ -113,6 +113,8 @@ export async function getSalesRep(
  */
 export interface BrandHandoffContext {
   name: string | null;
+  /** The brand's own website domain (`docdinners.com`), lowercased; null for a no-website brand. */
+  domain: string | null;
   rep: {
     email: string | null;
     firstName: string | null;
@@ -150,6 +152,7 @@ export async function getBrandHandoffContext(
   const brand = body.brand ?? {};
   return {
     name: nonEmpty(brand.name),
+    domain: nonEmpty(brand.domain)?.toLowerCase() ?? null,
     rep: {
       email: nonEmpty(brand.salesRepEmail),
       firstName: nonEmpty(brand.salesRepFirstName),

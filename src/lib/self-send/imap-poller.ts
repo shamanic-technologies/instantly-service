@@ -44,6 +44,7 @@ import { qualifyReply } from "./qualify-reply";
 import { OPT_OUT_REPLY_KIND, recordOptOutFromReply } from "../reply-opt-out";
 import { isSelfSendCampaignId, SEND_TRANSPORT_SMTP } from "./transport";
 import { isStaffSender } from "../staff-senders";
+import { senderIsOurSide } from "./our-side-sender";
 import { orphanReplyExclusion } from "./orphan-reply";
 import { loadOwnMailDomains } from "./own-mail-domains";
 
@@ -501,10 +502,6 @@ async function pollAccount(
         }
 
         const classified = classifyInbound(headers, body, new Set(knownSends.keys()));
-        // One of OUR OWN people answered the prospect and CC'd this mailbox: the
-        // message is our side of the thread, never the prospect's reply. Filed
-        // `staff_reply`, it promotes nothing and the takeover gate reads it.
-
         const correlation = correlateSend(
           classified.referencedMessageIds,
           knownSends,
@@ -522,11 +519,18 @@ async function pollAccount(
 
         const send = correlation.outcome === "matched" ? correlation.send : undefined;
 
+        // Who wrote it, not just which thread it is in: a reply-all by OUR side
+        // (staff, the brand's own people, the rep we handed the prospect to) is
+        // our answer, never the prospect's reply (`our-side-sender.ts`,
+        // SENDER-NOT-PROSPECT-1015). Read before bronze so a failed lookup
+        // leaves the message unfiled and the next read decides it.
+        const sender = candidate.head.from?.text ?? headers["from"];
         const classification = {
           ...classified,
           kind: refileStaffReply(
             classified.kind,
-            isStaffSender(candidate.head.from?.text ?? headers["from"], send?.leadEmail),
+            isStaffSender(sender, send?.leadEmail) ||
+              (classified.kind === "reply" && send !== undefined && (await senderIsOurSide(sender, send))),
           ),
         };
 
@@ -610,7 +614,7 @@ async function pollAccount(
         if (classification.kind === STAFF_REPLY_KIND) {
           summary.staffReplies += 1;
           console.log(
-            `[instantly-service] self-send-poll: staff answer on campaign=${send.instantlyCampaignId} lead=${send.leadEmail} from=${parsed.from?.text ?? "?"} — recorded as our own reply, nothing promoted`,
+            `[instantly-service] self-send-poll: our side answered on campaign=${send.instantlyCampaignId} lead=${send.leadEmail} from=${parsed.from?.text ?? "?"} — recorded as our own reply, nothing promoted`,
           );
           continue;
         }

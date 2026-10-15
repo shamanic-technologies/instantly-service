@@ -4,6 +4,7 @@ import {
   buildOrphanReplyQuestion,
   ORPHAN_REPLY_NONE,
   orphanReplyExclusion,
+  headerRecipients,
   rankOrphanReplyLeads,
   readOrphanReplyVerdict,
   type OrphanReplyLead,
@@ -100,6 +101,30 @@ describe("rankOrphanReplyLeads", () => {
     });
     const ranked = rankOrphanReplyLeads(stacyAnswer, [other, lead()]);
     expect(ranked.map((r) => r.lead.instantlyCampaignId)).toEqual(["self:stacy"]);
+  });
+
+  it("never offers a lead the message is addressed TO: the client writing to the prospect is not the prospect answering", () => {
+    // SENDER-NOT-PROSPECT-1015: someone on the client's side emailing Stacy
+    // fresh, with our mailbox in Cc, shares her name and the pitch, but is
+    // written TO her.
+    const toStacy = {
+      ...stacyAnswer,
+      fromAddress: '"Dev-Raj Mandroop" <dev@docdinners.com>',
+      text: "Hey Stacy Blecher, Dev here from Doc Dinners. When would be a good time to jump on a quick call?",
+      recipients: ["stacy.blecher@twinhealth.com", "michaela@saviolabsco.com"],
+    };
+    expect(rankOrphanReplyLeads(toStacy, [lead()])).toEqual([]);
+    // Control: the same words NOT addressed to her are still offered.
+    expect(rankOrphanReplyLeads({ ...toStacy, recipients: ["michaela@saviolabsco.com"] }, [lead()])).toHaveLength(1);
+  });
+
+  it("reads To/Cc from a stored header in either shape", () => {
+    expect(
+      headerRecipients({
+        to: '{"value":[{"address":"Hanna@gemkernelio.com","name":"Hanna"}],"text":"Hanna <hanna@gemkernelio.com>"}',
+        cc: "jerryclark@alpinespinalrehab.com, Kevin <kevin@distribute.you>",
+      }),
+    ).toEqual(["hanna@gemkernelio.com", "jerryclark@alpinespinalrehab.com", "kevin@distribute.you"]);
   });
 
   it("offers the lead a COLLEAGUE answers for, through the quoted pitch and company domain", () => {

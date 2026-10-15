@@ -44,6 +44,7 @@ import {
   INSTANTLY_WARMUP_TAGS,
   ORPHAN_REPLY_QUESTION_KEY,
   orphanReplyExclusion,
+  headerRecipients,
   rankOrphanReplyLeads,
   readOrphanReplyVerdict,
   type OrphanReplyLead,
@@ -461,7 +462,13 @@ export async function runOrphanReplySweep(
       }
 
       const ranked = rankOrphanReplyLeads(
-        { fromAddress: row.fromAddress, subject: row.subject, text: row.text, receivedAt: row.receivedAt },
+        {
+          fromAddress: row.fromAddress,
+          subject: row.subject,
+          text: row.text,
+          receivedAt: row.receivedAt,
+          recipients: headerRecipients(row.headers),
+        },
         leadsAsOf(mailbox.leads, mailbox.steps, row.receivedAt),
       );
       if (ranked.length === 0) {
