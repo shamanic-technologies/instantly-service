@@ -82,6 +82,12 @@ vi.mock("../../src/lib/runs-client", () => ({
     /failed: 404\b/.test(error instanceof Error ? error.message : String(error)),
 }));
 
+// A first promoted REAL click notes the person's website visit (CLICK-FIRES-WEBSITE-VISIT-1015).
+const mockNoteWebsiteVisit = vi.fn();
+vi.mock("../../src/lib/website-visit-trigger", () => ({
+  noteWebsiteVisitFromClick: (...args: unknown[]) => mockNoteWebsiteVisit(...args),
+}));
+
 // A thread held by a person from their own mailbox: none here (gmail-threads).
 vi.mock("../../src/lib/human-takeover", () => ({ isHeldInOwnMailbox: () => Promise.resolve(false) }));
 vi.mock("../../src/lib/status-gold", () => ({
@@ -1447,5 +1453,83 @@ describe("promoteSyntheticInterestFromLead", () => {
     });
 
     expect(result.promoted).toBe(false);
+  });
+});
+
+// ─── A click on our link fires the website visit, once (CLICK-FIRES-WEBSITE-VISIT-1015) ──────────
+
+describe("promoteEvent → website visit outcome trigger", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockDbSelect.mockResolvedValue([]);
+    mockDbInsertReturning.mockResolvedValue([]);
+    mockUpdateCostStatus.mockResolvedValue({});
+    mockRefreshLeadStatusCurrent.mockResolvedValue(undefined);
+  });
+
+  const click = (over: Record<string, unknown> = {}) =>
+    promoteFromWebhookPayload({
+      bronzeRowId: "bronze-click",
+      payload: {
+        event_type: "link_clicked",
+        campaign_id: "inst-camp-1",
+        lead_email: "lead@test.com",
+        step: 1,
+        timestamp: "2026-10-15T10:00:00.000Z",
+        ...over,
+      },
+    });
+
+  it("a first promoted REAL click notes the person's website visit, with the click's own time and silver id", async () => {
+    mockCampaign({ leadId: "lead-1" });
+    mockNewSilverRow("silver-click");
+
+    await click();
+
+    expect(mockNoteWebsiteVisit).toHaveBeenCalledTimes(1);
+    const [campaign, email, at, silverId] = mockNoteWebsiteVisit.mock.calls[0];
+    expect(campaign).toMatchObject({ campaignId: "camp-1", orgId: "org-uuid", instantlyCampaignId: "inst-camp-1", leadId: "lead-1" });
+    expect(email).toBe("lead@test.com");
+    expect((at as Date).toISOString()).toBe("2026-10-15T10:00:00.000Z");
+    expect(silverId).toBe("silver-click");
+  });
+
+  it("a webhook replay of the same click (silver dedupe) notes nothing", async () => {
+    mockCampaign({ leadId: "lead-1" });
+    mockDuplicateSilverRow();
+
+    await click();
+
+    expect(mockNoteWebsiteVisit).not.toHaveBeenCalled();
+  });
+
+  it("an Instantly lead-list re-sync of a click already in silver notes nothing", async () => {
+    mockCampaign({ leadId: "lead-1" });
+    mockDuplicateSilverRow();
+
+    await promoteSyntheticClicksFromLead({
+      bronzeRowId: "bronze-leads",
+      instantlyCampaignId: "inst-camp-1",
+      lead: { email: "lead@test.com", email_click_count: 2, timestamp_last_click: "2026-10-15T10:00:00.000Z" } as never,
+    });
+
+    expect(mockNoteWebsiteVisit).not.toHaveBeenCalled();
+  });
+
+  it("an open or a reply is not a website visit", async () => {
+    mockCampaign();
+    mockNewSilverRow();
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-open",
+      payload: { event_type: "email_opened", campaign_id: "inst-camp-1", lead_email: "lead@test.com", step: 1 },
+    });
+    mockCampaign();
+    mockNewSilverRow();
+    await promoteFromWebhookPayload({
+      bronzeRowId: "bronze-reply",
+      payload: { event_type: "reply_received", campaign_id: "inst-camp-1", lead_email: "lead@test.com", step: 1 },
+    });
+
+    expect(mockNoteWebsiteVisit).not.toHaveBeenCalled();
   });
 });

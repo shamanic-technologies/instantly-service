@@ -554,6 +554,13 @@
       "when": 1792200000000,
       "tag": "0078_human_answer_counted",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1792300000000,
+      "tag": "0079_outcome_trigger_fires",
+      "breakpoints": true
     }
   ]
 }
