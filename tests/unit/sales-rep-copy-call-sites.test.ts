@@ -31,7 +31,6 @@ function stripComments(src: string): string {
 }
 
 const REPLY = read("reply-to-lead.ts");
-const RING = read("ring-rep-on-sales-interest.ts");
 const CLIENT = read("brand-client.ts");
 
 describe("the one-to-one reply copies the rep", () => {
@@ -64,14 +63,8 @@ describe("the one-to-one reply copies the rep", () => {
 });
 
 describe("one reader asks brand-service who the rep is", () => {
-  it("the ring path reads the whole rep rather than a phone-only route of its own", () => {
-    expect(RING).toContain('import { getSalesRep } from "./brand-client"');
-    expect(RING).toContain("(await getSalesRep(brandId, campaign.orgId)).phone");
-  });
-
   it("the phone-only reader is GONE — two readers is how the two sends name two people", () => {
     expect(CLIENT).not.toContain("getSalesRepPhone");
-    expect(RING).not.toContain("getSalesRepPhone");
   });
 
   it("the client reads the rep route, not the deprecated phone alias", () => {

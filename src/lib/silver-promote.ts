@@ -26,7 +26,6 @@ import { maybeEnqueueFollowupOnInterest } from "./enqueue-followup-on-interest";
 import { maybeStopFollowupsOnDecline } from "./stop-followups-on-decline";
 import { isSalesInterestQualification, maybeTriggerSalesInterestCampaign } from "./trigger-sales-interest-campaign";
 import { isHeldInOwnMailbox } from "./human-takeover";
-import { maybeRingRepOnSalesInterest } from "./ring-rep-on-sales-interest";
 import { maybeEscalateOffTopicReply } from "./escalate-off-topic-reply";
 import { maybeHandleNotAProspect } from "./not-a-prospect";
 import { maybeMirrorCampaignEmails } from "./mirror-emails";
@@ -702,9 +701,6 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // into them. Same gate as the trigger, fail-soft, never throws.
       if (live && !heldByPerson) await maybeEnqueueFollowupOnInterest(campaign, input.leadEmail, input.eventType);
 
-      // ...then ask campaign-service to run the campaign bought for that leg.
-      if (live && !heldByPerson) await maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
-
       // ...and the reverse: a reply that declines, asks to stop, or hands us
       // somebody else takes the person back OUT of that queue. Without it a
       // prospect who said yes then no was still handed out for a follow-up
@@ -721,6 +717,19 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
       // never saw, so its mirror cannot hold it: asking is pointless (and 402s
       // since the plan was cancelled, one error line per recovered event).
       if (live) await maybeMirrorCampaignEmails(campaign, input.eventType);
+
+      // ...then report the occurrence (`positive_reply_received`) to
+      // campaign-service, naming the person and carrying their words: every
+      // pipe answering that trigger runs off it (the email responder, AI
+      // Instant Call ringing the rep...). AFTER the follow-up enqueue above
+      // (the run claims at once) and AFTER the mirror, which is what puts the
+      // words in bronze. DETACHED: it reads the thread and lead-service, and
+      // this runs inside Instantly's webhook, which counts a slow delivery
+      // toward disabling the whole subscription. It never throws, and is
+      // idempotent per reply (AIC-COMMON-1015).
+      if (live && !heldByPerson) {
+        void maybeTriggerSalesInterestCampaign(campaign, input.leadEmail, input.eventType);
+      }
 
       // Celebrate a positive reply to the client (the brand's rep, the agency
       // inbox in Bcc), with their reply shown word for word. AFTER the mirror,
@@ -763,24 +772,6 @@ export async function promoteEvent(rawInput: PromoteEventInput): Promise<Promote
         input.eventType,
         refinement.reading ?? undefined,
       );
-
-      // ...and ring the brand's sales rep about that buyer, offering to connect
-      // them to the prospect right there. Same gate as the two above.
-      //
-      // ⚠️ DELIBERATELY NOT AWAITED. It waits, bounded, for Apollo to deliver the
-      // prospect's phone number (asynchronous by Apollo's own design), and this
-      // runs inside Instantly's webhook, which counts a slow delivery toward
-      // DISABLING the whole subscription — that has already cost this service a
-      // six-day outage once. So it is launched detached and the qualification
-      // answers immediately; it claims its own at-most-once column and swallows
-      // every failure itself. Placed AFTER the mirror on purpose: the mirror is
-      // what puts the prospect's words in bronze, and the call reads them out.
-      if (live) {
-        void maybeRingRepOnSalesInterest(campaign, input.leadEmail, input.eventType).catch(
-          (error: unknown) =>
-            console.warn("[instantly-service] ring-rep: detached run failed —", error),
-        );
-      }
     }
   }
 
