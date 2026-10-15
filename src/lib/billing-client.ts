@@ -24,6 +24,14 @@ export interface AuthorizeResult {
   sufficient: boolean;
   balance_cents: number | string;
   required_cents: number | string;
+  /**
+   * Present ONLY when the refusal is not a balance shortfall (billing owns the
+   * vocabulary): `sales_funnel_max_budget_reached` / `sales_funnel_max_budget_unreadable`.
+   * Relayed verbatim, see src/lib/funding-refusal.ts.
+   */
+  reason?: string;
+  /** billing's cap figures, present only with `reason`. Relayed verbatim. */
+  sales_funnel_cap?: unknown;
 }
 
 export async function authorizeCreditSpend(

@@ -2413,6 +2413,65 @@ describe("POST /send", () => {
     expect(authorizeOrder).toBeLessThan(mockCreateCampaign.mock.invocationCallOrder[0]);
   });
 
+  it("a balance shortfall (billing sent no reason): the 402 body is byte-identical to before", async () => {
+    mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: false, balance_cents: 2, required_cents: 18 });
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]);
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([{ id: "reserved-1", campaignId: "camp-1", instantlyCampaignId: "reserving:x" }]);
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(402);
+    expect(res.body).toEqual({
+      error: "Insufficient credits",
+      code: "insufficient_credits",
+      balance_cents: 2,
+      required_cents: 18,
+    });
+  });
+
+  it("a sales funnel MAX BUDGET refusal is named, with billing's reason + sales_funnel_cap verbatim (FUNNEL-CAP-NAMED-402-1016)", async () => {
+    const cap = {
+      salesFunnelId: "sf-1",
+      salesFunnelCampaignId: "sfc-1",
+      amountCents: 1000,
+      period: "day",
+      consumedCents: 990,
+      reservedCents: 10,
+    };
+    mockAuthorizeCreditSpend.mockResolvedValue({
+      sufficient: false,
+      balance_cents: 50000,
+      required_cents: 18,
+      reason: "sales_funnel_max_budget_reached",
+      sales_funnel_cap: cap,
+    });
+    mockDbWhere.mockReset();
+    mockDbWhere.mockResolvedValueOnce([]);
+    mockDbReturning.mockReset();
+    mockDbReturning.mockResolvedValueOnce([{ id: "reserved-1", campaignId: "camp-1", instantlyCampaignId: "reserving:x" }]);
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(402);
+    expect(res.body).toMatchObject({
+      error: "Sales funnel max budget reached",
+      code: "insufficient_credits",
+      reason: "sales_funnel_max_budget_reached",
+      sales_funnel_cap: cap,
+      balance_cents: 50000,
+      required_cents: 18,
+    });
+    expect(res.body.error).not.toBe("Insufficient credits");
+    expect(res.body.details).toMatch(/max budget/);
+    expect(res.body.details).not.toMatch(/add credit(?! changes nothing)/i);
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "failed", expect.anything(), "sales_funnel_max_budget_reached");
+  });
+
   it("refuses an org out of credit with a loud 402 — nothing sent, costs cancelled, nothing queued", async () => {
     mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: false, balance_cents: 2, required_cents: 18 });
     mockDbWhere.mockReset();
@@ -3149,6 +3208,50 @@ describe("POST /send — no email to an address without a verdict from our verif
     expect(res.status).toBe(402);
     expect(res.body.code).toBe("insufficient_credits");
     expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+
+  it("verification refused for the sales funnel's MAX BUDGET: 402 names it and relays reason + sales_funnel_cap", async () => {
+    const cap = { salesFunnelId: "sf-1", salesFunnelCampaignId: "sfc-1", amountCents: 500, period: "day", consumedCents: 500, reservedCents: 0 };
+    mockGateAddressForSend.mockResolvedValue({
+      ...VALID_DECISION,
+      verdict: null,
+      accepted: false,
+      reason: "insufficient_credits",
+      verificationId: null,
+      verifiedAt: null,
+      reused: null,
+      fundingCause: { reason: "sales_funnel_max_budget_reached", sales_funnel_cap: cap },
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(402);
+    expect(res.body).toMatchObject({
+      error: "Sales funnel max budget reached",
+      code: "insufficient_credits",
+      reason: "sales_funnel_max_budget_reached",
+      sales_funnel_cap: cap,
+    });
+    expect(res.body.details).not.toMatch(/balance cannot pay/);
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+
+  it("verification the org cannot pay for (no reason): 402 body unchanged", async () => {
+    mockGateAddressForSend.mockResolvedValue({
+      ...VALID_DECISION,
+      verdict: null,
+      accepted: false,
+      reason: "insufficient_credits",
+      verificationId: null,
+      verifiedAt: null,
+      reused: null,
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(402);
+    expect(Object.keys(res.body).sort()).toEqual(["code", "details", "error"]);
+    expect(res.body.error).toBe("Insufficient credits");
   });
 
   it("an opted-out person is refused before anything is spent on verifying them", async () => {

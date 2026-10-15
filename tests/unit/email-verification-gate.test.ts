@@ -85,6 +85,14 @@ describe("gateAddresses — verify, decide, record", () => {
     expect(d.reason).toBe("insufficient_credits");
   });
 
+  it("a sales funnel max-budget refusal relayed by apollo keeps billing's named cause on the decision", async () => {
+    const cause = { reason: "sales_funnel_max_budget_reached", sales_funnel_cap: { salesFunnelId: "sf-1" } };
+    mockVerify.mockRejectedValue(new EmailVerifierError("402", 402, true, cause));
+    const d = await gateAddressForSend("a@x.com", IDENTITY);
+    expect(d.reason).toBe("insufficient_credits");
+    expect(d.fundingCause).toEqual(cause);
+  });
+
   it("an address missing from apollo's answer is no verdict", async () => {
     mockVerify.mockResolvedValue([]);
     const d = await gateAddressForSend("a@x.com", IDENTITY);
