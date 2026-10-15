@@ -48,7 +48,7 @@ import {
 import type { ThreadMessage } from "./forward-positive-reply";
 import { recordExistingCustomerByEmail } from "./lead-client";
 import { loadHistoryWithLatestReply, REPLY_WAIT_BACKGROUND_MS } from "./prospect-history";
-import { normalizeLeadEmail } from "./recontact-window";
+import { normalizeLeadEmail } from "./lead-email";
 import { isNotAProspectReplyKind, NOT_A_PROSPECT_REPLY_KINDS } from "./reply-kind";
 import { replyToLead } from "./reply-to-lead";
 import { stripQuotedHistory } from "./self-send/qualify-reply";

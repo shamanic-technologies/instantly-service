@@ -1019,7 +1019,7 @@ describe("POST /status — what the send route would refuse (RECONTACT-LOOP-1011
 
   it("states the refusal on the campaign scope, keyed by the address as asked", async () => {
     mockFindSendRefusals.mockResolvedValue(
-      new Map([["jjohnson@purewellchiro.com", { code: "recent_brand_contact", until: UNTIL }]]),
+      new Map([["jjohnson@purewellchiro.com", { code: "email_not_verified", until: UNTIL }]]),
     );
     const app = await createStatusApp();
     const res = await request(app).post("/").send({
@@ -1033,7 +1033,7 @@ describe("POST /status — what the send route would refuse (RECONTACT-LOOP-1011
       ["75d7e3e8-6926-4f85-a557-976895400666"],
       ["jjohnson@purewellchiro.com", "clean@x.com"],
     );
-    expect(res.body.results[0].campaign.sendRefusal).toEqual({ code: "recent_brand_contact", until: UNTIL });
+    expect(res.body.results[0].campaign.sendRefusal).toEqual({ code: "email_not_verified", until: UNTIL });
     // No refusal = the scope is byte-identical to before: the field is ABSENT.
     expect(res.body.results[1].campaign).toEqual(emptyScoped);
     expect("sendRefusal" in res.body.results[1].campaign).toBe(false);

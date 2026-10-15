@@ -40,7 +40,7 @@ import {
   type EmailVerification,
   type VerificationIdentity,
 } from "./apollo-client";
-import { normalizeLeadEmail } from "./recontact-window";
+import { normalizeLeadEmail } from "./lead-email";
 
 /** The 409 `code` the send route answers, and the status read states. */
 export const EMAIL_NOT_VERIFIED_REFUSAL_CODE = "email_not_verified";

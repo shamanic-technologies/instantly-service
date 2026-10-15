@@ -26,7 +26,7 @@ describe("threadSubjectFor (NEVER-NO-FOLLOWUP-1014)", () => {
     expect(threadSubjectFor(null, "kim@sender.com")).toBeNull();
   });
 
-  it("refusal body is explicit and distinct from recent_brand_contact", () => {
+  it("refusal body is explicit and with its own code", () => {
     const r = followUpQueuedRefusal("p@x.com", { instantlyCampaignId: "ss-1", brandId: "b-1" });
     expect(r.code).toBe("brand_sequence_queued");
     expect(r.brandId).toBe("b-1");

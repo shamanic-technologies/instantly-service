@@ -23,7 +23,7 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { emailVerificationHistory, emailVerificationHistorySync } from "../db/schema";
 import { fetchVerificationHistoryPage, type VerificationHistoryRow } from "./apollo-client";
-import { normalizeLeadEmail } from "./recontact-window";
+import { normalizeLeadEmail } from "./lead-email";
 
 export const VERIFICATION_FEED = "apollo-email-verifications";
 
