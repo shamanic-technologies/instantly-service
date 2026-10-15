@@ -30,7 +30,7 @@ import { db } from "../db";
 import { gateAddresses, type GateDecision } from "./email-verification-gate";
 import { updateCampaignStatus } from "./instantly-client";
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
-import { normalizeLeadEmail } from "./recontact-window";
+import { normalizeLeadEmail } from "./lead-email";
 import { isSelfSendCampaignId } from "./self-send/transport";
 import { stopSelfSendSequence } from "./self-send/stop-sequence";
 

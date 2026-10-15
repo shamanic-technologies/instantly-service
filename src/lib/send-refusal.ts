@@ -1,7 +1,7 @@
 // The status read's statement that `POST /orgs/send` would REFUSE a person.
 //
 // Why it exists (RECONTACT-LOOP-1011, Perky 2026-10-11): the send route refuses
-// with 409 `recent_brand_contact`, `lead_opted_out`, `lead_not_a_prospect` or
+// with 409 `lead_opted_out`, `lead_not_a_prospect` or
 // `email_not_verified` (our verifier called the address invalid / risky),
 // but none of that showed in `POST /orgs/status`. A refused person read
 // "not contacted, not queued, not finished" — exactly like a stranded one — so
@@ -18,11 +18,7 @@ import {
 } from "./email-verification-gate";
 import { findStandingOptOuts, OPT_OUT_REFUSAL_CODE } from "./lead-optouts";
 import { findNotAProspects, NOT_A_PROSPECT_REFUSAL_CODE } from "./not-a-prospect";
-import {
-  findRecentBrandContacts,
-  normalizeLeadEmail,
-  RECONTACT_REFUSAL_CODE,
-} from "./recontact-window";
+import { normalizeLeadEmail } from "./lead-email";
 
 export interface SendRefusal {
   /** The send route's own 409 `code`. */
@@ -36,7 +32,7 @@ export interface SendRefusal {
  * would give for this org and these brands. Absent = no refusal.
  *
  * Several rules can stand at once; the one that lasts LONGEST is stated
- * (a never-lapsing rule beats a window), because the consumer's question is
+ * (a never-lapsing rule beats a lapsing one), because the consumer's question is
  * "when may I hand this person back?" and the answer is when the last gate
  * opens. Fail loud: a DB error propagates (an unreadable refusal must not read
  * as "none").
@@ -46,10 +42,9 @@ export async function findSendRefusals(
   brandIds: string[],
   emails: string[],
 ): Promise<Map<string, SendRefusal>> {
-  const [optOuts, notAProspects, recentContacts, notVerified] = await Promise.all([
+  const [optOuts, notAProspects, notVerified] = await Promise.all([
     findStandingOptOuts(orgId, emails),
     findNotAProspects(emails, brandIds),
-    findRecentBrandContacts(emails, brandIds),
     findEmailNotVerifiedRefusals(orgId, emails),
   ]);
 
@@ -64,12 +59,8 @@ export async function findSendRefusals(
       out.set(email, { code: NOT_A_PROSPECT_REFUSAL_CODE, until: null });
       continue;
     }
-    // Two lapsing rules can stand at once: the later lapse is the answer.
-    const recent = recentContacts.get(key);
     const unverifiedUntil = notVerified.get(key);
-    if (recent && (!unverifiedUntil || recent.lapsesAt >= unverifiedUntil)) {
-      out.set(email, { code: RECONTACT_REFUSAL_CODE, until: recent.lapsesAt.toISOString() });
-    } else if (unverifiedUntil) {
+    if (unverifiedUntil) {
       out.set(email, { code: EMAIL_NOT_VERIFIED_REFUSAL_CODE, until: unverifiedUntil.toISOString() });
     }
   }

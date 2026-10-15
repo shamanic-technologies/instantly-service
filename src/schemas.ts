@@ -476,7 +476,7 @@ export const SendRequestSchema = z
       .optional()
       .describe(
         "`true` = this email CONTINUES the brand's own earlier outreach to this person (a follow-up), it is not a new cold pitch. " +
-          "The per-brand 3-month re-contact window (409 `recent_brand_contact`) does not apply to it; every other gate still does " +
+          "Every send gate applies to it " +
           "(409 `lead_opted_out` org-wide, 409 `lead_not_a_prospect`, the address verifier, 402 `insufficient_credits`). " +
           "Refused 409 `brand_sequence_queued` while a step of this brand's sequence to the person is still waiting to leave (two of our emails would race). " +
           "Lands in the SAME thread as the brand's latest email to the person (same mailbox, `Re:` that subject, In-Reply-To/References) when that mailbox can still send; else a new thread with this `subject`. " +
@@ -526,7 +526,7 @@ const SendResponseSchema = z
 const SendRefusalSchema = z
   .object({
     error: z.string(),
-    code: z.enum(["recent_brand_contact", "lead_opted_out", "lead_not_a_prospect", "email_not_verified"]),
+    code: z.enum(["lead_opted_out", "lead_not_a_prospect", "email_not_verified"]),
     details: z.string(),
     verdict: z
       .string()
@@ -541,15 +541,6 @@ const SendRefusalSchema = z
       .nullable()
       .optional()
       .describe("email_not_verified only — when the verdict may be re-asked (verdict time + 30 days)"),
-    brandId: z.string().optional().describe("recent_brand_contact only — the brand already contacted"),
-    lastEmailedAt: z
-      .string()
-      .optional()
-      .describe("recent_brand_contact only — when the previous email to this person for that brand went out"),
-    windowInterval: z
-      .string()
-      .optional()
-      .describe("recent_brand_contact only — the re-contact window, e.g. \"3 months\""),
   })
   .openapi("SendRefusal");
 
@@ -588,8 +579,8 @@ registry.registerPath({
     409: {
       description:
         "Refused, not a transport failure — no email was sent and nothing was billed. " +
-        "`code: \"recent_brand_contact\"` = the recipient was already emailed for one of " +
-        "this send's brands inside the 3-month re-contact window. " +
+        "No send is refused because the brand emailed the person recently: that is the serve-time " +
+        "tactic \"Fresh contacts only\" (lead-service), never a send gate; a person the caller names is sent to. " +
         "`code: \"lead_opted_out\"` = the recipient asked this org to stop. " +
         "`code: \"lead_not_a_prospect\"` = the recipient told the brand they are not a prospect. " +
         "`code: \"email_signature_conflict\"` = two brands of this send set different email signatures (PUT /orgs/email-signature). " +
@@ -1344,11 +1335,11 @@ const ScopedStatusSchema = StatusScopeSchema.extend({
     .object({
       code: z
         .string()
-        .describe("The 409 `code` `POST /orgs/send` would answer: `lead_opted_out`, `lead_not_a_prospect`, `recent_brand_contact` or `email_not_verified` (our verifier called the address invalid / risky; until = when it may be re-verified)."),
+        .describe("The 409 `code` `POST /orgs/send` would answer: `lead_opted_out`, `lead_not_a_prospect` or `email_not_verified` (our verifier called the address invalid / risky; until = when it may be re-verified)."),
       until: z
         .string()
         .nullable()
-        .describe("ISO 8601 instant the refusal lapses (the re-contact window: the moment the send gate lets the send through again). Null = never lapses on its own (opt-out, not a prospect)."),
+        .describe("ISO 8601 instant the refusal lapses (the moment the send gate lets the send through again, e.g. when the address may be re-verified). Null = never lapses on its own (opt-out, not a prospect)."),
     })
     .optional()
     .describe(
@@ -2336,7 +2327,7 @@ registry.registerPath({
   path: "/orgs/email-sequences",
   summary: "A brand's email sequences, each email sent or queued (paged)",
   description:
-    "Every sequence we run for one brand of the org: one row per sequence (a prospect emailed again after the re-contact window has two), with every step (first email + follow-ups) and what happened to it: `sent` with `sentAt`, `queued`, or `stopped`. Read from our own send records (send holds, self-send steps, real `email_sent` events), so the counts match our dispatch log.\n\n" +
+    "Every sequence we run for one brand of the org: one row per sequence (a prospect emailed again by a later campaign has two), with every step (first email + follow-ups) and what happened to it: `sent` with `sentAt`, `queued`, or `stopped`. Read from our own send records (send holds, self-send steps, real `email_sent` events), so the counts match our dispatch log.\n\n" +
     "**Join** with the generated email bodies (content-generation-service, `GET /v1/emails?brandId=`) on `leadId`.\n\n" +
     "**Paging.** Keyset, opaque cursor. Read until `nextCursor` is null. Default page 500, max 2000.\n\n" +
     "**Scope.** Org-scoped on `x-org-id`: a brand of another org lists nothing.\n\n" +

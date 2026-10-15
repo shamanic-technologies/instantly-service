@@ -12,7 +12,6 @@ import {
 } from "../lib/instantly-client";
 import { selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
 import { stepRowsFromSendPayload } from "../lib/self-send/sequence-steps";
-import { findRecentBrandContact, recontactRefusal } from "../lib/recontact-window";
 import {
   findFollowUpThread,
   findQueuedBrandSequence,
@@ -240,8 +239,7 @@ router.post("/", async (req: Request, res: Response) => {
       //    metadata. Refusing protected nothing: a second email to the same
       //    person is prevented by the gates that key on the ADDRESS — the
       //    (campaign, email) reservation below (a duplicate answers 200 with
-      //    `held`), the opt-out and the per-brand re-contact window — none of
-      //    which reads the lead id.
+      //    `held`) and the opt-out — neither of which reads the lead id.
       if (body.leadId) {
         const superseded = await db
           .select({ leadId: instantlyCampaigns.leadId })
@@ -302,12 +300,9 @@ router.post("/", async (req: Request, res: Response) => {
 
       // 3a-bis. OPT-OUT — refuse outright if this person asked this org to stop.
       //
-      //     Checked BEFORE the re-contact window because the two say different
-      //     things and this one is stronger: the window is a three-month timing
-      //     rule that LAPSES, an opt-out never does. Without this gate a
-      //     recorded opt-out stopped the campaigns that existed that day and
-      //     nothing else — so once the window expired we would email the person
-      //     again, which is the outcome the record exists to prevent.
+      //     Without this gate a recorded opt-out stopped the campaigns that
+      //     existed that day and nothing else, so the next send would email the
+      //     person again, which is the outcome the record exists to prevent.
       //
       //     ORG-scoped, like the record itself: they asked US to stop, and
       //     honouring it for one brand while a sibling brand keeps writing is
@@ -331,23 +326,16 @@ router.post("/", async (req: Request, res: Response) => {
         return res.status(409).json(refusal);
       }
 
-      // 3b. RE-CONTACT WINDOW — refuse a prospect this service already emailed
-      //     for the same brand inside the last three months.
+      // 3b. FOLLOW-UP RACE. There is no re-contact window here
+      //     (RECONTACT-OFF-1015, owner 2026-10-15): "never re-contact a person
+      //     this brand emailed in the last 3 months" is a TACTIC workflows state
+      //     at serve time (lead-service `excludeEmailedWithin`), not a rule of
+      //     the sending service. This route sends what it is given, whoever
+      //     named the person (a served lead or a client pushing its own email).
       //
-      //     Placed BEFORE the reservation and before the account selection, so
-      //     a refused send creates no reservation, no Instantly campaign, no
-      //     run and no `sequence_costs` row: nothing is billed for an email
-      //     that never left. Fail loud — a DB error here propagates rather
-      //     than waving the send through.
-      //
-      //     See src/lib/recontact-window.ts for why this half of the rule can
-      //     only live in this service.
-      //
-      //     A FOLLOW-UP (`followUp: true`) continues the brand's own thread with
-      //     the person, it is not a second cold pitch: the window does not apply
-      //     (src/lib/follow-up-send.ts). It is refused instead while a step of
-      //     the brand's sequence to them is still queued (two of our emails
-      //     would race), with its own code.
+      //     A FOLLOW-UP (`followUp: true`) is refused while a step of the
+      //     brand's sequence to the person is still queued (two of our emails
+      //     would race), with its own code (src/lib/follow-up-send.ts).
       let followUpThread: FollowUpThread | null = null;
       if (isFollowUp) {
         const queued = await findQueuedBrandSequence(orgId, body.to, brandIds, sendRunId);
@@ -358,26 +346,10 @@ router.post("/", async (req: Request, res: Response) => {
         }
         followUpThread = await findFollowUpThread(orgId, body.to, brandIds);
       }
-      const recentContact = isFollowUp ? null : await findRecentBrandContact(body.to, brandIds);
-      if (recentContact) {
-        const refusal = recontactRefusal(body.to, recentContact);
-        console.warn(`[send] Refused — ${refusal.details}`);
-        traceEvent(
-          res.locals.runId as string,
-          {
-            service: "instantly-service",
-            event: "send-refused-recent-contact",
-            detail: `to=${body.to}, brandId=${recentContact.brandId}, lastEmailedAt=${recentContact.lastEmailedAt.toISOString()}`,
-          },
-          req.headers,
-        ).catch(() => {});
-        return res.status(409).json(refusal);
-      }
 
       // 3c. NOT A PROSPECT — the person told this brand they already buy from
-      //     the client, or are the client. Permanent for the brand, unlike the
-      //     window above. Same placement and fail-loud posture. See
-      //     src/lib/not-a-prospect.ts.
+      //     the client, or are the client. Permanent for the brand. Same
+      //     placement and fail-loud posture. See src/lib/not-a-prospect.ts.
       const notAProspect = await findNotAProspect(body.to, brandIds);
       if (notAProspect) {
         const refusal = notAProspectRefusal(body.to, notAProspect);

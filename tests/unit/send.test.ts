@@ -8,8 +8,8 @@ const mockDbDelete = vi.fn();
 const mockOnConflictDoUpdate = vi.fn();
 const mockRefreshLeadStatusCurrent = vi.fn();
 const mockDbUpdateSet = vi.fn();
-// Raw SQL reads (the per-brand re-contact-window lookup). Defaults to "no
-// prior contact" in beforeEach so every pre-existing send test is unaffected.
+// Raw SQL reads. Defaults to "no rows" in beforeEach so every send test
+// starts from an empty history.
 const mockDbExecute = vi.fn();
 
 // The transport a new sequence takes is derived from ONE fact — do we hold a
@@ -2883,7 +2883,11 @@ function extractSendSqlText(obj: unknown): string {
   return "";
 }
 
-describe("POST /send — per-brand re-contact window", () => {
+describe("POST /send — no re-contact window at send time (RECONTACT-OFF-1015)", () => {
+  // "Never re-contact a person this brand emailed in the last 3 months" is the
+  // serve-time tactic "Fresh contacts only" (lead-service), not a send gate.
+  // A client naming the person itself (its own test address, emailed the night
+  // before) must be able to send.
   let runCounter: number;
 
   beforeEach(() => {
@@ -2910,26 +2914,31 @@ describe("POST /send — per-brand re-contact window", () => {
     mockDbReturning.mockResolvedValue([{ id: "row-1" }]);
   });
 
-  const lastWeek = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+  const yesterday = new Date(Date.now() - 24 * 3600 * 1000);
 
-  it("refuses a recipient already emailed for the same brand inside the window — 409, no Instantly campaign, no run, no cost", async () => {
-    mockDbExecute.mockResolvedValue({
-      rows: [{ brand_id: "brand-1", last_emailed_at: lastWeek.toISOString() }],
+  /** Any query asking "did this brand email them in 3 months?" would say yes. */
+  function brandEmailedYesterday() {
+    mockDbExecute.mockImplementation(async (q: unknown) => {
+      const text = extractSendSqlText(q);
+      return text.includes("3 months")
+        ? { rows: [{ lead_email: validBody.to, brand_id: "brand-1", last_emailed_at: yesterday.toISOString() }] }
+        : { rows: [] };
     });
+  }
+
+  it("sends to a person the brand emailed yesterday", async () => {
+    brandEmailedYesterday();
+    mockNewCampaignFlow();
 
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
 
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe("recent_brand_contact");
-    expect(res.body.brandId).toBe("brand-1");
-    expect(res.body.lastEmailedAt).toBe(lastWeek.toISOString());
-    expect(res.body.windowInterval).toBe("3 months");
-    // The email never left, and nothing was billed or reserved for it.
-    expect(mockCreateCampaign).not.toHaveBeenCalled();
-    expect(mockAddLeads).not.toHaveBeenCalled();
-    expect(mockCreateRun).not.toHaveBeenCalled();
-    expect(mockDbInsertValues).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBeUndefined();
+    expect(mockCreateCampaign).toHaveBeenCalled();
+    // No send-history window is even asked.
+    const asked = mockDbExecute.mock.calls.map((c) => extractSendSqlText(c[0]));
+    expect(asked.some((t) => t.includes("3 months"))).toBe(false);
   });
 
   it("a first-ever contact is unaffected", async () => {
@@ -2941,44 +2950,6 @@ describe("POST /send — per-brand re-contact window", () => {
 
     expect(res.status).toBe(200);
     expect(mockCreateCampaign).toHaveBeenCalled();
-  });
-
-  it("a re-contact PAST the window is unaffected — the SQL, not the route, bounds it", async () => {
-    // The window lives in the query (`now() - interval '3 months'`), so an
-    // out-of-window prior send simply returns no row.
-    mockDbExecute.mockResolvedValue({ rows: [] });
-    mockNewCampaignFlow();
-
-    const app = await createSendApp();
-    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-
-    expect(res.status).toBe(200);
-    const sqlText = extractSendSqlText(mockDbExecute.mock.calls[0][0]);
-    expect(sqlText).toContain("interval '3 months'");
-    expect(sqlText).toContain("email_sent");
-    expect(sqlText).toContain("e.inferred = false");
-    expect(sqlText).toContain("lower(c.lead_email)");
-  });
-
-  it("a platform send (no brand) never runs the lookup — the window is per brand", async () => {
-    mockNewCampaignFlow();
-    const { "x-brand-id": _drop, ...noBrand } = identityHeadersObj;
-
-    const app = await createSendApp();
-    const res = await request(app).post("/send").set(noBrand).send(validBody);
-
-    expect(res.status).toBe(200);
-    expect(mockDbExecute).not.toHaveBeenCalled();
-  });
-
-  it("fails loud when the lookup errors — never waves the send through", async () => {
-    mockDbExecute.mockRejectedValue(new Error("connection terminated"));
-
-    const app = await createSendApp();
-    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-
-    expect(res.status).toBe(500);
-    expect(mockCreateCampaign).not.toHaveBeenCalled();
   });
 });
 
@@ -3017,8 +2988,7 @@ describe("POST /send — a person who asked us to stop", () => {
 
   it("refuses — 409, no Instantly campaign, no run, no cost, no reservation", async () => {
     // Without this gate a recorded opt-out stopped the campaigns that existed
-    // that day and nothing else, so the three-month re-contact window would
-    // lapse and we would email them again.
+    // that day and nothing else, so the next send would email them again.
     mockFindStandingOptOut.mockResolvedValue(STANDING);
 
     const app = await createSendApp();
@@ -3045,29 +3015,6 @@ describe("POST /send — a person who asked us to stop", () => {
     const [orgArg, emailArg] = mockFindStandingOptOut.mock.calls[0];
     expect(orgArg).toBe(identityHeadersObj["x-org-id"]);
     expect(emailArg).toBe(validBody.to);
-  });
-
-  it("is checked BEFORE the re-contact window — one expires, the other never does", async () => {
-    // Both would refuse here. The opt-out must win, because its body is the one
-    // that tells the caller not to come back at all.
-    mockFindStandingOptOut.mockResolvedValue(STANDING);
-    mockDbExecute.mockResolvedValue({
-      rows: [{ brand_id: "brand-1", last_emailed_at: new Date().toISOString() }],
-    });
-
-    const app = await createSendApp();
-    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-
-    expect(res.body.code).toBe("lead_opted_out");
-  });
-
-  it("is distinguishable from the re-contact 409 on this route", async () => {
-    mockFindStandingOptOut.mockResolvedValue(STANDING);
-
-    const app = await createSendApp();
-    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-
-    expect(res.body.code).not.toBe("recent_brand_contact");
   });
 
   it("lets a lead with NO standing opt-out through", async () => {
@@ -3235,8 +3182,8 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     mockFindStandingOptOut.mockResolvedValue(null);
     mockGateAddressForSend.mockResolvedValue(VALID_DECISION);
     mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
-    // The re-contact window WOULD refuse: the brand emailed them last week.
-    // Only the window's query answers that row; every other read finds nothing.
+    // The brand emailed them last week: any "emailed in 3 months?" read would
+    // say so (none is asked any more, RECONTACT-OFF-1015).
     mockDbExecute.mockImplementation(async (q: unknown) => {
       let text = "";
       try {
@@ -3270,11 +3217,13 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     mockDbReturning.mockResolvedValue([{ id: "row-1" }]);
   });
 
-  it("control: the same send WITHOUT the declaration is still refused recent_brand_contact", async () => {
+  it("control: the same send WITHOUT the declaration goes out too (no re-contact window), and skips the follow-up race check", async () => {
+    credentialedMailboxes.add("first@example.com");
+    credentialedMailboxes.add("thread@example.com");
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe("recent_brand_contact");
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBeUndefined();
     expect(mockFindQueuedBrandSequence).not.toHaveBeenCalled();
   });
 

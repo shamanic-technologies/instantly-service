@@ -3,11 +3,10 @@
 // opt-out, ou réponse positive »).
 //
 // A caller states on `POST /orgs/send` that the email CONTINUES the brand's own
-// earlier outreach to this person (`followUp: true`). The per-brand re-contact
-// window (recontact-window.ts) exists so two COLD campaigns of one brand never
-// both pitch the same person; a follow-up of our own thread is not a second
-// pitch, so the window does not apply to it. Every other gate still does:
-// opt-out (org-wide), not-a-prospect, the verifier, credits.
+// earlier outreach to this person (`followUp: true`). Every send gate applies to
+// it: opt-out (org-wide), not-a-prospect, the verifier, credits. (There is no
+// re-contact window at send time any more: RECONTACT-OFF-1015, it is the serve
+// tactic "Fresh contacts only".)
 //
 // Two facts this module reads, both from OUR send evidence:
 // - is a step of this brand's sequence to the person still QUEUED? Then a
@@ -26,7 +25,7 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "../db";
-import { normalizeLeadEmail } from "./recontact-window";
+import { normalizeLeadEmail } from "./lead-email";
 import { subjectForStep } from "./self-send/message";
 
 export const FOLLOW_UP_QUEUED_REFUSAL_CODE = "brand_sequence_queued";
@@ -229,7 +228,7 @@ export function threadSubjectFor(
   return subjectForStep(thread.subject, 2);
 }
 
-/** The 409 body: explicit, distinct from `recent_brand_contact`. */
+/** The 409 body: explicit, distinct from every other refusal of the route. */
 export function followUpQueuedRefusal(leadEmail: string, queued: QueuedBrandSequence) {
   return {
     error: "A sequence of this brand is still queued for this person",

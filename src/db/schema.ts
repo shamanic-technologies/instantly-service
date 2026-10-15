@@ -172,9 +172,8 @@ export const instantlyCampaigns = pgTable(
     index("instantly_campaigns_lead_email_idx").on(table.leadEmail),
     // NOTE: a second, hand-written EXPRESSION index on `lower(lead_email)`
     // exists in migration 0040 — drizzle has no expression-index form, so it
-    // cannot be declared here. It serves the per-brand re-contact-window
-    // lookup (src/lib/recontact-window.ts), which normalizes the prospect's
-    // address the same way the serve path does. Do NOT drop it on a
+    // cannot be declared here. It serves the per-address lookups keyed on
+    // the normalized address (`normalizeLeadEmail`, src/lib/lead-email.ts). Do NOT drop it on a
     // `db:generate` diff.
     index("instantly_campaigns_brand_ids_idx").using("gin", table.brandIds),
     index("instantly_campaigns_org_id_idx").on(table.orgId),
@@ -1602,7 +1601,7 @@ export const scheduledReplies = pgTable(
 // same Gmail per-user quota as real sends, so `loadSendingAccounts` counts it.
 // Nothing here promotes to silver: a warmup email is not outreach, and minting
 // an `email_sent` for one would corrupt step accounting, queue attribution and
-// the per-brand re-contact window.
+// the outreach facts lead-service reads (tactic "Fresh contacts only").
 
 export const warmupDispatches = pgTable(
   "warmup_dispatches",

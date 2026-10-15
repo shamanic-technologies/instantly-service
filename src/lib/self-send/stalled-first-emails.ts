@@ -28,8 +28,7 @@
  *   CLOSE — when sending it now would be wrong: no step-1 body stored, no
  *           provisioned hold left (the dispatcher's queue), assigned
  *           more than `STALLED_FIRST_EMAIL_MAX_AGE_DAYS` ago, the person opted
- *           out / replied / bounced / unsubscribed anywhere in the org, was
- *           emailed for the same brand inside the re-contact window, or a NEWER
+ *           out / replied / bounced / unsubscribed anywhere in the org, or a NEWER
  *           sequence already holds them for the same brand. The holds are
  *           cancelled (refund) and the row is marked paused, exactly like a
  *           stopped self-send sequence.
@@ -57,7 +56,6 @@ import {
   type CallerInfo,
 } from "../key-client";
 import { findStandingOptOut } from "../lead-optouts";
-import { findRecentBrandContact } from "../recontact-window";
 import { cancelRemainingProvisions } from "../silver-promote";
 import { refreshLeadStatusCurrent } from "../status-gold";
 import { announceEvidenceChanged } from "../evidence-changed";
@@ -98,7 +96,6 @@ export type CloseReason =
   | "too_old"
   | "opted_out"
   | "lead_answered"
-  | "recent_brand_contact"
   | "newer_sequence";
 
 /** Everything the pure decision reads about one candidate. */
@@ -121,7 +118,6 @@ export interface StalledCandidate {
   /** Another sequence for this address, same org and brand, created later. */
   newerSequence: boolean;
   optedOut: boolean;
-  recentBrandContact: boolean;
 }
 
 /** Sending days strictly between the assignment day and `asOf`'s day. */
@@ -155,7 +151,6 @@ export function decideStalledFirstEmail(
   if (c.optedOut) return { action: "close", reason: "opted_out" };
   if (c.leadAnswered) return { action: "close", reason: "lead_answered" };
   if (c.newerSequence) return { action: "close", reason: "newer_sequence" };
-  if (c.recentBrandContact) return { action: "close", reason: "recent_brand_contact" };
   if (asOf.getTime() - c.createdAt.getTime() > STALLED_FIRST_EMAIL_MAX_AGE_DAYS * MS_PER_DAY) {
     return { action: "close", reason: "too_old" };
   }
@@ -214,7 +209,7 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
  * included on purpose: an `active` row nobody will ever send is a stall whether
  * or not it still carries a hold.
  */
-async function loadCandidates(): Promise<Omit<StalledCandidate, "optedOut" | "recentBrandContact">[]> {
+async function loadCandidates(): Promise<Omit<StalledCandidate, "optedOut">[]> {
   const result = await db.execute(sql`
     SELECT c.instantly_campaign_id AS "instantlyCampaignId",
            c.campaign_id           AS "campaignId",
@@ -427,7 +422,6 @@ async function sweepExclusive(
       const c: StalledCandidate = {
         ...base,
         optedOut: base.orgId ? (await findStandingOptOut(base.orgId, base.leadEmail)) !== null : false,
-        recentBrandContact: (await findRecentBrandContact(base.leadEmail, base.brandIds)) !== null,
       };
       const decision = decideStalledFirstEmail(c, asOf);
 

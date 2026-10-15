@@ -453,11 +453,10 @@ describe("optOutRefusal", () => {
     withdrawnBy: null,
   };
 
-  it("carries its own code, distinct from the expiring re-contact window", () => {
+  it("carries its own code, distinct from every other refusal", () => {
     const body = optOutRefusal("chad@clinic.com", standing);
     expect(body.code).toBe(OPT_OUT_REFUSAL_CODE);
     expect(body.code).toBe("lead_opted_out");
-    expect(body.code).not.toBe("recent_brand_contact");
   });
 
   it("says out loud that it does not expire and that nothing was billed", () => {

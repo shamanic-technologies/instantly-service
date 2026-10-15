@@ -463,8 +463,8 @@ router.post("/", async (req: Request, res: Response) => {
       campPromise = scopedQueryByEmail(orgId, campFilter, emails);
     }
 
-    // What the send route would REFUSE (opt-out, re-contact window, not a
-    // prospect), stated on the scope a consumer decides a re-serve from. Only
+    // What the send route would REFUSE (opt-out, not a prospect, address
+    // verifier), stated on the scope a consumer decides a re-serve from. Only
     // when a scope is asked about: the global-only read has no scope object.
     const refusalsPromise =
       isBrandMode || isCampaignMode ? findSendRefusals(orgId, refusalBrandIds, emails) : null;

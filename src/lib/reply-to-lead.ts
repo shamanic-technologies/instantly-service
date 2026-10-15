@@ -300,8 +300,8 @@ export interface CampaignRow {
  * them — so reading a whole campaign's exchange means reading every row of it
  * that holds this lead. Callers that want a single row pass a single id.
  *
- * Matched on `lower(lead_email)` — the same normalization the re-contact window
- * and the serve-side suppression use. `Joe@X.com` and `joe@x.com` are one inbox,
+ * Matched on `lower(lead_email)` — the same normalization every per-person
+ * lookup and the serve-side suppression use. `Joe@X.com` and `joe@x.com` are one inbox,
  * and a case-sensitive lookup would refuse to answer a prospect we did email.
  *
  * The ids are bound one by one rather than through `= ANY(<js array>)`: drizzle
@@ -1007,8 +1007,8 @@ export async function replyToLead(
 
   // ⚠️ THE TAKEOVER GATE RUNS BEFORE ANYTHING IS PREPARED. A refused reply
   // resolves no credential, makes no Instantly read and writes no bronze row —
-  // the same placement, for the same reason, as the opt-out and re-contact
-  // gates on `POST /orgs/send`.
+  // the same placement, for the same reason, as the opt-out and
+  // not-a-prospect gates on `POST /orgs/send`.
   //
   // Only an `automation` reply is gated. A person answering their own thread is
   // never refused, whatever else is on it: the whole point of the gate is to

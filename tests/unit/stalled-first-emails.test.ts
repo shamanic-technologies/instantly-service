@@ -8,7 +8,6 @@ const mockUpdateCampaignStatus = vi.fn();
 const mockResolveInstantlyApiKey = vi.fn();
 const mockResolvePlatformKey = vi.fn();
 const mockFindStandingOptOut = vi.fn();
-const mockFindRecentBrandContact = vi.fn();
 const mockCancelRemainingProvisions = vi.fn();
 const mockRefreshLeadStatusCurrent = vi.fn();
 const mockAnnounce = vi.fn();
@@ -30,9 +29,6 @@ vi.mock("../../src/lib/key-client", () => ({
 }));
 vi.mock("../../src/lib/lead-optouts", () => ({
   findStandingOptOut: (...args: unknown[]) => mockFindStandingOptOut(...args),
-}));
-vi.mock("../../src/lib/recontact-window", () => ({
-  findRecentBrandContact: (...args: unknown[]) => mockFindRecentBrandContact(...args),
 }));
 vi.mock("../../src/lib/silver-promote", () => ({
   cancelRemainingProvisions: (...args: unknown[]) => mockCancelRemainingProvisions(...args),
@@ -70,7 +66,6 @@ function candidate(over: Record<string, unknown> = {}) {
     leadAnswered: false,
     newerSequence: false,
     optedOut: false,
-    recentBrandContact: false,
     ...over,
   };
 }
@@ -86,7 +81,6 @@ beforeEach(() => {
   mockResolveInstantlyApiKey.mockResolvedValue({ key: "k" });
   mockResolvePlatformKey.mockResolvedValue("pk");
   mockFindStandingOptOut.mockResolvedValue(null);
-  mockFindRecentBrandContact.mockResolvedValue(null);
   mockListLeadsFull.mockResolvedValue([{ id: "l", email: "jane@acme.com", status: 1, email_open_count: 0 }]);
   mockUpdateCampaignStatus.mockResolvedValue({});
   mockTxExecute.mockResolvedValue({ rows: [{ id: "row-1" }] });
@@ -117,7 +111,6 @@ describe("move or close", () => {
     ["opted_out", { optedOut: true }],
     ["lead_answered", { leadAnswered: true }],
     ["newer_sequence", { newerSequence: true }],
-    ["recent_brand_contact", { recentBrandContact: true }],
     ["no_step_body", { hasFirstStepBody: false }],
     ["no_queued_step", { hasQueuedStep: false }],
   ])("closes it when %s", (reason, over) => {
