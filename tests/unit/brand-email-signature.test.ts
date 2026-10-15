@@ -11,9 +11,11 @@ import {
   EmailSignatureConflictError,
   normalizeSignatureText,
   renderSignatureHtml,
+  fillSenderPlaceholders,
   resolveSignatureHtmlForSend,
   signatureTextProblem,
 } from "../../src/lib/brand-email-signature";
+import { buildFromHeader, buildMessage } from "../../src/lib/self-send/message";
 import {
   buildEmailBodyWithSignature,
   buildReplyBodyWithSignature,
@@ -95,5 +97,70 @@ describe("resolveSignatureHtmlForSend", () => {
     const err = await resolveSignatureHtmlForSend("org-1", ["b1", "b2"]).catch((e) => e);
     expect(err).toBeInstanceOf(EmailSignatureConflictError);
     expect(err.brandIds).toEqual(["b1", "b2"]);
+  });
+});
+
+describe("sender placeholders: the signature names the mailbox that sends", () => {
+  const TEXT = "{first_name} {last_name}, DefiniteJobs\n{sender_email}";
+  const RUTH = { email: "ruth@agileconsultco.com", first_name: "Ruth", last_name: "Chandler" } as Account;
+  const FALLON = { email: "fallon@boostdistribute.com", first_name: "Fallon", last_name: "Price" } as Account;
+
+  it("accepts the four placeholders at write, refuses any other brace", () => {
+    expect(signatureTextProblem(TEXT)).toBeNull();
+    expect(signatureTextProblem("{full_name}\nDefiniteJobs")).toBeNull();
+    expect(signatureTextProblem("{firstname}\nAcme")).toMatch(/Unknown placeholder `\{firstname\}`/);
+    expect(signatureTextProblem("{First_Name}")).toMatch(/Braces are only allowed/);
+    expect(signatureTextProblem("Jane {\nAcme")).toMatch(/Braces are only allowed/);
+    expect(signatureTextProblem("Jane }")).toMatch(/Braces are only allowed/);
+  });
+
+  it("set once through the API (pinned), renders each mailbox's own name, From agreeing", async () => {
+    mockWhere.mockResolvedValueOnce([{ brandId: "b1", signature: TEXT }]);
+    const pinned = await resolveSignatureHtmlForSend("org-1", ["b1"]);
+    expect(pinned).toBe("<p>{first_name} {last_name}, DefiniteJobs<br>{sender_email}</p>");
+
+    const build = (account: Account) =>
+      buildMessage({
+        account,
+        signatureHtml: pinned,
+        leadEmail: "prospect@example.com",
+        subject: "Quick question",
+        bodyHtml: "<p>Hi there</p>",
+        step: 1,
+        identity: { instantlyCampaignId: "camp-1", leadEmail: "prospect@example.com" },
+        unsubscribeUrl: "https://opt.test/u/p/s",
+        trackingOrigin: null,
+      });
+    const ruth = build(RUTH);
+    const fallon = build(FALLON);
+    expect(ruth.html).toContain("<p>--</p><p>Ruth Chandler, DefiniteJobs<br>ruth@agileconsultco.com</p>");
+    expect(fallon.html).toContain("<p>--</p><p>Fallon Price, DefiniteJobs<br>fallon@boostdistribute.com</p>");
+    expect(ruth.from).toBe(buildFromHeader(RUTH));
+    for (const m of [ruth, fallon]) expect(m.html).not.toMatch(/[{}]/);
+  });
+
+  it("fills follow-ups and replies of the thread the same way (one sender, one signature)", () => {
+    const pinned = renderSignatureHtml("{full_name}\nDefiniteJobs");
+    const email = buildEmailBodyWithSignature("<p>Hi</p>", RUTH, pinned);
+    const reply = buildReplyBodyWithSignature("<p>Thanks</p>", RUTH, pinned);
+    for (const body of [email, reply]) expect(body.endsWith("<p>--</p><p>Ruth Chandler<br>DefiniteJobs</p>")).toBe(true);
+    expect(buildEmailBodyWithSignature(email, RUTH, pinned)).toBe(email);
+  });
+
+  it("escapes the mailbox's values like the rest of the signature", () => {
+    const odd = { email: "o@x.com", first_name: "Ann <b>", last_name: "O'Neil & Co" } as Account;
+    expect(fillSenderPlaceholders("<p>{full_name}</p>", odd)).toBe("<p>Ann &lt;b&gt; O'Neil &amp; Co</p>");
+  });
+
+  it("never lets a brace reach a recipient: an unfillable token throws", () => {
+    const noLast = { email: "x@y.com", first_name: "Amy" } as Account;
+    expect(() => resolveSignatureBlock(noLast, "<p>{first_name} {last_name}</p>")).toThrow(/\{last_name\} has no value/);
+    expect(() => fillSenderPlaceholders("<p>{nope}</p>", RUTH)).toThrow(/not supported/);
+    expect(() => fillSenderPlaceholders("<p>a { b</p>", RUTH)).toThrow(/brace/);
+  });
+
+  it("a signature without placeholders is byte-identical to before", () => {
+    expect(resolveSignatureBlock(ACCOUNT, CLIENT)).toBe(CLIENT);
+    expect(fillSenderPlaceholders(CLIENT, ACCOUNT)).toBe(CLIENT);
   });
 });
