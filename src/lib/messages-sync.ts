@@ -14,7 +14,7 @@
  * state facts (sent / bounced / replied / clicked) stay in `instantly_events`.
  */
 
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import { messages } from "../db/schema";
 import { parseInstantlySequenceStep } from "./self-send/instantly-sends";
@@ -415,6 +415,53 @@ async function upsertRows(rows: MessageRow[], syncedAt: Date): Promise<number> {
   return written;
 }
 
+/** IMAP bronze rows matching `where` (alias `i`), mapped to the projection. */
+async function loadImapRows(where: SQL): Promise<Array<MessageRow | null>> {
+  const imap = rowsOf<Record<string, unknown>>(
+    await db.execute(sql`
+      SELECT i.id, i.account_email, i.message_id, i.from_address, i.subject, i.kind,
+             i.instantly_campaign_id, i.step, i.received_at, i.polled_at,
+             c.org_id, c.campaign_id, a.mailbox_login
+      FROM imap_messages_raw i
+      LEFT JOIN instantly_campaigns c ON c.instantly_campaign_id = i.instantly_campaign_id
+      LEFT JOIN instantly_accounts a ON lower(a.email) = lower(i.account_email)
+      WHERE ${where}
+    `),
+  );
+  return imap.map((r) =>
+    mapImapMessage({
+      id: String(r.id),
+      accountEmail: String(r.account_email),
+      messageId: String(r.message_id),
+      fromAddress: str(r.from_address),
+      subject: str(r.subject),
+      kind: String(r.kind),
+      instantlyCampaignId: str(r.instantly_campaign_id),
+      step: r.step === null || r.step === undefined ? null : Number(r.step),
+      receivedAt: (r.received_at as Date | null) ?? null,
+      polledAt: r.polled_at as Date,
+      orgId: str(r.org_id),
+      campaignId: str(r.campaign_id),
+      mailboxLogin: str(r.mailbox_login),
+    }),
+  );
+}
+
+/**
+ * Re-project ONE IMAP bronze row after its kind changed (a refile). Writing the
+ * bronze kind into `messages.kind` by hand put `staff_reply` / `in` where the
+ * projection says `manual_reply` / `out` / `sent`, and the windowed sync never
+ * revisits a row polled days ago. Same mapper as the sync; nothing else.
+ */
+export async function reprojectImapMessage(rowId: string): Promise<void> {
+  const [mapped] = await loadImapRows(sql`i.id = ${rowId}`);
+  if (!mapped) {
+    await db.execute(sql`DELETE FROM messages WHERE source_table = 'imap_messages_raw' AND source_row_id = ${rowId}`);
+    return;
+  }
+  await upsertRows([mapped], new Date());
+}
+
 /**
  * Re-read a window of every source and upsert. `sinceDays` bounds the window
  * on each source's OWN write timestamp; the unique source index makes the
@@ -508,35 +555,9 @@ export async function syncMessages(
     else skipped += 1;
   }
 
-  const imap = rowsOf<Record<string, unknown>>(
-    await db.execute(sql`
-      SELECT i.id, i.account_email, i.message_id, i.from_address, i.subject, i.kind,
-             i.instantly_campaign_id, i.step, i.received_at, i.polled_at,
-             c.org_id, c.campaign_id, a.mailbox_login
-      FROM imap_messages_raw i
-      LEFT JOIN instantly_campaigns c ON c.instantly_campaign_id = i.instantly_campaign_id
-      LEFT JOIN instantly_accounts a ON lower(a.email) = lower(i.account_email)
-      WHERE i.polled_at >= ${cutoff}
-        AND i.kind <> 'unrelated'
-    `),
-  );
+  const imap = await loadImapRows(sql`i.polled_at >= ${cutoff} AND i.kind <> 'unrelated'`);
   read.imap_messages_raw = imap.length;
-  for (const r of imap) {
-    const mapped = mapImapMessage({
-      id: String(r.id),
-      accountEmail: String(r.account_email),
-      messageId: String(r.message_id),
-      fromAddress: str(r.from_address),
-      subject: str(r.subject),
-      kind: String(r.kind),
-      instantlyCampaignId: str(r.instantly_campaign_id),
-      step: r.step === null || r.step === undefined ? null : Number(r.step),
-      receivedAt: (r.received_at as Date | null) ?? null,
-      polledAt: r.polled_at as Date,
-      orgId: str(r.org_id),
-      campaignId: str(r.campaign_id),
-      mailboxLogin: str(r.mailbox_login),
-    });
+  for (const mapped of imap) {
     if (mapped) rows.push(mapped);
     else skipped += 1;
   }
