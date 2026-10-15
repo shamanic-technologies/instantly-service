@@ -41,6 +41,7 @@ import {
   type VerificationIdentity,
 } from "./apollo-client";
 import { normalizeLeadEmail } from "./lead-email";
+import type { FundingRefusalCause } from "./funding-refusal";
 
 /** The 409 `code` the send route answers, and the status read states. */
 export const EMAIL_NOT_VERIFIED_REFUSAL_CODE = "email_not_verified";
@@ -81,6 +82,12 @@ export interface GateDecision {
   verificationId: string | null;
   verifiedAt: string | null;
   reused: boolean | null;
+  /**
+   * `insufficient_credits` only: billing's NAMED cause when the refusal was a
+   * sales funnel's max budget, not the balance (relayed verbatim; not persisted,
+   * the ledger keeps `insufficient_credits`). Absent otherwise.
+   */
+  fundingCause?: FundingRefusalCause | null;
 }
 
 /** Pure: what the door does with one verdict. */
@@ -128,6 +135,7 @@ function failureDecision(email: string, error: EmailVerifierError): GateDecision
     verificationId: null,
     verifiedAt: null,
     reused: null,
+    ...(error.fundingCause ? { fundingCause: error.fundingCause } : {}),
   };
 }
 

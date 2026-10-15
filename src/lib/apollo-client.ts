@@ -3,6 +3,8 @@
  * verification history feed. FAILS LOUD on any non-2xx, status and body intact.
  */
 
+import { fundingRefusalCauseFromText, type FundingRefusalCause } from "./funding-refusal";
+
 const APOLLO_SERVICE_URL = process.env.APOLLO_SERVICE_URL;
 const APOLLO_SERVICE_API_KEY = process.env.APOLLO_SERVICE_API_KEY;
 
@@ -35,6 +37,11 @@ export class EmailVerifierError extends Error {
     message: string,
     readonly status: number | null,
     readonly insufficientCredits: boolean,
+    /**
+     * apollo relayed billing's NAMED cause (a sales funnel max budget, not a
+     * balance shortfall): `reason` + `sales_funnel_cap` verbatim. Null otherwise.
+     */
+    readonly fundingCause: FundingRefusalCause | null = null,
   ) {
     super(message);
     this.name = "EmailVerifierError";
@@ -98,12 +105,16 @@ export async function verifyEmailAddresses(
   if (!response.ok) {
     const detail = await response.text();
     // The 502 names an insufficient balance in its message; the 400 says it by type.
+    // A refusal for a sales funnel's max budget carries billing's `reason` (and
+    // `sales_funnel_cap`): still a refusal to pay, but named, never "add credit".
+    const fundingCause = fundingRefusalCauseFromText(detail);
     const insufficientCredits =
-      /credit_insufficient|insufficient balance/i.test(detail);
+      fundingCause !== null || /credit_insufficient|insufficient balance/i.test(detail);
     throw new EmailVerifierError(
       `apollo-service POST /email-verifications failed: ${response.status} - ${detail.slice(0, 300)}`,
       response.status,
       insufficientCredits,
+      fundingCause,
     );
   }
 

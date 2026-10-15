@@ -544,6 +544,35 @@ const SendRefusalSchema = z
   })
   .openapi("SendRefusal");
 
+export const SendCreditRefusalSchema = z
+  .object({
+    error: z
+      .string()
+      .describe(
+        "\"Insufficient credits\" for a balance shortfall; names the cause otherwise " +
+          "(\"Sales funnel max budget reached\" / \"Sales funnel max budget unreadable\").",
+      ),
+    code: z.literal("insufficient_credits").describe("Unchanged for every refusal to pay, so callers keep backing off on it."),
+    details: z.string().optional(),
+    balance_cents: z.union([z.number(), z.string()]).optional(),
+    required_cents: z.union([z.number(), z.string()]).optional(),
+    reason: z
+      .string()
+      .optional()
+      .describe(
+        "billing-service's reason, verbatim, present ONLY when the refusal is not a balance shortfall: " +
+          "`sales_funnel_max_budget_reached` / `sales_funnel_max_budget_unreadable` (raise the campaign's max budget; adding credit changes nothing).",
+      ),
+    sales_funnel_cap: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        "billing-service's `sales_funnel_cap`, verbatim, present only with `reason` " +
+          "({ salesFunnelId, salesFunnelCampaignId, amountCents, period, consumedCents, reservedCents }).",
+      ),
+  })
+  .openapi("SendCreditRefusal");
+
 registry.registerPath({
   method: "post",
   path: "/orgs/send",
@@ -573,8 +602,10 @@ registry.registerPath({
         "their `-catch-all` (×2) / `-unknown` (×3) twins for those verdicts). No email was " +
         "sent, the provisioned costs were cancelled and nothing was queued. " +
         "Body: `{ error, code: \"insufficient_credits\", balance_cents, required_cents }`. " +
-        "Also answered (without the cents) when the org cannot pay to verify the address.",
-      content: { "application/json": { schema: ErrorSchema } },
+        "Also answered (without the cents) when the org cannot pay to verify the address. " +
+        "When billing refused for the sales funnel campaign's MAX BUDGET (not the balance), `error` names it " +
+        "(\"Sales funnel max budget reached\") and billing's `reason` + `sales_funnel_cap` ride along verbatim; `code` is unchanged.",
+      content: { "application/json": { schema: SendCreditRefusalSchema } },
     },
     409: {
       description:

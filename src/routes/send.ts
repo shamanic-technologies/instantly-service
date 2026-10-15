@@ -37,6 +37,7 @@ import {
   type TrackingHeaders,
 } from "../lib/runs-client";
 import { authorizeCreditSpend } from "../lib/billing-client";
+import { creditRefusalBody, fundingRefusalCause, fundingRefusalError } from "../lib/funding-refusal";
 import { provisionStepEmailCosts, sendAuthorizeItems, type SendableVerdict } from "../lib/send-costs";
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { SendRequestSchema } from "../schemas";
@@ -383,12 +384,23 @@ router.post("/", async (req: Request, res: Response) => {
           req.headers,
         ).catch(() => {});
         if (verification.reason === "insufficient_credits") {
-          console.warn(`[send] Refused — org ${orgId} cannot pay to verify ${body.to}`);
-          return res.status(402).json({
-            error: "Insufficient credits",
-            code: "insufficient_credits",
-            details: `the address ${body.to} must be verified before it is emailed and the org's balance cannot pay for it`,
-          });
+          const cause = verification.fundingCause ?? null;
+          console.warn(
+            cause
+              ? `[send] Refused — ${fundingRefusalError(cause)} (${cause.reason}) for org ${orgId}, cannot verify ${body.to}`
+              : `[send] Refused — org ${orgId} cannot pay to verify ${body.to}`,
+          );
+          return res.status(402).json(
+            creditRefusalBody(
+              {
+                error: "Insufficient credits",
+                code: "insufficient_credits",
+                details: `the address ${body.to} must be verified before it is emailed and the org's balance cannot pay for it`,
+              },
+              cause,
+              `the address ${body.to} must be verified before it is emailed`,
+            ),
+          );
         }
         if (verification.reason === "verifier_failed") {
           console.error(`[send] NOT SENT — no verdict could be obtained for ${body.to} (verifier unavailable)`);
@@ -569,28 +581,38 @@ router.post("/", async (req: Request, res: Response) => {
           { ...billingIdentity, runId: res.locals.runId as string },
         );
         if (!auth.sufficient) {
-          await abandonStepHolds(stepHolds, billingIdentity, "insufficient_credits");
+          // billing's `reason` (a sales funnel max budget) names the real cause;
+          // absent = a balance shortfall, answered exactly as before.
+          const cause = fundingRefusalCause(auth);
+          await abandonStepHolds(stepHolds, billingIdentity, cause ? cause.reason : "insufficient_credits");
           stepHolds = [];
           await releaseReservation(reservedId);
           reservedId = null;
           console.warn(
-            `[send] Refused — insufficient credits for org ${orgId} (balance=${auth.balance_cents} required=${auth.required_cents}) to=${body.to}`,
+            cause
+              ? `[send] Refused — ${fundingRefusalError(cause)} (${cause.reason}) for org ${orgId} (balance=${auth.balance_cents} required=${auth.required_cents}) to=${body.to}`
+              : `[send] Refused — insufficient credits for org ${orgId} (balance=${auth.balance_cents} required=${auth.required_cents}) to=${body.to}`,
           );
           traceEvent(
             res.locals.runId as string,
             {
               service: "instantly-service",
-              event: "send-refused-insufficient-credits",
-              detail: `to=${body.to}, balance_cents=${auth.balance_cents}, required_cents=${auth.required_cents}`,
+              event: cause ? "send-refused-sales-funnel-max-budget" : "send-refused-insufficient-credits",
+              detail: `to=${body.to}, balance_cents=${auth.balance_cents}, required_cents=${auth.required_cents}${cause ? `, reason=${cause.reason}` : ""}`,
             },
             req.headers,
           ).catch(() => {});
-          return res.status(402).json({
-            error: "Insufficient credits",
-            code: "insufficient_credits",
-            balance_cents: auth.balance_cents,
-            required_cents: auth.required_cents,
-          });
+          return res.status(402).json(
+            creditRefusalBody(
+              {
+                error: "Insufficient credits",
+                code: "insufficient_credits",
+                balance_cents: auth.balance_cents,
+                required_cents: auth.required_cents,
+              },
+              cause,
+            ),
+          );
         }
       }
 
