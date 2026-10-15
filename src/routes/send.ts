@@ -649,6 +649,9 @@ router.post("/", async (req: Request, res: Response) => {
         sequence: sortedSequence,
         // A follow-up stays with the mailbox that wrote the thread when it can.
         preferAccountEmail: followUpThread?.accountEmail ?? null,
+        // A mailbox whose domain can afford this address's bounce risk is
+        // preferred (bounce-budget.ts); the dispatcher enforces it.
+        verdict: verification.verdict ?? null,
       });
       // The pipe for a NEW sequence. With the A/B off this is exactly the
       // account's own policy; with it on, a credentialed mailbox alternates so

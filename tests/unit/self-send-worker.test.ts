@@ -56,6 +56,13 @@ vi.mock("../../src/db/schema", () => ({
 // here keeps these assertions about SEQUENCE dispatch, and keeps the queued
 // `db.execute` reads below aligned with the reads the step path actually makes.
 const mockDispatchScheduledReplies = vi.fn();
+// The bounce budget's history read (bounce-budget.ts): an empty fleet, so the
+// db.execute sequence below stays the one the dispatcher made before it.
+vi.mock("../../src/lib/bounce-budget-history", () => ({
+  loadFleetBounceHistory: vi.fn(async () => new Map()),
+  loadFleetBounceHistoryCached: vi.fn(async () => new Map()),
+}));
+
 vi.mock("../../src/lib/self-send/inbound-blindness", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/lib/self-send/inbound-blindness")>()),
   loadInboundBlindMailboxes: vi.fn(async () => new Set<string>()),
@@ -129,6 +136,7 @@ function primeReads(options: { hasBody?: boolean; signatureHtml?: string | null 
           leadEmail: "prospect@example.com",
           accountEmail: "amy@saviolabsco.com",
           provisionedSteps: [1, 2],
+          verdict: "valid",
           lastSentStep: null,
           lastSentAt: null,
           stepDelays: [2, null],
@@ -478,6 +486,7 @@ describe("runDispatch — capacity", () => {
             leadEmail: "prospect@example.com",
             accountEmail: "amy@saviolabsco.com",
             provisionedSteps: [1],
+            verdict: "valid",
             lastSentStep: null,
             lastSentAt: null,
             stepDelays: [],
@@ -587,6 +596,7 @@ describe("dispatchAnswerNow — an answer to a person leaves at once (FORM-ANSWE
         leadEmail: "kevin+form@distribute.you",
         accountEmail: "amy@saviolabsco.com",
         provisionedSteps: [1],
+        verdict: "valid",
         lastSentStep: null,
         lastSentAt: null,
         stepDelays: [null],
@@ -625,6 +635,7 @@ describe("dispatchAnswerNow — an answer to a person leaves at once (FORM-ANSWE
             leadEmail: "prospect@example.com",
             accountEmail: "amy@saviolabsco.com",
             provisionedSteps: [1, 2],
+            verdict: "valid",
             lastSentStep: null,
             lastSentAt: null,
             stepDelays: [2, null],
