@@ -16,6 +16,7 @@ import { runDispatch } from "../lib/self-send/dispatch-worker";
 import { runPoll } from "../lib/self-send/imap-poller";
 import { runOrphanReplySweep } from "../lib/self-send/orphan-reply-sweep";
 import { recoverForwardedReplies } from "../lib/self-send/forwarded-replies";
+import { refileOurSideReplies } from "../lib/self-send/our-side-refile";
 import { ForwardedRepliesRequestSchema, GmailThreadsRequestSchema } from "../schemas";
 import { foldInGmailThreads } from "../lib/self-send/gmail-threads";
 import { promotePendingClicks } from "../lib/self-send/click-promotion";
@@ -159,6 +160,29 @@ router.post("/gmail-threads", async (req: Request, res: Response) => {
         `[instantly-service] gmail-threads failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     });
+});
+
+/**
+ * Refile as OUR answer every stored "reply" our side wrote in a prospect's
+ * thread (`our-side-refile.ts`, SENDER-NOT-PROSPECT-1015). Body
+ * `{ dryRun?: boolean (default TRUE), sinceDays?: number (default 120) }`.
+ * Answers the plan (or what it did) synchronously, naming every row.
+ */
+router.post("/our-side-replies", async (req: Request, res: Response) => {
+  const dryRun = req.body?.dryRun !== false;
+  const sinceDays =
+    typeof req.body?.sinceDays === "number" && Number.isFinite(req.body.sinceDays)
+      ? req.body.sinceDays
+      : undefined;
+  try {
+    const summary = await refileOurSideReplies({ dryRun, sinceDays });
+    console.log(`[instantly-service] our-side-replies: done ${JSON.stringify(summary)}`);
+    res.json(summary);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[instantly-service] our-side-replies failed: ${message}`);
+    res.status(500).json({ error: message });
+  }
 });
 
 /**
