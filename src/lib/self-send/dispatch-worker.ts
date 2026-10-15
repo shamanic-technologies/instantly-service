@@ -17,6 +17,8 @@ import { db } from "../../db";
 import { smtpDispatchRaw } from "../../db/schema";
 import { fetchRecentDailyVolume, sustainedForMailbox } from "../recent-send-volume";
 import { promoteEvent } from "../silver-promote";
+import { BounceBudget } from "../bounce-budget";
+import { loadFleetBounceHistory } from "../bounce-budget-history";
 import type { Account } from "../instantly-client";
 import type { CallerInfo } from "../key-client";
 import {
@@ -95,6 +97,12 @@ export interface DispatchSummary {
    * reason, on the campaign row before the email goes out.
    */
   rehomed: number;
+  /**
+   * First emails held off their mailbox's domain by the bounce budget
+   * (`bounce-budget.ts`) this run. Still queued: rehomed to a domain with budget
+   * when one has room (counted in `rehomed`), else sent once the domain recovers.
+   */
+  heldBounceBudget: number;
   sent: number;
   /** Permanent, about the RECIPIENT — promoted as a bounce. */
   bounced: number;
@@ -156,6 +164,7 @@ async function loadPendingSequences(
         c.instantly_campaign_id,
         c.lead_email,
         c.account_email,
+        c.org_id,
         COALESCE(
           jsonb_agg(DISTINCT sc.step) FILTER (WHERE sc.status = 'provisioned'),
           '[]'::jsonb
@@ -173,7 +182,7 @@ async function loadPendingSequences(
         AND c.delivery_status IN ('contacted', 'sent')
         AND c.account_email IS NOT NULL
         AND (${onlyInstantlyCampaignId}::text IS NULL OR c.instantly_campaign_id = ${onlyInstantlyCampaignId})
-      GROUP BY c.instantly_campaign_id, c.lead_email, c.account_email
+      GROUP BY c.instantly_campaign_id, c.lead_email, c.account_email, c.org_id
       HAVING COUNT(*) FILTER (WHERE sc.status = 'provisioned') > 0
     )
     SELECT
@@ -186,6 +195,31 @@ async function loadPendingSequences(
       p.timezone              AS "timezone",
       p.queued_at             AS "queuedAt",
       p.answers_person        AS "answersPerson",
+      -- The bounce budget (bounce-budget.ts) reads both, for a FIRST email only:
+      -- the verdict our verifier holds for this org + address (latest accepted
+      -- row, served by email_send_verifications_org_email_idx) …
+      (
+        SELECT v.verdict
+        FROM email_send_verifications v
+        WHERE v.org_id = p.org_id
+          AND v.email = lower(p.lead_email)
+          AND v.accepted
+        ORDER BY v.created_at DESC
+        LIMIT 1
+      ) AS "verdict",
+      -- … and whether the address already accepted a real email of ours (sent,
+      -- never bounced, any campaign): proven deliverable, spends no budget.
+      CASE WHEN p.last_sent_step IS NOT NULL THEN true ELSE (
+        EXISTS (
+          SELECT 1 FROM instantly_events e
+          WHERE e.lead_email = p.lead_email AND e.event_type = 'email_sent'
+            AND e.inferred = false AND e.withdrawn_at IS NULL
+        ) AND NOT EXISTS (
+          SELECT 1 FROM instantly_events e
+          WHERE e.lead_email = p.lead_email AND e.event_type = 'email_bounced'
+            AND e.inferred = false AND e.withdrawn_at IS NULL
+        )
+      ) END AS "addressProven",
       (
         SELECT COALESCE(jsonb_agg(s.delay_days ORDER BY s.step), '[]'::jsonb)
         FROM sequence_steps s
@@ -217,6 +251,8 @@ async function loadPendingSequences(
     // A sequence answering a person's own action (`answer-now.ts`): its first
     // email is owed now, like a reply.
     answersPerson: row.answersPerson === true,
+    verdict: typeof row.verdict === "string" ? row.verdict : null,
+    addressProven: row.addressProven === true,
   }));
 }
 
@@ -663,6 +699,7 @@ function emptySummary(): DispatchSummary {
     blockedNoCapacityRow: 0,
     skippedSilenced: 0,
     rehomed: 0,
+    heldBounceBudget: 0,
     sent: 0,
     bounced: 0,
     senderBlocked: 0,
@@ -774,10 +811,13 @@ async function runDispatchExclusive(
       (s) => !notYetStopped.has(s.instantlyCampaignId),
     );
     const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
+    // Fresh per selection (never the 60 s cache): the budget is spent in memory
+    // as steps are planned, so it must start from what has really happened.
+    const bounceBudget = new BounceBudget(await loadFleetBounceHistory());
     return {
       sequences,
       accounts,
-      selection: selectDueSteps(sequences, capacities, asOf, skippedMailboxes),
+      selection: selectDueSteps(sequences, capacities, asOf, skippedMailboxes, bounceBudget),
     };
   };
 
@@ -820,6 +860,7 @@ async function runDispatchExclusive(
       blockedNoCapacityRow: current.selection.blockedNoCapacityRow,
       skippedSilenced: current.selection.skippedSilenced,
       rehomed: current.selection.rehomed,
+      heldBounceBudget: current.selection.heldBounceBudget,
     };
     console.log(
       `[instantly-service] self-send-dispatch: done ${JSON.stringify(idle)}`,
@@ -889,6 +930,7 @@ async function runDispatchExclusive(
       blockedNoCapacityRow: selection.blockedNoCapacityRow,
       skippedSilenced: selection.skippedSilenced,
       rehomed: selection.rehomed,
+      heldBounceBudget: selection.heldBounceBudget,
       polled,
     };
 
@@ -1139,7 +1181,8 @@ export async function dispatchAnswerNow(
   return withSendLock(async () => {
     const sequences = (await loadPendingSequences(instantlyCampaignId)).filter(isAnswerOwed);
     const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
-    const selection = selectDueSteps(sequences, capacities, asOf, skippedMailboxes);
+    const bounceBudget = new BounceBudget(await loadFleetBounceHistory());
+    const selection = selectDueSteps(sequences, capacities, asOf, skippedMailboxes, bounceBudget);
 
     const summary: DispatchSummary = {
       ...emptySummary(),
@@ -1149,6 +1192,7 @@ export async function dispatchAnswerNow(
       blockedNoCapacityRow: selection.blockedNoCapacityRow,
       skippedSilenced: selection.skippedSilenced,
       rehomed: selection.rehomed,
+      heldBounceBudget: selection.heldBounceBudget,
     };
     const credentials = new Map<string, MailboxCredential>();
     for (const step of selection.selected) {

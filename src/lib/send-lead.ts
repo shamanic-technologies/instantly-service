@@ -36,6 +36,8 @@ import {
 import { capForAccount } from "./account-lifecycle";
 import { keepSelfSendCapable } from "./self-send/capability";
 import { dropInboundBlind } from "./self-send/inbound-blindness";
+import { BounceBudget } from "./bounce-budget";
+import { loadFleetBounceHistoryCached } from "./bounce-budget-history";
 import { dateKeyUTC } from "./sending-forecast";
 import { sequenceFootprintDays } from "./sending-window";
 import { tagColdEmailLinks } from "./cold-email-utm";
@@ -853,6 +855,26 @@ export interface SelectAccountOptions {
    * order. Absent from the pool = the fill order decides, as for any send.
    */
   preferAccountEmail?: string | null;
+  /**
+   * The verdict our verifier gave this address. When present, mailboxes whose
+   * DOMAIN cannot afford its bounce risk right now (`bounce-budget.ts`) are
+   * passed over while another domain can; when none can, the fill order decides
+   * as before and the dispatcher holds the first email until a domain can.
+   */
+  verdict?: string | null;
+}
+
+/**
+ * Prefer mailboxes whose domain has bounce budget for this verdict. Never
+ * empties the pool: a send is never refused here, the dispatcher is the gate.
+ */
+async function preferBounceBudget(
+  accounts: PooledAccount[],
+  verdict: string | null,
+): Promise<PooledAccount[]> {
+  const budget = new BounceBudget(await loadFleetBounceHistoryCached());
+  const affordable = accounts.filter((a) => budget.refusal(a.email, verdict) === null);
+  return affordable.length > 0 ? affordable : accounts;
 }
 
 export async function selectSendingAccount(
@@ -875,6 +897,9 @@ export async function selectSendingAccount(
     if (same) return same;
   }
 
+  const pool =
+    opts.verdict === undefined ? accounts : await preferBounceBudget(accounts, opts.verdict);
+
   // The footprint is anchored on the lead's OWN next open window, not on a
   // fleet-wide weekday snap: a prospect whose local business hours have already
   // closed is a tomorrow lead even though it is mid-morning here, and one on the
@@ -887,7 +912,7 @@ export async function selectSendingAccount(
   );
   const effectiveDay = new Date(`${footprint[0]!}T00:00:00.000Z`);
   const capacityByEmail = await fetchAccountCapacityCached(effectiveDay);
-  return pickSequentialFillAccount(accounts, capacityByEmail, effectiveDay, footprint);
+  return pickSequentialFillAccount(pool, capacityByEmail, effectiveDay, footprint);
 }
 
 export async function sendLeadToInstantly(opts: SendOptions): Promise<SendResult> {

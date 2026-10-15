@@ -11,6 +11,7 @@
  */
 
 import { rampCapForVolume } from "../account-lifecycle";
+import type { BounceBudget } from "../bounce-budget";
 import { isSendingDay } from "../sending-calendar";
 import { delayForGap } from "../sending-forecast";
 import { isWithinLocalSendWindow } from "../sending-window";
@@ -58,6 +59,18 @@ export interface PendingSequence {
    * and every refusal still apply. Absent = a cold (proactive) sequence.
    */
   answersPerson?: boolean;
+  /**
+   * The verdict our verifier holds for this address (latest ACCEPTED row of
+   * `email_send_verifications` for the org). Null = none held. Read by the
+   * bounce budget (`bounce-budget.ts`) for a FIRST email only.
+   */
+  verdict?: string | null;
+  /**
+   * The address already ACCEPTED a real email of ours (a real `email_sent` with
+   * no bounce): it is proven deliverable, so its first email in this sequence
+   * spends no risk budget (a follow-up thread, a re-contact months later).
+   */
+  addressProven?: boolean;
 }
 
 /** The first email of a sequence that answers a person: owed now, like a reply. */
@@ -229,6 +242,13 @@ export interface DueSelection {
    * mailbox with room. Each one is in `selected` with `rehomedFrom` set.
    */
   rehomed: number;
+  /**
+   * First emails the bounce budget (`bounce-budget.ts`) kept off their mailbox's
+   * DOMAIN this run: a risky address on a domain without budget, or any address
+   * on a domain past the hard ceiling. Each one stays queued: it is rehomed to a
+   * domain with budget below when one has room, else it waits for the next run.
+   */
+  heldBounceBudget: number;
 }
 
 export function selectDueSteps(
@@ -240,6 +260,11 @@ export function selectDueSteps(
    * caller that has not loaded the health read behaves exactly as before.
    */
   silencedMailboxes: ReadonlySet<string> = new Set(),
+  /**
+   * The sending domains' bounce budget for this selection, spent as steps are
+   * planned. Absent = no budget (a caller that has not loaded the history).
+   */
+  bounceBudget: BounceBudget | null = null,
 ): DueSelection {
   // Nothing goes out on a weekend, matching the Mon-Fri window every campaign in
   // the fleet is created with. Two reasons this is not optional:
@@ -270,6 +295,7 @@ export function selectDueSteps(
       blockedNoCapacityRow: 0,
       skippedSilenced: 0,
       rehomed: 0,
+      heldBounceBudget: 0,
     };
 
   // Capacity is spent per REAL MAILBOX, not per sending address — several
@@ -371,6 +397,27 @@ export function selectDueSteps(
     return sequence !== undefined && sequence.lastSentStep === null;
   };
 
+  // A first email to an address that has not yet accepted one of ours is what
+  // can bounce, so it is the only step the bounce budget gates. Follow-ups and
+  // proven addresses spend nothing but still count as sends (they dilute).
+  const gatedByBudget = (step: DueStep): boolean => {
+    const sequence = sequenceByCampaign.get(step.instantlyCampaignId);
+    return (
+      bounceBudget !== null &&
+      sequence !== undefined &&
+      sequence.lastSentStep === null &&
+      sequence.addressProven !== true
+    );
+  };
+  const verdictOf = (step: DueStep): string | null =>
+    sequenceByCampaign.get(step.instantlyCampaignId)?.verdict ?? null;
+  const budgetRefuses = (step: DueStep, accountEmail: string): boolean =>
+    gatedByBudget(step) && bounceBudget!.refusal(accountEmail, verdictOf(step)) !== null;
+  const spendBudget = (step: DueStep, accountEmail: string): void => {
+    bounceBudget?.spend(accountEmail, verdictOf(step), gatedByBudget(step));
+  };
+  let heldBounceBudget = 0;
+
   for (const step of due) {
     // No capacity row ⇒ no mailbox ⇒ no room, per the invariant above. An
     // account whose limits we could not establish must not be sent from.
@@ -396,7 +443,17 @@ export function selectDueSteps(
       if (isFirstEmail(step)) stranded.push(step);
       continue;
     }
+
+    // The mailbox's DOMAIN cannot afford this address's bounce risk right now
+    // (`bounce-budget.ts`). The lead stays queued: offered to a domain with
+    // budget in the second pass, else it waits for this one to recover.
+    if (budgetRefuses(step, step.accountEmail)) {
+      heldBounceBudget += 1;
+      stranded.push(step);
+      continue;
+    }
     selected.push(step);
+    spendBudget(step, step.accountEmail);
     remaining.set(mailbox, room - 1);
   }
 
@@ -424,18 +481,23 @@ export function selectDueSteps(
       if (mailbox === mailboxOf.get(step.accountEmail)) continue;
       const room = remaining.get(mailbox) ?? 0;
       if (room <= 0) continue;
+      if (budgetRefuses(step, adopterAddressByMailbox.get(mailbox)!)) continue;
       if (target === null || room > targetRoom || (room === targetRoom && mailbox < target)) {
         target = mailbox;
         targetRoom = room;
       }
     }
-    // Nobody has room left: the rest stay where they are, counted as due.
-    if (target === null) break;
+    // Nobody can take this one (no room, or no domain with budget for its
+    // verdict): it stays where it is, still queued, and the next one is tried
+    // (a valid address may fit where a catch-all does not).
+    if (target === null) continue;
+    const adopter = adopterAddressByMailbox.get(target)!;
     selected.push({
       ...step,
-      accountEmail: adopterAddressByMailbox.get(target)!,
+      accountEmail: adopter,
       rehomedFrom: step.accountEmail,
     });
+    spendBudget(step, adopter);
     remaining.set(target, targetRoom - 1);
     rehomed += 1;
   }
@@ -446,6 +508,7 @@ export function selectDueSteps(
     blockedNoCapacityRow,
     skippedSilenced,
     rehomed,
+    heldBounceBudget,
   };
 }
 
