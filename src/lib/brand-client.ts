@@ -17,9 +17,7 @@
  * This file was deleted once, when stop-on-click was repointed at
  * campaign-service and brand-service lost its last consumer here. It is back for
  * exactly one read; do not grow it into a general brand mirror. The rep is that
- * one read — two facts about one person, never two reads. The second read,
- * the offer's sales path, answers whether the customer AUTHORIZED the instant
- * call at all (see `ring-rep-on-sales-interest.ts`).
+ * one read — two facts about one person, never two reads.
  */
 
 const BRAND_SERVICE_URL = process.env.BRAND_SERVICE_URL;

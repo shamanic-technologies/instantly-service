@@ -1,20 +1,30 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockGetCampaignTriggerScope = vi.fn();
-const mockTriggerCampaignForStep = vi.fn();
+const mockRecordTriggerEvent = vi.fn();
 const mockFindResponders = vi.fn();
+const mockFindLead = vi.fn();
+const mockReadThread = vi.fn();
 
 vi.mock("../../src/lib/campaign-client", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
   getCampaignTriggerScope: (...args: unknown[]) => mockGetCampaignTriggerScope(...args),
-  triggerCampaignForStep: (...args: unknown[]) => mockTriggerCampaignForStep(...args),
+  recordTriggerEvent: (...args: unknown[]) => mockRecordTriggerEvent(...args),
   findOngoingResponderCampaigns: (...args: unknown[]) => mockFindResponders(...args),
+}));
+vi.mock("../../src/lib/lead-client", () => ({
+  findLeadOnCampaignByEmail: (...args: unknown[]) => mockFindLead(...args),
+}));
+vi.mock("../../src/lib/positive-reply-item", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  readReplyThread: (...args: unknown[]) => mockReadThread(...args),
 }));
 
 const {
   maybeTriggerSalesInterestCampaign,
+  triggerSalesInterestLeg,
   isSalesInterestQualification,
-  SALES_INTEREST_STEP_KEY,
+  POSITIVE_REPLY_TRIGGER_ID,
 } = await import("../../src/lib/trigger-sales-interest-campaign");
 const { POSITIVE_REPLY_KINDS, REPLY_KIND_CLASSIFICATION, REPLY_KINDS } = await import(
   "../../src/lib/reply-kind"
@@ -24,25 +34,39 @@ const CAMPAIGN = {
   instantlyCampaignId: "inst-camp-1",
   campaignId: "camp-1",
   orgId: "org-1",
+  leadId: "lead-1",
 };
 
-const SCOPE = {
-  brandId: "brand-1",
-  offerId: "offer-1",
-};
+const SCOPE = { brandId: "brand-1", offerId: "offer-1" };
 
-const EMPTY_OUTCOME = {
-  step: SALES_INTEREST_STEP_KEY,
-  legKeys: [],
-  triggered: [],
-  skipped: [],
-};
+const THREAD = [
+  { direction: "outbound" as const, from: "amy@s.com", to: "p@x.com", date: "2026-10-01T09:00:00.000Z", subject: "Hi", bodyText: "our pitch\n--\nAmy Moore" },
+  { direction: "inbound" as const, from: "p@x.com", to: "amy@s.com", date: "2026-10-02T09:00:00.000Z", subject: "Re: Hi", bodyText: "Yes, interested.\n\n> our pitch" },
+];
+
+function event(over: Record<string, unknown> = {}) {
+  return {
+    event: {
+      id: "evt-1",
+      triggerId: "positive_reply_received",
+      status: "done",
+      outcome: "skipped",
+      skipReason: "no_campaign",
+      ranCampaignIds: [],
+      detail: { legKeys: [], triggered: [], skipped: [] },
+      ...over,
+    },
+    replayed: false,
+  };
+}
 
 beforeEach(() => {
   vi.resetAllMocks();
   mockGetCampaignTriggerScope.mockResolvedValue(SCOPE);
-  mockTriggerCampaignForStep.mockResolvedValue(EMPTY_OUTCOME);
+  mockRecordTriggerEvent.mockResolvedValue(event());
   mockFindResponders.mockResolvedValue(["responder-1"]);
+  mockFindLead.mockResolvedValue({ id: "lc-1", email: "p@x.com", name: "Dana Reid" });
+  mockReadThread.mockResolvedValue(THREAD);
 });
 
 // ─── which replies count as a sales interest (pure) ───────────────────────────
@@ -83,179 +107,132 @@ describe("isSalesInterestQualification", () => {
   );
 });
 
-// ─── the ask ─────────────────────────────────────────────────────────────────
+// ─── the occurrence ──────────────────────────────────────────────────────────
 
-describe("maybeTriggerSalesInterestCampaign", () => {
-  it("asks campaign-service to run the campaign for the leg out of the step", async () => {
-    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested");
-
+describe("the positive reply is reported to the trigger door", () => {
+  it("names the trigger, the scope, the person and carries their cleaned words", async () => {
+    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested");
     expect(mockGetCampaignTriggerScope).toHaveBeenCalledWith("camp-1", "org-1");
-    expect(mockTriggerCampaignForStep).toHaveBeenCalledWith({
+    expect(mockReadThread).toHaveBeenCalledWith("inst-camp-1");
+    expect(mockRecordTriggerEvent).toHaveBeenCalledTimes(1);
+    const arg = mockRecordTriggerEvent.mock.calls[0][0];
+    expect(arg).toMatchObject({
       orgId: "org-1",
+      triggerId: "positive_reply_received",
       brandId: "brand-1",
       offerId: "offer-1",
-      // features-service's step key, carried verbatim — never parsed into legs here.
-      step: "conversation",
+      leadId: "lead-1",
+      requestedByCampaignId: "camp-1",
+      person: { email: "p@x.com", name: "Dana Reid" },
+      // LOCKED with the AI Instant Call workflow: {replyText, priorMessages newest-first}.
+      item: {
+        replyText: "Yes, interested.",
+        priorMessages: [{ direction: "outbound", text: "our pitch" }],
+      },
     });
+    expect(arg.idempotencyKey).toMatch(/^positive_reply_received:[0-9a-f]{64}$/);
+    expect(POSITIVE_REPLY_TRIGGER_ID).toBe("positive_reply_received");
   });
 
-  it("carries features-service's published step key", () => {
-    expect(SALES_INTEREST_STEP_KEY).toBe("conversation");
+  it("ONE occurrence per reply: a replay or a re-qualification of the same words sends the same key", async () => {
+    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested");
+    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "P@X.com ", "lead_meeting_requested");
+    const [a, b] = mockRecordTriggerEvent.mock.calls.map((c) => c[0].idempotencyKey);
+    expect(a).toBe(b);
   });
 
-  it("asks nothing on a reply that is not a sales interest", async () => {
-    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_not_interested");
-    expect(mockGetCampaignTriggerScope).not.toHaveBeenCalled();
-    expect(mockTriggerCampaignForStep).not.toHaveBeenCalled();
+  it("a NEW reply later in the thread is a new occurrence", async () => {
+    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested");
+    mockReadThread.mockResolvedValueOnce([
+      ...THREAD,
+      { ...THREAD[1], date: "2026-10-05T09:00:00.000Z", bodyText: "Can we talk Friday?" },
+    ]);
+    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_meeting_requested");
+    const [a, b] = mockRecordTriggerEvent.mock.calls.map((c) => c[0].idempotencyKey);
+    expect(a).not.toBe(b);
   });
 
-  // A platform send belongs to no caller campaign, so it is on no
-  // offer — there is nothing to name.
-  it("asks nothing for a platform send (no caller campaign)", async () => {
-    await maybeTriggerSalesInterestCampaign(
-      { ...CAMPAIGN, campaignId: null },
-      "lead@x.com",
-      "lead_interested",
-    );
-    expect(mockGetCampaignTriggerScope).not.toHaveBeenCalled();
-    expect(mockTriggerCampaignForStep).not.toHaveBeenCalled();
+  it("a caller-stated key wins (a redraft is a new occurrence of the same reply)", async () => {
+    await triggerSalesInterestLeg(CAMPAIGN, "p@x.com", { idempotencyKey: "positive_reply_received:redraft:r-1" });
+    expect(mockRecordTriggerEvent.mock.calls[0][0].idempotencyKey).toBe("positive_reply_received:redraft:r-1");
   });
 
-  it("asks nothing when the campaign is not org-scoped", async () => {
-    await maybeTriggerSalesInterestCampaign(
-      { ...CAMPAIGN, orgId: null },
-      "lead@x.com",
-      "lead_interested",
-    );
-    expect(mockGetCampaignTriggerScope).not.toHaveBeenCalled();
+  it("still reports, without the words, when the thread cannot be read", async () => {
+    mockReadThread.mockRejectedValueOnce(new Error("db down"));
+    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested");
+    expect(mockRecordTriggerEvent.mock.calls[0][0].item).toEqual({ replyText: null, priorMessages: [] });
   });
 
-  // Nothing is inferred: a campaign stating no offer (or no brand)
-  // cannot have a leg resolved for it, so naming a scope would be a guess.
-  it.each([
-    ["brandId", { ...SCOPE, brandId: null }],
-    ["offerId", { ...SCOPE, offerId: null }],
-    ["campaign", null],
-  ])("asks nothing when the scope states no %s", async (_label, scope) => {
-    mockGetCampaignTriggerScope.mockResolvedValue(scope);
-    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested");
-    expect(mockTriggerCampaignForStep).not.toHaveBeenCalled();
-  });
-});
-
-// ─── a brand with no responsible campaign, and a trigger that fails ──────────
-
-describe("maybeTriggerSalesInterestCampaign — quiet answers and loud failures", () => {
-  // Most brands buy one leg of one offer, so "nobody bought the leg out of this
-  // step" is the COMMON answer and it is an ordinary 200, not an error.
-  it("treats an empty leg set as the ordinary answer it is", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await expect(
-      maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested"),
-    ).resolves.toBe("nobody");
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
+  it("still reports, without a name, when lead-service cannot be read", async () => {
+    mockFindLead.mockRejectedValueOnce(new Error("lead 500"));
+    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested");
+    expect(mockRecordTriggerEvent.mock.calls[0][0].person).toEqual({ email: "p@x.com" });
   });
 
-  it("treats a NAMED skip as an ordinary answer, not a failure", async () => {
-    mockTriggerCampaignForStep.mockResolvedValue({
-      ...EMPTY_OUTCOME,
-      legKeys: ["conversation_to_meeting_booked"],
-      skipped: [
-        {
-          campaignId: "camp-2",
-          legKey: "conversation_to_meeting_booked",
-          reason: "unfunded",
-          detail: "the customer funds nothing for it",
-        },
-      ],
-    });
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested");
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
+  it("reports nothing on a reply that is not a sales interest", async () => {
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_referral")).toBeUndefined();
+    expect(mockRecordTriggerEvent).not.toHaveBeenCalled();
   });
 
-  // Qualifying the reply is the primary job. A trigger failure must never change
-  // its outcome — and must never throw into the webhook (Instantly auto-pauses a
-  // webhook that keeps failing).
+  it("reports nothing for a platform send (no caller campaign) or an org-less one", async () => {
+    expect(await maybeTriggerSalesInterestCampaign({ ...CAMPAIGN, campaignId: null }, "p@x.com", "lead_interested")).toBe("unknown");
+    expect(await maybeTriggerSalesInterestCampaign({ ...CAMPAIGN, orgId: null }, "p@x.com", "lead_interested")).toBe("unknown");
+    expect(mockRecordTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it("a thread on no offer: nothing reported, nobody answers", async () => {
+    mockGetCampaignTriggerScope.mockResolvedValueOnce({ brandId: "brand-1", offerId: null });
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested")).toBe("nobody");
+    expect(mockRecordTriggerEvent).not.toHaveBeenCalled();
+  });
+
   it("never throws when campaign-service fails, and says so loudly", async () => {
-    mockTriggerCampaignForStep.mockRejectedValue(new Error("502 catalogue unreadable"));
+    mockRecordTriggerEvent.mockRejectedValueOnce(new Error("campaign-service POST /internal/trigger-events failed: 502"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await expect(
-      maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested"),
-    ).resolves.toBe("unknown");
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toContain("502 catalogue unreadable");
-    warn.mockRestore();
-  });
-
-  it("never throws when the scope read fails", async () => {
-    mockGetCampaignTriggerScope.mockRejectedValue(new Error("campaign-service down"));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await expect(
-      maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested"),
-    ).resolves.toBe("unknown");
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(mockTriggerCampaignForStep).not.toHaveBeenCalled();
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested")).toBe("unknown");
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("502"))).toBe(true);
     warn.mockRestore();
   });
 });
 
-// ─── the verdict: will an EMAIL responder answer? (owner 2026-10-11) ─────────
+// ─── what the step trigger's answer fed: does an email responder answer? ─────
 
-describe("maybeTriggerSalesInterestCampaign — responder verdict", () => {
-  const skip = (campaignId: string, reason: string) => ({ campaignId, legKey: "conversation_to_meeting_booked", reason, detail: reason });
-
-  it("a responder took the run: answers", async () => {
-    mockTriggerCampaignForStep.mockResolvedValue({
-      ...EMPTY_OUTCOME,
-      triggered: [{ campaignId: "responder-1", legKey: "conversation_to_meeting_booked", workflowSlug: "ai-meeting-booking-rhodium" }],
-    });
-    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_info_requested")).toBe("answers");
+describe("responder verdict, read off the recorded occurrence", () => {
+  it("a responder ran: answers", async () => {
+    mockRecordTriggerEvent.mockResolvedValueOnce(event({ outcome: "ran", ranCampaignIds: ["responder-1"] }));
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested")).toBe("answers");
   });
 
   it("a responder run already in flight: answers", async () => {
-    mockTriggerCampaignForStep.mockResolvedValue({ ...EMPTY_OUTCOME, skipped: [skip("responder-1", "run_in_flight")] });
-    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested")).toBe("answers");
+    mockRecordTriggerEvent.mockResolvedValueOnce(
+      event({ detail: { legKeys: [], triggered: [], skipped: [{ campaignId: "responder-1", legKey: null, reason: "run_in_flight", detail: "" }] } }),
+    );
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested")).toBe("answers");
   });
 
-  it.each(["unfunded", "global_sales_budget_reached", "item_budget_reached", "no_workflow", "dispatch_refused"])(
-    "responder ON but skipped (%s): nobody — the out-of-money hole",
-    async (reason) => {
-      mockTriggerCampaignForStep.mockResolvedValue({ ...EMPTY_OUTCOME, skipped: [skip("responder-1", reason)] });
-      expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_info_requested")).toBe("nobody");
-    },
-  );
-
-  it("no responder bought (empty answer): nobody", async () => {
-    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_info_requested")).toBe("nobody");
+  it("a replayed occurrence answers as the first one did", async () => {
+    mockRecordTriggerEvent.mockResolvedValueOnce({ ...event({ outcome: "ran", ranCampaignIds: ["responder-1"] }), replayed: true });
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested")).toBe("answers");
   });
 
-  it("only the PHONE leg took it (AI Instant Call answers no email): nobody", async () => {
-    mockFindResponders.mockResolvedValue([]);
-    mockTriggerCampaignForStep.mockResolvedValue({
-      ...EMPTY_OUTCOME,
-      triggered: [{ campaignId: "instant-call-1", legKey: "conversation_to_booking_call", workflowSlug: "" }],
-    });
-    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested")).toBe("nobody");
+  it("only the PHONE pipe ran (AI Instant Call answers no email): nobody", async () => {
+    mockRecordTriggerEvent.mockResolvedValueOnce(event({ outcome: "ran", ranCampaignIds: ["aic-1"] }));
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested")).toBe("nobody");
   });
 
-  it("thread on no offer: nobody (a responder is bought per offer)", async () => {
-    mockGetCampaignTriggerScope.mockResolvedValue({ ...SCOPE, offerId: null });
-    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested")).toBe("nobody");
+  it("the responder is out of money (owed until room returns): nobody answers NOW", async () => {
+    mockRecordTriggerEvent.mockResolvedValueOnce(
+      event({ status: "pending", outcome: null, skipReason: null, detail: { legKeys: [], triggered: [], skipped: [{ campaignId: "responder-1", legKey: null, reason: "unfunded", detail: "" }] } }),
+    );
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested")).toBe("nobody");
   });
 
-  it("campaign-service unreadable: unknown (never read as nobody)", async () => {
-    mockTriggerCampaignForStep.mockRejectedValue(new Error("502"));
-    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_interested")).toBe("unknown");
+  it("no pipe bought: nobody", async () => {
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested")).toBe("nobody");
   });
 
-  it("not a sales interest: no verdict", async () => {
-    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "lead@x.com", "lead_not_interested")).toBeUndefined();
+  it("no campaign asked yet (person not known to the brand yet): unknown, never nobody", async () => {
+    mockRecordTriggerEvent.mockResolvedValueOnce(event({ status: "pending", outcome: null, skipReason: null, detail: { person: {}, item: {} } }));
+    expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested")).toBe("unknown");
   });
 });

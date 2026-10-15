@@ -58,6 +58,9 @@ async function redraft(reply: ScheduledReply, asOf: Date): Promise<void> {
       orgId: reply.orgId,
     },
     reply.leadEmail,
+    // A redraft is a NEW occurrence of the same reply: the per-reply key
+    // would only replay the first one and run nobody.
+    { idempotencyKey: `positive_reply_received:redraft:${reply.id}` },
   );
   await markScheduledReplySuperseded(reply.id);
 }

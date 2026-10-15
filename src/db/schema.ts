@@ -87,15 +87,9 @@ export const instantlyCampaigns = pgTable(
     // HISTORY ONLY (migration 0068): the claim of the retired "answer this
     // reply yourself" email (REPLY-NOTIFS-1013). Nothing writes it any more.
     clientAnswerRequestedAt: timestamp("client_answer_requested_at"),
-    // Exactly-once claim for the "ring the brand's sales rep when a sales
-    // interest lands" side effect (lib/ring-rep-on-sales-interest.ts). Set
-    // atomically BEFORE any external call is placed; a webhook retry / reconcile
-    // re-poll / re-qualification finds it non-null and rings nobody. Released
-    // back to NULL only when the call itself could not be placed, so a later
-    // positive signal re-attempts. Same shape and same reasoning as
-    // `positive_reply_forwarded_at` above -- two at-most-once side effects must
-    // not claim two different ways. NULL = the rep has never been rung about
-    // this lead.
+    // HISTORY ONLY (migration 0049): the claim of the retired in-ingestion
+    // rep call (AIC-COMMON-1015). The AI Instant Call workflow places the call
+    // off the `positive_reply_received` occurrence now; nothing writes it.
     salesInterestCallAt: timestamp("sales_interest_call_at"),
     // Exactly-once claim for an escalation (lib/escalate-reply.ts, migration
     // 0062): set BEFORE anything is sent, so a repeated escalation of the same

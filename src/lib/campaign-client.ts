@@ -114,62 +114,8 @@ export async function getCampaignTriggerScope(
   };
 }
 
-/** The channel and leg of an AI Instant Call campaign (campaign-service #560). */
+/** The AI Instant Call channel (campaign-service #560): it rings the rep's phone, it writes no email. */
 export const AI_INSTANT_CALL_FEATURE_SLUG = "ai-instant-call";
-export const AI_INSTANT_CALL_LEG_KEY = "conversation_to_booking_call";
-
-/**
- * The id of the ONGOING AI Instant Call campaign for one offer, or null when it
- * is off.
- *
- * AI Instant Call is a real campaign in campaign-service with no workflow: the
- * customer turns it on or off per offer, and a payment hold stops it like any
- * other campaign. Null covers every way it is off (never created, stopped by the
- * customer, stopped by a hold). The identity index allows at most one live row
- * per (org, brand, offer, leg, channel). Any non-2xx THROWS: the caller must not
- * read an unreadable answer as "off" or as "on".
- */
-export async function findOngoingInstantCallCampaign(params: {
-  orgId: string;
-  brandId: string;
-  offerId: string;
-}): Promise<string | null> {
-  if (!CAMPAIGN_SERVICE_URL || !CAMPAIGN_SERVICE_API_KEY) {
-    throw new Error("CAMPAIGN_SERVICE_URL or CAMPAIGN_SERVICE_API_KEY is not set");
-  }
-
-  const query = new URLSearchParams({
-    brandId: params.brandId,
-    offerId: params.offerId,
-    featureSlug: AI_INSTANT_CALL_FEATURE_SLUG,
-    legKey: AI_INSTANT_CALL_LEG_KEY,
-    status: "ongoing",
-  });
-  const response = await fetch(`${CAMPAIGN_SERVICE_URL}/campaigns?${query.toString()}`, {
-    headers: {
-      "x-api-key": CAMPAIGN_SERVICE_API_KEY,
-      "x-org-id": params.orgId,
-    },
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `campaign-service GET /campaigns (ai-instant-call) failed: ${response.status} - ${body.slice(0, 200)}`,
-    );
-  }
-
-  const body = (await response.json()) as { campaigns?: unknown };
-  if (!Array.isArray(body.campaigns)) {
-    throw new Error("campaign-service GET /campaigns (ai-instant-call) returned no `campaigns` array");
-  }
-  const first = body.campaigns[0] as { id?: unknown } | undefined;
-  if (!first) return null;
-  if (typeof first.id !== "string" || !first.id) {
-    throw new Error("campaign-service GET /campaigns (ai-instant-call) returned a row with no id");
-  }
-  return first.id;
-}
 
 /** The channel that rings the rep by phone: it answers no email, so it is not a responder. */
 const PHONE_CHANNEL_FEATURE_SLUGS: ReadonlySet<string> = new Set([AI_INSTANT_CALL_FEATURE_SLUG]);
@@ -219,53 +165,81 @@ export async function findOngoingResponderCampaigns(params: {
     .map((c) => String(c.id));
 }
 
-/** One campaign campaign-service DID run for the leg out of the step. */
-export interface StepTriggerTriggered {
+/** One campaign campaign-service DID run for the occurrence. */
+export interface TriggerEventTriggered {
   campaignId: string;
   legKey: string | null;
   workflowSlug: string;
 }
 
 /** One campaign it deliberately did NOT run, and the named business reason why. */
-export interface StepTriggerSkipped {
+export interface TriggerEventSkipped {
   campaignId: string;
   legKey: string | null;
   reason: string;
   detail: string;
 }
 
-export interface StepTriggerOutcome {
-  step: string;
-  legKeys: string[];
-  triggered: StepTriggerTriggered[];
-  skipped: StepTriggerSkipped[];
+/** The recorded occurrence, as campaign-service serves it (the fields read here). */
+export interface RecordedTriggerEvent {
+  id: string;
+  triggerId: string | null;
+  /** `pending` (held: person not known yet, money, pacing) | `firing` | `done`. */
+  status: string;
+  /** `ran` | `skipped` | `failed`; null until done. */
+  outcome: string | null;
+  skipReason: string | null;
+  ranCampaignIds: string[];
+  /** Per-campaign answers `{legKeys, triggered[], skipped[], offCampaignIds}` (plus `person`/`item`). */
+  detail: {
+    legKeys?: string[];
+    triggered?: TriggerEventTriggered[];
+    skipped?: TriggerEventSkipped[];
+  } | null;
+}
+
+/** The person an occurrence is about, by identity. */
+export interface TriggerEventPerson {
+  email: string;
+  name?: string;
 }
 
 /**
- * Ask campaign-service to run the campaign bought for the leg OUT of a step a
- * lead just reached.
+ * Report ONE occurrence of a declared trigger to campaign-service's generic
+ * trigger door (`POST /internal/trigger-events`), which fires every campaign
+ * whose pipe answers that trigger on (org, brand, offer): same dispatch, same
+ * funding gate, same `/execute` as every other pipe. Each campaign reached
+ * receives `person` and `item` verbatim on `/execute` `trigger`.
  *
- * campaign-service owns every decision here: which leg leaves the step (it reads
- * features-service's published catalogue), which campaign states that leg, and
- * whether that campaign may spend. This is the ASK and nothing else — no leg is
- * resolved on this side and no campaign is selected.
+ * `idempotencyKey` is unique per org: a retried call answers the FIRST event
+ * (`replayed: true`) and records nothing new.
  *
- * An empty `legKeys` is the COMMON answer: most brands buy one leg of one offer,
- * so a step nobody bought the leg out of is an ordinary 200 with nothing in it.
- * Anything that is not a 200 throws — the caller decides how loudly to fail.
+ * Anything that is not a 2xx throws, with campaign-service's body (`reason`:
+ * `unknown_trigger`, `catalogue_unavailable`...): the caller decides how loudly
+ * to fail.
  */
-export async function triggerCampaignForStep(params: {
+export async function recordTriggerEvent(params: {
   orgId: string;
+  triggerId: string;
   brandId: string;
   offerId: string;
-  step: string;
-}): Promise<StepTriggerOutcome> {
+  leadId?: string | null;
+  requestedByCampaignId?: string | null;
+  idempotencyKey: string;
+  person: TriggerEventPerson;
+  item: unknown;
+}): Promise<{ event: RecordedTriggerEvent; replayed: boolean }> {
   if (!CAMPAIGN_SERVICE_URL || !CAMPAIGN_SERVICE_API_KEY) {
     throw new Error("CAMPAIGN_SERVICE_URL or CAMPAIGN_SERVICE_API_KEY is not set");
   }
 
-  const { orgId, ...body } = params;
-  const response = await fetch(`${CAMPAIGN_SERVICE_URL}/internal/campaigns/trigger-for-step`, {
+  const { orgId, leadId, requestedByCampaignId, ...rest } = params;
+  const body = {
+    ...rest,
+    ...(leadId ? { leadId } : {}),
+    ...(requestedByCampaignId ? { requestedByCampaignId } : {}),
+  };
+  const response = await fetch(`${CAMPAIGN_SERVICE_URL}/internal/trigger-events`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -278,11 +252,11 @@ export async function triggerCampaignForStep(params: {
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(
-      `campaign-service POST /internal/campaigns/trigger-for-step failed: ${response.status} - ${detail.slice(0, 200)}`,
+      `campaign-service POST /internal/trigger-events failed: ${response.status} - ${detail.slice(0, 300)}`,
     );
   }
 
-  return (await response.json()) as StepTriggerOutcome;
+  return (await response.json()) as { event: RecordedTriggerEvent; replayed: boolean };
 }
 
 /**
