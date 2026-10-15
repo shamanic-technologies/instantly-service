@@ -30,7 +30,6 @@ const emptyInventory = { domains: [], mailboxes: [], accountScopes: [] };
 const mockGandi = vi.fn(async () => emptyInventory);
 const mockMailforge = vi.fn(async () => emptyInventory);
 const mockPrimeforge = vi.fn(async () => emptyInventory);
-const mockDfy = vi.fn(async () => emptyInventory);
 
 vi.mock("../../src/lib/providers/gandi-client", () => ({
   fetchGandiInventory: (...a: unknown[]) => mockGandi(...(a as [])),
@@ -40,9 +39,6 @@ vi.mock("../../src/lib/providers/mailforge-client", () => ({
 }));
 vi.mock("../../src/lib/providers/primeforge-client", () => ({
   fetchPrimeforgeInventory: (...a: unknown[]) => mockPrimeforge(...(a as [])),
-}));
-vi.mock("../../src/lib/providers/instantly-dfy-client", () => ({
-  fetchInstantlyDfyInventory: (...a: unknown[]) => mockDfy(...(a as [])),
 }));
 
 import {
@@ -62,16 +58,15 @@ beforeEach(() => {
   mockGandi.mockResolvedValue(emptyInventory);
   mockMailforge.mockResolvedValue(emptyInventory);
   mockPrimeforge.mockResolvedValue(emptyInventory);
-  mockDfy.mockResolvedValue(emptyInventory);
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 describe("buildProviderTasks", () => {
-  it("emits one task per Gandi organisation plus the three single-tenant vendors", () => {
+  it("emits one task per Gandi organisation plus the two single-tenant vendors", () => {
     const tasks = buildProviderTasks();
 
-    expect(tasks).toHaveLength(GANDI_KEY_PROVIDERS.length + 3);
+    expect(tasks).toHaveLength(GANDI_KEY_PROVIDERS.length + 2);
     expect(tasks.filter((t) => t.provider === "gandi")).toHaveLength(3);
     expect(tasks.map((t) => t.keyProvider)).toEqual([
       "gandi-org1",
@@ -79,7 +74,6 @@ describe("buildProviderTasks", () => {
       "gandi-org3",
       "mailforge",
       "primeforge",
-      "instantly",
     ]);
   });
 
@@ -88,9 +82,9 @@ describe("buildProviderTasks", () => {
     expect(new Set(gandi.map((t) => t.provider))).toEqual(new Set(["gandi"]));
   });
 
-  it("reads the DFY inventory with the Instantly platform key, not a DFY-specific one", () => {
-    const dfy = buildProviderTasks().find((t) => t.provider === "instantly-dfy");
-    expect(dfy?.keyProvider).toBe("instantly");
+  it("no longer reads Instantly DFY: every DFY mailbox was cancelled (2026-10-15)", () => {
+    // The Instantly plan is cancelled too, so the read answered 402 every day.
+    expect(buildProviderTasks().some((t) => t.provider === "instantly-dfy")).toBe(false);
   });
 });
 
@@ -121,7 +115,6 @@ describe("syncProviderInfra", () => {
       "gandi-org3",
       "mailforge",
       "primeforge",
-      "instantly",
     ]);
   });
 
@@ -162,11 +155,11 @@ describe("syncProviderInfra", () => {
     const summary = await syncProviderInfra(caller);
 
     expect(summary.providersFailed).toBe(1);
-    expect(summary.providersSucceeded).toBe(5);
+    expect(summary.providersSucceeded).toBe(4);
     expect(summary.failures).toEqual([
       { provider: "primeforge", message: "Primeforge GET /domains failed: 401" },
     ]);
-    expect(mockDfy).toHaveBeenCalledTimes(1);
+    expect(mockMailforge).toHaveBeenCalledTimes(1);
   });
 
   it("counts a missing platform key as that vendor's failure, not a fatal run error", async () => {
@@ -196,8 +189,8 @@ describe("syncProviderInfra", () => {
       .map((call) => JSON.stringify(call[0]))
       .filter((text) => text.includes("absent_since"));
 
-    // 3 vendors succeeded (mailforge, primeforge, instantly-dfy) × domains+mailboxes.
-    expect(swept).toHaveLength(6);
+    // 2 vendors succeeded (mailforge, primeforge) × domains+mailboxes.
+    expect(swept).toHaveLength(4);
     expect(swept.some((text) => text.includes("gandi"))).toBe(false);
   });
 
