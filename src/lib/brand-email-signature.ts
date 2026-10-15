@@ -16,6 +16,16 @@
  * Plain text in, HTML out: the client writes lines, we escape them and wrap
  * them in the same `<p>…<br>…</p>` shape as our default (Instantly's sanitizer
  * keeps only tag-wrapped content). We add the `--` separator ourselves.
+ *
+ * SENDER PLACEHOLDERS (owner brief 2026-10-15, DefiniteJobs): the From name is
+ * the sending mailbox's persona and mailboxes rotate, so a static name in the
+ * client's text would contradict the From on most emails. The text may carry
+ * `{first_name}`, `{last_name}`, `{full_name}`, `{sender_email}`: they stay as
+ * tokens in the pinned HTML and are filled per email from the account that
+ * sends it ({@link fillSenderPlaceholders}, called by `resolveSignatureBlock`).
+ * A thread keeps one mailbox, so it keeps one rendered signature. Any other
+ * brace is refused at write; an unfillable token throws at send: never a
+ * literal brace in an email.
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 
@@ -67,6 +77,33 @@ export function signatureTextProblem(text: string): string | null {
   if (lines.some((l) => l.trim() === "--")) {
     return "Leave out the `--` line: it is added above the signature automatically";
   }
+  return placeholderProblem(normalized);
+}
+
+/** The tokens a signature may carry, each filled from the sending mailbox. */
+export const SIGNATURE_PLACEHOLDERS = ["first_name", "last_name", "full_name", "sender_email"] as const;
+export type SignaturePlaceholder = (typeof SIGNATURE_PLACEHOLDERS)[number];
+
+const PLACEHOLDER_RE = /\{([a-z_]+)\}/g;
+
+/** The mailbox fields a placeholder reads (an Instantly `Account` fits). */
+export interface SignatureSender {
+  email: string;
+  first_name?: string | null;
+  last_name?: string | null;
+}
+
+/** An unknown token, or a brace that is not part of a token. Pure. */
+function placeholderProblem(text: string): string | null {
+  const allowed = SIGNATURE_PLACEHOLDERS.map((p) => `{${p}}`).join(", ");
+  for (const m of text.matchAll(PLACEHOLDER_RE)) {
+    if (!(SIGNATURE_PLACEHOLDERS as readonly string[]).includes(m[1])) {
+      return `Unknown placeholder \`${m[0]}\`. Allowed: ${allowed}`;
+    }
+  }
+  if (/[{}]/.test(text.replace(PLACEHOLDER_RE, ""))) {
+    return `Braces are only allowed around a placeholder: ${allowed}`;
+  }
   return null;
 }
 
@@ -82,6 +119,37 @@ function escapeHtml(s: string): string {
 export function renderSignatureHtml(text: string): string {
   const lines = normalizeSignatureText(text).split("\n").map(escapeHtml);
   return `<p>${lines.join("<br>")}</p>`;
+}
+
+/**
+ * Fill the sender placeholders of a pinned signature block with the mailbox
+ * that sends THIS email (values HTML-escaped). A block without tokens is
+ * returned unchanged. Throws when a token cannot be filled (a mailbox without
+ * a first or last name) or a brace survives: never a literal brace in an
+ * email. Pure.
+ */
+export function fillSenderPlaceholders(html: string, sender: SignatureSender): string {
+  if (!/[{}]/.test(html)) return html;
+  const first = sender.first_name?.trim() || "";
+  const last = sender.last_name?.trim() || "";
+  const values: Record<SignaturePlaceholder, string> = {
+    first_name: first,
+    last_name: last,
+    full_name: [first, last].filter(Boolean).join(" "),
+    sender_email: sender.email.trim(),
+  };
+  const filled = html.replace(PLACEHOLDER_RE, (token, name: string) => {
+    if (!(SIGNATURE_PLACEHOLDERS as readonly string[]).includes(name)) {
+      throw new Error(`Signature placeholder ${token} is not supported (sender ${sender.email})`);
+    }
+    const value = values[name as SignaturePlaceholder];
+    if (!value) throw new Error(`Signature placeholder ${token} has no value for sender ${sender.email}`);
+    return escapeHtml(value);
+  });
+  if (/[{}]/.test(filled)) {
+    throw new Error(`Signature still holds a brace after filling placeholders (sender ${sender.email})`);
+  }
+  return filled;
 }
 
 function toWire(row: typeof brandEmailSignatures.$inferSelect): BrandEmailSignature {

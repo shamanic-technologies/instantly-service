@@ -39,6 +39,7 @@ import { dropInboundBlind } from "./self-send/inbound-blindness";
 import { BounceBudget } from "./bounce-budget";
 import { loadFleetBounceHistoryCached } from "./bounce-budget-history";
 import { dateKeyUTC } from "./sending-forecast";
+import { fillSenderPlaceholders } from "./brand-email-signature";
 import { sequenceFootprintDays } from "./sending-window";
 import { tagColdEmailLinks } from "./cold-email-utm";
 
@@ -546,15 +547,17 @@ const SIG_SEPARATOR_HTML = "<p>--</p>";
  *
  * `pinnedSignatureHtml` is the client's own signature pinned on the THREAD at
  * send time (`instantly_campaigns.signature_html`, lib/brand-email-signature):
- * when present it wins, on every email of that thread. Absent = ours, exactly
- * as before: the Instantly UI override, else `buildDefaultSignature(account)`.
+ * when present it wins, on every email of that thread, its sender
+ * placeholders (`{first_name}`…) filled from THIS account (throws when one
+ * cannot be). Absent = ours, exactly as before: the Instantly UI override,
+ * else `buildDefaultSignature(account)`.
  */
 export function resolveSignatureBlock(
   account: Account,
   pinnedSignatureHtml?: string | null,
 ): string {
   const pinned = pinnedSignatureHtml?.trim() || "";
-  if (pinned) return pinned;
+  if (pinned) return fillSenderPlaceholders(pinned, account);
   const accountSig = account.signature?.trim() || "";
   return accountSig || buildDefaultSignature(account);
 }
