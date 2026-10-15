@@ -63,6 +63,10 @@ vi.mock("../../src/db/schema", () => ({
 }));
 
 const mockUpdateCostStatus = vi.fn();
+vi.mock("../../src/lib/website-visit-trigger", () => ({
+  noteWebsiteVisitFromClick: () => Promise.resolve(),
+}));
+
 vi.mock("../../src/lib/runs-client", () => ({
   updateCostStatus: (...args: unknown[]) => mockUpdateCostStatus(...args),
 }));

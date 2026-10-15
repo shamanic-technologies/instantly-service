@@ -60,8 +60,8 @@ export function legArrivalStep(
   return distinct.size === 1 ? [...distinct][0] : null;
 }
 
-/** Fetch the published channel catalogue. Throws on any failure — the caller decides. */
-async function fetchChannels(): Promise<CatalogueChannel[]> {
+/** Fetch the published catalogue document. Throws on any failure — the caller decides. */
+async function fetchCatalogueBody(): Promise<unknown> {
   const url = process.env.FEATURES_SERVICE_URL;
   if (!url) throw new Error("FEATURES_SERVICE_URL is not set");
 
@@ -73,7 +73,12 @@ async function fetchChannels(): Promise<CatalogueChannel[]> {
     const body = await response.text();
     throw new Error(`features-service GET /public/channels failed: ${response.status} - ${body.slice(0, 200)}`);
   }
-  const body = (await response.json()) as { channels?: CatalogueChannel[] };
+  return response.json();
+}
+
+/** Fetch the published channel catalogue. Throws on any failure — the caller decides. */
+async function fetchChannels(): Promise<CatalogueChannel[]> {
+  const body = (await fetchCatalogueBody()) as { channels?: CatalogueChannel[] };
   if (!Array.isArray(body.channels)) {
     throw new Error("features-service GET /public/channels returned no channels array");
   }
@@ -83,4 +88,55 @@ async function fetchChannels(): Promise<CatalogueChannel[]> {
 /** The catalogue, cached per replica. A failed read caches nothing and throws. */
 export function getChannelCatalogue(): Promise<CatalogueChannel[]> {
   return getOrSetCachedStats("leg-catalogue:channels", fetchChannels, LEG_CATALOGUE_TTL_MS);
+}
+
+/**
+ * One OUTCOME trigger as features-service publishes it (`triggers[]`,
+ * `type: "outcome"`): exactly one per outcome, `outcomeKey` = the outcome's step
+ * key (`website_visit` -> `website_visited` today). Read, never hard-coded.
+ */
+export interface CatalogueOutcomeTrigger {
+  id: string;
+  outcomeKey: string;
+}
+
+/**
+ * Pure: the outcome triggers of a `/public/channels` body. THROWS on an
+ * unreadable list (no `triggers` array, an outcome trigger without its id or
+ * outcomeKey): a guess would fire the wrong trigger or skip one.
+ */
+export function parseOutcomeTriggers(body: unknown): CatalogueOutcomeTrigger[] {
+  const triggers = (body as { triggers?: unknown } | null)?.triggers;
+  if (!Array.isArray(triggers)) {
+    throw new Error("features-service GET /public/channels returned no triggers array");
+  }
+  const out: CatalogueOutcomeTrigger[] = [];
+  for (const raw of triggers) {
+    const t = raw as Record<string, unknown> | null;
+    if (!t || t.type !== "outcome") continue;
+    if (typeof t.id !== "string" || typeof t.outcomeKey !== "string") {
+      throw new Error(
+        `features-service outcome trigger unreadable (id, outcomeKey): ${JSON.stringify(t).slice(0, 300)}`,
+      );
+    }
+    out.push({ id: t.id, outcomeKey: t.outcomeKey });
+  }
+  return out;
+}
+
+/** Pure: the trigger an outcome fires, null when the catalogue states none. */
+export function outcomeTriggerIdFor(
+  triggers: readonly CatalogueOutcomeTrigger[],
+  outcomeKey: string,
+): string | null {
+  return triggers.find((t) => t.outcomeKey === outcomeKey)?.id ?? null;
+}
+
+/** The outcome triggers, cached per replica like the channels. A failed read caches nothing and throws. */
+export function getOutcomeTriggers(): Promise<CatalogueOutcomeTrigger[]> {
+  return getOrSetCachedStats(
+    "leg-catalogue:outcome-triggers",
+    async () => parseOutcomeTriggers(await fetchCatalogueBody()),
+    LEG_CATALOGUE_TTL_MS,
+  );
 }

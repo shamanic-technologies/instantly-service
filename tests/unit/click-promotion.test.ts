@@ -54,6 +54,23 @@ beforeEach(() => {
 });
 
 describe("promotePendingClicks", () => {
+  // CLICK-FIRES-WEBSITE-VISIT-1015: the website-visit trigger is fired from
+  // `promoteEvent` on a first promoted click, so a hit ruled `scanner` here can
+  // never fire it: it never reaches `promoteEvent`.
+  it("a scanner click never reaches promoteEvent, so it never fires the website visit", async () => {
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([
+        hitRow({ id: "hit-scanner", user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.7339.128 Safari/537.36" }),
+      ]),
+    );
+    mockDbExecute.mockResolvedValue(pgResult([]));
+
+    const summary = await promotePendingClicks({ asOf: new Date("2026-09-11T10:05:00Z") });
+
+    expect(summary).toMatchObject({ decided: 1, promoted: 0, scanner: 1 });
+    expect(mockPromoteEvent).not.toHaveBeenCalled();
+  });
+
   it("promotes a human click with the HIT's own timestamp, then marks the bronze row", async () => {
     mockDbExecute.mockResolvedValueOnce(pgResult([hitRow()]));
     mockDbExecute.mockResolvedValue(pgResult([]));

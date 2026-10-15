@@ -207,6 +207,15 @@ async function start() {
         );
       });
 
+    // Deliver, and retry, the outcome triggers this service fires (a click on one
+    // of our links = a website visit, lib/website-visit-trigger). Armed after listen.
+    import("./lib/outcome-trigger-worker")
+      .then(({ startOutcomeTriggerWorker }) => startOutcomeTriggerWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start outcome-trigger worker: ${message}`);
+      });
+
     import("./lib/self-send/click-promotion-worker")
       .then(({ startClickPromotionWorker }) => startClickPromotionWorker())
       .catch((err: unknown) => {
