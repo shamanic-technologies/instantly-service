@@ -548,8 +548,8 @@ const SIG_SEPARATOR_HTML = "<p>--</p>";
  * `pinnedSignatureHtml` is the client's own signature pinned on the THREAD at
  * send time (`instantly_campaigns.signature_html`, lib/brand-email-signature):
  * when present it wins, on every email of that thread, its sender
- * placeholders (`{first_name}`…) filled from THIS account (throws when one
- * cannot be). Absent = ours, exactly as before: the Instantly UI override,
+ * placeholders (`{first_name}`…) filled from THIS account (never throws: a
+ * missing value renders empty). Absent = ours, exactly as before: the Instantly UI override,
  * else `buildDefaultSignature(account)`.
  */
 export function resolveSignatureBlock(
