@@ -704,6 +704,24 @@ describe("a human took over, so the automated responder stops", () => {
     });
   });
 
+  it("the refusal names the answer, so it can be counted as our touch (REPLY-ANY-LEAD-1015)", async () => {
+    queueAutomationReply([{ at: "2026-09-04T17:51:31.000Z", source: "instantly_unibox" }]);
+
+    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({
+      code: "human_took_over",
+      answer: { at: "2026-09-04T17:51:31.000Z", heldInOwnMailbox: false },
+    });
+  });
+
+  it("an own-mailbox hold is named as such (never counted)", async () => {
+    queueAutomationReply([{ at: "2026-09-04T17:51:31.000Z", source: "own_mailbox" }]);
+
+    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({
+      code: "human_took_over",
+      answer: { heldInOwnMailbox: true },
+    });
+  });
+
   it("refuses an automated reply once one of our own people CC'd an answer to the thread", async () => {
     queueAutomationReply([{ at: "2026-09-21T19:07:27.000Z", source: "staff_cc" }]);
 

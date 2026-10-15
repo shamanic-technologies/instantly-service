@@ -50,7 +50,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { smtpDispatchRaw } from "../db/schema";
 import { agencyInbox } from "./agency-inbox";
-import { ReplyToLeadError } from "./reply-to-lead-error";
+import { HumanTookOverError, ReplyToLeadError } from "./reply-to-lead-error";
 import {
   describeAttachment,
   resolveReplyAttachments,
@@ -148,7 +148,7 @@ function signedBody(
  */
 export { MANUAL_REPLY_STEP };
 
-export { ReplyToLeadError };
+export { HumanTookOverError, ReplyToLeadError };
 
 export interface ReplyToLeadInput {
   orgId: string;
@@ -1017,12 +1017,15 @@ export async function replyToLead(
   if (input.sentBy === "automation") {
     const takeover = await findHumanTakeover(campaign.instantlyCampaignId);
     if (takeover) {
-      throw new ReplyToLeadError(
-        "human_took_over",
-        409,
+      throw new HumanTookOverError(
         takeover.source === "own_mailbox"
           ? `A person holds the conversation with ${campaign.leadEmail} (sequence ${campaign.instantlyCampaignId}) from their own mailbox since ${takeover.at} — the automated responder does not write into it`
-          : `A person answered ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} at ${takeover.at} (${takeover.source}), after their last message — the automated responder does not write over a human conversation`,
+          : `A person answered ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} at ${takeover.at} (${takeover.source}), after their last message — the automated responder does not write over a human conversation; that answer now counts as our touch and the next follow-up is scheduled from it`,
+        {
+          instantlyCampaignId: campaign.instantlyCampaignId,
+          at: takeover.at,
+          heldInOwnMailbox: takeover.source === "own_mailbox",
+        },
       );
     }
   }
