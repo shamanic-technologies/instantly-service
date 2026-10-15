@@ -1831,3 +1831,64 @@ export const brandEmailSignatures = pgTable(
   },
   (table) => [primaryKey({ columns: [table.orgId, table.brandId] })],
 );
+
+// ─── Outcome triggers this service fires (CLICK-FIRES-WEBSITE-VISIT-1015) ─────
+//
+// Owner 2026-10-15: "Every outcome reached fires its trigger, no exception". A
+// click on a link in one of our emails is recorded HERE, so the `website_visit`
+// outcome it reaches is fired from here: ONE row per person (org, caller
+// campaign, address) and outcome, written when the first human click is
+// promoted, then delivered to campaign-service's internal trigger door
+// (lib/website-visit-trigger.ts). The row is the retry: a delivery that fails
+// stays `pending` with a backoff, logged loud each time; a 400 is `refused` and
+// kept. `idempotency_key` is lead-service's own key for the same outcome and
+// person, so the door answers a fire of the same person from either service
+// with ONE event. Moved by a brand transfer (CAMPAIGN_CHILD_TABLES).
+export const outcomeTriggerFires = pgTable(
+  "outcome_trigger_fires",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    // features-service's outcome (step) key, e.g. `website_visit`.
+    outcomeKey: text("outcome_key").notNull(),
+    orgId: text("org_id").notNull(),
+    // The CALLER campaign (campaign-service's id) whose email was clicked.
+    campaignId: text("campaign_id").notNull(),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    // Canonical (trimmed, lowercased).
+    leadEmail: text("lead_email").notNull(),
+    // lead-service's person id, as the send carried it (instantly_campaigns.lead_id).
+    leadId: text("lead_id"),
+    // The silver event that reached the outcome (the promoted click).
+    sourceEventId: text("source_event_id"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    // 'pending' | 'delivered' | 'refused' | 'skipped'
+    status: text("status").default("pending").notNull(),
+    skipReason: text("skip_reason"),
+    // Resolved at delivery: the catalogue's trigger, the caller campaign's scope, the key sent.
+    triggerId: text("trigger_id"),
+    brandId: text("brand_id"),
+    offerId: text("offer_id"),
+    idempotencyKey: text("idempotency_key"),
+    campaignEventId: text("campaign_event_id"),
+    // True when campaign-service answered with an event already recorded (ours, or lead-service's).
+    replayed: boolean("replayed"),
+    attempts: integer("attempts").default(0).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).defaultNow().notNull(),
+    lastError: text("last_error"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("outcome_trigger_fires_once_idx").on(
+      table.outcomeKey,
+      table.orgId,
+      table.campaignId,
+      table.leadEmail,
+    ),
+    index("outcome_trigger_fires_due_idx")
+      .on(table.nextAttemptAt)
+      .where(sql`status = 'pending'`),
+    index("outcome_trigger_fires_instantly_campaign_idx").on(table.instantlyCampaignId),
+  ],
+);

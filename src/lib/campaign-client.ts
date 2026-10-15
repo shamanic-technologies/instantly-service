@@ -205,6 +205,20 @@ export interface TriggerEventPerson {
 }
 
 /**
+ * campaign-service answered the trigger door with a non-2xx. `status` lets a
+ * caller that retries tell a refusal (400: the same bytes can never succeed)
+ * from an outage (anything else: try again later).
+ */
+export class TriggerDoorError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "TriggerDoorError";
+    this.status = status;
+  }
+}
+
+/**
  * Report ONE occurrence of a declared trigger to campaign-service's generic
  * trigger door (`POST /internal/trigger-events`), which fires every campaign
  * whose pipe answers that trigger on (org, brand, offer): same dispatch, same
@@ -227,7 +241,9 @@ export async function recordTriggerEvent(params: {
   requestedByCampaignId?: string | null;
   idempotencyKey: string;
   person: TriggerEventPerson;
-  item: unknown;
+  item?: unknown;
+  /** When it happened (ISO). Absent = now, at campaign-service. */
+  occurredAt?: string;
 }): Promise<{ event: RecordedTriggerEvent; replayed: boolean }> {
   if (!CAMPAIGN_SERVICE_URL || !CAMPAIGN_SERVICE_API_KEY) {
     throw new Error("CAMPAIGN_SERVICE_URL or CAMPAIGN_SERVICE_API_KEY is not set");
@@ -251,8 +267,9 @@ export async function recordTriggerEvent(params: {
 
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(
+    throw new TriggerDoorError(
       `campaign-service POST /internal/trigger-events failed: ${response.status} - ${detail.slice(0, 300)}`,
+      response.status,
     );
   }
 
