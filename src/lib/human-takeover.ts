@@ -162,6 +162,17 @@ export async function isHeldInOwnMailbox(instantlyCampaignId: string): Promise<b
  * third source to add — closing that would mean reading Sent, which is a
  * different piece of work.
  *
+ * ⚠️ AN ANSWER ALREADY COUNTED AS OURS IS NOT A TAKEOVER (owner 2026-10-15,
+ * REPLY-ANY-LEAD-1015): a message the brand's person types by hand on the
+ * thread is one of our touches, the follow-ups go on. The first refusal counts
+ * it (lib/count-human-answer: lead-service `acted`, next date from the usual
+ * ladder) and stamps `instantly_campaigns.human_answer_counted_at`; every human
+ * answer at or before that stamp is skipped here, so the follow-up due after it
+ * goes out. A NEW hand-typed answer is refused (and counted) again. Compared at
+ * millisecond grain because the stamp is written from the ISO string this
+ * returns. An own-mailbox answer (`held`) is never skipped: the conversation
+ * lives in that person's Gmail, where nothing automated can write.
+ *
  * Fails loud. A gate that cannot read its own history must not wave a send
  * through.
  */
@@ -230,11 +241,19 @@ export async function findHumanTakeover(
       FROM imap_messages_raw m
       WHERE m.instantly_campaign_id = ${instantlyCampaignId}
         AND m.kind = ${STAFF_REPLY_KIND}
+    ),
+    counted AS (
+      SELECT c.human_answer_counted_at AS at
+      FROM instantly_campaigns c
+      WHERE c.instantly_campaign_id = ${instantlyCampaignId}
     )
     SELECT h.at AS "at", h.source AS "source"
-    FROM human_answers h, latest_inbound li
+    FROM human_answers h
+    CROSS JOIN latest_inbound li
+    LEFT JOIN counted ct ON true
     WHERE h.at IS NOT NULL
       AND (li.at IS NULL OR h.at > li.at OR h.held)
+      AND (h.held OR ct.at IS NULL OR date_trunc('milliseconds', h.at) > ct.at)
     ORDER BY h.held DESC, h.at DESC
     LIMIT 1
   `);

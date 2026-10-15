@@ -178,3 +178,15 @@ describe("findHumanTakeover", () => {
     await expect(findHumanTakeover("ic-1")).rejects.toThrow("connection terminated");
   });
 });
+
+describe("an answer already counted as our touch is not a takeover (REPLY-ANY-LEAD-1015)", () => {
+  it("skips human answers at or before the thread's counted stamp, except an own-mailbox one", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([]));
+
+    expect(await findHumanTakeover("seq-1")).toBeNull();
+
+    const text = extractSqlText(mockDbExecute.mock.calls[0][0]);
+    expect(text).toContain("human_answer_counted_at");
+    expect(text).toContain("(h.held OR ct.at IS NULL OR date_trunc('milliseconds', h.at) > ct.at)");
+  });
+});

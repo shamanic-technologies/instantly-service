@@ -2,8 +2,10 @@
  * A thread became a PERSON's: tell lead-service so no automated responder ever
  * claims it again (owner 2026-10-11, Shockwavecenters).
  *
- * Stated here when a person already answered in the thread (`human_took_over`
- * on POST /orgs/replies); the escalation states it through lead-client. lead-service owns the queue and the
+ * Stated here when the conversation is held in a person's OWN mailbox
+ * (`human_took_over` own-mailbox, `prospect_wrote_elsewhere` on POST
+ * /orgs/replies); the escalation states it through lead-client. A message typed
+ * by hand IN our thread is NOT a hand-over: lib/count-human-answer. lead-service owns the queue and the
  * claim; we own the fact, so we state it (the queue's model: whoever OBSERVES
  * says so). The 409 gates in lib/reply-to-lead stay as the last line.
  *
