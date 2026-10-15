@@ -31,7 +31,6 @@ import {
 } from "../db/schema";
 import { resolvePlatformKey, type CallerInfo } from "./key-client";
 import { fetchGandiInventory, type GandiOrgCredential } from "./providers/gandi-client";
-import { fetchInstantlyDfyInventory } from "./providers/instantly-dfy-client";
 import { fetchMailforgeInventory } from "./providers/mailforge-client";
 import { fetchPrimeforgeInventory } from "./providers/primeforge-client";
 import type { InfraProvider, ProviderInventory } from "./providers/types";
@@ -93,7 +92,6 @@ export function buildProviderTasks(): ProviderTask[] {
     ...gandiTasks,
     { provider: "mailforge", keyProvider: "mailforge", fetch: fetchMailforgeInventory },
     { provider: "primeforge", keyProvider: "primeforge", fetch: fetchPrimeforgeInventory },
-    { provider: "instantly-dfy", keyProvider: "instantly", fetch: fetchInstantlyDfyInventory },
   ];
 }
 
