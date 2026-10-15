@@ -152,11 +152,21 @@ describe("sender placeholders: the signature names the mailbox that sends", () =
     expect(fillSenderPlaceholders("<p>{full_name}</p>", odd)).toBe("<p>Ann &lt;b&gt; O'Neil &amp; Co</p>");
   });
 
-  it("never lets a brace reach a recipient: an unfillable token throws", () => {
+  it("never blocks an email: a mailbox without a name renders without it, no brace left", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const noLast = { email: "x@y.com", first_name: "Amy" } as Account;
-    expect(() => resolveSignatureBlock(noLast, "<p>{first_name} {last_name}</p>")).toThrow(/\{last_name\} has no value/);
-    expect(() => fillSenderPlaceholders("<p>{nope}</p>", RUTH)).toThrow(/not supported/);
-    expect(() => fillSenderPlaceholders("<p>a { b</p>", RUTH)).toThrow(/brace/);
+    const noName = { email: "x@y.com" } as Account;
+    expect(resolveSignatureBlock(noLast, "<p>{first_name} {last_name}, DefiniteJobs<br>{sender_email}</p>")).toBe(
+      "<p>Amy, DefiniteJobs<br>x@y.com</p>",
+    );
+    expect(fillSenderPlaceholders("<p>{full_name} | DefiniteJobs</p>", noName)).toBe("<p>DefiniteJobs</p>");
+    expect(fillSenderPlaceholders("<p>{full_name}<br>DefiniteJobs</p>", noName)).toBe("<p>DefiniteJobs</p>");
+    expect(fillSenderPlaceholders("<p>{last_name}</p>", noName)).toBe("<p>x@y.com</p>");
+    expect(fillSenderPlaceholders("<p>{nope} a { b</p>", RUTH)).toBe("<p>a b</p>");
+    const curly = { email: "c@y.com", first_name: "{Amy}", last_name: "Moore" } as Account;
+    expect(fillSenderPlaceholders("<p>{full_name}</p>", curly)).toBe("<p>Amy Moore</p>");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("{last_name} empty for sender x@y.com"));
+    warn.mockRestore();
   });
 
   it("a signature without placeholders is byte-identical to before", () => {
