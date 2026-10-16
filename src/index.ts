@@ -276,6 +276,15 @@ async function start() {
         console.error(`[instantly-service] failed to start booked-stops-cold worker: ${message}`);
       });
 
+    // A send the process died in the middle of (OOM, deploy): its reservation is
+    // released and its orphan step costs cancelled (lib/stale-reservations).
+    import("./lib/stale-reservation-worker")
+      .then(({ startStaleReservationWorker }) => startStaleReservationWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start stale-reservation worker: ${message}`);
+      });
+
     // A queued sequence the caller sent with no zone takes the person's zone from
     // lead-service, so it is emailed in THEIR business hours. Armed after listen.
     import("./lib/queued-sequence-timezone-worker")

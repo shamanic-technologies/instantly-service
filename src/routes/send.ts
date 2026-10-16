@@ -658,6 +658,18 @@ router.post("/", async (req: Request, res: Response) => {
           )
         : SEND_TRANSPORT_INSTANTLY;
 
+      // The Instantly campaign is created BEFORE phase-2: a crash past this point
+      // can leave a live campaign we hold no id for. The stamp is what tells the
+      // stale-reservation sweep never to release this row (lib/stale-reservations).
+      if (account && transport !== SEND_TRANSPORT_SMTP) {
+        await db
+          .update(instantlyCampaigns)
+          .set({
+            metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object('instantlyCreateStartedAt', now())`,
+          })
+          .where(eq(instantlyCampaigns.id, reservedId));
+      }
+
       const sendResult: SendResult = !account
         ? { ok: false, reason: "no_healthy_accounts_available" }
         : transport === SEND_TRANSPORT_SMTP
