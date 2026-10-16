@@ -12,6 +12,8 @@ import {
 } from "../lib/domain-blocklist-read";
 import { recordRemovalRequest, runBlocklistCheck } from "../lib/domain-blocklist-sync";
 import { deliverPendingBlocklistAlerts } from "../lib/domain-blocklist-alert";
+import { fileDueRemovals } from "../lib/blocklist-removal";
+import { loadOwnerContact } from "../lib/owner-identity-client";
 import { getOrSetCachedStats, statsCacheKey, deleteCachedStatsWhere } from "../lib/stats-cache";
 
 const router = Router();
@@ -47,6 +49,22 @@ router.post("/domain-blocklist/check", async (_req: Request, res: Response) => {
   } catch (error: any) {
     console.error(`[instantly-service] domain-blocklist check failed: ${error?.message ?? error}`);
     return res.status(500).json({ error: error?.message ?? "domain-blocklist check failed" });
+  }
+});
+
+/**
+ * File every DUE automated removal request now (SURBL; one per listed domain per
+ * week, the daily worker does the same after its check). Synchronous: answers
+ * the per-outcome counts once every request is stored.
+ */
+router.post("/domain-blocklist/removals", async (_req: Request, res: Response) => {
+  try {
+    const summary = await fileDueRemovals({ loadContact: loadOwnerContact, spacingMs: 5_000 });
+    deleteCachedStatsWhere((key) => key.startsWith("domain-blocklist"));
+    return res.json(summary);
+  } catch (error: any) {
+    console.error(`[instantly-service] domain-blocklist removals failed: ${error?.message ?? error}`);
+    return res.status(500).json({ error: error?.message ?? "removal requests failed" });
   }
 });
 

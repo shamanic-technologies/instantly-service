@@ -3710,7 +3710,7 @@
                 },
                 "removalAutomated": {
                   "type": "boolean",
-                  "description": "False for every list today: the removal forms need a person (see removalNote)"
+                  "description": "True = we file the removal form ourselves, once a week per listed domain (SURBL); false = a person files it from removalUrl (Spamhaus, URIBL)"
                 },
                 "removalNote": {
                   "type": "string"
@@ -3852,7 +3852,8 @@
                     "listed",
                     "delisted",
                     "removal_link_issued",
-                    "removal_requested"
+                    "removal_requested",
+                    "removal_failed"
                   ]
                 },
                 "answer": {
@@ -3874,7 +3875,7 @@
                 },
                 "detail": {
                   "nullable": true,
-                  "description": "listed: {zone, firstBlocklistBounceAt, actionTaken}; removal_*: {method, url, note}"
+                  "description": "listed: {zone, firstBlocklistBounceAt, actionTaken}; removal_link_issued: {method, url, note}; removal_requested / removal_failed (automated): {method:'automated', attemptId, outcome, httpStatus, error, answer}"
                 },
                 "occurredAt": {
                   "type": "string"
@@ -4055,15 +4056,19 @@
                     },
                     "requested": {
                       "type": "integer"
+                    },
+                    "failed": {
+                      "type": "integer"
                     }
                   },
                   "required": [
                     "day",
                     "linksIssued",
-                    "requested"
+                    "requested",
+                    "failed"
                   ]
                 },
-                "description": "Removal links issued to staff (one per new listing) and requests a person recorded as filed"
+                "description": "Per day: removal links issued to staff (one per new listing), removal requests SENT to a list (automated SURBL form, or recorded by a person), and automated attempts that FAILED (form refused it, network, owner record unreadable; retried the next day)"
               },
               "delistings": {
                 "type": "array",
@@ -11136,10 +11141,34 @@
         }
       }
     },
+    "/internal/domain-blocklist/removals": {
+      "post": {
+        "summary": "File every due automated removal request now (SURBL)",
+        "description": "For every domain SURBL lists, sends SURBL's removal form unless one reached the form within 7 days, with the owner's details read from kevinlourd.com, a real email of ours and our anti-spam terms. Every attempt is stored (bronze `domain_blocklist_removal_attempts`, event `removal_requested` or `removal_failed`). The daily worker does the same after its check.",
+        "responses": {
+          "200": {
+            "description": "`{due, sent, refused, notListed, failed, skippedCoolingDown}`"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Could not run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/internal/domain-blocklist/removal-requests": {
       "post": {
         "summary": "Record a removal request a person filed on a list's form",
-        "description": "Append-only `removal_requested` event (the forms need a person: we never file them).",
+        "description": "Append-only `removal_requested` event, for a list we do not file ourselves (Spamhaus, URIBL). SURBL is filed automatically once a week per listed domain.",
         "requestBody": {
           "content": {
             "application/json": {
