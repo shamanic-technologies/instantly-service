@@ -2798,7 +2798,7 @@ const DomainBlocklistReadSchema = z
           name: z.string().describe("SURBL, Spamhaus DBL, URIBL"),
           zone: z.string(),
           removalUrl: z.string().describe("Where a person starts a removal request"),
-          removalAutomated: z.boolean().describe("False for every list today: the removal forms need a person (see removalNote)"),
+          removalAutomated: z.boolean().describe("True = we file the removal form ourselves, once a week per listed domain (SURBL); false = a person files it from removalUrl (Spamhaus, URIBL)"),
           removalNote: z.string(),
         }),
       )
@@ -2832,11 +2832,11 @@ const DomainBlocklistReadSchema = z
           id: z.string(),
           domain: z.string(),
           list: z.string(),
-          type: z.enum(["listed", "delisted", "removal_link_issued", "removal_requested"]),
+          type: z.enum(["listed", "delisted", "removal_link_issued", "removal_requested", "removal_failed"]),
           answer: z.string().nullable(),
           labels: z.array(z.string()),
           mailboxes: z.array(z.string()).describe("Sending addresses on the domain at the event"),
-          detail: z.unknown().describe("listed: {zone, firstBlocklistBounceAt, actionTaken}; removal_*: {method, url, note}"),
+          detail: z.unknown().describe("listed: {zone, firstBlocklistBounceAt, actionTaken}; removal_link_issued: {method, url, note}; removal_requested / removal_failed (automated): {method:'automated', attemptId, outcome, httpStatus, error, answer}"),
           occurredAt: z.string(),
           alert: z
             .object({ status: z.string(), attempts: z.number().int(), lastError: z.string().nullable(), alertedAt: z.string().nullable() })
@@ -2852,7 +2852,7 @@ const DomainBlocklistReadSchema = z
         mailboxesOutOfNewSequences: z.array(z.object({ day: z.string(), mailboxes: z.number().int().nullable() })).describe("Mailboxes on a listed domain that day (out of new sequences)"),
         sendsFromListedDomains: z.array(z.object({ day: z.string(), sends: z.number().int().nullable() })).describe("Real emails sent that day from a domain listed that day (follow-ups keep going: expect non-zero)"),
         blocklistBounces: z.array(z.object({ day: z.string(), total: z.number().int(), byList: z.object({ surbl: z.number().int(), spamhaus: z.number().int(), uribl: z.number().int(), other_list: z.number().int() }) })).describe("Bounces (DSNs read in our mailboxes) whose text cites a blocklist, by the list cited. Backfilled from the first DSN we hold"),
-        removalRequests: z.array(z.object({ day: z.string(), linksIssued: z.number().int(), requested: z.number().int() })).describe("Removal links issued to staff (one per new listing) and requests a person recorded as filed"),
+        removalRequests: z.array(z.object({ day: z.string(), linksIssued: z.number().int(), requested: z.number().int(), failed: z.number().int() })).describe("Per day: removal links issued to staff (one per new listing), removal requests SENT to a list (automated SURBL form, or recorded by a person), and automated attempts that FAILED (form refused it, network, owner record unreadable; retried the next day)"),
         delistings: z.array(z.object({ day: z.string(), delistings: z.number().int() })),
       })
       .describe("One point per day of the window, zero included; null = before monitoring started"),
@@ -2967,9 +2967,21 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/internal/domain-blocklist/removals",
+  summary: "File every due automated removal request now (SURBL)",
+  description: "For every domain SURBL lists, sends SURBL's removal form unless one reached the form within 7 days, with the owner's details read from kevinlourd.com, a real email of ours and our anti-spam terms. Every attempt is stored (bronze `domain_blocklist_removal_attempts`, event `removal_requested` or `removal_failed`). The daily worker does the same after its check.",
+  responses: {
+    200: { description: "`{due, sent, refused, notListed, failed, skippedCoolingDown}`" },
+    401: { description: "Unauthorized" },
+    500: { description: "Could not run", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/internal/domain-blocklist/removal-requests",
   summary: "Record a removal request a person filed on a list's form",
-  description: "Append-only `removal_requested` event (the forms need a person: we never file them).",
+  description: "Append-only `removal_requested` event, for a list we do not file ourselves (Spamhaus, URIBL). SURBL is filed automatically once a week per listed domain.",
   request: {
     body: {
       content: {

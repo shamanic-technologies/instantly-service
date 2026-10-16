@@ -49,7 +49,10 @@ export function buildBlocklistAlert(row: PendingAlertRow): DomainBlocklistedAler
     actionTaken:
       `Its ${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"} take no new prospects from now on. ` +
       "Follow-ups already planned from them still go out. They come back by themselves the day a daily check reads the domain clean." +
-      (firstBounce ? ` First bounce citing a blocklist from this domain: ${firstBounce.slice(0, 10)}.` : ""),
+      (firstBounce ? ` First bounce citing a blocklist from this domain: ${firstBounce.slice(0, 10)}.` : "") +
+      (def.removalAutomated
+        ? ` We send ${def.name}'s removal request for you today, then once a week while the domain stays listed.`
+        : ""),
     removalUrl: def.removalUrl(row.domain),
   };
 }

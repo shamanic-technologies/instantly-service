@@ -1935,7 +1935,7 @@ export const domainBlocklistEvents = pgTable(
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     domain: text("domain").notNull(),
     list: text("list").notNull(),
-    // 'listed' | 'delisted' | 'removal_link_issued' | 'removal_requested'
+    // 'listed' | 'delisted' | 'removal_link_issued' | 'removal_requested' | 'removal_failed'
     eventType: text("event_type").notNull(),
     answer: text("answer"),
     labels: text("labels").array().default(sql`'{}'::text[]`).notNull(),
@@ -1983,4 +1983,23 @@ export const leadProvenanceRaw = pgTable(
   (table) => [
     index("lead_provenance_raw_key_idx").on(table.orgId, table.brandId, table.email, table.fetchedAt),
   ],
+);
+
+// Every automated removal request to a blocklist's own form (lib/blocklist-removal.ts,
+// migration 0082): what we posted and what the list answered. Bronze, append-only.
+export const domainBlocklistRemovalAttempts = pgTable(
+  "domain_blocklist_removal_attempts",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    domain: text("domain").notNull(),
+    list: text("list").notNull(),
+    attemptedAt: timestamp("attempted_at", { withTimezone: true }).defaultNow().notNull(),
+    // 'sent' | 'refused' | 'not_listed' | 'failed'
+    outcome: text("outcome").notNull(),
+    httpStatus: integer("http_status"),
+    request: jsonb("request"),
+    responseExcerpt: text("response_excerpt"),
+    error: text("error"),
+  },
+  (table) => [index("domain_blocklist_removal_attempts_pair_idx").on(table.domain, table.list, table.attemptedAt)],
 );

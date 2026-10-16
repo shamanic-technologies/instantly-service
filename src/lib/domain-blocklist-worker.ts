@@ -9,6 +9,11 @@
  */
 import { lastCheckAt, runBlocklistCheck } from "./domain-blocklist-sync";
 import { deliverPendingBlocklistAlerts } from "./domain-blocklist-alert";
+import { fileDueRemovals } from "./blocklist-removal";
+import { loadOwnerContact } from "./owner-identity-client";
+
+/** Pause between two removal requests to the same list: a person's pace. */
+export const REMOVAL_SPACING_MS = 60 * 1000;
 
 export const BLOCKLIST_CHECK_EVERY_MS = 23 * 60 * 60 * 1000;
 export const BLOCKLIST_WORKER_INTERVAL_MS = 60 * 60 * 1000;
@@ -20,11 +25,13 @@ let inFlight: Promise<void> | null = null;
 export function blocklistTick(now: Date = new Date()): Promise<void> {
   if (inFlight) return inFlight;
   inFlight = (async () => {
+    let checkedNow = false;
     try {
       const last = await lastCheckAt();
       if (last === null || now.getTime() - last.getTime() >= BLOCKLIST_CHECK_EVERY_MS) {
         const summary = await runBlocklistCheck({ asOf: now });
         console.log(`[instantly-service] domain-blocklist: check done ${JSON.stringify(summary)}`);
+        checkedNow = true;
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -38,6 +45,18 @@ export function blocklistTick(now: Date = new Date()): Promise<void> {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[instantly-service] domain-blocklist: alert delivery FAILED: ${message}`);
+    }
+    // Removal requests ride the DAILY check (after its alert went out), so a
+    // failure before the form is retried once a day, and a request that reached
+    // the form waits a week (REMOVAL_COOLDOWN_DAYS).
+    if (checkedNow) {
+      try {
+        const removals = await fileDueRemovals({ now, loadContact: loadOwnerContact, spacingMs: REMOVAL_SPACING_MS });
+        console.log(`[instantly-service] domain-blocklist: removal requests ${JSON.stringify(removals)}`);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[instantly-service] domain-blocklist: removal requests FAILED: ${message}`);
+      }
     }
   })().finally(() => {
     inFlight = null;
