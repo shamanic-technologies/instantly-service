@@ -124,8 +124,10 @@ describe("the positive reply is reported to the trigger door", () => {
       leadId: "lead-1",
       requestedByCampaignId: "camp-1",
       person: { email: "p@x.com", name: "Dana Reid" },
-      // LOCKED with the AI Instant Call workflow: {replyText, priorMessages newest-first}.
+      // LOCKED with the AI Instant Call workflow: {channel, replyText, priorMessages newest-first}.
+      // channel "email": the instant call rings only on an email reply (INSTANT-CALL-EMAIL-ONLY-1016).
       item: {
+        channel: "email",
         replyText: "Yes, interested.",
         priorMessages: [{ direction: "outbound", text: "our pitch" }],
       },
@@ -160,7 +162,7 @@ describe("the positive reply is reported to the trigger door", () => {
   it("still reports, without the words, when the thread cannot be read", async () => {
     mockReadThread.mockRejectedValueOnce(new Error("db down"));
     await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested");
-    expect(mockRecordTriggerEvent.mock.calls[0][0].item).toEqual({ replyText: null, priorMessages: [] });
+    expect(mockRecordTriggerEvent.mock.calls[0][0].item).toEqual({ channel: "email", replyText: null, priorMessages: [] });
   });
 
   it("still reports, without a name, when lead-service cannot be read", async () => {
