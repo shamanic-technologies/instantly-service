@@ -136,6 +136,18 @@ describe("copying lead-service's provenance", () => {
     expect(planProvenanceBatches(missing, stale, 1000, 2)).toHaveLength(2);
   });
 
+  it("never sends a null or empty address (lead-service 400s the whole batch on one)", () => {
+    const batches = planProvenanceBatches(
+      [
+        { orgId: ORG, brandId: BRAND, email: "a@x.com" },
+        { orgId: ORG, brandId: BRAND, email: null as unknown as string },
+        { orgId: ORG, brandId: BRAND, email: "" },
+      ],
+      [],
+    );
+    expect(batches).toEqual([{ orgId: ORG, brandId: BRAND, emails: ["a@x.com"] }]);
+  });
+
   it("a 502 stores NOTHING: those people stay unknown and are asked again next pass", async () => {
     execute.mockResolvedValueOnce(
       pgResult([{ orgId: ORG, brandId: BRAND, email: "a@x.com", state: "missing" }]),
