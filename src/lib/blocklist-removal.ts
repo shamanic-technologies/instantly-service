@@ -1,24 +1,31 @@
 /**
- * Ask a blocklist to remove a listed sending domain, by its own web form, at
- * most once a week per (domain, list) (owner 2026-10-16: "Automate the auto
- * form filling in the backend with a 1 week cool pause, to not spam them").
+ * Ask a blocklist to remove a listed sending domain, at most once a week per
+ * (domain, list) (owner 2026-10-16: "Automate the auto form filling in the
+ * backend with a 1 week cool pause, to not spam them").
  *
- * Only SURBL is filed (its removal form is reachable from its lookup page);
- * Spamhaus and URIBL need an owner account, so their alert keeps the link.
+ * SURBL only, and BY EMAIL to whitelist@surbl.org, the channel SURBL's own
+ * removal page offers ("If you can't use the web form, then please send all
+ * information required above by plaintext email to: whitelist@surbl.org").
+ * Its web form is NOT ours to drive: the site forbids automated use and
+ * refuses a post "submitted faster than a person can fill it in" (measured
+ * 2026-10-16, every one of 11 posts refused). The email carries every field
+ * the form asks for, is sent from the company's own mailbox (`company.email`,
+ * so SURBL's answer reaches the owner) and blind-copies that address so the
+ * owner holds what was sent. Spamhaus and URIBL need an owner account: their
+ * alert keeps the link.
  *
  * Every attempt is stored (owner: "Report this form filling success or failure
- * in BSG event storing"): bronze `domain_blocklist_removal_attempts` keeps the
- * request we sent and what SURBL answered, silver is the event history
- * (`removal_requested` on a sent request, `removal_failed` otherwise), gold is
- * the daily `removalRequests` series of the staff read.
+ * in BSG event storing"): bronze `domain_blocklist_removal_attempts` keeps what
+ * we sent and the SMTP answer, silver is the event history
+ * (`removal_requested` when SMTP accepted it, `removal_failed` otherwise), gold
+ * is the daily `removalRequests` series of the staff read.
  *
  * What we tell SURBL is true and only that: who we are (read from the owner's
  * own record, kevinlourd.com, never guessed), a real email of ours as sent, our
- * real sending practice and the anti-spam clause our Terms publish. The form
- * hides bot traps (fields to leave empty, an instruction no person can see);
- * we leave every trap untouched, like a person would.
+ * real sending practice and the anti-spam clause our Terms publish.
  */
 
+import nodemailer from "nodemailer";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -35,8 +42,8 @@ function rowsOf<T>(result: unknown): T[] {
 export const REMOVAL_COOLDOWN_DAYS = 7;
 const MS_DAY = 86_400_000;
 
-const SURBL_FORM_URL = "https://www.surbl.org/lookupform/embed_form.php";
-const USER_AGENT = "Mozilla/5.0 (compatible; distribute.you removal request; +https://distribute.you)";
+/** SURBL's documented removal address (on its lookup answer page). */
+export const SURBL_REMOVAL_ADDRESS = "whitelist@surbl.org";
 
 /** The person and company filing, as the owner's own record states them. */
 export interface RemovalContact {
@@ -54,80 +61,46 @@ export interface SampleMessage {
   body: string;
 }
 
+/** `refused` = the receiving server permanently refused it; `not_listed` is no longer produced (kept for rows of 2026-10-16). */
 export type FilingOutcome = "sent" | "refused" | "not_listed" | "failed";
 
 export interface FilingResult {
   outcome: FilingOutcome;
+  /** SMTP reply code when the server answered. */
   httpStatus: number | null;
-  /** What SURBL answered, trimmed to its visible text. */
+  /** The SMTP server's answer. */
   responseExcerpt: string | null;
   error: string | null;
-  /** The fields we posted (contact included), stored in bronze. */
+  /** What we sent (fields + the email), stored in bronze. */
   request: Record<string, string> | null;
 }
 
+/** The email that carries a removal request. */
+export interface RemovalEmail {
+  from: string;
+  to: string;
+  bcc: string;
+  subject: string;
+  text: string;
+}
+
+/** What sending one removal email answered. Throws on failure, with `responseCode` when the server answered. */
+export type SendRemovalEmail = (email: RemovalEmail) => Promise<{ response: string; code: number | null }>;
+
 // ─── Pure ────────────────────────────────────────────────────────────────────
 
-export function visibleText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<div class="fg-hp"[\s\S]*?<\/div>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-export function tokenOf(html: string): string | null {
-  return /name="fg_token"\s+value="([^"]+)"/.exec(html)?.[1] ?? null;
-}
-
-/**
- * Read the lookup answer: is the domain listed, and the removal form's own
- * action and token. Pure.
- */
-export function parseLookupAnswer(html: string): {
-  listed: boolean;
-  action: string | null;
-  token: string | null;
-} {
-  const text = visibleText(html);
-  const listed = /\bis listed in\b/i.test(text);
-  const form = /<form[^>]+action="([^"]*processor[^"]*)"[\s\S]*?<\/form>/i.exec(html);
-  return {
-    listed,
-    action: form?.[1] ?? null,
-    token: form ? tokenOf(form[0]) : null,
-  };
-}
-
-/**
- * What SURBL's processor said about the request. Pure. A page naming a missing
- * field, an error or a refusal is `refused`; anything else answered 2xx is
- * `sent` (the page is kept in bronze either way).
- */
-export function classifyProcessorAnswer(status: number, html: string): FilingOutcome {
-  if (status < 200 || status >= 300) return "failed";
-  const text = visibleText(html);
-  if (/\b(error|invalid|required|missing|denied|rejected|not accepted|try again|too many)\b/i.test(text)) {
-    return "refused";
-  }
-  return "sent";
-}
-
-/** True when no request for this pair was SENT within the cooldown. Pure. */
+/** True when no request for this pair reached the list within the cooldown. Pure. */
 export function removalDue(lastSentAt: Date | null, now: Date): boolean {
   return lastSentAt === null || now.getTime() - lastSentAt.getTime() >= REMOVAL_COOLDOWN_DAYS * MS_DAY;
 }
 
-/** The form's words. Pure: only facts we hold, in plain ASCII as SURBL asks. */
+/** The form's fields. Pure: only facts we hold, in plain ASCII as SURBL asks. */
 export function removalFormFields(input: {
   domain: string;
   contact: RemovalContact;
   sample: SampleMessage;
   sendingServers: string;
   stoppedNewContactsOn: string;
-  token: string;
 }): Record<string, string> {
   const { domain, contact } = input;
   const ascii = (s: string) => s.normalize("NFKD").replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "");
@@ -136,7 +109,6 @@ export function removalFormFields(input: {
     email: ascii(contact.email),
     org: ascii(contact.organization),
     address1: ascii(contact.address),
-    address2: "",
     phone: ascii(contact.phone),
     fp: domain,
     servers: ascii(input.sendingServers),
@@ -157,95 +129,110 @@ export function removalFormFields(input: {
     policy:
       "Terms of Service, section 9 (Acceptable Use): You will not, and will not attempt to: Use the Service to send unsolicited bulk email in violation of any anti-spam law. " +
       "Contact recipients on suppression lists, who have unsubscribed, or who have not provided a lawful basis to be contacted.",
-    registration: "",
-    fg_token: input.token,
-    // Bot traps: hidden fields a person never fills. Left empty on purpose.
-    contact_url: "",
-    email_confirm: "",
   };
 }
 
-// ─── HTTP (SURBL) ────────────────────────────────────────────────────────────
-
-type Fetch = typeof fetch;
-
-function cookieJar() {
-  const jar = new Map<string, string>();
+/** The plaintext email carrying every field SURBL's form asks for, in its order. Pure. */
+export function removalEmail(fields: Record<string, string>): RemovalEmail {
+  const text = [
+    `SURBL blacklist removal request for ${fields.fp}`,
+    "",
+    `1. Your name: ${fields.name}`,
+    `2. Your email address: ${fields.email}`,
+    `3. Organization name: ${fields.org}`,
+    `4. Street address: ${fields.address1}`,
+    `5. Telephone number: ${fields.phone}`,
+    `6. Web site domain name: ${fields.fp}`,
+    `7. Sending IP addresses: ${fields.servers}`,
+    "",
+    "8. Full headers of a typical, normal message:",
+    fields.headers,
+    "",
+    "Full source of the typical, normal message body:",
+    fields.body,
+    "",
+    "9. Description of web site and organization:",
+    fields.describe,
+    "",
+    "10. Explanation:",
+    fields.justify,
+    "",
+    `11. Link to the organization's published policy against unsolicited messages: ${fields.policy_link}`,
+    "Text of that policy:",
+    fields.policy,
+    "",
+    fields.name,
+    fields.org,
+  ].join("\n");
   return {
-    take(res: Response) {
-      const raw = (res.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ?? [];
-      for (const c of raw) {
-        const [pair] = c.split(";");
-        const eq = pair!.indexOf("=");
-        if (eq > 0) jar.set(pair!.slice(0, eq).trim(), pair!.slice(eq + 1).trim());
-      }
-    },
-    header(): Record<string, string> {
-      return jar.size === 0 ? {} : { Cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; ") };
-    },
+    from: `"${fields.name.replace(/"/g, "")}" <${fields.email}>`,
+    to: SURBL_REMOVAL_ADDRESS,
+    bcc: fields.email,
+    subject: `Removal request: ${fields.fp}`,
+    text,
   };
 }
 
-/**
- * Look the domain up, then send its removal form. Never throws: a failure is
- * an outcome with its reason, stored like any other.
- */
+/** Sent, refused for good (5xx), or failed (anything else). Pure. */
+export function filingFromError(error: unknown, request: Record<string, string>): FilingResult {
+  const e = error as { responseCode?: unknown; response?: unknown; message?: unknown };
+  const code = typeof e?.responseCode === "number" ? e.responseCode : null;
+  return {
+    outcome: code !== null && code >= 500 && code < 600 ? "refused" : "failed",
+    httpStatus: code,
+    responseExcerpt: typeof e?.response === "string" ? e.response.slice(0, 2000) : null,
+    error: error instanceof Error ? error.message : String(error),
+    request,
+  };
+}
+
+// ─── Send (SURBL, by email) ──────────────────────────────────────────────────
+
+/** Send through the company mailbox's own SMTP login (the mailbox-credentials store). */
+export function smtpSender(fromAddress: string): SendRemovalEmail {
+  return async (email) => {
+    const { resolveMailboxCredential, loginFor, GMAIL_SMTP_PORT } = await import("./self-send/mailbox-credentials");
+    const credential = await resolveMailboxCredential(fromAddress, {
+      method: "POST",
+      path: "/internal/domain-blocklist/removals",
+    });
+    const transport = nodemailer.createTransport({
+      host: credential.smtpHost,
+      port: GMAIL_SMTP_PORT,
+      secure: false,
+      requireTLS: true,
+      auth: { user: loginFor(credential), pass: credential.appPassword },
+    });
+    try {
+      const info = await transport.sendMail(email);
+      const accepted = (info.accepted ?? []).map((a) => String(a).toLowerCase());
+      if (!accepted.includes(email.to.toLowerCase())) {
+        throw Object.assign(new Error(`SMTP did not accept ${email.to}`), { response: info.response ?? "" });
+      }
+      return { response: info.response ?? "", code: Number(/^(\d{3})/.exec(info.response ?? "")?.[1] ?? NaN) || null };
+    } finally {
+      transport.close();
+    }
+  };
+}
+
+/** Build and send one domain's removal request. Never throws: a failure is an outcome, stored like any other. */
 export async function fileSurblRemoval(input: {
   domain: string;
   contact: RemovalContact;
   sample: SampleMessage;
   sendingServers: string;
   stoppedNewContactsOn: string;
-  fetchImpl?: Fetch;
+  send?: SendRemovalEmail;
 }): Promise<FilingResult> {
-  const f = input.fetchImpl ?? fetch;
-  const jar = cookieJar();
-  const base = { "User-Agent": USER_AGENT };
+  const fields = removalFormFields(input);
+  const email = removalEmail(fields);
+  const request = { ...fields, emailTo: email.to, emailSubject: email.subject };
   try {
-    const page = await f(SURBL_FORM_URL, { headers: base, signal: AbortSignal.timeout(20_000) });
-    jar.take(page);
-    const lookupToken = tokenOf(await page.text());
-    if (!lookupToken) return { outcome: "failed", httpStatus: page.status, responseExcerpt: null, error: "lookup form has no token", request: null };
-
-    const lookup = await f(SURBL_FORM_URL, {
-      method: "POST",
-      headers: { ...base, ...jar.header(), "Content-Type": "application/x-www-form-urlencoded", Referer: SURBL_FORM_URL },
-      body: new URLSearchParams({ lookupInput: input.domain, fg_token: lookupToken, contact_url: "", email_confirm: "" }).toString(),
-      signal: AbortSignal.timeout(20_000),
-    });
-    jar.take(lookup);
-    const answer = parseLookupAnswer(await lookup.text());
-    if (!answer.listed) {
-      return { outcome: "not_listed", httpStatus: lookup.status, responseExcerpt: null, error: null, request: null };
-    }
-    if (!answer.action || !answer.token) {
-      return { outcome: "failed", httpStatus: lookup.status, responseExcerpt: null, error: "removal form not found on the lookup answer", request: null };
-    }
-
-    const request = removalFormFields({ ...input, token: answer.token });
-    const processor = new URL(answer.action, SURBL_FORM_URL).toString();
-    const res = await f(processor, {
-      method: "POST",
-      headers: { ...base, ...jar.header(), "Content-Type": "application/x-www-form-urlencoded", Referer: SURBL_FORM_URL },
-      body: new URLSearchParams(request).toString(),
-      signal: AbortSignal.timeout(30_000),
-    });
-    const html = await res.text();
-    return {
-      outcome: classifyProcessorAnswer(res.status, html),
-      httpStatus: res.status,
-      responseExcerpt: visibleText(html).slice(0, 2000),
-      error: null,
-      request,
-    };
+    const answer = await (input.send ?? smtpSender(input.contact.email))(email);
+    return { outcome: "sent", httpStatus: answer.code, responseExcerpt: answer.response.slice(0, 2000), error: null, request };
   } catch (error: unknown) {
-    return {
-      outcome: "failed",
-      httpStatus: null,
-      responseExcerpt: null,
-      error: error instanceof Error ? error.message : String(error),
-      request: null,
-    };
+    return filingFromError(error, request);
   }
 }
 
@@ -329,14 +316,15 @@ export interface RemovalPassSummary {
 
 /**
  * File every due removal. One request per (domain, list) per week: the clock is
- * the last request that reached the list's form (sent or refused); a failure
- * before it (owner record unreadable, network) does not start it, so the next
- * daily pass tries again. Requests go out one at a time.
+ * the last request that reached the list (sent or refused); a failure before
+ * it (owner record unreadable, network) does not start it, so the next daily
+ * pass tries again. Requests go out one at a time.
  */
 export async function fileDueRemovals(options: {
   now?: Date;
   loadContact: () => Promise<RemovalContact>;
-  fetchImpl?: Fetch;
+  /** Injected in tests; default = the company mailbox's SMTP login. */
+  send?: SendRemovalEmail;
   /** Pause between two requests (a person's pace). */
   spacingMs?: number;
 }): Promise<RemovalPassSummary> {
@@ -345,8 +333,8 @@ export async function fileDueRemovals(options: {
 
   const result = await db.execute(sql`
     SELECT s.domain, s.list, s.listed_since AS "listedSince",
-           -- Any request that reached the list's form starts the week, answered
-           -- or refused: the list was asked. A failure before the form does not.
+           -- Any request that reached the list starts the week, accepted or
+           -- refused by its server. A failure before it does not.
            (SELECT MAX(a.attempted_at) FROM domain_blocklist_removal_attempts a
              WHERE a.domain = s.domain AND a.list = s.list AND a.outcome IN ('sent', 'refused')) AS "lastSentAt"
     FROM domain_blocklist_status s
@@ -391,7 +379,7 @@ export async function fileDueRemovals(options: {
           sample,
           sendingServers: await sendingServersFor(row.domain),
           stoppedNewContactsOn: (toDate(row.listedSince) ?? now).toISOString().slice(0, 10),
-          fetchImpl: options.fetchImpl,
+          send: options.send,
         });
       }
     }
