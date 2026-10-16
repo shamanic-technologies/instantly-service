@@ -30,19 +30,26 @@ export async function fetchOwnerIdentity(fetchImpl: typeof fetch = fetch): Promi
   return JSON.parse(text) as OwnerIdentity;
 }
 
-/** The facts a removal form needs, or a throw naming each one unset. Pure. */
+/**
+ * The facts a removal form needs, or a throw naming each one unset. Pure.
+ *
+ * A removal request is filed by the COMPANY (the domains are distribute.you's),
+ * so it reaches the business email and phone (`company.*`), never the person's
+ * private ones (kevinlourd.com #343: `person` = personal, `company` = business).
+ * The filer's name is the person's legal name.
+ */
 export function contactFromIdentity(identity: OwnerIdentity): RemovalContact {
   const need = {
     fullName: identity.person.fullName,
-    email: identity.person.email,
-    phone: identity.person.phone,
+    email: identity.company.email,
+    phone: identity.company.phone,
     organization: identity.company.legalName,
     address: identity.company.registeredOffice,
     website: identity.company.website,
   };
   const missing = Object.entries(need)
     .filter(([, v]) => typeof v !== "string" || v.trim() === "")
-    .map(([k]) => k);
+    .map(([k]) => ({ fullName: "person.fullName", email: "company.email", phone: "company.phone", organization: "company.legalName", address: "company.registeredOffice", website: "company.website" })[k] ?? k);
   if (missing.length > 0) {
     throw new Error(`not set on kevinlourd.com (Identity page): ${missing.join(", ")}`);
   }
