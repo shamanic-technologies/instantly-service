@@ -43,8 +43,8 @@ export interface BlocklistDefinition {
   decode(answer: string): { refused: boolean; labels: string[] };
   /** Where a human starts a removal request for `domain`. */
   removalUrl(domain: string): string;
-  /** True when we can file the removal ourselves; false = the alert carries the link. */
-  removalAutomated: false;
+  /** True when we file the removal ourselves (lib/blocklist-removal.ts); false = the alert carries the link. */
+  removalAutomated: boolean;
   /** Why removal is not automated, stated to staff. */
   removalNote: string;
 }
@@ -84,9 +84,9 @@ export const BLOCKLISTS: readonly BlocklistDefinition[] = [
       };
     },
     removalUrl: () => "https://www.surbl.org/surbl-analysis",
-    removalAutomated: false,
+    removalAutomated: true,
     removalNote:
-      "SURBL's site forbids automated lookups, hides bot traps in its form, and the removal form needs the owner's name, address, phone, a sample message and a signed statement about the organisation's sending; a person files it.",
+      "We file SURBL's removal form ourselves, at most once a week per domain while it stays listed (owner 2026-10-16), with the owner's details from kevinlourd.com, a real email of ours and our anti-spam terms. SURBL reviews each request by hand.",
   },
   {
     key: "spamhaus_dbl",

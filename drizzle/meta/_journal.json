@@ -575,6 +575,13 @@
       "when": 1792500000000,
       "tag": "0081_lead_provenance_raw",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1792600000000,
+      "tag": "0082_blocklist_removal_attempts",
+      "breakpoints": true
     }
   ]
 }

@@ -174,7 +174,7 @@ export interface DomainBlocklistRead {
     mailboxesOutOfNewSequences: ListingSeries["mailboxesOutOfNewSequences"];
     sendsFromListedDomains: Array<{ day: string; sends: number | null }>;
     blocklistBounces: Array<{ day: string; total: number; byList: Record<CitedList, number> }>;
-    removalRequests: Array<{ day: string; linksIssued: number; requested: number }>;
+    removalRequests: Array<{ day: string; linksIssued: number; requested: number; failed: number }>;
     delistings: Array<{ day: string; delistings: number }>;
   };
 }
@@ -375,6 +375,7 @@ export async function loadDomainBlocklistRead(days: number, asOf: Date = new Dat
         day,
         linksIssued: countEvents(day, "removal_link_issued"),
         requested: countEvents(day, "removal_requested"),
+        failed: countEvents(day, "removal_failed"),
       })),
       delistings: dayList.map((day) => ({ day, delistings: countEvents(day, "delisted") })),
     },
