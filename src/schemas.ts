@@ -2874,6 +2874,85 @@ registry.registerPath({
   },
 });
 
+// ─── Lead source yield (SOURCE-YIELD-1016) ──────────────────────────────────
+
+const LeadSourceYieldMeasuresSchema = z.object({
+  firstEmails: z.number().int().describe("Sequences whose FIRST email left (step 1, every transport)"),
+  hardBounces: z.number().int().describe("Of those, sequences with a permanent bounce on any step"),
+  hardBounceRate: z.number().nullable().describe("hardBounces / firstEmails, 0..1; null when no first email"),
+  refusals: z.number().int().describe("Sequences a receiving server refused AFTER accepting (a delivery-failure notice); our own sender only, from refusalsMeasuredSince"),
+  refusalRate: z.number().nullable().describe("refusals / firstEmails, 0..1"),
+  blocklistRefusals: z.number().int().describe("Refusals whose notice cites a blocklist (SURBL, Spamhaus, URIBL, any RBL)"),
+  firstEmailsFromListedDomains: z.number().int().describe("First emails sent from a domain listed on any blocklist TODAY"),
+  listedDomainShare: z.number().nullable().describe("firstEmailsFromListedDomains / firstEmails, 0..1"),
+});
+
+const LeadSourceYieldPointSchema = z.object({
+  day: z.string().describe("UTC day of the FIRST email (cohort)"),
+  total: z.number().int().describe("Every sequence once (not the sum of byKey)"),
+  byKey: z.record(z.string(), z.number().int()).describe("Per key of `series.keys`, zero included"),
+});
+
+const LeadSourceYieldReadSchema = z
+  .object({
+    asOf: z.string(),
+    countingRule: z.literal("per_tag"),
+    countingRuleNote: z.string(),
+    pseudoKeys: z.object({ noSourceRecorded: z.string(), unknown: z.string() }).describe("The two keys that are not sources: lead-service named none / we hold no answer"),
+    provenanceSyncedAt: z.string().nullable(),
+    listedDomainsToday: z.array(z.string()),
+    refusalsMeasuredSince: z.string().nullable(),
+    total: LeadSourceYieldMeasuresSchema.describe("Every first email once"),
+    coverage: z.object({
+      firstEmails: z.number().int(),
+      withSource: z.number().int(),
+      noSourceRecorded: z.number().int(),
+      unknown: z.number().int(),
+    }),
+    sources: z
+      .array(LeadSourceYieldMeasuresSchema.extend({ key: z.string(), kind: z.enum(["source", "no_source_recorded", "unknown"]) }))
+      .describe("Since inception, ranked by hard-bounce rate (desc) then first emails; the two pseudo keys last"),
+    series: z
+      .object({
+        days: z.array(z.string()),
+        keys: z.array(z.string()).describe("Same order as `sources`"),
+        firstEmails: z.array(LeadSourceYieldPointSchema),
+        hardBounces: z.array(LeadSourceYieldPointSchema),
+        refusals: z.array(LeadSourceYieldPointSchema),
+        blocklistRefusals: z.array(LeadSourceYieldPointSchema),
+        firstEmailsFromListedDomains: z.array(LeadSourceYieldPointSchema),
+      })
+      .describe("One point per day of the window, zero included; one chart per measure"),
+  })
+  .openapi("LeadSourceYieldRead");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/lead-source-yield",
+  summary: "Lead sources ranked by the bounces, refusals and blocklist hits their people produce (staff)",
+  description:
+    "Platform-scoped, read-only. Every sequence whose first email left is joined, on the lowercased address and (org, brand), to every source tag lead-service holds for that person (our copy, refreshed every 30 min; never a live call). Counting rule `per_tag`: a person found by several sources counts once under EACH tag. `(no source recorded)` = lead-service named none; `(unknown)` = no answer held yet (never fetched, lead-service unavailable, or no org/brand). Cached 10 min per replica, refresh-ahead at 5.",
+  request: { query: z.object({ days: z.string().optional().describe("Series window in days, 1..365, default 60 (the ranking is since inception)") }) },
+  responses: {
+    200: { description: "The read", content: { "application/json": { schema: LeadSourceYieldReadSchema } } },
+    400: { description: "Bad `days`", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "Could not be read", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/lead-source-yield/sync",
+  summary: "Copy lead-service's provenance for the people we emailed, now",
+  description: "Asks lead-service for every (org, brand, address) with a first email and no answer stored, plus recent ones due a daily re-check, in batches of 1000. A 502 or failed batch stores nothing (those people stay unknown). The worker runs it every 30 min.",
+  responses: {
+    200: { description: "`missing`, `stale`, `batches`, `asked`, `inserted`, `confirmed`, `unavailableBatches`, `failedBatches`, `errors`" },
+    401: { description: "Unauthorized" },
+    500: { description: "The pass failed", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/internal/domain-blocklist/check",
