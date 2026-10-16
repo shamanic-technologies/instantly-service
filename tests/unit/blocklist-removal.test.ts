@@ -134,16 +134,23 @@ describe("the whole exchange", () => {
 });
 
 describe("the owner's record decides who files", () => {
+  // Shape of kevinlourd.com #343: person = personal, company = business.
   const identity = {
-    person: { fullName: "Kevin Lourd", email: "kevin@distribute.you", phone: null, postalAddress: null },
-    company: { legalName: "Blooming Generation SASU", siren: "882102775", registeredOffice: "285 rue de l'Église, 46140 Douelle, France", vatNumber: null, brand: "distribute.you", website: "https://distribute.you" },
+    person: { fullName: "Kevin Jonathan Leonard Lourd", email: "kevin.lourd@gmail.com", phone: "+33700000001", postalAddress: "x" },
+    company: { legalName: "Blooming Generation SASU", siren: "882102775", registeredOffice: "285 rue de l'Église, 46140 Douelle, France", vatNumber: "FR24882102775", brand: "distribute.you", website: "https://distribute.you", email: "kevin@distribute.you", phone: null as string | null },
     updatedAt: null,
   };
-  it("an unset phone is named, never guessed", () => {
-    expect(() => contactFromIdentity(identity)).toThrow(/not set on kevinlourd.com \(Identity page\): phone/);
+  it("an unset BUSINESS phone is named, never replaced by the personal one", () => {
+    expect(() => contactFromIdentity(identity)).toThrow(/not set on kevinlourd.com \(Identity page\): company.phone/);
   });
-  it("every fact set: the contact", () => {
-    const c = contactFromIdentity({ ...identity, person: { ...identity.person, phone: "+33 6 00 00 00 00" } });
-    expect(c).toMatchObject({ phone: "+33 6 00 00 00 00", organization: "Blooming Generation SASU", address: "285 rue de l'Église, 46140 Douelle, France" });
+  it("files as the company: business email and phone, the person's legal name", () => {
+    const c = contactFromIdentity({ ...identity, company: { ...identity.company, phone: "+33600000002" } });
+    expect(c).toMatchObject({
+      fullName: "Kevin Jonathan Leonard Lourd",
+      email: "kevin@distribute.you",
+      phone: "+33600000002",
+      organization: "Blooming Generation SASU",
+      address: "285 rue de l'Église, 46140 Douelle, France",
+    });
   });
 });
