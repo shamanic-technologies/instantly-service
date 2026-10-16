@@ -17,7 +17,7 @@ import { db } from "../../db";
 import { smtpDispatchRaw } from "../../db/schema";
 import { fetchRecentDailyVolume, sustainedForMailbox } from "../recent-send-volume";
 import { promoteEvent } from "../silver-promote";
-import { BounceBudget } from "../bounce-budget";
+import { BounceBudget, PROOF_FRESH_DAYS } from "../bounce-budget";
 import { loadFleetBounceHistory } from "../bounce-budget-history";
 import type { Account } from "../instantly-client";
 import type { CallerInfo } from "../key-client";
@@ -209,13 +209,16 @@ async function loadPendingSequences(
         ORDER BY v.created_at DESC
         LIMIT 1
       ) AS "verdict",
-      -- … and whether the address already accepted a real email of ours (sent,
-      -- never bounced, any campaign): proven deliverable, spends no budget.
+      -- … and whether the address already accepted a real email of ours (sent
+      -- within PROOF_FRESH_DAYS, never bounced, any campaign): proven
+      -- deliverable, spends no budget. Older proof is no proof (CATCHALL-BOUNCE-1016:
+      -- four follow-ups "proven" by an April send bounced on 2026-10-14).
       CASE WHEN p.last_sent_step IS NOT NULL THEN true ELSE (
         EXISTS (
           SELECT 1 FROM instantly_events e
           WHERE e.lead_email = p.lead_email AND e.event_type = 'email_sent'
             AND e.inferred = false AND e.withdrawn_at IS NULL
+            AND e."timestamp" > (now() AT TIME ZONE 'UTC') - make_interval(days => ${PROOF_FRESH_DAYS})
         ) AND NOT EXISTS (
           SELECT 1 FROM instantly_events e
           WHERE e.lead_email = p.lead_email AND e.event_type = 'email_bounced'

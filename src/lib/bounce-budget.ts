@@ -66,6 +66,15 @@
  * from its own once the domain is back under budget.
  */
 
+/**
+ * An address that accepted a real email of ours within this many days (and never
+ * bounced one) is proven deliverable: its first email spends no budget. Older
+ * proof is no proof: B2B addresses decay 2-3 % a month and the market
+ * re-verifies on a 90-day cadence (LeadMagic, ZeroBounce). 2026-10-14: four follow-ups "proven" by an April send bounced
+ * (CATCHALL-BOUNCE-1016).
+ */
+export const PROOF_FRESH_DAYS = 90;
+
 /** Expected bounce rate of one email by the verifier verdict held at send. */
 export const EXPECTED_BOUNCE_RATE_BY_VERDICT: Readonly<Record<string, number>> = {
   valid: 0.021,
