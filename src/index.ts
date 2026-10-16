@@ -30,6 +30,7 @@ import leadSendingScheduleRoutes from "./routes/lead-sending-schedule";
 import replyVerdictsRoutes from "./routes/reply-verdicts";
 import auditRoutes from "./routes/audit";
 import deliveryByVerdictRoutes from "./routes/delivery-by-verdict";
+import leadSourceYieldRoutes from "./routes/lead-source-yield";
 import domainBlocklistRoutes from "./routes/domain-blocklist";
 import infraRoutes from "./routes/infra";
 import opsRoutes from "./routes/ops";
@@ -89,6 +90,7 @@ app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 app.use("/internal/bounced-emails", serviceAuth, bouncedEmailsRoutes); // fleet-wide bounce lookup (human-service serve gate)
 app.use("/internal/outreach-facts", serviceAuth, outreachFactsRoutes); // fleet fact feed lead-service copies by cursor
 app.use("/internal", serviceAuth, domainBlocklistRoutes);      // sending domains on public blocklists (staff console)
+app.use("/internal", serviceAuth, leadSourceYieldRoutes);      // lead sources ranked by bounces / refusals / blocklist hits (staff console)
 app.use("/internal", serviceAuth, deliveryByVerdictRoutes);    // fleet delivery split by the verifier verdict at send (features-service)
 app.use("/internal/audit", serviceAuth, auditRoutes);          // staff sending forecast (capacity vs scheduled volume)
 app.use("/internal/infra", serviceAuth, infraRoutes);          // provider inventory sync (Gandi / Mailforge / Primeforge / DFY)
@@ -258,6 +260,14 @@ async function start() {
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[instantly-service] failed to start domain-blocklist worker: ${message}`);
+      });
+    // Copy of lead-service's lead provenance for GET /internal/lead-source-yield
+    // (SOURCE-YIELD-1016). Armed after listen.
+    import("./lib/lead-provenance-sync-worker")
+      .then(({ startLeadProvenanceWorker }) => startLeadProvenanceWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start lead-provenance worker: ${message}`);
       });
     import("./lib/booked-stops-cold-worker")
       .then(({ startBookedStopsWorker }) => startBookedStopsWorker())

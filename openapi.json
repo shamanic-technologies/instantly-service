@@ -4105,6 +4105,375 @@
           "series"
         ]
       },
+      "LeadSourceYieldRead": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "type": "string"
+          },
+          "countingRule": {
+            "type": "string",
+            "enum": [
+              "per_tag"
+            ]
+          },
+          "countingRuleNote": {
+            "type": "string"
+          },
+          "pseudoKeys": {
+            "type": "object",
+            "properties": {
+              "noSourceRecorded": {
+                "type": "string"
+              },
+              "unknown": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "noSourceRecorded",
+              "unknown"
+            ],
+            "description": "The two keys that are not sources: lead-service named none / we hold no answer"
+          },
+          "provenanceSyncedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "listedDomainsToday": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "refusalsMeasuredSince": {
+            "type": "string",
+            "nullable": true
+          },
+          "total": {
+            "type": "object",
+            "properties": {
+              "firstEmails": {
+                "type": "integer",
+                "description": "Sequences whose FIRST email left (step 1, every transport)"
+              },
+              "hardBounces": {
+                "type": "integer",
+                "description": "Of those, sequences with a permanent bounce on any step"
+              },
+              "hardBounceRate": {
+                "type": "number",
+                "nullable": true,
+                "description": "hardBounces / firstEmails, 0..1; null when no first email"
+              },
+              "refusals": {
+                "type": "integer",
+                "description": "Sequences a receiving server refused AFTER accepting (a delivery-failure notice); our own sender only, from refusalsMeasuredSince"
+              },
+              "refusalRate": {
+                "type": "number",
+                "nullable": true,
+                "description": "refusals / firstEmails, 0..1"
+              },
+              "blocklistRefusals": {
+                "type": "integer",
+                "description": "Refusals whose notice cites a blocklist (SURBL, Spamhaus, URIBL, any RBL)"
+              },
+              "firstEmailsFromListedDomains": {
+                "type": "integer",
+                "description": "First emails sent from a domain listed on any blocklist TODAY"
+              },
+              "listedDomainShare": {
+                "type": "number",
+                "nullable": true,
+                "description": "firstEmailsFromListedDomains / firstEmails, 0..1"
+              }
+            },
+            "required": [
+              "firstEmails",
+              "hardBounces",
+              "hardBounceRate",
+              "refusals",
+              "refusalRate",
+              "blocklistRefusals",
+              "firstEmailsFromListedDomains",
+              "listedDomainShare"
+            ],
+            "description": "Every first email once"
+          },
+          "coverage": {
+            "type": "object",
+            "properties": {
+              "firstEmails": {
+                "type": "integer"
+              },
+              "withSource": {
+                "type": "integer"
+              },
+              "noSourceRecorded": {
+                "type": "integer"
+              },
+              "unknown": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "firstEmails",
+              "withSource",
+              "noSourceRecorded",
+              "unknown"
+            ]
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "firstEmails": {
+                  "type": "integer",
+                  "description": "Sequences whose FIRST email left (step 1, every transport)"
+                },
+                "hardBounces": {
+                  "type": "integer",
+                  "description": "Of those, sequences with a permanent bounce on any step"
+                },
+                "hardBounceRate": {
+                  "type": "number",
+                  "nullable": true,
+                  "description": "hardBounces / firstEmails, 0..1; null when no first email"
+                },
+                "refusals": {
+                  "type": "integer",
+                  "description": "Sequences a receiving server refused AFTER accepting (a delivery-failure notice); our own sender only, from refusalsMeasuredSince"
+                },
+                "refusalRate": {
+                  "type": "number",
+                  "nullable": true,
+                  "description": "refusals / firstEmails, 0..1"
+                },
+                "blocklistRefusals": {
+                  "type": "integer",
+                  "description": "Refusals whose notice cites a blocklist (SURBL, Spamhaus, URIBL, any RBL)"
+                },
+                "firstEmailsFromListedDomains": {
+                  "type": "integer",
+                  "description": "First emails sent from a domain listed on any blocklist TODAY"
+                },
+                "listedDomainShare": {
+                  "type": "number",
+                  "nullable": true,
+                  "description": "firstEmailsFromListedDomains / firstEmails, 0..1"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "source",
+                    "no_source_recorded",
+                    "unknown"
+                  ]
+                }
+              },
+              "required": [
+                "firstEmails",
+                "hardBounces",
+                "hardBounceRate",
+                "refusals",
+                "refusalRate",
+                "blocklistRefusals",
+                "firstEmailsFromListedDomains",
+                "listedDomainShare",
+                "key",
+                "kind"
+              ]
+            },
+            "description": "Since inception, ranked by hard-bounce rate (desc) then first emails; the two pseudo keys last"
+          },
+          "series": {
+            "type": "object",
+            "properties": {
+              "days": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "keys": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Same order as `sources`"
+              },
+              "firstEmails": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "day": {
+                      "type": "string",
+                      "description": "UTC day of the FIRST email (cohort)"
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Every sequence once (not the sum of byKey)"
+                    },
+                    "byKey": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "Per key of `series.keys`, zero included"
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "total",
+                    "byKey"
+                  ]
+                }
+              },
+              "hardBounces": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "day": {
+                      "type": "string",
+                      "description": "UTC day of the FIRST email (cohort)"
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Every sequence once (not the sum of byKey)"
+                    },
+                    "byKey": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "Per key of `series.keys`, zero included"
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "total",
+                    "byKey"
+                  ]
+                }
+              },
+              "refusals": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "day": {
+                      "type": "string",
+                      "description": "UTC day of the FIRST email (cohort)"
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Every sequence once (not the sum of byKey)"
+                    },
+                    "byKey": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "Per key of `series.keys`, zero included"
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "total",
+                    "byKey"
+                  ]
+                }
+              },
+              "blocklistRefusals": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "day": {
+                      "type": "string",
+                      "description": "UTC day of the FIRST email (cohort)"
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Every sequence once (not the sum of byKey)"
+                    },
+                    "byKey": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "Per key of `series.keys`, zero included"
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "total",
+                    "byKey"
+                  ]
+                }
+              },
+              "firstEmailsFromListedDomains": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "day": {
+                      "type": "string",
+                      "description": "UTC day of the FIRST email (cohort)"
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Every sequence once (not the sum of byKey)"
+                    },
+                    "byKey": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer"
+                      },
+                      "description": "Per key of `series.keys`, zero included"
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "total",
+                    "byKey"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "days",
+              "keys",
+              "firstEmails",
+              "hardBounces",
+              "refusals",
+              "blocklistRefusals",
+              "firstEmailsFromListedDomains"
+            ],
+            "description": "One point per day of the window, zero included; one chart per measure"
+          }
+        },
+        "required": [
+          "asOf",
+          "countingRule",
+          "countingRuleNote",
+          "pseudoKeys",
+          "provenanceSyncedAt",
+          "listedDomainsToday",
+          "refusalsMeasuredSince",
+          "total",
+          "coverage",
+          "sources",
+          "series"
+        ]
+      },
       "ManualQualificationCreateResponse": {
         "type": "object",
         "properties": {
@@ -10655,6 +11024,83 @@
           },
           "500": {
             "description": "Could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/lead-source-yield": {
+      "get": {
+        "summary": "Lead sources ranked by the bounces, refusals and blocklist hits their people produce (staff)",
+        "description": "Platform-scoped, read-only. Every sequence whose first email left is joined, on the lowercased address and (org, brand), to every source tag lead-service holds for that person (our copy, refreshed every 30 min; never a live call). Counting rule `per_tag`: a person found by several sources counts once under EACH tag. `(no source recorded)` = lead-service named none; `(unknown)` = no answer held yet (never fetched, lead-service unavailable, or no org/brand). Cached 10 min per replica, refresh-ahead at 5.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Series window in days, 1..365, default 60 (the ranking is since inception)"
+            },
+            "required": false,
+            "description": "Series window in days, 1..365, default 60 (the ranking is since inception)",
+            "name": "days",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadSourceYieldRead"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `days`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/lead-source-yield/sync": {
+      "post": {
+        "summary": "Copy lead-service's provenance for the people we emailed, now",
+        "description": "Asks lead-service for every (org, brand, address) with a first email and no answer stored, plus recent ones due a daily re-check, in batches of 1000. A 502 or failed batch stores nothing (those people stay unknown). The worker runs it every 30 min.",
+        "responses": {
+          "200": {
+            "description": "`missing`, `stale`, `batches`, `asked`, `inserted`, `confirmed`, `unavailableBatches`, `failedBatches`, `errors`"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "The pass failed",
             "content": {
               "application/json": {
                 "schema": {
