@@ -9,8 +9,16 @@
  * walk back through the thread one keypress at a time. Its shape is LOCKED with
  * that workflow:
  *
- *   { replyText: string | null,
+ *   { channel: "email",
+ *     replyText: string | null,
  *     priorMessages: [{ direction: "outbound" | "inbound", text }] }   // newest-first, <= 5
+ *
+ * `channel` is the field name crm-service stamps on its own reply occurrences
+ * (`item.channel`: "whatsapp" for messaging, "email" for the Gmail mirror), so
+ * one reader serves both producers. Every reply this service reports came by
+ * email. The instant-call workflow rings ONLY on an email reply and treats a
+ * missing channel as not-email, so dropping this field silences every call
+ * (INSTANT-CALL-EMAIL-ONLY-1016).
  *
  * A reply read as an occurrence with no `answers`/`formName` (that is a form).
  * Identity (name, title, company...) and the phone reveal are NOT here: the
@@ -34,8 +42,13 @@ export interface PriorMessage {
   text: string;
 }
 
+/** The reply channel of every occurrence this service reports: a cold-email reply. */
+export const POSITIVE_REPLY_CHANNEL = "email" as const;
+
 /** The `item` of a `positive_reply_received` occurrence. */
 export interface PositiveReplyItem {
+  /** How the reply reached us. Byte-equal to crm-service's `item.channel`. */
+  channel: typeof POSITIVE_REPLY_CHANNEL;
   /** What the prospect wrote, cleaned. Null when we hold no words (the call says so). */
   replyText: string | null;
   /** The emails the reply answers, newest-first, entry 0 = the one it responds to. */
@@ -131,10 +144,16 @@ export function latestInboundText(messages: ThreadMessage[]): string | null {
   return i >= 0 ? messages[i].bodyText.trim() : null;
 }
 
+/** The item when the thread could not be read: no words, still an email reply. */
+export function emptyPositiveReplyItem(): PositiveReplyItem {
+  return { channel: POSITIVE_REPLY_CHANNEL, replyText: null, priorMessages: [] };
+}
+
 /** Pure: the item, out of one read of the thread. */
 export function buildPositiveReplyItem(thread: ThreadMessage[]): PositiveReplyItem {
   const latest = latestInboundText(thread);
   return {
+    channel: POSITIVE_REPLY_CHANNEL,
     replyText: latest ? cleanForSpeech(latest) || null : null,
     priorMessages: buildPriorMessages(thread),
   };

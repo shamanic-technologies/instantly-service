@@ -146,14 +146,16 @@ describe("buildPositiveReplyItem: the item the AI Instant Call workflow reads (L
       msg("inbound", "Yes, interested.\n\nOn Mon, Amy Moore wrote:\nour pitch", "2026-09-05T09:00:00.000Z"),
     ]);
     expect(item).toEqual({
+      channel: "email",
       replyText: "Yes, interested.",
       priorMessages: [{ direction: "outbound", text: "Hi Colleen,\n\nWe help chiropractic clinics fill their calendar." }],
     });
-    expect(Object.keys(item).sort()).toEqual(["priorMessages", "replyText"]);
+    expect(Object.keys(item).sort()).toEqual(["channel", "priorMessages", "replyText"]);
   });
 
   it("no words held: replyText null (the call says they are unavailable)", () => {
     expect(buildPositiveReplyItem([msg("outbound", "pitch")])).toEqual({
+      channel: "email",
       replyText: null,
       priorMessages: [{ direction: "outbound", text: "pitch" }],
     });

@@ -56,6 +56,7 @@ import {
 import { findLeadOnCampaignByEmail } from "./lead-client";
 import {
   buildPositiveReplyItem,
+  emptyPositiveReplyItem,
   positiveReplyKey,
   readReplyThread,
   type PositiveReplyItem,
@@ -187,7 +188,7 @@ export async function triggerSalesInterestLeg(
     // A failure costs the words, never the occurrence: the pipes still run and
     // the call says the words are unavailable.
     let thread: ThreadMessage[] = [];
-    let item: PositiveReplyItem = { replyText: null, priorMessages: [] };
+    let item: PositiveReplyItem = emptyPositiveReplyItem();
     try {
       thread = await readReplyThread(campaign.instantlyCampaignId);
       item = buildPositiveReplyItem(thread);
