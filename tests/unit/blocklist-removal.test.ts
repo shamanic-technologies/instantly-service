@@ -1,27 +1,24 @@
 /**
- * Automated SURBL removal requests (owner 2026-10-16): filled with the owner's
- * own record, once a week per listed domain, bot traps left untouched, every
- * outcome classified. Fixtures are SURBL's real pages (2026-10-16).
+ * Automated SURBL removal requests (owner 2026-10-16): sent BY EMAIL to
+ * whitelist@surbl.org (the channel SURBL's page offers; its web form refuses
+ * automated posts), from the company mailbox, once a week per listed domain,
+ * every outcome classified.
  */
-import fs from "node:fs";
-import path from "node:path";
 import { describe, it, expect, vi } from "vitest";
 
 vi.mock("../../src/db", () => ({ db: {} }));
 
 import {
   REMOVAL_COOLDOWN_DAYS,
-  classifyProcessorAnswer,
+  SURBL_REMOVAL_ADDRESS,
   fileSurblRemoval,
-  parseLookupAnswer,
   removalDue,
+  removalEmail,
   removalFormFields,
   type RemovalContact,
+  type RemovalEmail,
 } from "../../src/lib/blocklist-removal";
 import { contactFromIdentity } from "../../src/lib/owner-identity-client";
-
-const LISTED = fs.readFileSync(path.join(__dirname, "..", "helpers", "surbl-lookup-listed.html"), "utf8");
-const FORM = fs.readFileSync(path.join(__dirname, "..", "helpers", "surbl-lookup-form.html"), "utf8");
 
 const CONTACT: RemovalContact = {
   fullName: "Kevin Lourd",
@@ -31,38 +28,19 @@ const CONTACT: RemovalContact = {
   address: "285 rue de l'Église, 46140 Douelle, France",
   website: "https://distribute.you",
 };
-const SAMPLE = { headers: "From: x\nTo: y", body: "<p>Hello</p>" };
+const SAMPLE = { headers: "From: x\nTo: recipient@redacted.invalid", body: "<p>Hello</p>" };
+const INPUT = {
+  domain: "agileconsultco.com",
+  contact: CONTACT,
+  sample: SAMPLE,
+  sendingServers: "Google Workspace outbound servers (smtp.gmail.com).",
+  stoppedNewContactsOn: "2026-10-16",
+};
 
-describe("reading SURBL's lookup answer", () => {
-  it("a listed domain shows the removal form, its action and its token", () => {
-    const a = parseLookupAnswer(LISTED);
-    expect(a.listed).toBe(true);
-    expect(a.action).toBe("forms/processor.php");
-    expect(a.token).toMatch(/^d2hpdGVsaXN0/);
-  });
+describe("the request's words", () => {
+  const fields = removalFormFields(INPUT);
 
-  it("the lookup page alone is not a listing", () => {
-    expect(parseLookupAnswer(FORM)).toMatchObject({ listed: false, action: null });
-  });
-});
-
-describe("the form's words", () => {
-  const fields = removalFormFields({
-    domain: "agileconsultco.com",
-    contact: CONTACT,
-    sample: SAMPLE,
-    sendingServers: "Google Workspace outbound servers (smtp.gmail.com).",
-    stoppedNewContactsOn: "2026-10-16",
-    token: "tok",
-  });
-
-  it("leaves every bot trap untouched: hidden fields empty, the hidden reference code never quoted", () => {
-    expect(fields.contact_url).toBe("");
-    expect(fields.email_confirm).toBe("");
-    expect(JSON.stringify(fields)).not.toMatch(/SR-[0-9A-F]+/);
-  });
-
-  it("files in the owner's name, ASCII only, our real practice and our published terms", () => {
+  it("files in the company's name, ASCII only, our real practice and our published terms", () => {
     expect(fields).toMatchObject({
       name: "Kevin Lourd",
       email: "kevin@distribute.you",
@@ -70,12 +48,26 @@ describe("the form's words", () => {
       address1: "285 rue de l'Eglise, 46140 Douelle, France",
       fp: "agileconsultco.com",
       policy_link: "https://distribute.you/terms",
-      fg_token: "tok",
     });
     expect(fields.justify).toMatch(/verifier/);
     expect(fields.justify).toMatch(/2026-10-16/);
     expect(fields.policy).toMatch(/unsolicited bulk email in violation of any anti-spam law/);
     expect(Object.values(fields).join("")).toMatch(/^[\x09\x0A\x0D\x20-\x7E]*$/);
+  });
+
+  it("one plaintext email to SURBL's removal address, from the company mailbox, the owner in Bcc, every field of the form", () => {
+    const email = removalEmail(fields);
+    expect(email).toMatchObject({
+      to: SURBL_REMOVAL_ADDRESS,
+      from: '"Kevin Lourd" <kevin@distribute.you>',
+      bcc: "kevin@distribute.you",
+      subject: "Removal request: agileconsultco.com",
+    });
+    for (const label of ["Your name", "Your email address", "Organization name", "Street address", "Telephone number", "Web site domain name", "Sending IP addresses", "Full headers", "Full source", "Description", "Explanation", "published policy"]) {
+      expect(email.text).toContain(label);
+    }
+    expect(email.text).toContain("+33 1 23 45 67 89");
+    expect(email.text).not.toMatch(/[—–]/);
   });
 });
 
@@ -87,49 +79,28 @@ describe("once a week", () => {
     expect(removalDue(new Date("2026-10-16T06:00:00Z"), now)).toBe(true));
 });
 
-describe("what SURBL answered", () => {
-  it("2xx with no complaint: sent", () => expect(classifyProcessorAnswer(200, "<p>Thank you, we will review it.</p>")).toBe("sent"));
-  it("a page naming a missing field: refused", () => expect(classifyProcessorAnswer(200, "<p>Error: phone is required</p>")).toBe("refused"));
-  it("a server error: failed", () => expect(classifyProcessorAnswer(503, "")).toBe("failed"));
-});
+describe("what the mail server answered", () => {
+  it("accepted: sent, with the server's answer stored", async () => {
+    const sent: RemovalEmail[] = [];
+    const out = await fileSurblRemoval({ ...INPUT, send: async (e) => (sent.push(e), { response: "250 2.0.0 Ok: queued", code: 250 }) });
+    expect(out).toMatchObject({ outcome: "sent", httpStatus: 250, responseExcerpt: "250 2.0.0 Ok: queued", error: null });
+    expect(sent).toHaveLength(1);
+    expect(out.request).toMatchObject({ fp: "agileconsultco.com", emailTo: SURBL_REMOVAL_ADDRESS });
+  });
 
-describe("the whole exchange", () => {
-  it("looks up, then posts the removal form to the processor with the form's own token", async () => {
-    const calls: Array<{ url: string; body: string | null }> = [];
-    const fake = vi.fn(async (url: string | URL, init?: RequestInit) => {
-      calls.push({ url: String(url), body: (init?.body as string) ?? null });
-      const html = calls.length === 1 ? FORM : calls.length === 2 ? LISTED : "<p>Thank you</p>";
-      return new Response(html, { status: 200 });
-    }) as unknown as typeof fetch;
+  it("a 5xx refusal: refused (it reached the list, so it starts the week)", async () => {
     const out = await fileSurblRemoval({
-      domain: "agileconsultco.com",
-      contact: CONTACT,
-      sample: SAMPLE,
-      sendingServers: "Google",
-      stoppedNewContactsOn: "2026-10-16",
-      fetchImpl: fake,
+      ...INPUT,
+      send: async () => {
+        throw Object.assign(new Error("Message rejected"), { responseCode: 554, response: "554 5.7.1 rejected" });
+      },
     });
-    expect(out.outcome).toBe("sent");
-    expect(calls[2]!.url).toBe("https://www.surbl.org/lookupform/forms/processor.php");
-    const posted = new URLSearchParams(calls[2]!.body!);
-    expect(posted.get("fp")).toBe("agileconsultco.com");
-    expect(posted.get("fg_token")).toMatch(/^d2hpdGVsaXN0/);
-    expect(out.request?.phone).toBe("+33 1 23 45 67 89");
+    expect(out).toMatchObject({ outcome: "refused", httpStatus: 554, responseExcerpt: "554 5.7.1 rejected" });
   });
 
-  it("a domain SURBL no longer lists sends nothing", async () => {
-    let n = 0;
-    const fake = (async () => new Response(n++ === 0 ? FORM : FORM, { status: 200 })) as unknown as typeof fetch;
-    const out = await fileSurblRemoval({ domain: "x.com", contact: CONTACT, sample: SAMPLE, sendingServers: "g", stoppedNewContactsOn: "d", fetchImpl: fake });
-    expect(out).toMatchObject({ outcome: "not_listed", request: null });
-  });
-
-  it("a network error is a stored failure, never a throw", async () => {
-    const fake = (async () => {
-      throw new Error("ECONNRESET");
-    }) as unknown as typeof fetch;
-    const out = await fileSurblRemoval({ domain: "x.com", contact: CONTACT, sample: SAMPLE, sendingServers: "g", stoppedNewContactsOn: "d", fetchImpl: fake });
-    expect(out).toMatchObject({ outcome: "failed", error: "ECONNRESET" });
+  it("a network or login failure: failed, never a throw", async () => {
+    const out = await fileSurblRemoval({ ...INPUT, send: async () => { throw new Error("ECONNRESET"); } });
+    expect(out).toMatchObject({ outcome: "failed", httpStatus: null, error: "ECONNRESET" });
   });
 });
 

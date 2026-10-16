@@ -86,7 +86,7 @@ export const BLOCKLISTS: readonly BlocklistDefinition[] = [
     removalUrl: () => "https://www.surbl.org/surbl-analysis",
     removalAutomated: true,
     removalNote:
-      "We file SURBL's removal form ourselves, at most once a week per domain while it stays listed (owner 2026-10-16), with the owner's details from kevinlourd.com, a real email of ours and our anti-spam terms. SURBL reviews each request by hand.",
+      "We send SURBL's removal request ourselves, by email to whitelist@surbl.org (the channel its removal page offers), from the company mailbox, at most once a week per domain while it stays listed (owner 2026-10-16), with every field its form asks for. SURBL reviews each request by hand and answers that mailbox.",
   },
   {
     key: "spamhaus_dbl",
