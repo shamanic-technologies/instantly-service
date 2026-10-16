@@ -161,3 +161,55 @@ export async function sendEmail(
     );
   }
 }
+
+/** The staff alert for one new sending-domain listing (DOMAIN-BLOCKLIST-1016). */
+export interface DomainBlocklistedAlert {
+  /** Our event id: the dedup key, so a retry never sends twice. */
+  eventId: string;
+  domain: string;
+  list: string;
+  /** ISO day we first saw the listing. */
+  listedSince: string;
+  /** What the list answered, e.g. "ABUSE (127.0.0.64)". */
+  listAnswer: string;
+  /** Comma list of the sending addresses on the domain. */
+  mailboxes: string;
+  actionTaken: string;
+  removalUrl: string;
+}
+
+/**
+ * Deliver it to the STAFF list through transactional-email-service's org-less
+ * platform staff alert (a sending domain belongs to no organisation). Our event
+ * id is the dedup key: a second call for the same event answers `duplicate`,
+ * never a second email. THROWS on anything but sent/duplicate, so the caller
+ * keeps the alert pending and retries.
+ */
+export async function sendDomainBlocklistedAlert(alert: DomainBlocklistedAlert): Promise<void> {
+  const response = await fetch(`${TRANSACTIONAL_EMAIL_SERVICE_URL}/platform-staff-alert`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": TRANSACTIONAL_EMAIL_SERVICE_API_KEY },
+    body: JSON.stringify({
+      eventType: "sending_domain_blocklisted",
+      eventId: alert.eventId,
+      metadata: {
+        domain: alert.domain,
+        listName: alert.list,
+        listedSince: alert.listedSince,
+        listAnswer: alert.listAnswer,
+        mailboxesAffected: alert.mailboxes,
+        actionTaken: alert.actionTaken,
+        removalUrl: alert.removalUrl,
+      },
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`transactional-email-service POST /platform-staff-alert failed: ${response.status} - ${text}`);
+  }
+  const body = JSON.parse(text) as { sent?: boolean; duplicate?: boolean };
+  if (body.sent !== true && body.duplicate !== true) {
+    throw new Error(`transactional-email-service POST /platform-staff-alert did not send: ${text}`);
+  }
+}

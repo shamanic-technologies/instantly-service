@@ -192,6 +192,13 @@ export interface AccountCapacity {
    * loaded the lifecycle never moves anything.
    */
   adoptsFirstEmails?: boolean;
+  /**
+   * False when this address's DOMAIN is on a public blocklist right now
+   * (lifecycle reason `domain_blocklisted`, DOMAIN-BLOCKLIST-1016): a FIRST
+   * email assigned to it is moved to a production mailbox (or waits), its
+   * follow-ups still go out from it. Absent ⇒ true.
+   */
+  sendsFirstEmails?: boolean;
 }
 
 /**
@@ -249,6 +256,13 @@ export interface DueSelection {
    * domain with budget below when one has room, else it waits for the next run.
    */
   heldBounceBudget: number;
+  /**
+   * First emails kept off a mailbox whose domain a blocklist lists right now
+   * (`AccountCapacity.sendsFirstEmails` false). Each one is rehomed to a
+   * production mailbox with room below, else it waits. Follow-ups are never
+   * counted here: they keep dispatching from the listed mailbox.
+   */
+  heldBlocklisted: number;
 }
 
 export function selectDueSteps(
@@ -296,6 +310,7 @@ export function selectDueSteps(
       skippedSilenced: 0,
       rehomed: 0,
       heldBounceBudget: 0,
+      heldBlocklisted: 0,
     };
 
   // Capacity is spent per REAL MAILBOX, not per sending address — several
@@ -310,9 +325,12 @@ export function selectDueSteps(
   const limitByMailbox = new Map<string, number>();
   const peakByMailbox = new Map<string, number>();
   const sentByMailbox = new Map<string, number>();
+  // Addresses whose domain is blocklisted right now: no FIRST email from them.
+  const noFirstEmails = new Set<string>();
 
   for (const capacity of capacities) {
     mailboxOf.set(capacity.accountEmail, capacity.mailbox);
+    if (capacity.sendsFirstEmails === false) noFirstEmails.add(capacity.accountEmail);
     if (capacity.adoptsFirstEmails === true) {
       const known = adopterAddressByMailbox.get(capacity.mailbox);
       if (known === undefined || capacity.accountEmail < known) {
@@ -417,6 +435,7 @@ export function selectDueSteps(
     bounceBudget?.spend(accountEmail, verdictOf(step), gatedByBudget(step));
   };
   let heldBounceBudget = 0;
+  let heldBlocklisted = 0;
 
   for (const step of due) {
     // No capacity row ⇒ no mailbox ⇒ no room, per the invariant above. An
@@ -435,6 +454,15 @@ export function selectDueSteps(
     if (silencedMailboxes.has(mailbox)) {
       skippedSilenced += 1;
       if (isFirstEmail(step)) stranded.push(step);
+      continue;
+    }
+
+    // The address's domain is on a blocklist: a NEW prospect must not hear
+    // from it (the receiver refuses it citing the list). Offered to a
+    // production mailbox below; a follow-up falls through and goes out.
+    if (isFirstEmail(step) && noFirstEmails.has(step.accountEmail)) {
+      heldBlocklisted += 1;
+      stranded.push(step);
       continue;
     }
 
@@ -509,6 +537,7 @@ export function selectDueSteps(
     skippedSilenced,
     rehomed,
     heldBounceBudget,
+    heldBlocklisted,
   };
 }
 

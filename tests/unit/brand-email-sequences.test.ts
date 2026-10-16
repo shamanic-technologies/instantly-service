@@ -64,6 +64,20 @@ describe("classifyStep — the customer's reading of one email", () => {
       kind: "first_email",
       status: "sent",
       sentAt: "2026-10-09T10:45:37.185Z",
+      bouncedAt: null,
+    });
+  });
+
+  it("a send the receiving server refused after accepting it (a DSN bounce) reads bounced, never sent", () => {
+    // Prod 2026-10-15: Gmail accepted at 19:12:23, GoDaddy's DSN arrived at 19:12:26.
+    expect(
+      classifyStep({ step: 1, sentAt: "2026-10-15 19:12:23.342", bouncedAt: "2026-10-15 19:12:26", held: false }, true),
+    ).toEqual({
+      step: 1,
+      kind: "first_email",
+      status: "bounced",
+      sentAt: "2026-10-15T19:12:23.342Z",
+      bouncedAt: "2026-10-15T19:12:26.000Z",
     });
   });
 
@@ -77,6 +91,7 @@ describe("classifyStep — the customer's reading of one email", () => {
       kind: "follow_up",
       status: "queued",
       sentAt: null,
+      bouncedAt: null,
     });
   });
 
@@ -100,12 +115,29 @@ describe("fetchBrandEmailSequences", () => {
         leadEmail: "jane@acme.com",
         campaignId: "camp-1",
         steps: [
-          { step: 1, kind: "first_email", status: "sent", sentAt: "2026-10-09T10:45:37.185Z" },
-          { step: 2, kind: "follow_up", status: "queued", sentAt: null },
-          { step: 3, kind: "follow_up", status: "queued", sentAt: null },
+          { step: 1, kind: "first_email", status: "sent", sentAt: "2026-10-09T10:45:37.185Z", bouncedAt: null },
+          { step: 2, kind: "follow_up", status: "queued", sentAt: null, bouncedAt: null },
+          { step: 3, kind: "follow_up", status: "queued", sentAt: null, bouncedAt: null },
         ],
       },
     ]);
+  });
+
+  it("a sequence whose first email bounced serves it as bounced (the DSN flips it away from delivered)", async () => {
+    mockDbExecute.mockResolvedValue(
+      pgResult([
+        seqRow({
+          steps: [
+            { step: 1, sentAt: "2026-10-15T19:12:23.342", bouncedAt: "2026-10-15T19:12:26", held: false, anyHold: true },
+            { step: 2, sentAt: null, bouncedAt: null, held: false, anyHold: true },
+          ],
+        }),
+      ]),
+    );
+    const page = await fetchBrandEmailSequences({ orgId: "org-1", brandId: BRAND });
+    expect(page.sequences[0].steps.map((s) => s.status)).toEqual(["bounced", "stopped"]);
+    const sqlText = JSON.stringify(mockDbExecute.mock.calls[0]![0]);
+    expect(sqlText).toContain("email_bounced");
   });
 
   it("a step known only from a self-send step row (no hold record) on an active sequence is queued", async () => {

@@ -2321,11 +2321,12 @@ const EmailSequenceStepSchema = z
     step: z.number().int().describe("1-based position in the sequence. Step 1 is the first email."),
     kind: z.enum(["first_email", "follow_up"]),
     status: z
-      .enum(["sent", "queued", "stopped"])
+      .enum(["sent", "bounced", "queued", "stopped"])
       .describe(
-        "`sent`: it went out (see `sentAt`). `queued`: not sent yet, it goes out in the prospect's business hours. `stopped`: it will not go out (the prospect replied, bounced, opted out or booked, or the sequence was stopped).",
+        "`sent`: it went out (see `sentAt`). `bounced`: it went out and the receiving server refused it (see `bouncedAt`); it was NOT delivered. `queued`: not sent yet, it goes out in the prospect's business hours. `stopped`: it will not go out (the prospect replied, bounced, opted out or booked, or the sequence was stopped).",
       ),
-    sentAt: z.string().nullable().describe("When it went out (ISO 8601 UTC). Null unless `sent`."),
+    sentAt: z.string().nullable().describe("When it went out (ISO 8601 UTC). Null unless `sent` or `bounced`."),
+    bouncedAt: z.string().nullable().describe("When the receiving server refused it (ISO 8601 UTC). Null unless `bounced`."),
   })
   .openapi("EmailSequenceStep");
 
@@ -2358,7 +2359,7 @@ registry.registerPath({
   path: "/orgs/email-sequences",
   summary: "A brand's email sequences, each email sent or queued (paged)",
   description:
-    "Every sequence we run for one brand of the org: one row per sequence (a prospect emailed again by a later campaign has two), with every step (first email + follow-ups) and what happened to it: `sent` with `sentAt`, `queued`, or `stopped`. Read from our own send records (send holds, self-send steps, real `email_sent` events), so the counts match our dispatch log.\n\n" +
+    "Every sequence we run for one brand of the org: one row per sequence (a prospect emailed again by a later campaign has two), with every step (first email + follow-ups) and what happened to it: `sent` with `sentAt`, `bounced` (sent, then refused by the receiving server: `sentAt` + `bouncedAt`, not delivered), `queued`, or `stopped`. Read from our own send records (send holds, self-send steps, real `email_sent` events), so the counts match our dispatch log.\n\n" +
     "**Join** with the generated email bodies (content-generation-service, `GET /v1/emails?brandId=`) on `leadId`.\n\n" +
     "**Paging.** Keyset, opaque cursor. Read until `nextCursor` is null. Default page 500, max 2000.\n\n" +
     "**Scope.** Org-scoped on `x-org-id`: a brand of another org lists nothing.\n\n" +
@@ -2781,6 +2782,128 @@ registry.registerPath({
     401: { description: "Unauthorized" },
     500: { description: "Could not be read, or buckets do not reconcile with the total", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Verification history not mirrored yet", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const BlocklistKeySchema = z.enum(["surbl", "spamhaus_dbl", "uribl"]);
+
+const DomainBlocklistReadSchema = z
+  .object({
+    asOf: z.string().describe("ISO instant the read was computed"),
+    monitoredSince: z.string().nullable().describe("ISO instant of the first honest answer of any list. Listing series are null before it (nobody looked; not a clean day)"),
+    lists: z
+      .array(
+        z.object({
+          key: BlocklistKeySchema,
+          name: z.string().describe("SURBL, Spamhaus DBL, URIBL"),
+          zone: z.string(),
+          removalUrl: z.string().describe("Where a person starts a removal request"),
+          removalAutomated: z.boolean().describe("False for every list today: the removal forms need a person (see removalNote)"),
+          removalNote: z.string(),
+        }),
+      )
+      .describe("The lists checked daily, in display order"),
+    domains: z
+      .array(
+        z.object({
+          domain: z.string(),
+          mailboxes: z.array(z.string()).describe("Sending addresses on the domain (present accounts)"),
+          listed: z.boolean().describe("True when ANY list lists it right now"),
+          outOfNewSequences: z.boolean().describe("True when every mailbox of the domain is out of new sequences because of a listing (lifecycle reason domain_blocklisted)"),
+          lists: z.array(
+            z.object({
+              list: BlocklistKeySchema,
+              state: z.enum(["listed", "clean", "unknown"]).describe("`unknown` = the list never answered us honestly for this domain"),
+              answer: z.string().nullable().describe("The A record the list answered, e.g. 127.0.0.64"),
+              labels: z.array(z.string()).describe("The list's own sub-list names, e.g. ABUSE"),
+              listedSince: z.string().nullable().describe("ISO: when our check first saw the current listing"),
+              lastCheckedAt: z.string().nullable(),
+              lastAnsweredAt: z.string().nullable().describe("ISO: last run where the list answered honestly. The state is as of this instant"),
+              lastOutcome: z.string().nullable().describe("listed | clean | unanswered (refused / canary failed: state kept)"),
+              lastError: z.string().nullable(),
+            }),
+          ),
+        }),
+      )
+      .describe("Every sending domain, alphabetical"),
+    events: z
+      .array(
+        z.object({
+          id: z.string(),
+          domain: z.string(),
+          list: z.string(),
+          type: z.enum(["listed", "delisted", "removal_link_issued", "removal_requested"]),
+          answer: z.string().nullable(),
+          labels: z.array(z.string()),
+          mailboxes: z.array(z.string()).describe("Sending addresses on the domain at the event"),
+          detail: z.unknown().describe("listed: {zone, firstBlocklistBounceAt, actionTaken}; removal_*: {method, url, note}"),
+          occurredAt: z.string(),
+          alert: z
+            .object({ status: z.string(), attempts: z.number().int(), lastError: z.string().nullable(), alertedAt: z.string().nullable() })
+            .nullable()
+            .describe("The ONE staff email of a `listed` event (pending until delivered); null for other types"),
+        }),
+      )
+      .describe("Append-only history, newest first"),
+    series: z
+      .object({
+        days: z.array(z.string()).describe("UTC days of the window, oldest first"),
+        domainsListed: z.array(z.object({ day: z.string(), total: z.number().int().nullable(), byList: z.record(z.string(), z.number().int()).nullable() })).describe("Domains listed at any moment of the day, total (distinct domains) and per list"),
+        mailboxesOutOfNewSequences: z.array(z.object({ day: z.string(), mailboxes: z.number().int().nullable() })).describe("Mailboxes on a listed domain that day (out of new sequences)"),
+        sendsFromListedDomains: z.array(z.object({ day: z.string(), sends: z.number().int().nullable() })).describe("Real emails sent that day from a domain listed that day (follow-ups keep going: expect non-zero)"),
+        blocklistBounces: z.array(z.object({ day: z.string(), total: z.number().int(), byList: z.object({ surbl: z.number().int(), spamhaus: z.number().int(), uribl: z.number().int(), other_list: z.number().int() }) })).describe("Bounces (DSNs read in our mailboxes) whose text cites a blocklist, by the list cited. Backfilled from the first DSN we hold"),
+        removalRequests: z.array(z.object({ day: z.string(), linksIssued: z.number().int(), requested: z.number().int() })).describe("Removal links issued to staff (one per new listing) and requests a person recorded as filed"),
+        delistings: z.array(z.object({ day: z.string(), delistings: z.number().int() })),
+      })
+      .describe("One point per day of the window, zero included; null = before monitoring started"),
+  })
+  .openapi("DomainBlocklistRead");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/domain-blocklist",
+  summary: "Sending domains on public blocklists: current state, history, daily series (staff)",
+  description:
+    "Platform-scoped, read-only. Every sending domain is checked once a day on SURBL multi, Spamhaus DBL and URIBL (each behind its published test name, so a refused query is never read as a listing or as clean). A listed domain's mailboxes take no new sequence (lifecycle reason `domain_blocklisted`); their follow-ups keep going out; they come back the day a fresh check reads the domain clean. Cached 5 min per replica.",
+  request: { query: z.object({ days: z.string().optional().describe("Window in days, 1..365, default 60") }) },
+  responses: {
+    200: { description: "The read", content: { "application/json": { schema: DomainBlocklistReadSchema } } },
+    400: { description: "Bad `days`", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "Could not be read", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/domain-blocklist/check",
+  summary: "Run the daily blocklist check now",
+  description: "Checks every sending domain on every list, writes state + events, reconciles the lifecycle on a change, then delivers pending staff alerts. The in-process worker runs it daily. Idempotent: a listing already recorded writes nothing and alerts nobody.",
+  responses: {
+    200: { description: "What the check found: `domains`, per-list `answered/listed/clean/unanswered`, `listed`, `delisted`, `lifecycle`, `alerts`" },
+    401: { description: "Unauthorized" },
+    500: { description: "The check failed", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/domain-blocklist/removal-requests",
+  summary: "Record a removal request a person filed on a list's form",
+  description: "Append-only `removal_requested` event (the forms need a person: we never file them).",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({ domain: z.string(), list: BlocklistKeySchema, note: z.string().optional(), requestedBy: z.string().optional() }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: { description: "Recorded: `{id}`" },
+    400: { description: "Missing domain or unknown list", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
   },
 });
 
