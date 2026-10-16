@@ -95,6 +95,8 @@ export function planProvenanceBatches(
   for (const group of [missing, stale]) {
     const byPair = new Map<string, { orgId: string; brandId: string; emails: Set<string> }>();
     for (const t of group) {
+      // lead-service 400s a whole batch on one non-string address.
+      if (typeof t.email !== "string" || t.email.length === 0) continue;
       const k = `${t.orgId}|${t.brandId}`;
       const g = byPair.get(k) ?? { orgId: t.orgId, brandId: t.brandId, emails: new Set<string>() };
       g.emails.add(t.email);
@@ -124,11 +126,13 @@ async function loadTargets(now: Date): Promise<{ missing: ProvenanceTarget[]; st
       GROUP BY 1, 2
     ),
     people AS (
-      SELECT c.org_id AS org_id, b.brand_id, lower(trim(c.lead_email)) AS email, MAX(f.first_at) AS last_first_at
+      -- The address is the SEND's (the read joins on it too); the campaign
+      -- row's own lead_email can be null.
+      SELECT c.org_id AS org_id, b.brand_id, lower(trim(f.lead_email)) AS email, MAX(f.first_at) AS last_first_at
       FROM first_sends f
       JOIN instantly_campaigns c ON c.instantly_campaign_id = f.campaign_id
       CROSS JOIN LATERAL unnest(c.brand_ids) AS b(brand_id)
-      WHERE c.org_id IS NOT NULL
+      WHERE c.org_id IS NOT NULL AND f.lead_email IS NOT NULL AND trim(f.lead_email) <> ''
       GROUP BY 1, 2, 3
     ),
     latest AS (
