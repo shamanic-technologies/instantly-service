@@ -8,11 +8,34 @@ import {
   getOrSetCachedStats,
   deleteCachedStatsWhere,
   STATS_REFRESH_AFTER_MS,
+  statsCacheSize,
+  MAX_ENTRIES,
 } from "../../src/lib/stats-cache";
 
 describe("stats-cache", () => {
   beforeEach(() => clearStatsCache());
   afterEach(() => vi.useRealTimers());
+
+  it("an expired key nobody reads again leaves the store on a later write (it used to stay until the heap ran out)", () => {
+    vi.useFakeTimers();
+    // One /orgs/status batch per key, each read once: the shape that filled the heap in prod (2026-10-16).
+    for (let i = 0; i < 100; i += 1) setCachedStats(statsCacheKey("orgs-status", { orgId: "o", emails: `a${i}@x.io` }), { results: [] }, 1000);
+    expect(statsCacheSize()).toBe(100);
+    vi.advanceTimersByTime(31_000);
+    setCachedStats("fresh", 1);
+    expect(statsCacheSize()).toBe(1);
+    expect(getCachedStats("fresh")).toBe(1);
+  });
+
+  it("never holds more than MAX_ENTRIES: the oldest-written go first, a rewritten key counts as new", () => {
+    setCachedStats("first", 0);
+    setCachedStats("second", 0);
+    setCachedStats("first", 1); // rewritten: now the newest
+    for (let i = 0; i < MAX_ENTRIES; i += 1) setCachedStats(`k${i}`, i);
+    expect(statsCacheSize()).toBe(MAX_ENTRIES);
+    expect(getCachedStats("second")).toBeUndefined();
+    expect(getCachedStats(`k${MAX_ENTRIES - 1}`)).toBe(MAX_ENTRIES - 1);
+  });
 
   it("returns the set value within TTL (hit)", () => {
     setCachedStats("k", { a: 1 });
