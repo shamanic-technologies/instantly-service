@@ -213,3 +213,59 @@ export async function updateCostStatus(
     body: { status },
   });
 }
+
+/** A run as `GET /v1/runs` lists it: no cost rows, the sum of its own provisioned ones. */
+export interface ListedRun {
+  id: string;
+  parentRunId: string | null;
+  serviceName: string;
+  taskName: string;
+  status: string;
+  startedAt: string;
+  ownProvisionedCostInUsdCents: string;
+}
+
+/**
+ * Runs of the caller's org (`x-org-id`) matching `filters`, every page at once
+ * (no `limit`: the filters keep the set small). Throws on any failure.
+ */
+export async function listRuns(
+  filters: { serviceName: string; status: string; startedAfter: string; startedBefore: string },
+  identity: IdentityContext,
+): Promise<ListedRun[]> {
+  const qs = new URLSearchParams(filters).toString();
+  const body = await runsRequest<{ runs: ListedRun[] }>(`/v1/runs?${qs}`, identity);
+  return Array.isArray(body.runs) ? body.runs : [];
+}
+
+/** One run with its own cost rows, or null when the run does not exist (404). */
+export async function getRunWithCosts(
+  runId: string,
+  identity: IdentityContext,
+): Promise<(Run & { costs: RunCost[] }) | null> {
+  try {
+    const run = await runsRequest<Run & { costs?: RunCost[] }>(`/v1/runs/${runId}`, identity);
+    return { ...run, costs: Array.isArray(run.costs) ? run.costs : [] };
+  } catch (error) {
+    if (isRunGoneError(error)) return null;
+    throw error;
+  }
+}
+
+/** A trace event on a run (`POST /v1/runs/:id/events`, see trace-event.ts). */
+export interface RunEvent {
+  event: string;
+  detail: string | null;
+  createdAt: string;
+}
+
+/** The events traced on a run, or null when the run does not exist (404). */
+export async function listRunEvents(runId: string, identity: IdentityContext): Promise<RunEvent[] | null> {
+  try {
+    const body = await runsRequest<{ events?: RunEvent[] }>(`/v1/runs/${runId}/events`, identity);
+    return Array.isArray(body.events) ? body.events : [];
+  } catch (error) {
+    if (isRunGoneError(error)) return null;
+    throw error;
+  }
+}

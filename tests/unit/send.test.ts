@@ -2085,6 +2085,44 @@ describe("POST /send", () => {
     expect(mockCreateCampaign).toHaveBeenCalled();
   });
 
+  // STALE-RESERVATION-1016: a crash between the Instantly create and phase-2 can
+  // leave a live campaign we hold no id for; the stamp keeps the stale sweep
+  // from ever releasing (re-serving) that row.
+  it("stamps the reservation BEFORE creating the Instantly campaign", async () => {
+    mockNewCampaignFlow();
+    mockDbUpdateSet.mockClear();
+    let stampedBeforeCreate = false;
+    mockCreateCampaign.mockImplementationOnce(async () => {
+      stampedBeforeCreate = mockDbUpdateSet.mock.calls.some((c: unknown[]) =>
+        JSON.stringify((c[0] as any)?.metadata?.queryChunks ?? "").includes("instantlyCreateStartedAt"),
+      );
+      return { id: "inst-camp-new", status: "draft" };
+    });
+    const app = await createSendApp();
+
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(stampedBeforeCreate).toBe(true);
+  });
+
+  it("does not stamp a self-send reservation (nothing leaves before phase-2)", async () => {
+    mockNewCampaignFlow();
+    mockDbUpdateSet.mockClear();
+    credentialedMailboxes.add("smtp@saviolabsco.com");
+    mockFetchInProductionAccounts.mockResolvedValueOnce([
+      { email: "smtp@saviolabsco.com", warmup_status: 1, status: 1, sendTransport: "smtp", infraProvider: "primeforge" },
+    ]);
+    const app = await createSendApp();
+
+    await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    const stamped = mockDbUpdateSet.mock.calls.some((c: unknown[]) =>
+      JSON.stringify((c[0] as any)?.metadata?.queryChunks ?? "").includes("instantlyCreateStartedAt"),
+    );
+    expect(stamped).toBe(false);
+  });
+
   // ─── Self-send wiring (#590) ──────────────────────────────────────────────
 
   // Without these rows a mailbox flipped to the smtp transport would find no
