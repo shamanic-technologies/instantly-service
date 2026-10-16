@@ -23,6 +23,12 @@
  *   - `stopped` it will never go out: the hold was cancelled (reply, bounce,
  *               opt-out, booked meeting, stop) or the sequence is no longer
  *               active.
+ *   - `bounced` it went out (`sentAt`) and the receiving server REFUSED it: a
+ *               real `email_bounced` event on that step (a DSN read in the
+ *               mailbox, or Instantly's bounce), `bouncedAt` = its instant.
+ *               A send the receiver accepted at SMTP then refused seconds
+ *               later (prod 2026-10-15, GoDaddy behind a SURBL listing) read
+ *               `sent` here, i.e. delivered, to the client: never again.
  *
  * Step set = every step any of our three records knows (send holds, self-send
  * step rows, real send events). Historical holds written before migration 0027
@@ -41,15 +47,17 @@ import { isoOrNull, rowsOf } from "./engaged-leads";
 export const EMAIL_SEQUENCES_DEFAULT_LIMIT = 500;
 export const EMAIL_SEQUENCES_MAX_LIMIT = 2000;
 
-export type SequenceStepStatus = "sent" | "queued" | "stopped";
+export type SequenceStepStatus = "sent" | "bounced" | "queued" | "stopped";
 
 export interface SequenceStep {
   /** 1-based. Step 1 is the first email, every later step a follow-up. */
   step: number;
   kind: "first_email" | "follow_up";
   status: SequenceStepStatus;
-  /** When it went out (ISO 8601 UTC). Null unless `status` is `sent`. */
+  /** When it went out (ISO 8601 UTC). Null unless `status` is `sent` or `bounced`. */
   sentAt: string | null;
+  /** When the receiving server refused it (ISO 8601 UTC). Null unless `status` is `bounced`. */
+  bouncedAt: string | null;
 }
 
 export interface EmailSequence {
@@ -92,13 +100,16 @@ export function decodeSequenceCursor(cursor: string): string {
 export interface RawStepFacts {
   step: number;
   sentAt: string | null;
+  /** Earliest real bounce of the step's email, if the receiver refused it. */
+  bouncedAt?: string | null;
   /** At least one `provisioned` send hold for the step. */
   held: boolean;
 }
 
 /**
  * The customer-facing reading of one step. Pure, so the precedence is pinned:
- * a real send wins over everything; an inactive sequence sends nothing more;
+ * a real send wins over everything, and a refused send reads `bounced`, never
+ * `sent`; an inactive sequence sends nothing more;
  * otherwise a live hold (or no hold record at all on an active sequence) is
  * still queued, and a step whose holds were all cancelled is stopped.
  */
@@ -108,13 +119,18 @@ export function classifyStep(
 ): SequenceStep {
   const kind = facts.step <= 1 ? "first_email" : "follow_up";
   const sentAt = isoOrNull(facts.sentAt);
-  if (sentAt !== null) return { step: facts.step, kind, status: "sent", sentAt };
-  if (!sequenceActive) return { step: facts.step, kind, status: "stopped", sentAt: null };
+  const bouncedAt = isoOrNull(facts.bouncedAt ?? null);
+  if (sentAt !== null && bouncedAt !== null) {
+    return { step: facts.step, kind, status: "bounced", sentAt, bouncedAt };
+  }
+  if (sentAt !== null) return { step: facts.step, kind, status: "sent", sentAt, bouncedAt: null };
+  if (!sequenceActive) return { step: facts.step, kind, status: "stopped", sentAt: null, bouncedAt: null };
   return {
     step: facts.step,
     kind,
     status: facts.held ? "queued" : "stopped",
     sentAt: null,
+    bouncedAt: null,
   };
 }
 
@@ -131,7 +147,7 @@ function toSteps(raw: unknown, sequenceActive: boolean, sequenceKey: string): Se
   if (!Array.isArray(raw)) return [];
   return raw
     .flatMap((s) => {
-      const r = s as { step?: unknown; sentAt?: unknown; held?: unknown; anyHold?: unknown };
+      const r = s as { step?: unknown; sentAt?: unknown; bouncedAt?: unknown; held?: unknown; anyHold?: unknown };
       const step = Number(r.step);
       if (!Number.isInteger(step) || step < 1) {
         // One unreadable step never fails the page: that step is left out and
@@ -149,7 +165,12 @@ function toSteps(raw: unknown, sequenceActive: boolean, sequenceKey: string): Se
       const noHoldRecord = r.anyHold !== true;
       return [
         classifyStep(
-          { step, sentAt: (r.sentAt as string | null) ?? null, held: held || noHoldRecord },
+          {
+            step,
+            sentAt: (r.sentAt as string | null) ?? null,
+            bouncedAt: (r.bouncedAt as string | null) ?? null,
+            held: held || noHoldRecord,
+          },
           sequenceActive,
         ),
       ];
@@ -233,6 +254,16 @@ export async function fetchBrandEmailSequences(filters: {
         AND e.step IS NOT NULL
       GROUP BY 1, 2
     ),
+    bounces AS (
+      SELECT e.campaign_id AS instantly_campaign_id, e.step, MIN(e."timestamp") AS bounced_at
+      FROM instantly_events e
+      JOIN page p ON p.instantly_campaign_id = e.campaign_id
+      WHERE e.event_type = 'email_bounced'
+        AND e.inferred = false
+        AND e.withdrawn_at IS NULL
+        AND e.step IS NOT NULL
+      GROUP BY 1, 2
+    ),
     known_steps AS (
       SELECT instantly_campaign_id, step FROM hold_steps
       UNION
@@ -252,6 +283,7 @@ export async function fetchBrandEmailSequences(filters: {
                jsonb_build_object(
                  'step', k.step,
                  'sentAt', s.sent_at,
+                 'bouncedAt', b.bounced_at,
                  'held', COALESCE(h.held, false),
                  'anyHold', h.step IS NOT NULL
                ) ORDER BY k.step
@@ -262,6 +294,7 @@ export async function fetchBrandEmailSequences(filters: {
     LEFT JOIN known_steps k ON k.instantly_campaign_id = p.instantly_campaign_id
     LEFT JOIN hold_steps h ON h.instantly_campaign_id = k.instantly_campaign_id AND h.step = k.step
     LEFT JOIN sends s ON s.instantly_campaign_id = k.instantly_campaign_id AND s.step = k.step
+    LEFT JOIN bounces b ON b.instantly_campaign_id = k.instantly_campaign_id AND b.step = k.step
     GROUP BY p.instantly_campaign_id, p.lead_id, p.lead_email, p.campaign_id, p.status
     ORDER BY p.instantly_campaign_id
   `);

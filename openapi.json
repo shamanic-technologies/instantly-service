@@ -2666,22 +2666,29 @@
             "type": "string",
             "enum": [
               "sent",
+              "bounced",
               "queued",
               "stopped"
             ],
-            "description": "`sent`: it went out (see `sentAt`). `queued`: not sent yet, it goes out in the prospect's business hours. `stopped`: it will not go out (the prospect replied, bounced, opted out or booked, or the sequence was stopped)."
+            "description": "`sent`: it went out (see `sentAt`). `bounced`: it went out and the receiving server refused it (see `bouncedAt`); it was NOT delivered. `queued`: not sent yet, it goes out in the prospect's business hours. `stopped`: it will not go out (the prospect replied, bounced, opted out or booked, or the sequence was stopped)."
           },
           "sentAt": {
             "type": "string",
             "nullable": true,
-            "description": "When it went out (ISO 8601 UTC). Null unless `sent`."
+            "description": "When it went out (ISO 8601 UTC). Null unless `sent` or `bounced`."
+          },
+          "bouncedAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "When the receiving server refused it (ISO 8601 UTC). Null unless `bounced`."
           }
         },
         "required": [
           "step",
           "kind",
           "status",
-          "sentAt"
+          "sentAt",
+          "bouncedAt"
         ]
       },
       "EmailSignature": {
@@ -3663,6 +3670,439 @@
           "bucketsByLatestVerdict",
           "total",
           "sentAfterThrough"
+        ]
+      },
+      "DomainBlocklistRead": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "type": "string",
+            "description": "ISO instant the read was computed"
+          },
+          "monitoredSince": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO instant of the first honest answer of any list. Listing series are null before it (nobody looked; not a clean day)"
+          },
+          "lists": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "enum": [
+                    "surbl",
+                    "spamhaus_dbl",
+                    "uribl"
+                  ]
+                },
+                "name": {
+                  "type": "string",
+                  "description": "SURBL, Spamhaus DBL, URIBL"
+                },
+                "zone": {
+                  "type": "string"
+                },
+                "removalUrl": {
+                  "type": "string",
+                  "description": "Where a person starts a removal request"
+                },
+                "removalAutomated": {
+                  "type": "boolean",
+                  "description": "False for every list today: the removal forms need a person (see removalNote)"
+                },
+                "removalNote": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "name",
+                "zone",
+                "removalUrl",
+                "removalAutomated",
+                "removalNote"
+              ]
+            },
+            "description": "The lists checked daily, in display order"
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "domain": {
+                  "type": "string"
+                },
+                "mailboxes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Sending addresses on the domain (present accounts)"
+                },
+                "listed": {
+                  "type": "boolean",
+                  "description": "True when ANY list lists it right now"
+                },
+                "outOfNewSequences": {
+                  "type": "boolean",
+                  "description": "True when every mailbox of the domain is out of new sequences because of a listing (lifecycle reason domain_blocklisted)"
+                },
+                "lists": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "list": {
+                        "type": "string",
+                        "enum": [
+                          "surbl",
+                          "spamhaus_dbl",
+                          "uribl"
+                        ]
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "listed",
+                          "clean",
+                          "unknown"
+                        ],
+                        "description": "`unknown` = the list never answered us honestly for this domain"
+                      },
+                      "answer": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "The A record the list answered, e.g. 127.0.0.64"
+                      },
+                      "labels": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "The list's own sub-list names, e.g. ABUSE"
+                      },
+                      "listedSince": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "ISO: when our check first saw the current listing"
+                      },
+                      "lastCheckedAt": {
+                        "type": "string",
+                        "nullable": true
+                      },
+                      "lastAnsweredAt": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "ISO: last run where the list answered honestly. The state is as of this instant"
+                      },
+                      "lastOutcome": {
+                        "type": "string",
+                        "nullable": true,
+                        "description": "listed | clean | unanswered (refused / canary failed: state kept)"
+                      },
+                      "lastError": {
+                        "type": "string",
+                        "nullable": true
+                      }
+                    },
+                    "required": [
+                      "list",
+                      "state",
+                      "answer",
+                      "labels",
+                      "listedSince",
+                      "lastCheckedAt",
+                      "lastAnsweredAt",
+                      "lastOutcome",
+                      "lastError"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "domain",
+                "mailboxes",
+                "listed",
+                "outOfNewSequences",
+                "lists"
+              ]
+            },
+            "description": "Every sending domain, alphabetical"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "domain": {
+                  "type": "string"
+                },
+                "list": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "listed",
+                    "delisted",
+                    "removal_link_issued",
+                    "removal_requested"
+                  ]
+                },
+                "answer": {
+                  "type": "string",
+                  "nullable": true
+                },
+                "labels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "mailboxes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Sending addresses on the domain at the event"
+                },
+                "detail": {
+                  "nullable": true,
+                  "description": "listed: {zone, firstBlocklistBounceAt, actionTaken}; removal_*: {method, url, note}"
+                },
+                "occurredAt": {
+                  "type": "string"
+                },
+                "alert": {
+                  "type": "object",
+                  "nullable": true,
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "attempts": {
+                      "type": "integer"
+                    },
+                    "lastError": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "alertedAt": {
+                      "type": "string",
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "attempts",
+                    "lastError",
+                    "alertedAt"
+                  ],
+                  "description": "The ONE staff email of a `listed` event (pending until delivered); null for other types"
+                }
+              },
+              "required": [
+                "id",
+                "domain",
+                "list",
+                "type",
+                "answer",
+                "labels",
+                "mailboxes",
+                "occurredAt",
+                "alert"
+              ]
+            },
+            "description": "Append-only history, newest first"
+          },
+          "series": {
+            "type": "object",
+            "properties": {
+              "days": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "UTC days of the window, oldest first"
+              },
+              "domainsListed": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "day": {
+                      "type": "string"
+                    },
+                    "total": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "byList": {
+                      "type": "object",
+                      "nullable": true,
+                      "additionalProperties": {
+                        "type": "integer"
+                      }
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "total",
+                    "byList"
+                  ]
+                },
+                "description": "Domains listed at any moment of the day, total (distinct domains) and per list"
+              },
+              "mailboxesOutOfNewSequences": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "day": {
+                      "type": "string"
+                    },
+                    "mailboxes": {
+                      "type": "integer",
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "mailboxes"
+                  ]
+                },
+                "description": "Mailboxes on a listed domain that day (out of new sequences)"
+              },
+              "sendsFromListedDomains": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "day": {
+                      "type": "string"
+                    },
+                    "sends": {
+                      "type": "integer",
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "sends"
+                  ]
+                },
+                "description": "Real emails sent that day from a domain listed that day (follow-ups keep going: expect non-zero)"
+              },
+              "blocklistBounces": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "day": {
+                      "type": "string"
+                    },
+                    "total": {
+                      "type": "integer"
+                    },
+                    "byList": {
+                      "type": "object",
+                      "properties": {
+                        "surbl": {
+                          "type": "integer"
+                        },
+                        "spamhaus": {
+                          "type": "integer"
+                        },
+                        "uribl": {
+                          "type": "integer"
+                        },
+                        "other_list": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "surbl",
+                        "spamhaus",
+                        "uribl",
+                        "other_list"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "total",
+                    "byList"
+                  ]
+                },
+                "description": "Bounces (DSNs read in our mailboxes) whose text cites a blocklist, by the list cited. Backfilled from the first DSN we hold"
+              },
+              "removalRequests": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "day": {
+                      "type": "string"
+                    },
+                    "linksIssued": {
+                      "type": "integer"
+                    },
+                    "requested": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "linksIssued",
+                    "requested"
+                  ]
+                },
+                "description": "Removal links issued to staff (one per new listing) and requests a person recorded as filed"
+              },
+              "delistings": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "day": {
+                      "type": "string"
+                    },
+                    "delistings": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "day",
+                    "delistings"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "days",
+              "domainsListed",
+              "mailboxesOutOfNewSequences",
+              "sendsFromListedDomains",
+              "blocklistBounces",
+              "removalRequests",
+              "delistings"
+            ],
+            "description": "One point per day of the window, zero included; null = before monitoring started"
+          }
+        },
+        "required": [
+          "asOf",
+          "monitoredSince",
+          "lists",
+          "domains",
+          "events",
+          "series"
         ]
       },
       "ManualQualificationCreateResponse": {
@@ -9390,7 +9830,7 @@
     "/orgs/email-sequences": {
       "get": {
         "summary": "A brand's email sequences, each email sent or queued (paged)",
-        "description": "Every sequence we run for one brand of the org: one row per sequence (a prospect emailed again by a later campaign has two), with every step (first email + follow-ups) and what happened to it: `sent` with `sentAt`, `queued`, or `stopped`. Read from our own send records (send holds, self-send steps, real `email_sent` events), so the counts match our dispatch log.\n\n**Join** with the generated email bodies (content-generation-service, `GET /v1/emails?brandId=`) on `leadId`.\n\n**Paging.** Keyset, opaque cursor. Read until `nextCursor` is null. Default page 500, max 2000.\n\n**Scope.** Org-scoped on `x-org-id`: a brand of another org lists nothing.\n\n**Cost:** none. It sends nothing and declares nothing.",
+        "description": "Every sequence we run for one brand of the org: one row per sequence (a prospect emailed again by a later campaign has two), with every step (first email + follow-ups) and what happened to it: `sent` with `sentAt`, `bounced` (sent, then refused by the receiving server: `sentAt` + `bouncedAt`, not delivered), `queued`, or `stopped`. Read from our own send records (send holds, self-send steps, real `email_sent` events), so the counts match our dispatch log.\n\n**Join** with the generated email bodies (content-generation-service, `GET /v1/emails?brandId=`) on `leadId`.\n\n**Paging.** Keyset, opaque cursor. Read until `nextCursor` is null. Default page 500, max 2000.\n\n**Scope.** Org-scoped on `x-org-id`: a brand of another org lists nothing.\n\n**Cost:** none. It sends nothing and declares nothing.",
         "parameters": [
           {
             "schema": {
@@ -10169,6 +10609,139 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/internal/domain-blocklist": {
+      "get": {
+        "summary": "Sending domains on public blocklists: current state, history, daily series (staff)",
+        "description": "Platform-scoped, read-only. Every sending domain is checked once a day on SURBL multi, Spamhaus DBL and URIBL (each behind its published test name, so a refused query is never read as a listing or as clean). A listed domain's mailboxes take no new sequence (lifecycle reason `domain_blocklisted`); their follow-ups keep going out; they come back the day a fresh check reads the domain clean. Cached 5 min per replica.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Window in days, 1..365, default 60"
+            },
+            "required": false,
+            "description": "Window in days, 1..365, default 60",
+            "name": "days",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainBlocklistRead"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `days`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/domain-blocklist/check": {
+      "post": {
+        "summary": "Run the daily blocklist check now",
+        "description": "Checks every sending domain on every list, writes state + events, reconciles the lifecycle on a change, then delivers pending staff alerts. The in-process worker runs it daily. Idempotent: a listing already recorded writes nothing and alerts nobody.",
+        "responses": {
+          "200": {
+            "description": "What the check found: `domains`, per-list `answered/listed/clean/unanswered`, `listed`, `delisted`, `lifecycle`, `alerts`"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "The check failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/domain-blocklist/removal-requests": {
+      "post": {
+        "summary": "Record a removal request a person filed on a list's form",
+        "description": "Append-only `removal_requested` event (the forms need a person: we never file them).",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "domain": {
+                    "type": "string"
+                  },
+                  "list": {
+                    "type": "string",
+                    "enum": [
+                      "surbl",
+                      "spamhaus_dbl",
+                      "uribl"
+                    ]
+                  },
+                  "note": {
+                    "type": "string"
+                  },
+                  "requestedBy": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "domain",
+                  "list"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Recorded: `{id}`"
+          },
+          "400": {
+            "description": "Missing domain or unknown list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         }
       }
