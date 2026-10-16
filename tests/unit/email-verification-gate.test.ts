@@ -20,6 +20,7 @@ import {
   gateAddresses,
   gateAddressForSend,
   judgeVerdict,
+  refusalUntil,
 } from "../../src/lib/email-verification-gate";
 import { EmailVerifierError } from "../../src/lib/apollo-client";
 
@@ -30,8 +31,25 @@ function verdictRow(email: string, verdict: string, reused = false) {
 }
 
 describe("judgeVerdict — what the send door does with a verdict", () => {
-  it.each(["valid", "catch_all", "unknown"])("%s is sent", (v) => {
+  it.each(["valid", "catch_all"])("%s is sent", (v) => {
     expect(judgeVerdict(v)).toEqual({ accepted: true, reason: `verdict_${v}` });
+  });
+  it("a FIRST unknown is not sent: it is re-asked (CATCHALL-BOUNCE-1016)", () => {
+    expect(judgeVerdict("unknown")).toEqual({ accepted: false, reason: "verdict_unknown_recheck" });
+  });
+  it("a CONFIRMED unknown is sent (earlier unknown >= 24 h old, or fresh proof)", () => {
+    expect(judgeVerdict("unknown", true)).toEqual({ accepted: true, reason: "verdict_unknown" });
+  });
+  it("confirmation never rescues a bad verdict", () => {
+    expect(judgeVerdict("invalid", true).accepted).toBe(false);
+    expect(judgeVerdict("risky", true).accepted).toBe(false);
+  });
+  it("an unknown refusal lapses after 48 h, a bad verdict after 30 days", () => {
+    const at = "2026-10-14T08:00:00.000Z";
+    expect(refusalUntil({ verifiedAt: at, reason: "verdict_unknown_recheck" })?.toISOString()).toBe(
+      "2026-10-16T08:00:00.000Z",
+    );
+    expect(refusalUntil({ verifiedAt: at, reason: "verdict_invalid" })?.toISOString()).toBe("2026-11-13T08:00:00.000Z");
   });
   it.each(["invalid", "risky"])("%s is never sent", (v) => {
     expect(judgeVerdict(v)).toEqual({ accepted: false, reason: `verdict_${v}` });
@@ -66,6 +84,29 @@ describe("gateAddresses — verify, decide, record", () => {
       context: "send",
       runId: "run-1",
     });
+  });
+
+  it("an unknown is asked about in our history: confirmed = sent, first = refused and re-asked", async () => {
+    mockVerify.mockResolvedValue([verdictRow("a@x.com", "unknown"), verdictRow("b@x.com", "unknown"), verdictRow("c@x.com", "valid")]);
+    mockExecute.mockResolvedValue({ rows: [{ email: "a@x.com" }] });
+    const out = await gateAddresses(["a@x.com", "b@x.com", "c@x.com"], IDENTITY, "send");
+
+    expect(mockExecute).toHaveBeenCalledTimes(1); // only the unknowns are looked up
+    expect(out.get("a@x.com")).toMatchObject({ accepted: true, reason: "verdict_unknown" });
+    expect(out.get("b@x.com")).toMatchObject({ accepted: false, reason: "verdict_unknown_recheck" });
+    expect(out.get("c@x.com")).toMatchObject({ accepted: true, reason: "verdict_valid" });
+  });
+
+  it("no unknown in the answer = no history read", async () => {
+    mockVerify.mockResolvedValue([verdictRow("a@x.com", "valid")]);
+    await gateAddresses(["a@x.com"], IDENTITY, "send");
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it("an unreadable history fails LOUD, never reads as confirmed", async () => {
+    mockVerify.mockResolvedValue([verdictRow("a@x.com", "unknown")]);
+    mockExecute.mockRejectedValue(new Error("db down"));
+    await expect(gateAddressForSend("a@x.com", IDENTITY)).rejects.toThrow(/db down/);
   });
 
   it("no verdict from the verifier is a RECORDED refusal, never a pass", async () => {
