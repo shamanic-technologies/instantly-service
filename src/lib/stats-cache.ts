@@ -29,6 +29,32 @@ interface CacheEntry {
 const store = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<unknown>>();
 
+/**
+ * BOUNDS (prod 2026-10-16, SFC-MONEY-SLOW-1016): an entry used to leave the store only when its OWN key was read
+ * again after it expired. `POST /orgs/status` keys carry the whole email list of the batch, so almost every key is
+ * read once and never again: the store grew for the life of the process until the JS heap hit its 2 GB limit
+ * (`FATAL ERROR: Reached heap limit`, 4.6 h after boot). For minutes before the crash every garbage collection
+ * froze the process ~1 s, so `/orgs/status` timed out for email-gateway, lead-service and features-service.
+ *
+ * So a write sweeps every expired entry (at most once per {@link SWEEP_INTERVAL_MS}), and the store never holds
+ * more than {@link MAX_ENTRIES}: past it the oldest-written entries go first. Dropping an entry costs one reload
+ * and never a wrong answer.
+ */
+const SWEEP_INTERVAL_MS = 30_000;
+export const MAX_ENTRIES = 2_000;
+let lastSweepAt = 0;
+
+function sweepExpired(now: number): void {
+  if (now - lastSweepAt < SWEEP_INTERVAL_MS) return;
+  lastSweepAt = now;
+  for (const [key, entry] of store) if (entry.expiresAt <= now) store.delete(key);
+}
+
+/** How many entries the store holds (status route + tests). */
+export function statsCacheSize(): number {
+  return store.size;
+}
+
 /** Default TTL (ms) applied when a caller does not pass one explicitly. */
 export const STATS_CACHE_TTL_MS = DEFAULT_TTL_MS;
 
@@ -80,7 +106,14 @@ export function getCachedStats<T>(key: string): T | undefined {
 /** Store a value under key with the given TTL (defaults to STATS_CACHE_TTL_MS). */
 export function setCachedStats(key: string, value: unknown, ttlMs: number = DEFAULT_TTL_MS): void {
   const now = Date.now();
+  sweepExpired(now);
+  // Re-inserted at the end, so Map order stays oldest-written first.
+  store.delete(key);
   store.set(key, { storedAt: now, expiresAt: now + ttlMs, value });
+  for (const oldest of store.keys()) {
+    if (store.size <= MAX_ENTRIES) break;
+    store.delete(oldest);
+  }
 }
 
 /**
@@ -166,4 +199,5 @@ export function deleteCachedStatsWhere(predicate: (key: string) => boolean): num
 export function clearStatsCache(): void {
   store.clear();
   inFlight.clear();
+  lastSweepAt = 0;
 }
