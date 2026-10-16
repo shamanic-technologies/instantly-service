@@ -8,11 +8,10 @@
  * step whose address has no ACCEPTED decision for its org is verified here,
  * once per dispatch tick, BEFORE anything is selected (`runDispatch`).
  *
- *  - accepted verdict (valid / catch_all / confirmed unknown): recorded, dispatches
- *    as before. The price it was queued at is kept (never re-priced retroactively).
- *  - refused verdict (invalid / risky / a first unknown, re-asked in 48 h): the
- *    sequence is STOPPED and its queued holds refunded, same two pipes as
- *    `booked-stops-cold.ts`.
+ *  - accepted verdict (valid / catch_all / unknown): recorded, dispatches as before.
+ *    The price it was queued at is kept (never re-priced retroactively).
+ *  - refused verdict (invalid / risky): the sequence is STOPPED and its queued
+ *    holds refunded, same two pipes as `booked-stops-cold.ts`.
  *  - no verdict (verifier down, org cannot pay): recorded, the sequence is HELD
  *    (nothing sent) and asked again next tick.
  *

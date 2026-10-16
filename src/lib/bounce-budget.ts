@@ -68,10 +68,9 @@
 
 /**
  * An address that accepted a real email of ours within this many days (and never
- * bounced one) is proven deliverable: its first email spends no budget, and the
- * send door sends it on an `unknown`. Older proof is no proof: B2B addresses
- * decay 2-3 % a month and the market re-verifies on a 90-day cadence (LeadMagic,
- * ZeroBounce). 2026-10-14: four follow-ups "proven" by an April send bounced
+ * bounced one) is proven deliverable: its first email spends no budget. Older
+ * proof is no proof: B2B addresses decay 2-3 % a month and the market
+ * re-verifies on a 90-day cadence (LeadMagic, ZeroBounce). 2026-10-14: four follow-ups "proven" by an April send bounced
  * (CATCHALL-BOUNCE-1016).
  */
 export const PROOF_FRESH_DAYS = 90;

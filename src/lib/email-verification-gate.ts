@@ -13,33 +13,8 @@
  *  - an address is verified before mail leaves for it. apollo-service reuses a
  *    decisive verdict under 30 days old for free; otherwise it verifies now and
  *    bills the org on a child run of the run that sends (the campaign's run).
- *  - `valid`, `catch_all` are SENT (owner 2026-10-14: the email price follows the
- *    verdict, valid ×1, catch_all ×2, unknown ×3).
- *  - `unknown` is NOT sent on a first answer (CATCHALL-BOUNCE-1016): the verifier
- *    could not tell, so we ask again after `UNKNOWN_RECHECK_HOURS` (apollo never
- *    reuses an `unknown`, a re-ask is a fresh check, and BounceVerify does not
- *    bill it). It is sent (priced ×3, rationed by the domain's bounce budget at
- *    dispatch) only when it is CONFIRMED: an earlier `unknown` for the address at
- *    least `UNKNOWN_CONFIRM_MIN_HOURS` old (the retry answered the same), or the
- *    address accepted a real email of ours in the last `PROOF_FRESH_DAYS` and
- *    never bounced one.
- *
- *    Why, market consensus (cited in the PR):
- *      - ZeroBounce (status codes doc): an `unknown` is an address it could not
- *        validate (anti-spam gateway, server offline); "in most cases 80 % of
- *        unknowns are invalid/bad"; re-validate them, do not mail on them.
- *      - LeadMagic ("Catch-all vs risky vs unknown", "Unknown email status"):
- *        cold outbound cannot take a maybe; exclude unknowns from sends, retry
- *        after 24-48 h, and only then treat a persistent unknown like a
- *        catch-all (small, measured share).
- *      - Security gateways (Mimecast, Proofpoint, Barracuda) answer every probe
- *        the same way, so their mailboxes come back `unknown`; the gateway then
- *        judges the real email on the SENDER's reputation and content.
- *    Ours, to illustrate: 2026-10-14 four follow-ups to unknown Forbes /
- *    TechCrunch addresses from one mailbox were refused within six minutes by
- *    Mimecast ("554 Email rejected due to security policies"); fleet first
- *    emails 2026-09-16..10-16 by verdict at send: valid 87 / 3,975 bounced
- *    (2.2 %), catch_all 32 / 298 (10.7 %), unknown 7 / 19 (36.8 %).
+ *  - `valid`, `catch_all`, `unknown` are SENT (owner 2026-10-14: the email price
+ *    follows the verdict, valid ×1, catch_all ×2, unknown ×3).
  *  - `invalid` and `risky` (a spam trap) are NEVER sent.
  *  - no verdict (verifier down, empty answer, the org cannot pay for it) is never
  *    sent either: there is nothing to read as "fine".
@@ -66,7 +41,6 @@ import {
   type VerificationIdentity,
 } from "./apollo-client";
 import { normalizeLeadEmail } from "./lead-email";
-import { PROOF_FRESH_DAYS } from "./bounce-budget";
 import type { FundingRefusalCause } from "./funding-refusal";
 
 /** The 409 `code` the send route answers, and the status read states. */
@@ -85,18 +59,6 @@ export const SENDABLE_VERDICTS: ReadonlySet<string> = new Set<EmailVerdict>([
  */
 export const VERDICT_REFUSAL_DAYS = 30;
 
-/**
- * An `unknown` is re-asked after this many hours (LeadMagic: retry after 24-48 h).
- * It is the `until` of the refusal, so lead-service parks the person until then.
- */
-export const UNKNOWN_RECHECK_HOURS = 48;
-
-/** An earlier `unknown` at least this old confirms a new one (a real retry, not the same call). */
-export const UNKNOWN_CONFIRM_MIN_HOURS = 24;
-
-/** Only an earlier unknown this recent counts as the retry's first answer. */
-export const UNKNOWN_CONFIRM_MAX_DAYS = 30;
-
 /** Label stored by apollo-service on its bronze row (`verify:<source>`). */
 export const VERIFY_SOURCE = "instantly-send-gate";
 
@@ -106,7 +68,6 @@ export type GateReason =
   | "verdict_valid"
   | "verdict_catch_all"
   | "verdict_unknown"
-  | "verdict_unknown_recheck"
   | "verdict_invalid"
   | "verdict_risky"
   | "verdict_unrecognised"
@@ -129,22 +90,12 @@ export interface GateDecision {
   fundingCause?: FundingRefusalCause | null;
 }
 
-/**
- * Pure: what the door does with one verdict. `unknownConfirmed` = the address has
- * an earlier `unknown` at least a day old, or accepted our email recently
- * (`findConfirmedUnknowns`); a first `unknown` is re-asked, never sent.
- */
-export function judgeVerdict(
-  verdict: string,
-  unknownConfirmed = false,
-): { accepted: boolean; reason: GateReason } {
+/** Pure: what the door does with one verdict. */
+export function judgeVerdict(verdict: string): { accepted: boolean; reason: GateReason } {
   switch (verdict) {
-    case "unknown":
-      return unknownConfirmed
-        ? { accepted: true, reason: "verdict_unknown" }
-        : { accepted: false, reason: "verdict_unknown_recheck" };
     case "valid":
     case "catch_all":
+    case "unknown":
     case "invalid":
     case "risky":
       return { accepted: SENDABLE_VERDICTS.has(verdict), reason: `verdict_${verdict}` as GateReason };
@@ -155,19 +106,15 @@ export function judgeVerdict(
 }
 
 /** Pure: when a refusal on this decision lapses (null = no lapse stated). */
-export function refusalUntil(decision: Pick<GateDecision, "verifiedAt" | "reason">): Date | null {
+export function refusalUntil(decision: Pick<GateDecision, "verifiedAt">): Date | null {
   if (!decision.verifiedAt) return null;
   const at = new Date(decision.verifiedAt);
   if (Number.isNaN(at.getTime())) return null;
-  const ms =
-    decision.reason === "verdict_unknown_recheck"
-      ? UNKNOWN_RECHECK_HOURS * 60 * 60 * 1000
-      : VERDICT_REFUSAL_DAYS * 24 * 60 * 60 * 1000;
-  return new Date(at.getTime() + ms);
+  return new Date(at.getTime() + VERDICT_REFUSAL_DAYS * 24 * 60 * 60 * 1000);
 }
 
-function decisionFromVerification(v: EmailVerification, unknownConfirmed: boolean): GateDecision {
-  const { accepted, reason } = judgeVerdict(v.verdict, unknownConfirmed);
+function decisionFromVerification(v: EmailVerification): GateDecision {
+  const { accepted, reason } = judgeVerdict(v.verdict);
   return {
     email: normalizeLeadEmail(v.email),
     verdict: v.verdict,
@@ -238,15 +185,13 @@ export async function gateAddresses(
     try {
       const results = await verifyEmailAddresses(chunk, identity, VERIFY_SOURCE);
       const byEmail = new Map(results.map((r) => [normalizeLeadEmail(r.email), r]));
-      const unknowns = chunk.filter((email) => byEmail.get(email)?.verdict === "unknown");
-      const confirmed = await findConfirmedUnknowns(unknowns);
       decisions = chunk.map((email) => {
         const found = byEmail.get(email);
         if (!found) {
           // apollo answers one result per distinct address; a missing one is no verdict.
           return failureDecision(email, new EmailVerifierError("no result for this address", 200, false));
         }
-        return decisionFromVerification(found, confirmed.has(email));
+        return decisionFromVerification(found);
       });
     } catch (error: unknown) {
       if (!(error instanceof EmailVerifierError)) throw error;
@@ -258,48 +203,6 @@ export async function gateAddresses(
     await recordDecisions(identity.orgId, decisions, context, identity.runId);
     for (const d of decisions) out.set(d.email, d);
   }
-  return out;
-}
-
-/**
- * Of these addresses (each just answered `unknown`), the ones whose unknown is
- * CONFIRMED and may be sent. Never an address that ever bounced one of our
- * emails (2026-10-14: the Forbes / TechCrunch unknowns bounced; their retry must
- * not read as confirmation). Otherwise: an earlier `unknown` in our mirror of
- * apollo's verification history between `UNKNOWN_CONFIRM_MIN_HOURS` and
- * `UNKNOWN_CONFIRM_MAX_DAYS` old (the 48 h retry answered the same), or a real
- * email of ours accepted within `PROOF_FRESH_DAYS`. Fail loud: an unreadable
- * history must not read as "confirmed".
- */
-export async function findConfirmedUnknowns(emails: string[]): Promise<Set<string>> {
-  const keys = [...new Set(emails.map(normalizeLeadEmail))].filter((e) => e.length > 0);
-  const out = new Set<string>();
-  if (keys.length === 0) return out;
-  const result = await db.execute(sql`
-    SELECT k.email AS "email"
-    FROM unnest(${sql.param(keys)}::text[]) AS k(email)
-    WHERE NOT EXISTS (
-            SELECT 1 FROM instantly_events e
-            WHERE e.lead_email = k.email AND e.event_type = 'email_bounced'
-              AND e.inferred = false AND e.withdrawn_at IS NULL
-          )
-      AND (
-            EXISTS (
-              SELECT 1 FROM email_verification_history h
-              WHERE h.email = k.email
-                AND h.verdict = 'unknown'
-                AND h.verified_at <= now() - make_interval(hours => ${UNKNOWN_CONFIRM_MIN_HOURS})
-                AND h.verified_at > now() - make_interval(days => ${UNKNOWN_CONFIRM_MAX_DAYS})
-            )
-         OR EXISTS (
-              SELECT 1 FROM instantly_events e
-              WHERE e.lead_email = k.email AND e.event_type = 'email_sent'
-                AND e.inferred = false AND e.withdrawn_at IS NULL
-                AND e."timestamp" > (now() AT TIME ZONE 'UTC') - make_interval(days => ${PROOF_FRESH_DAYS})
-            )
-          )
-  `);
-  for (const row of rowsOf(result)) out.add(String(row.email));
   return out;
 }
 
@@ -345,10 +248,7 @@ export function emailNotVerifiedRefusal(email: string, decision: GateDecision) {
     reason: decision.reason,
     verifiedAt: decision.verifiedAt,
     until: until ? until.toISOString() : null,
-    details:
-      decision.reason === "verdict_unknown_recheck"
-        ? `${email} was not sent: our verifier could not tell whether it exists (unknown); it is checked again after ${until ? until.toISOString() : `${UNKNOWN_RECHECK_HOURS} h`} and sent only if that check is valid, catch_all, or unknown again`
-        : `${email} was not sent: our verifier's verdict is ${decision.verdict} (${decision.reason}); only valid, catch_all and confirmed unknown addresses are ever emailed`,
+    details: `${email} was not sent: our verifier's verdict is ${decision.verdict} (${decision.reason}); only valid, catch_all and unknown addresses are ever emailed`,
   };
 }
 
@@ -377,9 +277,7 @@ export async function findEmailNotVerifiedRefusals(
            v.email AS "email",
            v.accepted AS "accepted",
            v.reason AS "reason",
-           v.verified_at + CASE WHEN v.reason = 'verdict_unknown_recheck'
-                                THEN make_interval(hours => ${UNKNOWN_RECHECK_HOURS})
-                                ELSE make_interval(days => ${VERDICT_REFUSAL_DAYS}) END AS "until"
+           v.verified_at + make_interval(days => ${VERDICT_REFUSAL_DAYS}) AS "until"
     FROM email_send_verifications v
     WHERE v.org_id = ${orgId}
       AND v.email = ANY(${sql.param(keys)}::text[])

@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 
-import { BounceBudget, type WindowCounts } from "../../src/lib/bounce-budget";
+import { BounceBudget, PROOF_FRESH_DAYS, type WindowCounts } from "../../src/lib/bounce-budget";
 import { judgeVerdict } from "../../src/lib/email-verification-gate";
 
 /**
@@ -10,18 +12,17 @@ import { judgeVerdict } from "../../src/lib/email-verification-gate";
  * prospect address in the fixture, no email sent.
  *
  * Every one of the 11 had only an April 2026 send behind it: older than
- * PROOF_FRESH_DAYS, so under the new rule none is "proven" and each first email
- * goes through (1) the send door's verdict rule, then (2) its domain's bounce
- * budget, one selection per dispatch tick with the history known at tick start
- * (no DSN of the tick had landed yet).
+ * PROOF_FRESH_DAYS, so none is "proven" and each first email goes through
+ * (1) the send door's verdict rule (valid, catch_all AND unknown are sent:
+ * owner rule 2026-10-14, unknown priced x3, reaffirmed 2026-10-16), then
+ * (2) its domain's bounce budget, one selection per dispatch tick with the
+ * history known at tick start (no DSN of the tick had landed yet).
  */
 type Verdict = "valid" | "catch_all" | "unknown";
 interface Send {
   who: string;
   verdict: Verdict;
   bounced: boolean;
-  /** An earlier `unknown` >= 24 h old, or a real email of ours accepted < 90 days ago. */
-  unknownConfirmed: boolean;
 }
 interface Tick {
   mailbox: string;
@@ -34,39 +35,54 @@ const TICKS: Tick[] = [
   {
     mailbox: "raquel@agileconsultco.com", // 2026-10-14 14:27 UTC
     history: [28, 4, 334, 8],
-    sends: [{ who: "ionio.gr", verdict: "catch_all", bounced: false, unknownConfirmed: false }],
+    sends: [{ who: "ionio.gr", verdict: "catch_all", bounced: false }],
   },
   {
     mailbox: "tatiana@fuseconnectio.com", // 2026-10-14 16:31 UTC
     history: [14, 0, 281, 4],
     sends: [
-      { who: "forbes.com #1", verdict: "unknown", bounced: true, unknownConfirmed: false },
-      { who: "techcrunch.com", verdict: "unknown", bounced: true, unknownConfirmed: false },
-      { who: "forbes.com #2", verdict: "unknown", bounced: true, unknownConfirmed: false },
-      { who: "superhuman.ai", verdict: "catch_all", bounced: false, unknownConfirmed: false },
-      { who: "forbes.com #3", verdict: "unknown", bounced: true, unknownConfirmed: false },
+      { who: "forbes.com #1", verdict: "unknown", bounced: true },
+      { who: "techcrunch.com", verdict: "unknown", bounced: true },
+      { who: "forbes.com #2", verdict: "unknown", bounced: true },
+      { who: "superhuman.ai", verdict: "catch_all", bounced: false },
+      { who: "forbes.com #3", verdict: "unknown", bounced: true },
     ],
   },
   {
     mailbox: "allie@leansignalio.com", // 2026-10-14 16:31 UTC
     history: [23, 1, 436, 8],
     sends: [
-      { who: "indiehackers.com", verdict: "catch_all", bounced: false, unknownConfirmed: false },
-      { who: "ballmüllersolutions.de", verdict: "valid", bounced: false, unknownConfirmed: false },
+      { who: "indiehackers.com", verdict: "catch_all", bounced: false },
+      { who: "ballmüllersolutions.de", verdict: "valid", bounced: false },
     ],
   },
   {
     mailbox: "magnolia@saviolabsco.com", // 2026-10-15 19:10 UTC
     history: [6, 0, 310, 4],
     sends: [
-      { who: "tracematters.com", verdict: "catch_all", bounced: false, unknownConfirmed: false },
-      { who: "infogenetica.com", verdict: "catch_all", bounced: false, unknownConfirmed: false },
-      { who: "forbes.com #4", verdict: "unknown", bounced: false, unknownConfirmed: false },
+      { who: "tracematters.com", verdict: "catch_all", bounced: false },
+      { who: "infogenetica.com", verdict: "catch_all", bounced: false },
+      { who: "forbes.com #4", verdict: "unknown", bounced: false },
     ],
   },
 ];
 
-type Outcome = "sent" | "held (bounce budget)" | "refused (unknown, re-asked in 48 h)";
+/** Under the bounce budget (proof older than 90 days = none), the 4 Mimecast bounces are HELD, not refused. */
+const EXPECTED: Record<string, string> = {
+  "ionio.gr": "held (bounce budget)",
+  "forbes.com #1": "held (bounce budget)",
+  "techcrunch.com": "held (bounce budget)",
+  "forbes.com #2": "held (bounce budget)",
+  "superhuman.ai": "sent",
+  "forbes.com #3": "held (bounce budget)",
+  "indiehackers.com": "held (bounce budget)",
+  "ballmüllersolutions.de": "sent",
+  "tracematters.com": "sent",
+  "infogenetica.com": "held (bounce budget)",
+  "forbes.com #4": "held (bounce budget)",
+};
+
+type Outcome = "sent" | "held (bounce budget)" | "refused at the door";
 
 function replay(): Map<string, { outcome: Outcome; bounced: boolean }> {
   const out = new Map<string, { outcome: Outcome; bounced: boolean }>();
@@ -79,8 +95,8 @@ function replay(): Map<string, { outcome: Outcome; bounced: boolean }> {
     ]);
     const budget = new BounceBudget(new Map([[domain, windows]]));
     for (const send of tick.sends) {
-      if (!judgeVerdict(send.verdict, send.unknownConfirmed).accepted) {
-        out.set(send.who, { outcome: "refused (unknown, re-asked in 48 h)", bounced: send.bounced });
+      if (!judgeVerdict(send.verdict).accepted) {
+        out.set(send.who, { outcome: "refused at the door", bounced: send.bounced });
         continue;
       }
       if (budget.refusal(tick.mailbox, send.verdict) !== null) {
@@ -94,34 +110,23 @@ function replay(): Map<string, { outcome: Outcome; bounced: boolean }> {
   return out;
 }
 
-describe("CATCHALL-BOUNCE-1016 — the 11 follow-ups of 2026-10-14/15 under the new rule", () => {
+describe("CATCHALL-BOUNCE-1016 — the 11 follow-ups of 2026-10-14/15, unknown sent at x3 (owner 2026-10-14, reaffirmed 2026-10-16)", () => {
   const result = replay();
 
-  it("every unknown is refused at the door and re-asked: the 4 bounces never leave", () => {
-    for (const who of ["forbes.com #1", "techcrunch.com", "forbes.com #2", "forbes.com #3", "forbes.com #4"]) {
-      expect(result.get(who)?.outcome).toBe("refused (unknown, re-asked in 48 h)");
-    }
+  it("an unknown verdict is accepted at the door (priced -unknown at send), never refused there", () => {
+    expect(judgeVerdict("unknown")).toEqual({ accepted: true, reason: "verdict_unknown" });
+    for (const r of result.values()) expect(r.outcome).not.toBe("refused at the door");
+  });
+
+  it("unknowns and catch-alls are rationed by their domain's bounce budget, the valid one goes out", () => {
+    expect(Object.fromEntries([...result].map(([k, v]) => [k, v.outcome]))).toEqual(EXPECTED);
     const sentBounces = [...result.values()].filter((r) => r.outcome === "sent" && r.bounced);
     expect(sentBounces).toHaveLength(0);
   });
 
-  it("catch-alls are rationed by their domain's budget, the valid one goes out", () => {
-    expect(Object.fromEntries([...result].map(([k, v]) => [k, v.outcome]))).toEqual({
-      "ionio.gr": "held (bounce budget)",
-      "forbes.com #1": "refused (unknown, re-asked in 48 h)",
-      "techcrunch.com": "refused (unknown, re-asked in 48 h)",
-      "forbes.com #2": "refused (unknown, re-asked in 48 h)",
-      "superhuman.ai": "sent",
-      "forbes.com #3": "refused (unknown, re-asked in 48 h)",
-      "indiehackers.com": "held (bounce budget)",
-      "ballmüllersolutions.de": "sent",
-      "tracematters.com": "sent",
-      "infogenetica.com": "held (bounce budget)",
-      "forbes.com #4": "refused (unknown, re-asked in 48 h)",
-    });
-  });
-
-  it("a CONFIRMED unknown (retry answered the same, or fresh proof) is sendable, under the budget", () => {
-    expect(judgeVerdict("unknown", true)).toEqual({ accepted: true, reason: "verdict_unknown" });
+  it("proof expires: only an email of ours accepted within 90 days exempts an address from the budget", () => {
+    expect(PROOF_FRESH_DAYS).toBe(90);
+    const src = readFileSync(join(__dirname, "../../src/lib/self-send/dispatch-worker.ts"), "utf8");
+    expect(src).toContain("make_interval(days => ${PROOF_FRESH_DAYS})");
   });
 });
