@@ -622,6 +622,7 @@ describe("selectDueSteps — a throttled run is distinguishable from an idle one
       skippedSilenced: 0,
       rehomed: 0,
       heldBounceBudget: 0,
+      heldBlocklisted: 0,
     });
   });
 });

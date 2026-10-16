@@ -755,6 +755,8 @@ export const imapMessagesRaw = pgTable(
     ),
     index("imap_messages_raw_campaign_idx").on(table.instantlyCampaignId),
     index("imap_messages_raw_polled_at_idx").on(table.polledAt),
+    // DOMAIN-BLOCKLIST-1016 staff read: bounces by day (migration 0080, hand-written).
+    index("imap_messages_raw_bounce_received_idx").on(table.polledAt).where(sql`kind = 'bounce'`),
   ],
 );
 
@@ -1890,5 +1892,68 @@ export const outcomeTriggerFires = pgTable(
       .on(table.nextAttemptAt)
       .where(sql`status = 'pending'`),
     index("outcome_trigger_fires_instantly_campaign_idx").on(table.instantlyCampaignId),
+  ],
+);
+
+// ─── Sending-domain blocklists (DOMAIN-BLOCKLIST-1016, migration 0080) ──────
+// The CURRENT answer of each public domain blocklist for each sending domain
+// (lib/domain-blocklist-sync.ts). A row moves only on a FRESH honest answer: a
+// list that refused our query this run leaves the row as it was
+// (`last_outcome = 'unanswered'`), so a domain is never marked clean unchecked.
+export const domainBlocklistStatus = pgTable(
+  "domain_blocklist_status",
+  {
+    domain: text("domain").notNull(),
+    // Our list key (`surbl`, `spamhaus_dbl`, `uribl`), see BLOCKLISTS.
+    list: text("list").notNull(),
+    listed: boolean("listed").notNull(),
+    // The A record the list answered (e.g. 127.0.0.64), null when clean.
+    answer: text("answer"),
+    // The list's own sub-list names decoded from the answer (e.g. ABUSE).
+    labels: text("labels").array().default(sql`'{}'::text[]`).notNull(),
+    // When we first saw the current listing (null when clean).
+    listedSince: timestamp("listed_since", { withTimezone: true }),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }).notNull(),
+    // Last run where the list answered honestly (null = never: state unknown).
+    lastAnsweredAt: timestamp("last_answered_at", { withTimezone: true }),
+    // First run where the list answered honestly: when monitoring of this pair began.
+    firstAnsweredAt: timestamp("first_answered_at", { withTimezone: true }),
+    // 'listed' | 'clean' | 'unanswered'
+    lastOutcome: text("last_outcome").notNull(),
+    lastError: text("last_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ name: "domain_blocklist_status_pk", columns: [table.domain, table.list] })],
+);
+
+// Append-only history of every listing, delisting and removal step. A
+// `listed` event carries its ONE staff alert (`alert_status` pending -> sent),
+// so a listing that persists the next day writes nothing and alerts nobody.
+export const domainBlocklistEvents = pgTable(
+  "domain_blocklist_events",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    domain: text("domain").notNull(),
+    list: text("list").notNull(),
+    // 'listed' | 'delisted' | 'removal_link_issued' | 'removal_requested'
+    eventType: text("event_type").notNull(),
+    answer: text("answer"),
+    labels: text("labels").array().default(sql`'{}'::text[]`).notNull(),
+    // The sending addresses on the domain at the time of the event.
+    mailboxes: text("mailboxes").array().default(sql`'{}'::text[]`).notNull(),
+    detail: jsonb("detail"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).defaultNow().notNull(),
+    // null = no alert for this event type; 'pending' | 'sent'
+    alertStatus: text("alert_status"),
+    alertAttempts: integer("alert_attempts").default(0).notNull(),
+    alertLastError: text("alert_last_error"),
+    alertedAt: timestamp("alerted_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("domain_blocklist_events_occurred_idx").on(table.occurredAt),
+    index("domain_blocklist_events_domain_idx").on(table.domain, table.list, table.occurredAt),
+    index("domain_blocklist_events_alert_pending_idx")
+      .on(table.occurredAt)
+      .where(sql`alert_status = 'pending'`),
   ],
 );

@@ -103,6 +103,8 @@ export interface DispatchSummary {
    * when one has room (counted in `rehomed`), else sent once the domain recovers.
    */
   heldBounceBudget: number;
+  /** First emails kept off a mailbox whose domain is blocklisted (rehomed or waiting). */
+  heldBlocklisted: number;
   sent: number;
   /** Permanent, about the RECIPIENT — promoted as a bounce. */
   bounced: number;
@@ -410,6 +412,7 @@ async function loadSendingAccounts(
       a.last_name                               AS "lastName",
       a.daily_limit                             AS "dailyLimit",
       a.lifecycle_status                        AS "lifecycleStatus",
+      a.lifecycle_reason                        AS "lifecycleReason",
       COALESCE(st.n, 0)                         AS "sentToday",
       -- Warmup mail comes out of the SAME Gmail per-user quota as outreach, so
       -- it has to be counted here or the two jobs each spend the full cap and
@@ -488,6 +491,8 @@ async function loadSendingAccounts(
       // Same gate as the assignment of a NEW sequence: only a production mailbox
       // may take over a first email another mailbox cannot send.
       adoptsFirstEmails: row.lifecycleStatus === "in_production",
+      // Its domain is on a blocklist: follow-ups only (DOMAIN-BLOCKLIST-1016).
+      sendsFirstEmails: row.lifecycleReason !== "domain_blocklisted",
     });
 
     // The real account, so the From display name and the signature agree — the
@@ -700,6 +705,7 @@ function emptySummary(): DispatchSummary {
     skippedSilenced: 0,
     rehomed: 0,
     heldBounceBudget: 0,
+    heldBlocklisted: 0,
     sent: 0,
     bounced: 0,
     senderBlocked: 0,
@@ -861,6 +867,7 @@ async function runDispatchExclusive(
       skippedSilenced: current.selection.skippedSilenced,
       rehomed: current.selection.rehomed,
       heldBounceBudget: current.selection.heldBounceBudget,
+      heldBlocklisted: current.selection.heldBlocklisted,
     };
     console.log(
       `[instantly-service] self-send-dispatch: done ${JSON.stringify(idle)}`,
@@ -931,6 +938,7 @@ async function runDispatchExclusive(
       skippedSilenced: selection.skippedSilenced,
       rehomed: selection.rehomed,
       heldBounceBudget: selection.heldBounceBudget,
+      heldBlocklisted: selection.heldBlocklisted,
       polled,
     };
 
@@ -1193,6 +1201,7 @@ export async function dispatchAnswerNow(
       skippedSilenced: selection.skippedSilenced,
       rehomed: selection.rehomed,
       heldBounceBudget: selection.heldBounceBudget,
+      heldBlocklisted: selection.heldBlocklisted,
     };
     const credentials = new Map<string, MailboxCredential>();
     for (const step of selection.selected) {
