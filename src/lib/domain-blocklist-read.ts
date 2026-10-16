@@ -53,6 +53,12 @@ export function windowDays(asOf: Date, days: number): string[] {
   return Array.from({ length: days }, (_, i) => utcDay(new Date(end - (days - 1 - i) * MS_DAY)));
 }
 
+/**
+ * A delivery-failure notice whose words cite a blocklist (Postgres `~*`). One
+ * home: the blocklist read and the source-yield read (SOURCE-YIELD-1016) both use it.
+ */
+export const BLOCKLIST_CITATION_PATTERN = "(surbl|spamhaus|uribl|block ?list|black ?list|dnsbl|\\mrbl\\M)";
+
 /** Bounce classes a DSN can cite. `other_list` = names a blocklist we do not track. */
 export const CITED_LISTS = ["surbl", "spamhaus", "uribl", "other_list"] as const;
 export type CitedList = (typeof CITED_LISTS)[number];
@@ -213,7 +219,7 @@ export async function loadDomainBlocklistRead(days: number, asOf: Date = new Dat
       WHERE kind = 'bounce'
         AND polled_at >= ${since}::timestamptz - interval '2 days'
         AND COALESCE(received_at, polled_at) >= ${since}::timestamptz
-        AND payload->>'textSnippet' ~* '(surbl|spamhaus|uribl|block ?list|black ?list|dnsbl|\\mrbl\\M)'
+        AND payload->>'textSnippet' ~* ${BLOCKLIST_CITATION_PATTERN}
       GROUP BY 1, 2
     `),
   ]);

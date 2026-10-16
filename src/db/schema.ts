@@ -1957,3 +1957,30 @@ export const domainBlocklistEvents = pgTable(
       .where(sql`alert_status = 'pending'`),
   ],
 );
+
+// Bronze: what lead-service answered about where a person we emailed was FOUND
+// (SOURCE-YIELD-1016; lead-service `POST /internal/brands/:brandId/lead-provenance/by-email`).
+// One row per (org, brand, address) per DISTINCT answer: a re-fetch that reads
+// the same answer only moves `confirmed_at`; a changed answer (a later source
+// found the person too) is a new row, so the history of an answer is kept.
+// The current answer = latest `fetched_at`. A 502 / failed call writes nothing
+// (unknown is never stored as "no source"). Migration 0081, hand-written.
+export const leadProvenanceRaw = pgTable(
+  "lead_provenance_raw",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id").notNull(),
+    brandId: text("brand_id").notNull(),
+    // Lowercased, trimmed: the join key on our sends.
+    email: text("email").notNull(),
+    // lead-service's sorted, deduped tags; `{}` = it named no source.
+    tags: text("tags").array().notNull(),
+    // The whole PersonProvenance entry as served.
+    payload: jsonb("payload").notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).defaultNow().notNull(),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("lead_provenance_raw_key_idx").on(table.orgId, table.brandId, table.email, table.fetchedAt),
+  ],
+);
