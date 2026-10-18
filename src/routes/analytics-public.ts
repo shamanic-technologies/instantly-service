@@ -144,10 +144,10 @@ router.get("/stats", async (req: Request, res: Response) => {
   try {
     const payload = await getOrSetCachedStats(cacheKey, async () => {
       if (groupBy) {
-        const groups = await queryGroupedStats(whereClause, groupBy, timezone);
+        const groups = await queryGroupedStats(whereClause, "fleet", groupBy, timezone);
         return { groups };
       }
-      return computeStatsPayload(whereClause);
+      return computeStatsPayload(whereClause, "fleet");
     }, STATS_CACHE_TTL_MS, { refreshAfterMs: STATS_REFRESH_AFTER_MS });
     return res.json(payload);
   } catch (error: any) {
