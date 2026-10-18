@@ -269,3 +269,67 @@ export async function listRunEvents(runId: string, identity: IdentityContext): P
     throw error;
   }
 }
+
+/** One cost item declared late as real spend that was never charged (`/internal/incurred-costs/*`). */
+export interface IncurredCostItemRequest {
+  runId: string;
+  costName: string;
+  quantity: number;
+  /** When the spend really happened (ISO). Becomes the cost row's date. */
+  incurredAt: string;
+  /** Per-run dedup key: a re-sent item writes nothing. */
+  idempotencyKey: string;
+}
+
+export type IncurredCostOutcome = "to_record" | "recorded" | "already_recorded" | "invalid";
+
+export interface IncurredCostsResult {
+  itemCount: number;
+  toRecordCount: number;
+  alreadyRecordedCount: number;
+  invalidCount: number;
+  /** Gross, of the items to record only. Decimal string. */
+  totalCostInUsdCents: string;
+  netTotalCostInUsdCents: string;
+  alreadyRecordedTotalCostInUsdCents: string;
+  unitPrices: Record<string, string>;
+  /** Apply only. */
+  recordedCount?: number;
+  items: Array<{
+    runId: string;
+    idempotencyKey: string;
+    costName: string;
+    outcome: IncurredCostOutcome;
+    costId: string | null;
+    status: string | null;
+    incurredAt: string | null;
+    totalCostInUsdCents: string | null;
+    netCostInUsdCents: string | null;
+    error: string | null;
+  }>;
+}
+
+/**
+ * Record (or, `mode: "preview"`, price without writing) costs that REALLY
+ * happened and that the platform decided never to charge. runs-service writes
+ * each row born `refunded`: in no charge predicate at any instant, counted by
+ * every incurred read, dated at `incurredAt`. Platform-scoped (service key, no
+ * org headers); at most 500 items per call. Throws on any non-2xx (a 422 on
+ * apply = some item invalid, nothing written).
+ */
+export async function incurredCosts(
+  mode: "preview" | "apply",
+  items: IncurredCostItemRequest[],
+  audit: { reason: string; authorizedBy: string },
+): Promise<IncurredCostsResult> {
+  const response = await fetch(`${RUNS_SERVICE_URL}/internal/incurred-costs/${mode}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": RUNS_SERVICE_API_KEY },
+    body: JSON.stringify(mode === "apply" ? { items, ...audit } : { items }),
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`runs-service POST /internal/incurred-costs/${mode} failed: ${response.status} - ${errorText}`);
+  }
+  return response.json() as Promise<IncurredCostsResult>;
+}
