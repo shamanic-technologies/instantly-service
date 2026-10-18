@@ -122,13 +122,21 @@ export interface EngagementLatencyMetric {
 export interface EngagementLatencyGroup {
   key: string;
   workflowSlugs: string[];
+  /** How many campaign ids scoped this group (0 for a workflow-slug group). The ids are never echoed. */
+  campaignCount: number;
   timeToFirstLinkClick: EngagementLatencyMetric;
   timeToFirstPositiveReply: EngagementLatencyMetric;
 }
 
+/**
+ * One group: EITHER a workflow slug set (fleet per workflow) OR a campaign id set (one campaign, or a
+ * pipe's fleet of campaigns, CAMPAIGN-NEXT-STEPS-1018). `campaign_id` is the caller's campaign
+ * (`instantly_campaigns.campaign_id`), never an Instantly campaign id.
+ */
 export interface EngagementLatencyGroupInput {
   key: string;
   workflowSlugs: string[];
+  campaignIds?: string[];
 }
 
 const ZERO_ENGAGEMENT_LATENCY_METRIC: EngagementLatencyMetric = {
@@ -207,23 +215,32 @@ export async function queryEngagementLatencyGroups(
   const values = groups.flatMap((group) =>
     group.workflowSlugs.map((workflowSlug) => ({ key: group.key, workflowSlug })),
   );
-  if (values.length === 0) {
-    throw new Error("Engagement latency groups require at least one workflow slug");
+  const campaignValues = groups.flatMap((group) =>
+    (group.campaignIds ?? []).map((campaignId) => ({ key: group.key, campaignId })),
+  );
+  if (values.length === 0 && campaignValues.length === 0) {
+    throw new Error("Engagement latency groups require at least one workflow slug or campaign id");
   }
 
-  const groupWorkflowValues = sql.join(
-    values.map((value) => sql`(${value.key}, ${value.workflowSlug})`),
-    sql`, `,
-  );
+  // A VALUES list cannot be empty: a side with no member reads one row that matches nothing.
+  const groupWorkflowValues = values.length > 0
+    ? sql.join(values.map((value) => sql`(${value.key}, ${value.workflowSlug})`), sql`, `)
+    : sql`(NULL::text, NULL::text)`;
+  const groupCampaignValues = campaignValues.length > 0
+    ? sql.join(campaignValues.map((value) => sql`(${value.key}, ${value.campaignId})`), sql`, `)
+    : sql`(NULL::text, NULL::text)`;
 
   const result = await db.execute(sql`
     WITH group_workflows(group_key, workflow_slug) AS (
       VALUES ${groupWorkflowValues}
     ),
+    group_campaigns(group_key, campaign_id) AS (
+      VALUES ${groupCampaignValues}
+    ),
     group_keys AS (
-      SELECT group_key
-      FROM group_workflows
-      GROUP BY group_key
+      SELECT group_key FROM group_workflows WHERE group_key IS NOT NULL
+      UNION
+      SELECT group_key FROM group_campaigns WHERE group_key IS NOT NULL
     ),
     events_in_group AS (
       SELECT
@@ -235,6 +252,18 @@ export async function queryEngagementLatencyGroups(
       FROM instantly_events e
       JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
       JOIN group_workflows gw ON gw.workflow_slug = c.workflow_slug
+      WHERE ${internalExclusionClause("fleet")}
+        AND e.lead_email IS NOT NULL
+      UNION ALL
+      SELECT
+        gc.group_key,
+        e.lead_email,
+        e.event_type,
+        e.timestamp,
+        e.inferred
+      FROM instantly_events e
+      JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
+      JOIN group_campaigns gc ON gc.campaign_id = c.campaign_id
       WHERE ${internalExclusionClause("fleet")}
         AND e.lead_email IS NOT NULL
     ),
@@ -308,6 +337,7 @@ export async function queryEngagementLatencyGroups(
       return {
         key: group.key,
         workflowSlugs: group.workflowSlugs,
+        campaignCount: new Set(group.campaignIds ?? []).size,
         timeToFirstLinkClick: { ...ZERO_ENGAGEMENT_LATENCY_METRIC },
         timeToFirstPositiveReply: { ...ZERO_ENGAGEMENT_LATENCY_METRIC },
       };
@@ -316,6 +346,7 @@ export async function queryEngagementLatencyGroups(
     return {
       key: group.key,
       workflowSlugs: group.workflowSlugs,
+      campaignCount: new Set(group.campaignIds ?? []).size,
       timeToFirstLinkClick: buildLatencyMetric(
         row,
         "clickSampleSize",

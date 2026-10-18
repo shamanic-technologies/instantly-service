@@ -912,9 +912,22 @@ export const EngagementLatencyGroupedRequestSchema = z
   .object({
     groups: z.record(
       z.string(),
-      z.object({
-        workflowSlugs: z.array(z.string().trim().min(1)).min(1).describe("Workflow slugs included in this public-safe group."),
-      }),
+      z
+        .object({
+          workflowSlugs: z.array(z.string().trim().min(1)).min(1).optional().describe("Workflow slugs included in this public-safe group (fleet per workflow)."),
+          campaignIds: z
+            .array(z.string().trim().min(1))
+            .min(1)
+            .max(5000)
+            .optional()
+            .describe(
+              "Caller campaign ids (`instantly_campaigns.campaign_id`) included in this group, e.g. one campaign's units, or every campaign of one pipe across the fleet. " +
+                "Exclusive with `workflowSlugs`. The ids are never echoed (the entry serves `campaignCount`).",
+            ),
+        })
+        .refine((g) => (g.workflowSlugs ? 1 : 0) + (g.campaignIds ? 1 : 0) === 1, {
+          message: "A group takes exactly one of workflowSlugs or campaignIds",
+        }),
     ),
   })
   .openapi("EngagementLatencyGroupedRequest");
@@ -924,7 +937,8 @@ export type EngagementLatencyGroupedRequest = z.infer<typeof EngagementLatencyGr
 const EngagementLatencyGroupedEntrySchema = z
   .object({
     key: z.string().describe("Caller-owned public group key, for example a workflow dynasty slug."),
-    workflowSlugs: z.array(z.string()),
+    workflowSlugs: z.array(z.string()).describe("The group's workflow slugs; empty for a campaign id group."),
+    campaignCount: z.number().int().describe("How many distinct campaign ids scoped the group; 0 for a workflow slug group."),
     timeToFirstLinkClick: EngagementLatencyMetricSchema,
     timeToFirstPositiveReply: EngagementLatencyMetricSchema,
   })
@@ -1022,10 +1036,11 @@ registry.registerPath({
 registry.registerPath({
   method: "post",
   path: "/public/stats/engagement-latency/grouped",
-  summary: "Get public-safe engagement latency for workflow slug groups",
+  summary: "Get public-safe engagement latency for workflow slug or campaign id groups",
   description:
-    "Computes aggregate elapsed time from each recipient's first real send to first link click and first positive reply for caller-owned workflow slug groups. " +
-    "Use group keys such as workflow dynasty slugs when the consumer owns dynasty metadata. Returns no per-recipient rows or campaign internals.",
+    "Computes aggregate elapsed time from each recipient's first real send to first link click and first positive reply for caller-owned groups. " +
+    "A group is EITHER a workflow slug set OR a campaign id set (one campaign's units, or every campaign of one pipe across the fleet: the caller owns which campaigns form a pipe). " +
+    "Since inception, no time window. Use group keys such as workflow dynasty slugs when the consumer owns dynasty metadata. Returns no per-recipient rows or campaign internals.",
   request: {
     body: {
       content: { "application/json": { schema: EngagementLatencyGroupedRequestSchema } },
@@ -2116,6 +2131,68 @@ registry.registerPath({
       description: "The schedule could not be read",
       content: { "application/json": { schema: ErrorSchema } },
     },
+  },
+});
+
+export const CampaignSendQueueQuerySchema = z
+  .object({
+    campaignIds: z
+      .string()
+      .transform((raw) => Array.from(new Set(raw.split(",").map((id) => id.trim()).filter(Boolean))))
+      .pipe(z.array(z.string()).min(1).max(500))
+      .describe("Comma-separated caller campaign ids (`instantly_campaigns.campaign_id`), 1 to 500."),
+  })
+  .openapi("CampaignSendQueueQuery");
+
+const SendQueueTimezoneSchema = z
+  .object({
+    timezone: z.string().describe("IANA timezone the leads are emailed in."),
+    timezoneIsDefault: z.boolean().describe("True when no usable zone is stored for these leads: the fleet default the send runs in."),
+    leadsAwaitingFirstEmail: z.number().int(),
+    windowOpensAt: z.string().describe("ISO instant the sending window next opens in this zone (at or after `asOf`; `asOf` itself while it is open)."),
+  })
+  .openapi("SendQueueTimezone");
+
+export const CampaignSendQueueResponseSchema = z
+  .object({
+    campaignIds: z.array(z.string()),
+    asOf: z.string().describe("ISO instant the snapshot was read."),
+    leadsAwaitingFirstEmail: z.number().int().describe("Leads whose first email is written and queued, not sent yet (live sequence, delivery status `contacted`, >= 1 provisioned step)."),
+    leadsWithFollowUpQueued: z.number().int().describe("Leads already emailed whose next step is queued."),
+    queuedEmails: z.number().int().describe("Every queued email, all steps (the grain of `emailStats.queued`)."),
+    firstEmailsFrom: z
+      .string()
+      .nullable()
+      .describe("Earliest ISO instant the sending window opens for a lead awaiting its first email: the earliest such an email MAY leave, never a promise (mailbox capacity can push it later). Null when none awaits."),
+    sendWindow: z
+      .object({
+        weekdays: z.array(z.string()).describe("Local weekdays we send on."),
+        startHour: z.number().int().describe("Local hour the window opens."),
+        endHour: z.number().int().describe("Local hour the window closes."),
+        timezoneRule: z.literal("lead_local").describe("Hours are local to each lead (its own timezone)."),
+      })
+      .describe("The send path's own window constants."),
+    timezones: z.array(SendQueueTimezoneSchema).describe("Leads awaiting their first email per timezone, earliest window first."),
+  })
+  .openapi("CampaignSendQueueResponse");
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/send-queue",
+  summary: "What is queued to send for some campaigns, and when the window next opens",
+  description:
+    "A SNAPSHOT of the send queue for the given campaigns of the caller's org: leads awaiting their first email, leads with a follow-up step queued, queued emails, and when the sending window next opens for the leads awaiting their first email (each lead's own local business hours, the send path's own constants and `nextLocalSendInstant`).\n\n" +
+    "A queued sequence = a live per-lead campaign (`status='active'`, delivery `contacted|sent`) holding >= 1 provisioned step. Another org's campaign reads as nothing queued.\n\n" +
+    "**Fail loud:** a read failure is a 500, never zeros.\n\n**Cost:** none.",
+  request: {
+    headers: TrackingHeadersSchema,
+    query: CampaignSendQueueQuerySchema,
+  },
+  responses: {
+    200: { description: "The send queue snapshot", content: { "application/json": { schema: CampaignSendQueueResponseSchema } } },
+    400: { description: "Invalid query", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "The queue could not be read", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
