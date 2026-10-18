@@ -11245,6 +11245,33 @@
         }
       }
     },
+    "/internal/incurred-send-costs": {
+      "post": {
+        "summary": "Declare what the unbilled 2026-08-24 to 2026-10-02 sends really cost, never charged",
+        "description": "Every queued step of 2026-08-24 to 2026-10-02 carried no cost (the owner absorbed the sending infrastructure). For each such step whose email really left, declares on the step's own run the two email costs every send of that era carried (instantly-account-email-sent + instantly-domain-email-sent), through runs-service's incurred-costs capability: real spend, born never charged (no balance, usage total, bill, pacing or Stripe moves), dated at the email's real send instant, counted by every incurred read. Body `{dryRun (default true), limit}`. Dry run prices every item and writes nothing (200 + summary: sends, items to record / already recorded / invalid, total incurred USD, per org). `dryRun:false` answers 202 and applies in the background (log `incurred-send-costs: done`). Idempotent per item. Manual only.",
+        "responses": {
+          "200": {
+            "description": "Dry-run summary"
+          },
+          "202": {
+            "description": "Apply accepted, running in the background"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "The dry run failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/orgs/manual-qualifications": {
       "post": {
         "summary": "Set a manual reply qualification for a (campaign, lead) pair",
