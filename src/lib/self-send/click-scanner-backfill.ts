@@ -9,11 +9,9 @@
  * rebuildable, so the scanner-shaped ones are removed and gold is rebuilt from
  * what remains.
  *
- * ⚠️ SCOPED TO `source = 'self_send'` CLICKS. An Instantly-webhook click is
- * Instantly's own observation through its own tracking domain, and that era is
- * clean (851 of 924 clicked steps sat on a mail carrying a tracked link, no
- * clicker ever unsubscribed). Nothing here reads or writes a webhook-sourced
- * event.
+ * ⚠️ SCOPED TO `source = 'self_send'` CLICKS. An Instantly-recorded click
+ * carries no user-agent, method or address, so it is judged by the one
+ * fingerprint it can show, a click burst, in `vendor-click-burst.ts`.
  *
  * ⚠️ IT DOES NOT REACTIVATE ANYTHING ITSELF. Resuming the self-send sequences a
  * scanner click stopped is its own, separately dry-run step
@@ -47,8 +45,11 @@ import { refreshLeadStatusCurrent } from "../status-gold";
 import {
   PAIRED_UNSUBSCRIBE_WINDOW_SECONDS,
   classifyClickHit,
+  clickBurstEvidenceSql,
+  datacenterNetworkEvidenceSql,
   ipSharedAcrossCompaniesEvidenceSql,
   manyNetworksEvidenceSql,
+  manyUserAgentsEvidenceSql,
   scannerNetworkEvidenceSql,
 } from "./click-classification";
 
@@ -70,6 +71,9 @@ interface LegacyClickHit {
   sharesScannerNetwork: boolean;
   ipSharedAcrossCompanies: boolean;
   clickedFromManyNetworks: boolean;
+  inClickBurst: boolean;
+  fromDatacenterNetwork: boolean;
+  clickedWithManyUserAgents: boolean;
 }
 
 export interface BrandBreakdown {
@@ -119,7 +123,10 @@ async function loadLegacyClickHits(limit: number): Promise<LegacyClickHit[]> {
       ) AS has_paired_unsubscribe,
       ${scannerNetworkEvidenceSql("h")} AS shares_scanner_network,
       ${ipSharedAcrossCompaniesEvidenceSql("h")} AS ip_shared_across_companies,
-      ${manyNetworksEvidenceSql("h")} AS clicked_from_many_networks
+      ${manyNetworksEvidenceSql("h")} AS clicked_from_many_networks,
+      ${clickBurstEvidenceSql("h")} AS in_click_burst,
+      ${datacenterNetworkEvidenceSql("h")} AS from_datacenter_network,
+      ${manyUserAgentsEvidenceSql("h")} AS clicked_with_many_user_agents
     FROM tracking_hits_raw h
     LEFT JOIN instantly_campaigns c
       ON c.instantly_campaign_id = h.instantly_campaign_id
@@ -141,6 +148,9 @@ async function loadLegacyClickHits(limit: number): Promise<LegacyClickHit[]> {
     sharesScannerNetwork: row.shares_scanner_network === true,
     ipSharedAcrossCompanies: row.ip_shared_across_companies === true,
     clickedFromManyNetworks: row.clicked_from_many_networks === true,
+    inClickBurst: row.in_click_burst === true,
+    fromDatacenterNetwork: row.from_datacenter_network === true,
+    clickedWithManyUserAgents: row.clicked_with_many_user_agents === true,
   }));
 }
 

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const calls: string[] = [];
 const mockBackfill = vi.fn();
 const mockReactivate = vi.fn();
+const mockVendorBurst = vi.fn();
 
 vi.mock("../../src/lib/self-send/click-promotion", () => ({ promotePendingClicks: vi.fn() }));
 vi.mock("../../src/lib/self-send/click-scanner-backfill", () => ({
@@ -10,6 +11,10 @@ vi.mock("../../src/lib/self-send/click-scanner-backfill", () => ({
 }));
 vi.mock("../../src/lib/self-send/reactivate-scanner-paused", () => ({
   reactivateScannerPausedSequences: (...args: unknown[]) => mockReactivate(...args),
+}));
+
+vi.mock("../../src/lib/vendor-click-burst", () => ({
+  retractVendorBurstClicks: (...args: unknown[]) => mockVendorBurst(...args),
 }));
 
 const { runClickRepair, CLICK_REPAIR_INTERVAL_MS } = await import(
@@ -27,14 +32,20 @@ beforeEach(() => {
     calls.push("reactivate");
     return { reactivated: 1 };
   });
+  mockVendorBurst.mockImplementation(async () => {
+    calls.push("vendorBurst");
+    return { burstClicks: 0 };
+  });
 });
 
 describe("click repair loop", () => {
   it("re-judges clicks FIRST, then resumes what a now-scanner click stopped, both for real", async () => {
     await runClickRepair();
-    expect(calls).toEqual(["backfill", "reactivate"]);
+    expect(calls).toEqual(["backfill", "reactivate", "vendorBurst"]);
     expect(mockBackfill).toHaveBeenCalledWith({ dryRun: false });
     expect(mockReactivate).toHaveBeenCalledWith({ dryRun: false });
+    // CLICK-HUMANS-1018: Instantly-recorded clicks are re-judged in the same loop.
+    expect(mockVendorBurst).toHaveBeenCalledWith({ dryRun: false });
   });
 
   it("does not resume anything when the re-judging failed", async () => {

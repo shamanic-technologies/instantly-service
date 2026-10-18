@@ -34,6 +34,10 @@ export const SCANNER_REASONS = {
   scannerNetwork: "scanner_network",
   ipSharedAcrossCompanies: "ip_shared_across_companies",
   manyNetworks: "many_networks",
+  nonBrowserUserAgent: "non_browser_user_agent",
+  clickBurst: "click_burst",
+  datacenterNetwork: "datacenter_network",
+  manyUserAgents: "many_user_agents",
 } as const;
 
 export type ScannerReason = (typeof SCANNER_REASONS)[keyof typeof SCANNER_REASONS];
@@ -104,6 +108,18 @@ export function isUnreducedChromeVersion(userAgent: string): boolean {
   return Number.isFinite(major) && major >= CHROME_UA_REDUCTION_MAJOR && build !== "0";
 }
 
+/**
+ * Every browser that follows a link opens its user-agent with a product token:
+ * `Mozilla/5.0 (…)` for Chrome, Safari, Firefox, Edge and every in-app webview,
+ * `Opera/` for pre-Blink Opera. A string that does not is a program announcing
+ * itself as something else (`DNSClient`, measured 2026-10-03 from an AWS address
+ * on an oral-surgery lead). Not a blocklist: it names what a browser IS, so a new
+ * fetcher with an unseen name is caught the day it appears.
+ */
+export function isNonBrowserUserAgent(userAgent: string): boolean {
+  return !/^(Mozilla|Opera)\//.test(userAgent.trim());
+}
+
 export function isScannerUserAgent(userAgent: string): boolean {
   if (isUnreducedChromeVersion(userAgent)) return true;
   return SCANNER_USER_AGENT_PATTERNS.some((pattern) => pattern.test(userAgent));
@@ -136,6 +152,10 @@ export function classifyImmediateSignals(hit: ClickHitSignals): ClickClassificat
     return { verdict: "scanner", reason: SCANNER_REASONS.missingUserAgent };
   }
 
+  if (isNonBrowserUserAgent(userAgent)) {
+    return { verdict: "scanner", reason: SCANNER_REASONS.nonBrowserUserAgent };
+  }
+
   if (isScannerUserAgent(userAgent)) {
     return { verdict: "scanner", reason: SCANNER_REASONS.scannerUserAgent };
   }
@@ -159,6 +179,12 @@ export interface ClickHitEvidence extends ClickHitSignals {
   ipSharedAcrossCompanies: boolean;
   /** See `manyNetworksEvidenceSql`. */
   clickedFromManyNetworks: boolean;
+  /** See `clickBurstEvidenceSql`. */
+  inClickBurst: boolean;
+  /** See `datacenterNetworkEvidenceSql`. */
+  fromDatacenterNetwork: boolean;
+  /** See `manyUserAgentsEvidenceSql`. */
+  clickedWithManyUserAgents: boolean;
 }
 
 /** The full verdict, once the pairing window has closed. Total — never null. */
@@ -168,6 +194,14 @@ export function classifyClickHit(hit: ClickHitEvidence): ClickClassification {
 
   if (hit.hasPairedUnsubscribeFetch) {
     return { verdict: "scanner", reason: SCANNER_REASONS.pairedUnsubscribeFetch };
+  }
+
+  if (hit.inClickBurst) {
+    return { verdict: "scanner", reason: SCANNER_REASONS.clickBurst };
+  }
+
+  if (hit.fromDatacenterNetwork) {
+    return { verdict: "scanner", reason: SCANNER_REASONS.datacenterNetwork };
   }
 
   if (hit.sharesScannerNetwork) {
@@ -180,6 +214,10 @@ export function classifyClickHit(hit: ClickHitEvidence): ClickClassification {
 
   if (hit.clickedFromManyNetworks) {
     return { verdict: "scanner", reason: SCANNER_REASONS.manyNetworks };
+  }
+
+  if (hit.clickedWithManyUserAgents) {
+    return { verdict: "scanner", reason: SCANNER_REASONS.manyUserAgents };
   }
 
   return { verdict: "human", reason: null };
@@ -314,4 +352,101 @@ export function manyNetworksEvidenceSql(hitAlias: string): SQL {
       AND lower(o.lead_email) = lower(${h}.lead_email)
       AND o.received_at BETWEEN ${h}.received_at - ${window} AND ${h}.received_at + ${window}
   ) >= ${sql.raw(String(MANY_NETWORKS_MIN))}`;
+}
+
+/**
+ * Several clicks of the same (campaign, lead) inside a second or two: a program
+ * sweeping every link of the message, not a person. The recognised sources agree
+ * on the shape (Suped: an all-links sweep in the first second; Adobe Experience
+ * League: many link events for one profile in the same second; vendor burst
+ * detectors: 4-5 clicks in one second) and on keeping a single double-click
+ * human, hence the floor of THREE clicks within `CLICK_BURST_WINDOW_SECONDS`
+ * either side. It is a count of clicks, never a delay after the send.
+ *
+ * ⚠️ THE ONE RULE THAT ALSO JUDGES A CLICK INSTANTLY RECORDED: Instantly's
+ * webhook carries no user-agent, method or address, so this is the only
+ * positive fingerprint its clicks can show (`vendor-click-burst.ts`).
+ */
+export const CLICK_BURST_MIN = 3;
+export const CLICK_BURST_WINDOW_SECONDS = 1;
+
+export function clickBurstEvidenceSql(hitAlias: string): SQL {
+  const h = sql.raw(hitAlias);
+  const window = sql.raw(`interval '${CLICK_BURST_WINDOW_SECONDS} seconds'`);
+  return sql`(
+    SELECT COUNT(*)
+    FROM tracking_hits_raw o
+    WHERE o.kind = 'click'
+      AND o.instantly_campaign_id = ${h}.instantly_campaign_id
+      AND lower(o.lead_email) = lower(${h}.lead_email)
+      AND o.received_at BETWEEN ${h}.received_at - ${window} AND ${h}.received_at + ${window}
+  ) >= ${sql.raw(String(CLICK_BURST_MIN))}`;
+}
+
+/**
+ * `EXISTS (…)`: the click came from an address a cloud or hosting operator
+ * announces (`datacenter-networks.ts`), and the lead does not work for that
+ * operator.
+ *
+ * ⚠️ A person reads mail on their phone, laptop or office network; the link
+ * scanners of Microsoft Defender, Mimecast, Proofpoint and Barracuda detonate
+ * links from AWS, Azure, Google Cloud and OVH. Measured 2026-10-18 on every
+ * self-send hit with a real address: 3,192 of 3,642 scanner-ruled hits (88%)
+ * sat on those networks, and 26 of the 48 hits still called human did too —
+ * Linux `Chrome/124` from AWS on four hospitals, Windows `Chrome/122` from OVH
+ * on four oral-surgery practices. The lead's own operator is exempt (an Amazon
+ * employee clicks from Amazon's network). Accepted cost: a person browsing from
+ * a cloud desktop is ruled with the scanners.
+ */
+export function datacenterNetworkEvidenceSql(hitAlias: string): SQL {
+  const h = sql.raw(hitAlias);
+  return sql`EXISTS (
+    SELECT 1
+    FROM datacenter_networks d
+    WHERE d.prefix >>= ${clientInetSql(sql`${h}.client_ip`)}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM unnest(d.operator_domains) od
+        WHERE split_part(lower(${h}.lead_email), '@', 2) = od
+           OR split_part(lower(${h}.lead_email), '@', 2) LIKE '%.' || od
+      )
+  )`;
+}
+
+/**
+ * The recorded client address as an `inet`, IPv4-mapped IPv6 unwrapped; NULL
+ * when there is none or it is not an address (never a cast error).
+ */
+function clientInetSql(column: SQL): SQL {
+  return sql`(CASE
+    WHEN regexp_replace(${column}, '^::ffff:', '') ~ '^\\d{1,3}(\\.\\d{1,3}){3}$'
+      OR ${column} ~ '^[0-9a-fA-F:]+$'
+    THEN regexp_replace(${column}, '^::ffff:', '')::inet
+  END)`;
+}
+
+/**
+ * A lead "clicked" with this many distinct browsers inside
+ * `MANY_USER_AGENTS_WINDOW_HOURS` is being re-scanned, not read: the same reading
+ * as `many_networks`, for hits that carry no address (everything before
+ * 2026-09-11). A person shows one or two (desktop, phone). Measured: one lead
+ * at 9 clicks over two days from SIX browsers, Windows 7 Chrome 83 among them.
+ * Only hits not already ruled a scanner are counted, so a person clicking after
+ * Defender rotated its user-agents over the same message keeps their click.
+ */
+export const MANY_USER_AGENTS_MIN = 3;
+export const MANY_USER_AGENTS_WINDOW_HOURS = 24;
+
+export function manyUserAgentsEvidenceSql(hitAlias: string): SQL {
+  const h = sql.raw(hitAlias);
+  const window = sql.raw(`interval '${MANY_USER_AGENTS_WINDOW_HOURS} hours'`);
+  return sql`(
+    SELECT COUNT(DISTINCT o.user_agent)
+    FROM tracking_hits_raw o
+    WHERE o.kind = 'click'
+      AND o.classification IS DISTINCT FROM 'scanner'
+      AND o.instantly_campaign_id = ${h}.instantly_campaign_id
+      AND lower(o.lead_email) = lower(${h}.lead_email)
+      AND o.received_at BETWEEN ${h}.received_at - ${window} AND ${h}.received_at + ${window}
+  ) >= ${sql.raw(String(MANY_USER_AGENTS_MIN))}`;
 }
