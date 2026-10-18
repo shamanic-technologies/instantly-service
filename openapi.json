@@ -151,6 +151,20 @@
           }
         }
       },
+      "DsnJudgmentsRequest": {
+        "type": "object",
+        "properties": {
+          "dryRun": {
+            "type": "boolean"
+          },
+          "sinceDays": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 1,
+            "maximum": 3650
+          }
+        }
+      },
       "OrphanRepliesRequest": {
         "type": "object",
         "properties": {
@@ -7639,6 +7653,33 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/self-send/dsn-judgments": {
+      "post": {
+        "summary": "Settle permanent delivery failures by what they say",
+        "description": "Platform-scoped ops sweep over every permanent delivery-status notice (DSN) tied to one of our sends. Each is judged once by a chat-service judgment (`choice`, persisted on the bronze row): `address_dead` (the address does not exist, the mailbox is gone) is a bounce and promotes `email_bounced`; `message_refused` (spam, content, policy, blocklist, reputation, authentication) is NOT: every `email_bounced` event on that send is retracted (archived in `instantly_events_retracted`) and the person stays contactable. `sinceDays` (default null = the whole history); `dryRun` (default TRUE) judges and persists the judgments but retracts and promotes nothing. Returns 202; watch for `dsn-judgments: done`.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DsnJudgmentsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Sweep accepted; runs in the background",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelfSendDispatchAccepted"
                 }
               }
             }
