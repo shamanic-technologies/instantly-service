@@ -30,6 +30,7 @@ import { loadPendingScheduledReplies } from "../scheduled-replies";
 import { buildMessage } from "./message";
 import { runPoll } from "./imap-poller";
 import { runOrphanReplySweep } from "./orphan-reply-sweep";
+import { runDsnJudgmentSweep } from "./dsn-judgment-sweep";
 import { dispatchMessage, SmtpDispatchError } from "./smtp";
 import {
   classifyPermanentFailure,
@@ -861,6 +862,7 @@ async function runDispatchExclusive(
           }`,
         );
       });
+      await settleDsns("idle");
     }
     const idle: DispatchSummary = {
       ...emptySummary(),
@@ -912,6 +914,10 @@ async function runDispatchExclusive(
         }`,
       );
     });
+
+    // A permanent DSN the poll filed is judged here: a dead address stops its
+    // sequence before the re-selection, a refused message stops nothing.
+    await settleDsns("pre-dispatch");
   }
 
   // Selecting and sending happen under the SEND LOCK, shared with the answer
@@ -1216,4 +1222,24 @@ export async function dispatchAnswerNow(
     );
     return summary;
   });
+}
+
+/**
+ * Judge the permanent DSNs the poll filed (`dsn-judgment-sweep.ts`). Fail-soft
+ * like the poll: an unjudged DSN promotes nothing and the next run judges it.
+ */
+async function settleDsns(when: "idle" | "pre-dispatch"): Promise<void> {
+  try {
+    const summary = await runDsnJudgmentSweep();
+    if (summary.judgedNow > 0 || summary.judgmentFailed > 0 || summary.bouncesPromoted > 0 || summary.bounceEventsRetracted > 0) {
+      const { retractedLeads: _leads, ...counts } = summary;
+      console.log(`[instantly-service] self-send: dsn-judgments (${when}) ${JSON.stringify(counts)}`);
+    }
+  } catch (error) {
+    console.error(
+      `[instantly-service] self-send: ${when} dsn-judgment sweep failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 }

@@ -529,6 +529,13 @@ export async function promoteFiled(
     return;
   }
 
+  // A permanent DSN is judged before it is a bounce (`dsn-judgment-sweep.ts`,
+  // BOUNCE-SPAM-BLOCK-1018): filed here, promoted by the sweep or never.
+  if (plan.kind === "bounce") {
+    summary.poll.bounces += 1;
+    return;
+  }
+
   const eventType = eventTypeForInbound(plan.kind);
   if (!eventType) return;
   const timestamp = message.date ?? asOf;
@@ -557,7 +564,6 @@ export async function promoteFiled(
       deliveredLate,
     });
   } else if (plan.kind === "auto_reply") summary.poll.autoReplies += 1;
-  else if (plan.kind === "bounce") summary.poll.bounces += 1;
 }
 
 function reportOf(send: AliasedSend, kind: string, message: MirroredMessage, deliveredLate: boolean): RecoveredMessage {

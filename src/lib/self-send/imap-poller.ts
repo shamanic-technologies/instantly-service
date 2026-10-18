@@ -110,6 +110,10 @@ export interface PollSummary {
   messagesRead: number;
   replies: number;
   autoReplies: number;
+  /**
+   * Permanent delivery-status notices filed. None is promoted by the poll: a
+   * dead address or a refused message is judged by `dsn-judgment-sweep.ts`.
+   */
   bounces: number;
   /**
    * Delivery-status notices that report a TEMPORARY failure (the sending MTA is
@@ -619,6 +623,16 @@ async function pollAccount(
           continue;
         }
 
+        // A permanent DSN is filed, never promoted here: whether it is a dead
+        // address (`email_bounced`) or a refusal of OUR message (spam, policy,
+        // reputation: the person stays contactable) is judged from its words by
+        // `dsn-judgment-sweep.ts`, which runs right after this poll inside the
+        // same dispatch run (BOUNCE-SPAM-BLOCK-1018).
+        if (classification.kind === "bounce") {
+          summary.bounces += 1;
+          continue;
+        }
+
         const eventType = eventTypeForInbound(classification.kind);
         if (!eventType) {
           summary.unrelated += 1;
@@ -649,7 +663,6 @@ async function pollAccount(
             summary,
           });
         } else if (classification.kind === "auto_reply") summary.autoReplies += 1;
-        else summary.bounces += 1;
       }
     } finally {
       lock.release();

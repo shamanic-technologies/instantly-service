@@ -40,10 +40,9 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
-import { instantlyEventsRetracted } from "../db/schema";
+import { archiveSilverEvent, retractBouncedEvents } from "./bounce-retraction";
 import { isTransientDeliveryReport, type InboundHeaders } from "./self-send/inbound";
 import { refreshLeadStatusCurrent } from "./status-gold";
-import { announceEvidenceChanged } from "./evidence-changed";
 
 export const DELAYED_DSN_REASON = "delay_dsn_not_a_bounce";
 
@@ -163,33 +162,6 @@ async function loadBouncedEvents(sourceRowIds: string[]): Promise<BouncedEvent[]
   }));
 }
 
-async function archive(
-  event: BouncedEvent,
-  action: "retracted" | "reattributed",
-  replacementSourceRowId: string | null,
-): Promise<void> {
-  const [row] = rowsOf(
-    await db.execute(sql`
-      SELECT to_jsonb(e.*) AS event, c.delivery_status
-      FROM instantly_events e
-      LEFT JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
-      WHERE e.id = ${event.id}
-    `),
-  );
-  if (!row) return;
-  await db
-    .insert(instantlyEventsRetracted)
-    .values({
-      eventId: event.id,
-      action,
-      reason: DELAYED_DSN_REASON,
-      event: row.event as Record<string, unknown>,
-      priorDeliveryStatus: (row.delivery_status as string | null) ?? null,
-      replacementSourceRowId,
-    })
-    .onConflictDoNothing({ target: instantlyEventsRetracted.eventId });
-}
-
 export async function backfillDelayedDsns(
   options: { dryRun?: boolean } = {},
 ): Promise<DelayedDsnBackfillSummary> {
@@ -210,10 +182,10 @@ export async function backfillDelayedDsns(
   };
   if (dryRun) return summary;
 
-  const touched = new Map<string, string | null>(); // campaignId -> leadEmail
+  const reattributed = new Map<string, string | null>(); // campaignId -> leadEmail
 
   for (const { event, replacement } of plan.reattribute) {
-    await archive(event, "reattributed", replacement.id);
+    await archiveSilverEvent(event.id, "reattributed", DELAYED_DSN_REASON, replacement.id);
     await db.execute(sql`
       UPDATE instantly_events
       SET source_row_id = ${replacement.id},
@@ -223,29 +195,10 @@ export async function backfillDelayedDsns(
           )
       WHERE id = ${event.id}
     `);
-    if (event.campaignId) touched.set(event.campaignId, event.leadEmail);
+    if (event.campaignId) reattributed.set(event.campaignId, event.leadEmail);
   }
 
-  const retractedByCampaign: BouncedEvent[] = [];
-  for (const event of plan.retract) {
-    await archive(event, "retracted", null);
-    await db.execute(sql`DELETE FROM instantly_events WHERE id = ${event.id}`);
-    if (event.campaignId) {
-      // Back to `sent` only while nothing else still says it bounced.
-      await db.execute(sql`
-        UPDATE instantly_campaigns
-        SET delivery_status = 'sent', updated_at = now()
-        WHERE instantly_campaign_id = ${event.campaignId}
-          AND delivery_status = 'bounced'
-          AND NOT EXISTS (
-            SELECT 1 FROM instantly_events b
-            WHERE b.campaign_id = ${event.campaignId} AND b.event_type = 'email_bounced'
-          )
-      `);
-      touched.set(event.campaignId, event.leadEmail);
-      retractedByCampaign.push(event);
-    }
-  }
+  await retractBouncedEvents(plan.retract, DELAYED_DSN_REASON, "retract:delayed-dsn");
 
   // Bronze last: while a row is still `bounce` the sweep can be re-run and will
   // find the same work, so a crash mid-way leaves nothing half-done.
@@ -266,27 +219,8 @@ export async function backfillDelayedDsns(
     `);
   }
 
-  for (const [campaignId, leadEmail] of touched) {
+  for (const [campaignId, leadEmail] of reattributed) {
     await refreshLeadStatusCurrent(campaignId, leadEmail);
-  }
-
-  if (retractedByCampaign.length > 0) {
-    const orgs = rowsOf(
-      await db.execute(sql`
-        SELECT instantly_campaign_id, org_id FROM instantly_campaigns
-        WHERE instantly_campaign_id = ANY(${sql.param(
-          retractedByCampaign.map((e) => e.campaignId as string),
-        )}::text[])
-      `),
-    );
-    const orgOf = new Map(orgs.map((r) => [String(r.instantly_campaign_id), r.org_id as string | null]));
-    for (const event of retractedByCampaign) {
-      await announceEvidenceChanged(
-        orgOf.get(event.campaignId as string) ?? null,
-        [event.leadEmail],
-        "retract:delayed-dsn",
-      );
-    }
   }
 
   return summary;
