@@ -98,8 +98,13 @@ describe("backfillScannerClicks — dry run", () => {
     expect(text).toContain("h.classification IN ('legacy', 'human')");
     // A scanner verdict is never re-opened: nothing here promotes, so reversing
     // one would leave bronze claiming a click silver does not have.
-    // The only 'scanner' the query reads is the network EVIDENCE about OTHER hits.
-    expect(text.replaceAll("s.classification = 'scanner'", "")).not.toContain("'scanner'");
+    // The only 'scanner' the query reads is EVIDENCE about OTHER hits (their
+    // network, and the many-browsers count that leaves scanner hits out).
+    expect(
+      text
+        .replaceAll("s.classification = 'scanner'", "")
+        .replaceAll("o.classification IS DISTINCT FROM 'scanner'", ""),
+    ).not.toContain("'scanner'");
   });
 
   it("demotes a human hit whose /24 carries a scanner verdict (Defender's Mac UA, Olive 2026-10-02)", async () => {

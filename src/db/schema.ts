@@ -13,6 +13,7 @@ import {
   date,
   bigserial,
   bigint,
+  cidr,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -2002,4 +2003,23 @@ export const domainBlocklistRemovalAttempts = pgTable(
     error: text("error"),
   },
   (table) => [index("domain_blocklist_removal_attempts_pair_idx").on(table.domain, table.list, table.attemptedAt)],
+);
+
+// Config mirror: every prefix a cloud or hosting operator announces
+// (`self-send/datacenter-networks.ts`, refreshed daily from RIPEstat). A click
+// from one of them is a link scanner's, not a person's (`datacenter_network`).
+// `operator_domains` = the operator's own mail domains: its employees click from
+// its network and keep their click. A GiST `inet_ops` index on `prefix` exists
+// in migration 0084 (hand-written; drizzle-kit does not track it, do NOT drop it
+// on a db:generate diff).
+export const datacenterNetworks = pgTable(
+  "datacenter_networks",
+  {
+    asn: integer("asn").notNull(),
+    prefix: cidr("prefix").notNull(),
+    operator: text("operator").notNull(),
+    operatorDomains: text("operator_domains").array().default(sql`'{}'::text[]`).notNull(),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.asn, table.prefix] })],
 );

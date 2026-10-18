@@ -12,6 +12,7 @@ import {
   scannerNetworkEvidenceSql,
   ipSharedAcrossCompaniesEvidenceSql,
   manyNetworksEvidenceSql,
+  isNonBrowserUserAgent,
 } from "../../src/lib/self-send/click-classification";
 
 const CHROME =
@@ -77,6 +78,9 @@ describe("click classification — the paired opt-out fetch", () => {
         sharesScannerNetwork: false,
         ipSharedAcrossCompanies: false,
         clickedFromManyNetworks: false,
+        inClickBurst: false,
+        fromDatacenterNetwork: false,
+        clickedWithManyUserAgents: false,
       }),
     ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.pairedUnsubscribeFetch });
   });
@@ -90,6 +94,9 @@ describe("click classification — the paired opt-out fetch", () => {
         sharesScannerNetwork: false,
         ipSharedAcrossCompanies: false,
         clickedFromManyNetworks: false,
+        inClickBurst: false,
+        fromDatacenterNetwork: false,
+        clickedWithManyUserAgents: false,
       }),
     ).toEqual({ verdict: "human", reason: null });
   });
@@ -125,6 +132,9 @@ describe("click classification — the scanner's network", () => {
         sharesScannerNetwork: true,
         ipSharedAcrossCompanies: false,
         clickedFromManyNetworks: false,
+        inClickBurst: false,
+        fromDatacenterNetwork: false,
+        clickedWithManyUserAgents: false,
       }),
     ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.scannerNetwork });
   });
@@ -138,6 +148,9 @@ describe("click classification — the scanner's network", () => {
         sharesScannerNetwork: false,
         ipSharedAcrossCompanies: false,
         clickedFromManyNetworks: false,
+        inClickBurst: false,
+        fromDatacenterNetwork: false,
+        clickedWithManyUserAgents: false,
       }),
     ).toEqual({ verdict: "human", reason: null });
   });
@@ -159,7 +172,14 @@ describe("click classification — the scanner's network", () => {
   });
 });
 
-const NO_NET = { sharesScannerNetwork: false, ipSharedAcrossCompanies: false, clickedFromManyNetworks: false };
+const NO_NET = {
+  sharesScannerNetwork: false,
+  ipSharedAcrossCompanies: false,
+  clickedFromManyNetworks: false,
+  inClickBurst: false,
+  fromDatacenterNetwork: false,
+  clickedWithManyUserAgents: false,
+};
 
 describe("click classification — re-scans and shared fetchers", () => {
   it("calls a click from an address that also clicked for ANOTHER company a scanner", () => {
@@ -182,6 +202,9 @@ describe("click classification — re-scans and shared fetchers", () => {
         hasPairedUnsubscribeFetch: false,
         ...NO_NET,
         clickedFromManyNetworks: true,
+        inClickBurst: false,
+        fromDatacenterNetwork: false,
+        clickedWithManyUserAgents: false,
       }),
     ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.manyNetworks });
   });
@@ -268,5 +291,62 @@ describe("click classification — the frozen Chrome version", () => {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/109.0",
       ),
     ).toBe(false);
+  });
+});
+
+// CLICK-HUMANS-1018: every new rule pinned both ways (a known scanner hit
+// flagged, a real browser hit kept). The SQL halves are proven against a real
+// database in tests/integration/click-human-rules.test.ts.
+describe("click classification — CLICK-HUMANS-1018 rules", () => {
+  const PERSON_MAC =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+  const PERSON_IPHONE =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1";
+  const evidence = (over: Partial<typeof NO_NET> = {}) => ({
+    method: "GET",
+    userAgent: PERSON_MAC,
+    hasPairedUnsubscribeFetch: false,
+    ...NO_NET,
+    ...over,
+  });
+
+  it("non_browser_user_agent: `DNSClient` (prod 2026-10-03) is a scanner", () => {
+    expect(classifyImmediateSignals({ method: "GET", userAgent: "DNSClient" })).toEqual({
+      verdict: "scanner",
+      reason: SCANNER_REASONS.nonBrowserUserAgent,
+    });
+  });
+
+  it("non_browser_user_agent: every browser shape is kept (Chrome, Safari, iPhone, Opera)", () => {
+    for (const ua of [PERSON_MAC, PERSON_IPHONE, "Opera/9.80 (Windows NT 6.1) Presto/2.12.388 Version/12.18"]) {
+      expect(isNonBrowserUserAgent(ua)).toBe(false);
+      expect(classifyImmediateSignals({ method: "GET", userAgent: ua })).toBeNull();
+    }
+  });
+
+  it("datacenter_network: a click from a cloud operator's network is a scanner", () => {
+    expect(classifyClickHit(evidence({ fromDatacenterNetwork: true }))).toEqual({
+      verdict: "scanner",
+      reason: SCANNER_REASONS.datacenterNetwork,
+    });
+  });
+
+  it("click_burst: three clicks inside a second are a scanner", () => {
+    expect(classifyClickHit(evidence({ inClickBurst: true }))).toEqual({
+      verdict: "scanner",
+      reason: SCANNER_REASONS.clickBurst,
+    });
+  });
+
+  it("many_user_agents: three browsers on one lead in a day are a re-scan", () => {
+    expect(classifyClickHit(evidence({ clickedWithManyUserAgents: true }))).toEqual({
+      verdict: "scanner",
+      reason: SCANNER_REASONS.manyUserAgents,
+    });
+  });
+
+  it("a real browser click with none of the fingerprints stays human", () => {
+    expect(classifyClickHit(evidence())).toEqual({ verdict: "human", reason: null });
+    expect(classifyClickHit(evidence({ userAgent: PERSON_IPHONE }))).toEqual({ verdict: "human", reason: null });
   });
 });

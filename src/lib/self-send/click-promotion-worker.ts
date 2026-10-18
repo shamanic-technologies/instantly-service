@@ -21,6 +21,7 @@
 import { promotePendingClicks } from "./click-promotion";
 import { backfillScannerClicks } from "./click-scanner-backfill";
 import { reactivateScannerPausedSequences } from "./reactivate-scanner-paused";
+import { retractVendorBurstClicks } from "../vendor-click-burst";
 
 /** How often the drain runs. Tick cost is one indexed query when idle. */
 export const CLICK_PROMOTION_INTERVAL_MS = (() => {
@@ -52,6 +53,14 @@ export const CLICK_REPAIR_INTERVAL_MS = (() => {
   return parsed;
 })();
 
+/**
+ * The first repair runs this long after boot: a deploy that sharpens the rule
+ * re-judges the past within minutes, not at the next 6-hour mark (deploys
+ * restart the interval more often than it fires). Long enough for the
+ * cloud-network list's first refresh (one minute after boot) to have landed.
+ */
+export const CLICK_REPAIR_FIRST_TICK_MS = 5 * 60 * 1000;
+
 let timer: NodeJS.Timeout | null = null;
 let repairTimer: NodeJS.Timeout | null = null;
 let inFlight = false;
@@ -64,12 +73,13 @@ export async function runClickRepair(): Promise<void> {
   try {
     const backfill = await backfillScannerClicks({ dryRun: false });
     const reactivation = await reactivateScannerPausedSequences({ dryRun: false });
+    const vendorBurst = await retractVendorBurstClicks({ dryRun: false });
     console.log(
       `[instantly-service] click-repair: done backfill=${JSON.stringify({
         scannerHits: backfill.scannerHits,
         leadsDemoted: backfill.leadsDemoted,
         reasons: backfill.reasons,
-      })} reactivation=${JSON.stringify(reactivation)}`,
+      })} reactivation=${JSON.stringify(reactivation)} vendorBurst=${JSON.stringify(vendorBurst)}`,
     );
   } finally {
     repairInFlight = false;
@@ -105,6 +115,13 @@ export function startClickPromotionWorker(): void {
 
   // Never hold the event loop open on account of this timer.
   timer.unref?.();
+
+  setTimeout(() => {
+    runClickRepair().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[instantly-service] click-repair failed: ${message}`);
+    });
+  }, CLICK_REPAIR_FIRST_TICK_MS).unref?.();
 
   repairTimer = setInterval(() => {
     runClickRepair().catch((error: unknown) => {

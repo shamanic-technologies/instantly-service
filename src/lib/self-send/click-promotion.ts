@@ -26,8 +26,11 @@ import {
   CLICK_DECISION_HOLD_SECONDS,
   PAIRED_UNSUBSCRIBE_WINDOW_SECONDS,
   classifyClickHit,
+  clickBurstEvidenceSql,
+  datacenterNetworkEvidenceSql,
   ipSharedAcrossCompaniesEvidenceSql,
   manyNetworksEvidenceSql,
+  manyUserAgentsEvidenceSql,
   scannerNetworkEvidenceSql,
 } from "./click-classification";
 
@@ -47,6 +50,12 @@ export interface PendingClickHit {
   userAgent: string | null;
   receivedAt: Date;
   hasPairedUnsubscribeFetch: boolean;
+  /**
+   * Whether the cloud-network list (`datacenter-networks.ts`) holds anything.
+   * Until it does, the `datacenter_network` rule cannot see, so no click is
+   * decided (held, logged loud) rather than waved through as human.
+   */
+  datacenterNetworksLoaded: boolean;
 }
 
 /** The network-level evidence about one hit. */
@@ -54,12 +63,18 @@ export interface ClickNetworkEvidence {
   sharesScannerNetwork: boolean;
   ipSharedAcrossCompanies: boolean;
   clickedFromManyNetworks: boolean;
+  inClickBurst: boolean;
+  fromDatacenterNetwork: boolean;
+  clickedWithManyUserAgents: boolean;
 }
 
 const NO_NETWORK_EVIDENCE: ClickNetworkEvidence = {
   sharesScannerNetwork: false,
   ipSharedAcrossCompanies: false,
   clickedFromManyNetworks: false,
+  inClickBurst: false,
+  fromDatacenterNetwork: false,
+  clickedWithManyUserAgents: false,
 };
 
 /**
@@ -79,7 +94,10 @@ export async function loadNetworkEvidence(
       h.id,
       ${scannerNetworkEvidenceSql("h")} AS shares_scanner_network,
       ${ipSharedAcrossCompaniesEvidenceSql("h")} AS ip_shared_across_companies,
-      ${manyNetworksEvidenceSql("h")} AS clicked_from_many_networks
+      ${manyNetworksEvidenceSql("h")} AS clicked_from_many_networks,
+      ${clickBurstEvidenceSql("h")} AS in_click_burst,
+      ${datacenterNetworkEvidenceSql("h")} AS from_datacenter_network,
+      ${manyUserAgentsEvidenceSql("h")} AS clicked_with_many_user_agents
     FROM tracking_hits_raw h
     WHERE h.id = ANY(${sql.param(hitIds)}::text[])
   `);
@@ -90,6 +108,9 @@ export async function loadNetworkEvidence(
         sharesScannerNetwork: row.shares_scanner_network === true,
         ipSharedAcrossCompanies: row.ip_shared_across_companies === true,
         clickedFromManyNetworks: row.clicked_from_many_networks === true,
+        inClickBurst: row.in_click_burst === true,
+        fromDatacenterNetwork: row.from_datacenter_network === true,
+        clickedWithManyUserAgents: row.clicked_with_many_user_agents === true,
       },
     ]),
   );
@@ -101,6 +122,8 @@ export interface ClickPromotionSummary {
   promoted: number;
   scanner: number;
   failed: number;
+  /** Hits left undecided because the cloud-network list was never loaded. */
+  heldNoNetworkList: number;
   /** Scanner reason → count. A human hit contributes to none of them. */
   reasons: Record<string, number>;
 }
@@ -143,7 +166,8 @@ export async function loadPendingClickHits(
           AND u.received_at BETWEEN
             h.received_at - ${pairingWindow}
             AND h.received_at + ${pairingWindow}
-      ) AS has_paired_unsubscribe
+      ) AS has_paired_unsubscribe,
+      EXISTS (SELECT 1 FROM datacenter_networks) AS datacenter_networks_loaded
     FROM tracking_hits_raw h
     WHERE h.kind = 'click'
       AND h.classification IS NULL
@@ -162,6 +186,7 @@ export async function loadPendingClickHits(
       row.user_agent === null || row.user_agent === undefined ? null : String(row.user_agent),
     receivedAt: new Date(String(row.received_at)),
     hasPairedUnsubscribeFetch: row.has_paired_unsubscribe === true,
+    datacenterNetworksLoaded: row.datacenter_networks_loaded === true,
   }));
 }
 
@@ -200,8 +225,19 @@ export async function promotePendingClicks(
     promoted: 0,
     scanner: 0,
     failed: 0,
+    heldNoNetworkList: 0,
     reasons: {},
   };
+
+  // The cloud-network rule is blind on an empty list: hold every click (they
+  // stay undecided, nothing is lost) until the list worker has loaded it.
+  if (hits.length > 0 && !hits[0].datacenterNetworksLoaded) {
+    summary.heldNoNetworkList = hits.length;
+    console.error(
+      `[instantly-service] click-promotion: ${hits.length} click(s) HELD, the cloud-network list (datacenter_networks) is empty`,
+    );
+    return summary;
+  }
 
   // Two passes. Every verdict that needs no network evidence is taken first, so
   // its scanner rows are on disk when the network question is asked of the

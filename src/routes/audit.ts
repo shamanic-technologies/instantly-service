@@ -29,6 +29,7 @@ import { backfillReplyOptOuts } from "../lib/reply-optout-backfill";
 import { backfillDelayedDsns } from "../lib/delayed-dsn-backfill";
 import { backfillScannerClicks } from "../lib/self-send/click-scanner-backfill";
 import { reactivateScannerPausedSequences } from "../lib/self-send/reactivate-scanner-paused";
+import { retractVendorBurstClicks } from "../lib/vendor-click-burst";
 import { syncInProductionDailyLimit } from "../lib/sync-daily-limit";
 import { syncSlowRampOff } from "../lib/sync-slow-ramp";
 import { syncLifecycleLimits } from "../lib/sync-lifecycle-limits";
@@ -1121,6 +1122,33 @@ router.post("/click-scanner-backfill", async (req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[audit] click-scanner-backfill run=${runId} failed: ${message}`);
   });
+});
+
+/**
+ * POST /internal/audit/vendor-click-burst
+ *
+ * Platform-scoped. Retracts the clicks INSTANTLY recorded (webhook, lead poll)
+ * that came in a burst (`vendor-click-burst.ts`): the one machine fingerprint an
+ * Instantly click can show. `{dryRun}` DEFAULTS TO TRUE and answers synchronously
+ * with the counts; `{dryRun: false}` answers 202 and retracts in the background
+ * (log `vendor-click-burst: done`). Idempotent; also run by the click repair.
+ */
+router.post("/vendor-click-burst", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { dryRun?: unknown };
+  if (body.dryRun !== false) {
+    res.json(await retractVendorBurstClicks({ dryRun: true }));
+    return;
+  }
+  const runId = crypto.randomUUID();
+  res.status(202).json({ accepted: true, dryRun: false, runId });
+  retractVendorBurstClicks({ dryRun: false })
+    .then((summary) => {
+      console.log(`[audit] vendor-click-burst: done run=${runId} ${JSON.stringify(summary)}`);
+    })
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[audit] vendor-click-burst run=${runId} failed: ${message}`);
+    });
 });
 
 /**
