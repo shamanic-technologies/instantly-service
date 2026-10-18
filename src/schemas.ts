@@ -2957,9 +2957,9 @@ registry.registerPath({
   method: "post",
   path: "/internal/domain-blocklist/check",
   summary: "Run the daily blocklist check now",
-  description: "Checks every sending domain on every list, writes state + events, reconciles the lifecycle on a change, then delivers pending staff alerts. The in-process worker runs it daily. Idempotent: a listing already recorded writes nothing and alerts nobody.",
+  description: "Checks every sending domain on every list, writes state + events, reconciles the lifecycle on a change. Emails nobody (the admin chart is the surface). The in-process worker runs it daily. Idempotent: a listing already recorded writes nothing.",
   responses: {
-    200: { description: "What the check found: `domains`, per-list `answered/listed/clean/unanswered`, `listed`, `delisted`, `lifecycle`, `alerts`" },
+    200: { description: "What the check found: `domains`, per-list `answered/listed/clean/unanswered`, `listed`, `delisted`, `lifecycle`" },
     401: { description: "Unauthorized" },
     500: { description: "The check failed", content: { "application/json": { schema: ErrorSchema } } },
   },

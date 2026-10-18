@@ -15,7 +15,6 @@ import {
   type CurrentState,
 } from "../../src/lib/domain-blocklist";
 import { checkList, type Lookup } from "../../src/lib/domain-blocklist-sync";
-import { buildBlocklistAlert } from "../../src/lib/domain-blocklist-alert";
 import { buildListingSeries, windowDays } from "../../src/lib/domain-blocklist-read";
 import { deriveLifecycle, type DeriveLifecycleInput } from "../../src/lib/account-lifecycle";
 import { selectDueSteps, type AccountCapacity, type PendingSequence } from "../../src/lib/self-send/dispatch";
@@ -121,34 +120,6 @@ describe("a new listing writes one event; the same listing next day writes none"
   it("a clean domain checked again clean: nothing", () => {
     const current: CurrentState[] = [{ domain: "ok.com", list: "surbl", listed: false, listedSince: null }];
     expect(planTransitions(current, [{ domain: "ok.com", list: "surbl", verdict: { outcome: "clean" } }])).toEqual([]);
-  });
-});
-
-describe("the alert names the domain, list, date, mailboxes, what was done and the removal link", () => {
-  it("renders from the event alone", () => {
-    const alert = buildBlocklistAlert({
-      id: "evt-1",
-      domain: "agileconsultco.com",
-      list: "surbl",
-      answer: "127.0.0.64",
-      labels: ["ABUSE"],
-      mailboxes: ["raquel@agileconsultco.com", "ruth@agileconsultco.com"],
-      detail: { firstBlocklistBounceAt: "2026-10-01T09:00:00.000Z" },
-      occurredAt: new Date("2026-10-16T08:00:00.000Z"),
-    });
-    expect(alert).toMatchObject({
-      eventId: "evt-1",
-      domain: "agileconsultco.com",
-      list: "SURBL",
-      listedSince: "2026-10-16",
-      listAnswer: "ABUSE (127.0.0.64)",
-      mailboxes: "raquel@agileconsultco.com, ruth@agileconsultco.com",
-      removalUrl: "https://www.surbl.org/surbl-analysis",
-    });
-    expect(alert.actionTaken).toMatch(/2 mailboxes take no new prospects/);
-    expect(alert.actionTaken).toMatch(/Follow-ups already planned from them still go out/);
-    expect(alert.actionTaken).toMatch(/2026-10-01/);
-    expect(`${alert.actionTaken}${alert.listAnswer}`).not.toMatch(/[—–]/);
   });
 });
 
