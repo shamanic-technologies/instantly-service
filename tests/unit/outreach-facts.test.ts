@@ -24,6 +24,8 @@ import {
   replySentFactsInsertSql,
   replyContentHash,
   toOutreachFact,
+  toSequenceContext,
+  localWallClock,
 } from "../../src/lib/outreach-facts";
 import { judgeReply, questionsForKind, NO_TEXT } from "../../src/lib/reply-judgments";
 import { REPLY_KINDS, replyKindDistinctions, replyKindFacts } from "../../src/lib/reply-kind";
@@ -295,7 +297,10 @@ describe("the served fact", () => {
       payload: { step: 3, position: "followup", positionBasis: "step", accountEmail: "bria@x.com" },
     });
     expect(sent.seq).toBe("42");
-    expect(sent.send).toEqual({ step: 3, position: "followup", positionBasis: "step", accountEmail: "bria@x.com" });
+    expect(sent.send).toEqual({
+      step: 3, position: "followup", positionBasis: "step", accountEmail: "bria@x.com",
+      localSentAt: null, localWeekday: null,
+    });
     expect([sent.open, sent.click, sent.bounce, sent.unsubscribe, sent.reply, sent.withdrawal]).toEqual([
       null, null, null, null, null, null,
     ]);
@@ -330,5 +335,68 @@ describe("the served fact", () => {
     expect(fact.replySent).toEqual({ via: "replies_route", sentBy: "automation", accountEmail: "bria@x.com", subject: "Re: hello" });
     expect([fact.send, fact.reply, fact.withdrawal]).toEqual([null, null, null]);
     expect(toOutreachFact({ ...base, type: "email_sent", payload: { step: 1, position: "first" } }).replySent).toBeNull();
+  });
+});
+
+describe("sequence context: the prospect's timezone and the open-pixel arm (LIVE-RESEARCH-1018)", () => {
+  const base = {
+    seq: 7,
+    subject_key: "ievt:1",
+    supersedes_seq: null,
+    occurred_at: new Date("2026-10-18T03:30:00Z"),
+    recorded_at: new Date("2026-10-18T03:31:00Z"),
+    lead_email: "a@b.com",
+    org_id: "org",
+    campaign_id: "camp",
+    brand_ids: ["b"],
+    transport: "instantly",
+    type: "email_sent",
+    payload: { step: 1, position: "first", positionBasis: "step", accountEmail: "m@x.com" },
+  };
+
+  it("reads a Sunday 03:30 UTC send as Saturday 22:30 in Chicago, on the sequence's own zone", () => {
+    const fact = toOutreachFact({
+      ...base,
+      instantly_campaign_id: "self:abc",
+      seq_timezone: "America/Chicago",
+      seq_schedule_timezone: "Europe/Paris",
+      seq_open_tracking: null,
+    });
+    expect(fact.sequence).toEqual({ timezone: "America/Chicago", timezoneBasis: "sequence", openTracking: "off" });
+    expect(fact.send?.localSentAt).toBe("2026-10-17T22:30:00");
+    expect(fact.send?.localWeekday).toBe("Saturday");
+  });
+
+  it("falls back to the stored schedule's zone, and states the absence when neither is known", () => {
+    expect(toSequenceContext({ instantly_campaign_id: "019a", seq_timezone: null, seq_schedule_timezone: "Europe/Paris", seq_open_tracking: "true" }))
+      .toEqual({ timezone: "Europe/Paris", timezoneBasis: "schedule", openTracking: "on" });
+    const none = toOutreachFact({ ...base, instantly_campaign_id: "019b", seq_timezone: "  ", seq_schedule_timezone: null, seq_open_tracking: null });
+    expect(none.sequence).toEqual({ timezone: null, timezoneBasis: null, openTracking: "unplaceable" });
+    expect(none.send?.localSentAt).toBeNull();
+    expect(none.send?.localWeekday).toBeNull();
+  });
+
+  it("places the pixel arm: self-sent = off whatever any config says, Instantly = its first config", () => {
+    expect(toSequenceContext({ instantly_campaign_id: "self:1", seq_open_tracking: "true" }).openTracking).toBe("off");
+    expect(toSequenceContext({ instantly_campaign_id: "019c", seq_open_tracking: "false" }).openTracking).toBe("off");
+    expect(toSequenceContext({ instantly_campaign_id: "019c", seq_open_tracking: "true" }).openTracking).toBe("on");
+    expect(toSequenceContext({ instantly_campaign_id: "019c" }).openTracking).toBe("unplaceable");
+  });
+
+  it("a zone the runtime cannot read keeps the stored zone and gives no local time", () => {
+    const fact = toOutreachFact({ ...base, instantly_campaign_id: "self:2", seq_timezone: "Mars/Olympus" });
+    expect(fact.sequence.timezone).toBe("Mars/Olympus");
+    expect(fact.send?.localSentAt).toBeNull();
+    expect(localWallClock("2026-10-18T03:30:00Z", "Mars/Olympus")).toBeNull();
+  });
+
+  it("only a send carries a local time; every fact carries the sequence", () => {
+    const click = toOutreachFact({ ...base, type: "link_clicked", payload: { step: 1, url: null }, instantly_campaign_id: "self:3", seq_timezone: "Asia/Tokyo" });
+    expect(click.sequence.timezone).toBe("Asia/Tokyo");
+    expect(click.send).toBeNull();
+  });
+
+  it("midnight reads 00, never 24", () => {
+    expect(localWallClock("2026-10-18T00:00:00Z", "UTC")).toEqual({ localAt: "2026-10-18T00:00:00", weekday: "Sunday" });
   });
 });

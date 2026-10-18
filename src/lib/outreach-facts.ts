@@ -474,7 +474,14 @@ export interface OutreachFact {
   instantlyCampaignId: string;
   brandIds: string[];
   transport: string | null;
-  send: { step: number | null; position: "first" | "followup"; positionBasis: "step" | "order"; accountEmail: string | null } | null;
+  send: {
+    step: number | null;
+    position: "first" | "followup";
+    positionBasis: "step" | "order";
+    accountEmail: string | null;
+    localSentAt: string | null;
+    localWeekday: string | null;
+  } | null;
   open: { step: number | null } | null;
   click: { step: number | null; url: string | null } | null;
   bounce: { step: number | null } | null;
@@ -482,18 +489,105 @@ export interface OutreachFact {
   reply: ReplyVerdictView | null;
   replySent: { via: ReplySentVia; sentBy: "human" | "automation" | null; accountEmail: string | null; subject: string | null; attachments?: SentAttachment[] } | null;
   withdrawal: { withdrawnSeq: string; withdrawnType: string; reason: "source_removed" | "statement_withdrawn" } | null;
+  sequence: SequenceContext;
+}
+
+// ─── Sequence context (derived at read) ──────────────────────────────────────
+
+export const OPEN_TRACKING_ARMS = ["on", "off", "unplaceable"] as const;
+export type OpenTrackingArm = (typeof OPEN_TRACKING_ARMS)[number];
+
+/**
+ * What the thread (`instantlyCampaignId`) says about EVERY fact on it, read
+ * live from the campaign row and its bronze config, never frozen into the
+ * fact (facts emitted before this existed carry it too):
+ *  - `timezone`: the zone the prospect is read in. The sequence's own zone
+ *    (`instantly_campaigns.timezone`, the lead's zone as the caller sent it,
+ *    the one the sending window ran in), else the zone of the Instantly
+ *    campaign's stored schedule (latest config); null = neither is known
+ *    here (lead-service holds the lead's own record).
+ *  - `openTracking`: whether its emails carried the open pixel. `off` for a
+ *    sequence we dispatch ourselves (`self:`, our sender has no pixel); else
+ *    the FIRST stored Instantly config's `open_tracking`; `unplaceable` when
+ *    that config was never stored.
+ */
+export interface SequenceContext {
+  timezone: string | null;
+  timezoneBasis: "sequence" | "schedule" | null;
+  openTracking: OpenTrackingArm;
+}
+
+export function toSequenceContext(row: Record<string, unknown>): SequenceContext {
+  const own = nonEmpty(row.seq_timezone);
+  const schedule = nonEmpty(row.seq_schedule_timezone);
+  const ot = row.seq_open_tracking;
+  const openTracking: OpenTrackingArm = String(row.instantly_campaign_id).startsWith("self:")
+    ? "off"
+    : ot === "true"
+      ? "on"
+      : ot === "false"
+        ? "off"
+        : "unplaceable";
+  return {
+    timezone: own ?? schedule,
+    timezoneBasis: own ? "sequence" : schedule ? "schedule" : null,
+    openTracking,
+  };
+}
+
+function nonEmpty(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const v = value.trim();
+  return v === "" ? null : v;
+}
+
+const wallClockFormats = new Map<string, Intl.DateTimeFormat | null>();
+
+/**
+ * `instant` as a wall clock in `timeZone` (`YYYY-MM-DDTHH:mm:ss`, no offset)
+ * and its weekday. Null when there is no zone or the zone is not one the
+ * runtime can read. One formatter per zone (a new one per call is slow).
+ */
+export function localWallClock(
+  instant: string,
+  timeZone: string | null,
+): { localAt: string; weekday: string } | null {
+  if (!timeZone) return null;
+  let fmt = wallClockFormats.get(timeZone);
+  if (fmt === undefined) {
+    try {
+      fmt = new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        weekday: "long", hourCycle: "h23",
+      });
+    } catch {
+      fmt = null; // RangeError: not a zone the runtime knows; the fact says so with a null
+    }
+    wallClockFormats.set(timeZone, fmt);
+  }
+  if (!fmt) return null;
+  const parts = Object.fromEntries(fmt.formatToParts(new Date(instant)).map((p) => [p.type, p.value]));
+  return {
+    localAt: `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`,
+    weekday: String(parts.weekday),
+  };
 }
 
 export function toOutreachFact(row: Record<string, unknown>): OutreachFact {
   const type = String(row.type) as OutreachFactType;
   const p = (row.payload ?? {}) as Record<string, unknown>;
   const step = p.step == null ? null : Number(p.step);
+  const occurredAt = iso(row.occurred_at);
+  const sequence = toSequenceContext(row);
+  const local = type === "email_sent" ? localWallClock(occurredAt, sequence.timezone) : null;
   return {
     seq: String(row.seq),
     type,
     subjectKey: String(row.subject_key),
     supersedesSeq: row.supersedes_seq == null ? null : String(row.supersedes_seq),
-    occurredAt: iso(row.occurred_at),
+    occurredAt,
     recordedAt: iso(row.recorded_at),
     leadEmail: String(row.lead_email),
     orgId: (row.org_id as string | null) ?? null,
@@ -508,6 +602,8 @@ export function toOutreachFact(row: Record<string, unknown>): OutreachFact {
             position: p.position as "first" | "followup",
             positionBasis: p.positionBasis as "step" | "order",
             accountEmail: (p.accountEmail as string | null) ?? null,
+            localSentAt: local?.localAt ?? null,
+            localWeekday: local?.weekday ?? null,
           }
         : null,
     open: type === "email_opened" ? { step } : null,
@@ -533,6 +629,7 @@ export function toOutreachFact(row: Record<string, unknown>): OutreachFact {
             reason: p.reason as "source_removed" | "statement_withdrawn",
           }
         : null,
+    sequence,
   };
 }
 
@@ -544,15 +641,40 @@ export async function readOutreachFacts(args: {
   brandId?: string;
   email?: string;
 }): Promise<{ facts: OutreachFact[]; nextCursor: string; hasMore: boolean }> {
+  // The page first, then its sequence context: one indexed lookup per fact of
+  // the page (campaign row by its unique id, bronze config by (id, fetched_at)).
   const rows = rowsOf(
     await db.execute(sql`
-      SELECT * FROM outreach_facts f
-      WHERE f.seq > ${args.since}
-        ${args.orgId ? sql`AND f.org_id = ${args.orgId}` : sql``}
-        ${args.brandId ? sql`AND ${args.brandId} = ANY(f.brand_ids)` : sql``}
-        ${args.email ? sql`AND lower(f.lead_email) = ${args.email.trim().toLowerCase()}` : sql``}
-      ORDER BY f.seq
-      LIMIT ${args.limit + 1}
+      WITH page AS (
+        SELECT * FROM outreach_facts f
+        WHERE f.seq > ${args.since}
+          ${args.orgId ? sql`AND f.org_id = ${args.orgId}` : sql``}
+          ${args.brandId ? sql`AND ${args.brandId} = ANY(f.brand_ids)` : sql``}
+          ${args.email ? sql`AND lower(f.lead_email) = ${args.email.trim().toLowerCase()}` : sql``}
+        ORDER BY f.seq
+        LIMIT ${args.limit + 1}
+      )
+      SELECT page.*,
+             c.timezone AS seq_timezone,
+             latest_cfg.tz AS seq_schedule_timezone,
+             first_cfg.ot AS seq_open_tracking
+      FROM page
+      LEFT JOIN instantly_campaigns c ON c.instantly_campaign_id = page.instantly_campaign_id
+      LEFT JOIN LATERAL (
+        SELECT r.payload->'campaign_schedule'->'schedules'->0->>'timezone' AS tz
+        FROM instantly_campaigns_config_raw r
+        WHERE r.instantly_campaign_id = page.instantly_campaign_id
+        ORDER BY r.fetched_at DESC
+        LIMIT 1
+      ) latest_cfg ON true
+      LEFT JOIN LATERAL (
+        SELECT r.payload->>'open_tracking' AS ot
+        FROM instantly_campaigns_config_raw r
+        WHERE r.instantly_campaign_id = page.instantly_campaign_id
+        ORDER BY r.fetched_at
+        LIMIT 1
+      ) first_cfg ON true
+      ORDER BY page.seq
     `),
   );
   const hasMore = rows.length > args.limit;

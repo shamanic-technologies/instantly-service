@@ -2654,6 +2654,14 @@ const OutreachFactSchema = z
         position: z.enum(["first", "followup"]).describe("The first email of the sequence, or a follow-up"),
         positionBasis: z.enum(["step", "order"]).describe("`step` = from the step number; `order` = no step was reported, placed by its order among this thread's sends"),
         accountEmail: z.string().nullable().describe("The mailbox that sent it"),
+        localSentAt: z
+          .string()
+          .nullable()
+          .describe("When it went out on the PROSPECT's wall clock, `YYYY-MM-DDTHH:mm:ss` (no offset), in `sequence.timezone`. Null when that zone is unknown or not a zone we can read."),
+        localWeekday: z
+          .string()
+          .nullable()
+          .describe("The day of the week it went out in the prospect's timezone (`Monday`..`Sunday`); null exactly when `localSentAt` is."),
       })
       .nullable(),
     open: z.object({ step: z.number().int().nullable() }).nullable(),
@@ -2695,6 +2703,21 @@ const OutreachFactSchema = z
           .describe("`source_removed` = it turned out not to have happened (a click proven to be a link scanner, a bounce retracted as a delayed notice, a reply placeholder replaced by the real message); `statement_withdrawn` = staff withdrew a recorded opt-out"),
       })
       .nullable(),
+    sequence: z
+      .object({
+        timezone: z
+          .string()
+          .nullable()
+          .describe("The timezone the prospect is read in, as stored (IANA name). Null = this service holds none for the thread (the lead's own record lives in lead-service)."),
+        timezoneBasis: z
+          .enum(["sequence", "schedule"])
+          .nullable()
+          .describe("Where `timezone` comes from: `sequence` = the zone the sequence was scheduled in (the lead's zone as the sender was given it; first choice); `schedule` = the zone of the provider campaign's stored sending schedule (older Instantly threads); null when neither is known."),
+        openTracking: z
+          .enum(["on", "off", "unplaceable"])
+          .describe("Whether this thread's emails carried the open-tracking pixel. `off` = a thread our own sender dispatched (it never carries one) or an Instantly campaign created with open tracking off; `on` = an Instantly campaign whose first stored settings had it on; `unplaceable` = an Instantly thread whose settings were never stored, so it cannot be placed in either arm."),
+      })
+      .describe("What the thread (`instantlyCampaignId`) says, on EVERY fact of it, read live at each page (also on facts stated before this field existed). Stable for a thread: a consumer may keep it once per `instantlyCampaignId`."),
   })
   .openapi("OutreachFact");
 
@@ -2714,7 +2737,8 @@ registry.registerPath({
     "Every dated thing our cold-email outreach did or saw for a person, in ONE total order, for a consumer to COPY into its own store and then follow incrementally: each email we sent (first or follow-up), each open, click (with the URL when we recorded it), bounce and unsubscribe, and each real reply with its verdict and finer distinctions, and each email we sent into the thread outside the sequence (`reply_sent`: our answers, manual or automated). Read-only, DB-only, no cost.\n\n" +
     "**Append-only.** A fact is never edited. A reply whose verdict, judgments or escalation changes gets a NEW `reply` fact naming the one it supersedes; something that turned out not to have happened gets a `withdrawn` fact. A consumer keeps, per `subjectKey`, the latest fact.\n\n" +
     "**Paging.** Start with no `since`; pass `nextCursor` back until `hasMore` is false; then poll with the last cursor. A cursor never skips a fact (emission is serialized).\n\n" +
-    "**Coverage.** From the first stored event (2026-02-10). Real events only (no inferred projections). Opens on our own sender are not observed (no pixel). Spam complaints are not captured. Freshness: emitted every 2 minutes. A reply is emitted the tick it lands, with its verdict and judgments when already known, else null; they arrive as a correction. A reply typed into Instantly's Unibox (`provider_unibox`) is stated once our mirror of the thread picks it up.",
+    "**Coverage.** From the first stored event (2026-02-10). Real events only (no inferred projections). Opens on our own sender are not observed (no pixel). Spam complaints are not captured. Freshness: emitted every 2 minutes. A reply is emitted the tick it lands, with its verdict and judgments when already known, else null; they arrive as a correction. A reply typed into Instantly's Unibox (`provider_unibox`) is stated once our mirror of the thread picks it up.\n\n" +
+    "**Thread context.** Every fact carries `sequence`: the prospect's timezone (and on each send, its local wall-clock time and weekday) and whether the thread's emails carried the open pixel.",
   request: { query: OutreachFactsQuerySchema },
   responses: {
     200: { description: "A page of facts", content: { "application/json": { schema: OutreachFactsResponseSchema } } },
