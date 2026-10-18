@@ -173,7 +173,7 @@ describe("GET /stats", () => {
     expect(response.body.emailStats.stepStats[0].delivered).toBe(9);
   });
 
-  it("should exclude internal emails from stats query", async () => {
+  it("fleet read keeps staff test activity out (internal lead list on events, campaigns, sentiment)", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] });
@@ -186,6 +186,9 @@ describe("GET /stats", () => {
     const sqlText = extractSqlText(sqlObj);
     expect(sqlText).toContain("account_email IS NULL OR e.lead_email != e.account_email");
     expect(sqlText).toContain("lead_email NOT IN");
+    // campaign aggregates + latest sentiment keep the list too
+    expect(extractSqlText(mockExecute.mock.calls[1][0])).toContain("c.lead_email NOT IN");
+    expect(extractSqlText(mockExecute.mock.calls[2][0])).toContain("e.lead_email NOT IN");
   });
 
   it("should return 500 on db error", async () => {

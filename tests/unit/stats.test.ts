@@ -399,7 +399,7 @@ describe("GET /stats", () => {
     expect(sqlText).not.toContain("ANY");
   });
 
-  it("should exclude internal emails and sender from stats query", async () => {
+  it("org read counts every lead of the org (no address list), drops only self-addressed sends", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [makeStatsRow()] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
     mockExecute.mockResolvedValueOnce({ rows: [] }); // latest-sentiment query
@@ -416,8 +416,13 @@ describe("GET /stats", () => {
     const sqlText = extractSqlText(sqlObj);
 
     expect(sqlText).toContain("account_email IS NULL OR e.lead_email != e.account_email");
-    expect(sqlText).toContain("lead_email NOT IN");
-    expect(sqlText).toContain("LIKE");
+    // CAMPAIGN-STATS-SENT-ZERO-1018: an org's own figures never drop a lead
+    // because of its address (staff tests run on staff test orgs).
+    for (const call of mockExecute.mock.calls) {
+      const text = extractSqlText(call[0]);
+      expect(text).not.toContain("lead_email NOT IN");
+      expect(text).not.toContain("lead_email LIKE");
+    }
   });
 
   it("should return 500 on db error", async () => {
@@ -1339,7 +1344,7 @@ describe("POST /stats/grouped", () => {
     expect(sqlText).not.toContain("ANY");
   });
 
-  it("should exclude internal emails from grouped stats", async () => {
+  it("grouped org read keeps the self-addressed guard and no address list", async () => {
     mockExecute.mockResolvedValueOnce({ rows: [] });
     mockExecute.mockResolvedValueOnce({ rows: [{ emailsContacted: 0 }] });
 
@@ -1357,7 +1362,7 @@ describe("POST /stats/grouped", () => {
     const sqlObj = mockExecute.mock.calls[0][0];
     const sqlText = extractSqlText(sqlObj);
     expect(sqlText).toContain("account_email IS NULL OR e.lead_email != e.account_email");
-    expect(sqlText).toContain("lead_email NOT IN");
+    expect(sqlText).not.toContain("lead_email NOT IN");
   });
 });
 
@@ -1639,8 +1644,8 @@ describe("GET /stats — emailStats.queued (emails queued right now, not yet sen
     expect(queuedSql).toContain("c.campaign_id =");
     expect(queuedSql).toContain("c.feature_slug IN");
     expect(queuedSql).toContain("c.workflow_slug IN");
-    // Internal test leads excluded like every other stats figure.
-    expect(queuedSql).toContain("c.lead_email NOT IN");
+    // An org read counts every lead of the org, like every other figure.
+    expect(queuedSql).not.toContain("c.lead_email NOT IN");
   });
 
   it("reads 0 when nothing is waiting", async () => {
