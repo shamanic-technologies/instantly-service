@@ -7,10 +7,29 @@ import { canonicalIanaTimezone, unrecognizedTimezoneFromError } from "../lib/tim
 
 const router = Router();
 
-// Internal emails/domains excluded from all stats.
-// Events where lead_email matches these (or equals the sender) are never counted.
-const EXCLUDED_EMAILS = ["kevin.lourd@gmail.com", "kevin@distribute.you"];
-const EXCLUDED_DOMAINS = [
+/**
+ * WHO a stats read is for decides what it leaves out (CAMPAIGN-STATS-SENT-ZERO-1018).
+ *
+ * - `"org"`: one org reading its own figures (`GET /orgs/stats`,
+ *   `POST /orgs/stats/grouped`). Every lead in that org's scope counts, whatever
+ *   its address: the figures must agree with what the org was billed for and
+ *   with its leads list. Since 2026-10-14 staff tests run on staff test orgs, so
+ *   a staff address inside an org's scope IS that org's activity. Measured
+ *   2026-10-18: a staff test campaign billed 13 sends read `sent 0` because
+ *   every lead was on @distribute.you.
+ * - `"fleet"`: a cross-org read (`/public/stats*`: leaderboard, landing,
+ *   benchmarks). Staff test activity must not move a fleet figure, and this
+ *   service holds no positive "staff org" fact, so the internal-lead address
+ *   list below stays, on fleet reads ONLY.
+ *
+ * Both audiences drop a SELF-ADDRESSED send (lead = the sending mailbox): a
+ * positive machine fingerprint, the message reached no person.
+ */
+export type StatsAudience = "org" | "fleet";
+
+// Fleet reads only: internal leads kept out of cross-org figures.
+const FLEET_EXCLUDED_EMAILS = ["kevin.lourd@gmail.com", "kevin@distribute.you"];
+const FLEET_EXCLUDED_DOMAINS = [
   "distribute.you",
   "mcpfactory.org",
   "growthagency.dev",
@@ -20,15 +39,17 @@ const EXCLUDED_DOMAINS = [
   "polaritycourse.com",
 ];
 
-/** SQL fragment that filters out internal/sender events */
-export function internalExclusionClause(): SQL {
-  const domainConditions = EXCLUDED_DOMAINS.map(
+/** Events (`e.` alias) a stats read leaves out for this audience. */
+export function internalExclusionClause(audience: StatsAudience): SQL {
+  const selfAddressed = sql`(e.account_email IS NULL OR e.lead_email != e.account_email)`;
+  if (audience === "org") return selfAddressed;
+  const domainConditions = FLEET_EXCLUDED_DOMAINS.map(
     (d) => sql`e.lead_email LIKE ${"%" + d}`,
   );
   return sql`
-    (e.account_email IS NULL OR e.lead_email != e.account_email)
+    ${selfAddressed}
     AND e.lead_email NOT IN (${sql.join(
-      EXCLUDED_EMAILS.map((e) => sql`${e}`),
+      FLEET_EXCLUDED_EMAILS.map((e) => sql`${e}`),
       sql`, `,
     )})
     AND NOT (${sql.join(domainConditions, sql` OR `)})
@@ -214,7 +235,7 @@ export async function queryEngagementLatencyGroups(
       FROM instantly_events e
       JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
       JOIN group_workflows gw ON gw.workflow_slug = c.workflow_slug
-      WHERE ${internalExclusionClause()}
+      WHERE ${internalExclusionClause("fleet")}
         AND e.lead_email IS NOT NULL
     ),
     first_sends AS (
@@ -311,14 +332,15 @@ export async function queryEngagementLatencyGroups(
   });
 }
 
-/** SQL fragment that filters out internal emails on the campaigns table (uses c.lead_email) */
-export function campaignExclusionClause(): SQL {
-  const domainConditions = EXCLUDED_DOMAINS.map(
+/** Campaign rows (`c.` alias) a stats read leaves out for this audience. */
+export function campaignExclusionClause(audience: StatsAudience): SQL {
+  if (audience === "org") return sql`TRUE`;
+  const domainConditions = FLEET_EXCLUDED_DOMAINS.map(
     (d) => sql`c.lead_email LIKE ${"%" + d}`,
   );
   return sql`
     c.lead_email NOT IN (${sql.join(
-      EXCLUDED_EMAILS.map((e) => sql`${e}`),
+      FLEET_EXCLUDED_EMAILS.map((e) => sql`${e}`),
       sql`, `,
     )})
     AND NOT (${sql.join(domainConditions, sql` OR `)})
@@ -342,7 +364,7 @@ const ZERO_CAMPAIGN_AGGREGATES: CampaignAggregates = { contacted: 0, notSending:
  *   - `cancelled` = row count where the retry-stuck job has terminally
  *     killed the campaign (delivery_status='cancelled').
  */
-export async function queryCampaignAggregates(whereClause: SQL): Promise<CampaignAggregates> {
+export async function queryCampaignAggregates(whereClause: SQL, audience: StatsAudience): Promise<CampaignAggregates> {
   const result = await db.execute(sql`
     SELECT
       COUNT(*)::int AS "emailsContacted",
@@ -350,7 +372,7 @@ export async function queryCampaignAggregates(whereClause: SQL): Promise<Campaig
       COUNT(*) FILTER (WHERE c.delivery_status = 'cancelled')::int AS "cancelled"
     FROM instantly_campaigns c
     WHERE ${whereClause}
-      AND ${campaignExclusionClause()}
+      AND ${campaignExclusionClause(audience)}
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
   const row = rows[0] as any;
@@ -364,6 +386,7 @@ export async function queryCampaignAggregates(whereClause: SQL): Promise<Campaig
 /** Same aggregates as queryCampaignAggregates, grouped by dimension. */
 export async function queryGroupedCampaignAggregates(
   whereClause: SQL,
+  audience: StatsAudience,
   groupBy: string,
   timezone = "UTC",
 ): Promise<Map<string, CampaignAggregates>> {
@@ -389,7 +412,7 @@ export async function queryGroupedCampaignAggregates(
         c.delivery_status
       FROM instantly_campaigns c
       WHERE ${whereClause}
-        AND ${campaignExclusionClause()}
+        AND ${campaignExclusionClause(audience)}
     )
     SELECT
       c.group_key AS "groupKey",
@@ -408,7 +431,7 @@ export async function queryGroupedCampaignAggregates(
     FROM instantly_campaigns c
     ${lateralJoin}
     WHERE ${whereClause}
-      AND ${campaignExclusionClause()}
+      AND ${campaignExclusionClause(audience)}
       AND ${groupCol} IS NOT NULL
     GROUP BY ${groupCol}
   `;
@@ -640,7 +663,7 @@ const ZERO_SENTIMENT_DETAIL: SentimentDetail = {
  * silver are left untouched (the full reclassification history stays in the
  * event log). The `e.` alias matches `internalExclusionClause()`.
  */
-function latestSentimentCteBody(): SQL {
+function latestSentimentCteBody(audience: StatsAudience): SQL {
   const typeList = sql.join(
     SENTIMENT_EVENT_TYPES.map((t) => sql`${t}`),
     sql`, `,
@@ -658,7 +681,7 @@ function latestSentimentCteBody(): SQL {
       -- count here, or a lead reads as carrying a kind its author took back.
       -- Only manual mirror rows can ever be withdrawn; NULL on everything else.
       AND e.withdrawn_at IS NULL
-      AND ${internalExclusionClause()}
+      AND ${internalExclusionClause(audience)}
     ORDER BY e.campaign_id, e.lead_email,
       e.timestamp DESC, (e.source = 'manual') DESC, e.created_at DESC, e.id DESC
   `;
@@ -718,6 +741,7 @@ const SENTIMENT_GROUP_BY_COLUMNS: Record<string, string> = {
  */
 export async function queryGroupedSentiment(
   whereClause: SQL,
+  audience: StatsAudience,
   groupBy: string,
   timezone = "UTC",
 ): Promise<Map<string, SentimentDetail>> {
@@ -727,7 +751,7 @@ export async function queryGroupedSentiment(
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
   if (groupBy === "day") {
     const result = await db.execute(sql`
-      WITH latest_sentiment AS (${latestSentimentCteBody()}),
+      WITH latest_sentiment AS (${latestSentimentCteBody(audience)}),
       grouped_sentiment AS (
         SELECT
           ${groupCol} AS group_key,
@@ -750,7 +774,7 @@ export async function queryGroupedSentiment(
   }
 
   const result = await db.execute(sql`
-    WITH latest_sentiment AS (${latestSentimentCteBody()})
+    WITH latest_sentiment AS (${latestSentimentCteBody(audience)})
     SELECT
       ${groupCol} AS "groupKey",
       ${SENTIMENT_COUNT_COLUMNS}
@@ -768,9 +792,9 @@ export async function queryGroupedSentiment(
 }
 
 /** Aggregate current-sentiment counts (no grouping). */
-export async function querySentiment(whereClause: SQL): Promise<SentimentDetail> {
+export async function querySentiment(whereClause: SQL, audience: StatsAudience): Promise<SentimentDetail> {
   const result = await db.execute(sql`
-    WITH latest_sentiment AS (${latestSentimentCteBody()})
+    WITH latest_sentiment AS (${latestSentimentCteBody(audience)})
     SELECT
       ${SENTIMENT_COUNT_COLUMNS}
     FROM latest_sentiment ls
@@ -797,9 +821,9 @@ export async function querySentiment(whereClause: SQL): Promise<SentimentDetail>
  * (sent/opened/clicked/bounced) stay genuinely per-step in the caller; only the
  * reply *sentiment* is collapsed to the last step here.
  */
-export async function queryStepSentiment(whereClause: SQL): Promise<Map<number, SentimentDetail>> {
+export async function queryStepSentiment(whereClause: SQL, audience: StatsAudience): Promise<Map<number, SentimentDetail>> {
   const result = await db.execute(sql`
-    WITH latest_sentiment AS (${latestSentimentCteBody()}),
+    WITH latest_sentiment AS (${latestSentimentCteBody(audience)}),
     ls AS (
       SELECT
         lc.campaign_id,
@@ -832,6 +856,7 @@ export async function queryStepSentiment(whereClause: SQL): Promise<Map<number, 
 /** Execute grouped stats query and return array of { key, recipientStats, emailStats } */
 export async function queryGroupedStats(
   whereClause: SQL,
+  audience: StatsAudience,
   groupBy: string,
   timezone = "UTC",
 ): Promise<Array<{ key: string; recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }>> {
@@ -850,7 +875,7 @@ export async function queryGroupedStats(
         FROM instantly_events e
         JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
         WHERE ${whereClause}
-          AND ${internalExclusionClause()}
+          AND ${internalExclusionClause(audience)}
       )
       SELECT
         e.group_key AS "groupKey",
@@ -891,7 +916,7 @@ export async function queryGroupedStats(
       ${lateralJoin}
       ${BOUNCE_JOINS}
       WHERE ${whereClause}
-        AND ${internalExclusionClause()}
+        AND ${internalExclusionClause(audience)}
         AND ${groupCol} IS NOT NULL
       GROUP BY ${groupCol}
       ORDER BY ${groupCol}
@@ -906,11 +931,11 @@ export async function queryGroupedStats(
   // (issued LAST so the existing db.execute call order is unchanged).
   const [result, aggregatesMap, sentimentMap, queuedMap] = await Promise.all([
     db.execute(eventsQuery),
-    queryGroupedCampaignAggregates(whereClause, groupBy, timezone),
-    queryGroupedSentiment(whereClause, groupBy, timezone),
+    queryGroupedCampaignAggregates(whereClause, audience, groupBy, timezone),
+    queryGroupedSentiment(whereClause, audience, groupBy, timezone),
     groupBy === "day"
       ? Promise.resolve(undefined)
-      : queryGroupedQueuedEmails(whereClause, groupBy),
+      : queryGroupedQueuedEmails(whereClause, audience, groupBy),
   ]);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
@@ -996,7 +1021,7 @@ export async function queryGroupedStats(
 }
 
 /** Execute the aggregate stats query and return { recipientStats, emailStats } */
-export async function queryStats(whereClause: SQL): Promise<{ recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }> {
+export async function queryStats(whereClause: SQL, audience: StatsAudience): Promise<{ recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }> {
   // These three reads are independent — run them concurrently to cut wall-clock
   // latency (and the time each holds a pool connection) under load. Reply
   // sentiment comes from each lead's CURRENT sentiment (latest sentiment event,
@@ -1020,10 +1045,10 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
       JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
       ${BOUNCE_JOINS}
       WHERE ${whereClause}
-        AND ${internalExclusionClause()}
+        AND ${internalExclusionClause(audience)}
     `),
-    queryCampaignAggregates(whereClause),
-    querySentiment(whereClause),
+    queryCampaignAggregates(whereClause, audience),
+    querySentiment(whereClause, audience),
   ]);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
 
@@ -1102,7 +1127,7 @@ export async function queryStats(whereClause: SQL): Promise<{ recipientStats: ty
  * (they will never be sent) do not count. Hold-to-campaign match mirrors
  * `matchesHoldCampaign` (per-lead id, historical org holds fall back to
  * campaign_id + lead). `COUNT(DISTINCT step)` because pre-0038 rows are doubled.
- * Internal test leads are excluded exactly like every other stats figure.
+ * Scoped for its audience exactly like every other stats figure.
  */
 const QUEUED_STEPS_LATERAL = sql`
   CROSS JOIN LATERAL (
@@ -1121,7 +1146,7 @@ const LIVE_SEQUENCE_GATE = sql`c.status = 'active' AND c.delivery_status IN ('co
  * Scope-level queued-email count. A COUNT always returns one row, so a missing
  * row or a failed read is UNKNOWN: `null` (logged loud), never a 0.
  */
-export async function queryQueuedEmails(whereClause: SQL): Promise<number | null> {
+export async function queryQueuedEmails(whereClause: SQL, audience: StatsAudience): Promise<number | null> {
   try {
     const result = await db.execute(sql`
       SELECT COALESCE(SUM(q.steps), 0)::int AS "queued"
@@ -1129,7 +1154,7 @@ export async function queryQueuedEmails(whereClause: SQL): Promise<number | null
       ${QUEUED_STEPS_LATERAL}
       WHERE ${whereClause}
         AND ${LIVE_SEQUENCE_GATE}
-        AND ${campaignExclusionClause()}
+        AND ${campaignExclusionClause(audience)}
     `);
     const rows = Array.isArray(result) ? result : (result as any)?.rows ?? [];
     const value = rows[0]?.queued;
@@ -1153,6 +1178,7 @@ export async function queryQueuedEmails(whereClause: SQL): Promise<number | null
  */
 export async function queryGroupedQueuedEmails(
   whereClause: SQL,
+  audience: StatsAudience,
   groupBy: string,
 ): Promise<Map<string, number> | null> {
   const col = CAMPAIGN_GROUP_BY_COLUMNS[groupBy];
@@ -1167,7 +1193,7 @@ export async function queryGroupedQueuedEmails(
       ${QUEUED_STEPS_LATERAL}
       WHERE ${whereClause}
         AND ${LIVE_SEQUENCE_GATE}
-        AND ${campaignExclusionClause()}
+        AND ${campaignExclusionClause(audience)}
         AND ${groupCol} IS NOT NULL
       GROUP BY ${groupCol}
     `);
@@ -1233,7 +1259,7 @@ export interface StepStat {
  * The step events query and the step-sentiment query are independent — run
  * concurrently.
  */
-export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
+export async function computeStepStats(whereClause: SQL, audience: StatsAudience): Promise<StepStat[]> {
   const [stepResult, stepSentimentMap] = await Promise.all([
     db.execute(sql`
       SELECT
@@ -1249,12 +1275,12 @@ export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
       JOIN instantly_campaigns c ON c.instantly_campaign_id = e.campaign_id
       ${BOUNCE_JOINS}
       WHERE ${whereClause}
-        AND ${internalExclusionClause()}
+        AND ${internalExclusionClause(audience)}
         AND e.step IS NOT NULL
       GROUP BY e.step
       ORDER BY e.step
     `),
-    queryStepSentiment(whereClause),
+    queryStepSentiment(whereClause, audience),
   ]);
   const stepRows = Array.isArray(stepResult) ? stepResult : (stepResult as any).rows ?? [];
   return stepRows.map((sr: any) => {
@@ -1301,17 +1327,18 @@ export async function computeStepStats(whereClause: SQL): Promise<StepStat[]> {
  */
 export async function computeStatsPayload(
   whereClause: SQL,
+  audience: StatsAudience,
 ): Promise<{ recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: Record<string, unknown> }> {
   const [overall, stepStats, queued] = await Promise.all([
-    queryStats(whereClause),
-    computeStepStats(whereClause).catch((stepError: any) => {
+    queryStats(whereClause, audience),
+    computeStepStats(whereClause, audience).catch((stepError: any) => {
       console.error(
         `[instantly-service] Step query failed (overall stats still returned): ${stepError.cause?.message ?? stepError.message}`,
       );
       return [] as StepStat[];
     }),
     // Issued LAST so existing db.execute call order is unchanged.
-    queryQueuedEmails(whereClause),
+    queryQueuedEmails(whereClause, audience),
   ]);
   return {
     recipientStats: overall.recipientStats,
@@ -1399,10 +1426,10 @@ router.get("/stats", async (req: Request, res: Response) => {
   try {
     const payload = await getOrSetCachedStats(cacheKey, async () => {
       if (groupBy) {
-        const groups = await queryGroupedStats(whereClause, groupBy, timezone);
+        const groups = await queryGroupedStats(whereClause, "org", groupBy, timezone);
         return { groups };
       }
-      return computeStatsPayload(whereClause);
+      return computeStatsPayload(whereClause, "org");
     }, STATS_CACHE_TTL_MS, { refreshAfterMs: STATS_REFRESH_AFTER_MS });
     return res.json(payload);
   } catch (error: any) {
@@ -1451,7 +1478,7 @@ router.post("/stats/grouped", async (req: Request, res: Response) => {
       entries.map(async ([key, { runIds }]) => {
         const orgId = res.locals.orgId as string;
         const whereClause = sql`c.org_id = ${orgId} AND c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`;
-        const { recipientStats, emailStats } = await queryStats(whereClause);
+        const { recipientStats, emailStats } = await queryStats(whereClause, "org");
         return { key, recipientStats, emailStats };
       }),
     );

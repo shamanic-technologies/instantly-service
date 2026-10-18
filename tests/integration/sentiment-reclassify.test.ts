@@ -73,7 +73,7 @@ describe.skipIf(SKIP)("reply-sentiment reclassification (DB-backed)", () => {
   it("aggregate /stats counts the lead as the CURRENT (negative) sentiment, not the stale positive", async () => {
     await seedReclassifiedLead();
 
-    const { recipientStats } = await queryStats(whereOrg);
+    const { recipientStats } = await queryStats(whereOrg, "org");
 
     expect(recipientStats.repliesPositive).toBe(0);
     expect(recipientStats.repliesNegative).toBe(1);
@@ -84,12 +84,12 @@ describe.skipIf(SKIP)("reply-sentiment reclassification (DB-backed)", () => {
   it("grouped (model/brand) stats also reflect the current sentiment", async () => {
     await seedReclassifiedLead();
 
-    const byWorkflow = await queryGroupedStats(whereOrg, "workflowSlug");
+    const byWorkflow = await queryGroupedStats(whereOrg, "org", "workflowSlug");
     const wf = byWorkflow.find((g) => g.key === "wf-s");
     expect(wf?.recipientStats.repliesPositive).toBe(0);
     expect(wf?.recipientStats.repliesNegative).toBe(1);
 
-    const byBrand = await queryGroupedStats(whereOrg, "brandId");
+    const byBrand = await queryGroupedStats(whereOrg, "org", "brandId");
     const brand = byBrand.find((g) => g.key === "brand-s");
     expect(brand?.recipientStats.repliesPositive).toBe(0);
     expect(brand?.recipientStats.repliesNegative).toBe(1);
@@ -107,7 +107,7 @@ describe.skipIf(SKIP)("reply-sentiment reclassification (DB-backed)", () => {
       { eventType: "lead_not_interested", campaignId: "inst-tie", leadEmail: "tie@external.com", timestamp: sameTs, source: "manual" },
     ]);
 
-    const { recipientStats } = await queryStats(whereOrg);
+    const { recipientStats } = await queryStats(whereOrg, "org");
     expect(recipientStats.repliesPositive).toBe(0);
     expect(recipientStats.repliesNegative).toBe(1);
   });
@@ -127,7 +127,7 @@ describe.skipIf(SKIP)("reply-sentiment reclassification (DB-backed)", () => {
       { eventType: "lead_not_interested", campaignId: "inst-step", leadEmail: "step@external.com", step: null, timestamp: new Date("2026-06-03T10:00:00Z"), source: "manual" },
     ]);
 
-    const byStep = await queryStepSentiment(whereOrg);
+    const byStep = await queryStepSentiment(whereOrg, "org");
     // Current sentiment (negative) attributed to the last sent step (2), nowhere positive.
     expect(byStep.get(2)?.notInterested).toBe(1);
     expect(byStep.get(2)?.interested).toBe(0);
@@ -149,7 +149,7 @@ describe.skipIf(SKIP)("reply-sentiment reclassification (DB-backed)", () => {
       source: "webhook",
     });
 
-    const { recipientStats } = await queryStats(whereOrg);
+    const { recipientStats } = await queryStats(whereOrg, "org");
     expect(recipientStats.repliesPositive).toBe(1);
     expect(recipientStats.repliesNegative).toBe(0);
   });
