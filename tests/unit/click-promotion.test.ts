@@ -44,6 +44,7 @@ function hitRow(over: Record<string, unknown> = {}) {
     user_agent: CHROME,
     received_at: "2026-09-11T10:00:00.000Z",
     has_paired_unsubscribe: false,
+    datacenter_networks_loaded: true,
     ...over,
   };
 }
@@ -54,6 +55,32 @@ beforeEach(() => {
 });
 
 describe("promotePendingClicks", () => {
+  // CLICK-HUMANS-1018: the cloud-network rule cannot see on an empty list, so a
+  // click is held undecided (never waved through as human) until it is loaded.
+  it("holds every click, deciding nothing, while the cloud-network list is empty", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([hitRow({ datacenter_networks_loaded: false })]));
+    mockDbExecute.mockResolvedValue(pgResult([]));
+
+    const summary = await promotePendingClicks({ asOf: new Date("2026-09-11T10:05:00Z") });
+
+    expect(summary).toMatchObject({ decided: 0, promoted: 0, heldNoNetworkList: 1 });
+    expect(mockPromoteEvent).not.toHaveBeenCalled();
+    expect(mockDbExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("a click from a cloud operator's network is never promoted", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([hitRow({ id: "hit-aws" })]));
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([{ id: "hit-aws", from_datacenter_network: true }]),
+    );
+    mockDbExecute.mockResolvedValue(pgResult([]));
+
+    const summary = await promotePendingClicks({ asOf: new Date("2026-09-11T10:05:00Z") });
+
+    expect(summary).toMatchObject({ decided: 1, promoted: 0, scanner: 1, reasons: { datacenter_network: 1 } });
+    expect(mockPromoteEvent).not.toHaveBeenCalled();
+  });
+
   // CLICK-FIRES-WEBSITE-VISIT-1015: the website-visit trigger is fired from
   // `promoteEvent` on a first promoted click, so a hit ruled `scanner` here can
   // never fire it: it never reaches `promoteEvent`.

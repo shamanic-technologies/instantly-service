@@ -229,6 +229,15 @@ async function start() {
         );
       });
 
+    // The cloud networks a click scanner fetches from (`datacenter_network`
+    // click verdict), refreshed daily from RIPEstat. Armed after listen.
+    import("./lib/self-send/datacenter-networks-worker")
+      .then(({ startDatacenterNetworksWorker }) => startDatacenterNetworksWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start datacenter-networks worker: ${message}`);
+      });
+
     // Send the self-send steps that have come due. An in-process interval, NOT
     // a cron: `self-send-cron.yml` declares hourly and GitHub Actions delivered
     // 6.2 runs a day, leaving leads hours past due and the fleet queue growing.
