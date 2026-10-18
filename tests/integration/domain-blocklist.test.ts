@@ -1,8 +1,8 @@
 /**
  * DB-backed proof of the sending-domain blocklist check (DOMAIN-BLOCKLIST-1016):
  * migration 0080 applies; a new listing writes ONE `listed` event, ONE removal
- * link and ONE staff alert; the same listing the next day writes nothing and
- * alerts nobody; a refused query keeps the state; a fresh clean answer delists.
+ * link and NO staff email (owner 2026-10-18); the same listing the next day
+ * writes nothing; a refused query keeps the state; a fresh clean answer delists.
  *
  * Builds its own pool (like outcome-trigger-fires.test.ts). Skipped when no
  * database is configured (CI runs without one):
@@ -25,7 +25,6 @@ vi.mock("../../src/db", async () => {
 });
 
 const { runBlocklistCheck } = await import("../../src/lib/domain-blocklist-sync");
-const { deliverPendingBlocklistAlerts } = await import("../../src/lib/domain-blocklist-alert");
 const { loadDomainBlocklistRead } = await import("../../src/lib/domain-blocklist-read");
 type Lookup = import("../../src/lib/domain-blocklist-sync").Lookup;
 type Def = import("../../src/lib/domain-blocklist").BlocklistDefinition;
@@ -52,7 +51,6 @@ function world(opts: { listed: boolean; refuse?: boolean }) {
 
 describe.skipIf(SKIP)("domain blocklist check (DB-backed)", () => {
   const reconcile = vi.fn().mockResolvedValue({ changed: 0 });
-  const send = vi.fn().mockResolvedValue(undefined);
 
   beforeAll(async () => {
     const { drizzle } = await import("drizzle-orm/node-postgres");
@@ -74,29 +72,22 @@ describe.skipIf(SKIP)("domain blocklist check (DB-backed)", () => {
   const events = async () =>
     (await q(`SELECT event_type, alert_status, mailboxes FROM domain_blocklist_events WHERE domain = $1 ORDER BY occurred_at, event_type`, [LISTED])).rows;
 
-  it("day 1, a new listing: one listed event + one removal link, one alert, lifecycle reconciled", async () => {
+  it("day 1, a new listing: one listed event + one removal link, no staff email, lifecycle reconciled", async () => {
     const summary = await runBlocklistCheck({ asOf: new Date("2026-10-16T06:00:00Z"), lookupFactory: world({ listed: true }), reconcile });
     expect(summary.listed).toBe(1);
     expect(reconcile).toHaveBeenCalledTimes(1);
     const rows = await events();
     expect(rows.map((r) => r.event_type)).toEqual(["listed", "removal_link_issued"]);
-    expect(rows[0].alert_status).toBe("pending");
+    expect(rows[0].alert_status).toBeNull();
     expect([...rows[0].mailboxes].sort()).toEqual([`raquel@${LISTED}`, `ruth@${LISTED}`]);
 
-    const alerts = await deliverPendingBlocklistAlerts(send);
-    expect(alerts).toMatchObject({ sent: 1, failed: 0 });
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0]![0]).toMatchObject({ domain: LISTED, list: "SURBL", listAnswer: "ABUSE (127.0.0.64)" });
-    expect((await events())[0].alert_status).toBe("sent");
   });
 
-  it("day 2, the same listing: no new event, no alert, no reconcile", async () => {
+  it("day 2, the same listing: no new event, no reconcile", async () => {
     const summary = await runBlocklistCheck({ asOf: new Date("2026-10-17T06:00:00Z"), lookupFactory: world({ listed: true }), reconcile });
     expect(summary.listed).toBe(0);
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(await events()).toHaveLength(2);
-    expect(await deliverPendingBlocklistAlerts(send)).toMatchObject({ attempted: 0 });
-    expect(send).toHaveBeenCalledTimes(1);
     const status = (await q(`SELECT listed, listed_since FROM domain_blocklist_status WHERE domain = $1 AND list = 'surbl'`, [LISTED])).rows[0];
     expect(status.listed).toBe(true);
     expect(new Date(status.listed_since).toISOString()).toBe("2026-10-16T06:00:00.000Z");

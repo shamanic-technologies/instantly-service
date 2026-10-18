@@ -10,9 +10,9 @@
  * refuses a post "submitted faster than a person can fill it in" (measured
  * 2026-10-16, every one of 11 posts refused). The email carries every field
  * the form asks for, is sent from the company's own mailbox (`company.email`,
- * so SURBL's answer reaches the owner) and blind-copies that address so the
- * owner holds what was sent. Spamhaus and URIBL need an owner account: their
- * alert keeps the link.
+ * so SURBL's answer reaches us) and copies nobody: no Bcc to the owner (owner
+ * 2026-10-18: « Arrête de m'envoyer des emails pour ça »); what we sent lives in
+ * bronze. Spamhaus and URIBL need an owner account: the staff read keeps the link.
  *
  * Every attempt is stored (owner: "Report this form filling success or failure
  * in BSG event storing"): bronze `domain_blocklist_removal_attempts` keeps what
@@ -79,7 +79,6 @@ export interface FilingResult {
 export interface RemovalEmail {
   from: string;
   to: string;
-  bcc: string;
   subject: string;
   text: string;
 }
@@ -167,7 +166,6 @@ export function removalEmail(fields: Record<string, string>): RemovalEmail {
   return {
     from: `"${fields.name.replace(/"/g, "")}" <${fields.email}>`,
     to: SURBL_REMOVAL_ADDRESS,
-    bcc: fields.email,
     subject: `Removal request: ${fields.fp}`,
     text,
   };
