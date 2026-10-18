@@ -69,7 +69,8 @@ router.post("/stats/engagement-latency/grouped", async (req: Request, res: Respo
 
   const groups = Object.entries(parsed.data.groups).map(([key, group]) => ({
     key,
-    workflowSlugs: Array.from(new Set(group.workflowSlugs)),
+    workflowSlugs: Array.from(new Set(group.workflowSlugs ?? [])),
+    ...(group.campaignIds ? { campaignIds: Array.from(new Set(group.campaignIds)) } : {}),
   }));
 
   try {

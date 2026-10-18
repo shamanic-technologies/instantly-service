@@ -27,6 +27,7 @@ import writtenToLeadsRoutes from "./routes/written-to-leads";
 import emailSequencesRoutes from "./routes/email-sequences";
 import emailSignatureRoutes from "./routes/email-signature";
 import leadSendingScheduleRoutes from "./routes/lead-sending-schedule";
+import campaignSendQueueRoutes from "./routes/campaign-send-queue";
 import replyVerdictsRoutes from "./routes/reply-verdicts";
 import auditRoutes from "./routes/audit";
 import deliveryByVerdictRoutes from "./routes/delivery-by-verdict";
@@ -115,6 +116,7 @@ app.use("/orgs/written-to-leads", serviceAuth, requireOrgId, writtenToLeadsRoute
 app.use("/orgs/email-sequences", serviceAuth, requireOrgId, emailSequencesRoutes);
 app.use("/orgs/email-signature", serviceAuth, requireOrgId, emailSignatureRoutes);
 app.use("/orgs/sending-schedule", serviceAuth, requireOrgId, leadSendingScheduleRoutes);
+app.use("/orgs/send-queue", serviceAuth, requireOrgId, campaignSendQueueRoutes); // what is queued to send for some campaigns, and when the window opens (CAMPAIGN-NEXT-STEPS-1018)
 app.use("/orgs/reply-verdicts", serviceAuth, requireOrgId, replyVerdictsRoutes);
 app.use("/orgs", serviceAuth, requireOrgId, analyticsRoutes);
 

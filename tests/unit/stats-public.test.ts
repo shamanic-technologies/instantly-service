@@ -461,16 +461,68 @@ describe("POST /stats/engagement-latency/grouped", () => {
       {
         key: "sales-outreach",
         workflowSlugs: ["sales-outreach-v1", "sales-outreach-v2"],
+        campaignCount: 0,
         timeToFirstLinkClick: { averageMs: 10, medianMs: 10, sampleSize: 2 },
         timeToFirstPositiveReply: { averageMs: null, medianMs: null, sampleSize: 0 },
       },
       {
         key: "sales-outreach-premium",
         workflowSlugs: ["sales-outreach-premium-v1"],
+        campaignCount: 0,
         timeToFirstLinkClick: { averageMs: null, medianMs: null, sampleSize: 0 },
         timeToFirstPositiveReply: { averageMs: 20, medianMs: 20, sampleSize: 1 },
       },
     ]);
     expect(mockExecute).toHaveBeenCalledTimes(1);
+  });
+
+  // CAMPAIGN-NEXT-STEPS-1018: one campaign's units, or one pipe's fleet of campaigns.
+  it("scopes a group by campaign ids, never echoing them", async () => {
+    mockExecute.mockResolvedValueOnce({
+      rows: [
+        {
+          groupKey: "campaign",
+          clickSampleSize: 0,
+          clickAverageMs: null,
+          clickMedianMs: null,
+          positiveReplySampleSize: 2,
+          positiveReplyAverageMs: 30,
+          positiveReplyMedianMs: 25,
+        },
+      ],
+    });
+    const app = await createPublicStatsApp();
+    const response = await request(app)
+      .post("/stats/engagement-latency/grouped")
+      .send({ groups: { campaign: { campaignIds: ["c-1", "c-2", "c-1"] }, fleet: { workflowSlugs: ["wf-1"] } } });
+    expect(response.status).toBe(200);
+    expect(response.body.groups).toEqual([
+      {
+        key: "campaign",
+        workflowSlugs: [],
+        campaignCount: 2,
+        timeToFirstLinkClick: { averageMs: null, medianMs: null, sampleSize: 0 },
+        timeToFirstPositiveReply: { averageMs: 30, medianMs: 25, sampleSize: 2 },
+      },
+      {
+        key: "fleet",
+        workflowSlugs: ["wf-1"],
+        campaignCount: 0,
+        timeToFirstLinkClick: { averageMs: null, medianMs: null, sampleSize: 0 },
+        timeToFirstPositiveReply: { averageMs: null, medianMs: null, sampleSize: 0 },
+      },
+    ]);
+    const sqlText = extractSqlText(mockExecute.mock.calls[0][0]);
+    expect(sqlText).toContain("group_campaigns");
+    expect(sqlText).toContain("gc.campaign_id = c.campaign_id");
+  });
+
+  it("refuses a group naming both workflow slugs and campaign ids", async () => {
+    const app = await createPublicStatsApp();
+    const response = await request(app)
+      .post("/stats/engagement-latency/grouped")
+      .send({ groups: { both: { workflowSlugs: ["wf-1"], campaignIds: ["c-1"] } } });
+    expect(response.status).toBe(400);
+    expect(mockExecute).not.toHaveBeenCalled();
   });
 });
