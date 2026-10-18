@@ -160,7 +160,7 @@ describe("a refused MESSAGE is not a dead address (BOUNCE-SPAM-BLOCK-1018)", () 
     judgmentMock.mockClear();
     const judged = {
       ...GODADDY_ROW,
-      judgment: { verdict: "message_refused", questionVersion: 2, judgedAt: "x", model: "m", probability: 1, confidence: 1, probabilities: {} },
+      judgment: { verdict: "message_refused", questionVersion: 3, judgedAt: "x", model: "m", probability: 1, confidence: 1, probabilities: {} },
     };
     database([judged], [GODADDY_EVENT]);
     await runDsnJudgmentSweep({ dryRun: false, sinceDays: null });

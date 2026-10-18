@@ -31,7 +31,7 @@ export const DSN_QUESTION_KEY = "dsn_meaning";
  * version is judged again (one more paid call), so every stored verdict reads
  * the current rule.
  */
-export const DSN_QUESTION_VERSION = 2;
+export const DSN_QUESTION_VERSION = 3;
 
 export const DSN_ADDRESS_DEAD = "address_dead" as const;
 export const DSN_MESSAGE_REFUSED = "message_refused" as const;
@@ -72,6 +72,7 @@ export function buildDsnQuestion(): JudgmentChoiceQuestion {
       "Decide what the failure says about the RECIPIENT'S ADDRESS. " +
       "Judge on the human-readable words of the remote server's answer, not on the numeric status code: servers often send codes like 550 5.1.1 or 552 5.2.0 when they actually blocked the message as spam. " +
       "Answer address_dead ONLY when the words say the address itself cannot receive mail (it does not exist, the account was deleted or disabled, the domain does not exist or has no mail server). " +
+      "A rejection aimed at the RECIPIENT ADDRESS (\"Recipient address rejected\", \"user unknown\", Microsoft 365's 5.4.1 \"Access denied\" which means the address is not in that organization's directory) is about the address; a rejection aimed at the MESSAGE, the SENDER or the CONNECTION is not. " +
       "Whenever the words say the server refused this message or the sender (spam, content, policy, blocklist, reputation, authentication, rate limits, any other reason), or do not say the address is gone, answer message_refused.",
     criteria: {
       [DSN_ADDRESS_DEAD]: {
