@@ -15,9 +15,14 @@ import { Router, type Request, type Response } from "express";
 import { runDispatch } from "../lib/self-send/dispatch-worker";
 import { runPoll } from "../lib/self-send/imap-poller";
 import { runOrphanReplySweep } from "../lib/self-send/orphan-reply-sweep";
+import { runDsnJudgmentSweep } from "../lib/self-send/dsn-judgment-sweep";
 import { recoverForwardedReplies } from "../lib/self-send/forwarded-replies";
 import { refileOurSideReplies } from "../lib/self-send/our-side-refile";
-import { ForwardedRepliesRequestSchema, GmailThreadsRequestSchema } from "../schemas";
+import {
+  DsnJudgmentsRequestSchema,
+  ForwardedRepliesRequestSchema,
+  GmailThreadsRequestSchema,
+} from "../schemas";
 import { foldInGmailThreads } from "../lib/self-send/gmail-threads";
 import { promotePendingClicks } from "../lib/self-send/click-promotion";
 import { sweepStalledFirstEmails } from "../lib/self-send/stalled-first-emails";
@@ -300,6 +305,41 @@ router.post("/retire-instantly-sequences", async (req: Request, res: Response) =
       }`,
     );
   });
+});
+
+/**
+ * Judge every permanent DSN tied to one of our sends and settle it by what it
+ * says (`dsn-judgment-sweep.ts`, BOUNCE-SPAM-BLOCK-1018): a refused message
+ * (spam, policy, reputation) is not a bounce and its `email_bounced` events are
+ * retracted; a dead address is. The dispatch run does the routine 7-day half;
+ * this is the fleet backfill and its dry run.
+ *
+ * Body `{ dryRun?: boolean (default TRUE), sinceDays?: number | null (default
+ * null = the whole history) }`. A dry run judges and persists the judgments
+ * (paid once, reused by the commit run) but retracts and promotes nothing.
+ * 202, then `dsn-judgments: done` with the summary.
+ */
+router.post("/dsn-judgments", async (req: Request, res: Response) => {
+  const parsed = DsnJudgmentsRequestSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid request", details: parsed.error.flatten() });
+    return;
+  }
+  const dryRun = parsed.data.dryRun !== false;
+  const sinceDays = parsed.data.sinceDays ?? null;
+
+  res.status(202).json({ accepted: true });
+  runDsnJudgmentSweep({ dryRun, sinceDays })
+    .then((summary) => {
+      console.log(`[instantly-service] dsn-judgments: done ${JSON.stringify(summary)}`);
+    })
+    .catch((error) => {
+      console.error(
+        `[instantly-service] dsn-judgments failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
 });
 
 export default router;

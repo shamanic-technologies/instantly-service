@@ -326,6 +326,41 @@ registry.registerPath({
   },
 });
 
+export const DsnJudgmentsRequestSchema = z
+  .object({
+    dryRun: z.boolean().optional(),
+    sinceDays: z.number().int().min(1).max(3650).nullable().optional(),
+  })
+  .openapi("DsnJudgmentsRequest");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/self-send/dsn-judgments",
+  summary: "Settle permanent delivery failures by what they say",
+  description:
+    "Platform-scoped ops sweep over every permanent delivery-status notice (DSN) tied " +
+    "to one of our sends. Each is judged once by a chat-service judgment (`choice`, " +
+    "persisted on the bronze row): `address_dead` (the address does not exist, the " +
+    "mailbox is gone) is a bounce and promotes `email_bounced`; `message_refused` " +
+    "(spam, content, policy, blocklist, reputation, authentication) is NOT: every " +
+    "`email_bounced` event on that send is retracted (archived in " +
+    "`instantly_events_retracted`) and the person stays contactable. `sinceDays` " +
+    "(default null = the whole history); `dryRun` (default TRUE) judges and persists " +
+    "the judgments but retracts and promotes nothing. Returns 202; watch for " +
+    "`dsn-judgments: done`.",
+  request: {
+    body: {
+      content: { "application/json": { schema: DsnJudgmentsRequestSchema } },
+    },
+  },
+  responses: {
+    202: {
+      description: "Sweep accepted; runs in the background",
+      content: { "application/json": { schema: AcceptedResponseSchema } },
+    },
+  },
+});
+
 export const OrphanRepliesRequestSchema = z
   .object({
     dryRun: z.boolean().optional(),

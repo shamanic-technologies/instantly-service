@@ -80,6 +80,11 @@ vi.mock("../../src/lib/self-send/orphan-reply-sweep", () => ({
   runOrphanReplySweep: async (...args: unknown[]) => mockOrphanSweep(...(args as [])),
 }));
 
+const mockDsnSweep = vi.fn(async () => ({ judgedNow: 0, judgmentFailed: 0, bouncesPromoted: 0, bounceEventsRetracted: 0 }));
+vi.mock("../../src/lib/self-send/dsn-judgment-sweep", () => ({
+  runDsnJudgmentSweep: async (...args: unknown[]) => mockDsnSweep(...(args as [])),
+}));
+
 vi.mock("../../src/lib/scheduled-replies-worker", () => ({
   dispatchScheduledReplies: (...args: unknown[]) =>
     mockDispatchScheduledReplies(...args),
@@ -259,6 +264,12 @@ describe("runDispatch — the probe that decides whether to read the mailboxes",
       order.push("poll");
       return { accountsPolled: 1 };
     });
+    // A permanent DSN the poll filed is judged before the re-selection
+    // (BOUNCE-SPAM-BLOCK-1018): a dead address must stop its sequence first.
+    mockDsnSweep.mockImplementationOnce(async () => {
+      order.push("dsn-judgments");
+      return { judgedNow: 0, judgmentFailed: 0, bouncesPromoted: 0, bounceEventsRetracted: 0 };
+    });
 
     primeSenderHealth();
     primePlan([SEQUENCE_ROW], [ACCOUNT_ROW]); // probe
@@ -268,7 +279,7 @@ describe("runDispatch — the probe that decides whether to read the mailboxes",
 
     const summary = await runDispatch({ asOf: NOW, pollFirst: true });
 
-    expect(order).toEqual(["poll"]);
+    expect(order).toEqual(["poll", "dsn-judgments"]);
     expect(mockRunPoll).toHaveBeenCalledTimes(1);
     expect(summary.polled).toBe(true);
     expect(summary.sent).toBe(1);

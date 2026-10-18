@@ -19,11 +19,14 @@
  * seq-scans (~55 ms) on every serve.
  *
  * HARD vs SOFT. No column distinguishes them, and none needs to: an
- * `email_bounced` event here is already a PERMANENT failure. The self-send
- * poller promotes only a permanent DSN (`classifyPermanentFailure`,
- * `isTransientDeliveryReport`), the delayed-DSN backfill deleted every event a
- * temporary delay had produced, and Instantly's own `email_bounced` webhook is
- * its hard-bounce signal. So every row is treated as a hard bounce.
+ * `email_bounced` event here is already a PERMANENT failure OF THE ADDRESS. The
+ * self-send path promotes only a permanent DSN (`classifyPermanentFailure`,
+ * `isTransientDeliveryReport`) that a judgment read as a dead address
+ * (`dsn-judgment-sweep.ts`: a refusal of our message for spam, policy or
+ * reputation is retracted, the person stays contactable), the delayed-DSN
+ * backfill deleted every event a temporary delay had produced, and Instantly's
+ * own `email_bounced` webhook is its hard-bounce signal. So every row is
+ * treated as a hard bounce.
  *
  * Addresses are stored lowercased and trimmed (0 exceptions in prod), and the
  * input is normalized the same way before the lookup.
