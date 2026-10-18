@@ -276,7 +276,8 @@ export async function runBlocklistCheck(
             actionTaken: "mailboxes_out_of_new_sequences",
           },
           occurredAt: asOf,
-          alertStatus: "pending",
+          // No staff email (owner 2026-10-18: « Arrête de m'envoyer des emails pour ça »):
+          // the admin chart is the surface. `alert_status` stays null.
         });
         await tx.insert(domainBlocklistEvents).values({
           domain: t.domain,

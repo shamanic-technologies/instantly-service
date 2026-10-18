@@ -55,14 +55,17 @@ describe("the request's words", () => {
     expect(Object.values(fields).join("")).toMatch(/^[\x09\x0A\x0D\x20-\x7E]*$/);
   });
 
-  it("one plaintext email to SURBL's removal address, from the company mailbox, the owner in Bcc, every field of the form", () => {
+  it("one plaintext email to SURBL's removal address, from the company mailbox, nobody copied, every field of the form", () => {
     const email = removalEmail(fields);
-    expect(email).toMatchObject({
+    expect(email).toEqual({
       to: SURBL_REMOVAL_ADDRESS,
       from: '"Kevin Lourd" <kevin@distribute.you>',
-      bcc: "kevin@distribute.you",
       subject: "Removal request: agileconsultco.com",
+      text: expect.any(String),
     });
+    // Owner 2026-10-18: « Arrête de m'envoyer des emails pour ça ». No copy to him.
+    expect(email).not.toHaveProperty("bcc");
+    expect(email).not.toHaveProperty("cc");
     for (const label of ["Your name", "Your email address", "Organization name", "Street address", "Telephone number", "Web site domain name", "Sending IP addresses", "Full headers", "Full source", "Description", "Explanation", "published policy"]) {
       expect(email.text).toContain(label);
     }
@@ -85,6 +88,8 @@ describe("what the mail server answered", () => {
     const out = await fileSurblRemoval({ ...INPUT, send: async (e) => (sent.push(e), { response: "250 2.0.0 Ok: queued", code: 250 }) });
     expect(out).toMatchObject({ outcome: "sent", httpStatus: 250, responseExcerpt: "250 2.0.0 Ok: queued", error: null });
     expect(sent).toHaveLength(1);
+    expect(sent[0]!.to).toBe(SURBL_REMOVAL_ADDRESS);
+    expect(Object.keys(sent[0]!).sort()).toEqual(["from", "subject", "text", "to"]);
     expect(out.request).toMatchObject({ fp: "agileconsultco.com", emailTo: SURBL_REMOVAL_ADDRESS });
   });
 

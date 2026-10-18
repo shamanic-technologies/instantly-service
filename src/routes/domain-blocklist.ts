@@ -11,7 +11,6 @@ import {
   loadDomainBlocklistRead,
 } from "../lib/domain-blocklist-read";
 import { recordRemovalRequest, runBlocklistCheck } from "../lib/domain-blocklist-sync";
-import { deliverPendingBlocklistAlerts } from "../lib/domain-blocklist-alert";
 import { fileDueRemovals } from "../lib/blocklist-removal";
 import { loadOwnerContact } from "../lib/owner-identity-client";
 import { getOrSetCachedStats, statsCacheKey, deleteCachedStatsWhere } from "../lib/stats-cache";
@@ -39,13 +38,12 @@ router.get("/domain-blocklist", async (req: Request, res: Response) => {
   }
 });
 
-/** Run one full check now (the worker runs it daily), then deliver pending alerts. */
+/** Run one full check now (the worker runs it daily). No email to anyone. */
 router.post("/domain-blocklist/check", async (_req: Request, res: Response) => {
   try {
     const summary = await runBlocklistCheck();
-    const alerts = await deliverPendingBlocklistAlerts();
     deleteCachedStatsWhere((key) => key.startsWith("domain-blocklist"));
-    return res.json({ ...summary, alerts });
+    return res.json(summary);
   } catch (error: any) {
     console.error(`[instantly-service] domain-blocklist check failed: ${error?.message ?? error}`);
     return res.status(500).json({ error: error?.message ?? "domain-blocklist check failed" });
