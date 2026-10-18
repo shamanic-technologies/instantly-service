@@ -160,12 +160,24 @@ describe("a refused MESSAGE is not a dead address (BOUNCE-SPAM-BLOCK-1018)", () 
     judgmentMock.mockClear();
     const judged = {
       ...GODADDY_ROW,
-      judgment: { verdict: "message_refused", judgedAt: "x", model: "m", probability: 1, confidence: 1, probabilities: {} },
+      judgment: { verdict: "message_refused", questionVersion: 2, judgedAt: "x", model: "m", probability: 1, confidence: 1, probabilities: {} },
     };
     database([judged], [GODADDY_EVENT]);
     await runDsnJudgmentSweep({ dryRun: false, sinceDays: null });
     expect(judgmentMock).not.toHaveBeenCalled();
     expect(retractMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a judgment asked under an older wording of the question is asked again", async () => {
+    const stale = {
+      ...GODADDY_ROW,
+      judgment: { verdict: "address_dead", questionVersion: 1, judgedAt: "x", model: "m", probability: 1, confidence: 1, probabilities: {} },
+    };
+    database([stale], [GODADDY_EVENT]);
+    judges(byFixture);
+    const summary = await runDsnJudgmentSweep({ dryRun: true, sinceDays: null });
+    expect(judgmentMock).toHaveBeenCalledTimes(1);
+    expect(summary).toMatchObject({ messageRefused: 1, bounceEventsRetracted: 1 });
   });
 
   it("a dry run judges but retracts and promotes nothing", async () => {

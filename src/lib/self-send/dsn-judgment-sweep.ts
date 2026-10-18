@@ -38,6 +38,7 @@ import {
   DSN_ADDRESS_DEAD,
   DSN_MESSAGE_REFUSED,
   DSN_QUESTION_KEY,
+  DSN_QUESTION_VERSION,
   dsnSendKey,
   planDsnSettlement,
   readDsnJudgment,
@@ -119,8 +120,14 @@ async function loadDsnRows(sinceDays: number | null): Promise<DsnRow[]> {
     subject: (r.subject as string | null) ?? null,
     text: String(r.text ?? ""),
     at: new Date(r.at as string | Date),
-    judgment: (r.judgment as DsnJudgment | null) ?? null,
+    judgment: currentJudgment(r.judgment),
   }));
+}
+
+/** A judgment asked under an older wording of the question counts as none. */
+function currentJudgment(value: unknown): DsnJudgment | null {
+  const judgment = value as DsnJudgment | null;
+  return judgment && judgment.questionVersion === DSN_QUESTION_VERSION ? judgment : null;
 }
 
 async function loadBounceEvents(campaignIds: string[]): Promise<BounceEventRef[]> {

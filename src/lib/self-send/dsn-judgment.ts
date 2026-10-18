@@ -26,6 +26,13 @@ import type { JudgmentChoiceAnswer, JudgmentChoiceQuestion } from "../chat-clien
 
 export const DSN_QUESTION_KEY = "dsn_meaning";
 
+/**
+ * Bumped whenever the question's wording changes: a row judged under another
+ * version is judged again (one more paid call), so every stored verdict reads
+ * the current rule.
+ */
+export const DSN_QUESTION_VERSION = 2;
+
 export const DSN_ADDRESS_DEAD = "address_dead" as const;
 export const DSN_MESSAGE_REFUSED = "message_refused" as const;
 export type DsnVerdict = typeof DSN_ADDRESS_DEAD | typeof DSN_MESSAGE_REFUSED;
@@ -33,6 +40,7 @@ export type DsnVerdict = typeof DSN_ADDRESS_DEAD | typeof DSN_MESSAGE_REFUSED;
 /** What the bronze row carries under `payload.dsnJudgment`. */
 export interface DsnJudgment {
   verdict: DsnVerdict;
+  questionVersion: number;
   judgedAt: string;
   model: string;
   probability: number;
@@ -74,6 +82,8 @@ export function buildDsnQuestion(): JudgmentChoiceQuestion {
           "User unknown / No such user / Recipient address rejected: user does not exist",
           "The account has been disabled or deleted",
           "The domain couldn't be found / has no mail server (DNS error, no MX)",
+          "550 5.4.1 Recipient address rejected: Access denied (Microsoft 365: the recipient is not in the organization's directory)",
+          "The recipient is no longer working here / this mailbox is no longer monitored and was closed",
         ],
       },
       [DSN_MESSAGE_REFUSED]: {
@@ -102,6 +112,7 @@ export function readDsnJudgment(
   }
   return {
     verdict: answer.choice,
+    questionVersion: DSN_QUESTION_VERSION,
     judgedAt: judgedAt.toISOString(),
     model,
     probability: answer.probabilities[answer.choice] ?? 0,
