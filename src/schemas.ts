@@ -3090,7 +3090,7 @@ registry.registerPath({
   path: "/internal/seed-placement/daily",
   summary: "Seed inbox placement per day, Google and Microsoft (staff chart)",
   description:
-    "Platform-scoped, read-only. The stored daily series (`seed_placement_daily`, recomputed from bronze on every seed sync): per UTC day the seeds left, Google inbox % and Microsoft inbox % (Outlook.com + Microsoft 365), and the same split per SENDING vendor (gandi = the legacy shared-IP fleet, primeforge = the Google Workspace fleet that sends most prospect mail). Every day of the window is emitted; a day with no test has 0 seeds and null percentages.",
+    "Platform-scoped, read-only. The stored daily series (`seed_placement_daily`, recomputed from bronze on every seed sync): per UTC day the seeds left, Google inbox %, Microsoft 365 inbox % and Outlook.com inbox % (apart: they filter apart), and the same split per SENDING vendor (gandi = the legacy shared-IP fleet, primeforge = the Google Workspace fleet that sends most prospect mail). Every day of the window is emitted; a day with no test has 0 seeds and null percentages.",
   request: { query: z.object({ days: z.string().optional().describe("Window in days, 1..400, default 90") }) },
   responses: {
     200: {
@@ -3105,9 +3105,17 @@ registry.registerPath({
               z.object({
                 day: z.string().describe("YYYY-MM-DD (UTC)"),
                 google: SeedPlacementCountsSchema,
-                microsoft: SeedPlacementMsCountsSchema,
+                microsoft: SeedPlacementMsCountsSchema.describe("A Microsoft 365 business tenant receiver"),
+                microsoftConsumer: SeedPlacementMsCountsSchema.describe(
+                  "An Outlook.com consumer receiver, measured apart from Microsoft 365",
+                ),
                 byVendor: z.array(
-                  z.object({ vendor: z.string(), google: SeedPlacementCountsSchema, microsoft: SeedPlacementMsCountsSchema }),
+                  z.object({
+                    vendor: z.string(),
+                    google: SeedPlacementCountsSchema,
+                    microsoft: SeedPlacementMsCountsSchema,
+                    microsoftConsumer: SeedPlacementMsCountsSchema,
+                  }),
                 ),
               }),
             ),
@@ -3127,6 +3135,62 @@ registry.registerPath({
   description: "Platform-scoped. Every seed sync and every boot does the same.",
   responses: {
     200: { description: "Rows written", content: { "application/json": { schema: z.object({ rows: z.number().int() }) } } },
+    401: { description: "Unauthorized" },
+  },
+});
+
+// ─── Sender health (SENDER-HEALTH-1019) ─────────────────────────────────────
+
+const ProviderCountsSchema = z.object({
+  google: z.number().int(),
+  microsoft: z.number().int().describe("Microsoft 365 business tenants"),
+  microsoft_consumer: z.number().int().describe("Outlook.com / Hotmail / Live"),
+});
+const ProviderListsSchema = z.object({
+  google: z.array(z.string()),
+  microsoft: z.array(z.string()),
+  microsoft_consumer: z.array(z.string()),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/sender-health",
+  summary: "Mailboxes kept out of prospect mail, and why (staff chart)",
+  description:
+    "Platform-scoped, read-only. `current` = the latest dispatch tick's lists: `refused` = real mailboxes the relay refuses with no accepted send since (prospect, seed and warmup mail: they send nothing); `mostlySpam[provider]` = sending addresses with more than half of at least 10 found seeds in spam at that provider (no email, follow-ups included, to that provider's prospects). `days` = the stored daily series (`sender_health_daily`, written every dispatch tick): mailbox counts at day end, held emails = the day's max per tick. A day with no tick is null, never 0.",
+  request: { query: z.object({ days: z.string().optional().describe("Window in days, 1..400, default 90") }) },
+  responses: {
+    200: {
+      description: "State and series",
+      content: {
+        "application/json": {
+          schema: z.object({
+            asOf: z.string(),
+            from: z.string(),
+            to: z.string(),
+            current: z
+              .object({
+                day: z.string(),
+                updatedAt: z.string(),
+                refused: z.array(z.string()),
+                mostlySpam: ProviderListsSchema,
+              })
+              .nullable(),
+            days: z.array(
+              z.object({
+                day: z.string().describe("YYYY-MM-DD (UTC)"),
+                refusedMailboxes: z.number().int().nullable(),
+                mostlySpamMailboxes: ProviderCountsSchema.nullable(),
+                heldPlacement: z.number().int().nullable().describe("First emails held for placement (rehomed or waiting)"),
+                heldMostlySpam: z.number().int().nullable().describe("Follow-ups held: mailbox mostly spam at the prospect's provider"),
+                skippedRefused: z.number().int().nullable().describe("Steps skipped on a refused or blind mailbox"),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+    400: { description: "Bad `days`", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Unauthorized" },
   },
 });
@@ -3773,15 +3837,19 @@ const MicrosoftPlacementSchema = z
     verdict: z
       .enum(["inbox", "junk", "unmeasured"])
       .describe(
-        "Where Microsoft (Outlook.com + Microsoft 365) puts this mailbox's mail: inbox = at least 90% of the seeds Microsoft delivered sat in Inbox (Focused or Other) on evidence under 16 days; junk = below; unmeasured = no seed found or evidence too old. Decides only whether this mailbox may send a FIRST email to a prospect whose mail Microsoft hosts; never a demotion.",
+        "Where this provider puts this mailbox's mail, over the newest seed tests pooled until 10 seeds (under 16 days): inbox = at least 90% of the seeds found sat in Inbox (Focused or Other at Microsoft); junk = below; unmeasured = no seed found or evidence too old. A FIRST email to a prospect this provider hosts needs inbox; never a demotion.",
       ),
-    seedTotal: z.number().int().describe("Seeds sent to our Microsoft receivers in the latest Microsoft test"),
+    mostlySpam: z
+      .boolean()
+      .describe("More than half of at least 10 found seeds sat in spam: NO email (follow-ups included) to a prospect this provider hosts leaves from this mailbox"),
+    testsPooled: z.number().int().describe("Seed tests pooled into this verdict"),
+    seedTotal: z.number().int().describe("Seeds sent to this provider's receivers in the pooled tests"),
     inboxCount: z.number().int().describe("Of those, found in Inbox"),
     spamCount: z.number().int().describe("Of those, found in Junk"),
     inboxPctOfFound: z.number().nullable().describe("inbox / (inbox + junk), 0..100; null when no seed was found"),
     testedAt: z.string().describe("ISO8601 time the test's seeds left"),
   })
-  .openapi("MicrosoftPlacement");
+  .openapi("ProviderPlacement");
 
 const AccountHealthSchema = z
   .object({
@@ -3858,7 +3926,13 @@ const AccountHealthSchema = z
       .nullable()
       .describe("ISO8601 timestamp of the latest lifecycle transition; null until classified"),
     microsoftPlacement: MicrosoftPlacementSchema.nullable().describe(
-      "Microsoft placement from our own Microsoft seed receivers, served beside inboxPlacement (which reads the Google receivers only). Null when never measured at Microsoft.",
+      "Microsoft 365 (business tenant) placement from our own Microsoft seed receiver, served beside inboxPlacement. Decides for prospects hosted by a Microsoft 365 tenant. Null when never measured there.",
+    ),
+    microsoftConsumerPlacement: MicrosoftPlacementSchema.nullable().describe(
+      "Outlook.com (consumer) placement, measured apart from Microsoft 365 (SENDER-HEALTH-1019). Decides only for Outlook.com / Hotmail / Live prospects. Null when never measured there.",
+    ),
+    googlePlacement: MicrosoftPlacementSchema.nullable().describe(
+      "Google placement as the dispatcher routes on it (same pooled evidence as the lifecycle gate). mostlySpam = no email to a Google-hosted prospect leaves from this mailbox. Null when never measured.",
     ),
     inboxPlacement: InboxPlacementSchema.nullable().describe(
       "Inbox-placement breakdown from the account's latest placement test, promoted through our own Bronze/Silver/Gold pipeline. Headline percentages are the WORST gated ESP leg (the leg the lifecycle delivery gate reads), with the full per-ESP breakdown in `perEsp`. Null when the account has never been in a test — the Instantly V2 API exposes no standing per-account placement property, so this is derived from real test results and never fabricated.",

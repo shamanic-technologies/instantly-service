@@ -31,6 +31,7 @@ vi.mock("../../src/lib/providers/primeforge-client", async (importOriginal) => (
 import {
   ESP_GOOGLE,
   ESP_OUTLOOK,
+  ESP_OUTLOOK_CONSUMER,
   MAX_SEED_RECEIVERS,
   SEED_TEST_ID_PREFIX,
   domainOf,
@@ -142,8 +143,9 @@ describe("espForReceiverHost", () => {
 
   it("still recognises the consumer ESPs by name", () => {
     expect(espForReceiverHost("x@gmail.com", "whatever")).toBe(ESP_GOOGLE);
-    expect(espForReceiverHost("x@outlook.com", "whatever")).toBe(ESP_OUTLOOK);
-    expect(espForReceiverHost("x@hotmail.com", "whatever")).toBe(ESP_OUTLOOK);
+    // Consumer Outlook.com grades apart from a Microsoft 365 tenant (SENDER-HEALTH-1019).
+    expect(espForReceiverHost("x@outlook.com", "whatever")).toBe(ESP_OUTLOOK_CONSUMER);
+    expect(espForReceiverHost("x@hotmail.com", "whatever")).toBe(ESP_OUTLOOK_CONSUMER);
   });
 
   it("domainOf lowercases and trims", () => {
@@ -163,7 +165,7 @@ describe("planSeedSends", () => {
   it("carries the receiver's ESP onto each planned send", () => {
     const receivers = selectSeedReceivers([{ email: "r@outlook.com", imapHost: "x" }]);
     const [send] = planSeedSends(["s@one.com"], receivers);
-    expect(send.recipientEsp).toBe(ESP_OUTLOOK);
+    expect(send.recipientEsp).toBe(ESP_OUTLOOK_CONSUMER);
   });
 
   it("keeps a NON-gradeable mailbox usable as a SENDER", () => {

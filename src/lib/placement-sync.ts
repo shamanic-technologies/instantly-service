@@ -11,7 +11,8 @@
  */
 
 import { sql } from "drizzle-orm";
-import { ESP_OUTLOOK } from "./seed-placement/seeds";
+import { MICROSOFT_ESPS } from "./seed-placement/seeds";
+import { poolPlacementTests } from "./provider-placement";
 import { db } from "../db";
 import {
   instantlyPlacementTestsRaw,
@@ -188,35 +189,45 @@ function toLatestEspRow(r: SilverReadRow): LatestEspRow {
 }
 
 /**
- * Gold: latest placement per account, headlined by its worst gated ESP leg. Reads only the newest
- * test per account (`tested_at = MAX per account`). Returns a Map keyed by
+ * Gold: placement per account over the SAME pooled tests the lifecycle gate
+ * reads (newest tests until 10 seeds, `poolPlacementTests`), so the displayed
+ * percentage and `lifecycle_reason` cannot disagree. Returns a Map keyed by
  * account email; an account with no placement data is simply absent (→ null in
  * the account-health mapper).
  */
-export async function fetchLatestPlacementByAccount(): Promise<Map<string, InboxPlacement>> {
+export async function fetchLatestPlacementByAccount(
+  asOf: Date = new Date(),
+): Promise<Map<string, InboxPlacement>> {
   const result = await db.execute(sql`
-    SELECT r.account_email, r.recipient_esp, r.tested_at,
+    SELECT r.account_email, r.test_id, r.recipient_esp, r.tested_at,
            r.seed_total, r.inbox_count, r.spam_count, r.missing_count
     FROM instantly_placement_results r
-    -- Same population as the lifecycle gate: Microsoft (ESP 2) is served apart
-    -- (microsoftPlacement), never pooled into this score.
-    WHERE r.recipient_esp <> ${ESP_OUTLOOK}
-      AND r.tested_at = (
-      SELECT MAX(r2.tested_at) FROM instantly_placement_results r2
-      WHERE r2.account_email = r.account_email AND r2.recipient_esp <> ${ESP_OUTLOOK}
-    )
+    -- Same population as the lifecycle gate: Microsoft (ESP 2 and 4) is served
+    -- apart (provider placement), never pooled into this score.
+    WHERE r.recipient_esp NOT IN (${sql.join(MICROSOFT_ESPS.map((e) => sql`${e}`), sql`, `)})
   `);
 
-  const byAccount = new Map<string, LatestEspRow[]>();
-  for (const row of rowsOf(result)) {
-    const list = byAccount.get(row.account_email) ?? [];
-    list.push(toLatestEspRow(row));
-    byAccount.set(row.account_email, list);
+  const byAccount = new Map<string, Map<string, LatestEspRow[]>>();
+  for (const row of rowsOf(result) as (SilverReadRow & { test_id: string })[]) {
+    const tests = byAccount.get(row.account_email) ?? new Map<string, LatestEspRow[]>();
+    tests.set(row.test_id, [...(tests.get(row.test_id) ?? []), toLatestEspRow(row)]);
+    byAccount.set(row.account_email, tests);
   }
 
   const out = new Map<string, InboxPlacement>();
-  for (const [email, rows] of byAccount) {
-    const summary = summarizeEspRows(rows);
+  for (const [email, tests] of byAccount) {
+    const pooled = poolPlacementTests(
+      [...tests.entries()].map(([testId, rows]) => ({
+        testId,
+        testedAt: rows.reduce((max, r) => (r.testedAt > max ? r.testedAt : max), rows[0].testedAt),
+        seedTotal: rows.reduce((n, r) => n + r.seedTotal, 0),
+        inboxCount: rows.reduce((n, r) => n + r.inboxCount, 0),
+        spamCount: rows.reduce((n, r) => n + r.spamCount, 0),
+      })),
+      asOf,
+    );
+    if (!pooled) continue;
+    const summary = summarizeEspRows(pooled.testIds.flatMap((id) => tests.get(id) ?? []));
     if (summary) out.set(email, summary);
   }
   return out;
@@ -236,7 +247,8 @@ export async function fetchPlacementHistory(
     SELECT r.test_id, r.recipient_esp, r.tested_at,
            r.seed_total, r.inbox_count, r.spam_count, r.missing_count
     FROM instantly_placement_results r
-    WHERE r.account_email = ${accountEmail} AND r.recipient_esp <> ${ESP_OUTLOOK}
+    WHERE r.account_email = ${accountEmail}
+      AND r.recipient_esp NOT IN (${sql.join(MICROSOFT_ESPS.map((e) => sql`${e}`), sql`, `)})
     ORDER BY r.tested_at DESC
   `);
 

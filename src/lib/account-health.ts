@@ -28,7 +28,7 @@ import type { LifecycleStatus } from "./account-lifecycle";
 import type { LifecycleView } from "./account-lifecycle-sync";
 import type { QueueBreakdown } from "./queue-breakdown";
 import { capForAccount } from "./account-lifecycle";
-import type { MicrosoftPlacement } from "./microsoft-placement-read";
+import type { MicrosoftPlacement, PlacementByProvider, ProviderPlacementDetail } from "./provider-placement-read";
 import {
   SEND_TRANSPORT_SMTP,
   resolveTransportForSend,
@@ -67,8 +67,8 @@ export interface SelectionView {
    * the dispatcher both refuse it.
    */
   inboundBlindAddresses?: ReadonlySet<string>;
-  /** Lowercased address → its latest Microsoft seed test (`microsoft-placement-read.ts`). */
-  microsoftPlacementByEmail?: Map<string, MicrosoftPlacement>;
+  /** Lowercased address → its placement per provider (`provider-placement-read.ts`). */
+  placementByProviderByEmail?: Map<string, PlacementByProvider>;
 }
 
 /**
@@ -161,6 +161,17 @@ export interface AccountHealth {
    * Null when never measured at Microsoft.
    */
   microsoftPlacement: MicrosoftPlacement | null;
+  /**
+   * The same at Outlook.com (consumer), measured apart from Microsoft 365
+   * (SENDER-HEALTH-1019). Decides only for Outlook.com prospects.
+   */
+  microsoftConsumerPlacement: ProviderPlacementDetail | null;
+  /**
+   * Where Google puts this mailbox's mail, pooled the same way the dispatcher
+   * routes on (`provider-placement.ts`). `mostlySpam` = no email to a Google
+   * prospect leaves from it.
+   */
+  googlePlacement: ProviderPlacementDetail | null;
   /**
    * Count of REAL (non-inferred) `email_sent` events observed today (UTC) from
    * this account, derived from our silver event log. The "N" in a "N/dailyLimit"
@@ -336,7 +347,7 @@ export function buildAccountHealth(
   const recentSustainedByEmail = selection.recentSustainedByEmail ?? new Map<string, number>();
   const newSequencesTodayByEmail = selection.newSequencesTodayByEmail ?? new Map<string, number>();
   const inboundBlindAddresses = selection.inboundBlindAddresses ?? new Set<string>();
-  const microsoftPlacementByEmail = selection.microsoftPlacementByEmail ?? new Map<string, MicrosoftPlacement>();
+  const placementByProviderByEmail = selection.placementByProviderByEmail ?? new Map<string, PlacementByProvider>();
   return accounts.map((a) => {
     const lifecycle = lifecycleByEmail.get(a.email) ?? null;
     const lifecycleStatus = lifecycle?.status ?? null;
@@ -384,7 +395,10 @@ export function buildAccountHealth(
       lifecycleReason: lifecycle?.reason ?? null,
       lifecycleUpdatedAt: lifecycle?.updatedAt ?? null,
       inboxPlacement: placementByEmail.get(a.email) ?? null,
-      microsoftPlacement: microsoftPlacementByEmail.get(a.email.trim().toLowerCase()) ?? null,
+      microsoftPlacement: placementByProviderByEmail.get(a.email.trim().toLowerCase())?.microsoft ?? null,
+      microsoftConsumerPlacement:
+        placementByProviderByEmail.get(a.email.trim().toLowerCase())?.microsoft_consumer ?? null,
+      googlePlacement: placementByProviderByEmail.get(a.email.trim().toLowerCase())?.google ?? null,
       sentToday: sentTodayByEmail.get(a.email) ?? 0,
       sentYesterday: sentYesterdayByEmail.get(a.email) ?? 0,
       // Prefer the breakdown's step total so queueSize === sum of the four date

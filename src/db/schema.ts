@@ -2077,7 +2077,8 @@ export const seedPlacementDaily = pgTable(
 );
 
 // Who hosts a prospect domain's mail, from its MX records
-// (lib/recipient-mail-host.ts). `provider`: microsoft | google | other | none
+// (lib/recipient-mail-host.ts). `provider`: microsoft (Microsoft 365) |
+// microsoft_consumer (Outlook.com) | google | other | none
 // (no MX) | unknown (the lookup failed; `error` says why).
 export const recipientMailHosts = pgTable("recipient_mail_hosts", {
   domain: text("domain").primaryKey(),
@@ -2085,4 +2086,16 @@ export const recipientMailHosts = pgTable("recipient_mail_hosts", {
   mx: jsonb("mx").default(sql`'[]'::jsonb`).notNull(),
   error: text("error"),
   checkedAt: timestamp("checked_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Which mailboxes the dispatcher keeps out of prospect mail, per UTC day
+// (lib/sender-health-daily.ts, migration 0086, SENDER-HEALTH-1019).
+export const senderHealthDaily = pgTable("sender_health_daily", {
+  day: date("day").primaryKey(),
+  refused: jsonb("refused").default(sql`'[]'::jsonb`).notNull(),
+  mostlySpam: jsonb("mostly_spam").default(sql`'{}'::jsonb`).notNull(),
+  heldPlacement: integer("held_placement").default(0).notNull(),
+  heldMostlySpam: integer("held_mostly_spam").default(0).notNull(),
+  skippedRefused: integer("skipped_refused").default(0).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });

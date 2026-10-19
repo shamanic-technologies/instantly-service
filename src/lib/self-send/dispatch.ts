@@ -16,10 +16,13 @@ import { isSendingDay } from "../sending-calendar";
 import { delayForGap } from "../sending-forecast";
 import { isWithinLocalSendWindow } from "../sending-window";
 import {
-  isMicrosoftColdStart,
-  mayWriteToMicrosoftRecipient,
-  type MicrosoftPlacementVerdict,
-} from "../microsoft-placement";
+  RECIPIENT_PROVIDERS,
+  isColdStart,
+  mayWriteFirstEmail,
+  mayWriteFollowUp,
+  type ProviderPlacement,
+  type RecipientProvider,
+} from "../provider-placement";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -77,11 +80,13 @@ export interface PendingSequence {
    */
   addressProven?: boolean;
   /**
-   * Microsoft hosts this prospect's mail (their domain's MX, `recipient-mail-host.ts`).
-   * Their FIRST email goes out only from a mailbox Microsoft puts in Inbox
-   * (`microsoft-placement.ts`). Absent = not known to be Microsoft.
+   * Who hosts this prospect's mail (their domain's MX, `recipient-mail-host.ts`):
+   * Google, a Microsoft 365 tenant, or consumer Outlook.com. Their FIRST email
+   * goes out only from a mailbox measured Inbox there, and NO email from one
+   * measured mostly in spam there (`provider-placement.ts`). Absent / null = a
+   * host we do not measure (a gateway, unknown): no placement rule applies.
    */
-  recipientMicrosoft?: boolean;
+  recipientProvider?: RecipientProvider | null;
 }
 
 /** The first email of a sequence that answers a person: owed now, like a reply. */
@@ -211,10 +216,10 @@ export interface AccountCapacity {
    */
   sendsFirstEmails?: boolean;
   /**
-   * Where Microsoft puts this address's mail, from our Microsoft seed receivers
-   * (`microsoft-placement.ts`). Absent = unmeasured.
+   * Where each provider puts this address's mail, from our seed receivers
+   * (`provider-placement.ts`). A provider absent = unmeasured there.
    */
-  microsoftPlacement?: MicrosoftPlacementVerdict;
+  placement?: Partial<Record<RecipientProvider, ProviderPlacement>>;
 }
 
 /**
@@ -280,12 +285,18 @@ export interface DueSelection {
    */
   heldBlocklisted: number;
   /**
-   * First emails to a Microsoft-hosted prospect kept off a mailbox Microsoft does
-   * not put in Inbox (measured Junk, or unmeasured once the fleet has Microsoft
-   * evidence). Each one is rehomed to a mailbox Microsoft puts in Inbox with room
-   * below, else it waits. Follow-ups are never held here: the thread stays put.
+   * First emails kept off a mailbox the prospect's provider does not put in
+   * Inbox (measured below the bar there, or unmeasured once that provider has a
+   * measured-Inbox production mailbox). Each one is rehomed to a mailbox measured
+   * Inbox there with room below, else it waits.
    */
-  heldMicrosoftPlacement: number;
+  heldPlacement: number;
+  /**
+   * Follow-ups NOT sent because their mailbox is measured mostly in spam at the
+   * prospect's provider. Never moved (the thread keeps its sender): they wait
+   * until the mailbox measures better.
+   */
+  heldMostlySpam: number;
 }
 
 export function selectDueSteps(
@@ -334,7 +345,8 @@ export function selectDueSteps(
       rehomed: 0,
       heldBounceBudget: 0,
       heldBlocklisted: 0,
-      heldMicrosoftPlacement: 0,
+      heldPlacement: 0,
+      heldMostlySpam: 0,
     };
 
   // Capacity is spent per REAL MAILBOX, not per sending address — several
@@ -351,17 +363,20 @@ export function selectDueSteps(
   const sentByMailbox = new Map<string, number>();
   // Addresses whose domain is blocklisted right now: no FIRST email from them.
   const noFirstEmails = new Set<string>();
-  const microsoftVerdictOf = new Map<string, MicrosoftPlacementVerdict | undefined>();
-  // Cold start = not one PRODUCTION mailbox (the ones that take new first emails)
-  // is measured in Inbox at Microsoft yet: nobody to prefer, so unmeasured may
-  // carry Microsoft prospects as before. Measured Junk never does.
-  const microsoftColdStart = isMicrosoftColdStart(
-    capacities.filter((c) => c.adoptsFirstEmails === true).map((c) => c.microsoftPlacement),
+  const placementOf = new Map<string, AccountCapacity["placement"]>();
+  // Cold start, per provider = not one PRODUCTION mailbox (the ones that take new
+  // first emails) is measured Inbox there yet: nobody to prefer, so unmeasured
+  // may carry those prospects as before. Measured below the bar never does.
+  const coldStartOf = new Map<RecipientProvider, boolean>(
+    RECIPIENT_PROVIDERS.map((provider) => [
+      provider,
+      isColdStart(capacities.filter((c) => c.adoptsFirstEmails === true).map((c) => c.placement?.[provider])),
+    ]),
   );
 
   for (const capacity of capacities) {
     mailboxOf.set(capacity.accountEmail, capacity.mailbox);
-    microsoftVerdictOf.set(capacity.accountEmail, capacity.microsoftPlacement);
+    placementOf.set(capacity.accountEmail, capacity.placement);
     if (capacity.sendsFirstEmails === false) noFirstEmails.add(capacity.accountEmail);
     if (capacity.adoptsFirstEmails === true) {
       const known = adopterAddressByMailbox.get(capacity.mailbox);
@@ -468,18 +483,19 @@ export function selectDueSteps(
   };
   let heldBounceBudget = 0;
   let heldBlocklisted = 0;
-  let heldMicrosoftPlacement = 0;
+  let heldPlacement = 0;
+  let heldMostlySpam = 0;
 
-  // A FIRST email to a Microsoft-hosted prospect, from a mailbox Microsoft does
-  // not put in Inbox. A follow-up is never refused: its thread already exists.
-  const microsoftRefuses = (step: DueStep, accountEmail: string): boolean => {
+  // The prospect's provider and this mailbox's placement there
+  // (`provider-placement.ts`): a FIRST email needs Inbox there; NO email leaves
+  // from a mailbox measured mostly in spam there.
+  const placementRefuses = (step: DueStep, accountEmail: string): boolean => {
     const sequence = sequenceByCampaign.get(step.instantlyCampaignId);
-    return (
-      sequence !== undefined &&
-      sequence.lastSentStep === null &&
-      sequence.recipientMicrosoft === true &&
-      !mayWriteToMicrosoftRecipient(microsoftVerdictOf.get(accountEmail), microsoftColdStart)
-    );
+    const provider = sequence?.recipientProvider;
+    if (sequence === undefined || provider === undefined || provider === null) return false;
+    const placement = placementOf.get(accountEmail)?.[provider];
+    if (sequence.lastSentStep !== null) return !mayWriteFollowUp(placement);
+    return !mayWriteFirstEmail(placement, coldStartOf.get(provider) ?? true);
   };
 
   for (const step of due) {
@@ -511,12 +527,16 @@ export function selectDueSteps(
       continue;
     }
 
-    // Microsoft hosts this prospect and puts this mailbox's mail in Junk (or
-    // has not measured it while others are measured Inbox): offered below to a
-    // mailbox Microsoft puts in Inbox, else it waits.
-    if (microsoftRefuses(step, step.accountEmail)) {
-      heldMicrosoftPlacement += 1;
-      stranded.push(step);
+    // The prospect's provider does not put this mailbox's mail in Inbox. A
+    // first email is offered below to a mailbox measured Inbox there, else it
+    // waits; a follow-up (mailbox mostly in spam there) waits on its thread.
+    if (placementRefuses(step, step.accountEmail)) {
+      if (isFirstEmail(step)) {
+        heldPlacement += 1;
+        stranded.push(step);
+      } else {
+        heldMostlySpam += 1;
+      }
       continue;
     }
 
@@ -564,7 +584,7 @@ export function selectDueSteps(
       const room = remaining.get(mailbox) ?? 0;
       if (room <= 0) continue;
       if (budgetRefuses(step, adopterAddressByMailbox.get(mailbox)!)) continue;
-      if (microsoftRefuses(step, adopterAddressByMailbox.get(mailbox)!)) continue;
+      if (placementRefuses(step, adopterAddressByMailbox.get(mailbox)!)) continue;
       if (target === null || room > targetRoom || (room === targetRoom && mailbox < target)) {
         target = mailbox;
         targetRoom = room;
@@ -593,7 +613,8 @@ export function selectDueSteps(
     rehomed,
     heldBounceBudget,
     heldBlocklisted,
-    heldMicrosoftPlacement,
+    heldPlacement,
+    heldMostlySpam,
   };
 }
 

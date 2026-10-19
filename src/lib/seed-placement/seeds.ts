@@ -32,9 +32,26 @@
  */
 export const SEED_TEST_ID_PREFIX = "seed:";
 
-/** Recipient-ESP codes, matching the enum Instantly's own analytics rows use. */
+/**
+ * Recipient-ESP codes. 1 and 2 match the enum Instantly's own analytics rows use
+ * (1 Google, 2 Outlook; 999 "other"). Our own Microsoft receivers split what
+ * Instantly called Outlook in two (SENDER-HEALTH-1019, `provider-placement.ts`):
+ * 2 = a Microsoft 365 BUSINESS tenant, 4 = consumer Outlook.com/Hotmail. They
+ * filter apart, so they are measured apart.
+ */
 export const ESP_GOOGLE = 1;
 export const ESP_OUTLOOK = 2;
+export const ESP_OUTLOOK_CONSUMER = 4;
+
+/** Every Microsoft code: a ROUTING signal, never part of the lifecycle gate. */
+export const MICROSOFT_ESPS: readonly number[] = [ESP_OUTLOOK, ESP_OUTLOOK_CONSUMER];
+
+/** The ESP code a Microsoft seed receiver grades under, from its account kind. */
+export function espForMicrosoftReceiver(accountKind: string | null): number | null {
+  if (accountKind === "consumer") return ESP_OUTLOOK_CONSUMER;
+  if (accountKind === "business") return ESP_OUTLOOK;
+  return null;
+}
 
 /** How many receiver mailboxes one test seeds. See the domain-diversity note above. */
 export const MAX_SEED_RECEIVERS = 10;
@@ -82,7 +99,7 @@ const GOOGLE_IMAP_HOSTS = new Set(["imap.gmail.com", "imap.google.com"]);
  */
 export function espForReceiverHost(email: string, imapHost: string): number | null {
   const domain = domainOf(email);
-  if (OUTLOOK_DOMAINS.has(domain)) return ESP_OUTLOOK;
+  if (OUTLOOK_DOMAINS.has(domain)) return ESP_OUTLOOK_CONSUMER;
   if (GOOGLE_IMAP_HOSTS.has(imapHost.trim().toLowerCase())) return ESP_GOOGLE;
   if (domain === "gmail.com" || domain === "googlemail.com") return ESP_GOOGLE;
   return null;

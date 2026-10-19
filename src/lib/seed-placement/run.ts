@@ -24,7 +24,6 @@ import { dispatchMessage, SmtpDispatchError } from "../self-send/smtp";
 import { buildSeedMessage } from "./message";
 import { loadSeedCredentialResolver } from "./credentials";
 import {
-  ESP_OUTLOOK,
   MAX_SEED_RECEIVERS,
   type SeedReceiver,
   mintSeedTestId,
@@ -32,7 +31,7 @@ import {
   selectSeedReceivers,
 } from "./seeds";
 import { decideSeedTestDue, type SeedDueReason } from "./due";
-import { loadAuthorizedMicrosoftReceivers } from "./microsoft-oauth";
+import { loadAuthorizedMicrosoftReceiverEsps } from "./microsoft-oauth";
 
 const CALLER: CallerInfo = {
   method: "POST",
@@ -174,9 +173,11 @@ export async function runSeedPlacementTest(
   // every sender gets one Microsoft verdict per Microsoft mailbox.
   const receivers: SeedReceiver[] = [
     ...googleReceivers,
-    ...(await loadAuthorizedMicrosoftReceivers())
-      .filter((email) => !googleReceivers.some((r) => r.email === email))
-      .map((email) => ({ email, recipientEsp: ESP_OUTLOOK })),
+    // Each under its own code: Outlook.com and a Microsoft 365 tenant filter
+    // apart (SENDER-HEALTH-1019, ESP 4 vs 2).
+    ...(await loadAuthorizedMicrosoftReceiverEsps()).filter(
+      (r) => !googleReceivers.some((g) => g.email === r.email),
+    ),
   ];
 
   if (receivers.length === 0) {
