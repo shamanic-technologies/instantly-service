@@ -1523,6 +1523,12 @@ export const seedPlacementObservations = pgTable(
     spfPass: boolean("spf_pass"),
     dkimPass: boolean("dkim_pass"),
     dmarcPass: boolean("dmarc_pass"),
+    // Microsoft receivers only (migration 0085): `focused` | `other` inside the
+    // Inbox (Graph `inferenceClassification`), and the spam confidence level
+    // Microsoft scored the seed at (`X-MS-Exchange-Organization-SCL`). Null on
+    // a Google receiver, never a default.
+    msInference: text("ms_inference"),
+    msScl: integer("ms_scl"),
     observedAt: timestamp("observed_at").defaultNow().notNull(),
   },
   (table) => [
@@ -2023,3 +2029,60 @@ export const datacenterNetworks = pgTable(
   },
   (table) => [primaryKey({ columns: [table.asn, table.prefix] })],
 );
+
+// MS-SEED-PLACEMENT-1018 (migration 0085) ─────────────────────────────────────
+
+// A Microsoft mailbox (Outlook.com or Microsoft 365) we read seeds from. Microsoft
+// refuses password IMAP, so a person authorizes it once with an OAuth device code
+// (lib/seed-placement/microsoft-oauth.ts) and the refresh token keeps it readable.
+// `status`: pending (device code being polled) | authorized | failed | expired.
+export const microsoftSeedMailboxes = pgTable("microsoft_seed_mailboxes", {
+  email: text("email").primaryKey(),
+  status: text("status").notNull(),
+  clientId: text("client_id").notNull(),
+  tenant: text("tenant").notNull(),
+  // `consumer` (Outlook.com) | `business` (Microsoft 365), from the token's tenant.
+  accountKind: text("account_kind"),
+  deviceCode: text("device_code"),
+  userCode: text("user_code"),
+  verificationUri: text("verification_uri"),
+  deviceCodeExpiresAt: timestamp("device_code_expires_at", { withTimezone: true }),
+  pollIntervalSeconds: integer("poll_interval_seconds"),
+  refreshToken: text("refresh_token"),
+  authorizedAt: timestamp("authorized_at", { withTimezone: true }),
+  lastRefreshedAt: timestamp("last_refreshed_at", { withTimezone: true }),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// The stored daily series of seed placement (the admin chart reads it through
+// GET /internal/seed-placement/daily). One row per (UTC day the seeds left,
+// receiving provider, sending vendor); recomputed from bronze on every sync.
+export const seedPlacementDaily = pgTable(
+  "seed_placement_daily",
+  {
+    day: date("day").notNull(),
+    recipientEsp: integer("recipient_esp").notNull(),
+    senderVendor: text("sender_vendor").notNull(),
+    seeds: integer("seeds").notNull(),
+    inbox: integer("inbox").notNull(),
+    spam: integer("spam").notNull(),
+    missing: integer("missing").notNull(),
+    inboxFocused: integer("inbox_focused").notNull(),
+    inboxOther: integer("inbox_other").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.day, table.recipientEsp, table.senderVendor] })],
+);
+
+// Who hosts a prospect domain's mail, from its MX records
+// (lib/recipient-mail-host.ts). `provider`: microsoft | google | other | none
+// (no MX) | unknown (the lookup failed; `error` says why).
+export const recipientMailHosts = pgTable("recipient_mail_hosts", {
+  domain: text("domain").primaryKey(),
+  provider: text("provider").notNull(),
+  mx: jsonb("mx").default(sql`'[]'::jsonb`).notNull(),
+  error: text("error"),
+  checkedAt: timestamp("checked_at", { withTimezone: true }).defaultNow().notNull(),
+});

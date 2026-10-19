@@ -4294,6 +4294,43 @@
           "series"
         ]
       },
+      "MicrosoftAuthorizationStart": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The Microsoft mailbox being authorized (lowercased)"
+          },
+          "userCode": {
+            "type": "string",
+            "description": "Code the person types at verificationUri"
+          },
+          "verificationUri": {
+            "type": "string",
+            "description": "Where the person signs in (https://microsoft.com/devicelogin)"
+          },
+          "expiresAt": {
+            "type": "string",
+            "description": "ISO8601: the code stops working at this time (~15 min)"
+          },
+          "message": {
+            "type": "string",
+            "description": "Microsoft's own instruction sentence"
+          },
+          "instructions": {
+            "type": "string",
+            "description": "The steps, in one sentence"
+          }
+        },
+        "required": [
+          "email",
+          "userCode",
+          "verificationUri",
+          "expiresAt",
+          "message",
+          "instructions"
+        ]
+      },
       "LeadSourceYieldRead": {
         "type": "object",
         "properties": {
@@ -6397,6 +6434,9 @@
             "nullable": true,
             "description": "ISO8601 timestamp of the latest lifecycle transition; null until classified"
           },
+          "microsoftPlacement": {
+            "$ref": "#/components/schemas/MicrosoftPlacement"
+          },
           "inboxPlacement": {
             "$ref": "#/components/schemas/InboxPlacement"
           },
@@ -6473,6 +6513,7 @@
           "lifecycleStatus",
           "lifecycleReason",
           "lifecycleUpdatedAt",
+          "microsoftPlacement",
           "inboxPlacement",
           "sentToday",
           "sentYesterday",
@@ -6489,6 +6530,51 @@
           "queuedNextLater",
           "accountType"
         ]
+      },
+      "MicrosoftPlacement": {
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "inbox",
+              "junk",
+              "unmeasured"
+            ],
+            "description": "Where Microsoft (Outlook.com + Microsoft 365) puts this mailbox's mail: inbox = at least 90% of the seeds Microsoft delivered sat in Inbox (Focused or Other) on evidence under 16 days; junk = below; unmeasured = no seed found or evidence too old. Decides only whether this mailbox may send a FIRST email to a prospect whose mail Microsoft hosts; never a demotion."
+          },
+          "seedTotal": {
+            "type": "integer",
+            "description": "Seeds sent to our Microsoft receivers in the latest Microsoft test"
+          },
+          "inboxCount": {
+            "type": "integer",
+            "description": "Of those, found in Inbox"
+          },
+          "spamCount": {
+            "type": "integer",
+            "description": "Of those, found in Junk"
+          },
+          "inboxPctOfFound": {
+            "type": "number",
+            "nullable": true,
+            "description": "inbox / (inbox + junk), 0..100; null when no seed was found"
+          },
+          "testedAt": {
+            "type": "string",
+            "description": "ISO8601 time the test's seeds left"
+          }
+        },
+        "required": [
+          "verdict",
+          "seedTotal",
+          "inboxCount",
+          "spamCount",
+          "inboxPctOfFound",
+          "testedAt"
+        ],
+        "description": "Microsoft placement from our own Microsoft seed receivers, served beside inboxPlacement (which reads the Google receivers only). Null when never measured at Microsoft."
       },
       "InboxPlacement": {
         "type": "object",
@@ -11370,6 +11456,446 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/internal/seed-placement/microsoft/authorize": {
+      "post": {
+        "summary": "Start authorizing a Microsoft seed mailbox (OAuth device code) (staff)",
+        "description": "Platform-scoped. Microsoft refuses password IMAP, so a Microsoft seed receiver (Outlook.com or Microsoft 365) is read through Microsoft Graph with a delegated token. This call asks Microsoft for a device code and answers it; a person opens verificationUri, types userCode and signs in AS that mailbox. The service polls in the background, refuses a sign-in by any other account, and stores the refresh token (rotated on every use, refreshed daily). Calling it again for an authorized mailbox re-authorizes it without losing the current token until the new one lands.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "description": "The Microsoft mailbox address"
+                  }
+                },
+                "required": [
+                  "email"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Code to type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MicrosoftAuthorizationStart"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No email",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "502": {
+            "description": "Microsoft refused the device code request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/seed-placement/microsoft": {
+      "get": {
+        "summary": "Microsoft seed mailboxes and their authorization state (staff)",
+        "description": "Platform-scoped, read-only. Never returns a token.",
+        "responses": {
+          "200": {
+            "description": "Mailboxes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "mailboxes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "email": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "authorized",
+                              "failed",
+                              "expired"
+                            ]
+                          },
+                          "accountKind": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "consumer (Outlook.com) | business (Microsoft 365)"
+                          },
+                          "pendingCode": {
+                            "type": "object",
+                            "nullable": true,
+                            "properties": {
+                              "userCode": {
+                                "type": "string",
+                                "nullable": true
+                              },
+                              "verificationUri": {
+                                "type": "string",
+                                "nullable": true
+                              },
+                              "expiresAt": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "userCode",
+                              "verificationUri",
+                              "expiresAt"
+                            ]
+                          },
+                          "authorizedAt": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "lastRefreshedAt": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "lastError": {
+                            "type": "string",
+                            "nullable": true
+                          }
+                        },
+                        "required": [
+                          "email",
+                          "status",
+                          "accountKind",
+                          "pendingCode",
+                          "authorizedAt",
+                          "lastRefreshedAt",
+                          "lastError"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "mailboxes"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/seed-placement/daily": {
+      "get": {
+        "summary": "Seed inbox placement per day, Google and Microsoft (staff chart)",
+        "description": "Platform-scoped, read-only. The stored daily series (`seed_placement_daily`, recomputed from bronze on every seed sync): per UTC day the seeds left, Google inbox % and Microsoft inbox % (Outlook.com + Microsoft 365), and the same split per SENDING vendor (gandi = the legacy shared-IP fleet, primeforge = the Google Workspace fleet that sends most prospect mail). Every day of the window is emitted; a day with no test has 0 seeds and null percentages.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Window in days, 1..400, default 90"
+            },
+            "required": false,
+            "description": "Window in days, 1..400, default 90",
+            "name": "days",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Series",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "asOf": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    },
+                    "days": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "day": {
+                            "type": "string",
+                            "description": "YYYY-MM-DD (UTC)"
+                          },
+                          "google": {
+                            "type": "object",
+                            "properties": {
+                              "seeds": {
+                                "type": "integer",
+                                "description": "Seeds sent that day (successful dispatches)"
+                              },
+                              "inbox": {
+                                "type": "integer"
+                              },
+                              "spam": {
+                                "type": "integer"
+                              },
+                              "missing": {
+                                "type": "integer",
+                                "description": "Sent and never found in Inbox nor spam"
+                              },
+                              "inboxPct": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "inbox / seeds, 0..100; null on a day with no seed"
+                              },
+                              "spamPct": {
+                                "type": "number",
+                                "nullable": true
+                              }
+                            },
+                            "required": [
+                              "seeds",
+                              "inbox",
+                              "spam",
+                              "missing",
+                              "inboxPct",
+                              "spamPct"
+                            ]
+                          },
+                          "microsoft": {
+                            "type": "object",
+                            "properties": {
+                              "seeds": {
+                                "type": "integer",
+                                "description": "Seeds sent that day (successful dispatches)"
+                              },
+                              "inbox": {
+                                "type": "integer"
+                              },
+                              "spam": {
+                                "type": "integer"
+                              },
+                              "missing": {
+                                "type": "integer",
+                                "description": "Sent and never found in Inbox nor spam"
+                              },
+                              "inboxPct": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "inbox / seeds, 0..100; null on a day with no seed"
+                              },
+                              "spamPct": {
+                                "type": "number",
+                                "nullable": true
+                              },
+                              "inboxFocused": {
+                                "type": "integer",
+                                "description": "Inbox seeds Microsoft sorted to Focused"
+                              },
+                              "inboxOther": {
+                                "type": "integer",
+                                "description": "Inbox seeds Microsoft sorted to Other"
+                              }
+                            },
+                            "required": [
+                              "seeds",
+                              "inbox",
+                              "spam",
+                              "missing",
+                              "inboxPct",
+                              "spamPct",
+                              "inboxFocused",
+                              "inboxOther"
+                            ]
+                          },
+                          "byVendor": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "vendor": {
+                                  "type": "string"
+                                },
+                                "google": {
+                                  "type": "object",
+                                  "properties": {
+                                    "seeds": {
+                                      "type": "integer",
+                                      "description": "Seeds sent that day (successful dispatches)"
+                                    },
+                                    "inbox": {
+                                      "type": "integer"
+                                    },
+                                    "spam": {
+                                      "type": "integer"
+                                    },
+                                    "missing": {
+                                      "type": "integer",
+                                      "description": "Sent and never found in Inbox nor spam"
+                                    },
+                                    "inboxPct": {
+                                      "type": "number",
+                                      "nullable": true,
+                                      "description": "inbox / seeds, 0..100; null on a day with no seed"
+                                    },
+                                    "spamPct": {
+                                      "type": "number",
+                                      "nullable": true
+                                    }
+                                  },
+                                  "required": [
+                                    "seeds",
+                                    "inbox",
+                                    "spam",
+                                    "missing",
+                                    "inboxPct",
+                                    "spamPct"
+                                  ]
+                                },
+                                "microsoft": {
+                                  "type": "object",
+                                  "properties": {
+                                    "seeds": {
+                                      "type": "integer",
+                                      "description": "Seeds sent that day (successful dispatches)"
+                                    },
+                                    "inbox": {
+                                      "type": "integer"
+                                    },
+                                    "spam": {
+                                      "type": "integer"
+                                    },
+                                    "missing": {
+                                      "type": "integer",
+                                      "description": "Sent and never found in Inbox nor spam"
+                                    },
+                                    "inboxPct": {
+                                      "type": "number",
+                                      "nullable": true,
+                                      "description": "inbox / seeds, 0..100; null on a day with no seed"
+                                    },
+                                    "spamPct": {
+                                      "type": "number",
+                                      "nullable": true
+                                    },
+                                    "inboxFocused": {
+                                      "type": "integer",
+                                      "description": "Inbox seeds Microsoft sorted to Focused"
+                                    },
+                                    "inboxOther": {
+                                      "type": "integer",
+                                      "description": "Inbox seeds Microsoft sorted to Other"
+                                    }
+                                  },
+                                  "required": [
+                                    "seeds",
+                                    "inbox",
+                                    "spam",
+                                    "missing",
+                                    "inboxPct",
+                                    "spamPct",
+                                    "inboxFocused",
+                                    "inboxOther"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "vendor",
+                                "google",
+                                "microsoft"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "day",
+                          "google",
+                          "microsoft",
+                          "byVendor"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "asOf",
+                    "from",
+                    "to",
+                    "days"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `days`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/seed-placement/daily/refresh": {
+      "post": {
+        "summary": "Recompute the seed placement daily series from bronze now (staff)",
+        "description": "Platform-scoped. Every seed sync and every boot does the same.",
+        "responses": {
+          "200": {
+            "description": "Rows written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "rows"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         }
       }
