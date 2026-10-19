@@ -623,6 +623,7 @@ describe("selectDueSteps — a throttled run is distinguishable from an idle one
       rehomed: 0,
       heldBounceBudget: 0,
       heldBlocklisted: 0,
+      heldMicrosoftPlacement: 0,
     });
   });
 });

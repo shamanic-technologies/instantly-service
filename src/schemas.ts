@@ -3010,6 +3010,127 @@ registry.registerPath({
   },
 });
 
+// ─── Microsoft seed placement (MS-SEED-PLACEMENT-1018) ──────────────────────
+
+const MicrosoftAuthorizationStartSchema = z
+  .object({
+    email: z.string().describe("The Microsoft mailbox being authorized (lowercased)"),
+    userCode: z.string().describe("Code the person types at verificationUri"),
+    verificationUri: z.string().describe("Where the person signs in (https://microsoft.com/devicelogin)"),
+    expiresAt: z.string().describe("ISO8601: the code stops working at this time (~15 min)"),
+    message: z.string().describe("Microsoft's own instruction sentence"),
+    instructions: z.string().describe("The steps, in one sentence"),
+  })
+  .openapi("MicrosoftAuthorizationStart");
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/seed-placement/microsoft/authorize",
+  summary: "Start authorizing a Microsoft seed mailbox (OAuth device code) (staff)",
+  description:
+    "Platform-scoped. Microsoft refuses password IMAP, so a Microsoft seed receiver (Outlook.com or Microsoft 365) is read through Microsoft Graph with a delegated token. This call asks Microsoft for a device code and answers it; a person opens verificationUri, types userCode and signs in AS that mailbox. The service polls in the background, refuses a sign-in by any other account, and stores the refresh token (rotated on every use, refreshed daily). Calling it again for an authorized mailbox re-authorizes it without losing the current token until the new one lands.",
+  request: {
+    body: { content: { "application/json": { schema: z.object({ email: z.string().describe("The Microsoft mailbox address") }) } } },
+  },
+  responses: {
+    200: { description: "Code to type", content: { "application/json": { schema: MicrosoftAuthorizationStartSchema } } },
+    400: { description: "No email", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    502: { description: "Microsoft refused the device code request", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/seed-placement/microsoft",
+  summary: "Microsoft seed mailboxes and their authorization state (staff)",
+  description: "Platform-scoped, read-only. Never returns a token.",
+  responses: {
+    200: {
+      description: "Mailboxes",
+      content: {
+        "application/json": {
+          schema: z.object({
+            mailboxes: z.array(
+              z.object({
+                email: z.string(),
+                status: z.enum(["pending", "authorized", "failed", "expired"]),
+                accountKind: z.string().nullable().describe("consumer (Outlook.com) | business (Microsoft 365)"),
+                pendingCode: z
+                  .object({ userCode: z.string().nullable(), verificationUri: z.string().nullable(), expiresAt: z.string() })
+                  .nullable(),
+                authorizedAt: z.string().nullable(),
+                lastRefreshedAt: z.string().nullable(),
+                lastError: z.string().nullable(),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+    401: { description: "Unauthorized" },
+  },
+});
+
+const SeedPlacementCountsSchema = z.object({
+  seeds: z.number().int().describe("Seeds sent that day (successful dispatches)"),
+  inbox: z.number().int(),
+  spam: z.number().int(),
+  missing: z.number().int().describe("Sent and never found in Inbox nor spam"),
+  inboxPct: z.number().nullable().describe("inbox / seeds, 0..100; null on a day with no seed"),
+  spamPct: z.number().nullable(),
+});
+const SeedPlacementMsCountsSchema = SeedPlacementCountsSchema.extend({
+  inboxFocused: z.number().int().describe("Inbox seeds Microsoft sorted to Focused"),
+  inboxOther: z.number().int().describe("Inbox seeds Microsoft sorted to Other"),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/seed-placement/daily",
+  summary: "Seed inbox placement per day, Google and Microsoft (staff chart)",
+  description:
+    "Platform-scoped, read-only. The stored daily series (`seed_placement_daily`, recomputed from bronze on every seed sync): per UTC day the seeds left, Google inbox % and Microsoft inbox % (Outlook.com + Microsoft 365), and the same split per SENDING vendor (gandi = the legacy shared-IP fleet, primeforge = the Google Workspace fleet that sends most prospect mail). Every day of the window is emitted; a day with no test has 0 seeds and null percentages.",
+  request: { query: z.object({ days: z.string().optional().describe("Window in days, 1..400, default 90") }) },
+  responses: {
+    200: {
+      description: "Series",
+      content: {
+        "application/json": {
+          schema: z.object({
+            asOf: z.string(),
+            from: z.string(),
+            to: z.string(),
+            days: z.array(
+              z.object({
+                day: z.string().describe("YYYY-MM-DD (UTC)"),
+                google: SeedPlacementCountsSchema,
+                microsoft: SeedPlacementMsCountsSchema,
+                byVendor: z.array(
+                  z.object({ vendor: z.string(), google: SeedPlacementCountsSchema, microsoft: SeedPlacementMsCountsSchema }),
+                ),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+    400: { description: "Bad `days`", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/seed-placement/daily/refresh",
+  summary: "Recompute the seed placement daily series from bronze now (staff)",
+  description: "Platform-scoped. Every seed sync and every boot does the same.",
+  responses: {
+    200: { description: "Rows written", content: { "application/json": { schema: z.object({ rows: z.number().int() }) } } },
+    401: { description: "Unauthorized" },
+  },
+});
+
 // ─── Lead source yield (SOURCE-YIELD-1016) ──────────────────────────────────
 
 const LeadSourceYieldMeasuresSchema = z.object({
@@ -3647,6 +3768,21 @@ const InboxPlacementSchema = z
   })
   .openapi("InboxPlacement");
 
+const MicrosoftPlacementSchema = z
+  .object({
+    verdict: z
+      .enum(["inbox", "junk", "unmeasured"])
+      .describe(
+        "Where Microsoft (Outlook.com + Microsoft 365) puts this mailbox's mail: inbox = at least 90% of the seeds Microsoft delivered sat in Inbox (Focused or Other) on evidence under 16 days; junk = below; unmeasured = no seed found or evidence too old. Decides only whether this mailbox may send a FIRST email to a prospect whose mail Microsoft hosts; never a demotion.",
+      ),
+    seedTotal: z.number().int().describe("Seeds sent to our Microsoft receivers in the latest Microsoft test"),
+    inboxCount: z.number().int().describe("Of those, found in Inbox"),
+    spamCount: z.number().int().describe("Of those, found in Junk"),
+    inboxPctOfFound: z.number().nullable().describe("inbox / (inbox + junk), 0..100; null when no seed was found"),
+    testedAt: z.string().describe("ISO8601 time the test's seeds left"),
+  })
+  .openapi("MicrosoftPlacement");
+
 const AccountHealthSchema = z
   .object({
     email: z.string().describe("Sending account email"),
@@ -3721,6 +3857,9 @@ const AccountHealthSchema = z
       .string()
       .nullable()
       .describe("ISO8601 timestamp of the latest lifecycle transition; null until classified"),
+    microsoftPlacement: MicrosoftPlacementSchema.nullable().describe(
+      "Microsoft placement from our own Microsoft seed receivers, served beside inboxPlacement (which reads the Google receivers only). Null when never measured at Microsoft.",
+    ),
     inboxPlacement: InboxPlacementSchema.nullable().describe(
       "Inbox-placement breakdown from the account's latest placement test, promoted through our own Bronze/Silver/Gold pipeline. Headline percentages are the WORST gated ESP leg (the leg the lifecycle delivery gate reads), with the full per-ESP breakdown in `perEsp`. Null when the account has never been in a test — the Instantly V2 API exposes no standing per-account placement property, so this is derived from real test results and never fabricated.",
     ),

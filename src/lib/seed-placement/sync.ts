@@ -26,6 +26,9 @@ import {
 import type { CallerInfo } from "../key-client";
 import { GMAIL_IMAP_PORT, loginFor, type MailboxCredential } from "../self-send/mailbox-credentials";
 import { loadSeedCredentialResolver } from "./credentials";
+import { getMicrosoftAccessToken, keepMicrosoftReceiversAlive, loadAuthorizedMicrosoftReceivers } from "./microsoft-oauth";
+import { readMicrosoftSeedFolders } from "./microsoft-graph";
+import { refreshSeedPlacementDaily } from "./daily";
 import {
   aggregateSeedPlacement,
   classifySeedFolder,
@@ -65,6 +68,11 @@ export interface SeedPlacementSyncSummary {
   observations: number;
   testsPromoted: number;
   silverRows: number;
+  /** Rows of the stored daily series rewritten (`seed_placement_daily`). */
+  dailyRows: number;
+  /** Microsoft receivers whose token was refreshed after the read (keepalive). */
+  microsoftTokensRefreshed: number;
+  microsoftTokensFailed: number;
 }
 
 interface PendingSeed {
@@ -193,6 +201,46 @@ async function pollReceiver(
 }
 
 /**
+ * Read one Microsoft receiver (Outlook.com / Microsoft 365) through Graph: its
+ * Inbox (Focused + Other) and Junk. Same matching and first-observation-wins as
+ * the IMAP path; the token comes from the device-code authorization.
+ */
+async function pollMicrosoftReceiver(
+  receiverEmail: string,
+  since: Date,
+  wanted: Map<string, PendingSeed>,
+  summary: SeedPlacementSyncSummary,
+): Promise<void> {
+  const token = await getMicrosoftAccessToken(receiverEmail);
+  for (const observed of await readMicrosoftSeedFolders(token, since)) {
+    summary.messagesRead += 1;
+    const seed = wanted.get(observed.messageId);
+    if (!seed) continue;
+
+    const [inserted] = await db
+      .insert(seedPlacementObservations)
+      .values({
+        testId: seed.testId,
+        messageId: observed.messageId,
+        receiverEmail,
+        folder: observed.folder,
+        placement: observed.placement,
+        spfPass: observed.spfPass,
+        dkimPass: observed.dkimPass,
+        dmarcPass: observed.dmarcPass,
+        msInference: observed.inference,
+        msScl: observed.scl,
+      })
+      .onConflictDoNothing({
+        target: [seedPlacementObservations.receiverEmail, seedPlacementObservations.messageId],
+      })
+      .returning({ id: seedPlacementObservations.id });
+    if (inserted) summary.observations += 1;
+    wanted.delete(observed.messageId);
+  }
+}
+
+/**
  * Promote every seed test touched by this run into silver.
  *
  * Re-aggregates the WHOLE test each time rather than incrementally, so a seed
@@ -270,13 +318,20 @@ export async function syncSeedPlacement(): Promise<SeedPlacementSyncSummary> {
     observations: 0,
     testsPromoted: 0,
     silverRows: 0,
+    dailyRows: 0,
+    microsoftTokensRefreshed: 0,
+    microsoftTokensFailed: 0,
   };
 
   const pending = await loadPendingSeeds();
   const touchedTests = new Set(pending.map((p) => p.testId));
 
   if (pending.length > 0) {
-    const resolveCredential = await loadSeedCredentialResolver(CALLER);
+    const microsoftReceivers = new Set(await loadAuthorizedMicrosoftReceivers());
+    // Password credentials are only needed for the Google receivers; a run with
+    // Microsoft seeds alone never pays the vendor pagination.
+    const needsCredentials = pending.some((p) => !microsoftReceivers.has(p.receiverEmail));
+    const resolveCredential = needsCredentials ? await loadSeedCredentialResolver(CALLER) : () => null;
     const since = new Date(Date.now() - READ_WINDOW_DAYS * 24 * 60 * 60 * 1000);
 
     const byReceiver = new Map<string, Map<string, PendingSeed>>();
@@ -288,6 +343,11 @@ export async function syncSeedPlacement(): Promise<SeedPlacementSyncSummary> {
 
     for (const [receiverEmail, wanted] of byReceiver) {
       try {
+        if (microsoftReceivers.has(receiverEmail)) {
+          await pollMicrosoftReceiver(receiverEmail, since, wanted, summary);
+          summary.receiversPolled += 1;
+          continue;
+        }
         const credential = resolveCredential(receiverEmail);
         if (!credential) {
           // A receiver is chosen from the sendable set, so this should not
@@ -312,6 +372,15 @@ export async function syncSeedPlacement(): Promise<SeedPlacementSyncSummary> {
   }
 
   await promoteSeedTests([...touchedTests], summary);
+
+  // The admin chart's stored series, recomputed from bronze every sync.
+  summary.dailyRows = await refreshSeedPlacementDaily();
+
+  // Exercise every Microsoft refresh token daily so none reaches Microsoft's
+  // inactivity expiry between weekly tests. A failure is logged per mailbox.
+  const keepalive = await keepMicrosoftReceiversAlive();
+  summary.microsoftTokensRefreshed = keepalive.refreshed;
+  summary.microsoftTokensFailed = keepalive.failed;
 
   return summary;
 }

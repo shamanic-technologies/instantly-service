@@ -34,6 +34,7 @@ import deliveryByVerdictRoutes from "./routes/delivery-by-verdict";
 import incurredSendCostsRoutes from "./routes/incurred-send-costs";
 import leadSourceYieldRoutes from "./routes/lead-source-yield";
 import domainBlocklistRoutes from "./routes/domain-blocklist";
+import seedPlacementRoutes from "./routes/seed-placement";
 import infraRoutes from "./routes/infra";
 import opsRoutes from "./routes/ops";
 import outreachFactsRoutes from "./routes/outreach-facts";
@@ -91,6 +92,7 @@ app.use("/internal/accounts", serviceAuth, accountsRoutes);    // list all accou
 app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 app.use("/internal/bounced-emails", serviceAuth, bouncedEmailsRoutes); // fleet-wide bounce lookup (human-service serve gate)
 app.use("/internal/outreach-facts", serviceAuth, outreachFactsRoutes); // fleet fact feed lead-service copies by cursor
+app.use("/internal/seed-placement", serviceAuth, seedPlacementRoutes); // Microsoft seed receivers (OAuth) + daily placement series (MS-SEED-PLACEMENT-1018)
 app.use("/internal", serviceAuth, domainBlocklistRoutes);      // sending domains on public blocklists (staff console)
 app.use("/internal", serviceAuth, leadSourceYieldRoutes);      // lead sources ranked by bounces / refusals / blocklist hits (staff console)
 app.use("/internal", serviceAuth, deliveryByVerdictRoutes);    // fleet delivery split by the verifier verdict at send (features-service)
@@ -282,6 +284,21 @@ async function start() {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[instantly-service] failed to start lead-provenance worker: ${message}`);
       });
+    // Microsoft seed receivers: resume a device-code sign-in a deploy cut short,
+    // and fill the stored placement series once so the chart has data at boot.
+    import("./lib/seed-placement/microsoft-oauth")
+      .then(({ resumePendingMicrosoftAuthorizations }) => resumePendingMicrosoftAuthorizations())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to resume Microsoft seed authorizations: ${message}`);
+      });
+    import("./lib/seed-placement/daily")
+      .then(({ refreshSeedPlacementDaily }) => refreshSeedPlacementDaily())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to fill the seed placement daily series: ${message}`);
+      });
+
     import("./lib/booked-stops-cold-worker")
       .then(({ startBookedStopsWorker }) => startBookedStopsWorker())
       .catch((err: unknown) => {

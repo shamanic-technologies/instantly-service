@@ -28,6 +28,7 @@ import type { LifecycleStatus } from "./account-lifecycle";
 import type { LifecycleView } from "./account-lifecycle-sync";
 import type { QueueBreakdown } from "./queue-breakdown";
 import { capForAccount } from "./account-lifecycle";
+import type { MicrosoftPlacement } from "./microsoft-placement-read";
 import {
   SEND_TRANSPORT_SMTP,
   resolveTransportForSend,
@@ -66,6 +67,8 @@ export interface SelectionView {
    * the dispatcher both refuse it.
    */
   inboundBlindAddresses?: ReadonlySet<string>;
+  /** Lowercased address → its latest Microsoft seed test (`microsoft-placement-read.ts`). */
+  microsoftPlacementByEmail?: Map<string, MicrosoftPlacement>;
 }
 
 /**
@@ -150,8 +153,14 @@ export interface AccountHealth {
   lifecycleReason: string | null;
   /** ISO8601 timestamp of the latest lifecycle transition (null until classified). */
   lifecycleUpdatedAt: string | null;
-  /** Latest blended placement from our BSG history; null when never tested. */
+  /** Latest blended placement from our BSG history (Google receivers); null when never tested. */
   inboxPlacement: InboxPlacement | null;
+  /**
+   * Where Microsoft puts this mailbox's mail, from our Microsoft seed receivers.
+   * Decides whether it may write FIRST emails to Microsoft-hosted prospects.
+   * Null when never measured at Microsoft.
+   */
+  microsoftPlacement: MicrosoftPlacement | null;
   /**
    * Count of REAL (non-inferred) `email_sent` events observed today (UTC) from
    * this account, derived from our silver event log. The "N" in a "N/dailyLimit"
@@ -327,6 +336,7 @@ export function buildAccountHealth(
   const recentSustainedByEmail = selection.recentSustainedByEmail ?? new Map<string, number>();
   const newSequencesTodayByEmail = selection.newSequencesTodayByEmail ?? new Map<string, number>();
   const inboundBlindAddresses = selection.inboundBlindAddresses ?? new Set<string>();
+  const microsoftPlacementByEmail = selection.microsoftPlacementByEmail ?? new Map<string, MicrosoftPlacement>();
   return accounts.map((a) => {
     const lifecycle = lifecycleByEmail.get(a.email) ?? null;
     const lifecycleStatus = lifecycle?.status ?? null;
@@ -374,6 +384,7 @@ export function buildAccountHealth(
       lifecycleReason: lifecycle?.reason ?? null,
       lifecycleUpdatedAt: lifecycle?.updatedAt ?? null,
       inboxPlacement: placementByEmail.get(a.email) ?? null,
+      microsoftPlacement: microsoftPlacementByEmail.get(a.email.trim().toLowerCase()) ?? null,
       sentToday: sentTodayByEmail.get(a.email) ?? 0,
       sentYesterday: sentYesterdayByEmail.get(a.email) ?? 0,
       // Prefer the breakdown's step total so queueSize === sum of the four date

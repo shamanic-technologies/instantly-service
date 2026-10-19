@@ -27,6 +27,16 @@ vi.mock("../../src/lib/queued-verification", () => ({
   verifyQueuedSequences: (...args: unknown[]) => mockVerifyQueued(...(args as [])),
 }));
 
+// Microsoft routing (MS-SEED-PLACEMENT-1018) has its own tests
+// (microsoft-seed-placement.test.ts); here no mailbox is measured at Microsoft
+// and no prospect domain is known to be Microsoft-hosted.
+vi.mock("../../src/lib/microsoft-placement-read", () => ({
+  fetchMicrosoftPlacementByAccount: async () => new Map(),
+}));
+vi.mock("../../src/lib/recipient-mail-host", () => ({
+  refreshRecipientMailHosts: async () => ({ looked: 0, microsoft: 0, failed: 0 }),
+}));
+
 vi.mock("../../src/lib/booked-stops-cold", () => ({
   stopQueuedSequencesOfBookedPeople: (...args: unknown[]) => mockStopBooked(...args),
 }));
