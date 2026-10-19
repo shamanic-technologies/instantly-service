@@ -46,7 +46,8 @@ export const PLACEMENT_ALERT_MIN_FOUND_SEEDS = 20;
 /** Days re-evaluated each tick: seeds of yesterday are still being read today. */
 export const PLACEMENT_ALERT_EVAL_DAYS = 3;
 export const PLACEMENT_ALERT_EVENT = "inbox_placement_below_bar";
-export const MONITORING_DASHBOARD_URL = "https://distribute.you/v2/monitoring";
+/** The staff Monitoring > Emails > Inbox providers page (dashboard v2, the distribute.you staff org). */
+export const MONITORING_DASHBOARD_URL = "https://dashboard.distribute.you/v2/orgs/org_3CL2MrIGuvlW9YHd5RgRgNoMAMS/brands/f4d73dab-1f9d-49b2-b16e-63ecde76a5eb/monitoring/emails/inbox-providers";
 
 export const PLACEMENT_ALERT_SOURCES = [
   { name: "Omni Online Strategies", url: "https://omnionlinestrategies.com/blog/what-is-inbox-placement-rate-cold-email", says: "below 80% indicates a technical problem; target 85-95%" },

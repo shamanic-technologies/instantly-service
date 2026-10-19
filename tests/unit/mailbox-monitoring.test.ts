@@ -229,7 +229,7 @@ describe("inbox placement alert", () => {
     expect(alertEventId(written[0])).toBe("google:2026-10-19");
     expect(alertMetadata(written[0])).toEqual({
       provider: "Google", measuredOn: "2026-10-19", inboxPct: "40.0", seeds: "25",
-      thresholdPct: String(PLACEMENT_ALERT_INBOX_PCT_BAR), mailboxesCut: "0", dashboardUrl: "https://distribute.you/v2/monitoring",
+      thresholdPct: String(PLACEMENT_ALERT_INBOX_PCT_BAR), mailboxesCut: "0", dashboardUrl: "https://dashboard.distribute.you/v2/orgs/org_3CL2MrIGuvlW9YHd5RgRgNoMAMS/brands/f4d73dab-1f9d-49b2-b16e-63ecde76a5eb/monitoring/emails/inbox-providers",
     });
   });
 
