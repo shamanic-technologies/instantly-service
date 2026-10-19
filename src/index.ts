@@ -278,6 +278,14 @@ async function start() {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[instantly-service] failed to start domain-blocklist worker: ${message}`);
       });
+    // Staff alert when inbox placement at a provider falls below the market bar
+    // and the automatic cut did not bring it back (MAILBOX-MONITORING-1019).
+    import("./lib/placement-alert-worker")
+      .then(({ startPlacementAlertWorker }) => startPlacementAlertWorker())
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[instantly-service] failed to start placement-alert worker: ${message}`);
+      });
     // Copy of lead-service's lead provenance for GET /internal/lead-source-yield
     // (SOURCE-YIELD-1016). Armed after listen.
     import("./lib/lead-provenance-sync-worker")

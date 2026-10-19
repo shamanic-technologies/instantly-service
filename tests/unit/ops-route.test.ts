@@ -155,3 +155,30 @@ describe("mapSentPeriods", () => {
     expect(out.periods[0]).toMatchObject({ inProgress: true, toLeads: 3, warmup: 0 });
   });
 });
+
+describe("monitoring reads (MAILBOX-MONITORING-1019)", () => {
+  it("sent-per-period threads the scope into the SQL and refuses a bad groupBy", async () => {
+    expect((await request(app).get("/internal/ops/sent-per-period?grain=day&groupBy=brand")).status).toBe(400);
+    mockExecute.mockResolvedValueOnce(pgResult([]));
+    const res = await request(app).get("/internal/ops/sent-per-period?grain=day&domain=X.com");
+    expect(res.status).toBe(200);
+    expect(res.body.scope).toEqual({ domain: "x.com" });
+    const q = JSON.stringify((mockExecute.mock.calls[0][0] as { queryChunks?: unknown[] }).queryChunks);
+    expect(q).toContain("x.com");
+    expect(q).toContain("split_part");
+  });
+
+  it("refuses bad horizons, limits and cursors", async () => {
+    expect((await request(app).get("/internal/ops/capacity-daily?horizonDays=500")).status).toBe(400);
+    expect((await request(app).get("/internal/ops/schedule?horizonDays=-1")).status).toBe(400);
+    expect((await request(app).get("/internal/ops/queued-steps?limit=0")).status).toBe(400);
+    expect((await request(app).get("/internal/ops/queued-steps?overdue=maybe")).status).toBe(400);
+    expect((await request(app).get("/internal/ops/placement-tests?cursor=nope")).status).toBe(400);
+    expect((await request(app).get("/internal/ops/placement-alerts?days=0")).status).toBe(400);
+  });
+
+  it("404s an unknown placement test", async () => {
+    const res = await request(app).get("/internal/ops/placement-tests/seed:none");
+    expect(res.status).toBe(404);
+  });
+});

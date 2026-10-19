@@ -7071,6 +7071,84 @@
               "$ref": "#/components/schemas/SentPeriod"
             },
             "description": "Oldest first, no gaps, zeros included, last one is the current period"
+          },
+          "scope": {
+            "type": "object",
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "mailbox": {
+                "type": "string"
+              },
+              "domain": {
+                "type": "string"
+              }
+            },
+            "description": "The account / mailbox / domain filter applied; empty = the fleet"
+          },
+          "groupBy": {
+            "type": "string",
+            "enum": [
+              "account",
+              "mailbox",
+              "domain"
+            ]
+          },
+          "entities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "totals": {
+                  "type": "object",
+                  "properties": {
+                    "toLeads": {
+                      "type": "integer",
+                      "description": "`outreach` sent: cold sequence steps to a lead, Instantly + SMTP"
+                    },
+                    "manualReplies": {
+                      "type": "integer",
+                      "description": "`manual_reply` sent: a human's answer to a lead — reaches a lead but is kept apart from cold outreach"
+                    },
+                    "warmup": {
+                      "type": "integer",
+                      "description": "`warmup` sent: our own warmup mesh"
+                    },
+                    "warmupReplies": {
+                      "type": "integer",
+                      "description": "`warmup_reply` sent: replies inside the warmup mesh"
+                    },
+                    "seeds": {
+                      "type": "integer",
+                      "description": "`seed` sent: inbox-placement / seed tests"
+                    }
+                  },
+                  "required": [
+                    "toLeads",
+                    "manualReplies",
+                    "warmup",
+                    "warmupReplies",
+                    "seeds"
+                  ]
+                },
+                "periods": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SentPeriod"
+                  }
+                }
+              },
+              "required": [
+                "key",
+                "totals",
+                "periods"
+              ]
+            },
+            "description": "With `groupBy` only: the same periods per entity, zeros included, entities that sent at least once. Per-period sums equal `periods` (`leadsEmailed` is distinct and does not add)."
           }
         },
         "required": [
@@ -7079,7 +7157,8 @@
           "since",
           "asOf",
           "totals",
-          "periods"
+          "periods",
+          "scope"
         ]
       },
       "SentPeriod": {
@@ -7133,6 +7212,72 @@
           "seeds",
           "leadsEmailed"
         ]
+      },
+      "OpsPlacementTestsResponse": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": {
+              "nullable": true
+            }
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": {
+                "nullable": true
+              }
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "scope",
+          "tests",
+          "nextCursor"
+        ]
+      },
+      "OpsPlacementTestDetail": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "nullable": true
+        }
+      },
+      "OpsCapacityDaily": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "nullable": true
+        }
+      },
+      "OpsSchedule": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "nullable": true
+        }
+      },
+      "OpsQueuedSteps": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "nullable": true
+        }
+      },
+      "OpsPlacementAlerts": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "nullable": true
+        }
       },
       "OpsThreadsResponse": {
         "type": "object",
@@ -14119,6 +14264,51 @@
             "description": "ISO timestamp; the series starts at the period containing it",
             "name": "since",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending address"
+            },
+            "required": false,
+            "description": "One sending address",
+            "name": "account",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One real mailbox (its login): the unit a daily quota belongs to"
+            },
+            "required": false,
+            "description": "One real mailbox (its login): the unit a daily quota belongs to",
+            "name": "mailbox",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending domain"
+            },
+            "required": false,
+            "description": "One sending domain",
+            "name": "domain",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "account",
+                "mailbox",
+                "domain"
+              ],
+              "description": "Also serve the series per entity of this grain"
+            },
+            "required": false,
+            "description": "Also serve the series per entity of this grain",
+            "name": "groupBy",
+            "in": "query"
           }
         ],
         "responses": {
@@ -14134,6 +14324,475 @@
           },
           "400": {
             "description": "grain missing / unknown, or since not a timestamp"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/placement-tests": {
+      "get": {
+        "summary": "Placement tests, newest first, with inbox / spam / missing per inbox provider (MAILBOX-MONITORING-1019)",
+        "description": "Platform-scoped. One row per test (`seed:<uuid>` = our seed harness, any other id = an Instantly paid test), counted from the silver `instantly_placement_results` over the senders in scope: total and per provider (google = Google, microsoft = Microsoft 365, microsoftConsumer = Outlook.com, other). Cursor pagination on (testedAt, testId).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending address"
+            },
+            "required": false,
+            "description": "One sending address",
+            "name": "account",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One real mailbox (its login): the unit a daily quota belongs to"
+            },
+            "required": false,
+            "description": "One real mailbox (its login): the unit a daily quota belongs to",
+            "name": "mailbox",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending domain"
+            },
+            "required": false,
+            "description": "One sending domain",
+            "name": "domain",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "description": "Default 50"
+            },
+            "required": false,
+            "description": "Default 50",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque, from the previous page's `nextCursor`"
+            },
+            "required": false,
+            "description": "Opaque, from the previous page's `nextCursor`",
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tests page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsPlacementTestsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad filter or cursor"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/placement-tests/{testId}": {
+      "get": {
+        "summary": "One placement test, seed by seed: sender, receiver, inbox provider, where it landed",
+        "description": "Platform-scoped. Seed tests list every seed sent, never-found ones as `missing` (`missingSeedsListed: true`); an Instantly test lists only the seeds Instantly found (its missing seeds exist only in the list's counts). `placement` null = the seed never left (`dispatchOutcome` not `sent`), not counted. Totals per provider and per sender are recomputed from the seeds listed. Scope filters narrow the senders.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "testId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending address"
+            },
+            "required": false,
+            "description": "One sending address",
+            "name": "account",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One real mailbox (its login): the unit a daily quota belongs to"
+            },
+            "required": false,
+            "description": "One real mailbox (its login): the unit a daily quota belongs to",
+            "name": "mailbox",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending domain"
+            },
+            "required": false,
+            "description": "One sending domain",
+            "name": "domain",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Test detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsPlacementTestDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Unknown test"
+          }
+        }
+      }
+    },
+    "/internal/ops/capacity-daily": {
+      "get": {
+        "summary": "Capacity per day since inception and the ramp ahead, per account / mailbox / domain / fleet",
+        "description": "Platform-scoped, cached 60s. PAST: the capacity-history reconstruction kept per real mailbox (in_production addresses, operator limit = min across them, volume sustained over the ramp window, ramp cap, capacity = min); `phase: today` includes today so far. FUTURE (`horizonDays`, default 30, max 90): the ramp rule re-applied from today's volume for the mailboxes in production today, assuming each uses its room (never a promise). `rampRules` states the rule. Mailbox figures add up to domain and fleet; at the account grain each address carries its mailbox's figure (`additive: false`).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending address"
+            },
+            "required": false,
+            "description": "One sending address",
+            "name": "account",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One real mailbox (its login): the unit a daily quota belongs to"
+            },
+            "required": false,
+            "description": "One real mailbox (its login): the unit a daily quota belongs to",
+            "name": "mailbox",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending domain"
+            },
+            "required": false,
+            "description": "One sending domain",
+            "name": "domain",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "account",
+                "mailbox",
+                "domain"
+              ],
+              "description": "Also serve the series per entity of this grain"
+            },
+            "required": false,
+            "description": "Also serve the series per entity of this grain",
+            "name": "groupBy",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 90
+            },
+            "required": false,
+            "name": "horizonDays",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Capacity days",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsCapacityDaily"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad filter"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/schedule": {
+      "get": {
+        "summary": "From today on, per day: queued sequence steps at their theoretical date, planned warmups, planned seed tests",
+        "description": "Platform-scoped, cached 60s. Queued steps sit on their THEORETICAL date: previous send + configured step delay, chained (a never-sent sequence is anchored on the day it was assigned). No capacity, sending window or holiday is applied. Steps already past their theoretical date are `totals.overdueQueuedSteps`, never moved onto a day. Warmups = the warmup budget rule on the ramp's projected cap for the mailboxes that sent warmup in the last 7 days (sends; replies come on top). Seed tests = the seed cadence rule for the testable pool, each test expected to carry the address's latest seed count. `horizonDays` default 30, max 90; today is `isToday`.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending address"
+            },
+            "required": false,
+            "description": "One sending address",
+            "name": "account",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One real mailbox (its login): the unit a daily quota belongs to"
+            },
+            "required": false,
+            "description": "One real mailbox (its login): the unit a daily quota belongs to",
+            "name": "mailbox",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending domain"
+            },
+            "required": false,
+            "description": "One sending domain",
+            "name": "domain",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "account",
+                "mailbox",
+                "domain"
+              ],
+              "description": "Also serve the series per entity of this grain"
+            },
+            "required": false,
+            "description": "Also serve the series per entity of this grain",
+            "name": "groupBy",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 90
+            },
+            "required": false,
+            "name": "horizonDays",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Schedule days",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsSchedule"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad filter"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/queued-steps": {
+      "get": {
+        "summary": "Every queued sequence step at its theoretical date, oldest first",
+        "description": "Platform-scoped. One row per un-sent step: sequence (instantlyCampaignId), lead, org, caller campaign, account / mailbox / domain, step, first email or follow-up, the send it is anchored on, theoretical date, overdue. Same cadence as `/internal/ops/schedule`. Offset pagination.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending address"
+            },
+            "required": false,
+            "description": "One sending address",
+            "name": "account",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One real mailbox (its login): the unit a daily quota belongs to"
+            },
+            "required": false,
+            "description": "One real mailbox (its login): the unit a daily quota belongs to",
+            "name": "mailbox",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One sending domain"
+            },
+            "required": false,
+            "description": "One sending domain",
+            "name": "domain",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "description": "Default 100"
+            },
+            "required": false,
+            "description": "Default 100",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "overdue",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Steps page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsQueuedSteps"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad filter"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/placement-alerts": {
+      "get": {
+        "summary": "The inbox-placement alert: daily evaluation per inbox provider, its bar and sources, the episodes alerted",
+        "description": "Platform-scoped, cached 60s. Per (day, provider): the fleet's seeds and the seeds of the production mailboxes the automatic cut (SENDER-HEALTH-1019) still lets mail that provider, inbox % of FOUND seeds, mailboxes cut, whether the day is measured (>= 20 found seeds) and below the 80 % bar (market consensus, sources served). An episode opens on the first measured day below, closes on the first measured day back above; one staff alert per episode.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 400,
+              "description": "Default 30"
+            },
+            "required": false,
+            "description": "Default 30",
+            "name": "days",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Evaluation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsPlacementAlerts"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad days"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/ops/placement-alerts/run": {
+      "post": {
+        "summary": "One pass of the inbox-placement alert now; dryRun (default true) writes and sends nothing",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "dryRun": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pass summary: evaluations, episodes written, alerts due / sent / failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {
+                    "nullable": true
+                  }
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"

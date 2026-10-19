@@ -174,6 +174,18 @@ interface BreakdownRow {
   step_config: Array<{ delay?: number | string | null }> | null;
   lead_timezone?: string | null;
   queued_at?: string | Date | null;
+  instantly_campaign_id?: string | null;
+  lead_email?: string | null;
+  org_id?: string | null;
+  campaign_id?: string | null;
+}
+
+/** A queued sequence with its identity, for the monitoring unit list (MAILBOX-MONITORING-1019). */
+export interface QueuedSequenceDetail extends QueuedSequenceInput {
+  instantlyCampaignId: string;
+  leadEmail: string;
+  orgId: string | null;
+  campaignId: string | null;
 }
 
 /**
@@ -210,6 +222,11 @@ export async function fetchQueueBreakdownByAccount(
  * as fetchQueueSizeByAccount.
  */
 async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
+  return fetchQueuedSequenceDetails();
+}
+
+/** The same rows as `fetchQueuedSequenceInputs`, with the sequence's identity. */
+export async function fetchQueuedSequenceDetails(): Promise<QueuedSequenceDetail[]> {
   const result = await db.execute(sql`
     WITH campaign_account AS (
       SELECT e.campaign_id AS instantly_campaign_id,
@@ -226,6 +243,9 @@ async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
              MIN(c.account_email) AS persisted_account,
              MIN(c.timezone) AS persisted_timezone,
              MIN(c.created_at) AS queued_at,
+             MIN(c.lead_email) AS lead_email,
+             MIN(c.org_id) AS org_id,
+             MIN(c.campaign_id) AS campaign_id,
              MAX(sc.step) FILTER (WHERE sc.status = 'actual') AS last_sent_step,
              MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at,
              array_agg(DISTINCT sc.step) FILTER (WHERE sc.status = 'provisioned')
@@ -241,6 +261,10 @@ async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
                IS NOT NULL
     )
     SELECT COALESCE(s.persisted_account, ca.account_email) AS account_email,
+           s.instantly_campaign_id,
+           s.lead_email,
+           s.org_id,
+           s.campaign_id,
            s.last_sent_step,
            s.last_sent_at,
            s.provisioned_steps,
@@ -282,6 +306,10 @@ async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
       : null,
     timezone: r.lead_timezone ?? null,
     queuedAt: r.queued_at ? new Date(r.queued_at) : null,
+    instantlyCampaignId: String(r.instantly_campaign_id ?? ""),
+    leadEmail: String(r.lead_email ?? ""),
+    orgId: r.org_id ?? null,
+    campaignId: r.campaign_id ?? null,
   }));
 }
 

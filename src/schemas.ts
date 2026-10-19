@@ -4491,6 +4491,13 @@ const SentCountsShape = {
   seeds: z.number().int().describe("`seed` sent: inbox-placement / seed tests"),
 };
 
+const EntityScopeQueryShape = {
+  account: z.string().optional().describe("One sending address"),
+  mailbox: z.string().optional().describe("One real mailbox (its login): the unit a daily quota belongs to"),
+  domain: z.string().optional().describe("One sending domain"),
+  groupBy: z.enum(["account", "mailbox", "domain"]).optional().describe("Also serve the series per entity of this grain"),
+};
+
 const SentPeriodSchema = z
   .object({
     periodStart: z.string().describe("YYYY-MM-DD, UTC, inclusive (a week starts Monday)"),
@@ -4509,6 +4516,12 @@ const SentPerPeriodResponseSchema = z
     asOf: z.string(),
     totals: z.object(SentCountsShape).describe("Sum of the periods' counts"),
     periods: z.array(SentPeriodSchema).describe("Oldest first, no gaps, zeros included, last one is the current period"),
+    scope: z.object({ account: z.string().optional(), mailbox: z.string().optional(), domain: z.string().optional() }).describe("The account / mailbox / domain filter applied; empty = the fleet"),
+    groupBy: z.enum(["account", "mailbox", "domain"]).optional(),
+    entities: z
+      .array(z.object({ key: z.string(), totals: z.object(SentCountsShape), periods: z.array(SentPeriodSchema) }))
+      .optional()
+      .describe("With `groupBy` only: the same periods per entity, zeros included, entities that sent at least once. Per-period sums equal `periods` (`leadsEmailed` is distinct and does not add)."),
   })
   .openapi("SentPerPeriodResponse");
 
@@ -4522,11 +4535,126 @@ registry.registerPath({
     query: z.object({
       grain: z.enum(["day", "week", "month"]).describe("REQUIRED"),
       since: z.string().optional().describe("ISO timestamp; the series starts at the period containing it"),
+      ...EntityScopeQueryShape,
     }),
   },
   responses: {
     200: { description: "Periods", content: { "application/json": { schema: SentPerPeriodResponseSchema } } },
     400: { description: "grain missing / unknown, or since not a timestamp" },
+    401: { description: "Unauthorized" },
+  },
+});
+
+const ScopeOnlyQuery = {
+  account: EntityScopeQueryShape.account,
+  mailbox: EntityScopeQueryShape.mailbox,
+  domain: EntityScopeQueryShape.domain,
+};
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/placement-tests",
+  summary: "Placement tests, newest first, with inbox / spam / missing per inbox provider (MAILBOX-MONITORING-1019)",
+  description:
+    "Platform-scoped. One row per test (`seed:<uuid>` = our seed harness, any other id = an Instantly paid test), counted from the silver `instantly_placement_results` over the senders in scope: total and per provider (google = Google, microsoft = Microsoft 365, microsoftConsumer = Outlook.com, other). Cursor pagination on (testedAt, testId).",
+  request: {
+    query: z.object({
+      ...ScopeOnlyQuery,
+      limit: z.number().int().min(1).max(500).optional().describe("Default 50"),
+      cursor: z.string().optional().describe("Opaque, from the previous page's `nextCursor`"),
+    }),
+  },
+  responses: {
+    200: { description: "Tests page", content: { "application/json": { schema: z.object({ scope: OpsObject, tests: z.array(OpsObject), nextCursor: z.string().nullable() }).openapi("OpsPlacementTestsResponse") } } },
+    400: { description: "Bad filter or cursor" },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/placement-tests/{testId}",
+  summary: "One placement test, seed by seed: sender, receiver, inbox provider, where it landed",
+  description:
+    "Platform-scoped. Seed tests list every seed sent, never-found ones as `missing` (`missingSeedsListed: true`); an Instantly test lists only the seeds Instantly found (its missing seeds exist only in the list's counts). `placement` null = the seed never left (`dispatchOutcome` not `sent`), not counted. Totals per provider and per sender are recomputed from the seeds listed. Scope filters narrow the senders.",
+  request: { params: z.object({ testId: z.string() }), query: z.object(ScopeOnlyQuery) },
+  responses: {
+    200: { description: "Test detail", content: { "application/json": { schema: OpsObject.openapi("OpsPlacementTestDetail") } } },
+    404: { description: "Unknown test" },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/capacity-daily",
+  summary: "Capacity per day since inception and the ramp ahead, per account / mailbox / domain / fleet",
+  description:
+    "Platform-scoped, cached 60s. PAST: the capacity-history reconstruction kept per real mailbox (in_production addresses, operator limit = min across them, volume sustained over the ramp window, ramp cap, capacity = min); `phase: today` includes today so far. FUTURE (`horizonDays`, default 30, max 90): the ramp rule re-applied from today's volume for the mailboxes in production today, assuming each uses its room (never a promise). `rampRules` states the rule. Mailbox figures add up to domain and fleet; at the account grain each address carries its mailbox's figure (`additive: false`).",
+  request: { query: z.object({ ...EntityScopeQueryShape, horizonDays: z.number().int().min(0).max(90).optional() }) },
+  responses: {
+    200: { description: "Capacity days", content: { "application/json": { schema: OpsObject.openapi("OpsCapacityDaily") } } },
+    400: { description: "Bad filter" },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/schedule",
+  summary: "From today on, per day: queued sequence steps at their theoretical date, planned warmups, planned seed tests",
+  description:
+    "Platform-scoped, cached 60s. Queued steps sit on their THEORETICAL date: previous send + configured step delay, chained (a never-sent sequence is anchored on the day it was assigned). No capacity, sending window or holiday is applied. Steps already past their theoretical date are `totals.overdueQueuedSteps`, never moved onto a day. Warmups = the warmup budget rule on the ramp's projected cap for the mailboxes that sent warmup in the last 7 days (sends; replies come on top). Seed tests = the seed cadence rule for the testable pool, each test expected to carry the address's latest seed count. `horizonDays` default 30, max 90; today is `isToday`.",
+  request: { query: z.object({ ...EntityScopeQueryShape, horizonDays: z.number().int().min(0).max(90).optional() }) },
+  responses: {
+    200: { description: "Schedule days", content: { "application/json": { schema: OpsObject.openapi("OpsSchedule") } } },
+    400: { description: "Bad filter" },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/queued-steps",
+  summary: "Every queued sequence step at its theoretical date, oldest first",
+  description:
+    "Platform-scoped. One row per un-sent step: sequence (instantlyCampaignId), lead, org, caller campaign, account / mailbox / domain, step, first email or follow-up, the send it is anchored on, theoretical date, overdue. Same cadence as `/internal/ops/schedule`. Offset pagination.",
+  request: {
+    query: z.object({
+      ...ScopeOnlyQuery,
+      limit: z.number().int().min(1).max(1000).optional().describe("Default 100"),
+      offset: z.number().int().min(0).optional(),
+      overdue: z.enum(["true", "false"]).optional(),
+    }),
+  },
+  responses: {
+    200: { description: "Steps page", content: { "application/json": { schema: OpsObject.openapi("OpsQueuedSteps") } } },
+    400: { description: "Bad filter" },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/ops/placement-alerts",
+  summary: "The inbox-placement alert: daily evaluation per inbox provider, its bar and sources, the episodes alerted",
+  description:
+    "Platform-scoped, cached 60s. Per (day, provider): the fleet's seeds and the seeds of the production mailboxes the automatic cut (SENDER-HEALTH-1019) still lets mail that provider, inbox % of FOUND seeds, mailboxes cut, whether the day is measured (>= 20 found seeds) and below the 80 % bar (market consensus, sources served). An episode opens on the first measured day below, closes on the first measured day back above; one staff alert per episode.",
+  request: { query: z.object({ days: z.number().int().min(1).max(400).optional().describe("Default 30") }) },
+  responses: {
+    200: { description: "Evaluation", content: { "application/json": { schema: OpsObject.openapi("OpsPlacementAlerts") } } },
+    400: { description: "Bad days" },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/ops/placement-alerts/run",
+  summary: "One pass of the inbox-placement alert now; dryRun (default true) writes and sends nothing",
+  request: { body: { content: { "application/json": { schema: z.object({ dryRun: z.boolean().optional() }) } } } },
+  responses: {
+    200: { description: "Pass summary: evaluations, episodes written, alerts due / sent / failed", content: { "application/json": { schema: OpsObject } } },
     401: { description: "Unauthorized" },
   },
 });
