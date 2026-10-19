@@ -35,6 +35,7 @@ import incurredSendCostsRoutes from "./routes/incurred-send-costs";
 import leadSourceYieldRoutes from "./routes/lead-source-yield";
 import domainBlocklistRoutes from "./routes/domain-blocklist";
 import seedPlacementRoutes from "./routes/seed-placement";
+import senderHealthRoutes from "./routes/sender-health";
 import infraRoutes from "./routes/infra";
 import opsRoutes from "./routes/ops";
 import outreachFactsRoutes from "./routes/outreach-facts";
@@ -93,6 +94,7 @@ app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 app.use("/internal/bounced-emails", serviceAuth, bouncedEmailsRoutes); // fleet-wide bounce lookup (human-service serve gate)
 app.use("/internal/outreach-facts", serviceAuth, outreachFactsRoutes); // fleet fact feed lead-service copies by cursor
 app.use("/internal/seed-placement", serviceAuth, seedPlacementRoutes); // Microsoft seed receivers (OAuth) + daily placement series (MS-SEED-PLACEMENT-1018)
+app.use("/internal/sender-health", serviceAuth, senderHealthRoutes); // SENDER-HEALTH-1019: mailboxes out of prospect mail + daily series
 app.use("/internal", serviceAuth, domainBlocklistRoutes);      // sending domains on public blocklists (staff console)
 app.use("/internal", serviceAuth, leadSourceYieldRoutes);      // lead sources ranked by bounces / refusals / blocklist hits (staff console)
 app.use("/internal", serviceAuth, deliveryByVerdictRoutes);    // fleet delivery split by the verifier verdict at send (features-service)

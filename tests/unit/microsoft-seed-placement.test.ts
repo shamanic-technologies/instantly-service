@@ -20,10 +20,11 @@ import {
   tenantIdOfToken,
 } from "../../src/lib/seed-placement/microsoft-oauth";
 import {
-  isMicrosoftColdStart,
-  mayWriteToMicrosoftRecipient,
-  microsoftPlacementVerdict,
-} from "../../src/lib/microsoft-placement";
+  isColdStart,
+  mayWriteFirstEmail,
+  providerPlacement,
+  type ProviderPlacement,
+} from "../../src/lib/provider-placement";
 import { mailHostForMx, readMailHost } from "../../src/lib/recipient-mail-host";
 import { buildSeedPlacementDays } from "../../src/lib/seed-placement/daily";
 import { selectDueSteps, type AccountCapacity, type PendingSequence } from "../../src/lib/self-send/dispatch";
@@ -173,39 +174,48 @@ describe("Microsoft placement verdict per mailbox", () => {
   const asOf = new Date("2026-10-19T12:00:00Z");
   const fresh = new Date(asOf.getTime() - 2 * DAY);
 
+  const ev = (inboxCount: number, spamCount: number, testedAt: Date = fresh) => ({
+    inboxCount,
+    spamCount,
+    seedTotal: inboxCount + spamCount,
+    testedAt,
+    testIds: ["t"],
+  });
+  const verdict = (e: ReturnType<typeof ev> | null) => providerPlacement(e, asOf).verdict;
+
   it("Inbox at Microsoft = inbox; one Junk out of one = junk", () => {
-    expect(microsoftPlacementVerdict({ inboxCount: 2, spamCount: 0, testedAt: fresh }, asOf)).toBe("inbox");
-    expect(microsoftPlacementVerdict({ inboxCount: 0, spamCount: 1, testedAt: fresh }, asOf)).toBe("junk");
-    expect(microsoftPlacementVerdict({ inboxCount: 1, spamCount: 1, testedAt: fresh }, asOf)).toBe("junk");
+    expect(verdict(ev(2, 0))).toBe("inbox");
+    expect(verdict(ev(0, 1))).toBe("junk");
+    expect(verdict(ev(1, 1))).toBe("junk");
   });
 
   it("a seed nobody found yet is not Junk: unmeasured", () => {
-    expect(microsoftPlacementVerdict({ inboxCount: 0, spamCount: 0, testedAt: fresh }, asOf)).toBe("unmeasured");
+    expect(verdict(ev(0, 0))).toBe("unmeasured");
   });
 
   it("evidence older than 16 days is unmeasured (the Instantly Outlook rows of 2026-08-29)", () => {
-    expect(
-      microsoftPlacementVerdict({ inboxCount: 1, spamCount: 0, testedAt: new Date("2026-08-29T06:00:00Z") }, asOf),
-    ).toBe("unmeasured");
-    expect(microsoftPlacementVerdict(null, asOf)).toBe("unmeasured");
+    expect(verdict(ev(1, 0, new Date("2026-08-29T06:00:00Z")))).toBe("unmeasured");
+    expect(verdict(null)).toBe("unmeasured");
   });
 
   it("cold start until one production mailbox is measured Inbox; Junk never writes", () => {
-    expect(isMicrosoftColdStart(["unmeasured", "junk", undefined])).toBe(true);
-    expect(isMicrosoftColdStart(["unmeasured", "inbox"])).toBe(false);
-    expect(mayWriteToMicrosoftRecipient("inbox", false)).toBe(true);
-    expect(mayWriteToMicrosoftRecipient("junk", true)).toBe(false);
-    expect(mayWriteToMicrosoftRecipient("unmeasured", true)).toBe(true);
-    expect(mayWriteToMicrosoftRecipient(undefined, false)).toBe(false);
+    const p = (v: ProviderPlacement["verdict"]): ProviderPlacement => ({ verdict: v, mostlySpam: false });
+    expect(isColdStart([p("unmeasured"), p("junk"), undefined])).toBe(true);
+    expect(isColdStart([p("unmeasured"), p("inbox")])).toBe(false);
+    expect(mayWriteFirstEmail(p("inbox"), false)).toBe(true);
+    expect(mayWriteFirstEmail(p("junk"), true)).toBe(false);
+    expect(mayWriteFirstEmail(p("unmeasured"), true)).toBe(true);
+    expect(mayWriteFirstEmail(undefined, false)).toBe(false);
   });
 });
 
 describe("recipient mail host from MX", () => {
-  it("Microsoft 365 tenants, Outlook.com and Hotmail are microsoft (DefiniteJobs' three Junk prospects)", () => {
+  it("Microsoft 365 tenants are microsoft; Outlook.com and Hotmail are microsoft_consumer (they filter apart)", () => {
     expect(mailHostForMx(["ucl-ac-uk.mail.protection.outlook.com"])).toBe("microsoft");
     expect(mailHostForMx(["zahayr-com.mail.protection.outlook.com."])).toBe("microsoft");
-    expect(mailHostForMx(["outlook-com.olc.protection.outlook.com"])).toBe("microsoft");
-    expect(mailHostForMx(["hotmail-com.olc.protection.outlook.com"])).toBe("microsoft");
+    expect(mailHostForMx(["kevinhearon-com.mail.eo.outlook.com"])).toBe("microsoft");
+    expect(mailHostForMx(["outlook-com.olc.protection.outlook.com"])).toBe("microsoft_consumer");
+    expect(mailHostForMx(["hotmail-com.olc.protection.outlook.com"])).toBe("microsoft_consumer");
   });
 
   it("Google, a gateway, and no MX are not microsoft", () => {
@@ -259,11 +269,11 @@ describe("Microsoft-recipient mailbox pick (selectDueSteps)", () => {
 
   it("a first email to a Microsoft prospect leaves a Junk mailbox for one Microsoft puts in Inbox", () => {
     const out = selectDueSteps(
-      [seq("ms-1", JUNK, { recipientMicrosoft: true })],
-      [cap(JUNK, { microsoftPlacement: "junk" }), cap(INBOX, { microsoftPlacement: "inbox" })],
+      [seq("ms-1", JUNK, { recipientProvider: "microsoft" })],
+      [cap(JUNK, { placement: { microsoft: { verdict: "junk", mostlySpam: false } } }), cap(INBOX, { placement: { microsoft: { verdict: "inbox", mostlySpam: false } } })],
       NOW,
     );
-    expect(out.heldMicrosoftPlacement).toBe(1);
+    expect(out.heldPlacement).toBe(1);
     expect(out.selected).toEqual([
       expect.objectContaining({ instantlyCampaignId: "ms-1", accountEmail: INBOX, rehomedFrom: JUNK }),
     ]);
@@ -272,17 +282,17 @@ describe("Microsoft-recipient mailbox pick (selectDueSteps)", () => {
   it("a Google prospect still goes out from the Junk-at-Microsoft mailbox (routing, never a demotion)", () => {
     const out = selectDueSteps(
       [seq("g-1", JUNK)],
-      [cap(JUNK, { microsoftPlacement: "junk" }), cap(INBOX, { microsoftPlacement: "inbox" })],
+      [cap(JUNK, { placement: { microsoft: { verdict: "junk", mostlySpam: false } } }), cap(INBOX, { placement: { microsoft: { verdict: "inbox", mostlySpam: false } } })],
       NOW,
     );
-    expect(out.heldMicrosoftPlacement).toBe(0);
+    expect(out.heldPlacement).toBe(0);
     expect(out.selected).toEqual([expect.objectContaining({ accountEmail: JUNK })]);
   });
 
   it("a follow-up to a Microsoft prospect stays on its thread's mailbox", () => {
     const out = selectDueSteps(
-      [seq("ms-fu", JUNK, { recipientMicrosoft: true, provisionedSteps: [2, 3], lastSentStep: 1, lastSentAt: new Date(NOW.getTime() - 5 * DAY) })],
-      [cap(JUNK, { microsoftPlacement: "junk" }), cap(INBOX, { microsoftPlacement: "inbox" })],
+      [seq("ms-fu", JUNK, { recipientProvider: "microsoft", provisionedSteps: [2, 3], lastSentStep: 1, lastSentAt: new Date(NOW.getTime() - 5 * DAY) })],
+      [cap(JUNK, { placement: { microsoft: { verdict: "junk", mostlySpam: false } } }), cap(INBOX, { placement: { microsoft: { verdict: "inbox", mostlySpam: false } } })],
       NOW,
     );
     expect(out.selected).toEqual([expect.objectContaining({ accountEmail: JUNK, step: 2 })]);
@@ -290,27 +300,27 @@ describe("Microsoft-recipient mailbox pick (selectDueSteps)", () => {
 
   it("once the fleet has a Microsoft-Inbox mailbox, an unmeasured one no longer writes to Microsoft prospects", () => {
     const out = selectDueSteps(
-      [seq("ms-2", UNMEASURED, { recipientMicrosoft: true })],
-      [cap(UNMEASURED), cap(INBOX, { microsoftPlacement: "inbox" })],
+      [seq("ms-2", UNMEASURED, { recipientProvider: "microsoft" })],
+      [cap(UNMEASURED), cap(INBOX, { placement: { microsoft: { verdict: "inbox", mostlySpam: false } } })],
       NOW,
     );
     expect(out.selected).toEqual([expect.objectContaining({ accountEmail: INBOX, rehomedFrom: UNMEASURED })]);
   });
 
   it("cold start (no Microsoft evidence anywhere): unmeasured mailboxes send as before", () => {
-    const out = selectDueSteps([seq("ms-3", UNMEASURED, { recipientMicrosoft: true })], [cap(UNMEASURED)], NOW);
-    expect(out.heldMicrosoftPlacement).toBe(0);
+    const out = selectDueSteps([seq("ms-3", UNMEASURED, { recipientProvider: "microsoft" })], [cap(UNMEASURED)], NOW);
+    expect(out.heldPlacement).toBe(0);
     expect(out.selected).toEqual([expect.objectContaining({ accountEmail: UNMEASURED })]);
   });
 
   it("every mailbox Junk at Microsoft: the Microsoft prospect waits, never sent to Junk", () => {
     const out = selectDueSteps(
-      [seq("ms-4", JUNK, { recipientMicrosoft: true })],
-      [cap(JUNK, { microsoftPlacement: "junk" }), cap(UNMEASURED, { microsoftPlacement: "junk" })],
+      [seq("ms-4", JUNK, { recipientProvider: "microsoft" })],
+      [cap(JUNK, { placement: { microsoft: { verdict: "junk", mostlySpam: false } } }), cap(UNMEASURED, { placement: { microsoft: { verdict: "junk", mostlySpam: false } } })],
       NOW,
     );
     expect(out.selected).toEqual([]);
-    expect(out.heldMicrosoftPlacement).toBe(1);
+    expect(out.heldPlacement).toBe(1);
   });
 });
 

@@ -20,7 +20,7 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
-import { ESP_GOOGLE, ESP_OUTLOOK } from "./seeds";
+import { ESP_GOOGLE, ESP_OUTLOOK, ESP_OUTLOOK_CONSUMER } from "./seeds";
 
 function rowsOf<T>(result: unknown): T[] {
   return ((result as { rows?: T[] }).rows ?? []) as T[];
@@ -28,6 +28,16 @@ function rowsOf<T>(result: unknown): T[] {
 
 /** Recompute every day of the series from bronze. Returns the rows written. */
 export async function refreshSeedPlacementDaily(): Promise<number> {
+  // A row whose (day, ESP, vendor) no longer exists in bronze (a receiver
+  // relabelled from ESP 2 to 4, SENDER-HEALTH-1019) is dropped, never left stale.
+  await db.execute(sql`
+    DELETE FROM seed_placement_daily s
+    WHERE NOT EXISTS (
+      SELECT 1 FROM seed_placement_dispatches d
+      WHERE d.outcome = 'sent' AND d.recipient_esp = s.recipient_esp
+        AND (d.dispatched_at AT TIME ZONE 'UTC')::date = s.day
+    )
+  `);
   const result = await db.execute(sql`
     INSERT INTO seed_placement_daily
       (day, recipient_esp, sender_vendor, seeds, inbox, spam, missing, inbox_focused, inbox_other, updated_at)
@@ -79,9 +89,17 @@ export interface MicrosoftPlacementCounts extends PlacementCounts {
 export interface SeedPlacementDay {
   day: string;
   google: PlacementCounts;
+  /** A Microsoft 365 business tenant (ESP 2). */
   microsoft: MicrosoftPlacementCounts;
+  /** Outlook.com consumer (ESP 4): filters apart from Microsoft 365 (SENDER-HEALTH-1019). */
+  microsoftConsumer: MicrosoftPlacementCounts;
   /** Same split per sending vendor (gandi, primeforge, ...). */
-  byVendor: { vendor: string; google: PlacementCounts; microsoft: MicrosoftPlacementCounts }[];
+  byVendor: {
+    vendor: string;
+    google: PlacementCounts;
+    microsoft: MicrosoftPlacementCounts;
+    microsoftConsumer: MicrosoftPlacementCounts;
+  }[];
 }
 
 export interface DailyRow {
@@ -133,15 +151,22 @@ export function buildSeedPlacementDays(rows: readonly DailyRow[], fromDay: strin
     const day = new Date(t).toISOString().slice(0, 10);
     const google = emptyMs();
     const microsoft = emptyMs();
-    const vendors = new Map<string, { google: MicrosoftPlacementCounts; microsoft: MicrosoftPlacementCounts }>();
+    const microsoftConsumer = emptyMs();
+    const vendors = new Map<
+      string,
+      { google: MicrosoftPlacementCounts; microsoft: MicrosoftPlacementCounts; microsoftConsumer: MicrosoftPlacementCounts }
+    >();
     for (const r of byDay.get(day) ?? []) {
-      const v = vendors.get(r.senderVendor) ?? { google: emptyMs(), microsoft: emptyMs() };
+      const v = vendors.get(r.senderVendor) ?? { google: emptyMs(), microsoft: emptyMs(), microsoftConsumer: emptyMs() };
       if (r.recipientEsp === ESP_GOOGLE) {
         add(google, r);
         add(v.google, r);
       } else if (r.recipientEsp === ESP_OUTLOOK) {
         add(microsoft, r);
         add(v.microsoft, r);
+      } else if (r.recipientEsp === ESP_OUTLOOK_CONSUMER) {
+        add(microsoftConsumer, r);
+        add(v.microsoftConsumer, r);
       }
       vendors.set(r.senderVendor, v);
     }
@@ -149,9 +174,15 @@ export function buildSeedPlacementDays(rows: readonly DailyRow[], fromDay: strin
       day,
       google: googleOnly(google),
       microsoft: finish(microsoft),
+      microsoftConsumer: finish(microsoftConsumer),
       byVendor: [...vendors.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([vendor, v]) => ({ vendor, google: googleOnly(v.google), microsoft: finish(v.microsoft) })),
+        .map(([vendor, v]) => ({
+          vendor,
+          google: googleOnly(v.google),
+          microsoft: finish(v.microsoft),
+          microsoftConsumer: finish(v.microsoftConsumer),
+        })),
     });
   }
   return days;

@@ -6435,7 +6435,27 @@
             "description": "ISO8601 timestamp of the latest lifecycle transition; null until classified"
           },
           "microsoftPlacement": {
-            "$ref": "#/components/schemas/MicrosoftPlacement"
+            "$ref": "#/components/schemas/ProviderPlacement"
+          },
+          "microsoftConsumerPlacement": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderPlacement"
+              },
+              {
+                "description": "Outlook.com (consumer) placement, measured apart from Microsoft 365 (SENDER-HEALTH-1019). Decides only for Outlook.com / Hotmail / Live prospects. Null when never measured there."
+              }
+            ]
+          },
+          "googlePlacement": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderPlacement"
+              },
+              {
+                "description": "Google placement as the dispatcher routes on it (same pooled evidence as the lifecycle gate). mostlySpam = no email to a Google-hosted prospect leaves from this mailbox. Null when never measured."
+              }
+            ]
           },
           "inboxPlacement": {
             "$ref": "#/components/schemas/InboxPlacement"
@@ -6514,6 +6534,8 @@
           "lifecycleReason",
           "lifecycleUpdatedAt",
           "microsoftPlacement",
+          "microsoftConsumerPlacement",
+          "googlePlacement",
           "inboxPlacement",
           "sentToday",
           "sentYesterday",
@@ -6531,7 +6553,7 @@
           "accountType"
         ]
       },
-      "MicrosoftPlacement": {
+      "ProviderPlacement": {
         "type": "object",
         "nullable": true,
         "properties": {
@@ -6542,11 +6564,19 @@
               "junk",
               "unmeasured"
             ],
-            "description": "Where Microsoft (Outlook.com + Microsoft 365) puts this mailbox's mail: inbox = at least 90% of the seeds Microsoft delivered sat in Inbox (Focused or Other) on evidence under 16 days; junk = below; unmeasured = no seed found or evidence too old. Decides only whether this mailbox may send a FIRST email to a prospect whose mail Microsoft hosts; never a demotion."
+            "description": "Where this provider puts this mailbox's mail, over the newest seed tests pooled until 10 seeds (under 16 days): inbox = at least 90% of the seeds found sat in Inbox (Focused or Other at Microsoft); junk = below; unmeasured = no seed found or evidence too old. A FIRST email to a prospect this provider hosts needs inbox; never a demotion."
+          },
+          "mostlySpam": {
+            "type": "boolean",
+            "description": "More than half of at least 10 found seeds sat in spam: NO email (follow-ups included) to a prospect this provider hosts leaves from this mailbox"
+          },
+          "testsPooled": {
+            "type": "integer",
+            "description": "Seed tests pooled into this verdict"
           },
           "seedTotal": {
             "type": "integer",
-            "description": "Seeds sent to our Microsoft receivers in the latest Microsoft test"
+            "description": "Seeds sent to this provider's receivers in the pooled tests"
           },
           "inboxCount": {
             "type": "integer",
@@ -6568,13 +6598,15 @@
         },
         "required": [
           "verdict",
+          "mostlySpam",
+          "testsPooled",
           "seedTotal",
           "inboxCount",
           "spamCount",
           "inboxPctOfFound",
           "testedAt"
         ],
-        "description": "Microsoft placement from our own Microsoft seed receivers, served beside inboxPlacement (which reads the Google receivers only). Null when never measured at Microsoft."
+        "description": "Microsoft 365 (business tenant) placement from our own Microsoft seed receiver, served beside inboxPlacement. Decides for prospects hosted by a Microsoft 365 tenant. Null when never measured there."
       },
       "InboxPlacement": {
         "type": "object",
@@ -11616,7 +11648,7 @@
     "/internal/seed-placement/daily": {
       "get": {
         "summary": "Seed inbox placement per day, Google and Microsoft (staff chart)",
-        "description": "Platform-scoped, read-only. The stored daily series (`seed_placement_daily`, recomputed from bronze on every seed sync): per UTC day the seeds left, Google inbox % and Microsoft inbox % (Outlook.com + Microsoft 365), and the same split per SENDING vendor (gandi = the legacy shared-IP fleet, primeforge = the Google Workspace fleet that sends most prospect mail). Every day of the window is emitted; a day with no test has 0 seeds and null percentages.",
+        "description": "Platform-scoped, read-only. The stored daily series (`seed_placement_daily`, recomputed from bronze on every seed sync): per UTC day the seeds left, Google inbox %, Microsoft 365 inbox % and Outlook.com inbox % (apart: they filter apart), and the same split per SENDING vendor (gandi = the legacy shared-IP fleet, primeforge = the Google Workspace fleet that sends most prospect mail). Every day of the window is emitted; a day with no test has 0 seeds and null percentages.",
         "parameters": [
           {
             "schema": {
@@ -11735,7 +11767,55 @@
                               "spamPct",
                               "inboxFocused",
                               "inboxOther"
-                            ]
+                            ],
+                            "description": "A Microsoft 365 business tenant receiver"
+                          },
+                          "microsoftConsumer": {
+                            "type": "object",
+                            "properties": {
+                              "seeds": {
+                                "type": "integer",
+                                "description": "Seeds sent that day (successful dispatches)"
+                              },
+                              "inbox": {
+                                "type": "integer"
+                              },
+                              "spam": {
+                                "type": "integer"
+                              },
+                              "missing": {
+                                "type": "integer",
+                                "description": "Sent and never found in Inbox nor spam"
+                              },
+                              "inboxPct": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "inbox / seeds, 0..100; null on a day with no seed"
+                              },
+                              "spamPct": {
+                                "type": "number",
+                                "nullable": true
+                              },
+                              "inboxFocused": {
+                                "type": "integer",
+                                "description": "Inbox seeds Microsoft sorted to Focused"
+                              },
+                              "inboxOther": {
+                                "type": "integer",
+                                "description": "Inbox seeds Microsoft sorted to Other"
+                              }
+                            },
+                            "required": [
+                              "seeds",
+                              "inbox",
+                              "spam",
+                              "missing",
+                              "inboxPct",
+                              "spamPct",
+                              "inboxFocused",
+                              "inboxOther"
+                            ],
+                            "description": "An Outlook.com consumer receiver, measured apart from Microsoft 365"
                           },
                           "byVendor": {
                             "type": "array",
@@ -11826,12 +11906,59 @@
                                     "inboxFocused",
                                     "inboxOther"
                                   ]
+                                },
+                                "microsoftConsumer": {
+                                  "type": "object",
+                                  "properties": {
+                                    "seeds": {
+                                      "type": "integer",
+                                      "description": "Seeds sent that day (successful dispatches)"
+                                    },
+                                    "inbox": {
+                                      "type": "integer"
+                                    },
+                                    "spam": {
+                                      "type": "integer"
+                                    },
+                                    "missing": {
+                                      "type": "integer",
+                                      "description": "Sent and never found in Inbox nor spam"
+                                    },
+                                    "inboxPct": {
+                                      "type": "number",
+                                      "nullable": true,
+                                      "description": "inbox / seeds, 0..100; null on a day with no seed"
+                                    },
+                                    "spamPct": {
+                                      "type": "number",
+                                      "nullable": true
+                                    },
+                                    "inboxFocused": {
+                                      "type": "integer",
+                                      "description": "Inbox seeds Microsoft sorted to Focused"
+                                    },
+                                    "inboxOther": {
+                                      "type": "integer",
+                                      "description": "Inbox seeds Microsoft sorted to Other"
+                                    }
+                                  },
+                                  "required": [
+                                    "seeds",
+                                    "inbox",
+                                    "spam",
+                                    "missing",
+                                    "inboxPct",
+                                    "spamPct",
+                                    "inboxFocused",
+                                    "inboxOther"
+                                  ]
                                 }
                               },
                               "required": [
                                 "vendor",
                                 "google",
-                                "microsoft"
+                                "microsoft",
+                                "microsoftConsumer"
                               ]
                             }
                           }
@@ -11840,6 +11967,7 @@
                           "day",
                           "google",
                           "microsoft",
+                          "microsoftConsumer",
                           "byVendor"
                         ]
                       }
@@ -11890,6 +12018,180 @@
                   "required": [
                     "rows"
                   ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/sender-health": {
+      "get": {
+        "summary": "Mailboxes kept out of prospect mail, and why (staff chart)",
+        "description": "Platform-scoped, read-only. `current` = the latest dispatch tick's lists: `refused` = real mailboxes the relay refuses with no accepted send since (prospect, seed and warmup mail: they send nothing); `mostlySpam[provider]` = sending addresses with more than half of at least 10 found seeds in spam at that provider (no email, follow-ups included, to that provider's prospects). `days` = the stored daily series (`sender_health_daily`, written every dispatch tick): mailbox counts at day end, held emails = the day's max per tick. A day with no tick is null, never 0.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Window in days, 1..400, default 90"
+            },
+            "required": false,
+            "description": "Window in days, 1..400, default 90",
+            "name": "days",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "State and series",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "asOf": {
+                      "type": "string"
+                    },
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    },
+                    "current": {
+                      "type": "object",
+                      "nullable": true,
+                      "properties": {
+                        "day": {
+                          "type": "string"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        },
+                        "refused": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "mostlySpam": {
+                          "type": "object",
+                          "properties": {
+                            "google": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "microsoft": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "microsoft_consumer": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "required": [
+                            "google",
+                            "microsoft",
+                            "microsoft_consumer"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "day",
+                        "updatedAt",
+                        "refused",
+                        "mostlySpam"
+                      ]
+                    },
+                    "days": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "day": {
+                            "type": "string",
+                            "description": "YYYY-MM-DD (UTC)"
+                          },
+                          "refusedMailboxes": {
+                            "type": "integer",
+                            "nullable": true
+                          },
+                          "mostlySpamMailboxes": {
+                            "type": "object",
+                            "nullable": true,
+                            "properties": {
+                              "google": {
+                                "type": "integer"
+                              },
+                              "microsoft": {
+                                "type": "integer",
+                                "description": "Microsoft 365 business tenants"
+                              },
+                              "microsoft_consumer": {
+                                "type": "integer",
+                                "description": "Outlook.com / Hotmail / Live"
+                              }
+                            },
+                            "required": [
+                              "google",
+                              "microsoft",
+                              "microsoft_consumer"
+                            ]
+                          },
+                          "heldPlacement": {
+                            "type": "integer",
+                            "nullable": true,
+                            "description": "First emails held for placement (rehomed or waiting)"
+                          },
+                          "heldMostlySpam": {
+                            "type": "integer",
+                            "nullable": true,
+                            "description": "Follow-ups held: mailbox mostly spam at the prospect's provider"
+                          },
+                          "skippedRefused": {
+                            "type": "integer",
+                            "nullable": true,
+                            "description": "Steps skipped on a refused or blind mailbox"
+                          }
+                        },
+                        "required": [
+                          "day",
+                          "refusedMailboxes",
+                          "mostlySpamMailboxes",
+                          "heldPlacement",
+                          "heldMostlySpam",
+                          "skippedRefused"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "asOf",
+                    "from",
+                    "to",
+                    "current",
+                    "days"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad `days`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
