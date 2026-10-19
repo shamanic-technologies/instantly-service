@@ -2099,3 +2099,27 @@ export const senderHealthDaily = pgTable("sender_health_daily", {
   skippedRefused: integer("skipped_refused").default(0).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+// One fall of inbox placement at one inbox provider below the market bar, among
+// the mailboxes still allowed to mail it (lib/placement-alert.ts, migration
+// 0087, MAILBOX-MONITORING-1019). The staff alert fires once per row. The
+// partial unique index (one OPEN row per provider) is hand-written in 0087.
+export const placementAlertEpisodes = pgTable(
+  "placement_alert_episodes",
+  {
+    provider: text("provider").notNull(),
+    startedOn: date("started_on").notNull(),
+    lastBelowOn: date("last_below_on").notNull(),
+    closedOn: date("closed_on"),
+    inboxPct: numeric("inbox_pct", { precision: 5, scale: 1 }).notNull(),
+    foundSeeds: integer("found_seeds").notNull(),
+    thresholdPct: numeric("threshold_pct", { precision: 5, scale: 1 }).notNull(),
+    mailboxesCut: integer("mailboxes_cut").notNull(),
+    alertStatus: text("alert_status"),
+    alertError: text("alert_error"),
+    alertedAt: timestamp("alerted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ name: "placement_alert_episodes_pk", columns: [table.provider, table.startedOn] })],
+);

@@ -62,6 +62,42 @@ export async function fetchCapacityHistory(
   days: number,
   mailboxOf: ReadonlyMap<string, string> = new Map(),
 ): Promise<CapacityHistoryPoint[]> {
+  return (await fetchCapacityHistoryByMailbox(days, mailboxOf)).map((p) => ({
+    date: p.date,
+    inProductionCount: p.inProductionCount,
+    dailyCapacity: [...p.mailboxes.values()].reduce((n, m) => n + m.capacity, 0),
+  }));
+}
+
+/** One mailbox on one day of the capacity history. */
+export interface MailboxCapacityOnDay {
+  /** Its in_production addresses that day. */
+  addresses: string[];
+  /** The operator limit: the minimum `daily_limit` across those addresses. */
+  operatorLimit: number;
+  /** Volume the mailbox had sustained over the ramp window ending that day. */
+  sustained: number;
+  /** What the ramp allowed on that volume (`rampCapForVolume`). */
+  rampCap: number;
+  /** min(operatorLimit, rampCap): what it could send that day. */
+  capacity: number;
+}
+
+export interface CapacityHistoryByMailboxPoint {
+  date: string;
+  inProductionCount: number;
+  mailboxes: Map<string, MailboxCapacityOnDay>;
+}
+
+/**
+ * The same reconstruction, kept per real mailbox (MAILBOX-MONITORING-1019): the
+ * monitoring read rolls it up to domain and fleet and drills into the mailbox.
+ * `fetchCapacityHistory` is its fleet sum, so both serve ONE figure.
+ */
+export async function fetchCapacityHistoryByMailbox(
+  days: number,
+  mailboxOf: ReadonlyMap<string, string> = new Map(),
+): Promise<CapacityHistoryByMailboxPoint[]> {
   const window = Math.max(1, Math.min(365, Math.floor(days)));
   // One extra ramp-window of volume, so the OLDEST point in the series is
   // measured against a full window rather than a truncated one.
@@ -124,13 +160,13 @@ export async function fetchCapacityHistory(
 
   const byDate = new Map<
     string,
-    { accounts: number; limitByMailbox: Map<string, number> }
+    { accounts: number; limitByMailbox: Map<string, number>; addressesByMailbox: Map<string, string[]> }
   >();
   for (const row of rows) {
     const date = String(row.date);
     const email = String(row.accountEmail ?? "");
     if (!email) continue;
-    const point = byDate.get(date) ?? { accounts: 0, limitByMailbox: new Map() };
+    const point = byDate.get(date) ?? { accounts: 0, limitByMailbox: new Map(), addressesByMailbox: new Map() };
     point.accounts += 1;
     const mailbox = mailboxFor(email);
     // An address seen in the account history but never in the volume map still
@@ -142,6 +178,7 @@ export async function fetchCapacityHistory(
     const limit = row.dailyLimit === null || row.dailyLimit === undefined ? 0 : Number(row.dailyLimit);
     const known = point.limitByMailbox.get(mailbox);
     point.limitByMailbox.set(mailbox, known === undefined ? limit : Math.min(known, limit));
+    point.addressesByMailbox.set(mailbox, [...(point.addressesByMailbox.get(mailbox) ?? []), email.trim().toLowerCase()]);
     byDate.set(date, point);
   }
 
@@ -157,21 +194,28 @@ export async function fetchCapacityHistory(
   // account. The row-per-account query returns nothing for a day the fleet was
   // entirely out of production, and dropping those would leave holes in the
   // series that read as missing data rather than as the zero they are.
-  const series: CapacityHistoryPoint[] = [];
+  const series: CapacityHistoryByMailboxPoint[] = [];
   const today = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`);
   for (let i = window - 1; i >= 0; i -= 1) {
     const date = new Date(today - i * 86_400_000).toISOString().slice(0, 10);
     const point = byDate.get(date);
     if (point === undefined) {
-      series.push({ date, inProductionCount: 0, dailyCapacity: 0 });
+      series.push({ date, inProductionCount: 0, mailboxes: new Map() });
       continue;
     }
-    let dailyCapacity = 0;
+    const mailboxes = new Map<string, MailboxCapacityOnDay>();
     for (const [mailbox, limit] of point.limitByMailbox) {
       const sustained = sustainedOn(totalsFor(mailbox), date);
-      dailyCapacity += Math.min(limit, rampCapForVolume(sustained, IN_PRODUCTION_DAILY_LIMIT));
+      const rampCap = rampCapForVolume(sustained, IN_PRODUCTION_DAILY_LIMIT);
+      mailboxes.set(mailbox, {
+        addresses: (point.addressesByMailbox.get(mailbox) ?? []).sort(),
+        operatorLimit: limit,
+        sustained,
+        rampCap,
+        capacity: Math.min(limit, rampCap),
+      });
     }
-    series.push({ date, inProductionCount: point.accounts, dailyCapacity });
+    series.push({ date, inProductionCount: point.accounts, mailboxes });
   }
   return series;
 }
