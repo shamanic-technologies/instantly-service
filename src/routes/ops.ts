@@ -23,6 +23,12 @@ import {
 } from "../lib/ops/reads";
 import { getOrSetCachedStats } from "../lib/stats-cache";
 import { readSentPerPeriod, SENT_GRAINS, type SentGrain } from "../lib/ops/sent-per-period";
+import { parseEntityScope } from "../lib/ops/entity-scope";
+import { inScope, scopeIsFleet } from "../lib/ops/entity-scope";
+import { decodeTestCursor, readPlacementTest, readPlacementTests } from "../lib/ops/placement-tests";
+import { CAPACITY_HORIZON_DEFAULT_DAYS, CAPACITY_HORIZON_MAX_DAYS, readCapacityDaily } from "../lib/ops/capacity-daily";
+import { SCHEDULE_HORIZON_DEFAULT_DAYS, SCHEDULE_HORIZON_MAX_DAYS, readQueuedSteps, readSchedule } from "../lib/ops/schedule";
+import { readPlacementAlerts, runPlacementAlert } from "../lib/placement-alert";
 import { backfillReplyVerdicts, planReplyVerdicts, syncReplyVerdicts } from "../lib/reply-verdicts";
 
 const router = Router();
@@ -195,7 +201,7 @@ router.get("/infra", async (_req: Request, res: Response) => {
 });
 
 /**
- * GET /internal/ops/sent-per-period?grain=day|week|month&since=<ISO>
+ * GET /internal/ops/sent-per-period?grain=day|week|month&since=<ISO>&account=&mailbox=&domain=&groupBy=account|mailbox|domain
  * Emails SENT per UTC period, split by purpose (to leads / manual replies /
  * warmup / warmup replies / seeds) + distinct leads emailed. Every period from
  * the first send (or `since`) to the current one, zeros included; the current
@@ -217,14 +223,196 @@ router.get("/sent-per-period", async (req: Request, res: Response) => {
     }
     since = d.toISOString();
   }
+  const parsedScope = parseEntityScope(req.query as Record<string, unknown>);
+  if ("error" in parsedScope) {
+    res.status(400).json({ error: parsedScope.error });
+    return;
+  }
+  const { scope, groupBy } = parsedScope;
   try {
     res.json(
-      await getOrSetCachedStats(`ops-sent-per-period:${grain}:${since ?? "all"}`, () =>
-        readSentPerPeriod({ grain: grain as SentGrain, since }),
+      await getOrSetCachedStats(
+        `ops-sent-per-period:${grain}:${since ?? "all"}:${JSON.stringify(scope)}:${groupBy ?? "-"}`,
+        () => readSentPerPeriod({ grain: grain as SentGrain, since, scope, groupBy }),
+        // The fleet series keeps its 60 s; a scoped / grouped one is a drill-down
+        // read, served for 10 min and refreshed in the background after 5.
+        scopeIsFleet(scope) && !groupBy ? undefined : MONITORING_TTL_MS,
+        scopeIsFleet(scope) && !groupBy ? {} : { refreshAfterMs: MONITORING_REFRESH_MS },
       ),
     );
   } catch (error) {
     fail(res, "sent-per-period", error);
+  }
+});
+
+// ─── Monitoring reads (MAILBOX-MONITORING-1019) ─────────────────────────────
+
+/**
+ * The monitoring reads aggregate since inception (the capacity reconstruction
+ * alone is ~38k as-of lookups): served for 10 min, refreshed in the background
+ * after 5, so a dashboard never waits on a recompute after the first load.
+ */
+const MONITORING_TTL_MS = 10 * 60 * 1000;
+const MONITORING_REFRESH_MS = 5 * 60 * 1000;
+
+function intParam(raw: unknown, def: number, min: number, max: number): number | null {
+  if (raw === undefined || raw === "") return def;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= min && n <= max ? n : null;
+}
+
+function scopeOr400(req: Request, res: Response) {
+  const parsed = parseEntityScope(req.query as Record<string, unknown>);
+  if ("error" in parsed) {
+    res.status(400).json({ error: parsed.error });
+    return null;
+  }
+  return parsed;
+}
+
+/** GET /internal/ops/placement-tests?account=&mailbox=&domain=&limit=&cursor= — tests, newest first, counts per inbox provider. */
+router.get("/placement-tests", async (req: Request, res: Response) => {
+  const parsed = scopeOr400(req, res);
+  if (!parsed) return;
+  const limit = intParam(req.query.limit, 50, 1, 500);
+  if (limit === null) {
+    res.status(400).json({ error: "limit must be an integer between 1 and 500" });
+    return;
+  }
+  const rawCursor = typeof req.query.cursor === "string" && req.query.cursor !== "" ? req.query.cursor : null;
+  const cursor = rawCursor ? decodeTestCursor(rawCursor) : null;
+  if (rawCursor && !cursor) {
+    res.status(400).json({ error: "cursor is not one this read issued" });
+    return;
+  }
+  try {
+    res.json({ scope: parsed.scope, ...(await readPlacementTests({ scope: parsed.scope, limit, cursor })) });
+  } catch (error) {
+    fail(res, "placement-tests", error);
+  }
+});
+
+/** GET /internal/ops/placement-tests/:testId?account=&mailbox=&domain= — one test, seed by seed, per inbox provider. */
+router.get("/placement-tests/:testId", async (req: Request, res: Response) => {
+  const parsed = scopeOr400(req, res);
+  if (!parsed) return;
+  try {
+    const detail = await readPlacementTest(String(req.params.testId), parsed.scope);
+    if (!detail) {
+      res.status(404).json({ error: "placement_test_not_found" });
+      return;
+    }
+    res.json(detail);
+  } catch (error) {
+    fail(res, "placement-test", error);
+  }
+});
+
+/** GET /internal/ops/capacity-daily?account=&mailbox=&domain=&groupBy=&horizonDays= — capacity per day since inception + the ramp ahead. Cached 60s. */
+router.get("/capacity-daily", async (req: Request, res: Response) => {
+  const parsed = scopeOr400(req, res);
+  if (!parsed) return;
+  const horizonDays = intParam(req.query.horizonDays, CAPACITY_HORIZON_DEFAULT_DAYS, 0, CAPACITY_HORIZON_MAX_DAYS);
+  if (horizonDays === null) {
+    res.status(400).json({ error: `horizonDays must be an integer 0..${CAPACITY_HORIZON_MAX_DAYS}` });
+    return;
+  }
+  try {
+    res.json(
+      await getOrSetCachedStats(
+        `ops-capacity-daily:${JSON.stringify(parsed.scope)}:${parsed.groupBy ?? "-"}:${horizonDays}`,
+        () => readCapacityDaily({ scope: parsed.scope, groupBy: parsed.groupBy, horizonDays }),
+        MONITORING_TTL_MS,
+        { refreshAfterMs: MONITORING_REFRESH_MS },
+      ),
+    );
+  } catch (error) {
+    fail(res, "capacity-daily", error);
+  }
+});
+
+/** GET /internal/ops/schedule?account=&mailbox=&domain=&groupBy=&horizonDays= — per day from today: queued steps at their theoretical date, planned warmups and seed tests. Cached 60s. */
+router.get("/schedule", async (req: Request, res: Response) => {
+  const parsed = scopeOr400(req, res);
+  if (!parsed) return;
+  const horizonDays = intParam(req.query.horizonDays, SCHEDULE_HORIZON_DEFAULT_DAYS, 0, SCHEDULE_HORIZON_MAX_DAYS);
+  if (horizonDays === null) {
+    res.status(400).json({ error: `horizonDays must be an integer 0..${SCHEDULE_HORIZON_MAX_DAYS}` });
+    return;
+  }
+  try {
+    res.json(
+      await getOrSetCachedStats(
+        `ops-schedule:${JSON.stringify(parsed.scope)}:${parsed.groupBy ?? "-"}:${horizonDays}`,
+        () => readSchedule({ scope: parsed.scope, groupBy: parsed.groupBy, horizonDays }),
+        MONITORING_TTL_MS,
+        { refreshAfterMs: MONITORING_REFRESH_MS },
+      ),
+    );
+  } catch (error) {
+    fail(res, "schedule", error);
+  }
+});
+
+/** GET /internal/ops/queued-steps?account=&mailbox=&domain=&limit=&offset=&overdue=true|false — every queued step at its theoretical date, oldest first. */
+router.get("/queued-steps", async (req: Request, res: Response) => {
+  const parsed = scopeOr400(req, res);
+  if (!parsed) return;
+  const limit = intParam(req.query.limit, 100, 1, 1000);
+  const offset = intParam(req.query.offset, 0, 0, 10_000_000);
+  if (limit === null || offset === null) {
+    res.status(400).json({ error: "limit must be 1..1000 and offset >= 0" });
+    return;
+  }
+  const overdue = req.query.overdue;
+  if (overdue !== undefined && overdue !== "true" && overdue !== "false") {
+    res.status(400).json({ error: "overdue must be true|false" });
+    return;
+  }
+  try {
+    const { loginOf, steps } = await getOrSetCachedStats("ops-queued-steps", () => readQueuedSteps(), MONITORING_TTL_MS, {
+      refreshAfterMs: MONITORING_REFRESH_MS,
+    });
+    const filtered = steps.filter(
+      (s) =>
+        inScope(parsed.scope, s.account, loginOf.get(s.account) ?? s.mailbox) &&
+        (overdue === undefined || s.overdue === (overdue === "true")),
+    );
+    res.json({
+      scope: parsed.scope,
+      total: filtered.length,
+      offset,
+      steps: filtered.slice(offset, offset + limit),
+      nextOffset: offset + limit < filtered.length ? offset + limit : null,
+    });
+  } catch (error) {
+    fail(res, "queued-steps", error);
+  }
+});
+
+/** GET /internal/ops/placement-alerts?days= — the daily evaluation behind the inbox-placement alert, its bar and sources, the episodes. */
+router.get("/placement-alerts", async (req: Request, res: Response) => {
+  const days = intParam(req.query.days, 30, 1, 400);
+  if (days === null) {
+    res.status(400).json({ error: "days must be an integer 1..400" });
+    return;
+  }
+  try {
+    res.json(await getOrSetCachedStats(`ops-placement-alerts:${days}`, () => readPlacementAlerts(days), MONITORING_TTL_MS, {
+      refreshAfterMs: MONITORING_REFRESH_MS,
+    }));
+  } catch (error) {
+    fail(res, "placement-alerts", error);
+  }
+});
+
+/** POST /internal/ops/placement-alerts/run {dryRun (default true)} — one pass of the alert now. */
+router.post("/placement-alerts/run", async (req: Request, res: Response) => {
+  const dryRun = (req.body ?? {}).dryRun !== false;
+  try {
+    res.json({ dryRun, ...(await runPlacementAlert({ dryRun })) });
+  } catch (error) {
+    fail(res, "placement-alerts run", error);
   }
 });
 

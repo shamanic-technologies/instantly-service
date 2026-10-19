@@ -21,6 +21,12 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "../../db";
+import {
+  entityKeySql,
+  entityScopeSql,
+  type EntityGrain,
+  type EntityScope,
+} from "./entity-scope";
 
 export const SENT_GRAINS = ["day", "week", "month"] as const;
 export type SentGrain = (typeof SENT_GRAINS)[number];
@@ -39,13 +45,25 @@ export interface SentPeriod {
   leadsEmailed: number;
 }
 
+type SentTotals = { toLeads: number; manualReplies: number; warmup: number; warmupReplies: number; seeds: number };
+
 export interface SentPerPeriod {
   grain: SentGrain;
   timezone: "UTC";
   since: string | null;
   asOf: string;
-  totals: { toLeads: number; manualReplies: number; warmup: number; warmupReplies: number; seeds: number };
+  /** The account / mailbox / domain filter applied (empty = the fleet). */
+  scope: EntityScope;
+  totals: SentTotals;
   periods: SentPeriod[];
+  /**
+   * Present only with `groupBy`: the same periods per entity (account, mailbox
+   * or domain), every period emitted, only entities that sent at least once in
+   * the window. Their per-period sums equal `periods` (one mailbox never spans
+   * two domains); `leadsEmailed` is distinct per entity and does not add.
+   */
+  groupBy?: EntityGrain;
+  entities?: { key: string; totals: SentTotals; periods: SentPeriod[] }[];
 }
 
 function rowsOf<T>(result: unknown): T[] {
@@ -60,11 +78,20 @@ function int(v: unknown): number {
 }
 
 /** Pure: map the SQL rows (period text + counts, possibly strings) to the served shape. */
-export function mapSentPeriods(
-  rows: Record<string, unknown>[],
-  meta: { grain: SentGrain; since: string | null; asOf: string },
-): SentPerPeriod {
-  const periods: SentPeriod[] = rows.map((r) => ({
+function sumTotals(periods: SentPeriod[]): SentTotals {
+  const totals = { toLeads: 0, manualReplies: 0, warmup: 0, warmupReplies: 0, seeds: 0 };
+  for (const p of periods) {
+    totals.toLeads += p.toLeads;
+    totals.manualReplies += p.manualReplies;
+    totals.warmup += p.warmup;
+    totals.warmupReplies += p.warmupReplies;
+    totals.seeds += p.seeds;
+  }
+  return totals;
+}
+
+function mapPeriodRow(r: Record<string, unknown>): SentPeriod {
+  return {
     periodStart: String(r.period_start),
     periodEnd: String(r.period_end),
     inProgress: r.in_progress === true || r.in_progress === "t" || r.in_progress === "true",
@@ -74,32 +101,82 @@ export function mapSentPeriods(
     warmupReplies: int(r.warmup_replies),
     seeds: int(r.seeds),
     leadsEmailed: int(r.leads_emailed),
-  }));
-  const totals = { toLeads: 0, manualReplies: 0, warmup: 0, warmupReplies: 0, seeds: 0 };
-  for (const p of periods) {
-    totals.toLeads += p.toLeads;
-    totals.manualReplies += p.manualReplies;
-    totals.warmup += p.warmup;
-    totals.warmupReplies += p.warmupReplies;
-    totals.seeds += p.seeds;
-  }
-  return { grain: meta.grain, timezone: "UTC", since: meta.since, asOf: meta.asOf, totals, periods };
+  };
 }
 
-export async function readSentPerPeriod(opts: { grain: SentGrain; since: string | null }): Promise<SentPerPeriod> {
+export function mapSentPeriods(
+  rows: Record<string, unknown>[],
+  meta: { grain: SentGrain; since: string | null; asOf: string; scope?: EntityScope },
+): SentPerPeriod {
+  const periods = rows.map(mapPeriodRow);
+  return {
+    grain: meta.grain,
+    timezone: "UTC",
+    since: meta.since,
+    asOf: meta.asOf,
+    scope: meta.scope ?? {},
+    totals: sumTotals(periods),
+    periods,
+  };
+}
+
+/**
+ * Pure: spread per-(entity, period) count rows over the window's periods, zeros
+ * filled, entities sorted by key.
+ */
+export function mapEntityPeriods(
+  periods: SentPeriod[],
+  rows: Record<string, unknown>[],
+): { key: string; totals: SentTotals; periods: SentPeriod[] }[] {
+  const byKey = new Map<string, Map<string, SentPeriod>>();
+  for (const r of rows) {
+    const key = String(r.entity_key);
+    const p = mapPeriodRow(r);
+    const m = byKey.get(key) ?? new Map<string, SentPeriod>();
+    m.set(p.periodStart, p);
+    byKey.set(key, m);
+  }
+  return [...byKey.keys()].sort().map((key) => {
+    const m = byKey.get(key)!;
+    const series = periods.map(
+      (p) =>
+        m.get(p.periodStart) ?? {
+          periodStart: p.periodStart,
+          periodEnd: p.periodEnd,
+          inProgress: p.inProgress,
+          toLeads: 0,
+          manualReplies: 0,
+          warmup: 0,
+          warmupReplies: 0,
+          seeds: 0,
+          leadsEmailed: 0,
+        },
+    ).map((p, i) => ({ ...p, periodEnd: periods[i].periodEnd, inProgress: periods[i].inProgress }));
+    return { key, totals: sumTotals(series), periods: series };
+  });
+}
+
+export async function readSentPerPeriod(opts: {
+  grain: SentGrain;
+  since: string | null;
+  scope?: EntityScope;
+  groupBy?: EntityGrain | null;
+}): Promise<SentPerPeriod> {
   if (!SENT_GRAINS.includes(opts.grain)) throw new Error(`unknown grain ${opts.grain}`);
   // Whitelisted above: the grain is one of three literals, safe to inline.
   const unit = sql.raw(`'${opts.grain}'`);
   const step = sql.raw(`interval '1 ${opts.grain}'`);
   const kinds = sql.raw(SENT_KINDS.map((k) => `'${k}'`).join(","));
   const since = opts.since === null ? sql`NULL::timestamptz` : sql`${opts.since}::timestamptz`;
+  const scope = opts.scope ?? {};
+  const scoped = entityScopeSql(scope, sql`m.account_email`, sql`m.mailbox_login`);
 
   const result = await db.execute(sql`
     WITH bounds AS (
       SELECT
         date_trunc(${unit}, COALESCE(${since}, (
-          SELECT min(occurred_at) FROM messages
-          WHERE direction = 'out' AND outcome = 'sent' AND kind IN (${kinds})
+          SELECT min(m.occurred_at) FROM messages m
+          WHERE m.direction = 'out' AND m.outcome = 'sent' AND m.kind IN (${kinds}) AND ${scoped}
         )) AT TIME ZONE 'UTC') AS start,
         date_trunc(${unit}, now() AT TIME ZONE 'UTC') AS current
     ),
@@ -118,7 +195,7 @@ export async function readSentPerPeriod(opts: { grain: SentGrain; since: string 
         count(DISTINCT lower(m.counterparty)) FILTER (WHERE m.kind IN ('outreach', 'manual_reply')) AS leads_emailed
       FROM messages m, bounds b
       WHERE m.direction = 'out' AND m.outcome = 'sent' AND m.kind IN (${kinds})
-        AND m.occurred_at >= (b.start AT TIME ZONE 'UTC')
+        AND m.occurred_at >= (b.start AT TIME ZONE 'UTC') AND ${scoped}
       GROUP BY 1
     )
     SELECT
@@ -136,9 +213,34 @@ export async function readSentPerPeriod(opts: { grain: SentGrain; since: string 
     ORDER BY p.period_start
   `);
 
-  return mapSentPeriods(rowsOf<Record<string, unknown>>(result), {
+  const served = mapSentPeriods(rowsOf<Record<string, unknown>>(result), {
     grain: opts.grain,
     since: opts.since,
     asOf: new Date().toISOString(),
+    scope,
   });
+  if (!opts.groupBy || served.periods.length === 0) return served;
+
+  const key = entityKeySql(opts.groupBy, sql`m.account_email`, sql`m.mailbox_login`);
+  const first = served.periods[0].periodStart;
+  const grouped = await db.execute(sql`
+    SELECT
+      ${key} AS entity_key,
+      to_char(date_trunc(${unit}, m.occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS period_start,
+      count(*) FILTER (WHERE m.kind = 'outreach')::int AS to_leads,
+      count(*) FILTER (WHERE m.kind = 'manual_reply')::int AS manual_replies,
+      count(*) FILTER (WHERE m.kind = 'warmup')::int AS warmup,
+      count(*) FILTER (WHERE m.kind = 'warmup_reply')::int AS warmup_replies,
+      count(*) FILTER (WHERE m.kind = 'seed')::int AS seeds,
+      count(DISTINCT lower(m.counterparty)) FILTER (WHERE m.kind IN ('outreach', 'manual_reply'))::int AS leads_emailed
+    FROM messages m
+    WHERE m.direction = 'out' AND m.outcome = 'sent' AND m.kind IN (${kinds})
+      AND m.occurred_at >= (${first}::timestamp AT TIME ZONE 'UTC') AND ${scoped}
+    GROUP BY 1, 2
+  `);
+  return {
+    ...served,
+    groupBy: opts.groupBy,
+    entities: mapEntityPeriods(served.periods, rowsOf<Record<string, unknown>>(grouped)),
+  };
 }

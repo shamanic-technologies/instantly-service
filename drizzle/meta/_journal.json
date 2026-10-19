@@ -610,6 +610,13 @@
       "when": 1793000000000,
       "tag": "0086_sender_health",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1793100000000,
+      "tag": "0087_placement_alert_episodes",
+      "breakpoints": true
     }
   ]
 }
