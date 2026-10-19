@@ -22,6 +22,7 @@ import { eq, sql } from "drizzle-orm";
 
 import { db } from "../../db";
 import { microsoftSeedMailboxes } from "../../db/schema";
+import { espForMicrosoftReceiver } from "./seeds";
 
 export const DEFAULT_MS_SEED_CLIENT_ID = "14d82eec-204b-4c2f-b7e8-296a70dab67e";
 export const MS_SEED_TENANT = "common";
@@ -401,6 +402,30 @@ export async function loadAuthorizedMicrosoftReceivers(): Promise<string[]> {
     .from(microsoftSeedMailboxes)
     .where(eq(microsoftSeedMailboxes.status, "authorized"));
   return rows.map((r) => r.email).sort();
+}
+
+/**
+ * Every authorized Microsoft receiver with the ESP code it grades under:
+ * Outlook.com (consumer) and a Microsoft 365 tenant (business) filter apart, so
+ * they are scored apart (SENDER-HEALTH-1019). A receiver whose kind is unknown
+ * is skipped loudly: grading it under either code would claim a filter we did
+ * not measure.
+ */
+export async function loadAuthorizedMicrosoftReceiverEsps(): Promise<{ email: string; recipientEsp: number }[]> {
+  const rows = await db
+    .select({ email: microsoftSeedMailboxes.email, accountKind: microsoftSeedMailboxes.accountKind })
+    .from(microsoftSeedMailboxes)
+    .where(eq(microsoftSeedMailboxes.status, "authorized"));
+  const out: { email: string; recipientEsp: number }[] = [];
+  for (const r of rows) {
+    const recipientEsp = espForMicrosoftReceiver(r.accountKind);
+    if (recipientEsp === null) {
+      console.warn(`[ms-seed-oauth] ${r.email}: account kind unknown, not used as a receiver`);
+      continue;
+    }
+    out.push({ email: r.email, recipientEsp });
+  }
+  return out.sort((a, b) => (a.email < b.email ? -1 : 1));
 }
 
 /** Staff read: state of every Microsoft seed mailbox, never a token. */

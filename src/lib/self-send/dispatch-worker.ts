@@ -56,7 +56,9 @@ import { stopQueuedSequencesOfStoppedCampaigns } from "../stopped-campaigns";
 import { stopQueuedSequencesOfBookedPeople } from "../booked-stops-cold";
 import { healQueuedSequenceTimezones } from "../queued-sequence-timezone";
 import { verifyQueuedSequences } from "../queued-verification";
-import { fetchMicrosoftPlacementByAccount } from "../microsoft-placement-read";
+import { fetchPlacementByProvider } from "../provider-placement-read";
+import { recordSenderHealth, senderHealthSnapshot } from "../sender-health-daily";
+import { RECIPIENT_PROVIDERS, type RecipientProvider } from "../provider-placement";
 import { refreshRecipientMailHosts } from "../recipient-mail-host";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/dispatch" };
@@ -109,10 +111,12 @@ export interface DispatchSummary {
   /** First emails kept off a mailbox whose domain is blocklisted (rehomed or waiting). */
   heldBlocklisted: number;
   /**
-   * First emails to a Microsoft-hosted prospect kept off a mailbox Microsoft
-   * does not put in Inbox (rehomed to one it does, or waiting).
+   * First emails kept off a mailbox the prospect's provider (Google, Microsoft
+   * 365, Outlook.com) does not put in Inbox (rehomed to one it does, or waiting).
    */
-  heldMicrosoftPlacement: number;
+  heldPlacement: number;
+  /** Follow-ups not sent: their mailbox is mostly in spam at the prospect's provider. */
+  heldMostlySpam: number;
   sent: number;
   /** Permanent, about the RECIPIENT — promoted as a bounce. */
   bounced: number;
@@ -272,7 +276,7 @@ async function loadPendingSequences(
     answersPerson: row.answersPerson === true,
     verdict: typeof row.verdict === "string" ? row.verdict : null,
     addressProven: row.addressProven === true,
-    recipientMicrosoft: row.recipientMailHost === "microsoft",
+    recipientProvider: recipientProviderOf(row.recipientMailHost),
   }));
 }
 
@@ -324,6 +328,13 @@ function toDate(value: unknown): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+/** The provider we measure behind a stored MX reading; anything else = none. */
+function recipientProviderOf(host: unknown): RecipientProvider | null {
+  return typeof host === "string" && (RECIPIENT_PROVIDERS as readonly string[]).includes(host)
+    ? (host as RecipientProvider)
+    : null;
+}
+
 /**
  * Each real mailbox's recent dispatch record, for the silence rule.
  *
@@ -336,16 +347,30 @@ function toDate(value: unknown): Date | null {
  * refusal of one is a refusal of all of them. An address the login map does not
  * know is its own mailbox — the same reading every other consumer takes.
  */
-async function loadSmtpSenderHealth(
+export async function loadSmtpSenderHealth(
   mailboxLogins: ReadonlyMap<string, string>,
 ): Promise<SmtpSenderHealth[]> {
+  // EVERY mail a mailbox sends counts, not only prospect mail
+  // (SENDER-HEALTH-1019): a mailbox whose relay refuses every seed and every
+  // warmup email is refused, whether or not a prospect email was tried yet
+  // (kevin@growthagency.cloud: 271 seeds refused "550 5.7.1 Blacklisted user"
+  // 2026-10-13..19, zero accepted). Seeds and warmup go to OUR mailboxes, so a
+  // refusal there is about the sender; `classifyPermanentFailure` still drops
+  // any recipient-side one. Their logs carry no reply code column: it is read
+  // off the text.
   const [sentResult, failureResult] = await Promise.all([
     db.execute(sql`
-      SELECT account_email        AS "accountEmail",
-             MAX(dispatched_at)   AS "lastSuccessAt"
-      FROM smtp_dispatch_raw
-      WHERE dispatched_at > now() - interval '7 days'
-        AND outcome = 'sent'
+      SELECT account_email AS "accountEmail", MAX(at) AS "lastSuccessAt"
+      FROM (
+        SELECT account_email, dispatched_at AS at FROM smtp_dispatch_raw
+        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'sent'
+        UNION ALL
+        SELECT sender_email, dispatched_at FROM seed_placement_dispatches
+        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'sent'
+        UNION ALL
+        SELECT sender_email, dispatched_at FROM warmup_dispatches
+        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'sent'
+      ) ok
       GROUP BY 1
     `),
     db.execute(sql`
@@ -353,10 +378,21 @@ async function loadSmtpSenderHealth(
              response             AS "response",
              response_code        AS "responseCode",
              COUNT(*)::int        AS "n",
-             MIN(dispatched_at)   AS "firstAt"
-      FROM smtp_dispatch_raw
-      WHERE dispatched_at > now() - interval '7 days'
-        AND outcome = 'permanent'
+             MIN(at)              AS "firstAt"
+      FROM (
+        SELECT account_email, response, response_code, dispatched_at AS at FROM smtp_dispatch_raw
+        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'permanent'
+        UNION ALL
+        SELECT sender_email, response,
+               substring(response from '(?:^|[[:space:]])([45][0-9]{2})[ -]')::int, dispatched_at
+        FROM seed_placement_dispatches
+        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'permanent'
+        UNION ALL
+        SELECT sender_email, response,
+               substring(response from '(?:^|[[:space:]])([45][0-9]{2})[ -]')::int, dispatched_at
+        FROM warmup_dispatches
+        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'permanent'
+      ) refused
       GROUP BY 1, 2, 3
     `),
   ]);
@@ -422,7 +458,7 @@ async function loadSendingAccounts(
   asOf: Date,
   mailboxLogins: ReadonlyMap<string, string>,
 ): Promise<{ capacities: AccountCapacity[]; accounts: Map<string, Account> }> {
-  const [result, volume, microsoftPlacement] = await Promise.all([
+  const [result, volume, placementByAddress] = await Promise.all([
     db.execute(sql`
     SELECT
       a.email                                   AS "accountEmail",
@@ -461,7 +497,7 @@ async function loadSendingAccounts(
     WHERE a.absent_since IS NULL
   `),
     fetchRecentDailyVolume(),
-    fetchMicrosoftPlacementByAccount(asOf),
+    fetchPlacementByProvider(asOf),
   ]);
 
   const capacities: AccountCapacity[] = [];
@@ -512,8 +548,9 @@ async function loadSendingAccounts(
       adoptsFirstEmails: row.lifecycleStatus === "in_production",
       // Its domain is on a blocklist: follow-ups only (DOMAIN-BLOCKLIST-1016).
       sendsFirstEmails: row.lifecycleReason !== "domain_blocklisted",
-      // Where Microsoft puts its mail (MS-SEED-PLACEMENT-1018); absent = unmeasured.
-      microsoftPlacement: microsoftPlacement.get(email.trim().toLowerCase())?.verdict,
+      // Where Google, Microsoft 365 and Outlook.com put its mail
+      // (SENDER-HEALTH-1019); a provider absent = unmeasured there.
+      placement: placementByAddress.get(email.trim().toLowerCase()),
     });
 
     // The real account, so the From display name and the signature agree — the
@@ -727,7 +764,8 @@ function emptySummary(): DispatchSummary {
     rehomed: 0,
     heldBounceBudget: 0,
     heldBlocklisted: 0,
-    heldMicrosoftPlacement: 0,
+    heldPlacement: 0,
+    heldMostlySpam: 0,
     sent: 0,
     bounced: 0,
     senderBlocked: 0,
@@ -855,6 +893,7 @@ async function runDispatchExclusive(
     return {
       sequences,
       accounts,
+      capacities,
       selection: selectDueSteps(sequences, capacities, asOf, skippedMailboxes, bounceBudget),
     };
   };
@@ -873,6 +912,21 @@ async function runDispatchExclusive(
   // 10-minute interval would read 249 mailboxes around the clock to discover
   // there was nothing to do.
   let current = await plan();
+  // The stored daily series behind the admin sender-health chart
+  // (SENDER-HEALTH-1019): which mailboxes are out of prospect mail and why.
+  // A failed write is logged, never a reason to stop sending.
+  await recordSenderHealth(
+    senderHealthSnapshot({
+      asOf,
+      refusedMailboxes: silencedMailboxes,
+      capacities: current.capacities,
+      selection: current.selection,
+    }),
+  ).catch((error: unknown) => {
+    console.error(
+      `[instantly-service] sender-health: daily series NOT written: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
   // Any waiting reply is owed now — there is no window on an answer any more.
   const waitingReplies = await loadPendingScheduledReplies();
   const hasWork = current.selection.selected.length > 0 || waitingReplies.length > 0;
@@ -901,7 +955,8 @@ async function runDispatchExclusive(
       rehomed: current.selection.rehomed,
       heldBounceBudget: current.selection.heldBounceBudget,
       heldBlocklisted: current.selection.heldBlocklisted,
-      heldMicrosoftPlacement: current.selection.heldMicrosoftPlacement,
+      heldPlacement: current.selection.heldPlacement,
+      heldMostlySpam: current.selection.heldMostlySpam,
     };
     console.log(
       `[instantly-service] self-send-dispatch: done ${JSON.stringify(idle)}`,
@@ -977,7 +1032,8 @@ async function runDispatchExclusive(
       rehomed: selection.rehomed,
       heldBounceBudget: selection.heldBounceBudget,
       heldBlocklisted: selection.heldBlocklisted,
-      heldMicrosoftPlacement: selection.heldMicrosoftPlacement,
+      heldPlacement: selection.heldPlacement,
+      heldMostlySpam: selection.heldMostlySpam,
       polled,
     };
 
@@ -1241,7 +1297,8 @@ export async function dispatchAnswerNow(
       rehomed: selection.rehomed,
       heldBounceBudget: selection.heldBounceBudget,
       heldBlocklisted: selection.heldBlocklisted,
-      heldMicrosoftPlacement: selection.heldMicrosoftPlacement,
+      heldPlacement: selection.heldPlacement,
+      heldMostlySpam: selection.heldMostlySpam,
     };
     const credentials = new Map<string, MailboxCredential>();
     for (const step of selection.selected) {

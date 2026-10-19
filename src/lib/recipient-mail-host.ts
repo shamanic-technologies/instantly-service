@@ -21,7 +21,12 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../db";
 
-export type RecipientMailHost = "microsoft" | "google" | "other" | "none" | "unknown";
+/**
+ * `microsoft` = a Microsoft 365 business tenant (`<tenant>.mail.protection.outlook.com`);
+ * `microsoft_consumer` = Outlook.com / Hotmail / Live (`*.olc.protection.outlook.com`).
+ * They filter apart, so they are routed apart (SENDER-HEALTH-1019).
+ */
+export type RecipientMailHost = "microsoft" | "microsoft_consumer" | "google" | "other" | "none" | "unknown";
 
 /** How long one MX reading is trusted. */
 export const MAIL_HOST_FRESH_DAYS = 30;
@@ -30,6 +35,8 @@ export const MAIL_HOST_FRESH_DAYS = 30;
 export const MAIL_HOST_LOOKUPS_PER_TICK = 300;
 
 const MICROSOFT_MX_SUFFIXES = [".protection.outlook.com", ".outlook.com", ".hotmail.com"];
+/** Outlook.com consumer exchanges: outlook-com / hotmail-com / live-com / msn-com `.olc.protection.outlook.com`. */
+const MICROSOFT_CONSUMER_MX_SUFFIXES = [".olc.protection.outlook.com"];
 const GOOGLE_MX_SUFFIXES = [".google.com", ".googlemail.com"];
 
 /** The provider behind a list of MX exchanges. Pure. */
@@ -40,6 +47,7 @@ export function mailHostForMx(exchanges: readonly string[]): RecipientMailHost {
   if (hosts.length === 0) return "none";
   const endsWithAny = (host: string, suffixes: readonly string[]) =>
     suffixes.some((s) => host.endsWith(s) || host === s.slice(1));
+  if (hosts.some((h) => endsWithAny(h, MICROSOFT_CONSUMER_MX_SUFFIXES))) return "microsoft_consumer";
   if (hosts.some((h) => endsWithAny(h, MICROSOFT_MX_SUFFIXES))) return "microsoft";
   if (hosts.some((h) => endsWithAny(h, GOOGLE_MX_SUFFIXES))) return "google";
   return "other";
@@ -121,7 +129,7 @@ export async function refreshRecipientMailHosts(
     readings.push(...(await Promise.all(domains.slice(i, i + 20).map((d) => readMailHost(d, resolveMx)))));
   }
   for (const reading of readings) {
-    if (reading.provider === "microsoft") microsoft += 1;
+    if (reading.provider === "microsoft" || reading.provider === "microsoft_consumer") microsoft += 1;
     if (reading.provider === "unknown") failed += 1;
     await db.execute(sql`
       INSERT INTO recipient_mail_hosts (domain, provider, mx, error, checked_at)

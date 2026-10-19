@@ -87,6 +87,8 @@ describe("buildAccountHealth", () => {
       lifecycleUpdatedAt: "2026-07-05T00:00:00.000Z",
       inboxPlacement: null,
       microsoftPlacement: null,
+      microsoftConsumerPlacement: null,
+      googlePlacement: null,
       sentToday: 0,
       sentYesterday: 0,
       queueSize: 0,

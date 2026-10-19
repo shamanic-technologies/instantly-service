@@ -16,7 +16,8 @@
  */
 
 import { sql } from "drizzle-orm";
-import { ESP_OUTLOOK } from "./seed-placement/seeds";
+import { MICROSOFT_ESPS } from "./seed-placement/seeds";
+import { poolPlacementTests, type PlacementTest } from "./provider-placement";
 import { db } from "../db";
 import {
   resolveTransportForSend,
@@ -185,7 +186,7 @@ export async function fetchBlocklistedDomains(): Promise<Set<string>> {
   );
 }
 
-/** One account's latest-test placement delivery. */
+/** One account's placement delivery over its pooled newest tests. */
 export interface AccountDelivery {
   /** Σ inbox_count over the latest test's (account, ESP) rows. */
   inboxCount: number;
@@ -208,67 +209,92 @@ export interface AccountDelivery {
 }
 
 /**
- * Latest placement delivery per account. Returns ONE ROW PER (account, ESP) of the
- * account's latest test and pools them in JS via `isDeliveryAtBar`. The SQL keeps
+ * Placement delivery per account, over its newest tests pooled to 10 seeds
+ * (`deliveryFromSilverRows`). Reads ONE ROW PER (account, test, ESP) and pools
+ * them in JS via `isDeliveryAtBar`. The SQL keeps
  * the per-ESP grain deliberately: it is the raw silver shape, and the per-leg
  * split is what surfaced the Gmail-spam-vs-Outlook-fine finding the whole
  * deliverability model rests on — the GATE pools, the DATA does not.
  * The blended `deliveryPct` is still computed, for the event snapshot / display.
  * Accounts never tested are ABSENT from the map (→ delivery unknown → in_recovery).
  */
-export async function fetchLatestDeliveryByAccount(): Promise<Map<string, AccountDelivery>> {
+export async function fetchLatestDeliveryByAccount(
+  asOf: Date = new Date(),
+): Promise<Map<string, AccountDelivery>> {
   const result = await db.execute(sql`
-    -- Microsoft receivers (ESP 2) are a ROUTING signal, never a demotion
-    -- (lib/microsoft-placement.ts): the gate reads every other ESP.
-    WITH latest AS (
-      SELECT DISTINCT ON (account_email) account_email, test_id
-      FROM instantly_placement_results
-      WHERE recipient_esp <> ${ESP_OUTLOOK}
-      ORDER BY account_email, tested_at DESC, test_id DESC
-    )
+    -- Microsoft receivers (ESP 2 and 4) are a ROUTING signal, never a demotion
+    -- (lib/provider-placement.ts): the gate reads every other ESP.
     SELECT
       r.account_email AS "accountEmail",
+      r.test_id AS "testId",
       r.recipient_esp AS "recipientEsp",
       r.inbox_count::int AS "inboxCount",
+      r.spam_count::int AS "spamCount",
       r.seed_total::int AS "seedTotal",
       r.tested_at AS "testedAt"
     FROM instantly_placement_results r
-    JOIN latest l
-      ON l.account_email = r.account_email AND l.test_id = r.test_id
-    WHERE r.recipient_esp <> ${ESP_OUTLOOK}
+    WHERE r.recipient_esp NOT IN (${sql.join(MICROSOFT_ESPS.map((e) => sql`${e}`), sql`, `)})
   `);
+  return deliveryFromSilverRows(
+    rowsOf<{
+      accountEmail: string;
+      testId: string;
+      inboxCount: number;
+      spamCount: number;
+      seedTotal: number;
+      testedAt: string | Date | null;
+    }>(result),
+    asOf,
+  );
+}
 
-  const espRowsByAccount = new Map<string, { inboxCount: number; seedTotal: number }[]>();
-  const testedAtByAccount = new Map<string, string>();
-  for (const r of rowsOf<{
+/**
+ * Pure: the gate's delivery per account from silver rows (one per test x ESP).
+ *
+ * ⚠️ POOLED OVER THE NEWEST TESTS UNTIL 10 SEEDS, not the newest test alone
+ * (SENDER-HEALTH-1019, `poolPlacementTests`). A test the relay throttled to one
+ * seed promoted klourd@growthagency.agency to production on "1/1 = 100 %"
+ * (2026-10-18) after five tests at 0-10 %. The newest test always counts and a
+ * mailbox with nothing older still grades: sample size is still not a gate, a
+ * small test just cannot erase a bigger history.
+ */
+export function deliveryFromSilverRows(
+  rows: readonly {
     accountEmail: string;
+    testId: string;
     inboxCount: number;
+    spamCount: number;
     seedTotal: number;
     testedAt: string | Date | null;
-  }>(result)) {
-    const list = espRowsByAccount.get(r.accountEmail) ?? [];
-    list.push({ inboxCount: Number(r.inboxCount), seedTotal: Number(r.seedTotal) });
-    espRowsByAccount.set(r.accountEmail, list);
-
-    if (r.testedAt !== null && r.testedAt !== undefined) {
-      const iso = r.testedAt instanceof Date ? r.testedAt.toISOString() : String(r.testedAt);
-      const seen = testedAtByAccount.get(r.accountEmail);
-      // Rows of one test share a tested_at, but take the newest defensively.
-      if (seen === undefined || iso > seen) testedAtByAccount.set(r.accountEmail, iso);
-    }
+  }[],
+  asOf: Date,
+): Map<string, AccountDelivery> {
+  const testsByAccount = new Map<string, Map<string, PlacementTest>>();
+  for (const r of rows) {
+    if (r.testedAt === null || r.testedAt === undefined) continue;
+    const testedAt = r.testedAt instanceof Date ? r.testedAt : new Date(String(r.testedAt));
+    const tests = testsByAccount.get(r.accountEmail) ?? new Map<string, PlacementTest>();
+    const t = tests.get(r.testId) ?? { testId: r.testId, testedAt, seedTotal: 0, inboxCount: 0, spamCount: 0 };
+    t.seedTotal += Number(r.seedTotal);
+    t.inboxCount += Number(r.inboxCount);
+    t.spamCount += Number(r.spamCount);
+    // Rows of one test share a tested_at, but take the newest defensively.
+    if (testedAt > t.testedAt) t.testedAt = testedAt;
+    tests.set(r.testId, t);
+    testsByAccount.set(r.accountEmail, tests);
   }
 
   const map = new Map<string, AccountDelivery>();
-  for (const [email, espRows] of espRowsByAccount) {
-    const inboxCount = espRows.reduce((s, r) => s + r.inboxCount, 0);
-    const seedTotal = espRows.reduce((s, r) => s + r.seedTotal, 0);
-    const deliveryPct = seedTotal > 0 ? Math.round((inboxCount * 100) / seedTotal) : null;
+  for (const [email, tests] of testsByAccount) {
+    const pooled = poolPlacementTests([...tests.values()], asOf);
+    if (!pooled) continue;
+    const { inboxCount, seedTotal } = pooled;
     map.set(email, {
       inboxCount,
       seedTotal,
-      deliveryPct,
-      atBar: isDeliveryAtBar(espRows),
-      testedAt: testedAtByAccount.get(email) ?? null,
+      deliveryPct: seedTotal > 0 ? Math.round((inboxCount * 100) / seedTotal) : null,
+      atBar: isDeliveryAtBar([{ inboxCount, seedTotal }]),
+      testedAt: pooled.testedAt.toISOString(),
     });
   }
   return map;
@@ -612,7 +638,7 @@ export async function reconcileLifecycle(
       FROM instantly_accounts
     `),
     fetchDomainPolicy(),
-    fetchLatestDeliveryByAccount(),
+    fetchLatestDeliveryByAccount(asOf),
     fetchBlocklistedDomains(),
   ]);
 

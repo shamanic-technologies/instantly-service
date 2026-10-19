@@ -37,11 +37,15 @@ vi.mock("../../src/lib/queued-verification", () => ({
   verifyQueuedSequences: (...args: unknown[]) => mockVerifyQueued(...(args as [])),
 }));
 
-// Microsoft routing (MS-SEED-PLACEMENT-1018) has its own tests
-// (microsoft-seed-placement.test.ts); here no mailbox is measured at Microsoft
-// and no prospect domain is known to be Microsoft-hosted.
-vi.mock("../../src/lib/microsoft-placement-read", () => ({
-  fetchMicrosoftPlacementByAccount: async () => new Map(),
+// Provider placement routing (MS-SEED-PLACEMENT-1018, SENDER-HEALTH-1019) has
+// its own tests (microsoft-seed-placement.test.ts, sender-health.test.ts); here
+// no mailbox is measured and no prospect domain's host is known.
+vi.mock("../../src/lib/provider-placement-read", () => ({
+  fetchPlacementByProvider: async () => new Map(),
+}));
+vi.mock("../../src/lib/sender-health-daily", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  recordSenderHealth: async () => undefined,
 }));
 vi.mock("../../src/lib/recipient-mail-host", () => ({
   refreshRecipientMailHosts: async () => ({ looked: 0, microsoft: 0, failed: 0 }),
