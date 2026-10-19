@@ -16,6 +16,7 @@
  */
 
 import { sql } from "drizzle-orm";
+import { ESP_OUTLOOK } from "./seed-placement/seeds";
 import { db } from "../db";
 import {
   resolveTransportForSend,
@@ -217,9 +218,12 @@ export interface AccountDelivery {
  */
 export async function fetchLatestDeliveryByAccount(): Promise<Map<string, AccountDelivery>> {
   const result = await db.execute(sql`
+    -- Microsoft receivers (ESP 2) are a ROUTING signal, never a demotion
+    -- (lib/microsoft-placement.ts): the gate reads every other ESP.
     WITH latest AS (
       SELECT DISTINCT ON (account_email) account_email, test_id
       FROM instantly_placement_results
+      WHERE recipient_esp <> ${ESP_OUTLOOK}
       ORDER BY account_email, tested_at DESC, test_id DESC
     )
     SELECT
@@ -231,6 +235,7 @@ export async function fetchLatestDeliveryByAccount(): Promise<Map<string, Accoun
     FROM instantly_placement_results r
     JOIN latest l
       ON l.account_email = r.account_email AND l.test_id = r.test_id
+    WHERE r.recipient_esp <> ${ESP_OUTLOOK}
   `);
 
   const espRowsByAccount = new Map<string, { inboxCount: number; seedTotal: number }[]>();

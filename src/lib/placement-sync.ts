@@ -11,6 +11,7 @@
  */
 
 import { sql } from "drizzle-orm";
+import { ESP_OUTLOOK } from "./seed-placement/seeds";
 import { db } from "../db";
 import {
   instantlyPlacementTestsRaw,
@@ -197,9 +198,12 @@ export async function fetchLatestPlacementByAccount(): Promise<Map<string, Inbox
     SELECT r.account_email, r.recipient_esp, r.tested_at,
            r.seed_total, r.inbox_count, r.spam_count, r.missing_count
     FROM instantly_placement_results r
-    WHERE r.tested_at = (
+    -- Same population as the lifecycle gate: Microsoft (ESP 2) is served apart
+    -- (microsoftPlacement), never pooled into this score.
+    WHERE r.recipient_esp <> ${ESP_OUTLOOK}
+      AND r.tested_at = (
       SELECT MAX(r2.tested_at) FROM instantly_placement_results r2
-      WHERE r2.account_email = r.account_email
+      WHERE r2.account_email = r.account_email AND r2.recipient_esp <> ${ESP_OUTLOOK}
     )
   `);
 
@@ -232,7 +236,7 @@ export async function fetchPlacementHistory(
     SELECT r.test_id, r.recipient_esp, r.tested_at,
            r.seed_total, r.inbox_count, r.spam_count, r.missing_count
     FROM instantly_placement_results r
-    WHERE r.account_email = ${accountEmail}
+    WHERE r.account_email = ${accountEmail} AND r.recipient_esp <> ${ESP_OUTLOOK}
     ORDER BY r.tested_at DESC
   `);
 

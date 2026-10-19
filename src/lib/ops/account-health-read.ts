@@ -31,6 +31,7 @@ import {
   sustainedByMailboxForAccounts,
   type DailyVolume,
 } from "../recent-send-volume";
+import { fetchMicrosoftPlacementByAccount } from "../microsoft-placement-read";
 import { loadMailboxLogins } from "../self-send/mailbox-credentials";
 
 export interface AccountHealthRead {
@@ -62,6 +63,7 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
     recentVolume,
     mailboxOf,
     newSequencesTodayByEmail,
+    microsoftPlacementByEmail,
   ] = await Promise.all([
     listAccountsFromSilver(),
     fetchLatestPlacementByAccount(),
@@ -85,6 +87,7 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
     // which is the exact failure the `vendorPrewarmedAt` note below records.
     loadMailboxLogins({ method: "GET", path: "/internal/audit/account-health" }),
     fetchNewSequencesTodayByAccount(),
+    fetchMicrosoftPlacementByAccount(asOf),
   ]);
   const inboundBlindAddresses = await loadInboundBlindAddresses({
     method: "GET",
@@ -117,6 +120,7 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
       asOf,
       newSequencesTodayByEmail,
       inboundBlindAddresses,
+      microsoftPlacementByEmail,
     },
   );
 

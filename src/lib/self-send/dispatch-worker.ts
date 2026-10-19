@@ -56,6 +56,8 @@ import { stopQueuedSequencesOfStoppedCampaigns } from "../stopped-campaigns";
 import { stopQueuedSequencesOfBookedPeople } from "../booked-stops-cold";
 import { healQueuedSequenceTimezones } from "../queued-sequence-timezone";
 import { verifyQueuedSequences } from "../queued-verification";
+import { fetchMicrosoftPlacementByAccount } from "../microsoft-placement-read";
+import { refreshRecipientMailHosts } from "../recipient-mail-host";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/dispatch" };
 
@@ -106,6 +108,11 @@ export interface DispatchSummary {
   heldBounceBudget: number;
   /** First emails kept off a mailbox whose domain is blocklisted (rehomed or waiting). */
   heldBlocklisted: number;
+  /**
+   * First emails to a Microsoft-hosted prospect kept off a mailbox Microsoft
+   * does not put in Inbox (rehomed to one it does, or waiting).
+   */
+  heldMicrosoftPlacement: number;
   sent: number;
   /** Permanent, about the RECIPIENT — promoted as a bounce. */
   bounced: number;
@@ -198,6 +205,12 @@ async function loadPendingSequences(
       p.timezone              AS "timezone",
       p.queued_at             AS "queuedAt",
       p.answers_person        AS "answersPerson",
+      -- Microsoft hosts the prospect's mail (MX, lib/recipient-mail-host.ts): the
+      -- first email then goes only from a mailbox Microsoft puts in Inbox.
+      (
+        SELECT h.provider FROM recipient_mail_hosts h
+        WHERE h.domain = lower(split_part(p.lead_email, '@', 2))
+      ) AS "recipientMailHost",
       -- The bounce budget (bounce-budget.ts) reads both, for a FIRST email only:
       -- the verdict our verifier holds for this org + address (latest accepted
       -- row, served by email_send_verifications_org_email_idx) …
@@ -259,6 +272,7 @@ async function loadPendingSequences(
     answersPerson: row.answersPerson === true,
     verdict: typeof row.verdict === "string" ? row.verdict : null,
     addressProven: row.addressProven === true,
+    recipientMicrosoft: row.recipientMailHost === "microsoft",
   }));
 }
 
@@ -408,7 +422,7 @@ async function loadSendingAccounts(
   asOf: Date,
   mailboxLogins: ReadonlyMap<string, string>,
 ): Promise<{ capacities: AccountCapacity[]; accounts: Map<string, Account> }> {
-  const [result, volume] = await Promise.all([
+  const [result, volume, microsoftPlacement] = await Promise.all([
     db.execute(sql`
     SELECT
       a.email                                   AS "accountEmail",
@@ -447,6 +461,7 @@ async function loadSendingAccounts(
     WHERE a.absent_since IS NULL
   `),
     fetchRecentDailyVolume(),
+    fetchMicrosoftPlacementByAccount(asOf),
   ]);
 
   const capacities: AccountCapacity[] = [];
@@ -497,6 +512,8 @@ async function loadSendingAccounts(
       adoptsFirstEmails: row.lifecycleStatus === "in_production",
       // Its domain is on a blocklist: follow-ups only (DOMAIN-BLOCKLIST-1016).
       sendsFirstEmails: row.lifecycleReason !== "domain_blocklisted",
+      // Where Microsoft puts its mail (MS-SEED-PLACEMENT-1018); absent = unmeasured.
+      microsoftPlacement: microsoftPlacement.get(email.trim().toLowerCase())?.verdict,
     });
 
     // The real account, so the From display name and the signature agree — the
@@ -710,6 +727,7 @@ function emptySummary(): DispatchSummary {
     rehomed: 0,
     heldBounceBudget: 0,
     heldBlocklisted: 0,
+    heldMicrosoftPlacement: 0,
     sent: 0,
     bounced: 0,
     senderBlocked: 0,
@@ -761,6 +779,16 @@ async function runDispatchExclusive(
   // refunded; no verdict = held). Fails LOUD on an unreadable queue.
   const { notCleared: unverifiedLeft } = await verifyQueuedSequences(CALLER);
   const notYetStopped = new Set<string>([...stoppedCampaignLeft, ...bookedLeft, ...unverifiedLeft]);
+
+  // Which prospect domains Microsoft hosts (MX), read for the queued first
+  // emails that have no fresh reading, BEFORE selection: such a prospect is
+  // written to only from a mailbox Microsoft puts in Inbox. Fail-soft: an
+  // unread domain is not Microsoft as far as this tick knows.
+  await refreshRecipientMailHosts().catch((error: unknown) => {
+    console.error(
+      `[instantly-service] self-send-dispatch: mail-host refresh failed — ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
 
   // A sequence the caller queued with no zone takes the person's zone from lead-service BEFORE
   // selection, so its step is judged against THEIR business hours. Fail-soft per sequence
@@ -873,6 +901,7 @@ async function runDispatchExclusive(
       rehomed: current.selection.rehomed,
       heldBounceBudget: current.selection.heldBounceBudget,
       heldBlocklisted: current.selection.heldBlocklisted,
+      heldMicrosoftPlacement: current.selection.heldMicrosoftPlacement,
     };
     console.log(
       `[instantly-service] self-send-dispatch: done ${JSON.stringify(idle)}`,
@@ -948,6 +977,7 @@ async function runDispatchExclusive(
       rehomed: selection.rehomed,
       heldBounceBudget: selection.heldBounceBudget,
       heldBlocklisted: selection.heldBlocklisted,
+      heldMicrosoftPlacement: selection.heldMicrosoftPlacement,
       polled,
     };
 
@@ -1211,6 +1241,7 @@ export async function dispatchAnswerNow(
       rehomed: selection.rehomed,
       heldBounceBudget: selection.heldBounceBudget,
       heldBlocklisted: selection.heldBlocklisted,
+      heldMicrosoftPlacement: selection.heldMicrosoftPlacement,
     };
     const credentials = new Map<string, MailboxCredential>();
     for (const step of selection.selected) {

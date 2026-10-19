@@ -24,12 +24,15 @@ import { dispatchMessage, SmtpDispatchError } from "../self-send/smtp";
 import { buildSeedMessage } from "./message";
 import { loadSeedCredentialResolver } from "./credentials";
 import {
+  ESP_OUTLOOK,
   MAX_SEED_RECEIVERS,
+  type SeedReceiver,
   mintSeedTestId,
   planSeedSends,
   selectSeedReceivers,
 } from "./seeds";
 import { decideSeedTestDue, type SeedDueReason } from "./due";
+import { loadAuthorizedMicrosoftReceivers } from "./microsoft-oauth";
 
 const CALLER: CallerInfo = {
   method: "POST",
@@ -157,13 +160,24 @@ export async function runSeedPlacementTest(
   // more readable than it is sendable. The credential also carries the real
   // HOST, which is what decides whether the mailbox can grade at all (only a
   // Google/Microsoft-hosted one can; see `selectSeedReceivers`).
-  const receivers = selectSeedReceivers(
+  const googleReceivers = selectSeedReceivers(
     sendable.map((email) => ({
       email,
       imapHost: credentials.get(email)?.imapHost ?? "",
     })),
     MAX_SEED_RECEIVERS,
   );
+
+  // Microsoft receivers (Outlook.com, Microsoft 365): our own mailboxes a person
+  // authorized once over OAuth, read through Graph (MS-SEED-PLACEMENT-1018). They
+  // only RECEIVE, so they ride beside the Google set rather than inside its cap:
+  // every sender gets one Microsoft verdict per Microsoft mailbox.
+  const receivers: SeedReceiver[] = [
+    ...googleReceivers,
+    ...(await loadAuthorizedMicrosoftReceivers())
+      .filter((email) => !googleReceivers.some((r) => r.email === email))
+      .map((email) => ({ email, recipientEsp: ESP_OUTLOOK })),
+  ];
 
   if (receivers.length === 0) {
     // No gradeable receiver means no measurement is possible. Say so and stop,
