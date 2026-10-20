@@ -1,7 +1,8 @@
 /**
- * DOMAIN-BLOCKLIST-1016: a sending domain on a public blocklist takes no new
- * sequence, its follow-ups keep going out, and it comes back on a fresh clean
- * answer. A refused query is never a listing nor a clean bill.
+ * DOMAIN-BLOCKLIST-1016: a sending domain on a public blocklist is checked daily
+ * and a refused query is never a listing nor a clean bill. Since
+ * SURBL-FILL-LAST-1021 a listing no longer takes the mailbox out of production:
+ * it fills AFTER the clean mailboxes of its tier.
  */
 import { describe, it, expect, vi } from "vitest";
 
@@ -18,6 +19,12 @@ import { checkList, type Lookup } from "../../src/lib/domain-blocklist-sync";
 import { buildListingSeries, windowDays } from "../../src/lib/domain-blocklist-read";
 import { deriveLifecycle, type DeriveLifecycleInput } from "../../src/lib/account-lifecycle";
 import { selectDueSteps, type AccountCapacity, type PendingSequence } from "../../src/lib/self-send/dispatch";
+import {
+  accountFillOrder,
+  pickSequentialFillAccount,
+  providerFillRank,
+  type FillOrderAccount,
+} from "../../src/lib/send-lead";
 
 const surbl = blocklistByKey("surbl")!;
 const dbl = blocklistByKey("spamhaus_dbl")!;
@@ -123,35 +130,80 @@ describe("a new listing writes one event; the same listing next day writes none"
   });
 });
 
-describe("lifecycle: a listed domain is out of new sequences, a clean one comes back", () => {
+describe("lifecycle: a listing no longer takes a mailbox out of production (SURBL-FILL-LAST-1021)", () => {
+  // Owner 2026-10-21: keep the listed domains in production, filled AFTER the
+  // clean ones of their tier. The inbox test alone decides who is in production.
   const base: DeriveLifecycleInput = {
     sendTransport: "smtp",
     instantlyStatus: 1,
-    domain: "agileconsultco.com",
+    domain: "leaddistribute.com",
     healthScore: 100,
     deliveryAtBar: true,
-    deliveryTestedAt: new Date("2026-10-10T00:00:00.000Z").toISOString(),
-    currentStatus: "in_production",
+    deliveryTestedAt: new Date("2026-10-19T00:00:00.000Z").toISOString(),
+    currentStatus: "in_recovery",
     domainPolicy: new Set(["distribute.you"]),
-    blocklistedDomains: new Set(["agileconsultco.com"]),
-    asOf: new Date("2026-10-16T00:00:00.000Z"),
+    asOf: new Date("2026-10-21T00:00:00.000Z"),
   };
 
-  it("listed: in_recovery for `domain_blocklisted`, even from in_production with a passing test", () => {
-    expect(deriveLifecycle(base)).toEqual({ status: "in_recovery", reason: "domain_blocklisted" });
+  it("a listed domain with a passing inbox test is in production", () => {
+    expect(deriveLifecycle(base)).toEqual({ status: "in_production", reason: "passed" });
   });
 
-  it("clean again: back to production by itself", () => {
-    expect(deriveLifecycle({ ...base, blocklistedDomains: new Set(), currentStatus: "in_recovery" })).toEqual({
-      status: "in_production",
-      reason: "passed",
+  it("a listed domain whose mail lands in spam stays out, on delivery", () => {
+    expect(deriveLifecycle({ ...base, deliveryAtBar: false })).toEqual({
+      status: "in_recovery",
+      reason: "delivery_below_bar",
     });
   });
 
   it("a brand domain stays the user's decision", () => {
-    expect(
-      deriveLifecycle({ ...base, domain: "distribute.you", blocklistedDomains: new Set(["distribute.you"]) }),
-    ).toEqual({ status: "deactivated_by_user", reason: "brand_domain" });
+    expect(deriveLifecycle({ ...base, domain: "distribute.you" })).toEqual({
+      status: "deactivated_by_user",
+      reason: "brand_domain",
+    });
+  });
+});
+
+describe("fill order: a listed domain fills after the clean ones of its tier, before the next tier", () => {
+  const acct = (email: string, extra: Partial<FillOrderAccount> = {}): FillOrderAccount =>
+    ({
+      email,
+      infraProvider: "primeforge",
+      domainAcquiredAt: "2026-06-29T00:00:00.000Z",
+      timestamp_created: "2026-06-29T00:00:00.000Z",
+      vendorPrewarmedAt: null,
+      domainBlocklisted: false,
+      ...extra,
+    }) as FillOrderAccount;
+
+  it("clean own Primeforge, then listed own Primeforge, then pre-warmed", () => {
+    const listedOld = acct("a@leaddistribute.com", { domainBlocklisted: true });
+    // Bought LATER than the listed one: acquisition date alone would put it after.
+    const cleanNew = acct("b@senddistribute.com", { domainAcquiredAt: "2026-09-14T00:00:00.000Z" });
+    const prewarmed = acct("c@acutezoneco.com", { vendorPrewarmedAt: "2026-08-30T00:00:00.000Z" });
+    const gandi = acct("d@salesmolt.com", { infraProvider: "gandi" });
+    expect(accountFillOrder([prewarmed, listedOld, cleanNew, gandi]).map((a) => a.email)).toEqual([
+      "d@salesmolt.com",
+      "b@senddistribute.com",
+      "a@leaddistribute.com",
+      "c@acutezoneco.com",
+    ]);
+  });
+
+  it("the listed rank sits strictly between its tier and the next one", () => {
+    const own = providerFillRank("primeforge", null);
+    const listed = providerFillRank("primeforge", null, true);
+    const prewarmed = providerFillRank("primeforge", "2026-08-30T00:00:00.000Z");
+    expect(own).toBeLessThan(listed);
+    expect(listed).toBeLessThan(prewarmed);
+    expect(providerFillRank("gandi", null, true)).toBeLessThan(providerFillRank("mailforge", null));
+  });
+
+  it("the cheaper tier with room is used before a listed mailbox (separate vendor group)", () => {
+    const listed = acct("a@leaddistribute.com", { domainBlocklisted: true });
+    const clean = acct("b@senddistribute.com");
+    const picked = pickSequentialFillAccount([listed, clean], new Map());
+    expect(picked.email).toBe("b@senddistribute.com");
   });
 });
 

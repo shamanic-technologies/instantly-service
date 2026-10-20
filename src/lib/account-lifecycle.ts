@@ -52,7 +52,6 @@ export type LifecycleStatus =
  */
 export type LifecycleReason =
   | "brand_domain"
-  | "domain_blocklisted"
   | "deactivated_by_instantly"
   | "health_below_bar"
   | "delivery_below_bar"
@@ -100,12 +99,6 @@ export interface DeriveLifecycleInput {
   currentStatus: LifecycleStatus | null;
   /** Set of brand/product domains from instantly_domain_policy. */
   domainPolicy: ReadonlySet<string>;
-  /**
-   * Sending domains a public domain blocklist lists RIGHT NOW (fresh answer,
-   * lib/domain-blocklist-sync.ts). A mailbox on one takes no new sequence;
-   * it comes back by itself the day a fresh check reads the domain clean.
-   */
-  blocklistedDomains: ReadonlySet<string>;
   /** Clock, for the delivery-evidence freshness check. */
   asOf: Date;
 }
@@ -270,7 +263,6 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
     deliveryTestedAt,
     currentStatus,
     domainPolicy,
-    blocklistedDomains,
     asOf,
   } = input;
 
@@ -282,17 +274,11 @@ export function deriveLifecycle(input: DeriveLifecycleInput): Lifecycle {
   if (domainPolicy.has(domain)) {
     return { status: "deactivated_by_user", reason: "brand_domain" };
   }
-  // A domain a blocklist lists right now takes no NEW sequence, on every
-  // transport (DOMAIN-BLOCKLIST-1016): receivers refuse its mail citing the
-  // list, and every new prospect we put on it is one more refusal and one more
-  // hit keeping it listed. Out of production = out of new sequences only:
-  // follow-ups already queued on the mailbox keep dispatching (the dispatcher
-  // never gates a started sequence on lifecycle, owner 2026-10-16 "A"), and the
-  // flip keeps the mailbox's daily limit so they are not throttled. Pure
-  // function of today's listing: a fresh clean answer brings it back.
-  if (blocklistedDomains.has(domain)) {
-    return { status: "in_recovery", reason: "domain_blocklisted" };
-  }
+  // A blocklist listing is NOT a lifecycle input (SURBL-FILL-LAST-1021, owner
+  // 2026-10-21): a listed domain whose inbox test passes stays in production
+  // and is filled AFTER the clean mailboxes of its tier (`providerFillRank`).
+  // The inbox test below is what keeps a listed domain whose mail really lands
+  // in spam out of the cold stream.
   // Instantly's own status is a fact about INSTANTLY's willingness to dispatch,
   // not about the mailbox. Once we hold the credential and open the SMTP session
   // ourselves, its refusal says nothing about whether the mailbox can send — so

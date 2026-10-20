@@ -546,8 +546,6 @@ async function loadSendingAccounts(
       // Same gate as the assignment of a NEW sequence: only a production mailbox
       // may take over a first email another mailbox cannot send.
       adoptsFirstEmails: row.lifecycleStatus === "in_production",
-      // Its domain is on a blocklist: follow-ups only (DOMAIN-BLOCKLIST-1016).
-      sendsFirstEmails: row.lifecycleReason !== "domain_blocklisted",
       // Where Google, Microsoft 365 and Outlook.com put its mail
       // (SENDER-HEALTH-1019); a provider absent = unmeasured there.
       placement: placementByAddress.get(email.trim().toLowerCase()),
