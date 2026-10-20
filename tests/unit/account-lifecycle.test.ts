@@ -42,7 +42,6 @@ function input(overrides: Partial<DeriveLifecycleInput> = {}): DeriveLifecycleIn
     deliveryTestedAt: FRESH_TEST,
     currentStatus: null,
     domainPolicy: POLICY,
-    blocklistedDomains: new Set<string>(),
     asOf: NOW,
     ...overrides,
   };

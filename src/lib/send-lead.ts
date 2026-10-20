@@ -132,6 +132,9 @@ export type FillOrderAccount = Account & {
   /** Vendor's creation date when bought pre-warmed, so the ramp does not read
    *  our import date as the mailbox's age. See `capForAccount`. */
   vendorPrewarmedAt?: Date | string | null;
+  /** Its domain is on a public blocklist right now (`domain_blocklist_status`):
+   *  it fills after every clean mailbox of its tier. See `providerFillRank`. */
+  domainBlocklisted?: boolean;
 };
 
 /**
@@ -193,6 +196,16 @@ export const PREWARMED_PROVIDER_FILL_RANK = 3;
 export const UNKNOWN_PROVIDER_FILL_RANK = 5;
 
 /**
+ * How far a domain on a public blocklist slides within the fill order: half a
+ * tier, so it fills AFTER every clean mailbox of its own vendor tier and BEFORE
+ * the next tier (SURBL-FILL-LAST-1021, owner 2026-10-21: "après celles à $4.5
+ * qui ne sont pas dans SURBL, mais avant les prewarmed"). A listing no longer
+ * takes a mailbox out of production (the inbox test decides that); it only
+ * makes it the last resort of its price.
+ */
+export const BLOCKLISTED_DOMAIN_FILL_OFFSET = 0.5;
+
+/**
  * Key for a domain we cannot date — no `infra_domains` row, or a row with no
  * `created_at_provider`. Sorts LAST within its vendor, for the same reason an
  * unattributed vendor does: nobody can honestly place it, and the tail is the
@@ -236,14 +249,16 @@ export function fillOrderDomain(email: string): string {
 export function providerFillRank(
   provider?: string | null,
   vendorPrewarmedAt?: Date | string | null,
+  domainBlocklisted?: boolean,
 ): number {
-  if (!provider) return UNKNOWN_PROVIDER_FILL_RANK;
+  const offset = domainBlocklisted ? BLOCKLISTED_DOMAIN_FILL_OFFSET : 0;
+  if (!provider) return UNKNOWN_PROVIDER_FILL_RANK + offset;
   const rank = PROVIDER_FILL_RANK[provider] ?? UNKNOWN_PROVIDER_FILL_RANK;
   // A pre-warmed Primeforge mailbox costs double a self-named one, so it fills
   // one tier later. Only Primeforge sells both shapes; on any other vendor the
   // column carries no tiering meaning.
-  if (provider === "primeforge" && vendorPrewarmedAt) return PREWARMED_PROVIDER_FILL_RANK;
-  return rank;
+  if (provider === "primeforge" && vendorPrewarmedAt) return PREWARMED_PROVIDER_FILL_RANK + offset;
+  return rank + offset;
 }
 
 /**
@@ -291,8 +306,8 @@ export function accountFillOrder<T extends FillOrderAccount>(accounts: T[]): T[]
     return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
   };
   return [...accounts].sort((x, y) => {
-    const px = providerFillRank(x.infraProvider, x.vendorPrewarmedAt);
-    const py = providerFillRank(y.infraProvider, y.vendorPrewarmedAt);
+    const px = providerFillRank(x.infraProvider, x.vendorPrewarmedAt, x.domainBlocklisted);
+    const py = providerFillRank(y.infraProvider, y.vendorPrewarmedAt, y.domainBlocklisted);
     if (px !== py) return px - py;
     const dx = domainFillKeyOf(x.domainAcquiredAt);
     const dy = domainFillKeyOf(y.domainAcquiredAt);
@@ -315,7 +330,7 @@ function groupByVendor<T extends FillOrderAccount>(ordered: T[]): T[][] {
   const groups: T[][] = [];
   let rank: number | null = null;
   for (const a of ordered) {
-    const r = providerFillRank(a.infraProvider, a.vendorPrewarmedAt);
+    const r = providerFillRank(a.infraProvider, a.vendorPrewarmedAt, a.domainBlocklisted);
     if (r !== rank) {
       groups.push([]);
       rank = r;
