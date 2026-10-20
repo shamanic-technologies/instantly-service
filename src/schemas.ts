@@ -2945,7 +2945,7 @@ const DomainBlocklistReadSchema = z
           domain: z.string(),
           mailboxes: z.array(z.string()).describe("Sending addresses on the domain (present accounts)"),
           listed: z.boolean().describe("True when ANY list lists it right now"),
-          outOfNewSequences: z.boolean().describe("True when every mailbox of the domain is out of new sequences because of a listing (lifecycle reason domain_blocklisted)"),
+          outOfNewSequences: z.boolean().describe("Always false since SURBL-FILL-LAST-1021: a listing no longer takes a mailbox out of new sequences (it fills last within its tier)"),
           lists: z.array(
             z.object({
               list: BlocklistKeySchema,
@@ -3000,7 +3000,7 @@ registry.registerPath({
   path: "/internal/domain-blocklist",
   summary: "Sending domains on public blocklists: current state, history, daily series (staff)",
   description:
-    "Platform-scoped, read-only. Every sending domain is checked once a day on SURBL multi, Spamhaus DBL and URIBL (each behind its published test name, so a refused query is never read as a listing or as clean). A listed domain's mailboxes take no new sequence (lifecycle reason `domain_blocklisted`); their follow-ups keep going out; they come back the day a fresh check reads the domain clean. Cached 5 min per replica.",
+    "Platform-scoped, read-only. Every sending domain is checked once a day on SURBL multi, Spamhaus DBL and URIBL (each behind its published test name, so a refused query is never read as a listing or as clean). A listed domain stays in production when its inbox test passes and fills AFTER the clean mailboxes of its price tier (SURBL-FILL-LAST-1021). Cached 5 min per replica.",
   request: { query: z.object({ days: z.string().optional().describe("Window in days, 1..365, default 60") }) },
   responses: {
     200: { description: "The read", content: { "application/json": { schema: DomainBlocklistReadSchema } } },

@@ -3932,7 +3932,7 @@
                 },
                 "outOfNewSequences": {
                   "type": "boolean",
-                  "description": "True when every mailbox of the domain is out of new sequences because of a listing (lifecycle reason domain_blocklisted)"
+                  "description": "Always false since SURBL-FILL-LAST-1021: a listing no longer takes a mailbox out of new sequences (it fills last within its tier)"
                 },
                 "lists": {
                   "type": "array",
@@ -11587,7 +11587,7 @@
     "/internal/domain-blocklist": {
       "get": {
         "summary": "Sending domains on public blocklists: current state, history, daily series (staff)",
-        "description": "Platform-scoped, read-only. Every sending domain is checked once a day on SURBL multi, Spamhaus DBL and URIBL (each behind its published test name, so a refused query is never read as a listing or as clean). A listed domain's mailboxes take no new sequence (lifecycle reason `domain_blocklisted`); their follow-ups keep going out; they come back the day a fresh check reads the domain clean. Cached 5 min per replica.",
+        "description": "Platform-scoped, read-only. Every sending domain is checked once a day on SURBL multi, Spamhaus DBL and URIBL (each behind its published test name, so a refused query is never read as a listing or as clean). A listed domain stays in production when its inbox test passes and fills AFTER the clean mailboxes of its price tier (SURBL-FILL-LAST-1021). Cached 5 min per replica.",
         "parameters": [
           {
             "schema": {

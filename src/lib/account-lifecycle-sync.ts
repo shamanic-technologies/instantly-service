@@ -170,22 +170,6 @@ export async function fetchDomainPolicy(): Promise<Set<string>> {
   );
 }
 
-/**
- * Sending domains a blocklist lists right now (`domain_blocklist_status`, a
- * row moves only on a fresh honest answer). Read by every reconcile, so a
- * listing and a delisting reach the lifecycle on the next pass.
- */
-export async function fetchBlocklistedDomains(): Promise<Set<string>> {
-  const result = await db.execute(
-    sql`SELECT DISTINCT domain FROM domain_blocklist_status WHERE listed = true`,
-  );
-  return new Set(
-    rowsOf<{ domain: string }>(result)
-      .map((r) => (r.domain ?? "").toLowerCase())
-      .filter(Boolean),
-  );
-}
-
 /** One account's placement delivery over its pooled newest tests. */
 export interface AccountDelivery {
   /** Σ inbox_count over the latest test's (account, ESP) rows. */
@@ -399,6 +383,9 @@ export type PooledAccount = Account & {
   /** Vendor's own creation date when the mailbox was bought pre-warmed, so
    *  `capForAccount` does not read our import date as the mailbox's age. */
   vendorPrewarmedAt: Date | string | null;
+  /** Its domain is listed on a public blocklist right now: it fills after the
+   *  clean mailboxes of its tier (`providerFillRank`, SURBL-FILL-LAST-1021). */
+  domainBlocklisted: boolean;
 };
 
 export async function fetchInProductionAccounts(
@@ -416,6 +403,10 @@ export async function fetchInProductionAccounts(
            a.timestamp_created AS "timestampCreated",
            a.send_transport AS "sendTransport",
            a.vendor_prewarmed_at AS "vendorPrewarmedAt",
+           EXISTS (
+             SELECT 1 FROM domain_blocklist_status b
+             WHERE b.domain = lower(split_part(a.email, '@', 2)) AND b.listed
+           ) AS "domainBlocklisted",
            ip.provider AS "infraProvider",
            ip.acquired_at AS "domainAcquiredAt"
     FROM instantly_accounts a
@@ -461,6 +452,7 @@ export async function fetchInProductionAccounts(
     timestampCreated: string | Date | null;
     sendTransport: string | null;
     vendorPrewarmedAt: string | Date | null;
+    domainBlocklisted: boolean | null;
     infraProvider: string | null;
     domainAcquiredAt: string | Date | null;
   }>(result).map((r) => ({
@@ -483,6 +475,7 @@ export async function fetchInProductionAccounts(
     // explicit, reversible UPDATE.
     sendTransport: resolveTransportForSend(r.sendTransport),
     vendorPrewarmedAt: r.vendorPrewarmedAt ?? null,
+    domainBlocklisted: r.domainBlocklisted === true,
   }));
 }
 
@@ -626,7 +619,7 @@ export async function reconcileLifecycle(
   apiKey: string,
   asOf: Date = new Date(),
 ): Promise<ReconcileLifecycleSummary> {
-  const [accountsResult, domainPolicy, deliveryByEmail, blocklistedDomains] = await Promise.all([
+  const [accountsResult, domainPolicy, deliveryByEmail] = await Promise.all([
     db.execute(sql`
       SELECT email AS "email",
              instantly_status AS "instantlyStatus",
@@ -639,7 +632,6 @@ export async function reconcileLifecycle(
     `),
     fetchDomainPolicy(),
     fetchLatestDeliveryByAccount(asOf),
-    fetchBlocklistedDomains(),
   ]);
 
   const accounts = rowsOf<SilverAccountRow>(accountsResult);
@@ -696,7 +688,6 @@ export async function reconcileLifecycle(
       deliveryTestedAt: delivery?.testedAt ?? null,
       currentStatus,
       domainPolicy,
-      blocklistedDomains,
       asOf,
     });
 
@@ -736,12 +727,8 @@ export async function reconcileLifecycle(
     // (because the persist is skipped on error) block the flip from landing.
     // An smtp account Instantly still holds ACTIVE is healed within the hour by
     // `syncLifecycleLimits`, which enforces its warmup + daily_limit.
-    //
-    // A blocklisted domain changes NO limit (DOMAIN-BLOCKLIST-1016): the mailbox
-    // only stops taking NEW sequences, its queued follow-ups keep their pace.
-    const keepsLimits = reason === "domain_blocklisted";
-    const warmupTarget = keepsLimits ? null : warmupDailyForStatus(status, sendTransport);
-    const dailyLimitTarget = keepsLimits ? null : dailyLimitForStatus(status, sendTransport);
+    const warmupTarget = warmupDailyForStatus(status, sendTransport);
+    const dailyLimitTarget = dailyLimitForStatus(status, sendTransport);
 
     try {
       // ORDERING (load-bearing): PATCH Instantly FIRST. On failure we do NOT
@@ -781,7 +768,7 @@ export async function reconcileLifecycle(
     // per-state constant an Instantly flip would have pushed. Without it a box
     // promoted to in_production keeps its recovery 20/day forever.
     const ownDailyLimit =
-      sendTransport === SEND_TRANSPORT_SMTP && !keepsLimits ? dailyLimitForStatus(status) : null;
+      sendTransport === SEND_TRANSPORT_SMTP ? dailyLimitForStatus(status) : null;
     await db
       .update(instantlyAccounts)
       .set({
