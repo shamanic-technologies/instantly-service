@@ -753,6 +753,12 @@ export async function reconcileLifecycle(
     }
 
     const now = new Date();
+    // On our own sender nobody PATCHes Instantly any more, so silver's
+    // `daily_limit` (what `capForAccount` reads) is written HERE, from the same
+    // per-state constant an Instantly flip would have pushed. Without it a box
+    // promoted to in_production keeps its recovery 20/day forever.
+    const ownDailyLimit =
+      sendTransport === SEND_TRANSPORT_SMTP ? dailyLimitForStatus(status) : null;
     await db.insert(instantlyAccountLifecycleEvents).values({
       accountEmail: row.email,
       fromStatus: currentStatus,
@@ -761,14 +767,11 @@ export async function reconcileLifecycle(
       healthScore,
       deliveryPct: deliveryPctSnapshot,
       dailyLimit: row.dailyLimit ?? null,
+      // The limit in force from this flip on: capacity history reads it, the
+      // Instantly snapshots having stopped (CAPACITY-FROZEN-LIMIT-1021).
+      dailyLimitAfter: ownDailyLimit ?? dailyLimitTarget ?? row.dailyLimit ?? null,
       createdAt: now,
     });
-    // On our own sender nobody PATCHes Instantly any more, so silver's
-    // `daily_limit` (what `capForAccount` reads) is written HERE, from the same
-    // per-state constant an Instantly flip would have pushed. Without it a box
-    // promoted to in_production keeps its recovery 20/day forever.
-    const ownDailyLimit =
-      sendTransport === SEND_TRANSPORT_SMTP ? dailyLimitForStatus(status) : null;
     await db
       .update(instantlyAccounts)
       .set({

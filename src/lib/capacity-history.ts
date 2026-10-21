@@ -4,8 +4,15 @@
  * Bronze layers:
  *   - instantly_account_lifecycle_events → each account's STATUS as-of any day
  *     (the latest transition with created_at <= end-of-day).
- *   - instantly_accounts_raw            → each account's daily_limit as-of any day
- *     (the latest snapshot with fetched_at <= end-of-day).
+ *   - each account's daily_limit as-of any day = the LATEST, at or before
+ *     end-of-day, of an Instantly snapshot (`instantly_accounts_raw.fetched_at`)
+ *     and a lifecycle flip's `daily_limit_after` (the limit reconcileLifecycle
+ *     put in force). The snapshots stopped on 2026-10-12 (Instantly plan
+ *     cancelled) while our own limit kept moving on flips: reading snapshots
+ *     alone replayed the 10-12 limit on every later day (CAPACITY-FROZEN-LIMIT-
+ *     1021; flips after an account's last snapshot backfilled by migration 0088
+ *     from measured values). A day with neither is "limit unknown": counted in
+ *     `limitUnknownAddresses`, contributing 0, never invented.
  *
  * ⚠️ For each day, `dailyCapacity` is what the fleet could REALLY have sent that
  * day, not the sum of the limits its accounts carried. The old form was
@@ -74,8 +81,10 @@ export async function fetchCapacityHistory(
 export interface MailboxCapacityOnDay {
   /** Its in_production addresses that day. */
   addresses: string[];
-  /** The operator limit: the minimum `daily_limit` across those addresses. */
+  /** The operator limit: the minimum known `daily_limit` across those addresses (0 when none is known). */
   operatorLimit: number;
+  /** Its addresses whose limit that day is unknown (no snapshot, no flip): not invented. */
+  limitUnknownAddresses: string[];
   /** Volume the mailbox had sustained over the ramp window ending that day. */
   sustained: number;
   /** What the ramp allowed on that volume (`rampCapForVolume`). */
@@ -124,12 +133,22 @@ export async function fetchCapacityHistoryByMailbox(
             AND e.created_at < (d.day + INTERVAL '1 day')
           ORDER BY e.created_at DESC
           LIMIT 1) AS status,
-        (SELECT r.daily_limit
-           FROM instantly_accounts_raw r
-          WHERE r.account_email = a.account_email
-            AND r.fetched_at < (d.day + INTERVAL '1 day')
-          ORDER BY r.fetched_at DESC
-          LIMIT 1) AS daily_limit
+        (SELECT u.daily_limit FROM (
+           (SELECT r.daily_limit, r.fetched_at AS at
+              FROM instantly_accounts_raw r
+             WHERE r.account_email = a.account_email
+               AND r.fetched_at < (d.day + INTERVAL '1 day')
+             ORDER BY r.fetched_at DESC
+             LIMIT 1)
+           UNION ALL
+           (SELECT f.daily_limit_after, f.created_at AS at
+              FROM instantly_account_lifecycle_events f
+             WHERE f.account_email = a.account_email
+               AND f.daily_limit_after IS NOT NULL
+               AND f.created_at < (d.day + INTERVAL '1 day')
+             ORDER BY f.created_at DESC
+             LIMIT 1)
+         ) u ORDER BY u.at DESC LIMIT 1) AS daily_limit
       FROM days d CROSS JOIN accounts a
       -- An address that has left our estate (absent_since) stops counting from the
       -- day AFTER it vanished: its last lifecycle event still says in_production
@@ -171,13 +190,23 @@ export async function fetchCapacityHistoryByMailbox(
 
   const byDate = new Map<
     string,
-    { accounts: number; limitByMailbox: Map<string, number>; addressesByMailbox: Map<string, string[]> }
+    {
+      accounts: number;
+      limitByMailbox: Map<string, number | null>;
+      unknownByMailbox: Map<string, string[]>;
+      addressesByMailbox: Map<string, string[]>;
+    }
   >();
   for (const row of rows) {
     const date = String(row.date);
     const email = String(row.accountEmail ?? "");
     if (!email) continue;
-    const point = byDate.get(date) ?? { accounts: 0, limitByMailbox: new Map(), addressesByMailbox: new Map() };
+    const point = byDate.get(date) ?? {
+      accounts: 0,
+      limitByMailbox: new Map(),
+      unknownByMailbox: new Map(),
+      addressesByMailbox: new Map(),
+    };
     point.accounts += 1;
     const mailbox = mailboxFor(email);
     // An address seen in the account history but never in the volume map still
@@ -186,9 +215,12 @@ export async function fetchCapacityHistoryByMailbox(
     const group = addressesByMailbox.get(mailbox) ?? new Set<string>();
     group.add(email.trim().toLowerCase());
     addressesByMailbox.set(mailbox, group);
-    const limit = row.dailyLimit === null || row.dailyLimit === undefined ? 0 : Number(row.dailyLimit);
-    const known = point.limitByMailbox.get(mailbox);
-    point.limitByMailbox.set(mailbox, known === undefined ? limit : Math.min(known, limit));
+    const limit = row.dailyLimit === null || row.dailyLimit === undefined ? null : Number(row.dailyLimit);
+    const known = point.limitByMailbox.get(mailbox) ?? null;
+    point.limitByMailbox.set(mailbox, limit === null ? known : known === null ? limit : Math.min(known, limit));
+    if (limit === null) {
+      point.unknownByMailbox.set(mailbox, [...(point.unknownByMailbox.get(mailbox) ?? []), email.trim().toLowerCase()]);
+    }
     point.addressesByMailbox.set(mailbox, [...(point.addressesByMailbox.get(mailbox) ?? []), email.trim().toLowerCase()]);
     byDate.set(date, point);
   }
@@ -215,12 +247,14 @@ export async function fetchCapacityHistoryByMailbox(
       continue;
     }
     const mailboxes = new Map<string, MailboxCapacityOnDay>();
-    for (const [mailbox, limit] of point.limitByMailbox) {
+    for (const [mailbox, knownLimit] of point.limitByMailbox) {
+      const limit = knownLimit ?? 0;
       const sustained = sustainedOn(totalsFor(mailbox), date);
       const rampCap = rampCapForVolume(sustained, IN_PRODUCTION_DAILY_LIMIT);
       mailboxes.set(mailbox, {
         addresses: (point.addressesByMailbox.get(mailbox) ?? []).sort(),
         operatorLimit: limit,
+        limitUnknownAddresses: (point.unknownByMailbox.get(mailbox) ?? []).sort(),
         sustained,
         rampCap,
         capacity: Math.min(limit, rampCap),

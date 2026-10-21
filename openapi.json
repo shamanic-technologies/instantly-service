@@ -14476,7 +14476,7 @@
     "/internal/ops/capacity-daily": {
       "get": {
         "summary": "Capacity per day since inception and the ramp ahead, per account / mailbox / domain / fleet",
-        "description": "Platform-scoped, cached 60s. PAST: the capacity-history reconstruction kept per real mailbox (in_production addresses, operator limit = min across them, volume sustained over the ramp window, ramp cap, capacity = min); `phase: today` includes today so far. FUTURE (`horizonDays`, default 30, max 90): the ramp rule re-applied from today's volume for the mailboxes in production today, assuming each uses its room (never a promise). `rampRules` states the rule. Mailbox figures add up to domain and fleet; at the account grain each address carries its mailbox's figure (`additive: false`).",
+        "description": "Platform-scoped, cached 60s. PAST: the capacity-history reconstruction kept per real mailbox (in_production addresses, operator limit = min across them as in force THAT day: the latest of an Instantly snapshot and a lifecycle flip's limit, since the snapshots stopped on 2026-10-12; `limitUnknownAddresses` counts addresses with neither, which add 0, never a guess; volume sustained over the ramp window, ramp cap, capacity = min); `phase: today` includes today so far. FUTURE (`horizonDays`, default 30, max 90): the ramp rule re-applied from today's volume for the mailboxes in production today, assuming each uses its room (never a promise). `rampRules` states the rule. Mailbox figures add up to domain and fleet; at the account grain each address carries its mailbox's figure (`additive: false`).",
         "parameters": [
           {
             "schema": {
