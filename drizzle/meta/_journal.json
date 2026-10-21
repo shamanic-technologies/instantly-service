@@ -624,6 +624,13 @@
       "when": 1793200000000,
       "tag": "0088_lifecycle_limit_after",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1793300000000,
+      "tag": "0089_events_sent_steps_idx",
+      "breakpoints": true
     }
   ]
 }
