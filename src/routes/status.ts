@@ -150,6 +150,10 @@ function emailArray(values: string[]) {
  * address list: the list form read every event of those addresses across every
  * org off the heap on each status read (DB-LOAD-1014); per row it is a handful
  * of index probes. Same rows, same counts (prod diff 2026-10-14: 0 of 136).
+ * ⚠️ Served INDEX-ONLY by the partial `instantly_events_sent_steps_idx`
+ * (migration 0089): keep the `event_type = 'email_sent'` LITERAL (a bound value
+ * cannot match a partial index) and read no other events column, or each probe
+ * fetches the ~1 kB heap row again (biggest brand cold: 5-11 s before, 0.67 s after).
  */
 const sentCountLateral = sql`
     SELECT COUNT(DISTINCT e.step) AS cnt

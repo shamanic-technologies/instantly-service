@@ -90,3 +90,21 @@ describe("instantly_events index-only stats reads (migration 0066)", () => {
     expect(migration).toContain("ALTER TABLE instantly_events SET (autovacuum_vacuum_insert_scale_factor = 0.02);");
   });
 });
+
+describe("instantly_events sent-steps index (migration 0089)", () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, "..", "..", rel), "utf-8");
+
+  it("indexes the exact predicate and columns the status sentCount lateral reads", () => {
+    const migration = read("drizzle/0089_events_sent_steps_idx.sql");
+    expect(migration).toContain(
+      "CREATE INDEX IF NOT EXISTS instantly_events_sent_steps_idx\n  ON instantly_events (campaign_id, lead_email, step)\n  WHERE event_type = 'email_sent';",
+    );
+    // A different literal (or a bound parameter) would leave the partial index
+    // unusable and send the lateral back to the ~1 kB-per-row heap: the biggest
+    // brand's status read went from 5-11 s cold to 0.67 s on this index.
+    const status = read("src/routes/status.ts");
+    const lateral = status.slice(status.indexOf("const sentCountLateral"), status.indexOf("function queuedSubquery"));
+    expect(lateral).toContain("SELECT COUNT(DISTINCT e.step) AS cnt");
+    expect(lateral).toContain("WHERE e.campaign_id = s.instantly_campaign_id\n      AND e.event_type = 'email_sent'\n      AND e.lead_email = s.lead_email");
+  });
+});
