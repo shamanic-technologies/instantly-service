@@ -38,6 +38,7 @@ export const SCANNER_REASONS = {
   clickBurst: "click_burst",
   datacenterNetwork: "datacenter_network",
   manyUserAgents: "many_user_agents",
+  twoDevices: "two_devices",
 } as const;
 
 export type ScannerReason = (typeof SCANNER_REASONS)[keyof typeof SCANNER_REASONS];
@@ -185,6 +186,8 @@ export interface ClickHitEvidence extends ClickHitSignals {
   fromDatacenterNetwork: boolean;
   /** See `manyUserAgentsEvidenceSql`. */
   clickedWithManyUserAgents: boolean;
+  /** See `twoDevicesEvidenceSql`. */
+  clickedFromTwoDevices: boolean;
 }
 
 /** The full verdict, once the pairing window has closed. Total — never null. */
@@ -218,6 +221,10 @@ export function classifyClickHit(hit: ClickHitEvidence): ClickClassification {
 
   if (hit.clickedWithManyUserAgents) {
     return { verdict: "scanner", reason: SCANNER_REASONS.manyUserAgents };
+  }
+
+  if (hit.clickedFromTwoDevices) {
+    return { verdict: "scanner", reason: SCANNER_REASONS.twoDevices };
   }
 
   return { verdict: "human", reason: null };
@@ -449,4 +456,71 @@ export function manyUserAgentsEvidenceSql(hitAlias: string): SQL {
       AND lower(o.lead_email) = lower(${h}.lead_email)
       AND o.received_at BETWEEN ${h}.received_at - ${window} AND ${h}.received_at + ${window}
   ) >= ${sql.raw(String(MANY_USER_AGENTS_MIN))}`;
+}
+
+/**
+ * The device family a user-agent names, read off its platform token. Ordered:
+ * Android before Linux (every Android UA also says `Linux`), iPhone/iPad before
+ * Macintosh. NULL when no family is named: an unknown platform never pairs.
+ * The patterns are plain substrings so the SQL and the TS readings are ONE list.
+ */
+export const DEVICE_FAMILY_PATTERNS: ReadonlyArray<readonly [family: string, token: string]> = [
+  ["iphone", "iPhone"],
+  ["ipad", "iPad"],
+  ["android", "Android"],
+  ["windows", "Windows"],
+  ["mac", "Macintosh"],
+  ["chromeos", "CrOS"],
+  ["linux", "Linux"],
+];
+
+export function deviceFamily(userAgent: string | null): string | null {
+  if (!userAgent) return null;
+  const match = DEVICE_FAMILY_PATTERNS.find(([, token]) => userAgent.includes(token));
+  return match ? match[0] : null;
+}
+
+function deviceFamilySql(column: SQL): SQL {
+  const branches = DEVICE_FAMILY_PATTERNS.map(
+    ([family, token]) => sql`WHEN strpos(${column}, ${sql.raw(`'${token}'`)}) > 0 THEN ${sql.raw(`'${family}'`)}`,
+  );
+  return sql`(CASE ${sql.join(branches, sql` `)} END)`;
+}
+
+/**
+ * Two clicks on the SAME email (campaign, lead, step) from two different DEVICE
+ * FAMILIES within this many seconds either side: one message cannot be open on a
+ * PC and a phone at once, so it is a mail-security gateway rotating user-agents.
+ *
+ * ⚠️ A GAP BETWEEN TWO HITS OF ONE MESSAGE, NEVER A DELAY AFTER THE SEND (the
+ * module's no-time-threshold doctrine stands). Measured 2026-10-21 on Ozon Bank
+ * (ibalagurov@ozon.ru): step 1 Windows Chrome/123 then Android Chrome/135 5 s
+ * later, step 2 Windows Edge/123 then iPhone GSA 5 s later, all from one
+ * corporate /24; `many_user_agents` saw only two per message. Kept human: one
+ * click, two clicks from the same family (the Google app's in-app browser then
+ * Safari on one iPhone), a desktop click and a phone click minutes apart.
+ * Only hits not already ruled a scanner are counted, like `many_user_agents`.
+ * Shorter than `CLICK_DECISION_HOLD_SECONDS`, so the second hit is recorded
+ * before the first is decided.
+ */
+export const TWO_DEVICES_WINDOW_SECONDS = 60;
+
+export function twoDevicesEvidenceSql(hitAlias: string): SQL {
+  const h = sql.raw(hitAlias);
+  const window = sql.raw(`interval '${TWO_DEVICES_WINDOW_SECONDS} seconds'`);
+  const hitFamily = deviceFamilySql(sql.raw(`${hitAlias}.user_agent`));
+  const otherFamily = deviceFamilySql(sql`o.user_agent`);
+  return sql`(${hitFamily} IS NOT NULL AND EXISTS (
+    SELECT 1
+    FROM tracking_hits_raw o
+    WHERE o.kind = 'click'
+      AND o.id <> ${h}.id
+      AND o.classification IS DISTINCT FROM 'scanner'
+      AND o.instantly_campaign_id = ${h}.instantly_campaign_id
+      AND lower(o.lead_email) = lower(${h}.lead_email)
+      AND o.step IS NOT DISTINCT FROM ${h}.step
+      AND o.received_at BETWEEN ${h}.received_at - ${window} AND ${h}.received_at + ${window}
+      AND ${otherFamily} IS NOT NULL
+      AND ${otherFamily} <> ${hitFamily}
+  ))`;
 }

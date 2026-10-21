@@ -13,6 +13,9 @@ import {
   ipSharedAcrossCompaniesEvidenceSql,
   manyNetworksEvidenceSql,
   isNonBrowserUserAgent,
+  deviceFamily,
+  twoDevicesEvidenceSql,
+  TWO_DEVICES_WINDOW_SECONDS,
 } from "../../src/lib/self-send/click-classification";
 
 const CHROME =
@@ -81,6 +84,7 @@ describe("click classification — the paired opt-out fetch", () => {
         inClickBurst: false,
         fromDatacenterNetwork: false,
         clickedWithManyUserAgents: false,
+        clickedFromTwoDevices: false,
       }),
     ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.pairedUnsubscribeFetch });
   });
@@ -97,6 +101,7 @@ describe("click classification — the paired opt-out fetch", () => {
         inClickBurst: false,
         fromDatacenterNetwork: false,
         clickedWithManyUserAgents: false,
+        clickedFromTwoDevices: false,
       }),
     ).toEqual({ verdict: "human", reason: null });
   });
@@ -135,6 +140,7 @@ describe("click classification — the scanner's network", () => {
         inClickBurst: false,
         fromDatacenterNetwork: false,
         clickedWithManyUserAgents: false,
+        clickedFromTwoDevices: false,
       }),
     ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.scannerNetwork });
   });
@@ -151,6 +157,7 @@ describe("click classification — the scanner's network", () => {
         inClickBurst: false,
         fromDatacenterNetwork: false,
         clickedWithManyUserAgents: false,
+        clickedFromTwoDevices: false,
       }),
     ).toEqual({ verdict: "human", reason: null });
   });
@@ -179,6 +186,7 @@ const NO_NET = {
   inClickBurst: false,
   fromDatacenterNetwork: false,
   clickedWithManyUserAgents: false,
+        clickedFromTwoDevices: false,
 };
 
 describe("click classification — re-scans and shared fetchers", () => {
@@ -205,6 +213,7 @@ describe("click classification — re-scans and shared fetchers", () => {
         inClickBurst: false,
         fromDatacenterNetwork: false,
         clickedWithManyUserAgents: false,
+        clickedFromTwoDevices: false,
       }),
     ).toEqual({ verdict: "scanner", reason: SCANNER_REASONS.manyNetworks });
   });
@@ -348,5 +357,57 @@ describe("click classification — CLICK-HUMANS-1018 rules", () => {
   it("a real browser click with none of the fingerprints stays human", () => {
     expect(classifyClickHit(evidence())).toEqual({ verdict: "human", reason: null });
     expect(classifyClickHit(evidence({ userAgent: PERSON_IPHONE }))).toEqual({ verdict: "human", reason: null });
+  });
+});
+
+describe("click classification — two_devices (CLICK-DEVICE-PAIR-1021)", () => {
+  // Verbatim prod hits, ibalagurov@ozon.ru (Ozon Bank), one corporate /24.
+  const OZON = [
+    { step: 1, at: "2026-10-17T06:55:15.739Z", ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36" },
+    { step: 1, at: "2026-10-17T06:55:20.377Z", ua: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36" },
+    { step: 2, at: "2026-10-20T06:59:25.499Z", ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.2420.81" },
+    { step: 2, at: "2026-10-20T06:59:30.627Z", ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_3_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) GSA/363.0.743255906 Mobile/15E148 Safari/604.1" },
+  ];
+  const base = { method: "GET", hasPairedUnsubscribeFetch: false, ...NO_NET };
+
+  it("the four Ozon hits pass every other rule: each message pairs a desktop with a phone inside the window", () => {
+    expect(OZON.map((h) => deviceFamily(h.ua))).toEqual(["windows", "android", "windows", "iphone"]);
+    for (const step of [1, 2]) {
+      const [a, b] = OZON.filter((h) => h.step === step);
+      expect(deviceFamily(a.ua)).not.toEqual(deviceFamily(b.ua));
+      expect(Math.abs(Date.parse(b.at) - Date.parse(a.at)) / 1000).toBeLessThanOrEqual(TWO_DEVICES_WINDOW_SECONDS);
+    }
+    for (const h of OZON) {
+      expect(classifyClickHit({ ...base, userAgent: h.ua })).toEqual({ verdict: "human", reason: null });
+    }
+  });
+
+  it("all four Ozon hits are scanners once the pair is seen", () => {
+    for (const h of OZON) {
+      expect(classifyClickHit({ ...base, userAgent: h.ua, clickedFromTwoDevices: true })).toEqual({
+        verdict: "scanner",
+        reason: SCANNER_REASONS.twoDevices,
+      });
+    }
+  });
+
+  it("an unknown platform never pairs; the Google app then Safari on one iPhone is one family", () => {
+    expect(deviceFamily("Mozilla/5.0 (compatible)")).toBeNull();
+    expect(deviceFamily(null)).toBeNull();
+    expect(deviceFamily(OZON[3].ua)).toEqual(
+      deviceFamily("Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1"),
+    );
+    expect(deviceFamily("Mozilla/5.0 (Linux; Android 14) Chrome/140.0.0.0 Mobile")).toBe("android");
+  });
+
+  it("pairs on the SAME message (step), a different family, within the window either side, never a delay after send", () => {
+    expect(TWO_DEVICES_WINDOW_SECONDS).toBeLessThan(CLICK_DECISION_HOLD_SECONDS);
+    const text = flatten(twoDevicesEvidenceSql("h"));
+    expect(text).toContain("o.step IS NOT DISTINCT FROM h.step");
+    expect(text).toContain("lower(o.lead_email) = lower(h.lead_email)");
+    expect(text).toContain("o.instantly_campaign_id = h.instantly_campaign_id");
+    expect(text).toContain(`interval '${TWO_DEVICES_WINDOW_SECONDS} seconds'`);
+    expect(text).toContain("o.classification IS DISTINCT FROM 'scanner'");
+    expect(text).not.toMatch(/email_sent|sent_at/);
   });
 });
