@@ -5,7 +5,7 @@ vi.mock("../../src/db", () => ({
   db: { execute: (...args: unknown[]) => mockExecute(...args) },
 }));
 
-import { fetchCapacityHistory } from "../../src/lib/capacity-history";
+import { fetchCapacityHistory, fetchCapacityHistoryByMailbox } from "../../src/lib/capacity-history";
 import { RAMP_FLOOR_PER_DAY } from "../../src/lib/account-lifecycle";
 
 /** A UTC day key N days before today, which is what the series is anchored on. */
@@ -145,5 +145,44 @@ describe("fetchCapacityHistory", () => {
     expect(await fetchCapacityHistory(0)).toHaveLength(1);
     primeReads([], []);
     expect(await fetchCapacityHistory(9999)).toHaveLength(365);
+  });
+});
+
+// ─── CAPACITY-FROZEN-LIMIT-1021: the limit in force, not the last snapshot ────
+//
+// The Instantly snapshots stopped on 2026-10-12; our limit kept moving on every
+// lifecycle flip. Every day since replayed the 10-12 limit (kevin@hellodistribute
+// read 20 while it carried 50).
+describe("limit as-of a day", () => {
+  it("reads the latest of an Instantly snapshot AND a lifecycle flip's limit, so a change shows the same day", async () => {
+    primeReads([], []);
+    await fetchCapacityHistory(1);
+    const query = JSON.stringify(mockExecute.mock.calls[1]![0]);
+    expect(query).toContain("instantly_accounts_raw");
+    expect(query).toContain("daily_limit_after");
+    // Both sources bounded by the END of the day being reconstructed.
+    expect(query.match(/< \(d\.day \+ INTERVAL '1 day'\)/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+  });
+
+  it("states a day whose limit is unknown instead of inventing one", async () => {
+    const today = dayAgo(0);
+    primeReads(
+      [],
+      [
+        { date: today, accountEmail: "a@x.com", status: "in_production", dailyLimit: null },
+        { date: today, accountEmail: "b@x.com", status: "in_production", dailyLimit: 50 },
+      ],
+    );
+    const [point] = await fetchCapacityHistoryByMailbox(1, new Map([["a@x.com", "a@x.com"], ["b@x.com", "a@x.com"]]));
+    const m = point!.mailboxes.get("a@x.com")!;
+    expect(m.operatorLimit).toBe(50);
+    expect(m.limitUnknownAddresses).toEqual(["a@x.com"]);
+  });
+
+  it("a mailbox with NO known limit adds 0 and says so", async () => {
+    const today = dayAgo(0);
+    primeReads([], [{ date: today, accountEmail: "a@x.com", status: "in_production", dailyLimit: null }]);
+    const [point] = await fetchCapacityHistoryByMailbox(1);
+    expect(point!.mailboxes.get("a@x.com")).toMatchObject({ operatorLimit: 0, capacity: 0, limitUnknownAddresses: ["a@x.com"] });
   });
 });

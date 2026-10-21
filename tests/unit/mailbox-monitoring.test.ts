@@ -111,7 +111,7 @@ describe("placement tests", () => {
 
 describe("capacity per day", () => {
   const mb = (addresses: string[], operatorLimit: number, sustained: number, rampCap: number) => ({
-    addresses, operatorLimit, sustained, rampCap, capacity: Math.min(operatorLimit, rampCap),
+    addresses, operatorLimit, limitUnknownAddresses: [] as string[], sustained, rampCap, capacity: Math.min(operatorLimit, rampCap),
   });
   const history: CapacityHistoryByMailboxPoint[] = [
     { date: "2026-10-18", inProductionCount: 2, mailboxes: new Map([["eric@x.com", mb(["eric@x.com", "kev@x.com"], 50, 10, 15)], ["a@y.com", mb(["a@y.com"], 50, 40, 50)]]) },
