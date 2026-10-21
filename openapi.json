@@ -14613,6 +14613,22 @@
             "required": false,
             "name": "horizonDays",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "in_production",
+                "in_recovery",
+                "deactivated_by_instantly",
+                "deactivated_by_user"
+              ],
+              "description": "Only addresses whose CURRENT lifecycle status is this one (warmups: a mailbox with one such address). Absent = every address."
+            },
+            "required": false,
+            "description": "Only addresses whose CURRENT lifecycle status is this one (warmups: a mailbox with one such address). Absent = every address.",
+            "name": "lifecycle",
+            "in": "query"
           }
         ],
         "responses": {
@@ -14668,6 +14684,22 @@
             "required": false,
             "description": "One sending domain",
             "name": "domain",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "in_production",
+                "in_recovery",
+                "deactivated_by_instantly",
+                "deactivated_by_user"
+              ],
+              "description": "Only addresses whose CURRENT lifecycle status is this one (warmups: a mailbox with one such address). Absent = every address."
+            },
+            "required": false,
+            "description": "Only addresses whose CURRENT lifecycle status is this one (warmups: a mailbox with one such address). Absent = every address.",
+            "name": "lifecycle",
             "in": "query"
           },
           {

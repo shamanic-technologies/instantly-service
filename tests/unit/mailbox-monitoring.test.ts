@@ -193,6 +193,31 @@ describe("schedule: queued steps at their theoretical date", () => {
     expect(one.days[0]).toMatchObject({ queuedSteps: 1, warmupsPlanned: 4 });
   });
 
+  it("narrows to one lifecycle status: steps, seeds and warmups of other addresses drop out (ACCOUNTS-PROD-TABS-1021)", () => {
+    const loginOf = new Map<string, string | null>([["kev@x.com", "eric@x.com"], ["a@y.com", null]]);
+    const steps = listQueuedSteps(
+      [
+        seq({ lastSentStep: 1, lastSentAt: new Date("2026-10-16T09:00:00Z"), provisionedSteps: [2] }),
+        seq({ account: "a@y.com", instantlyCampaignId: "self:3", queuedAt: new Date("2026-10-19T08:00:00Z"), provisionedSteps: [1] }),
+      ],
+      loginOf,
+      asOf,
+    );
+    const lifecycleOf = new Map<string, string | null>([["kev@x.com", "in_production"], ["a@y.com", "deactivated_by_user"]]);
+    const input = {
+      asOf, horizonDays: 7, scope: {}, groupBy: null, loginOf, steps, lifecycleOf,
+      warmups: [{ mailbox: "eric@x.com", day: "2026-10-19", planned: 4 }, { mailbox: "a@y.com", day: "2026-10-19", planned: 2 }],
+      seeds: [{ account: "a@y.com", day: "2026-10-25", expectedSeeds: 12 }],
+    };
+    const all = buildSchedule(input);
+    expect(all.days[0]).toMatchObject({ queuedSteps: 2, warmupsPlanned: 6 });
+    expect(all.lifecycle).toBeUndefined();
+    const prod = buildSchedule({ ...input, lifecycle: "in_production" });
+    expect(prod.lifecycle).toBe("in_production");
+    expect(prod.days[0]).toMatchObject({ queuedSteps: 1, warmupsPlanned: 4 });
+    expect(prod.days[6]).toMatchObject({ seedTestsPlanned: 0 });
+  });
+
   it("plans seed tests on the cadence and warmups on the projected cap", () => {
     const plan = planSeedTests(
       [

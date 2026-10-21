@@ -4599,13 +4599,24 @@ registry.registerPath({
   },
 });
 
+const OpsLifecycleQuery = z
+  .enum(["in_production", "in_recovery", "deactivated_by_instantly", "deactivated_by_user"])
+  .optional()
+  .describe("Only addresses whose CURRENT lifecycle status is this one (warmups: a mailbox with one such address). Absent = every address.");
+
 registry.registerPath({
   method: "get",
   path: "/internal/ops/schedule",
   summary: "From today on, per day: queued sequence steps at their theoretical date, planned warmups, planned seed tests",
   description:
     "Platform-scoped, cached 60s. Queued steps sit on their THEORETICAL date: previous send + configured step delay, chained (a never-sent sequence is anchored on the day it was assigned). No capacity, sending window or holiday is applied. Steps already past their theoretical date are `totals.overdueQueuedSteps`, never moved onto a day. Warmups = the warmup budget rule on the ramp's projected cap for the mailboxes that sent warmup in the last 7 days (sends; replies come on top). Seed tests = the seed cadence rule for the testable pool, each test expected to carry the address's latest seed count. `horizonDays` default 30, max 90; today is `isToday`.",
-  request: { query: z.object({ ...EntityScopeQueryShape, horizonDays: z.number().int().min(0).max(90).optional() }) },
+  request: {
+    query: z.object({
+      ...EntityScopeQueryShape,
+      horizonDays: z.number().int().min(0).max(90).optional(),
+      lifecycle: OpsLifecycleQuery,
+    }),
+  },
   responses: {
     200: { description: "Schedule days", content: { "application/json": { schema: OpsObject.openapi("OpsSchedule") } } },
     400: { description: "Bad filter" },
@@ -4622,6 +4633,7 @@ registry.registerPath({
   request: {
     query: z.object({
       ...ScopeOnlyQuery,
+      lifecycle: OpsLifecycleQuery,
       limit: z.number().int().min(1).max(1000).optional().describe("Default 100"),
       offset: z.number().int().min(0).optional(),
       overdue: z.enum(["true", "false"]).optional(),
