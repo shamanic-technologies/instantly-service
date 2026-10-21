@@ -519,6 +519,12 @@ export const instantlyEvents = pgTable(
     index("instantly_events_bounced_idx")
       .on(table.campaignId, table.leadEmail, table.step)
       .where(sql`event_type = 'email_bounced'`),
+    // The status read's per-row sentCount (`sentCountLateral`, routes/status.ts)
+    // as an index-only scan (migration 0089, pre-built CONCURRENTLY on prod).
+    // The predicate is the lateral's literal filter: change one, change both.
+    index("instantly_events_sent_steps_idx")
+      .on(table.campaignId, table.leadEmail, table.step)
+      .where(sql`event_type = 'email_sent'`),
   ],
 );
 
