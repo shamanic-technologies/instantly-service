@@ -21,6 +21,7 @@ import { describeFx, loadLatestEurUsd, toUsdCents } from "../fx-rates";
 import { summarizeDns, type DnsRecordRow, type DnsRecordType, type DnsSummary } from "../domain-dns-sync";
 import { fetchLatestDeliveryByAccount, fetchLifecycleByEmail } from "../account-lifecycle-sync";
 import { capForAccount } from "../account-lifecycle";
+import { fetchQueueBreakdownByAccount, fetchQueueSizeByAccount } from "../account-sending-stats";
 import { fetchRecentDailyVolume, sustainedForMailbox } from "../recent-send-volume";
 import { warmupBudgetFor } from "../warmup/plan";
 import { computeCapacitySummary } from "../sending-forecast";
@@ -32,6 +33,7 @@ import {
   evidenceExpiresAt,
   poolDelivery,
   projectNextSeedTest,
+  queuedStepsForAddresses,
   rampProjection,
   ratePerMille,
 } from "./pure";
@@ -325,7 +327,7 @@ function mailboxMonthlyRate(rates: Map<string, PriceRate>, provider: string | nu
 }
 
 export async function readMailboxes(asOf: Date = new Date()) {
-  const [mailboxes, addresses, rates, delivery, volume7, volume30, recentVolume, lifecycle] =
+  const [mailboxes, addresses, rates, delivery, volume7, volume30, recentVolume, lifecycle, queueSize, breakdown] =
     await Promise.all([
       loadMailboxRows(),
       loadAddressRows(),
@@ -335,7 +337,10 @@ export async function readMailboxes(asOf: Date = new Date()) {
       loadVolume("mailbox_login", 30),
       fetchRecentDailyVolume(),
       fetchLifecycleByEmail(),
+      fetchQueueSizeByAccount(),
+      fetchQueueBreakdownByAccount(asOf),
     ]);
+  const breakdownSteps = new Map([...breakdown].map(([email, b]) => [email, b.steps]));
   const indexed = indexRates(rates);
   const addressesByLogin = new Map<string, AddressRowDb[]>();
   for (const a of addresses) {
@@ -380,6 +385,8 @@ export async function readMailboxes(asOf: Date = new Date()) {
           absentSince: a.absentSince,
         })),
         addressesByLifecycle: countBy(live, (a) => a.lifecycleStatus),
+        /** Queued-but-unsent steps of the mailbox: the sum of its addresses' `queueSize`. */
+        queuedSteps: queuedStepsForAddresses(addrs.map((a) => a.email), breakdownSteps, queueSize),
         sustainedDaily: sustained,
         effectiveDailyCap: cap,
         rampProjection: rampProjection(sustained, undefined, asOf),

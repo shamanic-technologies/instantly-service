@@ -145,3 +145,24 @@ export function estimatePaidToDate(
 export function ratePerMille(numerator: number, base: number): number | null {
   return base > 0 ? Math.round((numerator * 10000) / base) / 10 : null;
 }
+
+/**
+ * Queued-but-unsent STEPS of one mailbox: the sum of its addresses' `queueSize`
+ * (ACCOUNTS-PROD-TABS-1021). Each queued step is attributed to exactly one
+ * address, so the per-address figures partition the mailbox's queue. Same
+ * precedence as `buildAccountHealth`: the breakdown's step total, else the
+ * plain queue count, else 0. Keys are compared lower-cased.
+ */
+export function queuedStepsForAddresses(
+  emails: string[],
+  breakdownSteps: Map<string, number>,
+  queueSize: Map<string, number>,
+): number {
+  const lower = (m: Map<string, number>) => new Map([...m].map(([k, v]) => [k.toLowerCase(), v]));
+  const steps = lower(breakdownSteps);
+  const size = lower(queueSize);
+  return emails.reduce((sum, e) => {
+    const key = e.toLowerCase();
+    return sum + (steps.get(key) ?? size.get(key) ?? 0);
+  }, 0);
+}
