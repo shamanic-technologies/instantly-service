@@ -51,6 +51,7 @@ import {
   manyNetworksEvidenceSql,
   manyUserAgentsEvidenceSql,
   scannerNetworkEvidenceSql,
+  twoDevicesEvidenceSql,
 } from "./click-classification";
 
 /** node-postgres resolves `db.execute` to a QueryResult OBJECT, never an array. */
@@ -74,6 +75,7 @@ interface LegacyClickHit {
   inClickBurst: boolean;
   fromDatacenterNetwork: boolean;
   clickedWithManyUserAgents: boolean;
+  clickedFromTwoDevices: boolean;
 }
 
 export interface BrandBreakdown {
@@ -126,7 +128,8 @@ async function loadLegacyClickHits(limit: number): Promise<LegacyClickHit[]> {
       ${manyNetworksEvidenceSql("h")} AS clicked_from_many_networks,
       ${clickBurstEvidenceSql("h")} AS in_click_burst,
       ${datacenterNetworkEvidenceSql("h")} AS from_datacenter_network,
-      ${manyUserAgentsEvidenceSql("h")} AS clicked_with_many_user_agents
+      ${manyUserAgentsEvidenceSql("h")} AS clicked_with_many_user_agents,
+      ${twoDevicesEvidenceSql("h")} AS clicked_from_two_devices
     FROM tracking_hits_raw h
     LEFT JOIN instantly_campaigns c
       ON c.instantly_campaign_id = h.instantly_campaign_id
@@ -151,6 +154,7 @@ async function loadLegacyClickHits(limit: number): Promise<LegacyClickHit[]> {
     inClickBurst: row.in_click_burst === true,
     fromDatacenterNetwork: row.from_datacenter_network === true,
     clickedWithManyUserAgents: row.clicked_with_many_user_agents === true,
+        clickedFromTwoDevices: row.clicked_from_two_devices === true,
   }));
 }
 

@@ -32,6 +32,7 @@ import {
   manyNetworksEvidenceSql,
   manyUserAgentsEvidenceSql,
   scannerNetworkEvidenceSql,
+  twoDevicesEvidenceSql,
 } from "./click-classification";
 
 /** node-postgres resolves `db.execute` to a QueryResult OBJECT, never an array. */
@@ -66,6 +67,7 @@ export interface ClickNetworkEvidence {
   inClickBurst: boolean;
   fromDatacenterNetwork: boolean;
   clickedWithManyUserAgents: boolean;
+  clickedFromTwoDevices: boolean;
 }
 
 const NO_NETWORK_EVIDENCE: ClickNetworkEvidence = {
@@ -75,6 +77,7 @@ const NO_NETWORK_EVIDENCE: ClickNetworkEvidence = {
   inClickBurst: false,
   fromDatacenterNetwork: false,
   clickedWithManyUserAgents: false,
+  clickedFromTwoDevices: false,
 };
 
 /**
@@ -97,7 +100,8 @@ export async function loadNetworkEvidence(
       ${manyNetworksEvidenceSql("h")} AS clicked_from_many_networks,
       ${clickBurstEvidenceSql("h")} AS in_click_burst,
       ${datacenterNetworkEvidenceSql("h")} AS from_datacenter_network,
-      ${manyUserAgentsEvidenceSql("h")} AS clicked_with_many_user_agents
+      ${manyUserAgentsEvidenceSql("h")} AS clicked_with_many_user_agents,
+      ${twoDevicesEvidenceSql("h")} AS clicked_from_two_devices
     FROM tracking_hits_raw h
     WHERE h.id = ANY(${sql.param(hitIds)}::text[])
   `);
@@ -111,6 +115,7 @@ export async function loadNetworkEvidence(
         inClickBurst: row.in_click_burst === true,
         fromDatacenterNetwork: row.from_datacenter_network === true,
         clickedWithManyUserAgents: row.clicked_with_many_user_agents === true,
+        clickedFromTwoDevices: row.clicked_from_two_devices === true,
       },
     ]),
   );

@@ -7,6 +7,8 @@
  *    kept; an Amazon employee clicking from Amazon's network is kept.
  *  - `click_burst`: three clicks within a second are flagged; a double-click is kept.
  *  - `many_user_agents`: three browsers in a day are flagged; desktop + phone kept.
+ *  - `two_devices`: the four Ozon Bank hits are flagged; one device, another step,
+ *    or devices minutes apart are kept.
  *  - Instantly-recorded clicks: a three-click burst is retracted from silver
  *    (archived), a double-click and a lone click stay.
  *
@@ -30,6 +32,7 @@ vi.mock("../../src/db", async () => {
 });
 
 const { loadNetworkEvidence } = await import("../../src/lib/self-send/click-promotion");
+const { classifyClickHit } = await import("../../src/lib/self-send/click-classification");
 const { retractVendorBurstClicks } = await import("../../src/lib/vendor-click-burst");
 const { syncDatacenterNetworks, DATACENTER_OPERATORS } = await import("../../src/lib/self-send/datacenter-networks");
 
@@ -43,12 +46,17 @@ const at = (seconds: number) => new Date(T0 + seconds * 1000).toISOString();
 const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1";
 const WIN = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+// Verbatim prod user-agents, ibalagurov@ozon.ru, 2026-10-17 / 10-20.
+const OZON_WIN_CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
+const OZON_ANDROID = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36";
+const OZON_WIN_EDGE = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.2420.81";
+const OZON_IPHONE_GSA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_3_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) GSA/363.0.743255906 Mobile/15E148 Safari/604.1";
 
-async function hit(id: string, lead: string, seconds: number, opts: { ip?: string; ua?: string } = {}) {
+async function hit(id: string, lead: string, seconds: number, opts: { ip?: string; ua?: string; step?: number } = {}) {
   await q(
     `INSERT INTO tracking_hits_raw (id, kind, instantly_campaign_id, lead_email, step, method, user_agent, client_ip, payload, received_at)
-     VALUES ($1, 'click', $2, $3, 1, 'GET', $4, $5, '{}'::jsonb, $6)`,
-    [`${id}-${SUFFIX}`, CAMPAIGN, lead, opts.ua ?? MAC, opts.ip ?? null, at(seconds)],
+     VALUES ($1, 'click', $2, $3, $7, 'GET', $4, $5, '{}'::jsonb, $6)`,
+    [`${id}-${SUFFIX}`, CAMPAIGN, lead, opts.ua ?? MAC, opts.ip ?? null, at(seconds), opts.step ?? 1],
   );
   return `${id}-${SUFFIX}`;
 }
@@ -136,6 +144,39 @@ describe.skipIf(SKIP)("click human/scanner rules (DB-backed)", () => {
     const evidence = await loadNetworkEvidence([r1, p1]);
     expect(evidence.get(r1)?.clickedWithManyUserAgents).toBe(true);
     expect(evidence.get(p1)?.clickedWithManyUserAgents).toBe(false);
+  });
+
+  it("two_devices: the four Ozon Bank hits (two messages, desktop + phone 5 s apart) are all flagged", async () => {
+    const lead = "ibalagurov@ozon.ru";
+    const ids = [
+      await hit("oz1", lead, 100_000, { step: 1, ip: "178.72.158.114", ua: OZON_WIN_CHROME }),
+      await hit("oz2", lead, 100_004.6, { step: 1, ip: "178.72.158.116", ua: OZON_ANDROID }),
+      await hit("oz3", lead, 360_000, { step: 2, ip: "178.72.158.121", ua: OZON_WIN_EDGE }),
+      await hit("oz4", lead, 360_005.1, { step: 2, ip: "178.72.158.119", ua: OZON_IPHONE_GSA }),
+    ];
+    const evidence = await loadNetworkEvidence(ids);
+    for (const id of ids) {
+      const e = evidence.get(id)!;
+      expect(e.clickedFromTwoDevices).toBe(true);
+      expect(classifyClickHit({ method: "GET", userAgent: OZON_WIN_CHROME, hasPairedUnsubscribeFetch: false, ...e })).toEqual({
+        verdict: "scanner",
+        reason: "two_devices",
+      });
+    }
+  });
+
+  it("two_devices: one click, two clicks from one device, other steps and far-apart devices stay human", async () => {
+    const lone = await hit("tl", "lone@example.net", 400_000, { ua: WIN });
+    const same1 = await hit("ts1", "same@example.net", 400_000, { ua: IPHONE });
+    const same2 = await hit("ts2", "same@example.net", 400_004, { ua: OZON_IPHONE_GSA });
+    const stepA = await hit("tsa", "steps@example.net", 400_000, { ua: WIN, step: 1 });
+    await hit("tsb", "steps@example.net", 400_005, { ua: IPHONE, step: 2 });
+    const far = await hit("tf1", "far@example.net", 400_000, { ua: WIN });
+    await hit("tf2", "far@example.net", 400_600, { ua: IPHONE });
+    const evidence = await loadNetworkEvidence([lone, same1, same2, stepA, far]);
+    for (const id of [lone, same1, same2, stepA, far]) {
+      expect(evidence.get(id)?.clickedFromTwoDevices).toBe(false);
+    }
   });
 
   it("Instantly-recorded clicks: a three-click burst is retracted and archived, a double-click and a lone click stay", async () => {
