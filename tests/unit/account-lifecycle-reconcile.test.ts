@@ -463,6 +463,33 @@ describe("reconcileLifecycle", () => {
     );
   });
 
+  // CAPACITY-FROZEN-LIMIT-1021: the flip records the limit it put in force, so
+  // capacity history shows it from that day on (the snapshots stopped 2026-10-12).
+  it("smtp: the lifecycle event records the limit in force AFTER the flip", async () => {
+    mockSelfSendCapable.mockResolvedValue(true);
+    seedReads({
+      accounts: [
+        {
+          email: "self@fuseconnectio.com",
+          instantlyStatus: 1,
+          warmupScore: 0,
+          dailyLimit: 20,
+          sendTransport: "smtp",
+          lifecycleStatus: "in_recovery",
+        },
+      ],
+      delivery: [
+        { accountEmail: "self@fuseconnectio.com", inboxCount: 37, seedTotal: 39 },
+      ],
+    });
+
+    await reconcileLifecycle("api-key");
+
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ toStatus: "in_production", dailyLimit: 20, dailyLimitAfter: 50 }),
+    );
+  });
+
   it("instantly transport: the flip leaves silver's limit to the Instantly PATCH", async () => {
     mockSelfSendCapable.mockResolvedValue(false);
     seedReads({

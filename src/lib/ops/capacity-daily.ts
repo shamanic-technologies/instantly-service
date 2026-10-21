@@ -51,6 +51,8 @@ export interface CapacityDay {
   sustained: number;
   mailboxesInProduction: number;
   addressesInProduction: number;
+  /** In-production addresses whose limit that day is unknown (no snapshot, no flip): they add 0, never a guess. */
+  limitUnknownAddresses: number;
 }
 
 export interface CapacityDaily {
@@ -72,7 +74,7 @@ export interface CapacityDaily {
 }
 
 function emptyDay(date: string, phase: CapacityDay["phase"]): CapacityDay {
-  return { date, phase, capacity: 0, rampCap: 0, operatorLimit: 0, sustained: 0, mailboxesInProduction: 0, addressesInProduction: 0 };
+  return { date, phase, capacity: 0, rampCap: 0, operatorLimit: 0, sustained: 0, mailboxesInProduction: 0, addressesInProduction: 0, limitUnknownAddresses: 0 };
 }
 
 function addMailbox(day: CapacityDay, m: MailboxCapacityOnDay): void {
@@ -82,6 +84,7 @@ function addMailbox(day: CapacityDay, m: MailboxCapacityOnDay): void {
   day.sustained += m.sustained;
   day.mailboxesInProduction += 1;
   day.addressesInProduction += m.addresses.length;
+  day.limitUnknownAddresses += m.limitUnknownAddresses.length;
 }
 
 /**
@@ -108,6 +111,7 @@ export function projectMailboxCapacity(
       out[d - 1].mailboxes.set(mailbox, {
         addresses: m.addresses,
         operatorLimit: m.operatorLimit,
+        limitUnknownAddresses: m.limitUnknownAddresses,
         sustained,
         rampCap,
         capacity: Math.min(m.operatorLimit, rampCap),
@@ -171,7 +175,7 @@ export function buildCapacityDaily(input: {
             : m.addresses.filter((a) => inScope(input.scope, a, input.loginOf.get(a) ?? mailbox));
       for (const key of keys) {
         const rows = series.get(key) ?? all.map((q) => emptyDay(q.date, q.phase));
-        addMailbox(rows[i], grain === "account" ? { ...m, addresses: [key] } : m);
+        addMailbox(rows[i], grain === "account" ? { ...m, addresses: [key], limitUnknownAddresses: m.limitUnknownAddresses.filter((a) => a === key) } : m);
         series.set(key, rows);
       }
     }

@@ -396,6 +396,10 @@ export const instantlyAccountLifecycleEvents = pgTable(
     healthScore: integer("health_score"),
     deliveryPct: integer("delivery_pct"),
     dailyLimit: integer("daily_limit"),
+    // The limit the account carries AFTER this flip (migration 0088,
+    // CAPACITY-FROZEN-LIMIT-1021): capacity history reads it beside the Instantly
+    // snapshots, which stopped on 2026-10-12. `daily_limit` above is the BEFORE.
+    dailyLimitAfter: integer("daily_limit_after"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [
