@@ -200,9 +200,23 @@ export interface ScheduleTotals {
   beyondHorizonQueuedSteps: number;
 }
 
+/** The lifecycle statuses a monitoring read can be narrowed to (`?lifecycle=`). */
+export const LIFECYCLE_FILTERS = ["in_production", "in_recovery", "deactivated_by_instantly", "deactivated_by_user"] as const;
+export type LifecycleFilter = (typeof LIFECYCLE_FILTERS)[number];
+
+/** Each address's CURRENT lifecycle status, lower-cased keys. */
+export async function loadLifecycleOf(): Promise<Map<string, string | null>> {
+  const rows = rowsOf<{ email: string; lifecycle_status: string | null }>(
+    await db.execute(sql`SELECT lower(email) AS email, lifecycle_status FROM instantly_accounts`),
+  );
+  return new Map(rows.map((r) => [r.email, r.lifecycle_status]));
+}
+
 export interface Schedule {
   asOf: string;
   scope: EntityScope;
+  /** Present when the read was narrowed to one lifecycle status. */
+  lifecycle?: LifecycleFilter;
   horizonDays: number;
   days: ScheduleDay[];
   totals: ScheduleTotals;
@@ -233,8 +247,20 @@ export function buildSchedule(input: {
   steps: readonly QueuedStep[];
   warmups: readonly WarmupPlanDay[];
   seeds: readonly SeedPlan[];
+  /** Keep only addresses whose CURRENT lifecycle status is this one (null = every address). */
+  lifecycle?: LifecycleFilter | null;
+  lifecycleOf?: ReadonlyMap<string, string | null>;
 }): Schedule {
   const { asOf, horizonDays } = input;
+  const lifecycleOk = (address: string) =>
+    !input.lifecycle || (input.lifecycleOf?.get(address.toLowerCase()) ?? null) === input.lifecycle;
+  // A warmup belongs to a mailbox: kept when one of its addresses has the status.
+  const mailboxLifecycleOk = (mailbox: string) => {
+    if (!input.lifecycle) return true;
+    if (lifecycleOk(mailbox)) return true;
+    for (const [address, login] of input.loginOf) if (mailboxOf(address, login) === mailbox && lifecycleOk(address)) return true;
+    return false;
+  };
   const index = new Map(emptyDays(asOf, horizonDays).map((d, i) => [d.date, i]));
   const buckets = new Map<string, { days: ScheduleDay[]; totals: ScheduleTotals }>();
   const bucket = (key: string) => {
@@ -255,6 +281,7 @@ export function buildSchedule(input: {
 
   for (const s of input.steps) {
     if (!inScope(input.scope, s.account, input.loginOf.get(s.account) ?? s.mailbox)) continue;
+    if (!lifecycleOk(s.account)) continue;
     for (const key of keysFor(s.account, s.mailbox)) {
       const b = bucket(key);
       if (s.theoreticalDay === null) b.totals.undatedQueuedSteps += 1;
@@ -278,6 +305,7 @@ export function buildSchedule(input: {
     const i = index.get(w.day);
     if (i === undefined) continue;
     if (!inScope(input.scope, w.mailbox, w.mailbox) && !inMailboxScope(input.scope, w.mailbox, input.loginOf)) continue;
+    if (!mailboxLifecycleOk(w.mailbox)) continue;
     for (const key of keysFor(w.mailbox, w.mailbox)) bucket(key).days[i].warmupsPlanned += w.planned;
   }
 
@@ -286,6 +314,7 @@ export function buildSchedule(input: {
     if (i === undefined) continue;
     const mailbox = mailboxOf(p.account, input.loginOf.get(p.account));
     if (!inScope(input.scope, p.account, input.loginOf.get(p.account) ?? mailbox)) continue;
+    if (!lifecycleOk(p.account)) continue;
     for (const key of keysFor(p.account, mailbox)) {
       const day = bucket(key).days[i];
       day.seedTestsPlanned += 1;
@@ -297,6 +326,7 @@ export function buildSchedule(input: {
   const served: Schedule = {
     asOf: asOf.toISOString(),
     scope: input.scope,
+    ...(input.lifecycle ? { lifecycle: input.lifecycle } : {}),
     horizonDays,
     days: fleet.days,
     totals: fleet.totals,
@@ -393,11 +423,16 @@ export async function readSchedule(opts: {
   scope: EntityScope;
   groupBy: EntityGrain | null;
   horizonDays: number;
+  lifecycle?: LifecycleFilter | null;
   asOf?: Date;
 }): Promise<Schedule> {
   const asOf = opts.asOf ?? new Date();
   const { loginOf, steps } = await readQueuedSteps(asOf);
-  const [mesh, seedCandidates] = await Promise.all([loadWarmupMesh(loginOf), loadSeedCandidates()]);
+  const [mesh, seedCandidates, lifecycleOf] = await Promise.all([
+    loadWarmupMesh(loginOf),
+    loadSeedCandidates(),
+    opts.lifecycle ? loadLifecycleOf() : Promise.resolve(new Map<string, string | null>()),
+  ]);
   const horizonEnd = dayOf(new Date(asOf.getTime() + opts.horizonDays * MS_PER_DAY));
   return buildSchedule({
     asOf,
@@ -408,5 +443,7 @@ export async function readSchedule(opts: {
     steps,
     warmups: planWarmups(mesh, asOf, opts.horizonDays),
     seeds: planSeedTests(seedCandidates, asOf, horizonEnd),
+    lifecycle: opts.lifecycle ?? null,
+    lifecycleOf,
   });
 }
