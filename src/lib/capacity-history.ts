@@ -28,7 +28,8 @@
  * what those days could send on the evidence that existed, not a gap to patch.
  *
  * Days are UTC calendar days. No fabrication — a day before an account's first
- * event contributes 0.
+ * event contributes 0, and a day after the account vanished (`absent_since`)
+ * contributes 0 too.
  */
 
 import { sql } from "drizzle-orm";
@@ -130,6 +131,16 @@ export async function fetchCapacityHistoryByMailbox(
           ORDER BY r.fetched_at DESC
           LIMIT 1) AS daily_limit
       FROM days d CROSS JOIN accounts a
+      -- An address that has left our estate (absent_since) stops counting from the
+      -- day AFTER it vanished: its last lifecycle event still says in_production
+      -- (reconcile only re-derives present accounts), so without this the 22
+      -- cancelled DFY boxes read "in production" forever (ACCOUNTS-PROD-TABS-1021).
+      WHERE NOT EXISTS (
+        SELECT 1 FROM instantly_accounts ia
+         WHERE lower(ia.email) = lower(a.account_email)
+           AND ia.absent_since IS NOT NULL
+           AND ia.absent_since < d.day
+      )
     )
     SELECT
       to_char(day, 'YYYY-MM-DD') AS "date",

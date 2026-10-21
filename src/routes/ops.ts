@@ -27,7 +27,15 @@ import { parseEntityScope } from "../lib/ops/entity-scope";
 import { inScope, scopeIsFleet } from "../lib/ops/entity-scope";
 import { decodeTestCursor, readPlacementTest, readPlacementTests } from "../lib/ops/placement-tests";
 import { CAPACITY_HORIZON_DEFAULT_DAYS, CAPACITY_HORIZON_MAX_DAYS, readCapacityDaily } from "../lib/ops/capacity-daily";
-import { SCHEDULE_HORIZON_DEFAULT_DAYS, SCHEDULE_HORIZON_MAX_DAYS, readQueuedSteps, readSchedule } from "../lib/ops/schedule";
+import {
+  LIFECYCLE_FILTERS,
+  SCHEDULE_HORIZON_DEFAULT_DAYS,
+  SCHEDULE_HORIZON_MAX_DAYS,
+  loadLifecycleOf,
+  readQueuedSteps,
+  readSchedule,
+  type LifecycleFilter,
+} from "../lib/ops/schedule";
 import { readPlacementAlerts, runPlacementAlert } from "../lib/placement-alert";
 import { backfillReplyVerdicts, planReplyVerdicts, syncReplyVerdicts } from "../lib/reply-verdicts";
 
@@ -261,6 +269,17 @@ function intParam(raw: unknown, def: number, min: number, max: number): number |
   return Number.isInteger(n) && n >= min && n <= max ? n : null;
 }
 
+/** `?lifecycle=` narrows a read to addresses whose CURRENT lifecycle status is that one (absent = every address). */
+function lifecycleOr400(req: Request, res: Response): { lifecycle: LifecycleFilter | null } | null {
+  const v = req.query.lifecycle;
+  if (v === undefined || v === "") return { lifecycle: null };
+  if (typeof v !== "string" || !(LIFECYCLE_FILTERS as readonly string[]).includes(v)) {
+    res.status(400).json({ error: `lifecycle must be one of ${LIFECYCLE_FILTERS.join("|")}` });
+    return null;
+  }
+  return { lifecycle: v as LifecycleFilter };
+}
+
 function scopeOr400(req: Request, res: Response) {
   const parsed = parseEntityScope(req.query as Record<string, unknown>);
   if ("error" in parsed) {
@@ -331,10 +350,12 @@ router.get("/capacity-daily", async (req: Request, res: Response) => {
   }
 });
 
-/** GET /internal/ops/schedule?account=&mailbox=&domain=&groupBy=&horizonDays= — per day from today: queued steps at their theoretical date, planned warmups and seed tests. Cached 60s. */
+/** GET /internal/ops/schedule?account=&mailbox=&domain=&groupBy=&horizonDays=&lifecycle= — per day from today: queued steps at their theoretical date, planned warmups and seed tests. Cached 60s. */
 router.get("/schedule", async (req: Request, res: Response) => {
   const parsed = scopeOr400(req, res);
   if (!parsed) return;
+  const lc = lifecycleOr400(req, res);
+  if (!lc) return;
   const horizonDays = intParam(req.query.horizonDays, SCHEDULE_HORIZON_DEFAULT_DAYS, 0, SCHEDULE_HORIZON_MAX_DAYS);
   if (horizonDays === null) {
     res.status(400).json({ error: `horizonDays must be an integer 0..${SCHEDULE_HORIZON_MAX_DAYS}` });
@@ -343,8 +364,8 @@ router.get("/schedule", async (req: Request, res: Response) => {
   try {
     res.json(
       await getOrSetCachedStats(
-        `ops-schedule:${JSON.stringify(parsed.scope)}:${parsed.groupBy ?? "-"}:${horizonDays}`,
-        () => readSchedule({ scope: parsed.scope, groupBy: parsed.groupBy, horizonDays }),
+        `ops-schedule:${JSON.stringify(parsed.scope)}:${parsed.groupBy ?? "-"}:${horizonDays}:${lc.lifecycle ?? "-"}`,
+        () => readSchedule({ scope: parsed.scope, groupBy: parsed.groupBy, horizonDays, lifecycle: lc.lifecycle }),
         MONITORING_TTL_MS,
         { refreshAfterMs: MONITORING_REFRESH_MS },
       ),
@@ -354,10 +375,12 @@ router.get("/schedule", async (req: Request, res: Response) => {
   }
 });
 
-/** GET /internal/ops/queued-steps?account=&mailbox=&domain=&limit=&offset=&overdue=true|false — every queued step at its theoretical date, oldest first. */
+/** GET /internal/ops/queued-steps?account=&mailbox=&domain=&lifecycle=&limit=&offset=&overdue=true|false — every queued step at its theoretical date, oldest first. */
 router.get("/queued-steps", async (req: Request, res: Response) => {
   const parsed = scopeOr400(req, res);
   if (!parsed) return;
+  const lc = lifecycleOr400(req, res);
+  if (!lc) return;
   const limit = intParam(req.query.limit, 100, 1, 1000);
   const offset = intParam(req.query.offset, 0, 0, 10_000_000);
   if (limit === null || offset === null) {
@@ -370,16 +393,21 @@ router.get("/queued-steps", async (req: Request, res: Response) => {
     return;
   }
   try {
+    const lifecycleOf = lc.lifecycle
+      ? await getOrSetCachedStats("ops-lifecycle-of", () => loadLifecycleOf(), MONITORING_TTL_MS, { refreshAfterMs: MONITORING_REFRESH_MS })
+      : null;
     const { loginOf, steps } = await getOrSetCachedStats("ops-queued-steps", () => readQueuedSteps(), MONITORING_TTL_MS, {
       refreshAfterMs: MONITORING_REFRESH_MS,
     });
     const filtered = steps.filter(
       (s) =>
         inScope(parsed.scope, s.account, loginOf.get(s.account) ?? s.mailbox) &&
+        (!lifecycleOf || (lifecycleOf.get(s.account.toLowerCase()) ?? null) === lc.lifecycle) &&
         (overdue === undefined || s.overdue === (overdue === "true")),
     );
     res.json({
       scope: parsed.scope,
+      ...(lc.lifecycle ? { lifecycle: lc.lifecycle } : {}),
       total: filtered.length,
       offset,
       steps: filtered.slice(offset, offset + limit),
