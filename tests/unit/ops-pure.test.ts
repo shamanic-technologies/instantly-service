@@ -18,6 +18,7 @@ import {
   nextNonSendingDay,
   poolDelivery,
   projectNextSeedTest,
+  queuedStepsForAddresses,
   rampProjection,
   ratePerMille,
 } from "../../src/lib/ops/pure";
@@ -117,5 +118,17 @@ describe("cursor — opaque, round-trips, refuses garbage", () => {
   });
   it("rejects a cursor whose timestamp is not a date", () => {
     expect(decodeCursor(Buffer.from("nope|x").toString("base64url"))).toBeNull();
+  });
+});
+
+describe("queuedStepsForAddresses (ACCOUNTS-PROD-TABS-1021)", () => {
+  it("sums the mailbox's aliases with the address queueSize precedence", () => {
+    const breakdown = new Map([["A@x.com", 7]]);
+    const size = new Map([["a@x.com", 99], ["b@x.com", 3]]);
+    // a: breakdown wins (7, not 99); b: plain count (3); c: nothing queued (0).
+    expect(queuedStepsForAddresses(["a@x.com", "b@x.com", "c@x.com"], breakdown, size)).toBe(10);
+  });
+  it("is 0 for a mailbox with no address", () => {
+    expect(queuedStepsForAddresses([], new Map(), new Map([["a@x.com", 4]]))).toBe(0);
   });
 });
