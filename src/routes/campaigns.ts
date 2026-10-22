@@ -1,3 +1,4 @@
+import { errorMessage, messageOf } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 import { randomUUID } from "crypto";
 import { db } from "../db";
@@ -44,7 +45,7 @@ router.get("/:campaignId", async (req: Request, res: Response) => {
     // Backwards compat: return first as `campaign`, full list as `campaigns`
     res.json({ campaign: campaigns[0], campaigns });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: messageOf(error) });
   }
 });
 
@@ -63,7 +64,7 @@ router.get("/", async (req: Request, res: Response) => {
 
     res.json({ campaigns });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: messageOf(error) });
   }
 });
 
@@ -142,7 +143,7 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
     traceEvent(res.locals.runId as string || "unknown", { service: "instantly-service", event: "campaign-status-update", detail: `campaignId=${campaignId}, status=${status}, count=${updated.length}` }, req.headers).catch(() => {});
     res.json({ campaign: updated[0], campaigns: updated });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: messageOf(error) });
   }
 });
 
@@ -163,7 +164,7 @@ router.post("/reconcile", (_req: Request, res: Response) => {
   console.log(`[instantly-service] reconcile: dispatched run=${runId}`);
   res.status(202).json({ runId, startedAt });
   reconcileAll().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] reconcile run=${runId} failed: ${message}`);
   });
 });
@@ -187,7 +188,7 @@ router.post("/refund-stranded-holds", (req: Request, res: Response) => {
   console.log(`[instantly-service] refund-stranded-holds: dispatched run=${runId} limit=${limit ?? "all"}`);
   res.status(202).json({ runId, startedAt, limit: limit ?? null });
   refundStrandedHolds({ limit }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] refund-stranded-holds run=${runId} failed: ${message}`);
   });
 });
@@ -213,7 +214,7 @@ router.post("/stop-on-click-backfill", (req: Request, res: Response) => {
   );
   res.status(202).json({ runId, startedAt, limit: limit ?? null });
   backfillStopOnClick({ limit }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] stop-on-click-backfill run=${runId} failed: ${message}`);
   });
 });
@@ -239,7 +240,7 @@ router.post("/actualize-orphaned-sends", (req: Request, res: Response) => {
   console.log(`[instantly-service] actualize-orphaned-sends: dispatched run=${runId} limit=${limit ?? "all"}`);
   res.status(202).json({ runId, startedAt, limit: limit ?? null });
   actualizeOrphanedSends({ limit }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] actualize-orphaned-sends run=${runId} failed: ${message}`);
   });
 });
@@ -271,7 +272,7 @@ router.post("/reconcile-provisioned-holds", async (req: Request, res: Response) 
       const plan = await reconcileProvisionedHolds({ dryRun: true, limit });
       res.status(200).json(plan);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[instantly-service] reconcile-provisioned-holds dry-run failed: ${message}`);
       res.status(500).json({ error: message });
     }
@@ -285,7 +286,7 @@ router.post("/reconcile-provisioned-holds", async (req: Request, res: Response) 
   );
   res.status(202).json({ runId, startedAt, dryRun: false, limit: limit ?? null });
   reconcileProvisionedHolds({ dryRun: false, limit }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] reconcile-provisioned-holds run=${runId} failed: ${message}`);
   });
 });
@@ -319,7 +320,7 @@ router.post("/restore-stopped-followups", async (req: Request, res: Response) =>
     try {
       return res.status(200).json(await restoreStoppedFollowups({ campaignIds, dryRun, limit, caller }));
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[instantly-service] restore-stopped-followups dry-run failed: ${message}`);
       return res.status(500).json({ error: message });
     }
@@ -331,7 +332,7 @@ router.post("/restore-stopped-followups", async (req: Request, res: Response) =>
   );
   res.status(202).json({ runId, dryRun: false, campaignIds, limit: limit ?? null });
   restoreStoppedFollowups({ campaignIds, dryRun, limit, caller }).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] restore-stopped-followups run=${runId} failed: ${message}`);
   });
 });

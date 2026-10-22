@@ -20,6 +20,7 @@
  * flat-subscription reads in this service.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import {
@@ -306,7 +307,7 @@ export async function syncProviderInfra(caller: CallerInfo): Promise<InfraSyncSu
         `[instantly-service] infra-sync: ${label} → ${written.domains} domain(s), ${written.mailboxes} mailbox(es), ${swept.domains} newly absent`,
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       summary.providersFailed += 1;
       summary.failures.push({ provider: label, message });
       console.error(`[instantly-service] infra-sync: ${label} FAILED — ${message}`);

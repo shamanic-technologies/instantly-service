@@ -24,6 +24,7 @@
  * reply judged here and a reply judged by the webhook cannot drift.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -179,7 +180,7 @@ export async function backfillReplyOptOuts(
       else if (outcome.reason === "unqualified") summary.unqualified += 1;
     } catch (error: unknown) {
       summary.failed += 1;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.warn(
         `[instantly-service] reply-optout-backfill: campaign=${candidate.instantlyCampaignId} failed — ${message}`,
       );

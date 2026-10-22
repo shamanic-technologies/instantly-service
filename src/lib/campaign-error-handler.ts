@@ -15,6 +15,7 @@
  *     semantics, but signals "stuck and refunded" rather than "errored".
  */
 
+import { errorMessage } from "./db-error.js";
 import { db } from "../db";
 import { instantlyCampaigns, sequenceCosts } from "../db/schema";
 import { eq, and, or } from "drizzle-orm";
@@ -183,7 +184,7 @@ export async function handleCampaignError(
       );
       console.log(`[campaign-error] Admin notification sent to ${agencyInbox()}`);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.warn(
         `[campaign-error] Failed to send admin notification: ${message}`,
       );

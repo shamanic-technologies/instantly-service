@@ -6,6 +6,7 @@
  * once the silver objects exist.
  */
 
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 import { syncMailboxes } from "../lib/mailboxes-sync";
 import { syncMessages } from "../lib/messages-sync";
@@ -54,7 +55,7 @@ router.post("/mailboxes-sync", async (_req: Request, res: Response) => {
     const summary = await syncMailboxes({ method: "POST", path: "/internal/ops/mailboxes-sync" });
     res.json(summary);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] mailboxes-sync failed: ${message}`);
     res.status(500).json({ error: "mailboxes-sync failed", detail: message });
   }
@@ -79,7 +80,7 @@ router.post("/messages-sync", async (req: Request, res: Response) => {
     const summary = await syncMessages({ sinceDays });
     res.json(summary);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] messages-sync failed: ${message}`);
     res.status(500).json({ error: "messages-sync failed", detail: message });
   }
@@ -101,7 +102,7 @@ router.post("/reply-verdicts-sync", async (req: Request, res: Response) => {
   try {
     res.json(await syncReplyVerdicts({ sinceDays }));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] reply-verdicts-sync failed: ${message}`);
     res.status(500).json({ error: "reply-verdicts-sync failed", detail: message });
   }
@@ -129,7 +130,7 @@ router.post("/reply-verdicts-backfill", async (req: Request, res: Response) => {
     const summary = await backfillReplyVerdicts({ sinceDays, limit });
     res.json({ dryRun: false, summary, plan: await planReplyVerdicts(sinceDays) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] reply-verdicts-backfill failed: ${message}`);
     res.status(500).json({ error: "reply-verdicts-backfill failed", detail: message });
   }
@@ -147,7 +148,7 @@ router.post("/dns-sync", async (_req: Request, res: Response) => {
     const summary = await syncDomainDns();
     res.json(summary);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] dns-sync failed: ${message}`);
     res.status(500).json({ error: "dns-sync failed", detail: message });
   }
@@ -156,7 +157,7 @@ router.post("/dns-sync", async (_req: Request, res: Response) => {
 // ─── Gold reads ──────────────────────────────────────────────────────────────
 
 function fail(res: Response, what: string, error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   console.error(`[instantly-service] ops ${what} failed: ${message}`);
   res.status(500).json({ error: `${what} failed`, detail: message });
 }

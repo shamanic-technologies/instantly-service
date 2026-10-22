@@ -4,6 +4,8 @@
  * Auth: `serviceAuth` (X-API-Key) + `requireOrgId`, like engaged-leads: a read
  * of our own gold table, org-scoped in the query itself.
  */
+import { messageOf } from "../lib/db-error.js";
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import {
@@ -39,11 +41,11 @@ router.get("/", async (req: Request, res: Response) => {
     });
   } catch (error: unknown) {
     if (error instanceof InvalidCursorError) {
-      return res.status(400).json({ error: error.message });
+      return res.status(400).json({ error: messageOf(error) });
     }
     // Fail loud: an empty page on a read failure would read as "we never wrote
     // to anyone for this brand".
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] written-to-leads: failed for org=${orgId}: ${message}`,
     );

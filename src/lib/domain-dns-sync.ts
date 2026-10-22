@@ -18,6 +18,7 @@
  * never "no DKIM".
  */
 
+import { errorMessage } from "./db-error.js";
 import dns from "node:dns/promises";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
@@ -157,7 +158,7 @@ function isAbsence(error: unknown): boolean {
 
 function errorCode(error: unknown): string {
   const code = (error as { code?: string })?.code;
-  return code ?? (error instanceof Error ? error.message : String(error));
+  return code ?? (errorMessage(error));
 }
 
 async function txt(resolver: Resolver, name: string): Promise<{ values: string[]; error: string | null }> {

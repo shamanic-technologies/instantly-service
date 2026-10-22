@@ -45,6 +45,7 @@
  *
  * Fail-loud per account; in-cluster only (platform key via key-service).
  */
+import { errorMessage } from "./db-error.js";
 import {
   listAccounts,
   getAccountRaw,
@@ -187,7 +188,7 @@ export async function reactivateEligibleAccounts(
       reactivated += 1;
     } catch (error: unknown) {
       failed += 1;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[reactivate-accounts] resume failed email=${email}: ${message}`);
     }
   }

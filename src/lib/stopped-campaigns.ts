@@ -46,6 +46,7 @@
  * (`campaign_id IS NULL`) belong to no campaign and are never touched.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -255,7 +256,7 @@ export async function stopQueuedSequencesOfStoppedCampaigns(
     } catch (error: unknown) {
       summary.failed += 1;
       notYetStopped.add(seq.instantlyCampaignId);
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[instantly-service] stopped-campaigns: could not stop campaign=${seq.instantlyCampaignId} lead=${seq.leadEmail} — ${message}`,
       );

@@ -17,6 +17,7 @@
  * instead of reported delivered.
  */
 
+import { errorMessage } from "./db-error.js";
 import { externalOrgIdOrNull, DASHBOARD_ORIGIN, escapeHtml, prospectLabel } from "./celebrate-positive-reply";
 import { listOrgMembers, type OrgMember } from "./client-org-client";
 import { sendEmail } from "./email-client";
@@ -202,7 +203,7 @@ export async function emailBrandTeam(input: EmailBrandTeamInput): Promise<string
       sent.push(member.email);
     } catch (error) {
       console.error(
-        `[instantly-service] reply-escalation: send to team member ${member.email} FAILED for lead=${input.leadEmail} — ${error instanceof Error ? error.message : String(error)}`,
+        `[instantly-service] reply-escalation: send to team member ${member.email} FAILED for lead=${input.leadEmail} — ${errorMessage(error)}`,
       );
     }
   }

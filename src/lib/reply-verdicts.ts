@@ -40,6 +40,7 @@
  * withdrawn one no longer counts), then the most recent, then the latest row.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql, type SQL } from "drizzle-orm";
 
 import { db } from "../db";
@@ -491,7 +492,7 @@ export async function backfillReplyVerdicts(
     } catch (error: unknown) {
       summary.failed += 1;
       console.error(
-        `[instantly-service] reply-verdict-backfill: FAILED reply=${reply.id}: ${error instanceof Error ? error.message : String(error)}`,
+        `[instantly-service] reply-verdict-backfill: FAILED reply=${reply.id}: ${errorMessage(error)}`,
       );
     }
   }

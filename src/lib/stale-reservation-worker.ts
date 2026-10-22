@@ -4,6 +4,7 @@
  * deploys restart longer timers), then every 10 minutes. A failure is logged loud and
  * the next tick retries.
  */
+import { errorMessage } from "./db-error.js";
 import { reclaimInterruptedSends } from "./stale-reservations";
 
 export const STALE_RESERVATION_INTERVAL_MS = 10 * 60 * 1000;
@@ -13,7 +14,7 @@ let timer: NodeJS.Timeout | null = null;
 
 function tick(): void {
   reclaimInterruptedSends().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] stale-reservation tick failed: ${message}`);
   });
 }

@@ -1,3 +1,4 @@
+import { errorMessage } from "./db-error.js";
 /**
  * HTTP client for runs-service
  * BLOCKING: must succeed before operations proceed
@@ -153,7 +154,7 @@ export async function getRun(runId: string, identity: IdentityContext): Promise<
   try {
     return await runsRequest<Run>(`/v1/runs/${runId}`, identity);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     // runsRequest formats errors as `... failed: <status> - <body>`; 404 means
     // the run doesn't exist (deleted / wrong ID). 403 means the caller's
     // identity isn't allowed to read it (cross-org). Both are "unusable
@@ -198,7 +199,7 @@ export async function addCosts(
  * shape `runsRequest` throws.
  */
 export function isRunGoneError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   return /failed: 404\b/.test(message);
 }
 

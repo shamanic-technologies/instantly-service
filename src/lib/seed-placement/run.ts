@@ -14,6 +14,7 @@
  * than as a bad score.
  */
 
+import { errorMessage } from "../db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -237,9 +238,7 @@ export async function runSeedPlacementTest(
       const response =
         error instanceof SmtpDispatchError
           ? error.response
-          : error instanceof Error
-            ? error.message
-            : String(error);
+          : errorMessage(error);
 
       await db.insert(seedPlacementDispatches).values({
         testId,

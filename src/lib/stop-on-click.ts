@@ -38,6 +38,7 @@
  * So no local status write, no cost cancel, no contact delete is duplicated here.
  */
 
+import { errorMessage } from "./db-error.js";
 import { resolveInstantlyApiKey } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
 import { getCampaignLeg } from "./campaign-client";
@@ -109,7 +110,7 @@ export async function maybeStopOnClickForLeg(
       `[instantly-service] stop-on-click: paused campaign=${campaign.instantlyCampaignId} lead=${leadEmail} (leg=${leg.legKey})`,
     );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.warn(
       `[instantly-service] stop-on-click: no-op for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${message}; sequence continues`,
     );

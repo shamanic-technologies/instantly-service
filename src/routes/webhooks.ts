@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { instantlyCampaigns } from "../db/schema";
@@ -105,7 +106,7 @@ router.post("/instantly", async (req: Request, res: Response) => {
       )
       .limit(1);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] webhook campaign lookup failed (returning 200 to avoid Instantly auto-disable): campaign=${payload.campaign_id} type=${payload.event_type} error=${message}`,
     );
@@ -160,7 +161,7 @@ router.post("/instantly", async (req: Request, res: Response) => {
     );
     bronzeRowId = bronzeRef.id;
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     bronzeError = message;
     console.error(
       `[instantly-service] webhook bronze write failed (returning 200 to avoid auto-pause): campaign=${canonicalCampaignId} type=${payload.event_type} error=${message}`,
@@ -207,7 +208,7 @@ router.post("/instantly", async (req: Request, res: Response) => {
         ).catch(() => {});
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       silverError = message;
       console.error(
         `[instantly-service] webhook silver promote failed (bronze row=${bronzeRowId} persisted, returning 200 to avoid auto-pause): campaign=${canonicalCampaignId} type=${payload.event_type} error=${message}`,

@@ -5,6 +5,8 @@
  * itself (`org_id = x-org-id`): a brand of another org reads as an empty list
  * here; the gateway refuses it before it reaches us (brand ownership check).
  */
+import { messageOf } from "../lib/db-error.js";
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import {
@@ -34,11 +36,11 @@ router.get("/", async (req: Request, res: Response) => {
     });
   } catch (error: unknown) {
     if (error instanceof InvalidSequenceCursorError) {
-      return res.status(400).json({ error: error.message });
+      return res.status(400).json({ error: messageOf(error) });
     }
     // Fail loud: an empty page on a read failure would read as "we never
     // wrote to anyone for this brand".
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] email-sequences: failed for org=${orgId} brand=${brandId}: ${message}`,
     );

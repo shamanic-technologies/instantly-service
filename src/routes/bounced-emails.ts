@@ -9,6 +9,7 @@
  *
  * Fails loud: an empty list on a read failure would claim nobody bounced.
  */
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import { findBouncedEmails } from "../lib/bounced-emails";
@@ -25,7 +26,7 @@ router.post("/", async (req: Request, res: Response) => {
     const bounced = await findBouncedEmails(parsed.data.emails);
     return res.status(200).json({ bounced });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] bounced-emails: read failed: ${message}`);
     return res.status(500).json({ error: message });
   }

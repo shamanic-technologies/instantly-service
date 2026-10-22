@@ -26,6 +26,7 @@
  * when it goes out.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -201,7 +202,7 @@ export async function markScheduledReplyFailed(
   error: unknown,
 ): Promise<void> {
   const next = attempts + 1;
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   const status = next >= MAX_SCHEDULED_REPLY_ATTEMPTS ? "failed" : "pending";
 
   await db.execute(sql`

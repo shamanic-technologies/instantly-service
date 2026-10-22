@@ -4,6 +4,7 @@
  * loses nothing. Two minutes, well inside the qualification fallback's
  * 15-minute grace, so the fallback always sees a fresh "no verdict" set.
  */
+import { errorMessage } from "./db-error.js";
 import { syncReplyVerdicts } from "./reply-verdicts";
 
 export const REPLY_VERDICTS_INTERVAL_MS = 2 * 60 * 1000;
@@ -20,7 +21,7 @@ export function startReplyVerdictsWorker(): void {
     inFlight = true;
     syncReplyVerdicts({ sinceDays: TICK_WINDOW_DAYS })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         console.error(`[instantly-service] reply-verdicts tick failed: ${message}`);
       })
       .finally(() => {

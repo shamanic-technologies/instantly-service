@@ -48,6 +48,7 @@
  * fleet-wide, a volume decision; and it only acts on committed rows anyway).
  */
 
+import { errorMessage as dbErrorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -152,7 +153,7 @@ function rowsOf<T>(result: unknown): T[] {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return dbErrorMessage(error);
 }
 
 export interface ReleaseSummary {

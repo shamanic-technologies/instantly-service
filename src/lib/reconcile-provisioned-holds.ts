@@ -32,6 +32,7 @@
  * ACTUALIZE case for org; refund-stranded-holds = the CANCEL case for org
  * finished campaigns); those remain for compatibility but this covers all cases.
  */
+import { errorMessage } from "./db-error.js";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { eq } from "drizzle-orm";
@@ -278,7 +279,7 @@ export async function reconcileProvisionedHolds(
       } else {
         // Transient (5xx / timeout / 403 / cold-start) — leave provisioned.
         summary.transient++;
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         console.error(
           `[instantly-service] reconcile-provisioned-holds: hold=${h.id} ` +
             `action=${h.action} transient, left provisioned: ${message}`,

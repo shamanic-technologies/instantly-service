@@ -6,6 +6,8 @@
  * Auth: `serviceAuth` + `requireOrgId`; x-user-id required on the write (the
  * audit names who cut).
  */
+import { messageOf } from "../lib/db-error.js";
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import { FollowupCutsBodySchema, FollowupCutsListQuerySchema } from "../schemas";
@@ -46,12 +48,12 @@ router.post("/", async (req: Request, res: Response) => {
   } catch (error: unknown) {
     if (error instanceof LeadsNotInCampaignError) {
       return res.status(404).json({
-        error: error.message,
+        error: messageOf(error),
         code: "leads_not_in_campaign",
         emails: error.emails,
       });
     }
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] followup-cuts failed: ${message}`);
     return res.status(500).json({ error: message });
   }
@@ -76,7 +78,7 @@ router.get("/", async (req: Request, res: Response) => {
       })),
     });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] followup-cuts list failed: ${message}`);
     return res.status(500).json({ error: message });
   }

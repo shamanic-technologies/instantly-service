@@ -15,6 +15,7 @@
  *   - fetchTestablePoolEmails   — Silver read for placement-test seeding.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 import { MICROSOFT_ESPS } from "./seed-placement/seeds";
 import { poolPlacementTests, type PlacementTest } from "./provider-placement";
@@ -745,7 +746,7 @@ export async function reconcileLifecycle(
       }
     } catch (error: unknown) {
       failed += 1;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[account-lifecycle] Instantly PATCH failed for ${row.email} → ${status}: ${message}`,
       );

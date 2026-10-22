@@ -1,3 +1,5 @@
+import { queryErrorHandler } from "./lib/db-error.js";
+import { errorMessage } from "./lib/db-error.js";
 import express from "express";
 import cors from "cors";
 import * as dotenv from "dotenv";
@@ -123,6 +125,7 @@ app.use("/orgs/sending-schedule", serviceAuth, requireOrgId, leadSendingSchedule
 app.use("/orgs/send-queue", serviceAuth, requireOrgId, campaignSendQueueRoutes); // what is queued to send for some campaigns, and when the window opens (CAMPAIGN-NEXT-STEPS-1018)
 app.use("/orgs/reply-verdicts", serviceAuth, requireOrgId, replyVerdictsRoutes);
 app.use("/orgs", serviceAuth, requireOrgId, analyticsRoutes);
+app.use(queryErrorHandler);
 
 const PORT = process.env.PORT || 3011;
 
@@ -139,7 +142,7 @@ async function deployEmailTemplates(): Promise<void> {
     );
     console.log("[startup] Email templates deployed");
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.warn(`[startup] Failed to deploy email templates (non-fatal): ${message}`);
   }
 }
@@ -156,7 +159,7 @@ async function start() {
     import("./lib/retry-stuck-worker")
       .then(({ startRetryStuckWorker }) => startRetryStuckWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(
           `[instantly-service] failed to start retry-stuck worker: ${message}`,
         );
@@ -176,7 +179,7 @@ async function start() {
     import("./lib/reply-verdicts-worker")
       .then(({ startReplyVerdictsWorker }) => startReplyVerdictsWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start reply-verdicts worker: ${message}`);
       });
 
@@ -185,14 +188,14 @@ async function start() {
     import("./lib/outreach-facts-worker")
       .then(({ startOutreachFactsWorker }) => startOutreachFactsWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start outreach-facts worker: ${message}`);
       });
 
     import("./lib/messages-sync-worker")
       .then(({ startMessagesSyncWorker }) => startMessagesSyncWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start messages-sync worker: ${message}`);
       });
 
@@ -201,7 +204,7 @@ async function start() {
     import("./lib/unibox-mirror-worker")
       .then(({ startUniboxMirrorWorker }) => startUniboxMirrorWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start unibox-mirror worker: ${message}`);
       });
 
@@ -213,7 +216,7 @@ async function start() {
     import("./lib/reply-qualification-worker")
       .then(({ startReplyQualificationWorker }) => startReplyQualificationWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(
           `[instantly-service] failed to start qualification-fallback worker: ${message}`,
         );
@@ -224,14 +227,14 @@ async function start() {
     import("./lib/outcome-trigger-worker")
       .then(({ startOutcomeTriggerWorker }) => startOutcomeTriggerWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start outcome-trigger worker: ${message}`);
       });
 
     import("./lib/self-send/click-promotion-worker")
       .then(({ startClickPromotionWorker }) => startClickPromotionWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(
           `[instantly-service] failed to start click-promotion worker: ${message}`,
         );
@@ -242,7 +245,7 @@ async function start() {
     import("./lib/self-send/datacenter-networks-worker")
       .then(({ startDatacenterNetworksWorker }) => startDatacenterNetworksWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start datacenter-networks worker: ${message}`);
       });
 
@@ -253,7 +256,7 @@ async function start() {
     import("./lib/self-send/dispatch-scheduler")
       .then(({ startSelfSendDispatchWorker }) => startSelfSendDispatchWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(
           `[instantly-service] failed to start self-send dispatch worker: ${message}`,
         );
@@ -266,7 +269,7 @@ async function start() {
     import("./lib/verification-history-mirror-worker")
       .then(({ startVerificationHistoryMirrorWorker }) => startVerificationHistoryMirrorWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start verification-history-mirror worker: ${message}`);
       });
 
@@ -275,7 +278,7 @@ async function start() {
     import("./lib/domain-blocklist-worker")
       .then(({ startDomainBlocklistWorker }) => startDomainBlocklistWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start domain-blocklist worker: ${message}`);
       });
     // Inbox-placement episodes for the Monitoring page when a provider falls below
@@ -283,7 +286,7 @@ async function start() {
     import("./lib/placement-alert-worker")
       .then(({ startPlacementAlertWorker }) => startPlacementAlertWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start placement-alert worker: ${message}`);
       });
     // Copy of lead-service's lead provenance for GET /internal/lead-source-yield
@@ -291,7 +294,7 @@ async function start() {
     import("./lib/lead-provenance-sync-worker")
       .then(({ startLeadProvenanceWorker }) => startLeadProvenanceWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start lead-provenance worker: ${message}`);
       });
     // Microsoft seed receivers: resume a device-code sign-in a deploy cut short,
@@ -299,20 +302,20 @@ async function start() {
     import("./lib/seed-placement/microsoft-oauth")
       .then(({ resumePendingMicrosoftAuthorizations }) => resumePendingMicrosoftAuthorizations())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to resume Microsoft seed authorizations: ${message}`);
       });
     import("./lib/seed-placement/daily")
       .then(({ refreshSeedPlacementDaily }) => refreshSeedPlacementDaily())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to fill the seed placement daily series: ${message}`);
       });
 
     import("./lib/booked-stops-cold-worker")
       .then(({ startBookedStopsWorker }) => startBookedStopsWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start booked-stops-cold worker: ${message}`);
       });
 
@@ -321,7 +324,7 @@ async function start() {
     import("./lib/stale-reservation-worker")
       .then(({ startStaleReservationWorker }) => startStaleReservationWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start stale-reservation worker: ${message}`);
       });
 
@@ -330,7 +333,7 @@ async function start() {
     import("./lib/queued-sequence-timezone-worker")
       .then(({ startTimezoneHealWorker }) => startTimezoneHealWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start queued-sequence-timezone worker: ${message}`);
       });
 
@@ -339,7 +342,7 @@ async function start() {
     import("./lib/self-send/gmail-threads-worker")
       .then(({ startGmailThreadsWorker }) => startGmailThreadsWorker())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start gmail-threads worker: ${message}`);
       });
 
@@ -349,7 +352,7 @@ async function start() {
     import("./lib/self-send/inbox-watcher")
       .then(({ startInboxWatcher }) => startInboxWatcher())
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         console.error(`[instantly-service] failed to start inbox watcher: ${message}`);
       });
 
@@ -373,7 +376,7 @@ async function start() {
         `[instantly-service] account-lifecycle seed done ${JSON.stringify({ snapshot, lifecycle })}`,
       );
     })().catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorMessage(err);
       console.error(
         `[instantly-service] account-lifecycle seed failed (non-fatal): ${message}`,
       );

@@ -47,6 +47,7 @@
  * and lead-service's follow-up queue reaches the person on its own regardless.
  */
 
+import { errorMessage } from "./db-error.js";
 import {
   findOngoingResponderCampaigns,
   getCampaignTriggerScope,
@@ -243,5 +244,5 @@ export async function triggerSalesInterestLeg(
 }
 
 function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return errorMessage(error);
 }

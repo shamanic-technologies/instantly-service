@@ -1,3 +1,4 @@
+import { errorString } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { sql, type SQL } from "drizzle-orm";
@@ -1464,7 +1465,7 @@ router.get("/stats", async (req: Request, res: Response) => {
     }, STATS_CACHE_TTL_MS, { refreshAfterMs: STATS_REFRESH_AFTER_MS });
     return res.json(payload);
   } catch (error: any) {
-    const msg = error.cause?.message ?? error.message ?? String(error);
+    const msg = error.cause?.message ?? error.message ?? errorString(error);
     const badZone = unrecognizedTimezoneFromError(error);
     if (badZone) {
       console.error(
@@ -1516,7 +1517,7 @@ router.post("/stats/grouped", async (req: Request, res: Response) => {
 
     res.json({ groups: results });
   } catch (error: any) {
-    const msg = error.cause?.message ?? error.message ?? String(error);
+    const msg = error.cause?.message ?? error.message ?? errorString(error);
     console.error(`[stats/grouped] Failed to aggregate grouped stats: ${msg}`, error);
     res.status(500).json({ error: "Failed to aggregate grouped stats" });
   }

@@ -19,6 +19,7 @@
  * consumer VPN networks (M247, Datacamp). Their egress carries real people.
  */
 
+import { errorMessage } from "../db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -103,7 +104,7 @@ export async function syncDatacenterNetworks(
         summary.asnsSynced += 1;
         summary.prefixes += prefixes.length;
       } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         summary.failed.push({ asn, error: message });
         console.error(
           `[instantly-service] datacenter-networks: AS${asn} (${op.operator}) NOT refreshed, previous prefixes kept: ${message}`,

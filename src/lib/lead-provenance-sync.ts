@@ -19,6 +19,7 @@
  * pass. Never an empty tag list in their name.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -71,7 +72,7 @@ export const fetchLeadProvenance: ProvenanceFetcher = async (orgId, brandId, ema
     }
     return { ok: true, people: body.people as PersonProvenance[] };
   } catch (error: unknown) {
-    return { ok: false, status: 0, unavailable: true, error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, status: 0, unavailable: true, error: errorMessage(error) };
   }
 };
 

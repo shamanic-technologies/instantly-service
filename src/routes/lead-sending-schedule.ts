@@ -7,6 +7,7 @@
  * Org scope is enforced in the query itself (`org_id = <caller>`), so another
  * org's lead reads as one we hold nothing for (the default schedule).
  */
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import { fetchLeadSendingSchedule } from "../lib/lead-sending-schedule";
@@ -33,7 +34,7 @@ router.get("/", async (req: Request, res: Response) => {
   } catch (error: unknown) {
     // Fail loud: serving the default schedule on a read failure would tell the
     // customer we do not know a zone we may well hold.
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] sending-schedule: failed for org=${orgId}: ${message}`,
     );

@@ -4,6 +4,7 @@
  * more often than the interval fires), then every 30 minutes. Joins a pass
  * already running. A failed pass is logged loud; the next one retries.
  */
+import { errorMessage } from "./db-error.js";
 import { syncLeadProvenance } from "./lead-provenance-sync";
 import { deleteCachedStatsWhere } from "./stats-cache";
 
@@ -20,7 +21,7 @@ export async function leadProvenanceTick(): Promise<void> {
       console.log(`[instantly-service] lead-provenance-sync: pass done ${JSON.stringify(summary)}`);
     }
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] lead-provenance-sync: pass FAILED: ${message}`);
   }
 }

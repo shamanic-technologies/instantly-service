@@ -20,6 +20,7 @@
  * spend, on its own platform run.
  */
 
+import { errorMessage } from "../db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -402,7 +403,7 @@ export async function runWarmupMesh(
         error instanceof SmtpDispatchError
           ? classifyDispatchFailure(error)
           : "transient";
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = errorMessage(error);
 
       await db
         .insert(warmupDispatches)

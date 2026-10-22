@@ -33,6 +33,7 @@
  * input-token count. This service declares none — same as for completions.
  */
 
+import { errorMessage, errorString } from "./db-error.js";
 import { db } from "../db";
 import { replyClassificationShadow } from "../db/schema";
 import { platformJudgment, type JudgmentChoiceQuestion } from "./chat-client";
@@ -142,7 +143,7 @@ export async function recordShadowJudgment(input: ShadowJudgmentInput): Promise<
   } catch (error) {
     await db.insert(replyClassificationShadow).values({
       ...base,
-      error: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000),
+      error: error instanceof Error ? errorMessage(error).slice(0, 1000) : errorString(error).slice(0, 1000),
     });
     throw error;
   }

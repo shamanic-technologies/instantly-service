@@ -22,6 +22,7 @@
  * persists. Platform sends (`campaignId IS NULL`) are skipped — their holds
  * cannot be matched by the `(campaignId, leadEmail)` lookup (pre-existing gap).
  */
+import { errorMessage } from "./db-error.js";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { cancelRemainingProvisions } from "./silver-promote";
@@ -106,7 +107,7 @@ export async function refundStrandedHolds(opts: { limit?: number } = {}): Promis
       processed++;
     } catch (error: unknown) {
       failed++;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[instantly-service] refund-stranded-holds: campaign=${c.instantlyCampaignId} ` +
           `lead=${c.leadEmail} failed: ${message}`,

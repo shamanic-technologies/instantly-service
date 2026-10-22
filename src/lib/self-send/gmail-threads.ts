@@ -45,6 +45,7 @@
  * person who holds it answers (no email asks them, REPLY-NOTIFS-1013).
  */
 
+import { errorMessage } from "../db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -306,7 +307,7 @@ async function foldUnderRun(
   try {
     await foldSource(source, asOf, summary);
   } catch (error) {
-    await closeReaderRun(identity, error instanceof Error ? error.message : String(error));
+    await closeReaderRun(identity, errorMessage(error));
     throw error;
   }
   const failed = summary.batchesFailed - failedBefore;
@@ -407,7 +408,7 @@ export async function foldInGmailThreads(
       summary.batchesFailed += 1;
       console.error(
         `[instantly-service] gmail-threads: org ${orgId} has no usable identity to read its Gmail with: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
       continue;
@@ -473,7 +474,7 @@ async function foldSource(source: FoldSource, asOf: Date, summary: GmailThreadsS
       summary.batchesFailed += 1;
       console.error(
         `[instantly-service] gmail-threads: ${source.label} mirror read FAILED for batch ${i / ADDRESS_BATCH + 1}: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
     }

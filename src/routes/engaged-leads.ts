@@ -9,6 +9,7 @@
  * Org scope is enforced in the query itself (`org_id = <caller>`), so another
  * org's leads are not absent-by-filter but unreachable.
  */
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import { fetchEngagedLeads } from "../lib/engaged-leads";
@@ -38,7 +39,7 @@ router.get("/", async (req: Request, res: Response) => {
     // Fail loud. An empty list returned on a read failure would claim this org
     // has nobody worth talking to, which is the one wrong answer that looks
     // exactly like a correct one.
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] engaged-leads: failed for org=${orgId}: ${message}`,
     );

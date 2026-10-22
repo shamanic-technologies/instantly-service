@@ -24,6 +24,7 @@
  * pages without stopping early.
  */
 
+import { errorMessage } from "./db-error.js";
 import { backfillEmails } from "./emails-backfill";
 import { resolvePlatformInstantlyApiKey } from "./key-client";
 
@@ -57,7 +58,7 @@ export async function runUniboxMirrorTick(): Promise<void> {
     });
     console.log(`[instantly-service] unibox-mirror: ${JSON.stringify(summary)}`);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] unibox-mirror tick failed: ${message}`);
   } finally {
     inFlight = false;

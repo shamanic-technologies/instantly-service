@@ -38,6 +38,7 @@
  * Instantly's verdict and says so; this runs inside Instantly's webhook.
  */
 
+import { errorMessage } from "./db-error.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -145,7 +146,7 @@ export async function refineInstantlyInterest(
     return { eventType, reading: { qualification, inbound } };
   } catch (error: unknown) {
     console.warn(
-      `[instantly-service] refine-interest: could not read campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${error instanceof Error ? error.message : String(error)}; keeping Instantly's lead_interested`,
+      `[instantly-service] refine-interest: could not read campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${errorMessage(error)}; keeping Instantly's lead_interested`,
     );
     return keep;
   }

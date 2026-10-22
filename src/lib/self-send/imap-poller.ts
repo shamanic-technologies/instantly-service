@@ -13,6 +13,7 @@
  * costs a few redundant reads and cannot lose anything.
  */
 
+import { errorMessage } from "../db-error.js";
 import { connectImapClient, createImapClient } from "./imap-client";
 import { simpleParser, type ParsedMail } from "mailparser";
 import { sql } from "drizzle-orm";
@@ -356,7 +357,7 @@ export async function actOnInboundReply(input: {
   } catch (error) {
     console.error(
       `[instantly-service] self-send-poll: qualification failed for campaign=${send.instantlyCampaignId}: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
     summary.unqualified += 1;
@@ -724,7 +725,7 @@ export async function pollMailboxGroup(
     } catch (error) {
       console.error(
         `[instantly-service] self-send-poll: account=${accountEmail} failed: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
       summary.accountsFailed += 1;
@@ -802,7 +803,7 @@ export async function runPoll(
         } catch (error) {
           console.error(
             `[instantly-service] self-send-poll: account=${accountEmail} failed: ${
-              error instanceof Error ? error.message : String(error)
+              errorMessage(error)
             }`,
           );
           summary.accountsFailed += 1;

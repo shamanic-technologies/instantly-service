@@ -36,6 +36,7 @@
  * replaced by a summary. A model paraphrase is never presented as their words.
  */
 
+import { errorMessage } from "./db-error.js";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db";
 import { instantlyCampaigns, instantlyLeadStatusCurrent } from "../db/schema";
@@ -392,7 +393,7 @@ async function leadOrNull(
     return lead ? { id: lead.id, company: lead.company } : null;
   } catch (error) {
     console.warn(
-      `[instantly-service] celebrate: could not read the lead row of ${leadEmail} — ${error instanceof Error ? error.message : String(error)}; naming the person and linking the People list instead`,
+      `[instantly-service] celebrate: could not read the lead row of ${leadEmail} — ${errorMessage(error)}; naming the person and linking the People list instead`,
     );
     return null;
   }
@@ -404,7 +405,7 @@ export async function externalOrgIdOrNull(orgId: string): Promise<string | null>
     return await getExternalOrgId(orgId);
   } catch (error) {
     console.warn(
-      `[instantly-service] celebrate: could not resolve the dashboard org of ${orgId} — ${error instanceof Error ? error.message : String(error)}; the button opens the dashboard home`,
+      `[instantly-service] celebrate: could not resolve the dashboard org of ${orgId} — ${errorMessage(error)}; the button opens the dashboard home`,
     );
     return null;
   }
@@ -501,7 +502,7 @@ export async function celebrateOnce(
     claim = await claimCelebration(campaign.instantlyCampaignId, celebrationVariantFor(kind));
   } catch (error) {
     console.warn(
-      `[instantly-service] celebrate: claim failed for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${error instanceof Error ? error.message : String(error)}`,
+      `[instantly-service] celebrate: claim failed for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${errorMessage(error)}`,
     );
     return false;
   }
@@ -513,7 +514,7 @@ export async function celebrateOnce(
   } catch (error) {
     await releaseCelebration(campaign.instantlyCampaignId, claim).catch(() => {});
     console.error(
-      `[instantly-service] celebrate: FAILED for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${error instanceof Error ? error.message : String(error)}; claim released, will retry on the next signal`,
+      `[instantly-service] celebrate: FAILED for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${errorMessage(error)}; claim released, will retry on the next signal`,
     );
     return false;
   }

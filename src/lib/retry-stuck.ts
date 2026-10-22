@@ -45,6 +45,7 @@
  * `FOR UPDATE SKIP LOCKED` on the SELECT — not currently required.)
  */
 
+import { errorMessage } from "./db-error.js";
 import { db } from "../db";
 import { SELF_SEND_CAMPAIGN_LIKE } from "./self-send/transport";
 import { instantlyCampaigns, instantlyLeads, sequenceCosts } from "../db/schema";
@@ -418,7 +419,7 @@ async function cancelRowAsTerminal(
       extraMetadata: { retryStuckCancelReason: reason },
     });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] retry-stuck: row=${row.id} cancellation handler threw: ${message}`,
     );
@@ -486,7 +487,7 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
     apiKey = keyResult.key;
     keySource = keyResult.keySource;
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     await cancelRowAsTerminal(row, `key_unavailable: ${message}`);
     return { kind: "failed", reason: "key_unavailable" };
   }
@@ -668,7 +669,7 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
       account: result.value.account.email,
     };
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     // 409 from runs-service (parent/child identity drift) — cancel the row.
     // Anything else is unexpected; cool down via lastAttemptAt and let the
     // next pass try again with fresh state.

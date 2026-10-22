@@ -26,6 +26,7 @@
  * Spend: one platform judgment per permanent DSN tied to one of our sends,
  * input tokens only, billed by chat-service on a platform run.
  */
+import { errorMessage } from "../db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -177,7 +178,7 @@ async function judgeAll(rows: DsnRow[], summary: DsnJudgmentSweepSummary): Promi
         summary.judgmentFailed += 1;
         console.error(
           `[instantly-service] dsn-judgments: judgment FAILED for row=${row.id} campaign=${row.instantlyCampaignId}, left unjudged (no bounce promoted, retried next run): ${
-            error instanceof Error ? error.message : String(error)
+            errorMessage(error)
           }`,
         );
       }

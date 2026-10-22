@@ -18,6 +18,7 @@
  * Tenant `common`: one flow for Outlook.com and any Microsoft 365 tenant. $0.
  */
 
+import { errorMessage } from "../db-error.js";
 import { eq, sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -250,7 +251,7 @@ function pollInBackground(email: string): void {
   const run = pollDeviceCode(email)
     .catch((error: unknown) => {
       console.error(
-        `[ms-seed-oauth] poll for ${email} failed: ${error instanceof Error ? error.message : String(error)}`,
+        `[ms-seed-oauth] poll for ${email} failed: ${errorMessage(error)}`,
       );
     })
     .finally(() => polling.delete(email));
@@ -460,7 +461,7 @@ export async function keepMicrosoftReceiversAlive(): Promise<{ refreshed: number
       refreshed += 1;
     } catch (error) {
       failed += 1;
-      console.error(`[ms-seed-oauth] keepalive ${email}: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`[ms-seed-oauth] keepalive ${email}: ${errorMessage(error)}`);
     }
   }
   return { refreshed, failed };

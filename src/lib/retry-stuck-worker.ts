@@ -30,6 +30,7 @@
  *   - Idempotent: calling start twice is a no-op.
  */
 
+import { errorMessage } from "./db-error.js";
 import { processRow, selectOneStuckRow } from "./retry-stuck";
 
 /**
@@ -100,7 +101,7 @@ async function loop(): Promise<void> {
     try {
       row = await selectOneStuckRow();
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[instantly-service] retry-stuck worker: selectOneStuckRow failed — ${message}`,
       );

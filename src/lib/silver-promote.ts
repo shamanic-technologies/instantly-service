@@ -12,6 +12,7 @@
  * 'poll_emails', 'poll_leads') and `source_row_id` (FK into the bronze table)
  * so it can be traced back.
  */
+import { errorMessage } from "./db-error.js";
 import { db } from "../db";
 import { instantlyCampaigns, instantlyEvents, sequenceCosts } from "../db/schema";
 import { and, eq, isNull, or, type SQL } from "drizzle-orm";
@@ -321,7 +322,7 @@ export async function handleEmailSent(
           (cost.costId ? ` cost=${cost.costId}` : " (unbilled)"),
       );
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       if (isRunGoneError(error)) {
         // Terminal: the run is gone (retention purged it). Cancel locally — the
         // send fired but can never be billed. No runs-service PATCH (it 404s).
@@ -383,7 +384,7 @@ export async function cancelRemainingProvisions(
           (cost.costId ? ` cost=${cost.costId}` : " (unbilled)"),
       );
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[instantly-service] silver: failed to cancel cost ${cost.costId}: ${message}`,
       );

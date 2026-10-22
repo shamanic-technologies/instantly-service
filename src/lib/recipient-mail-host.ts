@@ -16,6 +16,7 @@
  * the domains of queued first emails (`refreshRecipientMailHosts`).
  */
 
+import { errorMessage } from "./db-error.js";
 import { promises as dns } from "node:dns";
 import { sql } from "drizzle-orm";
 
@@ -86,7 +87,7 @@ export async function readMailHost(
       domain,
       provider: "unknown",
       mx: [],
-      error: code || (error instanceof Error ? error.message : String(error)),
+      error: code || (errorMessage(error)),
     };
   }
 }

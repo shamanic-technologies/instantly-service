@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/db-error.js";
 import { loadMailboxLogins } from "../lib/self-send/mailbox-credentials";
 import { fetchRecentDailyVolume } from "../lib/recent-send-volume";
 import { Router, Request, Response } from "express";
@@ -224,7 +225,7 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
 
     res.json(payload);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] sending-forecast failed: ${message}`);
     res.status(500).json({ error: message });
   }
@@ -260,7 +261,7 @@ router.get("/account-health", async (_req: Request, res: Response) => {
     });
     res.json({ asOf: read.asOf.toISOString(), accounts: read.accounts });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] account-health failed: ${message}`);
     res.status(500).json({ error: message });
   }
@@ -282,7 +283,7 @@ router.get("/account-health/history", async (req: Request, res: Response) => {
     const history = await fetchPlacementHistory(email);
     res.json({ email, history });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] account-health/history failed: ${message}`);
     res.status(500).json({ error: message });
   }
@@ -308,7 +309,7 @@ router.get("/capacity-history", async (req: Request, res: Response) => {
     const series = await fetchCapacityHistory(days, mailboxOf);
     res.json({ series });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] capacity-history failed: ${message}`);
     res.status(500).json({ error: message });
   }
@@ -341,7 +342,7 @@ router.post("/accounts-sync", async (_req: Request, res: Response) => {
     try {
       snapshot = await snapshotAccounts(apiKey);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[audit] accounts-sync run=${runId} Instantly snapshot failed, reconciling from silver: ${message}`);
       snapshot = { failed: message };
     }
@@ -350,7 +351,7 @@ router.post("/accounts-sync", async (_req: Request, res: Response) => {
       `[audit] accounts-sync: done run=${runId} ${JSON.stringify({ snapshot, lifecycle })}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] accounts-sync run=${runId} failed: ${message}`);
   });
 });
@@ -398,7 +399,7 @@ router.post("/emails-backfill", async (req: Request, res: Response) => {
     const summary = await backfillEmails(apiKey, { maxPages, startingAfter });
     console.log(`[audit] emails-backfill: done run=${runId} ${JSON.stringify(summary)}`);
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] emails-backfill run=${runId} failed: ${message}`);
   });
 });
@@ -432,7 +433,7 @@ router.post("/daily-limit-sync", async (req: Request, res: Response) => {
       `[audit] daily-limit-sync: done run=${runId} ${JSON.stringify(summary)}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] daily-limit-sync run=${runId} failed: ${message}`);
   });
 });
@@ -464,7 +465,7 @@ router.get("/account-detail", async (req: Request, res: Response) => {
     const account = await getAccountRaw(apiKey, email);
     res.json({ account });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] account-detail failed email=${email}: ${message}`);
     res.status(500).json({ error: message });
   }
@@ -499,7 +500,7 @@ router.post("/slow-ramp-sync", async (req: Request, res: Response) => {
       `[audit] slow-ramp-sync: done run=${runId} ${JSON.stringify(summary)}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] slow-ramp-sync run=${runId} failed: ${message}`);
   });
 });
@@ -534,7 +535,7 @@ router.post("/lifecycle-limits-sync", async (req: Request, res: Response) => {
       `[audit] lifecycle-limits-sync: done run=${runId} ${JSON.stringify(summary)}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] lifecycle-limits-sync run=${runId} failed: ${message}`);
   });
 });
@@ -576,7 +577,7 @@ router.post("/reactivate-accounts", async (req: Request, res: Response) => {
       `[audit] reactivate-accounts: done run=${runId} ${JSON.stringify(summary)}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] reactivate-accounts run=${runId} failed: ${message}`);
   });
 });
@@ -608,7 +609,7 @@ router.post("/placement-test/sync", async (_req: Request, res: Response) => {
       `[audit] placement-sync: done run=${runId} ${JSON.stringify({ ...summary, lifecycle })}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] placement-sync run=${runId} failed: ${message}`);
   });
 });
@@ -636,7 +637,7 @@ router.post("/placement-test/run", async (_req: Request, res: Response) => {
     const summary = await runOneTimeFleetPlacementTest(apiKey);
     res.json({ ...summary });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] placement-test/run failed: ${message}`);
     res.status(500).json({ error: message });
   }
@@ -666,7 +667,7 @@ router.post("/placement-test/ensure", async (_req: Request, res: Response) => {
     const summary = await ensurePlacementSchedule(apiKey);
     res.json({ ...summary });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] placement-test/ensure failed: ${message}`);
     res.status(500).json({ error: message });
   }
@@ -772,7 +773,7 @@ router.get("/reconcile", async (_req: Request, res: Response) => {
       metrics: buildReconciliation(local, snapshot.counts),
     });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] reconcile failed: ${message}`);
     res.status(500).json({ error: message });
   }
@@ -804,7 +805,7 @@ router.post("/reconcile/refresh", async (_req: Request, res: Response) => {
       `[audit] reconcile-snapshot: done run=${runId} ${JSON.stringify(counts)}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] reconcile-snapshot: run=${runId} failed: ${message}`);
   });
 });
@@ -844,7 +845,7 @@ router.post("/seed-placement/run", async (req: Request, res: Response) => {
     const summary = await runSeedPlacementTest({ limit, force });
     console.log(`[audit] seed-placement-run: done run=${runId} ${JSON.stringify(summary)}`);
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] seed-placement-run run=${runId} failed: ${message}`);
   });
 });
@@ -888,7 +889,7 @@ router.post("/seed-placement/sync", async (_req: Request, res: Response) => {
       `[audit] seed-placement-sync: done run=${runId} ${JSON.stringify({ ...summary, lifecycle })}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] seed-placement-sync run=${runId} failed: ${message}`);
   });
 });
@@ -934,7 +935,7 @@ router.post("/inbound-replies-backfill", async (req: Request, res: Response) => 
       `[audit] inbound-replies-backfill: done run=${runId} ${JSON.stringify(summary)}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] inbound-replies-backfill run=${runId} failed: ${message}`);
   });
 });
@@ -987,7 +988,7 @@ router.post("/qualify-unanswered-replies", async (req: Request, res: Response) =
       `[audit] qualify-unanswered-replies: done run=${runId} ${JSON.stringify(summary)}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] qualify-unanswered-replies run=${runId} failed: ${message}`);
   });
 });
@@ -1045,7 +1046,7 @@ router.post("/reply-optout-backfill", async (req: Request, res: Response) => {
       `[audit] reply-optout-backfill: done run=${runId} ${JSON.stringify(summary)}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] reply-optout-backfill run=${runId} failed: ${message}`);
   });
 });
@@ -1119,7 +1120,7 @@ router.post("/click-scanner-backfill", async (req: Request, res: Response) => {
       `[audit] click-scanner-backfill: done run=${runId} ${JSON.stringify(summary)}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] click-scanner-backfill run=${runId} failed: ${message}`);
   });
 });
@@ -1146,7 +1147,7 @@ router.post("/vendor-click-burst", async (req: Request, res: Response) => {
       console.log(`[audit] vendor-click-burst: done run=${runId} ${JSON.stringify(summary)}`);
     })
     .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[audit] vendor-click-burst run=${runId} failed: ${message}`);
     });
 });
@@ -1185,7 +1186,7 @@ router.post("/reactivate-scanner-paused", async (req: Request, res: Response) =>
       `[audit] reactivate-scanner-paused: done run=${runId} ${JSON.stringify(summary)}`,
     );
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] reactivate-scanner-paused run=${runId} failed: ${message}`);
   });
 });
@@ -1229,7 +1230,7 @@ router.post("/warmup/run", async (req: Request, res: Response) => {
     const summary = await runWarmupMesh({ limit });
     console.log(`[audit] warmup-run: done run=${runId} ${JSON.stringify(summary)}`);
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] warmup-run run=${runId} failed: ${message}`);
   });
 });
@@ -1262,7 +1263,7 @@ router.post("/warmup/poll", async (req: Request, res: Response) => {
     const summary = await runWarmupPoll({ sinceDays });
     console.log(`[audit] warmup-poll: done run=${runId} ${JSON.stringify(summary)}`);
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[audit] warmup-poll run=${runId} failed: ${message}`);
   });
 });

@@ -4,6 +4,7 @@
  * after `listen`, mutexed, state entirely in the DB — a deploy mid-tick loses
  * nothing. The first pass on an empty feed is the full backfill.
  */
+import { errorMessage } from "./db-error.js";
 import { feedHasReplyFacts, syncOutreachFacts } from "./outreach-facts";
 import { judgePendingReplies } from "./reply-judgments";
 
@@ -35,7 +36,7 @@ export function startOutreachFactsWorker(): void {
     inFlight = true;
     runOutreachFactsTick()
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         console.error(`[instantly-service] outreach-facts tick failed: ${message}`);
       })
       .finally(() => {

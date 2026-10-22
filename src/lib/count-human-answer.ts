@@ -29,6 +29,7 @@
  * Fail-soft and loud: the refusal is already answered.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -108,7 +109,7 @@ export async function countHumanAnswerAsOurs(input: {
     return "counted";
   } catch (error) {
     console.error(
-      `${tag}: counting the hand-typed answer to ${input.leadEmail} on campaign=${input.campaignId} FAILED — ${error instanceof Error ? error.message : String(error)}; the responder will be refused again at its next claim`,
+      `${tag}: counting the hand-typed answer to ${input.leadEmail} on campaign=${input.campaignId} FAILED — ${errorMessage(error)}; the responder will be refused again at its next claim`,
     );
     return "failed";
   }

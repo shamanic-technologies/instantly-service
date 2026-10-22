@@ -1,3 +1,4 @@
+import { errorMessage, messageOf } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import {
@@ -132,7 +133,7 @@ async function abandonStepHolds(
       } catch (error: unknown) {
         console.error(
           `[send] FAILED to cancel provisioned cost ${costId} (run ${h.runId}) after "${reason}": ${
-            error instanceof Error ? error.message : String(error)
+            errorMessage(error)
           }`,
         );
       }
@@ -142,7 +143,7 @@ async function abandonStepHolds(
     } catch (error: unknown) {
       console.error(
         `[send] FAILED to fail step run ${h.runId} after "${reason}": ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
     }
@@ -293,7 +294,7 @@ router.post("/", async (req: Request, res: Response) => {
             error: "Conflicting email signatures",
             code: error.code,
             brandIds: error.brandIds,
-            details: error.message,
+            details: messageOf(error),
           });
         }
         throw error;
@@ -528,7 +529,7 @@ router.post("/", async (req: Request, res: Response) => {
         } catch (error) {
           console.error(
             `[send] held-lead lookup failed for ${campaignId ?? "none"}/${body.to}: ${
-              error instanceof Error ? error.message : String(error)
+              errorMessage(error)
             }`,
           );
         }
@@ -895,7 +896,7 @@ router.post("/", async (req: Request, res: Response) => {
           .catch((error: unknown) => {
             console.error(
               `[send] answer-now FAILED for instantlyCampaignId=${queuedId} (it goes out with the next sweep): ${
-                error instanceof Error ? error.message : String(error)
+                errorMessage(error)
               }`,
             );
           });
@@ -906,7 +907,7 @@ router.post("/", async (req: Request, res: Response) => {
       await abandonStepHolds(stepHolds, billingIdentity, error?.message ?? "send failed");
       for (const sr of stepRuns) {
         try {
-          await updateRun(sr.runId, "failed", { orgId, userId, runId: sr.runId }, error.message);
+          await updateRun(sr.runId, "failed", { orgId, userId, runId: sr.runId }, messageOf(error));
         } catch {
           // Run may already be completed (step 1) — ignore
         }
@@ -925,11 +926,11 @@ router.post("/", async (req: Request, res: Response) => {
         details: "Please configure your Instantly API key before sending emails.",
       });
     }
-    traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-error", detail: error.message, level: "error" }, req.headers).catch(() => {});
+    traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-error", detail: messageOf(error), level: "error" }, req.headers).catch(() => {});
     console.error(`[send] Failed to send — to=${body.to} error="${error.message}"`);
     res.status(500).json({
       error: "Failed to send email",
-      details: error.message,
+      details: messageOf(error),
     });
   }
 });
