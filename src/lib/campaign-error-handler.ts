@@ -133,7 +133,7 @@ export async function handleCampaignError(
         await updateRun(cost.runId, "failed", costIdentity, reason);
         console.log(`[campaign-error] Failed run ${cost.runId} for step ${cost.step}`);
       } catch (runErr: unknown) {
-        const msg = runErr instanceof Error ? runErr.message : String(runErr);
+        const msg = errorMessage(runErr);
         console.warn(`[campaign-error] Could not fail run ${cost.runId}: ${msg}`);
       }
     }
@@ -151,7 +151,7 @@ export async function handleCampaignError(
         `[campaign-error] Marked run ${campaign.runId} as failed`,
       );
     } catch (runErr: unknown) {
-      const msg = runErr instanceof Error ? runErr.message : String(runErr);
+      const msg = errorMessage(runErr);
       console.warn(
         `[campaign-error] Could not mark parent run ${campaign.runId} as failed (identity drift?): ${msg}`,
       );
