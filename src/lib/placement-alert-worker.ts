@@ -1,8 +1,8 @@
 /**
- * In-process drive of the inbox-placement staff alert (lib/placement-alert.ts,
+ * In-process drive of the inbox-placement episodes (lib/placement-alert.ts,
  * MAILBOX-MONITORING-1019): first pass 60 s after boot (deploys recreate the
- * container more often than the interval fires), then hourly. The alert fires
- * once per episode, so the cadence only decides how soon a new fall is told.
+ * container more often than the interval fires), then hourly. Records episodes
+ * for the Monitoring page; sends no email (PLACEMENT-ALERT-NO-EMAIL-1022).
  * Joins a pass already running. Failures are logged loud; the next tick retries.
  */
 import { runPlacementAlert } from "./placement-alert";
@@ -22,13 +22,8 @@ export function placementAlertTick(): Promise<void> {
         `[instantly-service] placement-alert: done ${JSON.stringify({
           evaluated: tick.evaluations.length,
           episodesWritten: tick.written.length,
-          alerted: tick.alerted,
-          failed: tick.failed,
         })}`,
       );
-      if (tick.failed.length > 0) {
-        console.error(`[instantly-service] placement-alert: ${tick.failed.length} alert(s) NOT delivered: ${JSON.stringify(tick.failed)}`);
-      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[instantly-service] placement-alert: pass FAILED: ${message}`);

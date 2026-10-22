@@ -1,12 +1,18 @@
 /**
- * Staff alert when inbox placement at an inbox provider falls and the automatic
- * cut did not bring it back (MAILBOX-MONITORING-1019).
+ * Inbox placement per inbox provider against the market bar, and the episodes
+ * when it falls and the automatic cut did not bring it back
+ * (MAILBOX-MONITORING-1019). Read by dashboard v2 Monitoring > Emails, where a
+ * provider below the bar shows red on the hub.
+ *
+ * NO EMAIL (PLACEMENT-ALERT-NO-EMAIL-1022, owner 2026-10-22: « no email in my
+ * inbox please »). The staff email `inbox_placement_below_bar` is gone: the
+ * page is the only surface. Do NOT add a send back.
  *
  * The owner learned on 2026-10-19 that seed tests had read 40-60 % spam at
  * Google for weeks and nobody told him. The machine already cuts a bad mailbox
  * (SENDER-HEALTH-1019: refused by its relay = sends nothing; mostly spam at a
- * provider = no mail to that provider's prospects), so an alert about the FLEET
- * figure would mostly report what was already fixed. The question asked here is
+ * provider = no mail to that provider's prospects), so a figure about the FLEET
+ * would mostly report what was already fixed. The question asked here is
  * the one the cut cannot answer: among the mailboxes STILL ALLOWED to mail a
  * provider's prospects (in production, not refused, not mostly spam there that
  * day), where do their seeds land?
@@ -26,12 +32,10 @@
  *   Illustration, prod 2026-10-19 Google: 1,099 inbox of 3,404 seeds fleet-wide,
  *   dominated by legacy relay senders the dispatcher no longer uses.
  *
- * ONCE PER NEW FACT: the fact is an EPISODE (`placement_alert_episodes`): opened
- * on the first measured day below the bar, closed on the first measured day back
- * at or above it. One alert per episode (event id = provider + start day), sent
- * through transactional-email `POST /platform-staff-alert` (staff list only,
- * org-less, deduplicated by event id there too). A day still below the bar
- * extends the open episode silently; a failed send is retried next tick.
+ * THE FACT is an EPISODE (`placement_alert_episodes`): opened on the first
+ * measured day below the bar, closed on the first measured day back at or above
+ * it; a day still below extends it. Episodes alerted by email before 1022 keep
+ * their `alert_status` / `alerted_at` as history; nothing writes them any more.
  */
 
 import { sql } from "drizzle-orm";
@@ -45,9 +49,6 @@ export const PLACEMENT_ALERT_INBOX_PCT_BAR = 80;
 export const PLACEMENT_ALERT_MIN_FOUND_SEEDS = 20;
 /** Days re-evaluated each tick: seeds of yesterday are still being read today. */
 export const PLACEMENT_ALERT_EVAL_DAYS = 3;
-export const PLACEMENT_ALERT_EVENT = "inbox_placement_below_bar";
-/** The staff Monitoring > Emails > Inbox providers page (dashboard v2, the distribute.you staff org). */
-export const MONITORING_DASHBOARD_URL = "https://dashboard.distribute.you/v2/orgs/org_3CL2MrIGuvlW9YHd5RgRgNoMAMS/brands/f4d73dab-1f9d-49b2-b16e-63ecde76a5eb/monitoring/emails/inbox-providers";
 
 export const PLACEMENT_ALERT_SOURCES = [
   { name: "Omni Online Strategies", url: "https://omnionlinestrategies.com/blog/what-is-inbox-placement-rate-cold-email", says: "below 80% indicates a technical problem; target 85-95%" },
@@ -220,23 +221,6 @@ export function applyEvaluations(
   return [...touched.values()];
 }
 
-/** The staff alert's metadata, as transactional-email's `inbox_placement_below_bar` names it. */
-export function alertMetadata(ep: Episode): Record<string, string> {
-  return {
-    provider: PROVIDER_LABELS[ep.provider],
-    measuredOn: ep.lastBelowOn,
-    inboxPct: ep.inboxPct.toFixed(1),
-    seeds: String(ep.foundSeeds),
-    thresholdPct: String(ep.thresholdPct),
-    mailboxesCut: String(ep.mailboxesCut),
-    dashboardUrl: MONITORING_DASHBOARD_URL,
-  };
-}
-
-export function alertEventId(ep: Episode): string {
-  return `${ep.provider}:${ep.startedOn}`;
-}
-
 // ─── IO ──────────────────────────────────────────────────────────────────────
 
 function rowsOf<T>(result: unknown): T[] {
@@ -339,72 +323,21 @@ async function writeEpisode(ep: Episode): Promise<void> {
   `);
 }
 
-/** POST the staff alert. Throws on any non-2xx (the episode stays `failed`, retried next tick). */
-export async function sendPlacementAlert(ep: Episode): Promise<{ sent: boolean; duplicate: boolean }> {
-  const url = process.env.TRANSACTIONAL_EMAIL_SERVICE_URL || "http://localhost:3000";
-  const response = await fetch(`${url}/platform-staff-alert`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": process.env.TRANSACTIONAL_EMAIL_SERVICE_API_KEY || "" },
-    body: JSON.stringify({ eventType: PLACEMENT_ALERT_EVENT, eventId: alertEventId(ep), metadata: alertMetadata(ep) }),
-  });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`transactional-email-service POST /platform-staff-alert ${response.status}: ${text}`);
-  const body = JSON.parse(text) as { sent?: boolean; duplicate?: boolean };
-  return { sent: body.sent === true, duplicate: body.duplicate === true };
-}
-
 export interface PlacementAlertTick {
   evaluations: PlacementEvaluation[];
   written: Episode[];
-  wouldAlert: { eventId: string; metadata: Record<string, string> }[];
-  alerted: string[];
-  failed: { eventId: string; error: string }[];
 }
 
 /**
- * One pass: evaluate the last days, update the episodes, alert every open
- * episode not alerted yet. `dryRun` writes and sends nothing.
+ * One pass: evaluate the last days and record the episodes. Sends nothing, ever.
+ * `dryRun` writes nothing either.
  */
-export async function runPlacementAlert(opts: { dryRun: boolean; asOf?: Date; send?: typeof sendPlacementAlert }): Promise<PlacementAlertTick> {
+export async function runPlacementAlert(opts: { dryRun: boolean; asOf?: Date }): Promise<PlacementAlertTick> {
   const evaluations = await loadEvaluations(PLACEMENT_ALERT_EVAL_DAYS, opts.asOf);
   const open = await loadOpenEpisodes();
   const written = applyEvaluations(evaluations, open);
-  const after = new Map(open);
-  for (const ep of written) {
-    if (ep.closedOn === null) after.set(ep.provider, ep);
-    else if (after.get(ep.provider)?.startedOn === ep.startedOn) after.delete(ep.provider);
-  }
-  const due = [...after.values()].filter((ep) => ep.alertStatus !== "sent");
-  const tick: PlacementAlertTick = {
-    evaluations,
-    written,
-    wouldAlert: due.map((ep) => ({ eventId: alertEventId(ep), metadata: alertMetadata(ep) })),
-    alerted: [],
-    failed: [],
-  };
-  if (opts.dryRun) return tick;
-
-  for (const ep of written) await writeEpisode(ep);
-  const send = opts.send ?? sendPlacementAlert;
-  for (const ep of due) {
-    const eventId = alertEventId(ep);
-    try {
-      await send(ep);
-      await db.execute(sql`
-        UPDATE placement_alert_episodes SET alert_status = 'sent', alert_error = NULL, alerted_at = now(), updated_at = now()
-        WHERE provider = ${ep.provider} AND started_on = ${ep.startedOn}::date
-      `);
-      tick.alerted.push(eventId);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      await db.execute(sql`
-        UPDATE placement_alert_episodes SET alert_status = 'failed', alert_error = ${message}, updated_at = now()
-        WHERE provider = ${ep.provider} AND started_on = ${ep.startedOn}::date
-      `);
-      tick.failed.push({ eventId, error: message });
-    }
-  }
-  return tick;
+  if (!opts.dryRun) for (const ep of written) await writeEpisode(ep);
+  return { evaluations, written };
 }
 
 /** The staff read: the daily evaluation series, the bar and its sources, the episodes. */
