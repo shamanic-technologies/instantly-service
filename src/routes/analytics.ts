@@ -1,3 +1,4 @@
+import { messageOf } from "../lib/db-error.js";
 import { errorString } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 import { db } from "../db";
@@ -1365,7 +1366,7 @@ export async function computeStatsPayload(
     queryStats(whereClause, audience),
     computeStepStats(whereClause, audience).catch((stepError: any) => {
       console.error(
-        `[instantly-service] Step query failed (overall stats still returned): ${stepError.cause?.message ?? stepError.message}`,
+        `[instantly-service] Step query failed (overall stats still returned): ${stepError.cause?.message ?? messageOf(stepError)}`,
       );
       return [] as StepStat[];
     }),

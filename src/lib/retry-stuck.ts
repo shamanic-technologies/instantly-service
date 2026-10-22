@@ -587,7 +587,7 @@ export async function processRow(row: StuckCampaignRow): Promise<RowOutcome> {
           `after redispatch to ${result.value.instantlyCampaignId}`,
       );
     } catch (pauseError: unknown) {
-      const msg = pauseError instanceof Error ? pauseError.message : String(pauseError);
+      const msg = errorMessage(pauseError);
       console.warn(
         `[instantly-service] retry-stuck: row=${row.id} failed to pause predecessor ` +
           `${row.instantlyCampaignId}: ${msg}`,
