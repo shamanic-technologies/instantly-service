@@ -25,6 +25,7 @@
  * longer `active` and is never selected again.
  */
 
+import { errorMessage, messageOf } from "../db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -106,7 +107,7 @@ export async function loadOpenInstantlySequences(): Promise<OpenInstantlySequenc
 
 /** True for an Instantly 404: the campaign is gone, so it cannot send either. */
 function isNotFound(error: unknown): boolean {
-  return error instanceof Error && / failed: 404 /.test(error.message);
+  return error instanceof Error && / failed: 404 /.test(messageOf(error));
 }
 
 async function closeRow(row: OpenInstantlySequence, asOf: Date): Promise<void> {
@@ -193,7 +194,7 @@ export async function retireInstantlySequences(
         summary.failed += 1;
         console.error(
           `[instantly-service] retire-instantly-sequences: campaign=${row.instantlyCampaignId} failed: ${
-            error instanceof Error ? error.message : String(error)
+            errorMessage(error)
           }`,
         );
       }

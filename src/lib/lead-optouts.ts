@@ -39,6 +39,7 @@
  * Scope is the PERSON, not a campaign: "stop contacting me" said once must not
  * be honoured in one campaign while another keeps sending.
  */
+import { errorMessage } from "./db-error.js";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -262,7 +263,7 @@ async function stopSendingForCampaign(
     );
     return true;
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.warn(
       `[instantly-service] opt-out: failed to stop campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${message}; sequence may continue at the sender`,
     );

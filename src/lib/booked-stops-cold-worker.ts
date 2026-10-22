@@ -7,6 +7,7 @@
  * a first pass 60 s after boot, then every 2 minutes. Joins a sweep already running (shared
  * in-flight promise in the sweep itself). A failure is logged loud and the next tick retries.
  */
+import { errorMessage } from "./db-error.js";
 import { stopQueuedSequencesOfBookedPeople } from "./booked-stops-cold";
 
 export const BOOKED_STOPS_INTERVAL_MS = 2 * 60 * 1000;
@@ -18,7 +19,7 @@ let timer: NodeJS.Timeout | null = null;
 
 function tick(): void {
   stopQueuedSequencesOfBookedPeople(CALLER).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] booked-stops-cold tick failed: ${message}`);
   });
 }

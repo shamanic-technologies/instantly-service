@@ -7,6 +7,7 @@
  *  - `POST /internal/outreach-facts/sync` — one judge + emission pass by hand
  *    (`{ judgeLimit?, sinceDays? }`; sinceDays null = whole history).
  */
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import { readOutreachFacts, syncOutreachFacts } from "../lib/outreach-facts";
@@ -25,7 +26,7 @@ router.get("/", async (req: Request, res: Response) => {
     const page = await readOutreachFacts({ since: since ? Number(since) : 0, limit: limit ?? 500, orgId, brandId, email });
     return res.status(200).json(page);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] outreach-facts read failed: ${message}`);
     return res.status(500).json({ error: message });
   }
@@ -41,7 +42,7 @@ router.post("/sync", async (req: Request, res: Response) => {
     const summary = await syncOutreachFacts({ sinceDays: parsed.data.sinceDays ?? null });
     return res.status(200).json({ judged, summary });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] outreach-facts sync failed: ${message}`);
     return res.status(500).json({ error: "outreach-facts sync failed", detail: message });
   }

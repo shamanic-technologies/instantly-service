@@ -42,6 +42,7 @@
  * left untouched and logged — never resent.
  */
 
+import { errorMessage, messageOf } from "../db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -289,7 +290,7 @@ async function loadCandidates(): Promise<Omit<StalledCandidate, "optedOut">[]> {
 
 /** True for an Instantly 404: the campaign is gone, so it cannot send either. */
 function isNotFound(error: unknown): boolean {
-  return error instanceof Error && / failed: 404 /.test(error.message);
+  return error instanceof Error && / failed: 404 /.test(messageOf(error));
 }
 
 /**
@@ -480,7 +481,7 @@ async function sweepExclusive(
       summary.failed += 1;
       console.error(
         `[instantly-service] stalled-first-emails: campaign=${base.instantlyCampaignId} failed: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
     }

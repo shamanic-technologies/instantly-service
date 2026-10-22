@@ -18,6 +18,7 @@
  * next tick; nothing is lost and nothing is silently swallowed.
  */
 
+import { errorMessage } from "../db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -298,7 +299,7 @@ export async function promotePendingClicks(
       summary.decided += 1;
     } catch (error: unknown) {
       summary.failed += 1;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[instantly-service] click-promotion: hit=${hit.id} campaign=${hit.instantlyCampaignId} failed: ${message}`,
       );

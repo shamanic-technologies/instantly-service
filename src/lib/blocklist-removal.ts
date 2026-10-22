@@ -25,6 +25,7 @@
  * real sending practice and the anti-spam clause our Terms publish.
  */
 
+import { errorMessage } from "./db-error.js";
 import nodemailer from "nodemailer";
 import { sql } from "drizzle-orm";
 
@@ -179,7 +180,7 @@ export function filingFromError(error: unknown, request: Record<string, string>)
     outcome: code !== null && code >= 500 && code < 600 ? "refused" : "failed",
     httpStatus: code,
     responseExcerpt: typeof e?.response === "string" ? e.response.slice(0, 2000) : null,
-    error: error instanceof Error ? error.message : String(error),
+    error: errorMessage(error),
     request,
   };
 }
@@ -358,7 +359,7 @@ export async function fileDueRemovals(options: {
   try {
     contact = await options.loadContact();
   } catch (error: unknown) {
-    contactError = `owner identity unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    contactError = `owner identity unavailable: ${errorMessage(error)}`;
   }
 
   for (const [i, row] of due.entries()) {

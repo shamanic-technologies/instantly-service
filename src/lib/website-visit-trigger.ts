@@ -37,6 +37,8 @@
  * and kept, never resent (the same bytes cannot succeed). Delivery runs DETACHED from the click's promotion.
  */
 
+import { messageOf } from "./db-error.js";
+import { errorMessage, errorString } from "./db-error.js";
 import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, lte } from "drizzle-orm";
 import { db } from "../db";
@@ -240,7 +242,7 @@ export const drizzleOutcomeFireStore: OutcomeFireStore = {
 export type DeliveryResult = "delivered" | "skipped" | "refused" | "retry";
 
 function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return errorMessage(error);
 }
 
 function label(fire: OutcomeFire): string {
@@ -259,7 +261,7 @@ async function keepForRetry(
   const attempts = fire.attempts + 1;
   const delay = backoffMs(attempts);
   console.error(
-    `[instantly-service] website-visit-trigger: NOT delivered (attempt ${attempts}), retried in ${Math.round(delay / 1000)}s: ${label(fire)}: ${error}`,
+    `[instantly-service] website-visit-trigger: NOT delivered (attempt ${attempts}), retried in ${Math.round(delay / 1000)}s: ${label(fire)}: ${errorString(error)}`,
   );
   await store.settle(fire.id, { status: "pending", attempts, nextAttemptAt: new Date(now.getTime() + delay), error }, now);
   return "retry";
@@ -365,7 +367,7 @@ export async function deliverOutcomeFire(
       // 400 = campaign-service read it and refused it (unknown trigger, shape): the same bytes cannot succeed.
       if (error instanceof TriggerDoorError && error.status === 400) {
         console.error(`[instantly-service] website-visit-trigger: ${triggerId} REFUSED by campaign-service, kept: ${label(fire)}: ${error.message}`);
-        await store.settle(fire.id, { status: "refused", triggerId, brandId, offerId, idempotencyKey, error: error.message }, now);
+        await store.settle(fire.id, { status: "refused", triggerId, brandId, offerId, idempotencyKey, error: messageOf(error) }, now);
         return "refused";
       }
       return await keepForRetry(fire, describe(error), store, now);

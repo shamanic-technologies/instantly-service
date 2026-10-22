@@ -7,6 +7,7 @@
  * the vendors actually return.
  */
 
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 import { syncProviderInfra } from "../lib/infra-sync";
 import { syncMailboxes } from "../lib/mailboxes-sync";
@@ -61,7 +62,7 @@ router.post("/sync", async (_req: Request, res: Response) => {
     const fxSummary = await syncFxRates();
     console.log(`[infra] fx-sync: done run=${runId} ${JSON.stringify(fxSummary)}`);
   })().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[infra] infra-sync run=${runId} failed: ${message}`);
   });
 });
@@ -78,7 +79,7 @@ router.post("/fx-sync", async (_req: Request, res: Response) => {
   try {
     res.json(await syncFxRates());
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[infra] fx-sync failed: ${message}`);
     res.status(502).json({ error: "Failed to fetch the ECB reference rate", detail: message });
   }
@@ -164,7 +165,7 @@ router.get("/domains", async (_req: Request, res: Response) => {
 
     res.json(payload);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[infra] domains failed: ${message}`);
     res.status(500).json({ error: "Failed to load the provider inventory" });
   }
@@ -203,7 +204,7 @@ router.get("/waste", async (_req: Request, res: Response) => {
 
     res.json(payload);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[infra] waste failed: ${message}`);
     res.status(500).json({ error: "Failed to classify infrastructure waste" });
   }
@@ -281,7 +282,7 @@ router.get("/spend", async (_req: Request, res: Response) => {
 
     res.json(payload);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[infra] spend failed: ${message}`);
     res.status(500).json({ error: "Failed to summarise infrastructure spend" });
   }

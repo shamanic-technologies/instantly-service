@@ -14,6 +14,7 @@
  * `unanswered` and keeps its stored state.
  */
 
+import { errorMessage, errorString } from "./db-error.js";
 import dns from "node:dns/promises";
 import { sql } from "drizzle-orm";
 
@@ -46,7 +47,7 @@ const LOOKUP_CONCURRENCY = 5;
 export type Lookup = (name: string) => Promise<LookupResult>;
 
 function toLookupResult(error: unknown): LookupResult {
-  const code = (error as { code?: string })?.code ?? String(error);
+  const code = (error as { code?: string })?.code ?? errorString(error);
   // NXDOMAIN / NODATA = the list's honest "not listed".
   if (code === "ENOTFOUND" || code === "ENODATA") return { kind: "nxdomain" };
   return { kind: "error", code };
@@ -144,7 +145,7 @@ export async function checkList(
   try {
     lookup = await lookupFactory(list);
   } catch (error) {
-    return unansweredAll(`resolver: ${error instanceof Error ? error.message : String(error)}`);
+    return unansweredAll(`resolver: ${errorMessage(error)}`);
   }
   const canary = await lookup(`${list.canary}.${list.zone}`);
   if (!canaryHonest(list, canary)) {

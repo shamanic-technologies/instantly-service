@@ -7,6 +7,7 @@
  * email on a listing (owner 2026-10-18): the admin chart is the surface.
  * Joins a pass already running. Failures are logged loud; the next tick retries.
  */
+import { errorMessage } from "./db-error.js";
 import { lastCheckAt, runBlocklistCheck } from "./domain-blocklist-sync";
 import { fileDueRemovals } from "./blocklist-removal";
 import { loadOwnerContact } from "./owner-identity-client";
@@ -33,7 +34,7 @@ export function blocklistTick(now: Date = new Date()): Promise<void> {
         checkedNow = true;
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[instantly-service] domain-blocklist: check FAILED: ${message}`);
     }
     // Removal requests ride the DAILY check, so a
@@ -44,7 +45,7 @@ export function blocklistTick(now: Date = new Date()): Promise<void> {
         const removals = await fileDueRemovals({ now, loadContact: loadOwnerContact, spacingMs: REMOVAL_SPACING_MS });
         console.log(`[instantly-service] domain-blocklist: removal requests ${JSON.stringify(removals)}`);
       } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         console.error(`[instantly-service] domain-blocklist: removal requests FAILED: ${message}`);
       }
     }

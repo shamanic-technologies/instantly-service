@@ -1,3 +1,4 @@
+import { messageOf } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { instantlyLeads, instantlyCampaigns } from "../db/schema";
@@ -49,7 +50,7 @@ router.get("/:campaignId/leads", async (req: Request, res: Response) => {
 
     res.json({ leads, count: leads.length, totalCount });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: messageOf(error) });
   }
 });
 

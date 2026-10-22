@@ -23,6 +23,7 @@
  * the path that promoted it.
  */
 
+import { errorMessage } from "./db-error.js";
 import { findOngoingResponderCampaigns, getCampaignTriggerScope } from "./campaign-client";
 import { handThreadToHuman } from "./escalate-reply";
 import type { TeamEscalationReason } from "./notify-brand-team";
@@ -95,7 +96,7 @@ export async function maybeEscalateOffTopicReply(
     const why = WHY[eventType] ?? WHY.lead_off_topic;
     const paysForAiAnswers = await responderRuns(campaign.orgId, campaign.campaignId).catch((error: unknown) => {
       console.error(
-        `[instantly-service] off-topic-escalation: responder read FAILED for campaign=${campaign.instantlyCampaignId} lead=${leadEmail}, the brand's team is NOT emailed — ${error instanceof Error ? error.message : String(error)}`,
+        `[instantly-service] off-topic-escalation: responder read FAILED for campaign=${campaign.instantlyCampaignId} lead=${leadEmail}, the brand's team is NOT emailed — ${errorMessage(error)}`,
       );
       return null;
     });
@@ -114,7 +115,7 @@ export async function maybeEscalateOffTopicReply(
       `[instantly-service] off-topic-escalation: campaign=${campaign.instantlyCampaignId} lead=${leadEmail} handed to a human (team told: ${result.handedTo ?? "nobody"}, followupsStopped=${result.followupsStopped})`,
     );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] off-topic-escalation FAILED for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${message}; the reply is classified, its ladder may still run`,
     );

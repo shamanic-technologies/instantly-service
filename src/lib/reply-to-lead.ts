@@ -45,6 +45,7 @@
  * row would assert something false (see CLAUDE.md, "Sending declares NO cost").
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -708,7 +709,7 @@ async function deliverInstantlyReply(
       "reply_dispatch_failed",
       502,
       `Instantly refused the reply from ${accountEmail} to ${campaign.leadEmail}: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   }
@@ -783,7 +784,7 @@ async function prepareSmtpReply(
       "mailbox_credential_unavailable",
       409,
       `No credential for ${accountEmail}, so we cannot authenticate as the mailbox that contacted ${campaign.leadEmail}: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   }
@@ -831,7 +832,7 @@ async function prepareOwnAddressReply(
     credential = await resolveMailboxCredential(address, CALLER);
   } catch (error: unknown) {
     return refuse(
-      `we hold no credential to send as ${address} (${error instanceof Error ? error.message : String(error)})`,
+      `we hold no credential to send as ${address} (${errorMessage(error)})`,
     );
   }
 
@@ -964,7 +965,7 @@ async function deliverSmtpReply(
           cc,
           inReplyTo: anchor.inReplyTo,
           ...(sentAttachments ? { attachments: sentAttachments } : {}),
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error),
         },
       })
       .catch(() => {});
@@ -973,7 +974,7 @@ async function deliverSmtpReply(
       "reply_dispatch_failed",
       502,
       `SMTP refused the reply from ${accountEmail} to ${campaign.leadEmail}: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   }

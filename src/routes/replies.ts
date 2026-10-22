@@ -11,6 +11,7 @@
  * thread — is resolved by this service from what already happened. See
  * lib/reply-to-lead.
  */
+import { errorMessage, messageOf } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import { EscalateReplyBodySchema, ReplyToLeadBodySchema } from "../schemas";
@@ -67,7 +68,7 @@ router.post("/", async (req: Request, res: Response) => {
     if (error instanceof ReplyToLeadError) {
       if (error instanceof AmbiguousReplyThreadError) {
         return res.status(error.status).json({
-          error: error.message,
+          error: messageOf(error),
           code: error.code,
           candidates: error.candidates.map((c) => ({
             campaign_id: c.campaignId,
@@ -105,13 +106,13 @@ router.post("/", async (req: Request, res: Response) => {
       }
       return res
         .status(error.status)
-        .json({ error: error.message, code: error.code });
+        .json({ error: messageOf(error), code: error.code });
     }
     // Anything else is a 500 carrying its real cause. This service installs no
     // global error handler, so re-throwing here would leave the request hanging
     // — and a reply that failed for a reason we cannot name must NOT be dressed
     // up as one we can, so it keeps the generic status and no `code`.
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] reply-to-lead: failed for campaign=${campaign_id} lead=${email}: ${message}`,
     );
@@ -160,12 +161,12 @@ router.post("/escalate", async (req: Request, res: Response) => {
     if (error instanceof EscalateReplyError) {
       return res
         .status(error.status)
-        .json({ error: error.message, code: error.code });
+        .json({ error: messageOf(error), code: error.code });
     }
     // Fail loud, and deliberately NOT partially: an escalation that could not
     // reach a human must not report success, because the ladder it would have
     // stopped is the only thing still talking to the prospect.
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] reply-escalation: failed for campaign=${campaign_id} lead=${email}: ${message}`,
     );

@@ -25,6 +25,7 @@
  *    could still go out; that lead is `failed` (no audit row, so a retry
  *    re-runs it) and the route answers 502.
  */
+import { errorMessage } from "./db-error.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -190,7 +191,7 @@ export async function cutFollowups(input: CutFollowupsInput): Promise<FollowupCu
         `[instantly-service] followup-cuts: cut campaign=${input.campaignId} sequence=${row.instantlyCampaignId} lead=${row.leadEmail} holds=${queuedBefore} by=${input.userId} (${input.reason})`,
       );
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[instantly-service] followup-cuts: FAILED campaign=${input.campaignId} sequence=${row.instantlyCampaignId} lead=${row.leadEmail} — ${message}`,
       );

@@ -24,6 +24,7 @@
  * guess. One sequence's failure is logged, counted and held; the rest proceed.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -184,7 +185,7 @@ async function verifyOne(
     summary.held += 1;
     notCleared.add(seq.instantlyCampaignId);
     console.error(
-      `[instantly-service] queued-verification: HELD campaign=${seq.instantlyCampaignId} lead=${seq.leadEmail} — ${error instanceof Error ? error.message : String(error)}`,
+      `[instantly-service] queued-verification: HELD campaign=${seq.instantlyCampaignId} lead=${seq.leadEmail} — ${errorMessage(error)}`,
     );
   }
 }

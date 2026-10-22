@@ -5,6 +5,7 @@
  * for the Monitoring page; sends no email (PLACEMENT-ALERT-NO-EMAIL-1022).
  * Joins a pass already running. Failures are logged loud; the next tick retries.
  */
+import { errorMessage } from "./db-error.js";
 import { runPlacementAlert } from "./placement-alert";
 
 export const PLACEMENT_ALERT_INTERVAL_MS = 60 * 60 * 1000;
@@ -25,7 +26,7 @@ export function placementAlertTick(): Promise<void> {
         })}`,
       );
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[instantly-service] placement-alert: pass FAILED: ${message}`);
     }
   })().finally(() => {

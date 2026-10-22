@@ -16,6 +16,7 @@
  * Limitations: open/click discrete events have no /emails-style endpoint at
  * Instantly. Best-effort synthetic recovery via /leads/list aggregate counts.
  */
+import { errorMessage } from "./db-error.js";
 import { db } from "../db";
 import { instantlyCampaigns } from "../db/schema";
 import { sql, eq } from "drizzle-orm";
@@ -112,7 +113,7 @@ async function deleteFinishedContact(
     try {
       await deleteLeads(apiKey, campaign.instantlyCampaignId, [campaign.leadEmail]);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       if (!isLeadAlreadyGone(message)) throw error;
       console.warn(
         `[instantly-service] reconcile: lead already gone campaign=${campaign.instantlyCampaignId} — ${message}`,
@@ -282,7 +283,7 @@ async function reconcileOneCampaign(
       instantlyStatus = parseInstantlyStatus(config["status"]);
     }
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] reconcile: /campaigns/${campaign.instantlyCampaignId} failed (phase 0): ${message}`,
     );
@@ -324,7 +325,7 @@ async function reconcileOneCampaign(
   try {
     leads = await listLeadsFull(apiKey, campaign.instantlyCampaignId);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] reconcile: /leads/list failed campaign=${campaign.instantlyCampaignId}: ${message}`,
     );
@@ -385,7 +386,7 @@ async function reconcileOneCampaign(
       minTimestampCreated: cursor,
     });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] reconcile: /emails failed campaign=${campaign.instantlyCampaignId}: ${message}`,
     );
@@ -542,7 +543,7 @@ export async function reconcileAll(): Promise<ReconcileSummary> {
       });
       apiKey = keyResult.key;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       const isKeyMissing = error instanceof KeyServiceError && error.statusCode === 404;
       const logLevel = isKeyMissing ? console.warn : console.error;
       logLevel(
@@ -559,7 +560,7 @@ export async function reconcileAll(): Promise<ReconcileSummary> {
         try {
           return await reconcileOneCampaign(campaign, apiKey);
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = errorMessage(error);
           console.error(
             `[instantly-service] reconcile: campaign=${campaign.instantlyCampaignId} failed: ${message}`,
           );

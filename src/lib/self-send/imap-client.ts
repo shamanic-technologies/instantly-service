@@ -32,6 +32,7 @@
  * asynchronous emit from being fatal.
  */
 
+import { errorMessage } from "../db-error.js";
 import { ImapFlow, type ImapFlowOptions } from "imapflow";
 
 import {
@@ -52,7 +53,7 @@ export function createImapClient(
   client.on("error", (error: unknown) => {
     console.warn(
       `[imap] ${label}: connection error (non-fatal): ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   });

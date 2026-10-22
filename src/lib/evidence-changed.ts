@@ -23,6 +23,7 @@
  * silent one would be indistinguishable from a working one.
  */
 
+import { errorMessage } from "./db-error.js";
 import { deleteCachedStatsWhere } from "./stats-cache";
 
 /** Producer ceiling on one call. */
@@ -128,7 +129,7 @@ export async function announceEvidenceChanged(
   try {
     await notifyEvidenceChanged(orgId, normalized);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.warn(
       `[instantly-service] evidence-changed NOT delivered to lead-service (Leads page stale up to 5 min): org=${orgId} reason=${reason} emails=${normalized.join(",")} — ${message}`,
     );

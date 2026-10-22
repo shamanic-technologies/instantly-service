@@ -60,6 +60,7 @@
  * Declares NO cost and sends nothing — it is a read of what already happened.
  */
 
+import { errorMessage } from "./db-error.js";
 import type { SentAttachment } from "./offer-documents";
 import { sql } from "drizzle-orm";
 
@@ -145,7 +146,7 @@ function unreadable(
     "thread_unavailable",
     502,
     `Could not read ${which} thread for ${campaign.leadEmail} on ${campaign.instantlyCampaignId}: ${
-      error instanceof Error ? error.message : String(error)
+      errorMessage(error)
     }`,
   );
 }
@@ -344,7 +345,7 @@ export async function loadSendFactIndex(
       "thread_unavailable",
       502,
       `Could not read the send facts for ${leadEmail}: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   }
@@ -507,7 +508,7 @@ async function fetchInstantlyConversation(
   ).catch((error: unknown) => {
     console.warn(
       `[instantly-service] lead-conversation: could not mirror the thread it just read for campaign=${campaign.instantlyCampaignId}: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
     return [];
@@ -574,7 +575,7 @@ async function resolveFamily(input: LeadConversationInput): Promise<string[]> {
       "campaign_identity_unavailable",
       502,
       `Could not resolve which campaigns ${input.campaignId} is part of: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   }

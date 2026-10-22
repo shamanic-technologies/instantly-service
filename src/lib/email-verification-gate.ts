@@ -29,6 +29,7 @@
  * (and refunds) the sequence.
  */
 
+import { messageOf } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -196,7 +197,7 @@ export async function gateAddresses(
     } catch (error: unknown) {
       if (!(error instanceof EmailVerifierError)) throw error;
       console.error(
-        `[instantly-service] email-verification-gate: NO VERDICT for ${chunk.length} address(es) of org ${identity.orgId} (run ${identity.runId}) — nothing will be sent to them: ${error.message}`,
+        `[instantly-service] email-verification-gate: NO VERDICT for ${chunk.length} address(es) of org ${identity.orgId} (run ${identity.runId}) — nothing will be sent to them: ${messageOf(error)}`,
       );
       decisions = chunk.map((email) => failureDecision(email, error));
     }

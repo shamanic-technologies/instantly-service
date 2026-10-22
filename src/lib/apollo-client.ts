@@ -3,6 +3,7 @@
  * verification history feed. FAILS LOUD on any non-2xx, status and body intact.
  */
 
+import { errorMessage } from "./db-error.js";
 import { fundingRefusalCauseFromText, type FundingRefusalCause } from "./funding-refusal";
 
 const APOLLO_SERVICE_URL = process.env.APOLLO_SERVICE_URL;
@@ -96,7 +97,7 @@ export async function verifyEmailAddresses(
     });
   } catch (error: unknown) {
     throw new EmailVerifierError(
-      `apollo-service POST /email-verifications unreachable: ${error instanceof Error ? error.message : String(error)}`,
+      `apollo-service POST /email-verifications unreachable: ${errorMessage(error)}`,
       null,
       false,
     );

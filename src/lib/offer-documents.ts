@@ -18,6 +18,7 @@
  * anything reach a prospect from the client's mailbox.
  */
 
+import { errorMessage } from "./db-error.js";
 import { createHash } from "node:crypto";
 
 import { ReplyToLeadError } from "./reply-to-lead-error";
@@ -117,7 +118,7 @@ async function fetchOfferDocument(
   try {
     response = await fetch(`${url}/internal/offer-documents/${id}/content`, { headers });
   } catch (error: unknown) {
-    return unavailable(error instanceof Error ? error.message : String(error));
+    return unavailable(errorMessage(error));
   }
   if (response.status === 404 || response.status === 403) return notFound();
   if (!response.ok) {

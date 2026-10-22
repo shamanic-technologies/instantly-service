@@ -19,6 +19,7 @@
  * and picks up whatever is still waiting.
  */
 
+import { errorMessage } from "./db-error.js";
 import { runReplyQualificationFallback } from "./reply-qualification-fallback";
 
 /**
@@ -59,7 +60,7 @@ export function startReplyQualificationWorker(): void {
         }
       })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         console.error(
           `[instantly-service] qualification-fallback tick failed: ${message}`,
         );

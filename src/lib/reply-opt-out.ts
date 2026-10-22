@@ -29,6 +29,7 @@
  * it back is not optional.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -229,7 +230,7 @@ export async function maybeRecordOptOutFromReply(
       },
     });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.warn(
       `[instantly-service] reply-opt-out: could not judge campaign=${campaign.instantlyCampaignId} on ${eventType} — ${message}; the reply stands, any opt-out in it is unrecorded`,
     );

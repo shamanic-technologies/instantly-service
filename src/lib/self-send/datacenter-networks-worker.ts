@@ -6,6 +6,7 @@
  * was never loaded. Joins a pass already running. Failures are logged loud; the
  * next tick retries.
  */
+import { errorMessage } from "../db-error.js";
 import {
   DATACENTER_REFRESH_EVERY_MS,
   datacenterNetworksFetchedAt,
@@ -27,7 +28,7 @@ export function datacenterNetworksTick(now: Date = new Date()): Promise<void> {
       const summary = await syncDatacenterNetworks();
       console.log(`[instantly-service] datacenter-networks: refreshed ${JSON.stringify(summary)}`);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[instantly-service] datacenter-networks: refresh FAILED: ${message}`);
     }
   })().finally(() => {

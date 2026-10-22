@@ -16,6 +16,7 @@
  * treated as transient and surfaced, never as a silent success.
  */
 
+import { errorMessage } from "../db-error.js";
 import nodemailer from "nodemailer";
 
 import { GMAIL_SMTP_PORT, loginFor, type MailboxCredential } from "./mailbox-credentials";
@@ -168,7 +169,7 @@ export async function dispatchMessage(
       code,
       response,
       `SMTP dispatch from ${credential.address} to ${message.to} failed (${kind}): ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   } finally {

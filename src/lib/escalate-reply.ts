@@ -46,6 +46,8 @@
  * The person it went to owns the conversation from here.
  */
 
+import { messageOf } from "./db-error.js";
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { agencyInbox } from "./agency-inbox";
@@ -352,10 +354,8 @@ export async function escalateReply(
         // somebody must still be told.
         const why =
           error instanceof ReplyToLeadError
-            ? `${error.code}: ${error.message}`
-            : error instanceof Error
-              ? error.message
-              : String(error);
+            ? `${error.code}: ${messageOf(error)}`
+            : errorMessage(error);
         console.error(
           `[instantly-service] reply-escalation: hand-over to rep ${repEmail} FAILED for campaign=${campaign.instantlyCampaignId} lead=${campaign.leadEmail} — ${why}; emailing the brand's team instead`,
         );
@@ -389,7 +389,7 @@ export async function escalateReply(
 
   await recordHandedTo(campaign.instantlyCampaignId, handedTo!).catch((error) =>
     console.error(
-      `[instantly-service] reply-escalation: could not record the hand-over on campaign=${campaign.instantlyCampaignId} — ${error instanceof Error ? error.message : String(error)}`,
+      `[instantly-service] reply-escalation: could not record the hand-over on campaign=${campaign.instantlyCampaignId} — ${errorMessage(error)}`,
     ),
   );
 
@@ -449,7 +449,7 @@ async function stopLadderOnce(input: {
     return true;
   } catch (error) {
     console.error(
-      `[instantly-service] reply-escalation: follow-up STOP FAILED for ${input.leadEmail} on campaign=${input.instantlyCampaignId} after the hand-over went out — ${error instanceof Error ? error.message : String(error)}`,
+      `[instantly-service] reply-escalation: follow-up STOP FAILED for ${input.leadEmail} on campaign=${input.instantlyCampaignId} after the hand-over went out — ${errorMessage(error)}`,
     );
     return false;
   }

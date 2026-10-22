@@ -26,6 +26,7 @@
  * means a mailbox quietly stops being warmed.
  */
 
+import { errorMessage } from "../db-error.js";
 import { sql } from "drizzle-orm";
 import { connectImapClient, createImapClient } from "../self-send/imap-client";
 import { simpleParser, type ParsedMail } from "mailparser";
@@ -278,7 +279,7 @@ async function pollReceiver(
               summary.repliesFailed += 1;
               console.warn(
                 `[warmup] reply ${receiverEmail} -> ${warmup.senderEmail} failed: ${
-                  error instanceof Error ? error.message : String(error)
+                  errorMessage(error)
                 }`,
               );
             }
@@ -393,7 +394,7 @@ export async function runWarmupPoll(
         summary.accountsFailed += 1;
         console.warn(
           `[warmup] poll: ${receiverEmail} failed: ${
-            error instanceof Error ? error.message : String(error)
+            errorMessage(error)
           }`,
         );
       }

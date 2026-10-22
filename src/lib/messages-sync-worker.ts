@@ -8,6 +8,7 @@
  * a projection read by a dashboard should not.
  */
 
+import { errorMessage } from "./db-error.js";
 import { syncMessages } from "./messages-sync";
 
 export const MESSAGES_SYNC_INTERVAL_MS = (() => {
@@ -29,7 +30,7 @@ export function startMessagesSyncWorker(): void {
     inFlight = true;
     syncMessages({ sinceDays: MESSAGES_SYNC_TICK_WINDOW_DAYS })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         console.error(`[instantly-service] messages-sync tick failed: ${message}`);
       })
       .finally(() => {

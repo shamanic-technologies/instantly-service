@@ -4,6 +4,7 @@
  * (`lib/sender-health-daily.ts`, SENDER-HEALTH-1019). The admin chart's read.
  */
 
+import { errorMessage } from "../lib/db-error.js";
 import { Router, type Request, type Response } from "express";
 
 import {
@@ -23,7 +24,7 @@ router.get("/", async (req: Request, res: Response) => {
   try {
     return res.json(await loadSenderHealth(days));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] sender-health read failed: ${message}`);
     return res.status(500).json({ error: message });
   }

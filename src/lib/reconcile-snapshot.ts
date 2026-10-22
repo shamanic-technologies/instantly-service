@@ -17,6 +17,7 @@
  * Fail loud throughout — a failed sweep propagates (never a fabricated zero).
  */
 
+import { errorMessage } from "./db-error.js";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { instantlyReconcileSnapshot } from "../db/schema";
@@ -114,7 +115,7 @@ export function maybeTriggerRefresh(apiKey: string, reason: string): boolean {
       ),
     )
     .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[audit] reconcile-snapshot: refresh (${reason}) failed: ${message}`,
       );

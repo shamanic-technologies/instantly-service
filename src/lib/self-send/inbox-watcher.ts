@@ -41,6 +41,7 @@
  * closes every session. The dispatch-time read keeps working without it.
  */
 
+import { errorMessage } from "../db-error.js";
 import { connectImapClient, createImapClient } from "./imap-client";
 import {
   GMAIL_IMAP_PORT,
@@ -221,7 +222,7 @@ async function readMailbox(watcher: Watcher, reason: string): Promise<void> {
   } catch (error) {
     console.error(
       `[instantly-service] inbox-watch: read of login=${watcher.login} failed: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   } finally {
@@ -299,7 +300,7 @@ async function connect(watcher: Watcher): Promise<void> {
     console.warn(
       `[instantly-service] inbox-watch: connect login=${watcher.login} failed, retrying in ${Math.round(
         watcher.backoffMs / 1000,
-      )}s: ${error instanceof Error ? error.message : String(error)}`,
+      )}s: ${errorMessage(error)}`,
     );
     watcher.connecting = false;
     // A session that connected but could not open the INBOX is still a login.
@@ -393,7 +394,7 @@ async function tick(): Promise<void> {
   } catch (error) {
     console.error(
       `[instantly-service] inbox-watch: refresh failed: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   } finally {

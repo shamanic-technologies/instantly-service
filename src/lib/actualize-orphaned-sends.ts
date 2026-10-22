@@ -32,6 +32,7 @@
  * NOTE: keyed on `(campaignId, leadEmail)` like refund-stranded-holds. Platform
  * sends (`campaignId IS NULL`) are skipped (same pre-existing gap).
  */
+import { errorMessage } from "./db-error.js";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { handleEmailSent } from "./silver-promote";
@@ -140,7 +141,7 @@ export async function actualizeOrphanedSends(
       transient += outcome.transient;
     } catch (error: unknown) {
       failed++;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[instantly-service] actualize-orphaned-sends: campaign=${o.instantlyCampaignId} ` +
           `lead=${o.leadEmail} step=${o.step} failed: ${message}`,

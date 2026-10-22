@@ -9,6 +9,7 @@
  * on `x-org-id`, so a brand of another org reads as "none set" here; the
  * gateway refuses it before it reaches us (brand ownership check).
  */
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import {
@@ -23,7 +24,7 @@ const router = Router();
 
 /** Express 4 does not catch a rejected handler: fail loud with a named 500. */
 function failed(res: Response, what: string, error: unknown): Response {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   console.error(`[email-signature] ${what} failed: ${message}`);
   return res.status(500).json({ error: message });
 }

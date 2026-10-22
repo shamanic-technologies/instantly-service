@@ -31,6 +31,7 @@
  * dispatched answers included). Actions come from our own silver event log.
  */
 
+import { errorMessage as dbErrorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import {
@@ -322,7 +323,7 @@ async function loadSingleSequenceThread(
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return dbErrorMessage(error);
 }
 
 /**

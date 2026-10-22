@@ -49,6 +49,7 @@
  * every other surface, and a later reply from them enqueues again.
  */
 
+import { errorMessage } from "./db-error.js";
 import { scheduleFollowupByEmail } from "./lead-client";
 import { liftWrongEscalationHandoff } from "./lift-wrong-handoff";
 import {
@@ -91,7 +92,7 @@ export async function maybeEnqueueFollowupOnInterest(
   } catch (error: unknown) {
     console.warn(
       `[instantly-service] followup-enqueue: hand-over lift FAILED for campaign=${campaign.instantlyCampaignId} ` +
-        `lead=${leadEmail} — ${error instanceof Error ? error.message : String(error)}; a thread an earlier verdict handed to a person stays handed`,
+        `lead=${leadEmail} — ${errorMessage(error)}; a thread an earlier verdict handed to a person stays handed`,
     );
   }
 
@@ -109,7 +110,7 @@ export async function maybeEnqueueFollowupOnInterest(
         `followupCount=${result.followup.followupCount}`,
     );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.warn(
       `[instantly-service] followup-enqueue: FAILED for campaign=${campaign.instantlyCampaignId} ` +
         `lead=${leadEmail} — ${message}; the qualification stands, but nobody is owed an answer ` +

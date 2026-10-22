@@ -1,3 +1,4 @@
+import { messageOf } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 import { db } from "../db";
 import { instantlyAccounts } from "../db/schema";
@@ -21,7 +22,7 @@ router.get("/", async (req: Request, res: Response) => {
     const accounts = await db.select().from(instantlyAccounts);
     res.json({ accounts });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: messageOf(error) });
   }
 });
 
@@ -69,7 +70,7 @@ router.post("/sync", async (req: Request, res: Response) => {
       synced: instantlyAccountsList.length,
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: messageOf(error) });
   }
 });
 
@@ -107,7 +108,7 @@ router.post("/:email/warmup", async (req: Request, res: Response) => {
 
     res.json({ success: true, email, warmupEnabled: enabled });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: messageOf(error) });
   }
 });
 
@@ -127,7 +128,7 @@ router.get("/warmup-analytics", async (req: Request, res: Response) => {
     const analytics = await getWarmupAnalytics(apiKey);
     res.json({ analytics });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: messageOf(error) });
   }
 });
 

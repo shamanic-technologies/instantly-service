@@ -6,6 +6,7 @@
  * fires), then every 15 minutes. Joins a pass already running. A failure is
  * logged loud and the next tick retries.
  */
+import { errorMessage } from "../db-error.js";
 import { runGmailThreadsPass } from "./gmail-threads";
 
 export const GMAIL_THREADS_INTERVAL_MS = 15 * 60 * 1000;
@@ -21,7 +22,7 @@ function tick(): void {
       );
     })
     .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[instantly-service] gmail-threads tick FAILED: ${message}; conversations held from our own mailboxes are not being folded in`);
     });
 }

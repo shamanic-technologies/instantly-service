@@ -19,6 +19,7 @@
  * rather than blocking every send of the tick.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { findLeadTimezoneOnCampaignByEmail } from "./lead-client";
@@ -151,7 +152,7 @@ async function runHeal(asOf: Date): Promise<TimezoneHealSummary> {
       } catch (error) {
         summary.failed++;
         console.warn(
-          `[instantly-service] queued-sequence-timezone: could not read the zone of ${s.leadEmail} on campaign=${s.instantlyCampaignId}, left on the default zone this tick — ${error instanceof Error ? error.message : String(error)}`,
+          `[instantly-service] queued-sequence-timezone: could not read the zone of ${s.leadEmail} on campaign=${s.instantlyCampaignId}, left on the default zone this tick — ${errorMessage(error)}`,
         );
       }
     }
