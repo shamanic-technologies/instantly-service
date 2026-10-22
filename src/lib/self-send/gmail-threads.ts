@@ -48,7 +48,7 @@
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
-import { createRun } from "../runs-client";
+import { createRun, updateRun } from "../runs-client";
 import { OWN_MAILBOX_THREAD } from "../reply-destination";
 import type { CallerInfo } from "../key-client";
 import { bareAddress, isStaffSender } from "../staff-senders";
@@ -273,6 +273,46 @@ async function readerIdentity(orgId?: string): Promise<GoogleCallerIdentity | nu
   return { ...identity, runId: run.id };
 }
 
+/**
+ * Close the run a source's read was made under, when that source's work ends:
+ * `completed`, or `failed` with what went wrong (an exception, or mirror batches
+ * that could not be read). Every reader run is opened by {@link readerIdentity}
+ * and MUST end here: 14,952 of them were left `running` for good before
+ * GMAIL-THREADS-RUNS-NEVER-CLOSE-1022, counted as live work by every reader of
+ * "runs in progress". A failed close is logged loud and the pass goes on (the
+ * folding is done; only the run's bookkeeping is lost).
+ */
+export async function closeReaderRun(identity: GoogleCallerIdentity, error: string | null): Promise<void> {
+  try {
+    if (error === null) await updateRun(identity.runId, "completed", identity);
+    else await updateRun(identity.runId, "failed", identity, error);
+  } catch (closeError) {
+    console.error(
+      `[instantly-service] gmail-threads: could not close run ${identity.runId} (org ${identity.orgId}) as ${
+        error === null ? "completed" : "failed"
+      }; it stays running in runs-service: ${closeError instanceof Error ? closeError.message : String(closeError)}`,
+    );
+  }
+}
+
+/** Fold one source under its reader run, and close that run whatever happens. */
+async function foldUnderRun(
+  identity: GoogleCallerIdentity,
+  source: FoldSource,
+  asOf: Date,
+  summary: GmailThreadsSummary,
+): Promise<void> {
+  const failedBefore = summary.batchesFailed;
+  try {
+    await foldSource(source, asOf, summary);
+  } catch (error) {
+    await closeReaderRun(identity, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+  const failed = summary.batchesFailed - failedBefore;
+  await closeReaderRun(identity, failed > 0 ? `${source.label}: ${failed} mirror batch(es) could not be read` : null);
+}
+
 /** One message folded in, as reported. */
 export interface FoldedMessage {
   leadEmail: string;
@@ -338,7 +378,8 @@ export async function foldInGmailThreads(
   // SOURCE 1: the staff mirrors, for every lead of every org.
   const identity = await readerIdentity();
   if (!identity) throw new Error("no campaign carries an identity to read the Gmail mirror with");
-  await foldSource(
+  await foldUnderRun(
+    identity,
     {
       label: "staff",
       leads,
@@ -373,7 +414,8 @@ export async function foldInGmailThreads(
     }
     if (!orgIdentity) continue;
     let owner: Set<string> | null = new Set();
-    await foldSource(
+    await foldUnderRun(
+      orgIdentity,
       {
         label: `org ${orgId}`,
         leads: scoped,
