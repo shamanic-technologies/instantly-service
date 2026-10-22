@@ -22,6 +22,7 @@
  * so the feed rarely has to correct itself. A failed call writes nothing (the
  * next tick retries) and is logged loud by the caller.
  */
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -239,7 +240,7 @@ export async function judgePendingReplies(limit: number): Promise<JudgeSummary> 
     } catch (error: unknown) {
       summary.failed.push(reply.replyId);
       console.error(
-        `[instantly-service] reply-judgments: FAILED reply=${reply.replyId}: ${error instanceof Error ? error.message : String(error)}`,
+        `[instantly-service] reply-judgments: FAILED reply=${reply.replyId}: ${errorMessage(error)}`,
       );
     }
   }

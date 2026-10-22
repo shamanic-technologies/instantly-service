@@ -2,6 +2,7 @@
  * Staff routes for the Microsoft seed receivers and the seed placement daily
  * series (MS-SEED-PLACEMENT-1018). Platform-scoped (no org), service-auth.
  */
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import {
@@ -33,7 +34,7 @@ router.post("/microsoft/authorize", async (req: Request, res: Response) => {
       instructions: `Open ${started.verificationUri}, enter ${started.userCode}, sign in as ${started.email} and accept. Then GET /internal/seed-placement/microsoft shows status "authorized".`,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] microsoft seed authorize failed: ${message}`);
     return res.status(error instanceof MicrosoftOAuthError ? 502 : 500).json({ error: message });
   }
@@ -44,7 +45,7 @@ router.get("/microsoft", async (_req: Request, res: Response) => {
   try {
     return res.json({ mailboxes: await listMicrosoftSeedMailboxes() });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     return res.status(500).json({ error: message });
   }
 });
@@ -59,7 +60,7 @@ router.get("/daily", async (req: Request, res: Response) => {
   try {
     return res.json(await loadSeedPlacementDaily(days));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] seed placement daily read failed: ${message}`);
     return res.status(500).json({ error: message });
   }
@@ -70,7 +71,7 @@ router.post("/daily/refresh", async (_req: Request, res: Response) => {
   try {
     return res.json({ rows: await refreshSeedPlacementDaily() });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     return res.status(500).json({ error: message });
   }
 });

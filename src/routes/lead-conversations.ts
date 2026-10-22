@@ -10,6 +10,8 @@
  * Org scope is enforced in the lookup itself (`org_id = <caller>`), so a
  * campaign belonging to another org reads as absent — never as a thread.
  */
+import { messageOf } from "../lib/db-error.js";
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import { LeadConversationQuerySchema } from "../schemas";
@@ -48,12 +50,12 @@ router.get("/", async (req: Request, res: Response) => {
     if (error instanceof LeadConversationError) {
       return res
         .status(error.status)
-        .json({ error: error.message, code: error.code });
+        .json({ error: messageOf(error), code: error.code });
     }
     // Anything else keeps the generic status and carries its real cause. This
     // service installs no global error handler, so re-throwing would leave the
     // request hanging.
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(
       `[instantly-service] lead-conversation: failed for campaign=${campaign_id} lead=${email}: ${message}`,
     );

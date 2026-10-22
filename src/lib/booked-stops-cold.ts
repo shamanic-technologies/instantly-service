@@ -32,6 +32,7 @@
  * fails, logged). A failure on one sequence's stop is logged and counted; the rest proceed.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -196,7 +197,7 @@ async function sweepBookedPeople(caller: CallerInfo, limit: number): Promise<Boo
     } catch (error: unknown) {
       summary.failed += 1;
       notYetStopped.add(seq.instantlyCampaignId);
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[instantly-service] booked-stops-cold: could not stop campaign=${seq.instantlyCampaignId} lead=${seq.leadEmail} — ${message}`,
       );

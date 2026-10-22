@@ -33,6 +33,7 @@
  * resumed row is `active`, so it leaves the candidate set.
  */
 
+import { errorMessage } from "../db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -247,7 +248,7 @@ export async function reactivateScannerPausedSequences(
       summary.failed += 1;
       console.error(
         `[instantly-service] reactivate-scanner-paused: campaign=${c.instantlyCampaignId} failed: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
     }

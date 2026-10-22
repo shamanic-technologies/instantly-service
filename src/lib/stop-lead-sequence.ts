@@ -23,6 +23,7 @@
  * sequence keeps running — visibly, in the log, rather than silently.
  */
 
+import { errorMessage } from "./db-error.js";
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
 import { isSelfSendCampaignId } from "./self-send/transport";
@@ -69,7 +70,7 @@ export async function stopLeadSequence(input: StopLeadSequenceInput): Promise<bo
     );
     return true;
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.warn(
       `[instantly-service] stop-lead-sequence: pause failed for campaign=${input.instantlyCampaignId} lead=${input.leadEmail} — ${message}; sequence continues on Instantly`,
     );

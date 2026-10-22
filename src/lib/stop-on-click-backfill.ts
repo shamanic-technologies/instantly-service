@@ -17,6 +17,7 @@
  * next reconcile (and a re-pause of an already-paused Instantly campaign is a no-op anyway), and
  * the helper is fail-soft per lead, so one bad campaign cannot stop the sweep.
  */
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -111,7 +112,7 @@ export async function backfillStopOnClick(
       // maybeStopOnClickForLeg is itself fail-soft, so reaching here means something outside it
       // broke. Count it and keep going: one campaign must not cost the rest of the sweep.
       failed++;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[instantly-service] stop-on-click-backfill: campaign=${c.instantlyCampaignId} ` +
           `lead=${c.leadEmail} failed: ${message}`,

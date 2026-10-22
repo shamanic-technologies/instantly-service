@@ -11,6 +11,7 @@
  * the walk. Verified live 2026-08-02 against all three org tokens.
  */
 
+import { errorMessage } from "../db-error.js";
 import {
   parseProviderDate,
   type ProviderDomain,
@@ -241,7 +242,7 @@ export async function fetchGandiInventory(
         domain.priceCurrency = price.currency;
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.warn(
         `[instantly-service] gandi: no renewal quote for ${domain.domain} — ${message}`,
       );

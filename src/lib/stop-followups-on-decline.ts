@@ -42,6 +42,7 @@
  * exactly the state that let a declining prospect be chased.
  */
 
+import { errorMessage } from "./db-error.js";
 import { findLeadOnCampaignByEmail, readFollowupState, stopFollowups } from "./lead-client";
 import { REPLY_KIND_CLASSIFICATION, isNotAProspectReplyKind, isReplyKind } from "./reply-kind";
 import type { SalesInterestTriggerCampaign } from "./trigger-sales-interest-campaign";
@@ -100,7 +101,7 @@ export async function maybeStopFollowupsOnDecline(
     });
     console.log(`${tag} leadRow=${lead.id} — stopped (was due ${state.dueAt ?? "claimed"})`);
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.warn(
       `${tag} — FAILED: ${message}; the classification stands, but this person may ` +
         `still be handed out for a follow-up`,

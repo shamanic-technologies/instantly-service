@@ -10,6 +10,7 @@
  * `RETRY_STUCK_WORKER_ENABLED` / `PLACEMENT_TESTS_ENABLED` convention.
  */
 
+import { errorMessage } from "../lib/db-error.js";
 import { Router, type Request, type Response } from "express";
 
 import { runDispatch } from "../lib/self-send/dispatch-worker";
@@ -59,7 +60,7 @@ router.post("/dispatch", async (req: Request, res: Response) => {
   runDispatch({ limit, pollFirst: true }).catch((error) => {
     console.error(
       `[instantly-service] self-send-dispatch failed: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   });
@@ -97,7 +98,7 @@ router.post("/poll", async (req: Request, res: Response) => {
   runPoll({ sinceDays }).catch((error) => {
     console.error(
       `[instantly-service] self-send-poll failed: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   });
@@ -132,7 +133,7 @@ router.post("/orphan-replies", async (req: Request, res: Response) => {
   runOrphanReplySweep({ dryRun, backfill, sinceDays, limit }).catch((error) => {
     console.error(
       `[instantly-service] orphan-replies failed: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   });
@@ -162,7 +163,7 @@ router.post("/gmail-threads", async (req: Request, res: Response) => {
     })
     .catch((error) => {
       console.error(
-        `[instantly-service] gmail-threads failed: ${error instanceof Error ? error.message : String(error)}`,
+        `[instantly-service] gmail-threads failed: ${errorMessage(error)}`,
       );
     });
 });
@@ -184,7 +185,7 @@ router.post("/our-side-replies", async (req: Request, res: Response) => {
     console.log(`[instantly-service] our-side-replies: done ${JSON.stringify(summary)}`);
     res.json(summary);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] our-side-replies failed: ${message}`);
     res.status(500).json({ error: message });
   }
@@ -211,7 +212,7 @@ router.post("/forwarded-replies", async (req: Request, res: Response) => {
     .catch((error) => {
       console.error(
         `[instantly-service] forwarded-replies failed: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
     });
@@ -271,7 +272,7 @@ router.post("/stalled-first-emails", async (req: Request, res: Response) => {
   sweepStalledFirstEmails({ limit }).catch((error) => {
     console.error(
       `[instantly-service] stalled-first-emails failed: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   });
@@ -301,7 +302,7 @@ router.post("/retire-instantly-sequences", async (req: Request, res: Response) =
   retireInstantlySequences({ dryRun: false, limit }).catch((error) => {
     console.error(
       `[instantly-service] retire-instantly-sequences failed: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   });
@@ -336,7 +337,7 @@ router.post("/dsn-judgments", async (req: Request, res: Response) => {
     .catch((error) => {
       console.error(
         `[instantly-service] dsn-judgments failed: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
     });

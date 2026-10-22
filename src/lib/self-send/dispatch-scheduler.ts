@@ -32,6 +32,7 @@
  * three land in `runDispatch`, whose mutex makes the extra triggers free.
  */
 
+import { errorMessage } from "../db-error.js";
 import { runDispatch } from "./dispatch-worker";
 import { sweepStalledFirstEmails } from "./stalled-first-emails";
 import { isSelfSendDispatchEnabled } from "../../routes/self-send";
@@ -80,12 +81,12 @@ export function startSelfSendDispatchWorker(): void {
     // goes out on this same tick. A sweep failure never blocks the dispatch.
     sweepStalledFirstEmails()
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         console.error(`[instantly-service] stalled-first-emails sweep failed: ${message}`);
       })
       .then(() => runDispatch({ pollFirst: true }))
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         console.error(`[instantly-service] self-send-dispatch tick failed: ${message}`);
       });
   }, SELF_SEND_DISPATCH_INTERVAL_MS);

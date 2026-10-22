@@ -11,6 +11,7 @@
  * only the steps that never got that far.
  */
 
+import { errorMessage } from "../db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -822,7 +823,7 @@ async function runDispatchExclusive(
   // unread domain is not Microsoft as far as this tick knows.
   await refreshRecipientMailHosts().catch((error: unknown) => {
     console.error(
-      `[instantly-service] self-send-dispatch: mail-host refresh failed — ${error instanceof Error ? error.message : String(error)}`,
+      `[instantly-service] self-send-dispatch: mail-host refresh failed — ${errorMessage(error)}`,
     );
   });
 
@@ -831,7 +832,7 @@ async function runDispatchExclusive(
   // (lib/queued-sequence-timezone); a failed pass is loud and sends on the zones already held.
   await healQueuedSequenceTimezones(asOf).catch((error: unknown) => {
     console.error(
-      `[instantly-service] self-send-dispatch: zone heal failed, dispatching on the zones already held — ${error instanceof Error ? error.message : String(error)}`,
+      `[instantly-service] self-send-dispatch: zone heal failed, dispatching on the zones already held — ${errorMessage(error)}`,
     );
   });
 
@@ -922,7 +923,7 @@ async function runDispatchExclusive(
     }),
   ).catch((error: unknown) => {
     console.error(
-      `[instantly-service] sender-health: daily series NOT written: ${error instanceof Error ? error.message : String(error)}`,
+      `[instantly-service] sender-health: daily series NOT written: ${errorMessage(error)}`,
     );
   });
   // Any waiting reply is owed now — there is no window on an answer any more.
@@ -938,7 +939,7 @@ async function runDispatchExclusive(
       await runOrphanReplySweep().catch((error) => {
         console.error(
           `[instantly-service] self-send: idle orphan-reply sweep failed: ${
-            error instanceof Error ? error.message : String(error)
+            errorMessage(error)
           }`,
         );
       });
@@ -978,7 +979,7 @@ async function runDispatchExclusive(
     await runPoll({ asOf }).catch((error) => {
       console.error(
         `[instantly-service] self-send: pre-dispatch poll failed, sending anyway: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
     });
@@ -992,7 +993,7 @@ async function runDispatchExclusive(
     await runOrphanReplySweep().catch((error) => {
       console.error(
         `[instantly-service] self-send: orphan-reply sweep failed, sending anyway: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
     });
@@ -1048,7 +1049,7 @@ async function runDispatchExclusive(
     } catch (error) {
       console.error(
         `[instantly-service] self-send: scheduled-reply drain failed, sending anyway: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
     }
@@ -1192,7 +1193,7 @@ async function sendDueStep(
     if (!(error instanceof SmtpDispatchError)) {
       console.error(
         `[instantly-service] self-send: campaign=${step.instantlyCampaignId} step=${step.step} failed: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
       summary.failed += 1;
@@ -1324,7 +1325,7 @@ async function settleDsns(when: "idle" | "pre-dispatch"): Promise<void> {
   } catch (error) {
     console.error(
       `[instantly-service] self-send: ${when} dsn-judgment sweep failed: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   }

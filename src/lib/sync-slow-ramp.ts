@@ -33,6 +33,7 @@
  * Fail-loud per account: a PATCH error is counted under `failed` and the sweep
  * continues (a re-run retries it) — no silent swallow of the overall op.
  */
+import { errorMessage } from "./db-error.js";
 import { listAccounts, setSlowRamp, type Account } from "./instantly-client";
 
 export interface SlowRampSyncSummary {
@@ -79,7 +80,7 @@ export async function syncSlowRampOff(
       patched += 1;
     } catch (error: unknown) {
       failed += 1;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[slow-ramp-sync] PATCH failed email=${email}: ${message}`);
     }
   }

@@ -5,6 +5,7 @@
  * minutes. Joins a pass already running. A failure is logged loud and the next
  * tick retries from the saved cursor.
  */
+import { errorMessage } from "./db-error.js";
 import { syncVerificationHistory } from "./verification-history-mirror";
 
 export const VERIFICATION_MIRROR_INTERVAL_MS = 5 * 60 * 1000;
@@ -22,7 +23,7 @@ function tick(): void {
       }
     })
     .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[instantly-service] verification-history-mirror tick failed: ${message}`);
     });
 }

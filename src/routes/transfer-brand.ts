@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/db-error.js";
 import { Router } from "express";
 import { TransferBrandRequestSchema } from "../schemas";
 import { transferBrand } from "../lib/transfer-brand";
@@ -16,7 +17,7 @@ router.post("/", async (req, res) => {
     console.error("[transfer-brand] failed:", error);
     return res.status(500).json({
       error: "Transfer failed",
-      detail: error instanceof Error ? error.message : String(error),
+      detail: errorMessage(error),
     });
   }
 });

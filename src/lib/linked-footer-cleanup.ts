@@ -20,6 +20,7 @@
  * CLI in `scripts/cleanup-linked-footer.ts` is a thin wrapper around it.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { getCampaign, updateCampaign, type InstantlySequenceStep } from "./instantly-client";
@@ -174,7 +175,7 @@ export async function runLinkedFooterCleanup(
       summary.failed++;
       log(
         `[cleanup-linked-footer] campaign=${row.instantlyCampaignId} failed: ${
-          e instanceof Error ? e.message : String(e)
+          errorMessage(e)
         }`,
       );
     }

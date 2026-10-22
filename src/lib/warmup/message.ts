@@ -21,6 +21,7 @@
  * note, not a reasoning task.
  */
 
+import { errorMessage } from "../db-error.js";
 import { platformComplete } from "../chat-client";
 
 /**
@@ -167,7 +168,7 @@ export async function buildWarmupMessage(
   } catch (error) {
     console.warn(
       `[warmup] message generation failed, using fallback: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
     const message = fallbackMessage(topic, receiverEmail);

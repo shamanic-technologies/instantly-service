@@ -47,6 +47,7 @@
  * daily (mirrors reconcile's ordering); a warmup failure skips that account's
  * daily PATCH this run (next run heals).
  */
+import { errorMessage } from "./db-error.js";
 import { fetchRecentDailyVolume, sustainedFor } from "./recent-send-volume";
 import {
   listAccounts,
@@ -311,7 +312,7 @@ export async function syncLifecycleLimits(
       accountsPatched += 1;
     } catch (error: unknown) {
       failed += 1;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[lifecycle-limits-sync] PATCH failed email=${patch.email}: ${message}`);
     }
   }

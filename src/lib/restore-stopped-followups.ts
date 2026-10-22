@@ -32,6 +32,7 @@
  * so it is no longer a candidate. Dry-run by default.
  */
 
+import { errorMessage } from "./db-error.js";
 import { fundingRefusalCause, isSalesFunnelCapReason } from "./funding-refusal";
 import { sql } from "drizzle-orm";
 
@@ -291,7 +292,7 @@ export async function restoreOne(
   } catch (error) {
     await abandon(holds, parent).catch((e: unknown) =>
       console.error(
-        `[instantly-service] restore-stopped-followups: could not give back holds of ${c.instantlyCampaignId}: ${e instanceof Error ? e.message : String(e)}`,
+        `[instantly-service] restore-stopped-followups: could not give back holds of ${c.instantlyCampaignId}: ${errorMessage(e)}`,
       ),
     );
     throw error;
@@ -353,7 +354,7 @@ export async function restoreStoppedFollowups(options: {
     } catch (error: unknown) {
       summary.failed += 1;
       console.error(
-        `[instantly-service] restore-stopped-followups: failed campaign=${c.instantlyCampaignId} lead=${c.leadEmail}: ${error instanceof Error ? error.message : String(error)}`,
+        `[instantly-service] restore-stopped-followups: failed campaign=${c.instantlyCampaignId} lead=${c.leadEmail}: ${errorMessage(error)}`,
       );
     }
   }

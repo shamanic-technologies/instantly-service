@@ -29,6 +29,7 @@
  * never degrade to some other sender.
  */
 
+import { errorMessage } from "../db-error.js";
 import { KeyServiceError, resolvePlatformKey, type CallerInfo } from "../key-client";
 import {
   listPrimeforgeRawMailboxes,
@@ -267,7 +268,7 @@ export function parseManualCredentials(raw: string): ManualMailboxEntry[] {
   } catch (error) {
     throw new MailboxCredentialError(
       `${MANUAL_CREDENTIALS_PROVIDER} platform key is not valid JSON: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
   }

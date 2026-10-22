@@ -25,6 +25,7 @@
  * tokens only. Nothing here declares a cost.
  */
 
+import { errorMessage } from "../db-error.js";
 import { sql } from "drizzle-orm";
 import { simpleParser } from "mailparser";
 
@@ -352,7 +353,7 @@ async function refetchBodies(rows: OrphanRow[], summary: OrphanReplySweepSummary
         summary.bodiesUnavailable += group.length;
         console.error(
           `[instantly-service] orphan-replies: could not re-read bodies on account=${accountEmail}: ${
-            error instanceof Error ? error.message : String(error)
+            errorMessage(error)
           }`,
         );
       }
@@ -586,7 +587,7 @@ export async function runOrphanReplySweep(
       summary.failed += 1;
       console.error(
         `[instantly-service] orphan-replies: row=${row.id} failed: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
     }

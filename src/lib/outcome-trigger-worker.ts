@@ -7,6 +7,7 @@
  * a first pass 60 s after boot, then every minute; a slow pass never stacks onto the next. State lives in the
  * table, so a deploy mid-pass loses nothing (a taken row's lease runs out and the next pass takes it again).
  */
+import { errorMessage } from "./db-error.js";
 import { drainOutcomeTriggerFires } from "./website-visit-trigger";
 
 export const OUTCOME_TRIGGER_DRAIN_INTERVAL_MS = 60_000;
@@ -25,7 +26,7 @@ export async function runOutcomeTriggerDrain(): Promise<void> {
       console.log(`[instantly-service] outcome-trigger drain: ${JSON.stringify(counts)}`);
     }
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] outcome-trigger drain failed (retried next pass): ${message}`);
   } finally {
     inFlight = false;

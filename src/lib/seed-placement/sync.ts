@@ -14,6 +14,7 @@
  * silently penalises a healthy mailbox.
  */
 
+import { errorMessage } from "../db-error.js";
 import { connectImapClient, createImapClient } from "../self-send/imap-client";
 import { simpleParser, type ParsedMail } from "mailparser";
 import { sql } from "drizzle-orm";
@@ -364,7 +365,7 @@ export async function syncSeedPlacement(): Promise<SeedPlacementSyncSummary> {
         summary.receiversFailed += 1;
         console.error(
           `[seed-placement] receiver ${receiverEmail} failed: ${
-            error instanceof Error ? error.message : String(error)
+            errorMessage(error)
           }`,
         );
       }

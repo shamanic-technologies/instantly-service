@@ -14,6 +14,7 @@
  * The campaign is the caller (outreach) campaign that holds the person.
  */
 
+import { errorMessage } from "./db-error.js";
 import { findLeadOnCampaignByEmail, handFollowupsToHuman } from "./lead-client";
 
 export async function handThreadFollowupsToHuman(input: {
@@ -49,7 +50,7 @@ export async function handThreadFollowupsToHuman(input: {
     return true;
   } catch (error) {
     console.error(
-      `[instantly-service] ${input.tag}: marking ${input.leadEmail} on campaign=${input.campaignId} HANDED FAILED — ${error instanceof Error ? error.message : String(error)}; an automated responder could still claim this thread`,
+      `[instantly-service] ${input.tag}: marking ${input.leadEmail} on campaign=${input.campaignId} HANDED FAILED — ${errorMessage(error)}; an automated responder could still claim this thread`,
     );
     return false;
   }

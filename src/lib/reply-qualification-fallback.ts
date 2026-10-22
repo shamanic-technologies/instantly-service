@@ -22,6 +22,7 @@
  * gate at once — no side effect is re-implemented here.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -329,7 +330,7 @@ export async function runReplyQualificationFallback(
       }
     } catch (error: unknown) {
       summary.failed += 1;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[instantly-service] qualification-fallback: FAILED lead=${reply.leadEmail} campaign=${reply.instantlyCampaignId}: ${message}`,
       );

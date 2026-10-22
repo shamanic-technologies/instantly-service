@@ -5,6 +5,7 @@
  * Fails loud: an empty list on a read failure would claim these leads never
  * replied, the one wrong answer that looks exactly like a correct one.
  */
+import { errorMessage } from "../lib/db-error.js";
 import { Router, Request, Response } from "express";
 
 import { readReplyVerdicts } from "../lib/reply-verdicts";
@@ -22,7 +23,7 @@ router.post("/query", async (req: Request, res: Response) => {
     const replies = await readReplyVerdicts({ orgId, ...parsed.data });
     return res.status(200).json({ replies });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] reply-verdicts: failed for org=${orgId}: ${message}`);
     return res.status(500).json({ error: message });
   }

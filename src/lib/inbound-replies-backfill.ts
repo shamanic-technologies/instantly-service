@@ -30,6 +30,7 @@
  * unqualified stays visible in bronze for a human to find.
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -334,7 +335,7 @@ export async function backfillInboundReplies(
       else summary.unclassifiable += 1;
       if (outcome.stopped) summary.sequencesStopped += 1;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(
         `[instantly-service] inbound-replies-backfill: campaign=${candidate.instantlyCampaignId} failed: ${message}`,
       );

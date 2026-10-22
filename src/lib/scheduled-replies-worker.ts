@@ -12,6 +12,7 @@
  * rides `SELF_SEND_DISPATCH_ENABLED`, the switch that gates the whole sweep.
  */
 
+import { errorMessage } from "./db-error.js";
 import {
   loadPendingScheduledReplies,
   markScheduledReplyFailed,
@@ -89,7 +90,7 @@ export async function dispatchScheduledReplies(
     await markScheduledReplyFailed(reply.id, reply.attempts, error).catch(() => {});
     console.error(
       `[instantly-service] scheduled-reply: campaign=${reply.instantlyCampaignId} lead=${reply.leadEmail} failed: ${
-        error instanceof Error ? error.message : String(error)
+        errorMessage(error)
       }`,
     );
     summary.failed += 1;

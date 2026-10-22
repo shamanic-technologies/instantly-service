@@ -3,6 +3,7 @@
  * before selecting, but its interval restarts on every deploy: a first pass 60 s after boot,
  * then every 5 minutes. Joins a pass already running. A failure is logged and retried next tick.
  */
+import { errorMessage } from "./db-error.js";
 import { healQueuedSequenceTimezones } from "./queued-sequence-timezone";
 
 export const TIMEZONE_HEAL_INTERVAL_MS = 5 * 60 * 1000;
@@ -12,7 +13,7 @@ let timer: NodeJS.Timeout | null = null;
 
 function tick(): void {
   healQueuedSequenceTimezones().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.error(`[instantly-service] queued-sequence-timezone tick failed: ${message}`);
   });
 }

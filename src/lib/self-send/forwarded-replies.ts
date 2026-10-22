@@ -39,6 +39,7 @@
  * pressbeat.ai once its forward kept a copy).
  */
 
+import { errorMessage } from "../db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
@@ -616,7 +617,7 @@ export async function recoverForwardedReplies(
       summary.mailboxesFailed += 1;
       console.error(
         `[instantly-service] forwarded-replies: mailbox=${login} failed: ${
-          error instanceof Error ? error.message : String(error)
+          errorMessage(error)
         }`,
       );
     }

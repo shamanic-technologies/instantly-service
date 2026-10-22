@@ -35,6 +35,7 @@
  * Spends no metered cost: a read against a flat subscription, same reasoning as
  * the Unibox backfill and the placement tests.
  */
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -147,7 +148,7 @@ export async function maybeMirrorCampaignEmails(
       `[instantly-service] mirror-emails: stored ${stored} new message(s) for campaign=${campaign.instantlyCampaignId} on ${eventType}`,
     );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     console.warn(
       `[instantly-service] mirror-emails: could not mirror campaign=${campaign.instantlyCampaignId} on ${eventType} — ${message}; the event stands, the words may be missing`,
     );

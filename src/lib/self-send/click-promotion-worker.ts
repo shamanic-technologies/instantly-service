@@ -18,6 +18,7 @@
  * /internal/self-send/promote-clicks` runs the same sweep by hand.
  */
 
+import { errorMessage } from "../db-error.js";
 import { promotePendingClicks } from "./click-promotion";
 import { backfillScannerClicks } from "./click-scanner-backfill";
 import { reactivateScannerPausedSequences } from "./reactivate-scanner-paused";
@@ -105,7 +106,7 @@ export function startClickPromotionWorker(): void {
         }
       })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         console.error(`[instantly-service] click-promotion tick failed: ${message}`);
       })
       .finally(() => {
@@ -118,14 +119,14 @@ export function startClickPromotionWorker(): void {
 
   setTimeout(() => {
     runClickRepair().catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[instantly-service] click-repair failed: ${message}`);
     });
   }, CLICK_REPAIR_FIRST_TICK_MS).unref?.();
 
   repairTimer = setInterval(() => {
     runClickRepair().catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       console.error(`[instantly-service] click-repair failed: ${message}`);
     });
   }, CLICK_REPAIR_INTERVAL_MS);

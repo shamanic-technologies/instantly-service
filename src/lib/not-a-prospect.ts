@@ -32,6 +32,7 @@
  * send through).
  */
 
+import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -223,7 +224,7 @@ async function reassureOnce(campaign: NotAProspectCampaign, leadEmail: string): 
   } catch (error) {
     // Nothing went out: give the claim back so a person (or a retry) can act.
     await releaseEscalation(campaign.instantlyCampaignId).catch(() => {});
-    return `NOT reassured: ${error instanceof Error ? error.message : String(error)}`;
+    return `NOT reassured: ${errorMessage(error)}`;
   }
 }
 
@@ -269,7 +270,7 @@ export async function maybeHandleNotAProspect(
           await recordExistingCustomerByEmail({ orgId, campaignId: campaign.campaignId, email: leadEmail })
         ).status;
       } catch (error) {
-        won = `FAILED: ${error instanceof Error ? error.message : String(error)}`;
+        won = `FAILED: ${errorMessage(error)}`;
       }
     }
 
@@ -283,7 +284,7 @@ export async function maybeHandleNotAProspect(
     );
   } catch (error) {
     console.error(
-      `[instantly-service] not-a-prospect FAILED for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${error instanceof Error ? error.message : String(error)}`,
+      `[instantly-service] not-a-prospect FAILED for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} — ${errorMessage(error)}`,
     );
   }
 }
