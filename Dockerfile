@@ -1,5 +1,5 @@
 # Build stage
-FROM node:20-alpine AS builder
+FROM node:22.23.4-alpine AS builder
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ COPY drizzle ./drizzle
 RUN npm run build
 
 # Production stage
-FROM node:20-alpine
+FROM node:22.23.4-alpine
 
 WORKDIR /app
 
