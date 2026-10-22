@@ -4649,9 +4649,9 @@ registry.registerPath({
 registry.registerPath({
   method: "get",
   path: "/internal/ops/placement-alerts",
-  summary: "The inbox-placement alert: daily evaluation per inbox provider, its bar and sources, the episodes alerted",
+  summary: "Inbox placement per inbox provider: daily evaluation, its bar and sources, the episodes below the bar",
   description:
-    "Platform-scoped, cached 60s. Per (day, provider): the fleet's seeds and the seeds of the production mailboxes the automatic cut (SENDER-HEALTH-1019) still lets mail that provider, inbox % of FOUND seeds, mailboxes cut, whether the day is measured (>= 20 found seeds) and below the 80 % bar (market consensus, sources served). An episode opens on the first measured day below, closes on the first measured day back above; one staff alert per episode.",
+    "Platform-scoped, cached 60s. Per (day, provider): the fleet's seeds and the seeds of the production mailboxes the automatic cut (SENDER-HEALTH-1019) still lets mail that provider, inbox % of FOUND seeds, mailboxes cut, whether the day is measured (>= 20 found seeds) and below the 80 % bar (market consensus, sources served). An episode opens on the first measured day below, closes on the first measured day back above. No email is sent (PLACEMENT-ALERT-NO-EMAIL-1022): `alertStatus`/`alertedAt` are history from before 2026-10-22.",
   request: { query: z.object({ days: z.number().int().min(1).max(400).optional().describe("Default 30") }) },
   responses: {
     200: { description: "Evaluation", content: { "application/json": { schema: OpsObject.openapi("OpsPlacementAlerts") } } },
@@ -4663,10 +4663,10 @@ registry.registerPath({
 registry.registerPath({
   method: "post",
   path: "/internal/ops/placement-alerts/run",
-  summary: "One pass of the inbox-placement alert now; dryRun (default true) writes and sends nothing",
+  summary: "One pass of the inbox-placement evaluation now; records the episodes, never emails; dryRun (default true) writes nothing",
   request: { body: { content: { "application/json": { schema: z.object({ dryRun: z.boolean().optional() }) } } } },
   responses: {
-    200: { description: "Pass summary: evaluations, episodes written, alerts due / sent / failed", content: { "application/json": { schema: OpsObject } } },
+    200: { description: "Pass summary: evaluations, episodes written", content: { "application/json": { schema: OpsObject } } },
     401: { description: "Unauthorized" },
   },
 });
