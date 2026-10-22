@@ -434,7 +434,7 @@ router.get("/placement-alerts", async (req: Request, res: Response) => {
   }
 });
 
-/** POST /internal/ops/placement-alerts/run {dryRun (default true)} — one pass of the alert now. */
+/** POST /internal/ops/placement-alerts/run {dryRun (default true)} — one pass now: records the episodes (dryRun writes nothing), never sends an email. */
 router.post("/placement-alerts/run", async (req: Request, res: Response) => {
   const dryRun = (req.body ?? {}).dryRun !== false;
   try {

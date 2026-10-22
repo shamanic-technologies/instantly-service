@@ -14758,8 +14758,8 @@
     },
     "/internal/ops/placement-alerts": {
       "get": {
-        "summary": "The inbox-placement alert: daily evaluation per inbox provider, its bar and sources, the episodes alerted",
-        "description": "Platform-scoped, cached 60s. Per (day, provider): the fleet's seeds and the seeds of the production mailboxes the automatic cut (SENDER-HEALTH-1019) still lets mail that provider, inbox % of FOUND seeds, mailboxes cut, whether the day is measured (>= 20 found seeds) and below the 80 % bar (market consensus, sources served). An episode opens on the first measured day below, closes on the first measured day back above; one staff alert per episode.",
+        "summary": "Inbox placement per inbox provider: daily evaluation, its bar and sources, the episodes below the bar",
+        "description": "Platform-scoped, cached 60s. Per (day, provider): the fleet's seeds and the seeds of the production mailboxes the automatic cut (SENDER-HEALTH-1019) still lets mail that provider, inbox % of FOUND seeds, mailboxes cut, whether the day is measured (>= 20 found seeds) and below the 80 % bar (market consensus, sources served). An episode opens on the first measured day below, closes on the first measured day back above. No email is sent (PLACEMENT-ALERT-NO-EMAIL-1022): `alertStatus`/`alertedAt` are history from before 2026-10-22.",
         "parameters": [
           {
             "schema": {
@@ -14796,7 +14796,7 @@
     },
     "/internal/ops/placement-alerts/run": {
       "post": {
-        "summary": "One pass of the inbox-placement alert now; dryRun (default true) writes and sends nothing",
+        "summary": "One pass of the inbox-placement evaluation now; records the episodes, never emails; dryRun (default true) writes nothing",
         "requestBody": {
           "content": {
             "application/json": {
@@ -14813,7 +14813,7 @@
         },
         "responses": {
           "200": {
-            "description": "Pass summary: evaluations, episodes written, alerts due / sent / failed",
+            "description": "Pass summary: evaluations, episodes written",
             "content": {
               "application/json": {
                 "schema": {

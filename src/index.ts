@@ -278,8 +278,8 @@ async function start() {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[instantly-service] failed to start domain-blocklist worker: ${message}`);
       });
-    // Staff alert when inbox placement at a provider falls below the market bar
-    // and the automatic cut did not bring it back (MAILBOX-MONITORING-1019).
+    // Inbox-placement episodes for the Monitoring page when a provider falls below
+    // the market bar (MAILBOX-MONITORING-1019). No email (PLACEMENT-ALERT-NO-EMAIL-1022).
     import("./lib/placement-alert-worker")
       .then(({ startPlacementAlertWorker }) => startPlacementAlertWorker())
       .catch((err: unknown) => {

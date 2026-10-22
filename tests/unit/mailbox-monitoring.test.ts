@@ -22,8 +22,6 @@ import {
 import type { QueuedSequenceDetail } from "../../src/lib/account-sending-stats";
 import {
   PLACEMENT_ALERT_INBOX_PCT_BAR,
-  alertEventId,
-  alertMetadata,
   applyEvaluations,
   evaluatePlacement,
   runPlacementAlert,
@@ -251,10 +249,9 @@ describe("inbox placement alert", () => {
     expect(evals[0].fleet.found).toBe(65);
     const written = applyEvaluations(evals, new Map());
     expect(written).toHaveLength(1);
-    expect(alertEventId(written[0])).toBe("google:2026-10-19");
-    expect(alertMetadata(written[0])).toEqual({
-      provider: "Google", measuredOn: "2026-10-19", inboxPct: "40.0", seeds: "25",
-      thresholdPct: String(PLACEMENT_ALERT_INBOX_PCT_BAR), mailboxesCut: "0", dashboardUrl: "https://dashboard.distribute.you/v2/orgs/org_3CL2MrIGuvlW9YHd5RgRgNoMAMS/brands/f4d73dab-1f9d-49b2-b16e-63ecde76a5eb/monitoring/emails/inbox-providers",
+    expect(written[0]).toMatchObject({
+      provider: "google", startedOn: "2026-10-19", lastBelowOn: "2026-10-19", inboxPct: 40, foundSeeds: 25,
+      thresholdPct: PLACEMENT_ALERT_INBOX_PCT_BAR, mailboxesCut: 0, closedOn: null,
     });
   });
 
@@ -287,49 +284,43 @@ describe("inbox placement alert", () => {
     const closed = applyEvaluations(above("2026-10-20"), new Map([["google", extended[0]]]));
     expect(closed[0]).toMatchObject({ startedOn: "2026-10-18", closedOn: "2026-10-20" });
     const again = applyEvaluations(below("2026-10-22"), new Map());
-    expect(alertEventId(again[0])).toBe("google:2026-10-22");
+    expect(again[0]).toMatchObject({ startedOn: "2026-10-22", closedOn: null });
   });
 
-  it("runPlacementAlert sends a new episode once and never re-sends an alerted one", async () => {
-    const send = vi.fn().mockResolvedValue({ sent: true, duplicate: false });
-    const seeds = pgResult([{ day: "2026-10-19", esp: 1, sender: "good@p.com", seeds: 25, inbox: 5, spam: 20 }]);
-    const accounts = pgResult([{ email: "good@p.com", mailbox_login: null, lifecycle_status: "in_production" }]);
-    // pass 1: no open episode
+  it("NO EMAIL (1022): a day below the bar records the episode and sends nothing", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     mockExecute
-      .mockResolvedValueOnce(seeds)
+      .mockResolvedValueOnce(pgResult([{ day: "2026-10-19", esp: 1, sender: "good@p.com", seeds: 25, inbox: 5, spam: 20 }]))
       .mockResolvedValueOnce(pgResult([]))
-      .mockResolvedValueOnce(accounts)
-      .mockResolvedValueOnce(pgResult([]));
-    const first = await runPlacementAlert({ dryRun: false, asOf: new Date("2026-10-19T12:00:00Z"), send });
-    expect(first.alerted).toEqual(["google:2026-10-19"]);
-    expect(send).toHaveBeenCalledTimes(1);
-
-    // pass 2: the episode is open and already alerted
-    mockExecute.mockReset();
-    mockExecute
-      .mockResolvedValueOnce(seeds)
+      .mockResolvedValueOnce(pgResult([{ email: "good@p.com", mailbox_login: null, lifecycle_status: "in_production" }]))
       .mockResolvedValueOnce(pgResult([]))
-      .mockResolvedValueOnce(accounts)
-      .mockResolvedValueOnce(
-        pgResult([{ provider: "google", started_on: "2026-10-19", last_below_on: "2026-10-19", closed_on: null, inbox_pct: "20.0", found_seeds: 25, threshold_pct: "80.0", mailboxes_cut: 0, alert_status: "sent" }]),
-      )
       .mockResolvedValue(pgResult([]));
-    const second = await runPlacementAlert({ dryRun: false, asOf: new Date("2026-10-19T13:00:00Z"), send });
-    expect(second.alerted).toEqual([]);
-    expect(second.wouldAlert).toEqual([]);
-    expect(send).toHaveBeenCalledTimes(1);
+    const tick = await runPlacementAlert({ dryRun: false, asOf: new Date("2026-10-19T12:00:00Z") });
+    expect(tick.written).toEqual([expect.objectContaining({ provider: "google", startedOn: "2026-10-19", closedOn: null })]);
+    expect(Object.keys(tick).sort()).toEqual(["evaluations", "written"]);
+    // 4 reads + 1 episode write, nothing else
+    expect(mockExecute).toHaveBeenCalledTimes(5);
+    expect(JSON.stringify(mockExecute.mock.calls[4])).toContain("placement_alert_episodes");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("the module exports no sender: no staff email can be sent from it", async () => {
+    const mod = await import("../../src/lib/placement-alert");
+    expect(Object.keys(mod).filter((k) => /send|alertMetadata|alertEventId|EVENT/i.test(k))).toEqual([]);
   });
 
   it("dry run writes and sends nothing", async () => {
-    const send = vi.fn();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     mockExecute
       .mockResolvedValueOnce(pgResult([{ day: "2026-10-19", esp: 1, sender: "good@p.com", seeds: 25, inbox: 5, spam: 20 }]))
       .mockResolvedValueOnce(pgResult([]))
       .mockResolvedValueOnce(pgResult([{ email: "good@p.com", mailbox_login: null, lifecycle_status: "in_production" }]))
       .mockResolvedValueOnce(pgResult([]));
-    const tick = await runPlacementAlert({ dryRun: true, asOf: new Date("2026-10-19T12:00:00Z"), send });
-    expect(tick.wouldAlert.map((w) => w.eventId)).toEqual(["google:2026-10-19"]);
-    expect(send).not.toHaveBeenCalled();
+    const tick = await runPlacementAlert({ dryRun: true, asOf: new Date("2026-10-19T12:00:00Z") });
+    expect(tick.written.map((w) => w.startedOn)).toEqual(["2026-10-19"]);
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(mockExecute).toHaveBeenCalledTimes(4);
+    fetchSpy.mockRestore();
   });
 });
