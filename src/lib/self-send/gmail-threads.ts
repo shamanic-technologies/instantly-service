@@ -291,7 +291,7 @@ export async function closeReaderRun(identity: GoogleCallerIdentity, error: stri
     console.error(
       `[instantly-service] gmail-threads: could not close run ${identity.runId} (org ${identity.orgId}) as ${
         error === null ? "completed" : "failed"
-      }; it stays running in runs-service: ${closeError instanceof Error ? closeError.message : String(closeError)}`,
+      }; it stays running in runs-service: ${errorMessage(closeError)}`,
     );
   }
 }
