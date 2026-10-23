@@ -328,6 +328,15 @@ async function start() {
         console.error(`[instantly-service] failed to start stale-reservation worker: ${message}`);
       });
 
+    // Every email sent is declared to runs-service's ledger as the `message_sent`
+    // its step run produced (lib/send-outcomes, COST-ACCOUNTING-1023).
+    import("./lib/send-outcomes-worker")
+      .then(({ startSendOutcomesWorker }) => startSendOutcomesWorker())
+      .catch((err: unknown) => {
+        const message = errorMessage(err);
+        console.error(`[instantly-service] failed to start send-outcomes worker: ${message}`);
+      });
+
     // A queued sequence the caller sent with no zone takes the person's zone from
     // lead-service, so it is emailed in THEIR business hours. Armed after listen.
     import("./lib/queued-sequence-timezone-worker")
