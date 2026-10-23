@@ -635,8 +635,17 @@ export const sequenceCosts = pgTable(
     status: text("status").notNull().default("provisioned"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    // COST-ACCOUNTING-1023 (migration 0090): has this ACTUAL step's run told
+    // runs-service's ledger the `message_sent` it produced (lib/send-outcomes.ts)?
+    // NULL = still to declare; `outcomesDeclaration` names how it ended.
+    outcomesDeclaredAt: timestamp("outcomes_declared_at", { withTimezone: true }),
+    outcomesDeclaration: text("outcomes_declaration"),
   },
   (table) => [
+    // The declaration sweep's pending scan (hand-written in 0090).
+    index("sequence_costs_outcomes_pending_idx")
+      .on(table.updatedAt.desc())
+      .where(sql`status = 'actual' AND outcomes_declared_at IS NULL`),
     index("sequence_costs_campaign_lead_idx").on(
       table.campaignId,
       table.leadEmail,
