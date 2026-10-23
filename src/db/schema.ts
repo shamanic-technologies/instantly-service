@@ -2153,3 +2153,18 @@ export const placementAlertEpisodes = pgTable(
   },
   (table) => [primaryKey({ name: "placement_alert_episodes_pk", columns: [table.provider, table.startedOn] })],
 );
+
+// COST-ACCOUNTING-1023 (migration 0092): one `reply-judging` run of ours per
+// (org, UTC day) (lib/reply-judging-run.ts). The reply classifier's chat-service
+// calls nest under it and that day's positive replies declare `conversation`
+// on it, so the judging spend rolls into Positive reply.
+export const replyJudgingRuns = pgTable(
+  "reply_judging_runs",
+  {
+    orgId: text("org_id").notNull(),
+    day: date("day").notNull(),
+    runId: text("run_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.orgId, table.day] })],
+);

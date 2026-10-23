@@ -14,6 +14,7 @@
  */
 
 import { platformComplete } from "../chat-client";
+import { replyJudgingRunForSequence } from "../reply-judging-run";
 import { loadOurOutreach } from "./our-outreach";
 import type { ShadowJudgmentContext } from "../shadow-judgment";
 
@@ -325,7 +326,9 @@ export function parseQualification(result: {
  *
  * The spend is chat-service's, on a platform run: this runs inside a sweep with
  * no inbound org request, so there is no customer to bill for classifying a
- * reply to our own outreach.
+ * reply to our own outreach. That platform run is made a CHILD of the org's
+ * `reply-judging` run of the day (lib/reply-judging-run.ts), so its cost
+ * reaches the Positive reply outcome; billing is unchanged.
  */
 export async function qualifyReply(
   replyText: string,
@@ -347,15 +350,23 @@ export async function qualifyReply(
   const framed = withOurOutreach(stripped, ourOutreach);
   const message = typedSubject ? framed : withSubject(framed, subject);
 
-  const result = await platformComplete({
-    message,
-    systemPrompt: SYSTEM_PROMPT,
-    provider: "deepseek",
-    model: "deepseek-flash",
-    responseFormat: "json",
-    temperature: 0,
-    disableThinking: true,
-  });
+  // The spend belongs to the org's reply-judging run of the day, where the
+  // positive replies declare `conversation` (COST-ACCOUNTING-1023).
+  const parentRunId = shadowContext.instantlyCampaignId
+    ? await replyJudgingRunForSequence(shadowContext.instantlyCampaignId)
+    : null;
+  const result = await platformComplete(
+    {
+      message,
+      systemPrompt: SYSTEM_PROMPT,
+      provider: "deepseek",
+      model: "deepseek-flash",
+      responseFormat: "json",
+      temperature: 0,
+      disableThinking: true,
+    },
+    { parentRunId },
+  );
 
   const classification = parseQualification(result);
 

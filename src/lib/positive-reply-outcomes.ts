@@ -8,16 +8,15 @@
  * thread) whose reply classification is `positive`
  * (`REPLY_KIND_CLASSIFICATION`, whoever judged it: our classifier, Instantly's
  * label, or a person's manual qualification) = ONE `conversation` occurrence
- * of the person, produced by a run of ours (`reply-judged-positive`), which
- * CONSUMES the person's `message_sent`. Subject = the person's lead in
- * lead-service, as everywhere in the chain.
+ * of the person, which CONSUMES the person's `message_sent`. Subject = the
+ * person's lead in lead-service, as everywhere in the chain.
  *
- * Why a run of ours: the classifier's LLM call is chat-service's
- * `/internal/platform-complete`, which opens its OWN platform run and returns no
- * id, so no run of this service ever "judged" the reply. The run here carries no
- * cost; the occurrence's production cost is what it consumed (the chain rolls
- * up), and the judge's own fraction of a cent stays on chat-service's run until
- * that call can nest under ours.
+ * The run that produces it is the org's `reply-judging` run of the day
+ * (lib/reply-judging-run.ts): every classifier call of that org that day nests
+ * its chat-service platform run under it, so the judging spend (non-positive
+ * judgments included, normal loss) is split over the day's positive replies.
+ * Sequences declared before 2026-10-23 15:00 UTC sit on a per-sequence
+ * `reply-judged-positive` run (no cost) and keep it.
  *
  * Once per sequence: the run id is persisted BEFORE the declaration (a retry
  * reuses the same run, runs-service answers `already_recorded`), and the row is
@@ -33,7 +32,7 @@
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { errorMessage } from "./db-error.js";
-import { createRun, updateRun } from "./runs-client";
+import { replyJudgingRunForOrg } from "./reply-judging-run";
 import {
   SEND_OUTCOME_SUBJECT_SERVICE,
   SEND_PRODUCED_OUTCOME,
@@ -44,7 +43,6 @@ import {
 } from "./send-outcomes";
 
 export const POSITIVE_REPLY_OUTCOME = "conversation";
-export const POSITIVE_REPLY_TASK = "reply-judged-positive";
 export const POSITIVE_REPLY_BATCH_LIMIT = 100;
 
 /** What a sequence's positive reply declares about the person. */
@@ -92,27 +90,24 @@ async function mark(id: string, outcome: DeclarationMark): Promise<void> {
   `);
 }
 
-/** The sequence's run: the persisted one, else a new one, persisted before any declaration. */
+/**
+ * The sequence's run: the persisted one, else the org's `reply-judging` run of
+ * the day (the run the classifier's spend nests under), persisted before any
+ * declaration so a retry reuses it.
+ */
 async function ensureRun(row: PendingPositiveReply): Promise<string> {
   if (row.runId) return row.runId;
-  const identity = { orgId: row.orgId, userId: row.userId ?? "" };
-  const run = await createRun(
-    { serviceName: "instantly-service", taskName: POSITIVE_REPLY_TASK, brandId: row.brandId, campaignId: row.campaignId },
-    identity,
-  );
+  const runId = await replyJudgingRunForOrg(row.orgId);
   const result = await db.execute(sql`
-    UPDATE instantly_campaigns SET conversation_run_id = ${run.id}
+    UPDATE instantly_campaigns SET conversation_run_id = ${runId}
     WHERE id = ${row.id} AND conversation_run_id IS NULL
     RETURNING conversation_run_id
   `);
   if ((result.rows as unknown[]).length === 0) {
-    // A concurrent pass persisted another run first: close ours, use theirs.
-    await updateRun(run.id, "completed", identity).catch(() => {});
     const [existing] = (await db.execute(sql`SELECT conversation_run_id FROM instantly_campaigns WHERE id = ${row.id}`)).rows as Array<Record<string, unknown>>;
     return String(existing.conversation_run_id);
   }
-  await updateRun(run.id, "completed", identity);
-  return run.id;
+  return runId;
 }
 
 export interface PositiveReplySummary {

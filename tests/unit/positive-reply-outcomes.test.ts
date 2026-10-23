@@ -2,17 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const execute = vi.fn();
 vi.mock("../../src/db", () => ({ db: { execute: (...a: unknown[]) => execute(...a) } }));
-const createRun = vi.fn();
-const updateRun = vi.fn();
-vi.mock("../../src/lib/runs-client", () => ({
-  createRun: (...a: unknown[]) => createRun(...a),
-  updateRun: (...a: unknown[]) => updateRun(...a),
+const replyJudgingRunForOrg = vi.fn();
+vi.mock("../../src/lib/reply-judging-run", () => ({
+  replyJudgingRunForOrg: (...a: unknown[]) => replyJudgingRunForOrg(...a),
 }));
 
 import {
   buildPositiveReplyDeclaration,
   declarePositiveReplies,
-  POSITIVE_REPLY_TASK,
 } from "../../src/lib/positive-reply-outcomes";
 
 const pgResult = (rows: unknown[]) => ({ rows, rowCount: rows.length, command: "SELECT", fields: [] });
@@ -39,8 +36,7 @@ describe("declarePositiveReplies: the sweep", () => {
   beforeEach(() => {
     execute.mockReset();
     fetchMock.mockReset();
-    createRun.mockReset();
-    updateRun.mockReset().mockResolvedValue({});
+    replyJudgingRunForOrg.mockReset();
     vi.stubGlobal("fetch", fetchMock);
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -56,8 +52,8 @@ describe("declarePositiveReplies: the sweep", () => {
     ...over,
   });
 
-  it("opens ONE run of ours, persists it BEFORE declaring, then declares and marks the sequence", async () => {
-    createRun.mockResolvedValue({ id: RUN });
+  it("declares on the org's reply-judging run of the day (where the judging spend nests), persisted BEFORE declaring", async () => {
+    replyJudgingRunForOrg.mockResolvedValue(RUN);
     execute
       .mockResolvedValueOnce(pgResult([row()])) // pending
       .mockResolvedValueOnce(pgResult([{ conversation_run_id: RUN }])) // persist run
@@ -67,8 +63,7 @@ describe("declarePositiveReplies: the sweep", () => {
     const s = await declarePositiveReplies();
 
     expect(s).toMatchObject({ read: 1, declared: 1 });
-    expect(createRun.mock.calls[0][0]).toMatchObject({ taskName: POSITIVE_REPLY_TASK, brandId: "brand-1", campaignId: "camp-1" });
-    expect(createRun.mock.calls[0][1]).toMatchObject({ orgId: ORG });
+    expect(replyJudgingRunForOrg).toHaveBeenCalledWith(ORG);
     expect(sqlText(execute.mock.calls[1])).toContain("SET conversation_run_id");
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toMatch(new RegExp(`/v1/platform-runs/${RUN}/outcomes$`));
@@ -80,7 +75,7 @@ describe("declarePositiveReplies: the sweep", () => {
     execute.mockResolvedValueOnce(pgResult([row({ conversation_run_id: RUN })])).mockResolvedValue(pgResult([]));
     fetchMock.mockResolvedValue(new Response('{"recordedCount":0,"alreadyRecordedCount":2}', { status: 200 }));
     const s = await declarePositiveReplies();
-    expect(createRun).not.toHaveBeenCalled();
+    expect(replyJudgingRunForOrg).not.toHaveBeenCalled();
     expect(s.declared).toBe(1);
   });
 
@@ -96,7 +91,7 @@ describe("declarePositiveReplies: the sweep", () => {
     execute.mockResolvedValueOnce(pgResult([row({ lead_id: null })])).mockResolvedValue(pgResult([]));
     const s = await declarePositiveReplies();
     expect(s.noLeadId).toBe(1);
-    expect(createRun).not.toHaveBeenCalled();
+    expect(replyJudgingRunForOrg).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
