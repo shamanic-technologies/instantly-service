@@ -141,6 +141,13 @@ export const instantlyCampaigns = pgTable(
     // new row, not a duplicate. The thread it continues, when it does, is
     // `metadata.followUpOf` (see src/lib/follow-up-send.ts).
     followUp: boolean("follow_up").notNull().default(false),
+    // COST-ACCOUNTING-1023 (migration 0091): this sequence's positive reply,
+    // declared to runs-service's ledger as one `conversation` of the person
+    // (lib/positive-reply-outcomes.ts). Run id persisted before the call so a
+    // retry reuses it; NULL declared_at = still to declare.
+    conversationRunId: text("conversation_run_id"),
+    conversationDeclaredAt: timestamp("conversation_declared_at", { withTimezone: true }),
+    conversationDeclaration: text("conversation_declaration"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -181,6 +188,10 @@ export const instantlyCampaigns = pgTable(
     index("instantly_campaigns_run_id_idx").on(table.runId),
     index("instantly_campaigns_workflow_slug_idx").on(table.workflowSlug),
     index("instantly_campaigns_account_email_idx").on(table.accountEmail),
+    // The positive-reply declaration sweep's pending scan (hand-written in 0091).
+    index("instantly_campaigns_conversation_pending_idx")
+      .on(table.updatedAt.desc())
+      .where(sql`reply_classification = 'positive' AND conversation_declared_at IS NULL`),
   ],
 );
 
