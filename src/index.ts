@@ -34,6 +34,7 @@ import replyVerdictsRoutes from "./routes/reply-verdicts";
 import auditRoutes from "./routes/audit";
 import deliveryByVerdictRoutes from "./routes/delivery-by-verdict";
 import incurredSendCostsRoutes from "./routes/incurred-send-costs";
+import sendOutcomesRoutes from "./routes/send-outcomes";
 import leadSourceYieldRoutes from "./routes/lead-source-yield";
 import domainBlocklistRoutes from "./routes/domain-blocklist";
 import seedPlacementRoutes from "./routes/seed-placement";
@@ -100,6 +101,7 @@ app.use("/internal/sender-health", serviceAuth, senderHealthRoutes); // SENDER-H
 app.use("/internal", serviceAuth, domainBlocklistRoutes);      // sending domains on public blocklists (staff console)
 app.use("/internal", serviceAuth, leadSourceYieldRoutes);      // lead sources ranked by bounces / refusals / blocklist hits (staff console)
 app.use("/internal", serviceAuth, deliveryByVerdictRoutes);    // fleet delivery split by the verifier verdict at send (features-service)
+app.use("/internal/send-outcomes", serviceAuth, sendOutcomesRoutes); // past sends declared to the ledger, dated when they left (manual)
 app.use("/internal/incurred-send-costs", serviceAuth, incurredSendCostsRoutes); // late, never-charged declaration of the 08-24..10-02 sends (manual)
 app.use("/internal/audit", serviceAuth, auditRoutes);          // staff sending forecast (capacity vs scheduled volume)
 app.use("/internal/infra", serviceAuth, infraRoutes);          // provider inventory sync (Gandi / Mailforge / Primeforge / DFY)

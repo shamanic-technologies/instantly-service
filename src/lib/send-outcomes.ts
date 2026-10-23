@@ -19,10 +19,20 @@
  * it NULL and the next tick retries, so the ledger catches up. runs-service is
  * idempotent per (run, direction, outcome, subject): a replay answers
  * `already_recorded` and declares nothing twice.
+ *
+ * COST-BACKFILL-1023-INSTANTLY: every declaration states WHEN the email left
+ * (`occurredAt` = the earliest non-withdrawn `email_sent` of that step), through
+ * runs-service's batch door (`POST /v1/platform-runs/outcomes/batch`), so a send
+ * of June declared today behaves in the ledger as declared in June (consumption
+ * resolution, the day it counts on). Declaring without it dated 79,029 past
+ * sends 2026-10-23 (the first hours of this worker). The past is swept by the
+ * SAME path (`runSendOutcomesBackfill`): keyset over every undeclared hold,
+ * cancelled ones included when their email really left (runs-service charged
+ * the run; ~20k such runs from 2026-02 to 2026-10). A hold with no real
+ * `email_sent` is never declared (a failure is never an outcome).
  */
 import { sql } from "drizzle-orm";
 import { db } from "../db";
-import { errorMessage } from "./db-error.js";
 
 /** The catalogue keys (features-service `GET /public/catalogue/steps`) a send run declares. */
 export const SEND_PRODUCED_OUTCOME = "message_sent";
@@ -31,7 +41,6 @@ export const SEND_CONSUMED_OUTCOMES = ["message_written", "email_checked"] as co
 export const SEND_OUTCOME_SUBJECT_SERVICE = "lead-service";
 
 export const SEND_OUTCOMES_BATCH_LIMIT = 500;
-const DECLARE_CONCURRENCY = 5;
 const DECLARE_TIMEOUT_MS = 15_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -83,73 +92,191 @@ export interface PendingSendOutcome {
   orgId: string | null;
   leadId: string | null;
   matches: number;
+  /** ISO instant the step's email left (earliest non-withdrawn `email_sent`), null = no evidence. */
+  sentAt: string | null;
+  status: string;
+}
+
+/** Terminal marks a hold can get without a call (never an invented subject or date). */
+export type LocalMark = "no_lead_id" | "ambiguous_lead" | "no_send_evidence";
+
+/** What one hold becomes before any call: a local mark, or a run to declare at `sentAt`. */
+export function classifyPendingSend(row: PendingSendOutcome): LocalMark | "declare" {
+  if (row.matches > 1) return "ambiguous_lead";
+  if (!row.leadId) return "no_lead_id";
+  if (!row.sentAt) return "no_send_evidence";
+  return "declare";
 }
 
 /**
- * Actual holds whose run has not been declared yet, newest send first, each
- * joined to its per-lead campaign row: by `instantly_campaign_id`, or for a
- * pre-0027 hold (no such id) by the caller campaign + address, the same
- * fallback as `matchesHoldCampaign`. `matches` > 1 = ambiguous, never guessed.
+ * Shared SELECT: each hold, its per-lead campaign row (by `instantly_campaign_id`,
+ * or for a pre-0027 hold by the caller campaign + address, the same fallback as
+ * `matchesHoldCampaign`; `matches` > 1 = ambiguous, never guessed), and the
+ * instant its step's email left. The column holds UTC without a zone: read as
+ * an ISO instant, never a local Date.
  */
-async function loadPending(limit: number): Promise<PendingSendOutcome[]> {
-  const result = await db.execute(sql`
-    SELECT sc.id AS hold_id, sc.run_id, sc.step, m.org_id, m.lead_id, COALESCE(m.n, 0)::int AS matches
-    FROM sequence_costs sc
-    LEFT JOIN LATERAL (
-      SELECT (array_agg(c.org_id))[1] AS org_id, (array_agg(c.lead_id))[1] AS lead_id, count(*) AS n
-      FROM (
-        -- Two index-served branches, never one OR (4.8 s vs 1.3 s on prod).
-        SELECT c.org_id, c.lead_id FROM instantly_campaigns c
-        WHERE sc.instantly_campaign_id IS NOT NULL AND c.instantly_campaign_id = sc.instantly_campaign_id
-        UNION ALL
-        SELECT c.org_id, c.lead_id FROM instantly_campaigns c
-        WHERE sc.instantly_campaign_id IS NULL AND c.campaign_id = sc.campaign_id
-          AND lower(c.lead_email) = lower(sc.lead_email)
-      ) c
-    ) m ON true
-    WHERE sc.status = 'actual' AND sc.outcomes_declared_at IS NULL
-    ORDER BY sc.updated_at DESC
-    LIMIT ${limit}
-  `);
-  return (result.rows as Array<Record<string, unknown>>).map((r) => ({
+const PENDING_SELECT = sql`
+  SELECT sc.id AS hold_id, sc.run_id, sc.step, sc.status, m.org_id, m.lead_id, COALESCE(m.n, 0)::int AS matches,
+    to_char(e.sent_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS sent_at
+  FROM sequence_costs sc
+  LEFT JOIN LATERAL (
+    SELECT (array_agg(c.org_id))[1] AS org_id, (array_agg(c.lead_id))[1] AS lead_id,
+      (array_agg(c.instantly_campaign_id))[1] AS icid, (array_agg(c.lead_email))[1] AS lead_email, count(*) AS n
+    FROM (
+      -- Two index-served branches, never one OR (4.8 s vs 1.3 s on prod).
+      SELECT c.org_id, c.lead_id, c.instantly_campaign_id, c.lead_email FROM instantly_campaigns c
+      WHERE sc.instantly_campaign_id IS NOT NULL AND c.instantly_campaign_id = sc.instantly_campaign_id
+      UNION ALL
+      SELECT c.org_id, c.lead_id, c.instantly_campaign_id, c.lead_email FROM instantly_campaigns c
+      WHERE sc.instantly_campaign_id IS NULL AND c.campaign_id = sc.campaign_id
+        AND lower(c.lead_email) = lower(sc.lead_email)
+    ) c
+  ) m ON true
+  LEFT JOIN LATERAL (
+    SELECT min(ev."timestamp") AS sent_at FROM instantly_events ev
+    WHERE m.n = 1 AND ev.campaign_id = m.icid AND ev.lead_email = m.lead_email
+      AND ev.event_type = 'email_sent' AND ev.step = sc.step AND ev.withdrawn_at IS NULL
+  ) e ON true
+`;
+
+function toPending(rows: Array<Record<string, unknown>>): PendingSendOutcome[] {
+  return rows.map((r) => ({
     holdId: String(r.hold_id),
     runId: String(r.run_id),
     step: Number(r.step),
     orgId: (r.org_id as string | null) ?? null,
     leadId: (r.lead_id as string | null) ?? null,
     matches: Number(r.matches),
+    sentAt: (r.sent_at as string | null) ?? null,
+    status: String(r.status),
   }));
 }
 
-async function mark(holdId: string, outcome: DeclarationMark): Promise<void> {
+/** Live selector: actual holds not yet declared, newest send first. */
+async function loadPending(limit: number): Promise<PendingSendOutcome[]> {
+  const result = await db.execute(sql`
+    ${PENDING_SELECT}
+    WHERE sc.status = 'actual' AND sc.outcomes_declared_at IS NULL
+    ORDER BY sc.updated_at DESC
+    LIMIT ${limit}
+  `);
+  return toPending(result.rows as Array<Record<string, unknown>>);
+}
+
+/**
+ * Backfill selector: every undeclared hold after `afterHoldId` (keyset on id),
+ * actual ones, plus cancelled ones whose email really left (their run was
+ * charged). A cancelled hold with no `email_sent` is skipped, never marked.
+ */
+export async function loadBackfillPage(
+  afterHoldId: string,
+  limit: number,
+  redate = false,
+): Promise<{ rows: PendingSendOutcome[]; lastHoldId: string | null }> {
+  // Re-date mode reads the holds ALREADY declared (79,029 runs were declared on
+  // 2026-10-23 without a date): re-stating them with `redate` moves each
+  // occurrence back to when the email left; one already on time stays as is.
+  const scope = redate
+    ? sql`sc.outcomes_declaration = 'declared'`
+    : sql`sc.outcomes_declared_at IS NULL AND sc.status IN ('actual', 'cancelled')`;
+  const result = await db.execute(sql`
+    SELECT * FROM (
+      ${PENDING_SELECT}
+      WHERE ${scope} AND sc.id > ${afterHoldId}
+      ORDER BY sc.id
+      LIMIT ${limit}
+    ) page
+  `);
+  const all = toPending(result.rows as Array<Record<string, unknown>>);
+  const lastHoldId = all.length > 0 ? all[all.length - 1].holdId : null;
+  return { rows: all.filter((r) => r.status === "actual" || r.sentAt !== null), lastHoldId };
+}
+
+async function markHolds(holdIds: string[], outcome: DeclarationMark | LocalMark): Promise<void> {
+  if (holdIds.length === 0) return;
   await db.execute(sql`
     UPDATE sequence_costs SET outcomes_declared_at = now(), outcomes_declaration = ${outcome}
-    WHERE id = ${holdId} AND outcomes_declared_at IS NULL
+    WHERE id = ANY(${`{${holdIds.join(",")}}`}::text[]) AND outcomes_declared_at IS NULL
   `);
 }
 
 /**
- * POST the declaration on the run's ledger entry (runs-service platform route:
- * the step runs are ours; `x-org-id` makes runs-service check the run is that
- * org's). Returns the raw answer, never throws on an HTTP status.
+ * POST one declaration on one run (runs-service platform route; `x-org-id`
+ * makes runs-service check the run is that org's). Used by the positive-reply
+ * sweep. Returns the raw answer, never throws on an HTTP status.
  */
 export async function postRunOutcomes(
   runId: string,
   orgId: string | null,
   declaration: SendOutcomeDeclaration,
 ): Promise<{ status: number; body: string }> {
-  const url = process.env.RUNS_SERVICE_URL || "http://localhost:3006";
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "x-api-key": process.env.RUNS_SERVICE_API_KEY || "",
-    "x-service-name": "instantly-service",
-  };
+  const headers = runsHeaders();
   if (orgId && UUID_RE.test(orgId)) headers["x-org-id"] = orgId;
-  const res = await fetch(`${url}/v1/platform-runs/${encodeURIComponent(runId)}/outcomes`, {
+  const res = await fetch(`${runsUrl()}/v1/platform-runs/${encodeURIComponent(runId)}/outcomes`, {
     method: "POST",
     headers,
     body: JSON.stringify(declaration),
     signal: AbortSignal.timeout(DECLARE_TIMEOUT_MS),
+  });
+  return { status: res.status, body: await res.text() };
+}
+
+const runsUrl = () => process.env.RUNS_SERVICE_URL || "http://localhost:3006";
+function runsHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "x-api-key": process.env.RUNS_SERVICE_API_KEY || "",
+    "x-service-name": "instantly-service",
+  };
+}
+
+/** runs-service's literal for "at the run's start" (a send recorded a hair before its run opened). */
+export const OCCURRED_AT_RUN_START = "run_started_at";
+/** 3 occurrences per run, runs-service caps a batch at 1000 occurrences / 500 runs. */
+export const DECLARE_BATCH_RUNS = 300;
+const BATCH_TIMEOUT_MS = 120_000;
+
+export interface BatchRun {
+  runId: string;
+  leadId: string;
+  occurredAt: string;
+  holdIds: string[];
+}
+
+/**
+ * One batch answer, read: `ok` = every run recorded or already recorded; `invalid`
+ * = the 422 per-run list (nothing was written); anything else throws loud with
+ * the status and body (the rows stay undeclared, the next pass retries).
+ */
+export function readBatchAnswer(status: number, body: string): { ok: true } | { ok: false; invalid: Array<{ runId: string; reason: string }> } {
+  if (status === 200 || status === 201) return { ok: true };
+  if (status === 422) {
+    const parsed = JSON.parse(body) as { error?: string; details?: { invalid?: Array<{ runId: string; reason: string }> } };
+    if (parsed.error === "invalid_runs" && Array.isArray(parsed.details?.invalid)) return { ok: false, invalid: parsed.details.invalid };
+  }
+  throw new Error(`runs-service outcomes batch ${status}: ${body.slice(0, 300)}`);
+}
+
+/** What a run refused by the batch becomes: a mark, or one more try dated at the run's start. */
+export function markForInvalidRun(reason: string, occurredAt: string): DeclarationMark | "retry_at_run_start" {
+  if (reason === "run_not_found") return "run_gone";
+  if (reason === "invalid_occurred_at" && occurredAt !== OCCURRED_AT_RUN_START) return "retry_at_run_start";
+  return "refused";
+}
+
+async function postBatch(runs: BatchRun[], redate: boolean): Promise<{ status: number; body: string }> {
+  const res = await fetch(`${runsUrl()}/v1/platform-runs/outcomes/batch`, {
+    method: "POST",
+    headers: runsHeaders(),
+    body: JSON.stringify({
+      runs: runs.map((r) => ({
+        runId: r.runId,
+        ...buildSendOutcomeDeclaration(r.leadId),
+        occurredAt: r.occurredAt,
+        ...(redate ? { redate: true } : {}),
+      })),
+    }),
+    signal: AbortSignal.timeout(BATCH_TIMEOUT_MS),
   });
   return { status: res.status, body: await res.text() };
 }
@@ -160,76 +287,159 @@ export interface SendOutcomesSummary {
   runGone: number;
   noLeadId: number;
   ambiguousLead: number;
+  noSendEvidence: number;
   refused: number;
-  retry: number;
-  /** Up to 5 holds of this pass NOT declared for want of a lead id (logged). */
+  /** Runs stated a second time at `run_started_at` (their email was stamped before the run opened). */
+  datedAtRunStart: number;
+  /** Occurrences runs-service moved back to the send time (re-date mode). */
+  redated: number;
+  /** Up to 5 holds of this pass NOT declared for want of a lead id or a sent email (logged). */
   undeclaredSample: string[];
 }
 
-async function declareOne(row: PendingSendOutcome, summary: SendOutcomesSummary): Promise<void> {
-  // Counted and named once per pass (the summary line), not per row: the
-  // pre-2026-08 holds carry no lead id by the tens of thousands.
-  if (row.matches > 1) {
-    await mark(row.holdId, "ambiguous_lead");
-    summary.ambiguousLead++;
-    summary.undeclaredSample.push(row.holdId);
+export const emptySummary = (): SendOutcomesSummary => ({
+  read: 0, declared: 0, runGone: 0, noLeadId: 0, ambiguousLead: 0, noSendEvidence: 0, refused: 0, datedAtRunStart: 0, redated: 0, undeclaredSample: [],
+});
+
+/**
+ * Groups holds into runs (pre-0038 steps carry two holds on one run; a batch
+ * states each run once), marks what can never be declared, and returns the runs
+ * to declare. A run whose holds disagree on lead = ambiguous, never guessed.
+ */
+export function planRuns(rows: PendingSendOutcome[]): { runs: BatchRun[]; marks: Array<{ holdIds: string[]; mark: LocalMark }> } {
+  const marks: Array<{ holdIds: string[]; mark: LocalMark }> = [];
+  const byRun = new Map<string, BatchRun>();
+  for (const row of rows) {
+    const verdict = classifyPendingSend(row);
+    if (verdict !== "declare") {
+      marks.push({ holdIds: [row.holdId], mark: verdict });
+      continue;
+    }
+    const existing = byRun.get(row.runId);
+    if (!existing) {
+      byRun.set(row.runId, { runId: row.runId, leadId: row.leadId!, occurredAt: row.sentAt!, holdIds: [row.holdId] });
+    } else if (existing.leadId !== row.leadId) {
+      byRun.delete(row.runId);
+      marks.push({ holdIds: [...existing.holdIds, row.holdId], mark: "ambiguous_lead" });
+    } else {
+      existing.holdIds.push(row.holdId);
+      if (row.sentAt! < existing.occurredAt) existing.occurredAt = row.sentAt!;
+    }
+  }
+  return { runs: [...byRun.values()], marks };
+}
+
+/** Declares runs in batches; `dryRun` only plans. Throws on an unreadable answer (rows stay NULL). */
+export async function declarePlannedRows(
+  rows: PendingSendOutcome[],
+  summary: SendOutcomesSummary,
+  dryRun = false,
+  redate = false,
+): Promise<void> {
+  summary.read += rows.length;
+  const { runs, marks } = planRuns(rows);
+  for (const m of marks) {
+    if (!dryRun) await markHolds(m.holdIds, m.mark);
+    if (m.mark === "no_lead_id") summary.noLeadId += m.holdIds.length;
+    else if (m.mark === "ambiguous_lead") summary.ambiguousLead += m.holdIds.length;
+    else summary.noSendEvidence += m.holdIds.length;
+    if (summary.undeclaredSample.length < 5) summary.undeclaredSample.push(m.holdIds[0]);
+  }
+  if (dryRun) {
+    summary.declared += runs.length;
     return;
   }
-  if (!row.leadId) {
-    await mark(row.holdId, "no_lead_id");
-    summary.noLeadId++;
-    summary.undeclaredSample.push(row.holdId);
-    return;
+  for (let i = 0; i < runs.length; i += DECLARE_BATCH_RUNS) {
+    let batch = runs.slice(i, i + DECLARE_BATCH_RUNS);
+    // A 422 writes nothing: drop/mark the refused runs, re-date the early ones, re-post the rest.
+    for (let attempt = 0; batch.length > 0; attempt++) {
+      if (attempt > 3) throw new Error(`runs-service outcomes batch still refusing after ${attempt} attempts`);
+      const posted = await postBatch(batch, redate);
+      const answer = readBatchAnswer(posted.status, posted.body);
+      if (answer.ok) {
+        summary.redated += Number((JSON.parse(posted.body) as { redatedCount?: unknown }).redatedCount ?? 0);
+        await markHolds(batch.flatMap((r) => r.holdIds), "declared");
+        summary.declared += batch.length;
+        break;
+      }
+      const refused = new Map(answer.invalid.map((x) => [x.runId.toLowerCase(), x.reason]));
+      const next: BatchRun[] = [];
+      for (const run of batch) {
+        const reason = refused.get(run.runId.toLowerCase());
+        if (!reason) {
+          next.push(run);
+          continue;
+        }
+        const verdict = markForInvalidRun(reason, run.occurredAt);
+        if (verdict === "retry_at_run_start") {
+          next.push({ ...run, occurredAt: OCCURRED_AT_RUN_START });
+          summary.datedAtRunStart++;
+          continue;
+        }
+        console.error(`[send-outcomes] run ${run.runId} refused by the batch (${reason}) -> ${verdict}`);
+        await markHolds(run.holdIds, verdict);
+        if (verdict === "run_gone") summary.runGone++;
+        else summary.refused++;
+      }
+      batch = next;
+    }
   }
-  let answer: { status: number; body: string };
-  try {
-    answer = await postRunOutcomes(row.runId, row.orgId, buildSendOutcomeDeclaration(row.leadId));
-  } catch (error: unknown) {
-    summary.retry++;
-    console.error(`[send-outcomes] run ${row.runId} declaration failed (retried next tick): ${errorMessage(error)}`);
-    return;
+}
+
+function logPass(tag: string, summary: SendOutcomesSummary): void {
+  if (summary.noLeadId + summary.ambiguousLead + summary.noSendEvidence > 0) {
+    console.error(
+      `[${tag}] ${summary.noLeadId} holds with no lead id + ${summary.ambiguousLead} ambiguous + ${summary.noSendEvidence} with no sent email NOT declared (never an invented subject or date), e.g. ${summary.undeclaredSample.join(", ")}`,
+    );
   }
-  const verdict = classifyDeclareAnswer(answer.status, answer.body);
-  if (verdict === "retry") {
-    summary.retry++;
-    console.error(`[send-outcomes] run ${row.runId} declaration ${answer.status} (retried next tick): ${answer.body.slice(0, 300)}`);
-    return;
-  }
-  if (verdict !== "declared") {
-    console.error(`[send-outcomes] run ${row.runId} declaration ${answer.status} -> ${verdict}: ${answer.body.slice(0, 300)}`);
-  }
-  await mark(row.holdId, verdict);
-  if (verdict === "declared") summary.declared++;
-  else if (verdict === "run_gone") summary.runGone++;
-  else summary.refused++;
+  if (summary.read > 0) console.log(`[${tag}] pass done ${JSON.stringify(summary)}`);
 }
 
 let inFlight: Promise<SendOutcomesSummary> | null = null;
 
-/** One sweep pass. Concurrent calls join the pass already running. */
+/** One live sweep pass. Concurrent calls join the pass already running. */
 export function declareSendOutcomes(limit = SEND_OUTCOMES_BATCH_LIMIT): Promise<SendOutcomesSummary> {
   if (inFlight) return inFlight;
   inFlight = (async () => {
-    const rows = await loadPending(limit);
-    const summary: SendOutcomesSummary = { read: rows.length, declared: 0, runGone: 0, noLeadId: 0, ambiguousLead: 0, refused: 0, retry: 0, undeclaredSample: [] };
-    let next = 0;
-    const lane = async () => {
-      while (next < rows.length) {
-        const row = rows[next++];
-        await declareOne(row, summary);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(DECLARE_CONCURRENCY, rows.length) }, lane));
-    summary.undeclaredSample = summary.undeclaredSample.slice(0, 5);
-    if (summary.noLeadId + summary.ambiguousLead > 0) {
-      console.error(
-        `[send-outcomes] ${summary.noLeadId} holds with no lead id + ${summary.ambiguousLead} ambiguous NOT declared (never an invented subject), e.g. ${summary.undeclaredSample.join(", ")}`,
-      );
-    }
-    if (rows.length > 0) console.log(`[send-outcomes] pass done ${JSON.stringify(summary)}`);
+    const summary = emptySummary();
+    await declarePlannedRows(await loadPending(limit), summary);
+    logPass("send-outcomes", summary);
     return summary;
   })().finally(() => {
     inFlight = null;
   });
   return inFlight;
+}
+
+export const BACKFILL_PAGE_HOLDS = 900;
+let backfillInFlight: Promise<SendOutcomesSummary> | null = null;
+
+/**
+ * The past, swept once through the same declaration (COST-BACKFILL-1023-INSTANTLY):
+ * keyset over every undeclared hold, page by page, until none is left or
+ * `limit` holds were walked. Idempotent and resumable: a declared hold is marked
+ * and never read again; a replay on runs-service is `already_recorded`. A dry
+ * run plans every page and writes nothing.
+ */
+export function runSendOutcomesBackfill(opts: { dryRun: boolean; limit?: number; redate?: boolean }): Promise<SendOutcomesSummary> {
+  if (backfillInFlight) return backfillInFlight;
+  backfillInFlight = (async () => {
+    const summary = emptySummary();
+    let cursor = "";
+    let walked = 0;
+    for (;;) {
+      const page = opts.limit === undefined ? BACKFILL_PAGE_HOLDS : Math.min(BACKFILL_PAGE_HOLDS, opts.limit - walked);
+      if (page <= 0) break;
+      const { rows, lastHoldId } = await loadBackfillPage(cursor, page, opts.redate === true);
+      if (!lastHoldId) break;
+      walked += page;
+      await declarePlannedRows(rows, summary, opts.dryRun, opts.redate === true);
+      cursor = lastHoldId;
+    }
+    logPass(`send-outcomes-backfill${opts.redate ? " redate" : ""}${opts.dryRun ? " dry-run" : ""}`, summary);
+    return summary;
+  })().finally(() => {
+    backfillInFlight = null;
+  });
+  return backfillInFlight;
 }
