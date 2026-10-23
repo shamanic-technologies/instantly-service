@@ -3347,6 +3347,20 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/internal/send-outcomes/backfill",
+  summary: "Declare the message_sent of every past send to the runs ledger, dated when the email left",
+  description:
+    "COST-BACKFILL-1023-INSTANTLY. Walks every undeclared step hold (actual, plus cancelled ones whose email really left) and declares on its email-send-step run the `message_sent` it produced and the `message_written` + `email_checked` it consumed (subject = the lead in lead-service), with `occurredAt` = the step's earliest non-withdrawn `email_sent`, through runs-service `POST /v1/platform-runs/outcomes/batch`. A hold with no lead id, two candidate leads or no sent email is marked and never declared. Body `{dryRun (default true), limit, redate}`: dry run plans every page and writes nothing (200 + summary); `dryRun:false` answers 202 and runs in the background (log `send-outcomes-backfill: done`). `redate:true` re-states the holds ALREADY declared with runs-service's `redate`, moving each occurrence declared late back to when the email left (one already on time stays). Idempotent and resumable. Manual only.",
+  responses: {
+    200: { description: "Dry-run summary: holds read, runs to declare, holds with no lead id / ambiguous / no sent email" },
+    202: { description: "Accepted, running in the background" },
+    401: { description: "Unauthorized" },
+    500: { description: "The dry run failed", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/orgs/manual-qualifications",
   summary: "Set a manual reply qualification for a (campaign, lead) pair",
   description:
