@@ -19,6 +19,12 @@ vi.mock("../../src/lib/self-send/our-outreach", () => ({
   loadOurOutreach: (...a: unknown[]) => mockLoadOurOutreach(...a),
 }));
 
+// The org's reply-judging run of the day (COST-ACCOUNTING-1023), mocked.
+const mockJudgingRun = vi.fn();
+vi.mock("../../src/lib/reply-judging-run", () => ({
+  replyJudgingRunForSequence: (...a: unknown[]) => mockJudgingRun(...a),
+}));
+
 import {
   QUALIFICATION_EVENT_TYPES,
   isQualificationEventType,
@@ -74,7 +80,19 @@ describe("qualifyReply", () => {
         temperature: 0,
         disableThinking: true,
       }),
+      { parentRunId: null },
     );
+  });
+
+  it("is made FOR the org's reply-judging run when the sequence is known (COST-ACCOUNTING-1023)", async () => {
+    mockJudgingRun.mockResolvedValue("4c8b7a1e-1111-4222-8333-444455556666");
+    mockLoadOurOutreach.mockResolvedValue(null);
+    mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_interested" }, tokensInput: 1, tokensOutput: 1, model: "x" });
+
+    await qualifyReply("Interested", { instantlyCampaignId: "self:abc" });
+
+    expect(mockJudgingRun).toHaveBeenCalledWith("self:abc");
+    expect(mockPlatformComplete.mock.calls.at(-1)?.[1]).toEqual({ parentRunId: "4c8b7a1e-1111-4222-8333-444455556666" });
   });
 
   // An unusable answer must not become a fabricated neutral — a wrong "neutral"
