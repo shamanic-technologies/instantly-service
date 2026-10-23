@@ -68,13 +68,19 @@ function apiKey(): string {
  */
 export async function platformComplete(
   params: ChatCompleteParams,
+  options: { parentRunId?: string | null } = {},
 ): Promise<ChatCompleteResult> {
+  const parentRunId = options.parentRunId ?? null;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "x-api-key": apiKey(),
+  };
+  // COST-ACCOUNTING-1023: the call is made FOR this run of ours, so
+  // chat-service's platform run becomes its child (billing unchanged).
+  if (parentRunId) headers["x-run-id"] = parentRunId;
   const response = await fetch(`${baseUrl()}/internal/platform-complete`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey(),
-    },
+    headers,
     body: JSON.stringify({
       message: params.message,
       systemPrompt: params.systemPrompt,
@@ -90,6 +96,14 @@ export async function platformComplete(
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    // A parent chat-service refuses (400 naming x-run-id) never costs the
+    // classification: the call goes again unparented, logged loud.
+    if (parentRunId && response.status === 400 && text.includes("x-run-id")) {
+      console.error(
+        `[instantly-service] chat-service refused x-run-id ${parentRunId}, retrying unparented (spend stays produced-none): ${text.slice(0, 300)}`,
+      );
+      return platformComplete(params);
+    }
     throw new Error(
       `[instantly-service] chat-service POST /internal/platform-complete returned ${response.status}: ${text.slice(0, 300)}`,
     );
