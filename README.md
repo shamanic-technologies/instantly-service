@@ -110,7 +110,7 @@ npm run dev
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start dev server (nodemon) |
+| `npm run dev` | Start dev server (tsx watch) |
 | `npm run build` | Compile TypeScript |
 | `npm start` | Run compiled app |
 | `npm test` | Run all tests |
