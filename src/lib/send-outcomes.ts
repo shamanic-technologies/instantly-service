@@ -164,9 +164,25 @@ async function loadPending(limit: number): Promise<PendingSendOutcome[]> {
 }
 
 /**
+ * One email, one occurrence: a retried step sits on several runs (one cancelled
+ * hold per attempt, then the attempt that sent). A cancelled hold speaks for its
+ * step only when no other run holds that step ACTUAL and no newer cancelled hold
+ * exists; prod 2026-10-23: 18k of the 20k charged cancelled-hold runs had such a
+ * sibling. The losers' spend stays "produced none", never a second message_sent.
+ */
+const ONLY_HOLD_OF_ITS_STEP = sql`NOT EXISTS (
+  SELECT 1 FROM sequence_costs o
+  WHERE o.run_id <> sc.run_id AND o.step = sc.step
+    AND (o.status = 'actual' OR (o.status = 'cancelled' AND o.created_at > sc.created_at))
+    AND ((sc.instantly_campaign_id IS NOT NULL AND o.instantly_campaign_id = sc.instantly_campaign_id)
+      OR (sc.instantly_campaign_id IS NULL AND o.campaign_id = sc.campaign_id AND o.lead_email = sc.lead_email))
+)`;
+
+/**
  * Backfill selector: every undeclared hold after `afterHoldId` (keyset on id),
- * actual ones, plus cancelled ones whose email really left (their run was
- * charged). A cancelled hold with no `email_sent` is skipped, never marked.
+ * actual ones, plus cancelled ones whose email really left and that are the
+ * only hold of their step (`ONLY_HOLD_OF_ITS_STEP`). A cancelled hold with no
+ * `email_sent` is skipped, never marked.
  */
 export async function loadBackfillPage(
   afterHoldId: string,
@@ -178,7 +194,7 @@ export async function loadBackfillPage(
   // occurrence back to when the email left; one already on time stays as is.
   const scope = redate
     ? sql`sc.outcomes_declaration = 'declared'`
-    : sql`sc.outcomes_declared_at IS NULL AND sc.status IN ('actual', 'cancelled')`;
+    : sql`sc.outcomes_declared_at IS NULL AND (sc.status = 'actual' OR (sc.status = 'cancelled' AND ${ONLY_HOLD_OF_ITS_STEP}))`;
   const result = await db.execute(sql`
     SELECT * FROM (
       ${PENDING_SELECT}

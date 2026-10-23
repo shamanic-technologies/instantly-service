@@ -249,7 +249,10 @@ describe("runSendOutcomesBackfill: the past, same declaration", () => {
     expect(s).toMatchObject({ read: 1, declared: 1, noSendEvidence: 0 });
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).runs.map((r: { runId: string }) => r.runId)).toEqual([RUN]);
     const pageSql = sqlText(execute.mock.calls[0]);
-    expect(pageSql).toContain("sc.outcomes_declared_at IS NULL AND sc.status IN ('actual', 'cancelled')");
+    expect(pageSql).toContain("sc.outcomes_declared_at IS NULL AND (sc.status = 'actual' OR (sc.status = 'cancelled' AND ");
+    // One email, one occurrence: a cancelled retry with an actual (or newer) sibling on another run never declares.
+    expect(pageSql).toContain("o.run_id <> sc.run_id AND o.step = sc.step");
+    expect(pageSql).toContain("o.status = 'actual' OR (o.status = 'cancelled' AND o.created_at > sc.created_at)");
     expect(pageSql).toContain(" AND sc.id > ");
     // The next page starts AFTER the last hold walked ("b"), skipped or not.
     expect(execute.mock.calls[2][0].queryChunks).toContain("b");
