@@ -1,29 +1,24 @@
 /**
- * LEDGER-HISTORY-1024: a send run consumes only an occurrence that exists. Until
- * 2026-10-24 every send declared it consumed the lead's `email_checked`; no
- * email check ran on served leads before 2026-09-24 18:12, so ~6,400 leads'
- * sends pointed at a check nobody produced (runs-service reconciliation:
- * unknown provenance). What the email actually went to was the address the
- * reveal found: `email_found`.
+ * LEDGER-HISTORY-1024: the ledger records what a send USED for the address
+ * (lib/send-outcomes.ts `sendUsedAVerdict`, our own records). Until 2026-10-24
+ * every send declared it consumed `email_checked`, including sends of
+ * sequences served before email checks began (2026-09-24 18:12) that our door
+ * never verified: those used only the address the reveal found, `email_found`.
  *
- * This re-states the PAST declared sends, through the owner doors only: walk
+ * This re-states the PAST declared sends through the owner doors only: walk
  * every declared hold (keyset on hold id), read what each run consumed from the
- * ledger (`GET /internal/outcome-occurrences?runIds=`), read which leads have a
- * produced `email_checked` by the end of the send's UTC day, and where the
- * declared key is not the one that exists, take back ONLY that consumption
- * (scoped void, the run stays open) and declare the right one dated at the
- * send. Both directions: a run that consumed `email_found` while a check
- * existed (a check declared after the live sweep read the ledger) is moved
- * back to `email_checked`. Idempotent: a run already right is left alone; a
- * re-run voids nothing.
+ * ledger (`GET /internal/outcome-occurrences?runIds=`), and where the declared
+ * key is not the one the send used, take back ONLY that consumption (scoped
+ * void, the run stays open) and declare the right one dated at the send. A
+ * verdict whose producer has not declared it yet is left as is: the unplaced
+ * `email_checked` names the missing producer. Idempotent: a run already right
+ * is left alone; a re-run voids nothing. At most 2 calls in flight (sequential).
  */
 import {
   BACKFILL_PAGE_HOLDS,
   OCCURRED_AT_RUN_START,
   SEND_UNCHECKED_ADDRESS_OUTCOME,
-  addressWasChecked,
   buildSendOutcomeDeclaration,
-  fetchEarliestCheckByLead,
   loadBackfillPage,
   planRuns,
   postOutcomesBatch,
@@ -92,9 +87,9 @@ async function voidConsumed(runId: string, outcomeKey: string): Promise<void> {
 export interface CheckRestateSummary {
   holdsWalked: number;
   runsRead: number;
-  /** checked -> found: no check of the address was ever produced by the send day. */
+  /** checked -> found: the send used no verdict on the address. */
   toEmailFound: number;
-  /** found -> checked: a check existed. */
+  /** found -> checked: the send used a verdict. */
   toEmailChecked: number;
 }
 
@@ -115,15 +110,9 @@ export function restateSendAddressConsumption(opts: { dryRun: boolean; limit?: n
       const { runs } = planRuns(rows);
       if (runs.length === 0) continue;
       summary.runsRead += runs.length;
-      const [consumed, checks] = await Promise.all([
-        fetchConsumedAddressKeys(runs.map((r) => r.runId)),
-        fetchEarliestCheckByLead(runs.map((r) => r.leadId)),
-      ]);
+      const consumed = await fetchConsumedAddressKeys(runs.map((r) => r.runId));
       const fixes = runs
-        .map((r) => {
-          const checked = addressWasChecked(checks.get(r.leadId), r.occurredAt, r.occurredAt);
-          return { run: r, checked, ...addressFix(consumed.get(r.runId), checked) };
-        })
+        .map((r) => ({ run: r, checked: r.checked, ...addressFix(consumed.get(r.runId), r.checked) }))
         .filter((f) => f.voidKey !== null || f.declare);
       for (const f of fixes) {
         if (f.checked) summary.toEmailChecked++;
