@@ -35,13 +35,16 @@ function runsHeaders(): Record<string, string> {
   };
 }
 
-/** The address keys each run consumed, read from the ledger (500 runs a call, every page). Throws on non-2xx. */
+/** Run ids per ledger read: 500 uuids (18 KB) in a query string is answered 431 by runs-service's server. */
+export const CONSUMED_READ_RUNS = 200;
+
+/** The address keys each run consumed, read from the ledger (CONSUMED_READ_RUNS a call, every page). Throws on non-2xx. */
 export async function fetchConsumedAddressKeys(runIds: string[]): Promise<Map<string, Set<string>>> {
   const keys = new Map<string, Set<string>>();
-  for (let i = 0; i < runIds.length; i += 500) {
+  for (let i = 0; i < runIds.length; i += CONSUMED_READ_RUNS) {
     let cursor: string | null = null;
     do {
-      const qs = new URLSearchParams({ runIds: runIds.slice(i, i + 500).join(","), direction: "consumed", limit: "1000" });
+      const qs = new URLSearchParams({ runIds: runIds.slice(i, i + CONSUMED_READ_RUNS).join(","), direction: "consumed", limit: "1000" });
       if (cursor) qs.set("cursor", cursor);
       const res = await fetch(`${runsUrl()}/internal/outcome-occurrences?${qs}`, { headers: runsHeaders(), signal: AbortSignal.timeout(120_000) });
       const body = await res.text();
