@@ -14,6 +14,7 @@ import { Router, Request, Response } from "express";
 import { declarePastBookingCalls } from "../lib/booking-call-outcomes";
 import { backfillMissingLeadIds } from "../lib/lead-id-backfill";
 import { redatePastPositiveReplies } from "../lib/positive-reply-outcomes";
+import { restateSendAddressConsumption } from "../lib/send-check-restate";
 import { runSendOutcomesBackfill } from "../lib/send-outcomes";
 
 const router = Router();
@@ -94,6 +95,31 @@ router.post("/booking-calls", async (req: Request, res: Response) => {
     console.error(`[instantly-service] booking-call declarations failed: ${error?.message ?? error}`);
     return res.status(500).json({ error: error?.message ?? "booking-call declarations failed" });
   }
+});
+
+/**
+ * POST /internal/send-outcomes/address-consumption/restate — LEDGER-HISTORY-1024:
+ * past sends re-stated to consume the address occurrence that exists
+ * (`email_checked`, else `email_found`; lib/send-check-restate.ts). Body
+ * `{dryRun (default TRUE), limit}`: dry run reads the ledger and counts
+ * (synchronous); `dryRun:false` answers 202 (log `send-check-restate`).
+ */
+router.post("/address-consumption/restate", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { dryRun?: unknown; limit?: unknown };
+  const dryRun = body.dryRun !== false;
+  const limit = typeof body.limit === "number" && body.limit > 0 ? Math.floor(body.limit) : undefined;
+  if (dryRun) {
+    try {
+      return res.json(await restateSendAddressConsumption({ dryRun: true, limit }));
+    } catch (error: any) {
+      console.error(`[instantly-service] send-check-restate dry-run failed: ${error?.message ?? error}`);
+      return res.status(500).json({ error: error?.message ?? "dry run failed" });
+    }
+  }
+  res.status(202).json({ accepted: true, dryRun: false, limit: limit ?? null });
+  restateSendAddressConsumption({ dryRun: false, limit }).catch((error) =>
+    console.error(`[instantly-service] send-check-restate: FAILED ${error?.message ?? error}`),
+  );
 });
 
 export default router;

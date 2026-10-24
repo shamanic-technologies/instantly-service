@@ -4,6 +4,7 @@ const execute = vi.fn();
 vi.mock("../../src/db", () => ({ db: { execute: (...a: unknown[]) => execute(...a) } }));
 
 import {
+  addressWasChecked,
   buildSendOutcomeDeclaration,
   classifyDeclareAnswer,
   classifyPendingSend,
@@ -67,6 +68,16 @@ describe("classifyDeclareAnswer", () => {
 
 const SENT = "2026-06-12T09:14:03.000Z";
 const RUN2 = "5d9c8b2f-2222-4333-8444-555566667777";
+/** A check of LEAD's address was produced before every send of these tests; other leads have none. */
+const CHECKED_AT = "2026-06-01T00:00:00.000Z";
+const ledgerReads: string[] = [];
+const ledgerAware = (inner: (...a: any[]) => unknown) => (url: string, init?: unknown) => {
+  if (String(url).includes("/internal/outcome-occurrences")) {
+    ledgerReads.push(String(url));
+    return Promise.resolve(new Response(JSON.stringify({ occurrences: [{ subjectId: LEAD, declaredAt: CHECKED_AT }], nextCursor: null }), { status: 200 }));
+  }
+  return inner(url, init);
+};
 
 const pendingRow = (over: Record<string, unknown> = {}) => ({
   hold_id: "hold-1",
@@ -151,7 +162,7 @@ describe("declareSendOutcomes: the live sweep", () => {
   beforeEach(() => {
     execute.mockReset();
     fetchMock.mockReset();
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", ledgerAware(fetchMock));
   });
   afterEach(() => vi.unstubAllGlobals());
 
@@ -244,7 +255,7 @@ describe("runSendOutcomesBackfill: the past, same declaration", () => {
   beforeEach(() => {
     execute.mockReset();
     fetchMock.mockReset();
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", ledgerAware(fetchMock));
   });
   afterEach(() => vi.unstubAllGlobals());
 
@@ -291,5 +302,30 @@ describe("runSendOutcomesBackfill: the past, same declaration", () => {
     expect(s).toMatchObject({ declared: 1, redated: 3 });
     expect(sqlText(execute.mock.calls[0])).toContain("sc.outcomes_declaration = 'declared'");
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).runs[0]).toMatchObject({ runId: RUN, occurredAt: SENT, redate: true });
+  });
+});
+
+describe("the address a send consumed: the occurrence that exists (LEDGER-HISTORY-1024)", () => {
+  it("consumes email_checked when a check exists, email_found when none was ever produced", () => {
+    expect(buildSendOutcomeDeclaration(LEAD, true).consumed.map((c) => c.outcomeKey)).toEqual(["message_written", "email_checked"]);
+    expect(buildSendOutcomeDeclaration(LEAD, false).consumed.map((c) => c.outcomeKey)).toEqual(["message_written", "email_found"]);
+  });
+  it("a check counts when produced by the end of the send's UTC day, never after", () => {
+    expect(addressWasChecked(undefined, SENT, SENT)).toBe(false);
+    expect(addressWasChecked("2026-06-12T23:59:00.000Z", SENT, SENT)).toBe(true);
+    expect(addressWasChecked("2026-06-13T00:00:00.000Z", SENT, SENT)).toBe(false);
+  });
+  it("the live sweep reads the ledger and declares email_found for a lead nobody checked", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 201 }));
+    vi.stubGlobal("fetch", ledgerAware(fetchMock));
+    const OTHER = "11111111-2222-4333-8444-555555555555";
+    execute.mockReset();
+    execute.mockResolvedValueOnce(pgResult([pendingRow(), pendingRow({ hold_id: "h2", run_id: RUN2, lead_id: OTHER })])).mockResolvedValue(pgResult([]));
+    const s = await declareSendOutcomes();
+    expect(s).toMatchObject({ declared: 2, unchecked: 1 });
+    const runs = JSON.parse(fetchMock.mock.calls[0][1].body).runs;
+    expect(runs[0].consumed.map((c: { outcomeKey: string }) => c.outcomeKey)).toContain("email_checked");
+    expect(runs[1].consumed.map((c: { outcomeKey: string }) => c.outcomeKey)).toContain("email_found");
+    vi.unstubAllGlobals();
   });
 });
