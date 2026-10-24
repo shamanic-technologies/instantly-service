@@ -202,3 +202,20 @@ describe("orphan-reply judgment", () => {
     ).toThrow(/unknown option/);
   });
 });
+
+describe("orphanJudgmentOrg: whose reply-judging run an orphan judgment is for (PLATFORM-CALLER-RUN-1024)", () => {
+  const lead = (orgId: string | null) => ({
+    lead: {
+      instantlyCampaignId: `self:${orgId}`, leadEmail: "a@b.com", firstName: null, lastName: null,
+      companyName: null, subject: null, excerpt: null, lastStep: 1,
+      firstSentAt: new Date(0), lastSentAt: new Date(0), orgId,
+    },
+    score: 2,
+  });
+  it("the likeliest lead's org, across orgs", async () => {
+    const { orphanJudgmentOrg } = await import("../../src/lib/self-send/orphan-reply");
+    expect(orphanJudgmentOrg([lead("org-a"), lead("org-b")])).toBe("org-a");
+    expect(orphanJudgmentOrg([lead(null), lead("org-b")])).toBe("org-b");
+    expect(orphanJudgmentOrg([lead(null)])).toBeNull();
+  });
+});

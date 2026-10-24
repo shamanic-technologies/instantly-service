@@ -6,16 +6,13 @@
  * declaration, so this service declares no LLM cost of its own; it just calls
  * and passes identity headers.
  *
- * Two endpoints, picked by whether the caller carries a run id:
- *   - WITH runId → `POST /complete`, org/run-scoped. The spend is metered
- *     against the caller's org.
- *   - WITHOUT runId → `POST /internal/platform-complete`, for run-less internal
- *     work (sweeps, pollers). chat-service uses the platform key and declares
- *     the spend on a platform run, with no org balance gate.
- *
- * The IMAP poller is a sweep with no inbound request, so it takes the platform
- * path — the reply it is classifying belongs to our own outreach, not to a
- * customer request we can bill.
+ * Two endpoints, picked by who PAYS:
+ *   - `POST /complete`, org/run-scoped. The spend is metered against the
+ *     caller's org.
+ *   - `POST /internal/platform-complete` (and `/internal/platform-judgments`),
+ *     platform-billed, no org balance gate, for internal work (sweeps,
+ *     pollers). Every such call still states WHOSE work it is
+ *     (`PlatformCaller`): our run, or a declared support function.
  */
 
 export type ChatProvider = "google" | "anthropic" | "deepseek";
@@ -61,26 +58,63 @@ function apiKey(): string {
 }
 
 /**
- * Platform completion — no org, no run, no balance gate.
+ * WHOSE work a platform call is (PLATFORM-CALLER-RUN-1024, chat-service's
+ * contract COST-SUPPORT-1024). Every call to a platform route states exactly
+ * one, never both, never neither:
+ *  - `{ runId }`: the run OF THIS SERVICE doing the work (the job, request or
+ *    step). chat-service's platform run becomes its child and the spend rides
+ *    the outcome that run declares. The default whenever a run exists: an AI
+ *    call made while judging a reply or reading a DSN is production.
+ *  - `{ support }`: only when no run stands behind the call BY DESIGN; reported
+ *    apart, never on an outcome. Never a way out of a 400 for production work.
+ * Never a run id forwarded from an inbound request: that is another service's
+ * run, not ours.
+ */
+export const SUPPORT_FUNCTIONS = [
+  "payment_fees",
+  "brand_setup",
+  "copilot",
+  "platform_llm",
+  "staff_experiment",
+  "product_feature",
+  "retired_product",
+] as const;
+export type SupportFunction = (typeof SUPPORT_FUNCTIONS)[number];
+
+export type PlatformCaller =
+  | { runId: string; support?: never }
+  | { support: { kind: SupportFunction; reason: string }; runId?: never };
+
+/** Headers + body field that state the caller. Throws on a caller stating neither. */
+export function platformCallerParts(caller: PlatformCaller): {
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+} {
+  if (caller.runId) return { headers: { "x-run-id": caller.runId }, body: {} };
+  if (caller.support) return { headers: {}, body: { support: caller.support } };
+  throw new Error("[instantly-service] a platform call must state its caller run or its support function");
+}
+
+/**
+ * Platform completion — no org, no balance gate; platform-billed.
  *
- * Throws on any non-2xx. Callers on a fail-soft path (the poller) catch it; a
- * classification we could not obtain is better left absent than guessed.
+ * Throws on any non-2xx (a refused `x-run-id` included: never retried without
+ * it, that would file production work as nobody's). Callers on a fail-soft
+ * path (the poller) catch it; a classification we could not obtain is better
+ * left absent than guessed, and the fallback sweep asks again.
  */
 export async function platformComplete(
   params: ChatCompleteParams,
-  options: { parentRunId?: string | null } = {},
+  caller: PlatformCaller,
 ): Promise<ChatCompleteResult> {
-  const parentRunId = options.parentRunId ?? null;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "x-api-key": apiKey(),
-  };
-  // COST-ACCOUNTING-1023: the call is made FOR this run of ours, so
-  // chat-service's platform run becomes its child (billing unchanged).
-  if (parentRunId) headers["x-run-id"] = parentRunId;
+  const parts = platformCallerParts(caller);
   const response = await fetch(`${baseUrl()}/internal/platform-complete`, {
     method: "POST",
-    headers,
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey(),
+      ...parts.headers,
+    },
     body: JSON.stringify({
       message: params.message,
       systemPrompt: params.systemPrompt,
@@ -91,19 +125,12 @@ export async function platformComplete(
       ...(params.disableThinking !== undefined && {
         disableThinking: params.disableThinking,
       }),
+      ...parts.body,
     }),
   });
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    // A parent chat-service refuses (400 naming x-run-id) never costs the
-    // classification: the call goes again unparented, logged loud.
-    if (parentRunId && response.status === 400 && text.includes("x-run-id")) {
-      console.error(
-        `[instantly-service] chat-service refused x-run-id ${parentRunId}, retrying unparented (spend stays produced-none): ${text.slice(0, 300)}`,
-      );
-      return platformComplete(params);
-    }
     throw new Error(
       `[instantly-service] chat-service POST /internal/platform-complete returned ${response.status}: ${text.slice(0, 300)}`,
     );
@@ -166,8 +193,8 @@ export async function orgComplete(
  * Shapes below are conformed to the DEPLOYED contract
  * (`POST /internal/platform-judgments`, read off the container's own
  * `openapi.json`), not to a spec. The route is org-less — service auth only, no
- * `x-org-id` / `x-user-id` / `x-run-id`, because a cron has none of them and a
- * fabricated run id is rejected by runs-service as a non-existent parent.
+ * `x-org-id` / `x-user-id`; the caller (`PlatformCaller`) is our own run in
+ * `x-run-id` or a declared support function, never a fabricated id.
  *
  * Billing is chat-service's, on a platform run, against the vendor's reported
  * INPUT-token count; output is free at this vendor, so nothing declares one.
@@ -205,17 +232,22 @@ export interface JudgmentsResult {
  * measurement path swallow it LOUDLY, and the body is what distinguishes a
  * vendor error (429, 502) from a bug of ours (400 naming the bad field).
  */
-export async function platformJudgment(params: {
-  state: string;
-  questions: Record<string, JudgmentChoiceQuestion>;
-}): Promise<JudgmentsResult> {
+export async function platformJudgment(
+  params: {
+    state: string;
+    questions: Record<string, JudgmentChoiceQuestion>;
+  },
+  caller: PlatformCaller,
+): Promise<JudgmentsResult> {
+  const parts = platformCallerParts(caller);
   const response = await fetch(`${baseUrl()}/internal/platform-judgments`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-api-key": apiKey(),
+      ...parts.headers,
     },
-    body: JSON.stringify({ state: params.state, questions: params.questions }),
+    body: JSON.stringify({ state: params.state, questions: params.questions, ...parts.body }),
   });
 
   if (!response.ok) {

@@ -181,6 +181,8 @@ The reply may quote our own email beneath it, and older emails of ours ended wit
  * partnership thread reads "partnership" in its subject and nowhere in the reply.
  */
 export interface QualifyReplyContext extends ShadowJudgmentContext {
+  /** The sequence the reply came in on: whose reply-judging run the call is for. */
+  instantlyCampaignId: string;
   subject?: string | null;
 }
 
@@ -332,9 +334,9 @@ export function parseQualification(result: {
  */
 export async function qualifyReply(
   replyText: string,
-  context?: QualifyReplyContext,
+  context: QualifyReplyContext,
 ): Promise<QualificationEventType | null> {
-  const { subject, ...shadowContext } = context ?? {};
+  const { subject, ...shadowContext } = context;
   const body = stripQuotedHistory(replyText).slice(0, 4000);
   // An empty body with a subject THEY typed: the subject IS the message
   // (prod 2026-09-24: a reply whose whole text was the subject "Stop" went
@@ -344,17 +346,18 @@ export async function qualifyReply(
   if (!stripped) return null;
   // What we sold them decides whether the reply is about buying it: "yes we
   // are hiring" is off topic to a marketing offer and a purchase to a job board.
-  const ourOutreach = shadowContext.instantlyCampaignId
-    ? await loadOurOutreach(shadowContext.instantlyCampaignId)
-    : null;
+  if (!shadowContext.instantlyCampaignId) {
+    throw new Error("[instantly-service] qualifyReply: no sequence, so no reply-judging run to judge it for");
+  }
+  const ourOutreach = await loadOurOutreach(shadowContext.instantlyCampaignId);
   const framed = withOurOutreach(stripped, ourOutreach);
   const message = typedSubject ? framed : withSubject(framed, subject);
 
   // The spend belongs to the org's reply-judging run of the day, where the
-  // positive replies declare `conversation` (COST-ACCOUNTING-1023).
-  const parentRunId = shadowContext.instantlyCampaignId
-    ? await replyJudgingRunForSequence(shadowContext.instantlyCampaignId)
-    : null;
+  // positive replies declare `conversation` (COST-ACCOUNTING-1023). Judging a
+  // reply is production: no run = no call (throws; every caller already treats
+  // a failed classification as absent and the fallback sweep asks again).
+  const runId = await replyJudgingRunForSequence(shadowContext.instantlyCampaignId);
   const result = await platformComplete(
     {
       message,
@@ -365,7 +368,7 @@ export async function qualifyReply(
       temperature: 0,
       disableThinking: true,
     },
-    { parentRunId },
+    { runId },
   );
 
   const classification = parseQualification(result);

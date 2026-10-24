@@ -10,13 +10,11 @@
  * declares nothing and its cost rides the positive ones (normal loss).
  *
  * The run carries no cost of its own and is closed `completed` at creation: it
- * is a cost anchor, not a job. Never blocks a classification: when it cannot
- * be resolved the call goes out unparented (spend stays "produced none"),
- * logged loud.
+ * is a cost anchor, not a job. When it cannot be resolved the judgment is not
+ * asked (throws): every judging call states its run (PLATFORM-CALLER-RUN-1024).
  */
 import { sql } from "drizzle-orm";
 import { db } from "../db";
-import { errorMessage } from "./db-error.js";
 import { createRun, updateRun } from "./runs-client";
 
 export const REPLY_JUDGING_TASK = "reply-judging";
@@ -67,22 +65,18 @@ export async function replyJudgingRunForOrg(orgId: string, asOf: Date = new Date
 }
 
 /**
- * The judging run for a reply on this sequence (`instantly_campaign_id`), or
- * null when it cannot be resolved (logged loud: the classification still runs).
+ * The judging run for a reply on this sequence (`instantly_campaign_id`).
+ * Throws when it cannot be resolved: judging a reply is production, it is
+ * never sent to chat-service as nobody's work (PLATFORM-CALLER-RUN-1024).
  */
-export async function replyJudgingRunForSequence(instantlyCampaignId: string): Promise<string | null> {
-  try {
-    const result = await db.execute(sql`
-      SELECT org_id FROM instantly_campaigns WHERE instantly_campaign_id = ${instantlyCampaignId} LIMIT 1
-    `);
-    const row = (result.rows as Array<Record<string, unknown>>)[0];
-    const orgId = row?.org_id ? String(row.org_id) : null;
-    if (!orgId) return null;
-    return await replyJudgingRunForOrg(orgId);
-  } catch (error: unknown) {
-    console.error(
-      `[reply-judging-run] no judging run for ${instantlyCampaignId}, classifier call goes out unparented (spend stays produced-none): ${errorMessage(error)}`,
-    );
-    return null;
+export async function replyJudgingRunForSequence(instantlyCampaignId: string): Promise<string> {
+  const result = await db.execute(sql`
+    SELECT org_id FROM instantly_campaigns WHERE instantly_campaign_id = ${instantlyCampaignId} LIMIT 1
+  `);
+  const row = (result.rows as Array<Record<string, unknown>>)[0];
+  const orgId = row?.org_id ? String(row.org_id) : null;
+  if (!orgId) {
+    throw new Error(`[reply-judging-run] sequence ${instantlyCampaignId} has no org: no reply-judging run to judge it for`);
   }
+  return replyJudgingRunForOrg(orgId);
 }

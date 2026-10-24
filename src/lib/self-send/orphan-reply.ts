@@ -249,6 +249,18 @@ export function rankOrphanReplyLeads(
   return ranked.slice(0, ORPHAN_REPLY_MAX_LEADS);
 }
 
+/**
+ * Whose reply-judging run an orphan judgment is for (PLATFORM-CALLER-RUN-1024):
+ * the org of the LIKELIEST lead (first in rank order). Finding which lead a
+ * stranger's email answers is judging a reply, production of that org's
+ * Positive reply; the candidates may span orgs (shared mailboxes), one run
+ * must be named, the best-ranked lead's org is the one the reply most likely
+ * lands in. Null when no candidate carries an org (the call is not made).
+ */
+export function orphanJudgmentOrg(ranked: RankedOrphanReplyLead[]): string | null {
+  return ranked.find(({ lead }) => lead.orgId)?.lead.orgId ?? null;
+}
+
 /** The judgment's answer key for "this answers none of them". */
 export const ORPHAN_REPLY_NONE = "none";
 
