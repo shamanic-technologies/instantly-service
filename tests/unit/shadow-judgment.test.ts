@@ -24,6 +24,7 @@ import {
   recordShadowJudgment,
   shadowJudgeReply,
   REPLY_KIND_QUESTION_KEY,
+  SHADOW_JUDGMENT_SUPPORT,
 } from "../../src/lib/shadow-judgment";
 import {
   QUALIFICATION_EVENT_TYPES,
@@ -144,6 +145,10 @@ describe("recordShadowJudgment", () => {
       leadEmail: "joe@x.com",
       source: "imap_poller",
     });
+
+    // A measurement that decides nothing: staff experiment, never a reply's run.
+    expect(mockPlatformJudgment.mock.calls[0][1]).toEqual({ support: SHADOW_JUDGMENT_SUPPORT });
+    expect(SHADOW_JUDGMENT_SUPPORT.kind).toBe("staff_experiment");
 
     expect(mockInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({

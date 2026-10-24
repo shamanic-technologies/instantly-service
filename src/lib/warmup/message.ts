@@ -143,6 +143,16 @@ export function parseWarmupMessage(raw: string): WarmupMessage | null {
   }
 }
 
+/**
+ * Writing a warmup email between two of our own mailboxes: no run stands
+ * behind it (a daily mesh, not a job producing an outcome), so it is declared
+ * support, apart from every outcome.
+ */
+export const WARMUP_SUPPORT = {
+  kind: "platform_llm",
+  reason: "Warmup mesh email between two of our own sending mailboxes, written to keep their sender reputation; it produces no outcome.",
+} as const;
+
 export async function buildWarmupMessage(
   senderEmail: string,
   receiverEmail: string,
@@ -161,7 +171,7 @@ export async function buildWarmupMessage(
       model: "deepseek-flash",
       temperature: 1,
       disableThinking: true,
-    });
+    }, { support: WARMUP_SUPPORT });
     const message =
       parseWarmupMessage(result.content ?? "") ?? fallbackMessage(topic, receiverEmail);
     return { ...message, subject: tagWarmupSubject(message.subject, ref) };
@@ -193,7 +203,7 @@ export async function buildWarmupReply(
       model: "deepseek-flash",
       temperature: 1,
       disableThinking: true,
-    });
+    }, { support: WARMUP_SUPPORT });
     const parsed = parseWarmupMessage(result.content ?? "");
     return { subject, text: parsed?.text ?? "Got it, thanks. Will take a look today." };
   } catch {

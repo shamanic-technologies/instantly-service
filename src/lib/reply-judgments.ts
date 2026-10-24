@@ -16,7 +16,8 @@
  *
  * Why Jev: owner, 2026-10-08 — "use Jev as much as possible everywhere, it is
  * super cheap". Platform-billed (a background projection has no inbound org
- * request); chat-service bills input tokens only and declares the cost.
+ * request); chat-service bills input tokens only and declares the cost, on a
+ * child of the org's reply-judging run of the day (lib/reply-judging-run.ts).
  *
  * Judged in the outreach-facts projection BEFORE the reply's fact is emitted,
  * so the feed rarely has to correct itself. A failed call writes nothing (the
@@ -27,6 +28,7 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../db";
 import { platformJudgment, type JudgmentChoiceQuestion } from "./chat-client";
+import { replyJudgingRunForOrg, replyJudgingRunForSequence } from "./reply-judging-run";
 import { AUTOMATED_REPLY_KINDS, OFF_TOPIC_REPLY_KINDS } from "./reply-kind";
 import { htmlToText } from "./forward-positive-reply";
 import { stripQuotedHistory, withSubject } from "./self-send/qualify-reply";
@@ -114,6 +116,9 @@ export interface StoredJudgment {
 
 export interface ReplyToJudge {
   replyId: string;
+  /** The org and sequence the reply came in on: whose judging run the call is for. */
+  orgId: string | null;
+  instantlyCampaignId: string;
   subject: string | null;
   /** Raw body (text or html) of the stored message. */
   body: string;
@@ -133,7 +138,7 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
 export async function selectRepliesToJudge(limit: number): Promise<ReplyToJudge[]> {
   const rows = rowsOf(
     await db.execute(sql`
-      SELECT r.id, r.subject, r.current_kind,
+      SELECT r.id, r.org_id, r.instantly_campaign_id, r.subject, r.current_kind,
              COALESCE(NULLIF(ie.payload->'body'->>'text', ''), ie.payload->'body'->>'html',
                       m.payload->>'textSnippet', '') AS body,
              COALESCE((SELECT jsonb_agg(j.question) FROM reply_judgments j WHERE j.reply_id = r.id), '[]'::jsonb) AS judged
@@ -162,6 +167,8 @@ export async function selectRepliesToJudge(limit: number): Promise<ReplyToJudge[
     const judged = Array.isArray(row.judged) ? (row.judged as string[]) : [];
     return {
       replyId: String(row.id),
+      orgId: typeof row.org_id === "string" && row.org_id ? row.org_id : null,
+      instantlyCampaignId: String(row.instantly_campaign_id),
       subject: typeof row.subject === "string" ? row.subject : null,
       body: String(row.body ?? ""),
       missing: questionsForKind(String(row.current_kind)).filter((q) => !judged.includes(q)),
@@ -198,7 +205,12 @@ export async function judgeReply(reply: ReplyToJudge): Promise<number> {
 
   const questions: Record<string, JudgmentChoiceQuestion> = {};
   for (const key of reply.missing) questions[key] = QUESTION_BY_KEY[key];
-  const result = await platformJudgment({ state, questions });
+  // Judging a reply is production: the org's reply-judging run of the day,
+  // where its positive replies declare `conversation` (PLATFORM-CALLER-RUN-1024).
+  const runId = reply.orgId
+    ? await replyJudgingRunForOrg(reply.orgId)
+    : await replyJudgingRunForSequence(reply.instantlyCampaignId);
+  const result = await platformJudgment({ state, questions }, { runId });
 
   let stored = 0;
   for (const key of reply.missing) {

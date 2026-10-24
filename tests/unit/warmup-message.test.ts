@@ -12,6 +12,7 @@ import {
   topicFor,
   warmupSubjectRef,
   WARMUP_SUBJECT_TAG,
+  WARMUP_SUPPORT,
 } from "../../src/lib/warmup/message";
 
 beforeEach(() => {
@@ -77,7 +78,10 @@ describe("buildWarmupMessage", () => {
           model: "deepseek-flash",
           disableThinking: true,
         }),
+        // No run stands behind the mesh: declared support (PLATFORM-CALLER-RUN-1024).
+        { support: WARMUP_SUPPORT },
       );
+      expect(WARMUP_SUPPORT.kind).toBe("platform_llm");
     });
   });
 
@@ -121,6 +125,7 @@ describe("buildWarmupReply", () => {
 
     expect((await buildWarmupReply("Quick one", "body")).subject).toBe("Re: Quick one");
     expect((await buildWarmupReply("Re: Quick one", "body")).subject).toBe("Re: Quick one");
+    expect(mockPlatformComplete.mock.calls.at(-1)?.[1]).toEqual({ support: WARMUP_SUPPORT });
   });
 
   it("answers anyway when the model is unavailable", async () => {
