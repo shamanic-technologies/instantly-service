@@ -38,13 +38,24 @@ import { db } from "../db";
 export const SEND_PRODUCED_OUTCOME = "message_sent";
 export const SEND_CONSUMED_OUTCOMES = ["message_written", "email_checked"] as const;
 /**
- * LEDGER-HISTORY-1024: what a send used for the address when NO check of it was
- * ever produced (no email check ran on served leads before 2026-09-24 18:12;
- * the reveal that carried the address is what the email went to). A run only
- * consumes an occurrence that exists: `email_checked` when the ledger holds one
- * produced for the lead by the end of the send's UTC day, else `email_found`.
+ * LEDGER-HISTORY-1024: the ledger records what a send USED for the address,
+ * read from OUR records, never from what another service declared so far. A
+ * send used a verdict (`email_checked`) when our send door verified the address
+ * before the email left (`email_send_verifications`, accepted), or when its
+ * sequence was served after email checks began on served leads
+ * (`EMAIL_CHECKS_BEGAN_AT`); otherwise it used the address the reveal found
+ * (`email_found`). A verdict whose producer has not declared it yet stays an
+ * unplaced `email_checked` (it names the missing producer), never re-stated.
  */
 export const SEND_UNCHECKED_ADDRESS_OUTCOME = "email_found";
+/** No email check ran on served leads before this instant (human-service + apollo-service, measured 2026-10-24). */
+export const EMAIL_CHECKS_BEGAN_AT = "2026-09-24T18:12:00.000Z";
+
+/** Did this send use a verdict on its address? From our own records only. Pure. */
+export function sendUsedAVerdict(row: { sequenceCreatedAt: string | null; verifiedBeforeSend: boolean }): boolean {
+  if (row.verifiedBeforeSend) return true;
+  return row.sequenceCreatedAt !== null && Date.parse(row.sequenceCreatedAt) >= Date.parse(EMAIL_CHECKS_BEGAN_AT);
+}
 /** A person's occurrences are named by their lead in lead-service. */
 export const SEND_OUTCOME_SUBJECT_SERVICE = "lead-service";
 
@@ -75,54 +86,6 @@ export function buildSendOutcomeDeclaration(leadId: string, checked = true): Sen
   };
 }
 
-/** End of the UTC day of an ISO instant (the resolver places a consumption on occurrences declared by then). */
-export function endOfUtcDay(iso: string): string {
-  return new Date(Date.parse(`${iso.slice(0, 10)}T00:00:00Z`) + 86_400_000).toISOString();
-}
-
-/**
- * The earliest declared `email_checked` PRODUCED for each lead, read from
- * runs-service's ledger (`GET /internal/outcome-occurrences`, 500 subjects a
- * call, every page). A lead absent from the map has none. Throws on any
- * non-2xx: the caller's rows stay undeclared and the next pass asks again.
- */
-export async function fetchEarliestCheckByLead(leadIds: string[]): Promise<Map<string, string>> {
-  const earliest = new Map<string, string>();
-  const unique = [...new Set(leadIds)];
-  for (let i = 0; i < unique.length; i += 500) {
-    let cursor: string | null = null;
-    do {
-      const qs = new URLSearchParams({
-        subjectService: SEND_OUTCOME_SUBJECT_SERVICE,
-        subjectIds: unique.slice(i, i + 500).join(","),
-        outcomeKey: "email_checked",
-        direction: "produced",
-        limit: "1000",
-      });
-      if (cursor) qs.set("cursor", cursor);
-      const res = await fetch(`${runsUrl()}/internal/outcome-occurrences?${qs}`, {
-        headers: runsHeaders(),
-        signal: AbortSignal.timeout(BATCH_TIMEOUT_MS),
-      });
-      const body = await res.text();
-      if (!res.ok) throw new Error(`runs-service outcome-occurrences ${res.status}: ${body.slice(0, 300)}`);
-      const page = JSON.parse(body) as { occurrences?: Array<{ subjectId: string; declaredAt: string }>; nextCursor?: string | null };
-      for (const o of page.occurrences ?? []) {
-        const prior = earliest.get(o.subjectId);
-        if (!prior || o.declaredAt < prior) earliest.set(o.subjectId, o.declaredAt);
-      }
-      cursor = page.nextCursor ?? null;
-    } while (cursor);
-  }
-  return earliest;
-}
-
-/** A check counts for a send when one was produced for the lead by the end of the send's UTC day. Pure. */
-export function addressWasChecked(earliestCheck: string | undefined, occurredAt: string, runStartedFallback: string): boolean {
-  if (!earliestCheck) return false;
-  const at = occurredAt === OCCURRED_AT_RUN_START ? runStartedFallback : occurredAt;
-  return Date.parse(earliestCheck) < Date.parse(endOfUtcDay(at));
-}
 
 /** Terminal marks stored in `sequence_costs.outcomes_declaration`. */
 export type DeclarationMark = "declared" | "run_gone" | "no_lead_id" | "ambiguous_lead" | "refused";
@@ -155,6 +118,10 @@ export interface PendingSendOutcome {
   /** ISO instant the step's email left (earliest non-withdrawn `email_sent`), null = no evidence. */
   sentAt: string | null;
   status: string;
+  /** When we received the sequence (`instantly_campaigns.created_at`, UTC). */
+  sequenceCreatedAt: string | null;
+  /** Our send door accepted a verdict on this address (org + address) before the email left. */
+  verifiedBeforeSend: boolean;
 }
 
 /** Terminal marks a hold can get without a call (never an invented subject or date). */
@@ -177,17 +144,20 @@ export function classifyPendingSend(row: PendingSendOutcome): LocalMark | "decla
  */
 const PENDING_SELECT = sql`
   SELECT sc.id AS hold_id, sc.run_id, sc.step, sc.status, m.org_id, m.lead_id, COALESCE(m.n, 0)::int AS matches,
-    to_char(e.sent_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS sent_at
+    to_char(e.sent_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS sent_at,
+    to_char(m.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS sequence_created_at,
+    COALESCE(vf.used, false) AS verified_before_send
   FROM sequence_costs sc
   LEFT JOIN LATERAL (
     SELECT (array_agg(c.org_id))[1] AS org_id, (array_agg(c.lead_id))[1] AS lead_id,
-      (array_agg(c.instantly_campaign_id))[1] AS icid, (array_agg(c.lead_email))[1] AS lead_email, count(*) AS n
+      (array_agg(c.instantly_campaign_id))[1] AS icid, (array_agg(c.lead_email))[1] AS lead_email,
+      (array_agg(c.created_at))[1] AS created_at, count(*) AS n
     FROM (
       -- Two index-served branches, never one OR (4.8 s vs 1.3 s on prod).
-      SELECT c.org_id, c.lead_id, c.instantly_campaign_id, c.lead_email FROM instantly_campaigns c
+      SELECT c.org_id, c.lead_id, c.instantly_campaign_id, c.lead_email, c.created_at FROM instantly_campaigns c
       WHERE sc.instantly_campaign_id IS NOT NULL AND c.instantly_campaign_id = sc.instantly_campaign_id
       UNION ALL
-      SELECT c.org_id, c.lead_id, c.instantly_campaign_id, c.lead_email FROM instantly_campaigns c
+      SELECT c.org_id, c.lead_id, c.instantly_campaign_id, c.lead_email, c.created_at FROM instantly_campaigns c
       WHERE sc.instantly_campaign_id IS NULL AND c.campaign_id = sc.campaign_id
         AND lower(c.lead_email) = lower(sc.lead_email)
     ) c
@@ -197,6 +167,13 @@ const PENDING_SELECT = sql`
     WHERE m.n = 1 AND ev.campaign_id = m.icid AND ev.lead_email = m.lead_email
       AND ev.event_type = 'email_sent' AND ev.step = sc.step AND ev.withdrawn_at IS NULL
   ) e ON true
+  LEFT JOIN LATERAL (
+    -- Served by (org_id, email, created_at); the event column is UTC without a zone.
+    SELECT true AS used FROM email_send_verifications v
+    WHERE m.n = 1 AND v.org_id = m.org_id AND v.email = lower(m.lead_email) AND v.accepted
+      AND v.created_at <= COALESCE(e.sent_at AT TIME ZONE 'UTC', now())
+    LIMIT 1
+  ) vf ON true
 `;
 
 function toPending(rows: Array<Record<string, unknown>>): PendingSendOutcome[] {
@@ -209,6 +186,8 @@ function toPending(rows: Array<Record<string, unknown>>): PendingSendOutcome[] {
     matches: Number(r.matches),
     sentAt: (r.sent_at as string | null) ?? null,
     status: String(r.status),
+    sequenceCreatedAt: (r.sequence_created_at as string | null) ?? null,
+    verifiedBeforeSend: r.verified_before_send === true,
   }));
 }
 
@@ -318,8 +297,8 @@ export interface BatchRun {
   leadId: string;
   occurredAt: string;
   holdIds: string[];
-  /** A check of the address exists (consume `email_checked`), else `email_found`. Set before posting. */
-  checked?: boolean;
+  /** The send used a verdict on the address (consume `email_checked`), else `email_found`. */
+  checked: boolean;
 }
 
 /**
@@ -364,7 +343,7 @@ function postBatch(runs: BatchRun[], redate: boolean): Promise<{ status: number;
   return postOutcomesBatch(
     runs.map((r) => ({
       runId: r.runId,
-      ...buildSendOutcomeDeclaration(r.leadId, r.checked !== false),
+      ...buildSendOutcomeDeclaration(r.leadId, r.checked),
       occurredAt: r.occurredAt,
       ...(redate ? { redate: true as const } : {}),
     })),
@@ -385,7 +364,7 @@ export interface SendOutcomesSummary {
   redated: number;
   /** Up to 5 holds of this pass NOT declared for want of a lead id or a sent email (logged). */
   undeclaredSample: string[];
-  /** Runs whose address had no check in the ledger: they consume `email_found`. */
+  /** Runs whose send used no verdict on the address: they consume `email_found`. */
   unchecked: number;
 }
 
@@ -409,12 +388,13 @@ export function planRuns(rows: PendingSendOutcome[]): { runs: BatchRun[]; marks:
     }
     const existing = byRun.get(row.runId);
     if (!existing) {
-      byRun.set(row.runId, { runId: row.runId, leadId: row.leadId!, occurredAt: row.sentAt!, holdIds: [row.holdId] });
+      byRun.set(row.runId, { runId: row.runId, leadId: row.leadId!, occurredAt: row.sentAt!, holdIds: [row.holdId], checked: sendUsedAVerdict(row) });
     } else if (existing.leadId !== row.leadId) {
       byRun.delete(row.runId);
       marks.push({ holdIds: [...existing.holdIds, row.holdId], mark: "ambiguous_lead" });
     } else {
       existing.holdIds.push(row.holdId);
+      existing.checked = existing.checked || sendUsedAVerdict(row);
       if (row.sentAt! < existing.occurredAt) existing.occurredAt = row.sentAt!;
     }
   }
@@ -441,12 +421,7 @@ export async function declarePlannedRows(
     summary.declared += runs.length;
     return;
   }
-  const checks = runs.length > 0 ? await fetchEarliestCheckByLead(runs.map((r) => r.leadId)) : new Map<string, string>();
-  for (const run of runs) {
-    // A run dated at its start has no send instant here: the send day is today's at worst.
-    run.checked = addressWasChecked(checks.get(run.leadId), run.occurredAt, new Date().toISOString());
-    if (!run.checked) summary.unchecked++;
-  }
+  summary.unchecked += runs.filter((r) => !r.checked).length;
   for (let i = 0; i < runs.length; i += DECLARE_BATCH_RUNS) {
     let batch = runs.slice(i, i + DECLARE_BATCH_RUNS);
     // A 422 writes nothing: drop/mark the refused runs, re-date the early ones, re-post the rest.
@@ -498,9 +473,9 @@ export async function declarePlannedRows(
  */
 async function declareRunByRun(runs: BatchRun[], summary: SendOutcomesSummary): Promise<void> {
   for (const run of runs) {
-    let answer = await postRunOutcomes(run.runId, null, buildSendOutcomeDeclaration(run.leadId, run.checked !== false), run.occurredAt);
+    let answer = await postRunOutcomes(run.runId, null, buildSendOutcomeDeclaration(run.leadId, run.checked), run.occurredAt);
     if (answer.status === 400 && answer.body.includes("occurred") && run.occurredAt !== OCCURRED_AT_RUN_START) {
-      answer = await postRunOutcomes(run.runId, null, buildSendOutcomeDeclaration(run.leadId, run.checked !== false), OCCURRED_AT_RUN_START);
+      answer = await postRunOutcomes(run.runId, null, buildSendOutcomeDeclaration(run.leadId, run.checked), OCCURRED_AT_RUN_START);
       summary.datedAtRunStart++;
     }
     const verdict = classifyDeclareAnswer(answer.status, answer.body);
