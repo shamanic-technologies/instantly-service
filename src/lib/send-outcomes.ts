@@ -383,6 +383,12 @@ export async function declarePlannedRows(
     for (let attempt = 0; batch.length > 0; attempt++) {
       if (attempt > 3) throw new Error(`runs-service outcomes batch still refusing after ${attempt} attempts`);
       const posted = await postBatch(batch, redate);
+      if (posted.status === 409 && posted.body.includes("run_marked_support")) {
+        // A run marked support (by its owner or staff) cannot declare, and the
+        // batch names none of them: state each run alone, a refused one is marked.
+        await declareRunByRun(batch, summary);
+        break;
+      }
       const answer = readBatchAnswer(posted.status, posted.body);
       if (answer.ok) {
         summary.redated += Number((JSON.parse(posted.body) as { redatedCount?: unknown }).redatedCount ?? 0);
@@ -411,6 +417,32 @@ export async function declarePlannedRows(
       }
       batch = next;
     }
+  }
+}
+
+/**
+ * The batch's fallback when runs-service refuses it for a support-marked run
+ * (409 `run_marked_support`, no run named): each run through the single door,
+ * dated the same way; a refusal (409) marks its holds `refused`, a transient
+ * answer leaves them undeclared for the next pass.
+ */
+async function declareRunByRun(runs: BatchRun[], summary: SendOutcomesSummary): Promise<void> {
+  for (const run of runs) {
+    let answer = await postRunOutcomes(run.runId, null, buildSendOutcomeDeclaration(run.leadId), run.occurredAt);
+    if (answer.status === 400 && answer.body.includes("occurred") && run.occurredAt !== OCCURRED_AT_RUN_START) {
+      answer = await postRunOutcomes(run.runId, null, buildSendOutcomeDeclaration(run.leadId), OCCURRED_AT_RUN_START);
+      summary.datedAtRunStart++;
+    }
+    const verdict = classifyDeclareAnswer(answer.status, answer.body);
+    if (verdict === "retry") {
+      console.error(`[send-outcomes] run ${run.runId} declaration ${answer.status} (retried next pass): ${answer.body.slice(0, 300)}`);
+      continue;
+    }
+    if (verdict !== "declared") console.error(`[send-outcomes] run ${run.runId} declaration ${answer.status} -> ${verdict}: ${answer.body.slice(0, 200)}`);
+    await markHolds(run.holdIds, verdict);
+    if (verdict === "declared") summary.declared++;
+    else if (verdict === "run_gone") summary.runGone++;
+    else summary.refused++;
   }
 }
 
