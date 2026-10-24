@@ -231,10 +231,12 @@ export interface ListedRun {
  * (no `limit`: the filters keep the set small). Throws on any failure.
  */
 export async function listRuns(
-  filters: { serviceName: string; status: string; startedAfter: string; startedBefore: string },
+  filters: { serviceName: string; status?: string; startedAfter: string; startedBefore: string },
   identity: IdentityContext,
 ): Promise<ListedRun[]> {
-  const qs = new URLSearchParams(filters).toString();
+  const qs = new URLSearchParams(
+    Object.entries(filters).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  ).toString();
   const body = await runsRequest<{ runs: ListedRun[] }>(`/v1/runs?${qs}`, identity);
   return Array.isArray(body.runs) ? body.runs : [];
 }
