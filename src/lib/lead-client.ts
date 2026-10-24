@@ -592,3 +592,34 @@ export async function findLeadTimezoneOnCampaignByEmail(params: {
   const zone = exact[0].lead?.timezone;
   return typeof zone === "string" && zone.trim() ? zone.trim() : null;
 }
+
+export interface LeadIdResolveItem {
+  orgId: string;
+  brandIds?: string[];
+  email: string;
+}
+
+/**
+ * Which lead each person is, for an org (lead-service `POST /internal/leads/ids/resolve`,
+ * COST-ACCOUNTING-1023-P1): read only, one answer per item in the order asked, up to 1000
+ * items; `null` = not a lead of that org (nothing is minted). Throws on any non-2xx.
+ */
+export async function resolveLeadIds(items: LeadIdResolveItem[]): Promise<Array<string | null>> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+  const response = await fetch(`${LEAD_SERVICE_URL}/internal/leads/ids/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": LEAD_SERVICE_API_KEY },
+    body: JSON.stringify({ people: items }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!response.ok) {
+    throw new Error(`lead-service POST /internal/leads/ids/resolve failed: ${response.status} - ${(await response.text()).slice(0, 300)}`);
+  }
+  const body = (await response.json()) as { people?: Array<{ leadId: string | null }> };
+  if (!Array.isArray(body.people) || body.people.length !== items.length) {
+    throw new Error(`lead-service lead id resolve answered ${body.people?.length ?? "no"} people for ${items.length} asked`);
+  }
+  return body.people.map((p) => p.leadId ?? null);
+}

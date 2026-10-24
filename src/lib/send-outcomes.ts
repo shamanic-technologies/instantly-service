@@ -218,20 +218,21 @@ async function markHolds(holdIds: string[], outcome: DeclarationMark | LocalMark
 
 /**
  * POST one declaration on one run (runs-service platform route; `x-org-id`
- * makes runs-service check the run is that org's). Used by the positive-reply
- * sweep. Returns the raw answer, never throws on an HTTP status.
+ * makes runs-service check the run is that org's), dated `occurredAt` when
+ * given. Used by the positive-reply and website-visit sweeps. Returns the raw answer, never throws on an HTTP status.
  */
 export async function postRunOutcomes(
   runId: string,
   orgId: string | null,
   declaration: SendOutcomeDeclaration,
+  occurredAt?: string,
 ): Promise<{ status: number; body: string }> {
   const headers = runsHeaders();
   if (orgId && UUID_RE.test(orgId)) headers["x-org-id"] = orgId;
   const res = await fetch(`${runsUrl()}/v1/platform-runs/${encodeURIComponent(runId)}/outcomes`, {
     method: "POST",
     headers,
-    body: JSON.stringify(declaration),
+    body: JSON.stringify(occurredAt ? { ...declaration, occurredAt } : declaration),
     signal: AbortSignal.timeout(DECLARE_TIMEOUT_MS),
   });
   return { status: res.status, body: await res.text() };
@@ -280,21 +281,32 @@ export function markForInvalidRun(reason: string, occurredAt: string): Declarati
   return "refused";
 }
 
-async function postBatch(runs: BatchRun[], redate: boolean): Promise<{ status: number; body: string }> {
+export interface BatchEntry extends SendOutcomeDeclaration {
+  runId: string;
+  occurredAt: string;
+  redate?: true;
+}
+
+/** runs-service's batch door (all or nothing: a 422 `invalid_runs` writes nothing). Never throws on an HTTP status. */
+export async function postOutcomesBatch(entries: BatchEntry[]): Promise<{ status: number; body: string }> {
   const res = await fetch(`${runsUrl()}/v1/platform-runs/outcomes/batch`, {
     method: "POST",
     headers: runsHeaders(),
-    body: JSON.stringify({
-      runs: runs.map((r) => ({
-        runId: r.runId,
-        ...buildSendOutcomeDeclaration(r.leadId),
-        occurredAt: r.occurredAt,
-        ...(redate ? { redate: true } : {}),
-      })),
-    }),
+    body: JSON.stringify({ runs: entries }),
     signal: AbortSignal.timeout(BATCH_TIMEOUT_MS),
   });
   return { status: res.status, body: await res.text() };
+}
+
+function postBatch(runs: BatchRun[], redate: boolean): Promise<{ status: number; body: string }> {
+  return postOutcomesBatch(
+    runs.map((r) => ({
+      runId: r.runId,
+      ...buildSendOutcomeDeclaration(r.leadId),
+      occurredAt: r.occurredAt,
+      ...(redate ? { redate: true as const } : {}),
+    })),
+  );
 }
 
 export interface SendOutcomesSummary {

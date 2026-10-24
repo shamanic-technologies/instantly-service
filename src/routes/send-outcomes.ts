@@ -11,6 +11,9 @@
  * Idempotent and resumable: a re-run declares nothing twice.
  */
 import { Router, Request, Response } from "express";
+import { declarePastBookingCalls } from "../lib/booking-call-outcomes";
+import { backfillMissingLeadIds } from "../lib/lead-id-backfill";
+import { redatePastPositiveReplies } from "../lib/positive-reply-outcomes";
 import { runSendOutcomesBackfill } from "../lib/send-outcomes";
 
 const router = Router();
@@ -34,6 +37,63 @@ router.post("/backfill", async (req: Request, res: Response) => {
   runSendOutcomesBackfill({ dryRun: false, limit, redate })
     .then((summary) => console.log(`[instantly-service] send-outcomes-backfill: done ${JSON.stringify(summary)}`))
     .catch((error) => console.error(`[instantly-service] send-outcomes-backfill: FAILED ${error?.message ?? error}`));
+});
+
+/**
+ * POST /internal/send-outcomes/conversations/redate — LEDGER-HISTORY-1024: the
+ * positive replies declared before the dated door re-stated dated at the reply
+ * (lib/positive-reply-outcomes.ts `redatePastPositiveReplies`). Body
+ * `{dryRun (default TRUE)}`; tens of rows, synchronous. Idempotent.
+ */
+router.post("/conversations/redate", async (req: Request, res: Response) => {
+  const dryRun = (req.body ?? {}).dryRun !== false;
+  try {
+    return res.json(await redatePastPositiveReplies({ dryRun }));
+  } catch (error: any) {
+    console.error(`[instantly-service] conversation redate failed: ${error?.message ?? error}`);
+    return res.status(500).json({ error: error?.message ?? "redate failed" });
+  }
+});
+
+/**
+ * POST /internal/send-outcomes/lead-ids/backfill — LEDGER-HISTORY-1024: name the
+ * lead of every sequence marked `no_lead_id` through lead-service, then re-run
+ * the send backfill so those sends are declared (lib/lead-id-backfill.ts).
+ * Body `{dryRun (default TRUE)}`: dry run asks lead-service and writes nothing
+ * (synchronous); `dryRun:false` answers 202 (log `lead-id-backfill: done`).
+ */
+router.post("/lead-ids/backfill", async (req: Request, res: Response) => {
+  const dryRun = (req.body ?? {}).dryRun !== false;
+  if (dryRun) {
+    try {
+      return res.json(await backfillMissingLeadIds({ dryRun: true }));
+    } catch (error: any) {
+      console.error(`[instantly-service] lead-id-backfill dry-run failed: ${error?.message ?? error}`);
+      return res.status(500).json({ error: error?.message ?? "dry run failed" });
+    }
+  }
+  res.status(202).json({ accepted: true, dryRun: false });
+  backfillMissingLeadIds({ dryRun: false })
+    .then(async (leadIds) => {
+      const sends = await runSendOutcomesBackfill({ dryRun: false });
+      console.log(`[instantly-service] lead-id-backfill: done ${JSON.stringify({ leadIds, sends })}`);
+    })
+    .catch((error) => console.error(`[instantly-service] lead-id-backfill: FAILED ${error?.message ?? error}`));
+});
+
+/**
+ * POST /internal/send-outcomes/booking-calls — LEDGER-HISTORY-1024: the past AI
+ * Instant Call rings declared as `booking_call` (lib/booking-call-outcomes.ts).
+ * Body `{dryRun (default TRUE)}`; a handful of runs, synchronous. Idempotent.
+ */
+router.post("/booking-calls", async (req: Request, res: Response) => {
+  const dryRun = (req.body ?? {}).dryRun !== false;
+  try {
+    return res.json(await declarePastBookingCalls({ dryRun }));
+  } catch (error: any) {
+    console.error(`[instantly-service] booking-call declarations failed: ${error?.message ?? error}`);
+    return res.status(500).json({ error: error?.message ?? "booking-call declarations failed" });
+  }
 });
 
 export default router;
