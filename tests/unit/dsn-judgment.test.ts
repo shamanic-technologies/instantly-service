@@ -25,7 +25,10 @@ import {
   readDsnJudgment,
   type BounceEventRef,
 } from "../../src/lib/self-send/dsn-judgment";
-import { runDsnJudgmentSweep } from "../../src/lib/self-send/dsn-judgment-sweep";
+import {
+  DSN_NO_SEND_RUN_SUPPORT,
+  runDsnJudgmentSweep,
+} from "../../src/lib/self-send/dsn-judgment-sweep";
 
 function pgResult<T>(rows: T[]) {
   return { command: "SELECT", rowCount: rows.length, oid: null, fields: [], rows };
@@ -42,6 +45,7 @@ const GODADDY_ROW = {
   text: GODADDY_SPAM_BLOCK_DSN,
   at: "2026-10-15T19:12:26Z",
   judgment: null,
+  send_run_id: "3f2e1d0c-1111-4222-8333-444455556666",
 };
 
 const GMAIL_ROW = {
@@ -55,6 +59,7 @@ const GMAIL_ROW = {
   text: GMAIL_ADDRESS_NOT_FOUND_DSN,
   at: "2026-10-16T09:00:00Z",
   judgment: null,
+  send_run_id: null,
 };
 
 /** The bounce the old poll promoted from the GoDaddy notice (seq 7935225's event). */
@@ -271,5 +276,23 @@ describe("planDsnSettlement (grain = one send)", () => {
       [],
     );
     expect(plan.promote.map((p) => p.id)).toEqual(["r1"]);
+  });
+});
+
+describe("whose work reading a DSN is (PLATFORM-CALLER-RUN-1024)", () => {
+  it("made FOR the run that sent the email it answers; a send with no run on record is declared support", async () => {
+    database([GODADDY_ROW, GMAIL_ROW], [GODADDY_EVENT]);
+    judges(byFixture);
+
+    await runDsnJudgmentSweep({ dryRun: true, sinceDays: null });
+
+    const callers = judgmentMock.mock.calls.map((c) => [(c[0] as { state: string }).state.includes("552 5.2.0"), c[1]]);
+    expect(callers).toContainEqual([true, { runId: GODADDY_ROW.send_run_id }]);
+    expect(callers).toContainEqual([false, { support: DSN_NO_SEND_RUN_SUPPORT }]);
+    expect(DSN_NO_SEND_RUN_SUPPORT.kind).toBe("platform_llm");
+    // The send's run is read from the step's own hold.
+    const loadSql = JSON.stringify(mockDbExecute.mock.calls.find((c) => JSON.stringify(c[0]).includes("FROM imap_messages_raw"))![0]);
+    expect(loadSql).toContain("FROM sequence_costs");
+    expect(loadSql).toContain("s.step = m.step");
   });
 });

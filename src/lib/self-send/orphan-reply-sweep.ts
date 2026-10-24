@@ -32,6 +32,7 @@ import { simpleParser } from "mailparser";
 import { db } from "../../db";
 import { promoteEvent } from "../silver-promote";
 import { platformJudgment } from "../chat-client";
+import { replyJudgingRunForOrg } from "../reply-judging-run";
 import type { CallerInfo } from "../key-client";
 import { htmlToText } from "../forward-positive-reply";
 import { actOnInboundReply, emptyPollSummary, type KnownSend, type PollSummary } from "./imap-poller";
@@ -44,6 +45,7 @@ import {
   buildOrphanReplyState,
   INSTANTLY_WARMUP_TAGS,
   ORPHAN_REPLY_QUESTION_KEY,
+  orphanJudgmentOrg,
   orphanReplyExclusion,
   headerRecipients,
   rankOrphanReplyLeads,
@@ -480,16 +482,21 @@ export async function runOrphanReplySweep(
         continue;
       }
 
-      const result = await platformJudgment({
-        state: buildOrphanReplyState({
-          fromAddress: row.fromAddress,
-          toAddress: row.accountEmail,
-          subject: row.subject,
-          receivedAt: row.receivedAt,
-          text: row.text,
-        }),
-        questions: { [ORPHAN_REPLY_QUESTION_KEY]: buildOrphanReplyQuestion(ranked) },
-      });
+      const judgingOrg = orphanJudgmentOrg(ranked);
+      if (!judgingOrg) throw new Error("no candidate lead carries an org: no reply-judging run to judge it for");
+      const result = await platformJudgment(
+        {
+          state: buildOrphanReplyState({
+            fromAddress: row.fromAddress,
+            toAddress: row.accountEmail,
+            subject: row.subject,
+            receivedAt: row.receivedAt,
+            text: row.text,
+          }),
+          questions: { [ORPHAN_REPLY_QUESTION_KEY]: buildOrphanReplyQuestion(ranked) },
+        },
+        { runId: await replyJudgingRunForOrg(judgingOrg) },
+      );
       summary.judged += 1;
       summary.judgmentInputTokens += result.usage?.inputTokens ?? 0;
       const answer = result.answers[ORPHAN_REPLY_QUESTION_KEY];

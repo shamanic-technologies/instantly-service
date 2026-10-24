@@ -17,6 +17,15 @@ vi.mock("../../src/lib/chat-client", () => ({
   platformJudgment: (...a: unknown[]) => mockPlatformJudgment(...a),
 }));
 
+// The org's reply-judging run of the day (PLATFORM-CALLER-RUN-1024), mocked.
+const JUDGING_RUN = "7e6d5c4b-1111-4222-8333-444455556666";
+const mockRunForOrg = vi.fn(async () => JUDGING_RUN);
+const mockRunForSequence = vi.fn(async () => JUDGING_RUN);
+vi.mock("../../src/lib/reply-judging-run", () => ({
+  replyJudgingRunForOrg: (...a: unknown[]) => mockRunForOrg(...(a as [])),
+  replyJudgingRunForSequence: (...a: unknown[]) => mockRunForSequence(...(a as [])),
+}));
+
 import {
   eventFactsInsertSql,
   eventWithdrawalsInsertSql,
@@ -141,6 +150,8 @@ describe("reply judgments (Jev, once per reply)", () => {
     });
     const stored = await judgeReply({
       replyId: "imap:9",
+      orgId: "org-a",
+      instantlyCampaignId: "self:9",
       subject: "Re: hello",
       body: "Are you hiring? I'd love to join your team\n\nOn Mon, Bria wrote:\n> our offer",
       missing: ["proposal_type", "question"],
@@ -152,6 +163,9 @@ describe("reply judgments (Jev, once per reply)", () => {
     // Their words only, under the subject; our quoted email is stripped.
     expect(call.state).toContain("Are you hiring?");
     expect(call.state).not.toContain("our offer");
+    // Judging a reply is production: made FOR the org's reply-judging run.
+    expect(mockRunForOrg).toHaveBeenCalledWith("org-a");
+    expect(mockPlatformJudgment.mock.calls[0][1]).toEqual({ runId: JUDGING_RUN });
     const inserts = mockDbExecute.mock.calls.map((c) => sqlText(c[0]));
     expect(inserts.every((q) => q.includes("ON CONFLICT (reply_id, question) DO NOTHING"))).toBe(true);
   });
@@ -163,13 +177,15 @@ describe("reply judgments (Jev, once per reply)", () => {
       answers: { question: { type: "choice", choice: "maybe", confidence: 1, probabilities: {} } },
     });
     await expect(
-      judgeReply({ replyId: "r", subject: null, body: "what?", missing: ["question"] }),
+      judgeReply({ replyId: "r", orgId: null, instantlyCampaignId: "self:r", subject: null, body: "what?", missing: ["question"] }),
     ).rejects.toThrow(/unreadable answer/);
+    // No org on the reply row: the sequence names the org's run.
+    expect(mockRunForSequence).toHaveBeenCalledWith("self:r");
     expect(mockDbExecute).not.toHaveBeenCalled();
   });
 
   it("records a reply with no words once, without calling the engine", async () => {
-    const stored = await judgeReply({ replyId: "r", subject: null, body: "> only quoted", missing: ["question"] });
+    const stored = await judgeReply({ replyId: "r", orgId: "org-a", instantlyCampaignId: "self:r", subject: null, body: "> only quoted", missing: ["question"] });
     expect(stored).toBe(0);
     expect(mockPlatformJudgment).not.toHaveBeenCalled();
     expect(mockDbExecute.mock.calls[0][0].queryChunks.map(sqlText).join("")).toContain("INSERT INTO reply_judgments");

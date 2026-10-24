@@ -44,6 +44,15 @@ import {
   type QualificationEventType,
 } from "./self-send/qualify-reply";
 
+/**
+ * A measurement that decides nothing produces nothing: staff experiment, never
+ * the reply's judging run (the classifier's call carries that one).
+ */
+export const SHADOW_JUDGMENT_SUPPORT = {
+  kind: "staff_experiment",
+  reason: "Shadow judgment of a reply already classified, kept only to measure the judgment engine against the classifier; it decides nothing.",
+} as const;
+
 /** The caller-chosen key the answer comes back under. */
 export const REPLY_KIND_QUESTION_KEY = "reply_kind";
 
@@ -136,10 +145,13 @@ export async function recordShadowJudgment(input: ShadowJudgmentInput): Promise<
 
   let result;
   try {
-    result = await platformJudgment({
-      state: input.replyText,
-      questions: { [REPLY_KIND_QUESTION_KEY]: buildReplyKindQuestion() },
-    });
+    result = await platformJudgment(
+      {
+        state: input.replyText,
+        questions: { [REPLY_KIND_QUESTION_KEY]: buildReplyKindQuestion() },
+      },
+      { support: SHADOW_JUDGMENT_SUPPORT },
+    );
   } catch (error) {
     await db.insert(replyClassificationShadow).values({
       ...base,

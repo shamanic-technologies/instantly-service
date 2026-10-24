@@ -10,6 +10,11 @@ const judgmentMock = vi.fn();
 vi.mock("../../src/lib/chat-client", () => ({
   platformJudgment: (...a: unknown[]) => judgmentMock(...(a as [])),
 }));
+const JUDGING_RUN = "5a4b3c2d-1111-4222-8333-444455556666";
+const runForOrgMock = vi.fn(async () => JUDGING_RUN);
+vi.mock("../../src/lib/reply-judging-run", () => ({
+  replyJudgingRunForOrg: (...a: unknown[]) => runForOrgMock(...(a as [])),
+}));
 vi.mock("../../src/lib/self-send/own-mail-domains", () => ({
   loadOwnMailDomains: async () => new Set(["saviolabsco.com"]),
 }));
@@ -105,6 +110,10 @@ describe("runOrphanReplySweep", () => {
     const summary = await runOrphanReplySweep();
 
     expect(judgmentMock).toHaveBeenCalledTimes(1);
+    // Judging which lead a stranger's email answers is reply judging: made FOR
+    // the likeliest lead's org's reply-judging run (PLATFORM-CALLER-RUN-1024).
+    expect(runForOrgMock).toHaveBeenCalledWith("org-doc");
+    expect(judgmentMock.mock.calls[0][1]).toEqual({ runId: JUDGING_RUN });
     const asked = JSON.stringify(judgmentMock.mock.calls[0]);
     expect(asked).toContain("stacy.blecher@twinhealth.com");
     // John shares nothing with the message: never offered, never paid for.

@@ -40,8 +40,14 @@ import {
   ONLY_OUR_QUOTED_THREAD,
 } from "../helpers/bottom-posted-reply";
 
+const JUDGING_RUN = "9d0c1b2a-1111-4222-8333-444455556666";
+/** Every reply is judged on a sequence: it names the reply-judging run. */
+const SEQ = { instantlyCampaignId: "self:seq" };
+
 beforeEach(() => {
   vi.resetAllMocks();
+  mockJudgingRun.mockResolvedValue(JUDGING_RUN);
+  mockLoadOurOutreach.mockResolvedValue(null);
 });
 
 /**
@@ -70,7 +76,7 @@ describe("qualifyReply", () => {
       model: "deepseek-v4-flash",
     });
 
-    await qualifyReply("I would be interested, send me the costs");
+    await qualifyReply("I would be interested, send me the costs", SEQ);
 
     expect(mockPlatformComplete).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -80,7 +86,7 @@ describe("qualifyReply", () => {
         temperature: 0,
         disableThinking: true,
       }),
-      { parentRunId: null },
+      { runId: JUDGING_RUN },
     );
   });
 
@@ -89,10 +95,10 @@ describe("qualifyReply", () => {
     mockLoadOurOutreach.mockResolvedValue(null);
     mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_interested" }, tokensInput: 1, tokensOutput: 1, model: "x" });
 
-    await qualifyReply("Interested", { instantlyCampaignId: "self:abc" });
+    await qualifyReply("Interested", { ...SEQ, instantlyCampaignId: "self:abc" });
 
     expect(mockJudgingRun).toHaveBeenCalledWith("self:abc");
-    expect(mockPlatformComplete.mock.calls.at(-1)?.[1]).toEqual({ parentRunId: "4c8b7a1e-1111-4222-8333-444455556666" });
+    expect(mockPlatformComplete.mock.calls.at(-1)?.[1]).toEqual({ runId: "4c8b7a1e-1111-4222-8333-444455556666" });
   });
 
   // An unusable answer must not become a fabricated neutral — a wrong "neutral"
@@ -105,7 +111,7 @@ describe("qualifyReply", () => {
       model: "deepseek-v4-flash",
     });
 
-    expect(await qualifyReply("hello")).toBeNull();
+    expect(await qualifyReply("hello", SEQ)).toBeNull();
   });
 });
 
@@ -258,7 +264,7 @@ describe("qualifyReply on a bottom-posted reply", () => {
       model: "deepseek-v4-flash",
     });
 
-    const kind = await qualifyReply(BOTTOM_POSTED_STOP_REPLY, {
+    const kind = await qualifyReply(BOTTOM_POSTED_STOP_REPLY, { ...SEQ,
       subject: "Re: Patient dinner events in Tulsa",
     });
 
@@ -269,7 +275,7 @@ describe("qualifyReply on a bottom-posted reply", () => {
   });
 
   it("never asks the classifier about our quoted footer alone", async () => {
-    const kind = await qualifyReply(ONLY_OUR_QUOTED_THREAD, {
+    const kind = await qualifyReply(ONLY_OUR_QUOTED_THREAD, { ...SEQ,
       subject: "Re: Patient dinner events in Tulsa",
     });
     expect(kind).toBeNull();
@@ -319,7 +325,7 @@ describe("the shadow judgment runs beside the classifier and decides nothing", (
       model: "deepseek-flash",
     });
 
-    const label = await qualifyReply("Not for us, thanks.\n\n> our quoted email", {
+    const label = await qualifyReply("Not for us, thanks.\n\n> our quoted email", { ...SEQ,
       instantlyCampaignId: "self:abc",
       leadEmail: "joe@x.com",
       source: "imap_poller",
@@ -346,7 +352,7 @@ describe("the shadow judgment runs beside the classifier and decides nothing", (
       model: "deepseek-flash",
     });
 
-    expect(await qualifyReply("hello")).toBeNull();
+    expect(await qualifyReply("hello", SEQ)).toBeNull();
     await drainDetached();
 
     expect(mockShadowJudgeReply).toHaveBeenCalledWith(
@@ -367,7 +373,7 @@ describe("the shadow judgment runs beside the classifier and decides nothing", (
     // A shadow that never settles must not hold the classification up.
     mockShadowJudgeReply.mockImplementation(() => new Promise(() => {}));
 
-    expect(await qualifyReply("interested!")).toBe("lead_interested");
+    expect(await qualifyReply("interested!", SEQ)).toBe("lead_interested");
   });
 });
 
@@ -386,7 +392,7 @@ describe("a reply about something other than the offer", () => {
       model: "deepseek-v4-flash",
     });
 
-    const kind = await qualifyReply("can you explain?\n\nOn Mon, Sep 28, 2026 Kevin wrote:\n> hi", {
+    const kind = await qualifyReply("can you explain?\n\nOn Mon, Sep 28, 2026 Kevin wrote:\n> hi", { ...SEQ,
       subject: "Re: Marktize + Doc Dinners partnership?",
     });
 
@@ -400,13 +406,13 @@ describe("a reply about something other than the offer", () => {
 
   it("sends the reply exactly as before when no subject is known", async () => {
     mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_interested" } });
-    await qualifyReply("I would be interested");
+    await qualifyReply("I would be interested", SEQ);
     expect(mockPlatformComplete.mock.calls[0][0].message).toBe("I would be interested");
   });
 
   it("keeps the subject out of the shadow measurement's context", async () => {
     mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_neutral" } });
-    await qualifyReply("ok", { leadEmail: "a@b.com", subject: "Re: x" });
+    await qualifyReply("ok", { ...SEQ, leadEmail: "a@b.com", subject: "Re: x" });
     await drainDetached();
     const [arg] = mockShadowJudgeReply.mock.calls[0];
     expect(arg).not.toHaveProperty("subject");
@@ -417,13 +423,13 @@ describe("a reply about something other than the offer", () => {
 describe("a reply whose only words are its subject", () => {
   it("classifies the subject they typed when the body is empty", async () => {
     mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_opt_out_requested" } });
-    const kind = await qualifyReply("\n> On 09/24/2026 Zoey wrote:\n> Hey Michelle", { subject: "Stop" });
+    const kind = await qualifyReply("\n> On 09/24/2026 Zoey wrote:\n> Hey Michelle", { ...SEQ, subject: "Stop" });
     expect(kind).toBe("lead_opt_out_requested");
     expect(mockPlatformComplete.mock.calls[0][0].message).toBe("Stop");
   });
 
   it("never reads OUR subject echoed back (Re:) as their words", async () => {
-    const kind = await qualifyReply("> quoted only", { subject: "Re: More patients for your clinic" });
+    const kind = await qualifyReply("> quoted only", { ...SEQ, subject: "Re: More patients for your clinic" });
     expect(kind).toBeNull();
     expect(mockPlatformComplete).not.toHaveBeenCalled();
   });
@@ -444,7 +450,7 @@ describe("the classifier reads what we sent them", () => {
     mockLoadOurOutreach.mockResolvedValue(OUR_EMAIL);
     mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_meeting_requested" } });
 
-    const kind = await qualifyReply("Hi, yes we are hiring two warehouse operatives in Leeds. A quick call this week?", {
+    const kind = await qualifyReply("Hi, yes we are hiring two warehouse operatives in Leeds. A quick call this week?", { ...SEQ,
       instantlyCampaignId: "self:abc",
       leadEmail: "sam@carter.co",
       subject: "Re: Hiring at Carter & Co this month?",
@@ -464,26 +470,35 @@ describe("the classifier reads what we sent them", () => {
   it("sends the reply exactly as before when we hold no email for the thread", async () => {
     mockLoadOurOutreach.mockResolvedValue(null);
     mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_interested" } });
-    await qualifyReply("I would be interested", { instantlyCampaignId: "inst-1", subject: "Re: x" });
+    await qualifyReply("I would be interested", { ...SEQ, instantlyCampaignId: "inst-1", subject: "Re: x" });
     expect(mockPlatformComplete.mock.calls[0][0].message).toBe("Subject: Re: x\n\nI would be interested");
   });
 
-  it("does not read the DB when no sequence is named", async () => {
-    mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_interested" } });
-    await qualifyReply("I would be interested");
-    expect(mockLoadOurOutreach).not.toHaveBeenCalled();
+  // PLATFORM-CALLER-RUN-1024: judging a reply is production; with no
+  // sequence there is no run to judge it for, so nothing is asked.
+  it("refuses a reply with no sequence: no run, no call", async () => {
+    await expect(
+      qualifyReply("I would be interested", {} as unknown as Parameters<typeof qualifyReply>[1]),
+    ).rejects.toThrow("no reply-judging run");
+    expect(mockPlatformComplete).not.toHaveBeenCalled();
+  });
+
+  it("a judging run that cannot be resolved asks nothing (never sent as nobody's work)", async () => {
+    mockJudgingRun.mockRejectedValue(new Error("runs-service down"));
+    await expect(qualifyReply("I would be interested", SEQ)).rejects.toThrow("runs-service down");
+    expect(mockPlatformComplete).not.toHaveBeenCalled();
   });
 
   it("fails loud when our email cannot be read, rather than judging blind", async () => {
     mockLoadOurOutreach.mockRejectedValue(new Error("db down"));
-    await expect(qualifyReply("yes please", { instantlyCampaignId: "self:abc" })).rejects.toThrow("db down");
+    await expect(qualifyReply("yes please", { ...SEQ, instantlyCampaignId: "self:abc" })).rejects.toThrow("db down");
     expect(mockPlatformComplete).not.toHaveBeenCalled();
   });
 
   it("frames the subject THEY typed with our email too", async () => {
     mockLoadOurOutreach.mockResolvedValue(OUR_EMAIL);
     mockPlatformComplete.mockResolvedValue({ content: "", json: { classification: "lead_opt_out_requested" } });
-    await qualifyReply("> quoted only", { instantlyCampaignId: "self:abc", subject: "Stop" });
+    await qualifyReply("> quoted only", { ...SEQ, instantlyCampaignId: "self:abc", subject: "Stop" });
     expect(mockPlatformComplete.mock.calls[0][0].message).toBe(`Our email:\n${OUR_EMAIL}\n\nTheir reply:\nStop`);
   });
 
