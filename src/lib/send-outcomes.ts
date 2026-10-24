@@ -37,6 +37,14 @@ import { db } from "../db";
 /** The catalogue keys (features-service `GET /public/catalogue/steps`) a send run declares. */
 export const SEND_PRODUCED_OUTCOME = "message_sent";
 export const SEND_CONSUMED_OUTCOMES = ["message_written", "email_checked"] as const;
+/**
+ * LEDGER-HISTORY-1024: what a send used for the address when NO check of it was
+ * ever produced (no email check ran on served leads before 2026-09-24 18:12;
+ * the reveal that carried the address is what the email went to). A run only
+ * consumes an occurrence that exists: `email_checked` when the ledger holds one
+ * produced for the lead by the end of the send's UTC day, else `email_found`.
+ */
+export const SEND_UNCHECKED_ADDRESS_OUTCOME = "email_found";
 /** A person's occurrences are named by their lead in lead-service. */
 export const SEND_OUTCOME_SUBJECT_SERVICE = "lead-service";
 
@@ -55,13 +63,65 @@ export interface SendOutcomeDeclaration {
   consumed: OutcomeOccurrence[];
 }
 
-/** What one sent step's run declares about the person it emailed. */
-export function buildSendOutcomeDeclaration(leadId: string): SendOutcomeDeclaration {
+/** What one sent step's run declares about the person it emailed (`checked` = a check of the address exists). */
+export function buildSendOutcomeDeclaration(leadId: string, checked = true): SendOutcomeDeclaration {
   const subject = { subjectService: SEND_OUTCOME_SUBJECT_SERVICE, subjectId: leadId };
   return {
     produced: [{ outcomeKey: SEND_PRODUCED_OUTCOME, ...subject }],
-    consumed: SEND_CONSUMED_OUTCOMES.map((outcomeKey) => ({ outcomeKey, ...subject })),
+    consumed: SEND_CONSUMED_OUTCOMES.map((outcomeKey) => ({
+      outcomeKey: outcomeKey === "email_checked" && !checked ? SEND_UNCHECKED_ADDRESS_OUTCOME : outcomeKey,
+      ...subject,
+    })),
   };
+}
+
+/** End of the UTC day of an ISO instant (the resolver places a consumption on occurrences declared by then). */
+export function endOfUtcDay(iso: string): string {
+  return new Date(Date.parse(`${iso.slice(0, 10)}T00:00:00Z`) + 86_400_000).toISOString();
+}
+
+/**
+ * The earliest declared `email_checked` PRODUCED for each lead, read from
+ * runs-service's ledger (`GET /internal/outcome-occurrences`, 500 subjects a
+ * call, every page). A lead absent from the map has none. Throws on any
+ * non-2xx: the caller's rows stay undeclared and the next pass asks again.
+ */
+export async function fetchEarliestCheckByLead(leadIds: string[]): Promise<Map<string, string>> {
+  const earliest = new Map<string, string>();
+  const unique = [...new Set(leadIds)];
+  for (let i = 0; i < unique.length; i += 500) {
+    let cursor: string | null = null;
+    do {
+      const qs = new URLSearchParams({
+        subjectService: SEND_OUTCOME_SUBJECT_SERVICE,
+        subjectIds: unique.slice(i, i + 500).join(","),
+        outcomeKey: "email_checked",
+        direction: "produced",
+        limit: "1000",
+      });
+      if (cursor) qs.set("cursor", cursor);
+      const res = await fetch(`${runsUrl()}/internal/outcome-occurrences?${qs}`, {
+        headers: runsHeaders(),
+        signal: AbortSignal.timeout(BATCH_TIMEOUT_MS),
+      });
+      const body = await res.text();
+      if (!res.ok) throw new Error(`runs-service outcome-occurrences ${res.status}: ${body.slice(0, 300)}`);
+      const page = JSON.parse(body) as { occurrences?: Array<{ subjectId: string; declaredAt: string }>; nextCursor?: string | null };
+      for (const o of page.occurrences ?? []) {
+        const prior = earliest.get(o.subjectId);
+        if (!prior || o.declaredAt < prior) earliest.set(o.subjectId, o.declaredAt);
+      }
+      cursor = page.nextCursor ?? null;
+    } while (cursor);
+  }
+  return earliest;
+}
+
+/** A check counts for a send when one was produced for the lead by the end of the send's UTC day. Pure. */
+export function addressWasChecked(earliestCheck: string | undefined, occurredAt: string, runStartedFallback: string): boolean {
+  if (!earliestCheck) return false;
+  const at = occurredAt === OCCURRED_AT_RUN_START ? runStartedFallback : occurredAt;
+  return Date.parse(earliestCheck) < Date.parse(endOfUtcDay(at));
 }
 
 /** Terminal marks stored in `sequence_costs.outcomes_declaration`. */
@@ -258,6 +318,8 @@ export interface BatchRun {
   leadId: string;
   occurredAt: string;
   holdIds: string[];
+  /** A check of the address exists (consume `email_checked`), else `email_found`. Set before posting. */
+  checked?: boolean;
 }
 
 /**
@@ -302,7 +364,7 @@ function postBatch(runs: BatchRun[], redate: boolean): Promise<{ status: number;
   return postOutcomesBatch(
     runs.map((r) => ({
       runId: r.runId,
-      ...buildSendOutcomeDeclaration(r.leadId),
+      ...buildSendOutcomeDeclaration(r.leadId, r.checked !== false),
       occurredAt: r.occurredAt,
       ...(redate ? { redate: true as const } : {}),
     })),
@@ -323,10 +385,12 @@ export interface SendOutcomesSummary {
   redated: number;
   /** Up to 5 holds of this pass NOT declared for want of a lead id or a sent email (logged). */
   undeclaredSample: string[];
+  /** Runs whose address had no check in the ledger: they consume `email_found`. */
+  unchecked: number;
 }
 
 export const emptySummary = (): SendOutcomesSummary => ({
-  read: 0, declared: 0, runGone: 0, noLeadId: 0, ambiguousLead: 0, noSendEvidence: 0, refused: 0, datedAtRunStart: 0, redated: 0, undeclaredSample: [],
+  read: 0, declared: 0, runGone: 0, noLeadId: 0, ambiguousLead: 0, noSendEvidence: 0, refused: 0, datedAtRunStart: 0, redated: 0, undeclaredSample: [], unchecked: 0,
 });
 
 /**
@@ -376,6 +440,12 @@ export async function declarePlannedRows(
   if (dryRun) {
     summary.declared += runs.length;
     return;
+  }
+  const checks = runs.length > 0 ? await fetchEarliestCheckByLead(runs.map((r) => r.leadId)) : new Map<string, string>();
+  for (const run of runs) {
+    // A run dated at its start has no send instant here: the send day is today's at worst.
+    run.checked = addressWasChecked(checks.get(run.leadId), run.occurredAt, new Date().toISOString());
+    if (!run.checked) summary.unchecked++;
   }
   for (let i = 0; i < runs.length; i += DECLARE_BATCH_RUNS) {
     let batch = runs.slice(i, i + DECLARE_BATCH_RUNS);
@@ -428,9 +498,9 @@ export async function declarePlannedRows(
  */
 async function declareRunByRun(runs: BatchRun[], summary: SendOutcomesSummary): Promise<void> {
   for (const run of runs) {
-    let answer = await postRunOutcomes(run.runId, null, buildSendOutcomeDeclaration(run.leadId), run.occurredAt);
+    let answer = await postRunOutcomes(run.runId, null, buildSendOutcomeDeclaration(run.leadId, run.checked !== false), run.occurredAt);
     if (answer.status === 400 && answer.body.includes("occurred") && run.occurredAt !== OCCURRED_AT_RUN_START) {
-      answer = await postRunOutcomes(run.runId, null, buildSendOutcomeDeclaration(run.leadId), OCCURRED_AT_RUN_START);
+      answer = await postRunOutcomes(run.runId, null, buildSendOutcomeDeclaration(run.leadId, run.checked !== false), OCCURRED_AT_RUN_START);
       summary.datedAtRunStart++;
     }
     const verdict = classifyDeclareAnswer(answer.status, answer.body);
