@@ -8,8 +8,10 @@ vi.mock("../../src/lib/reply-judging-run", () => ({
 }));
 
 import {
+  POSITIVE_REPLY_EVENT_TYPES,
   buildPositiveReplyDeclaration,
   declarePositiveReplies,
+  redatePastPositiveReplies,
 } from "../../src/lib/positive-reply-outcomes";
 
 const pgResult = (rows: unknown[]) => ({ rows, rowCount: rows.length, command: "SELECT", fields: [] });
@@ -99,5 +101,45 @@ describe("declarePositiveReplies: the sweep", () => {
     execute.mockResolvedValueOnce(pgResult([]));
     await declarePositiveReplies();
     expect(sqlText(execute.mock.calls[0])).toContain("reply_classification = 'positive' AND conversation_declared_at IS NULL");
+  });
+});
+
+describe("redatePastPositiveReplies: a past positive reply counts on the day it was written (LEDGER-HISTORY-1024)", () => {
+  const fetchMock = vi.fn();
+  beforeEach(() => {
+    execute.mockReset();
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("re-states each spend-free per-sequence run dated at the reply, through the batch door with redate", async () => {
+    execute.mockResolvedValueOnce(
+      pgResult([
+        { run_id: RUN, lead_id: LEAD, replied_at: "2026-07-03T10:00:00.000Z" },
+        { run_id: "other-run", lead_id: LEAD, replied_at: null },
+      ]),
+    );
+    fetchMock.mockResolvedValue(new Response('{"recordedCount":0,"redatedCount":1}', { status: 200 }));
+
+    const s = await redatePastPositiveReplies({ dryRun: false });
+
+    expect(s).toEqual({ read: 2, restated: 1, redated: 1, noReplyEvidence: 1 });
+    const q = sqlText(execute.mock.calls[0]);
+    expect(q).toContain("NOT EXISTS (SELECT 1 FROM reply_judging_runs j");
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.runs).toEqual([{ runId: RUN, ...buildPositiveReplyDeclaration(LEAD), occurredAt: "2026-07-03T10:00:00.000Z", redate: true }]);
+  });
+
+  it("dry run posts nothing", async () => {
+    execute.mockResolvedValueOnce(pgResult([{ run_id: RUN, lead_id: LEAD, replied_at: "2026-07-03T10:00:00.000Z" }]));
+    const s = await redatePastPositiveReplies({ dryRun: true });
+    expect(s.restated).toBe(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("dates on positive-classified kinds only (a referral is not a positive reply)", () => {
+    expect(POSITIVE_REPLY_EVENT_TYPES).toEqual(expect.arrayContaining(["lead_interested", "lead_info_requested", "lead_meeting_requested", "lead_meeting_booked", "lead_closed"]));
+    expect(POSITIVE_REPLY_EVENT_TYPES).not.toContain("lead_referral");
   });
 });

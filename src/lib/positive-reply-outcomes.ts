@@ -33,11 +33,14 @@ import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { errorMessage } from "./db-error.js";
 import { replyJudgingRunForOrg } from "./reply-judging-run";
+import { LEGACY_DEAL_PROGRESS_STATUSES, REPLY_KIND_CLASSIFICATION } from "./reply-kind";
 import {
   SEND_OUTCOME_SUBJECT_SERVICE,
   SEND_PRODUCED_OUTCOME,
   classifyDeclareAnswer,
+  postOutcomesBatch,
   postRunOutcomes,
+  readBatchAnswer,
   type DeclarationMark,
   type SendOutcomeDeclaration,
 } from "./send-outcomes";
@@ -166,4 +169,78 @@ export function declarePositiveReplies(limit = POSITIVE_REPLY_BATCH_LIMIT): Prom
     inFlight = null;
   });
   return inFlight;
+}
+
+/** The silver event types whose classification is `positive` (+ the legacy deal-progress spellings, resolved to `lead_interested`). */
+export const POSITIVE_REPLY_EVENT_TYPES: readonly string[] = [
+  ...Object.entries(REPLY_KIND_CLASSIFICATION)
+    .filter(([, classification]) => classification === "positive")
+    .map(([kind]) => kind),
+  ...LEGACY_DEAL_PROGRESS_STATUSES,
+];
+
+export interface ConversationRedateSummary {
+  /** Declared sequences on a spend-free per-sequence `reply-judged-positive` run. */
+  read: number;
+  /** Runs re-stated dated at the positive reply (runs-service moves an occurrence only earlier). */
+  restated: number;
+  /** Occurrences runs-service actually moved back. */
+  redated: number;
+  /** No witnessed reply on the sequence: left at its declaration time, never an invented date. */
+  noReplyEvidence: number;
+}
+
+/**
+ * LEDGER-HISTORY-1024: the positive replies declared before the dated door
+ * (2026-10-23, on a spend-free per-sequence `reply-judged-positive` run) sit
+ * on their declaration day. Re-state each dated at the reply itself: the
+ * earliest positive-kind event of the sequence, else its earliest witnessed
+ * reply. A run of the daily `reply-judging` table carries the judging spend
+ * (an occurrence there cannot predate the run) and is left as is. Idempotent:
+ * runs-service only moves an occurrence earlier; a re-run moves nothing.
+ */
+export async function redatePastPositiveReplies(opts: { dryRun: boolean }): Promise<ConversationRedateSummary> {
+  const result = await db.execute(sql`
+    SELECT c.conversation_run_id AS run_id, c.lead_id,
+      to_char(COALESCE(p.at, r.at), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS replied_at
+    FROM instantly_campaigns c
+    LEFT JOIN LATERAL (
+      SELECT min(e."timestamp") AS at FROM instantly_events e
+      WHERE e.campaign_id = c.instantly_campaign_id AND lower(e.lead_email) = lower(c.lead_email)
+        AND e.event_type = ANY(${`{${POSITIVE_REPLY_EVENT_TYPES.join(",")}}`}::text[])
+        AND e.inferred = false AND e.withdrawn_at IS NULL
+    ) p ON true
+    LEFT JOIN LATERAL (
+      SELECT min(e."timestamp") AS at FROM instantly_events e
+      WHERE e.campaign_id = c.instantly_campaign_id AND lower(e.lead_email) = lower(c.lead_email)
+        AND e.event_type = 'reply_received' AND e.inferred = false AND e.withdrawn_at IS NULL
+    ) r ON true
+    WHERE c.conversation_declaration = 'declared' AND c.lead_id IS NOT NULL AND c.conversation_run_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM reply_judging_runs j WHERE j.run_id = c.conversation_run_id)
+    ORDER BY c.id
+  `);
+  const rows = (result.rows as Array<Record<string, unknown>>).map((r) => ({
+    runId: String(r.run_id),
+    leadId: String(r.lead_id),
+    repliedAt: (r.replied_at as string | null) ?? null,
+  }));
+  const summary: ConversationRedateSummary = { read: rows.length, restated: 0, redated: 0, noReplyEvidence: 0 };
+  const dated = rows.filter((r) => r.repliedAt !== null);
+  summary.noReplyEvidence = rows.length - dated.length;
+  if (opts.dryRun) {
+    summary.restated = dated.length;
+    return summary;
+  }
+  for (let i = 0; i < dated.length; i += 300) {
+    const batch = dated.slice(i, i + 300);
+    const posted = await postOutcomesBatch(
+      batch.map((r) => ({ runId: r.runId, ...buildPositiveReplyDeclaration(r.leadId), occurredAt: r.repliedAt!, redate: true as const })),
+    );
+    const answer = readBatchAnswer(posted.status, posted.body);
+    if (!answer.ok) throw new Error(`runs-service refused the conversation re-date: ${JSON.stringify(answer.invalid).slice(0, 500)}`);
+    summary.restated += batch.length;
+    summary.redated += Number((JSON.parse(posted.body) as { redatedCount?: unknown }).redatedCount ?? 0);
+  }
+  console.log(`[positive-reply-outcomes] past positive replies re-dated ${JSON.stringify(summary)}`);
+  return summary;
 }

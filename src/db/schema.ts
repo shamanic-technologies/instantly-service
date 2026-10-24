@@ -148,6 +148,12 @@ export const instantlyCampaigns = pgTable(
     conversationRunId: text("conversation_run_id"),
     conversationDeclaredAt: timestamp("conversation_declared_at", { withTimezone: true }),
     conversationDeclaration: text("conversation_declaration"),
+    // LEDGER-HISTORY-1024 (migration 0093): this sequence's website visit (a
+    // real click on a link of our email), declared as one `website_visit` of
+    // the person dated at the click (lib/website-visit-outcomes.ts).
+    websiteVisitRunId: text("website_visit_run_id"),
+    websiteVisitDeclaredAt: timestamp("website_visit_declared_at", { withTimezone: true }),
+    websiteVisitDeclaration: text("website_visit_declaration"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -2167,4 +2173,19 @@ export const replyJudgingRuns = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [primaryKey({ columns: [table.orgId, table.day] })],
+);
+
+// LEDGER-HISTORY-1024 (migration 0093): one spend-free anchor run of ours per
+// (task, org, UTC day) (lib/outcome-anchor-run.ts): the run a dated outcome of
+// that day is declared on. Never given a cost or a child.
+export const outcomeAnchorRuns = pgTable(
+  "outcome_anchor_runs",
+  {
+    taskName: text("task_name").notNull(),
+    orgId: text("org_id").notNull(),
+    day: date("day").notNull(),
+    runId: text("run_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.taskName, table.orgId, table.day] })],
 );
