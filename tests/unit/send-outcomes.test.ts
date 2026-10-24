@@ -201,6 +201,22 @@ describe("declareSendOutcomes: the live sweep", () => {
     expect(second.runs).toEqual([{ runId: RUN2, ...buildSendOutcomeDeclaration(LEAD), occurredAt: "run_started_at" }]);
   });
 
+  it("a batch refused for a support-marked run falls back to one run at a time: the marked one is refused, the rest declared", async () => {
+    execute
+      .mockResolvedValueOnce(pgResult([pendingRow(), pendingRow({ hold_id: "hold-2", run_id: RUN2 })]))
+      .mockResolvedValue(pgResult([]));
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"error":"run_marked_support","conflicts":[]}', { status: 409 }))
+      .mockResolvedValueOnce(new Response('{"error":"run_marked_support"}', { status: 409 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 201 }));
+
+    const s = await declareSendOutcomes();
+
+    expect(s).toMatchObject({ declared: 1, refused: 1 });
+    expect(fetchMock.mock.calls[1][0]).toMatch(new RegExp(`/v1/platform-runs/${RUN}/outcomes$`));
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ ...buildSendOutcomeDeclaration(LEAD), occurredAt: SENT });
+  });
+
   it("never invents a subject: no lead id = marked no_lead_id, nothing posted", async () => {
     execute.mockResolvedValueOnce(pgResult([pendingRow({ lead_id: null })])).mockResolvedValue(pgResult([]));
     expect((await declareSendOutcomes()).noLeadId).toBe(1);
