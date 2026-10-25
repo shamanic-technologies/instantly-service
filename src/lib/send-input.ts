@@ -80,8 +80,12 @@ function runsHeaders(): Record<string, string> {
   };
 }
 
-/** Run ids per ledger read (a longer query string is answered 431). */
-const LEDGER_READ_RUNS = 200;
+/**
+ * Run ids per ledger read. These runs carry many priced children (a day's
+ * reply-judging run, an org's visit anchor): 200 a call hit runs-service's
+ * statement timeout (500, prod 2026-10-25), 25 answered in ~2 s.
+ */
+export const LEDGER_READ_RUNS = 20;
 
 /** Per run, the leads whose `message_sent` consumption resolves to NO producer in the ledger. Throws on non-2xx. */
 export async function fetchUnknownSendConsumptions(runIds: string[]): Promise<Map<string, Set<string>>> {
