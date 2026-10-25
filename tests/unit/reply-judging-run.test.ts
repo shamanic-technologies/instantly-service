@@ -10,8 +10,10 @@ vi.mock("../../src/lib/runs-client", () => ({
 }));
 
 import {
+  NO_PIPE,
   REPLY_JUDGING_TASK,
-  replyJudgingRunForOrg,
+  pipeOfRow,
+  replyJudgingRunFor,
   replyJudgingRunForSequence,
   resetReplyJudgingRunMemo,
   utcDay,
@@ -22,8 +24,10 @@ const pgResult = (rows: unknown[]) => ({ rows, rowCount: rows.length, command: "
 const ORG = "06ffd332-0000-4000-8000-000000000001";
 const RUN = "4c8b7a1e-1111-4222-8333-444455556666";
 const AS_OF = new Date("2026-10-23T23:59:00Z");
+const PIPE = { campaignId: "camp-1", workflowSlug: "cold-email-v3", brandIds: ["brand-1", "brand-2"], featureSlug: "sales-cold-email" };
+const params = (call: unknown[]) => JSON.stringify(call[0]);
 
-describe("replyJudgingRunForOrg: one reply-judging run per (org, UTC day)", () => {
+describe("replyJudgingRunFor: one reply-judging run per (org, UTC day, pipe) (LEDGER-RESIDUAL-1025)", () => {
   beforeEach(() => {
     execute.mockReset();
     createRun.mockReset().mockResolvedValue({ id: RUN });
@@ -36,20 +40,43 @@ describe("replyJudgingRunForOrg: one reply-judging run per (org, UTC day)", () =
     expect(utcDay(new Date("2026-10-24T00:00:01Z"))).toBe("2026-10-24");
   });
 
-  it("creates the day's run once, closes it (a cost anchor, not a job) and stores it", async () => {
+  it("creates the day's run of the pipe once, TAGGED with the pipe (a no-positive day is that pipe's loss), closes it and stores it", async () => {
     execute.mockResolvedValueOnce(pgResult([])).mockResolvedValueOnce(pgResult([{ run_id: RUN }]));
-    expect(await replyJudgingRunForOrg(ORG, AS_OF)).toBe(RUN);
+    expect(await replyJudgingRunFor(ORG, PIPE, AS_OF)).toBe(RUN);
     expect(createRun.mock.calls[0][0]).toEqual({ serviceName: "instantly-service", taskName: REPLY_JUDGING_TASK });
-    expect(createRun.mock.calls[0][1]).toMatchObject({ orgId: ORG });
+    expect(createRun.mock.calls[0][1]).toMatchObject({
+      orgId: ORG,
+      tracking: { campaignId: "camp-1", workflowSlug: "cold-email-v3", brandId: "brand-1,brand-2", featureSlug: "sales-cold-email" },
+    });
     expect(updateRun).toHaveBeenCalledWith(RUN, "completed", expect.objectContaining({ orgId: ORG }));
-    // memoized: the next call that day reads nothing
-    expect(await replyJudgingRunForOrg(ORG, AS_OF)).toBe(RUN);
+    expect(params(execute.mock.calls[1])).toContain("camp-1");
+    expect(params(execute.mock.calls[1])).toContain("cold-email-v3");
+    // memoized: the next call that day on that pipe reads nothing
+    expect(await replyJudgingRunFor(ORG, PIPE, AS_OF)).toBe(RUN);
     expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("another pipe of the same org and day is another run", async () => {
+    execute.mockResolvedValue(pgResult([]));
+    createRun.mockResolvedValueOnce({ id: "run-a" }).mockResolvedValueOnce({ id: "run-b" });
+    execute
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([{ run_id: "run-a" }]))
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([{ run_id: "run-b" }]));
+    expect(await replyJudgingRunFor(ORG, PIPE, AS_OF)).toBe("run-a");
+    expect(await replyJudgingRunFor(ORG, { ...PIPE, workflowSlug: "cold-email-v4" }, AS_OF)).toBe("run-b");
+  });
+
+  it("no pipe recorded (or half of one): the org's pipe-less run, created with no tags", async () => {
+    execute.mockResolvedValueOnce(pgResult([])).mockResolvedValueOnce(pgResult([{ run_id: RUN }]));
+    expect(await replyJudgingRunFor(ORG, { ...NO_PIPE, campaignId: "camp-1" }, AS_OF)).toBe(RUN);
+    expect(createRun.mock.calls[0][1]).not.toHaveProperty("tracking");
   });
 
   it("reuses a stored run: no new run", async () => {
     execute.mockResolvedValueOnce(pgResult([{ run_id: RUN }]));
-    expect(await replyJudgingRunForOrg(ORG, AS_OF)).toBe(RUN);
+    expect(await replyJudgingRunFor(ORG, PIPE, AS_OF)).toBe(RUN);
     expect(createRun).not.toHaveBeenCalled();
   });
 
@@ -58,7 +85,24 @@ describe("replyJudgingRunForOrg: one reply-judging run per (org, UTC day)", () =
       .mockResolvedValueOnce(pgResult([]))
       .mockResolvedValueOnce(pgResult([])) // insert lost
       .mockResolvedValueOnce(pgResult([{ run_id: "theirs" }]));
-    expect(await replyJudgingRunForOrg(ORG, AS_OF)).toBe("theirs");
+    expect(await replyJudgingRunFor(ORG, PIPE, AS_OF)).toBe("theirs");
+  });
+
+  it("a sequence's run is on the sequence's recorded pipe", async () => {
+    execute
+      .mockResolvedValueOnce(pgResult([{ org_id: ORG, campaign_id: "camp-1", workflow_slug: "cold-email-v3", feature_slug: null, brand_ids: ["brand-1"] }]))
+      .mockResolvedValueOnce(pgResult([{ run_id: RUN }]));
+    expect(await replyJudgingRunForSequence("self:abc", { asOf: AS_OF })).toBe(RUN);
+    expect(params(execute.mock.calls[1])).toContain("cold-email-v3");
+  });
+
+  it("pipeOfRow reads the row's recorded pipe, blanks as none", () => {
+    expect(pipeOfRow({ campaign_id: " ", workflow_slug: null, brand_ids: ["b", null], feature_slug: "f" })).toEqual({
+      campaignId: null,
+      workflowSlug: null,
+      brandIds: ["b"],
+      featureSlug: "f",
+    });
   });
 
   it("a sequence whose run cannot be resolved throws: no judgment goes out as nobody's work", async () => {
@@ -69,6 +113,11 @@ describe("replyJudgingRunForOrg: one reply-judging run per (org, UTC day)", () =
   it("a sequence with no org throws", async () => {
     execute.mockResolvedValueOnce(pgResult([]));
     await expect(replyJudgingRunForSequence("self:abc")).rejects.toThrow("no org");
+  });
+
+  it("a sequence with no org but a reply org: that org's pipe-less run", async () => {
+    execute.mockResolvedValueOnce(pgResult([])).mockResolvedValueOnce(pgResult([{ run_id: RUN }]));
+    expect(await replyJudgingRunForSequence("self:abc", { fallbackOrgId: ORG })).toBe(RUN);
   });
 });
 

@@ -163,8 +163,8 @@ describe("reply judgments (Jev, once per reply)", () => {
     // Their words only, under the subject; our quoted email is stripped.
     expect(call.state).toContain("Are you hiring?");
     expect(call.state).not.toContain("our offer");
-    // Judging a reply is production: made FOR the org's reply-judging run.
-    expect(mockRunForOrg).toHaveBeenCalledWith("org-a");
+    // Judging a reply is production: made FOR the org's reply-judging run on the sequence's pipe.
+    expect(mockRunForSequence).toHaveBeenCalledWith("self:9", { fallbackOrgId: "org-a" });
     expect(mockPlatformJudgment.mock.calls[0][1]).toEqual({ runId: JUDGING_RUN });
     const inserts = mockDbExecute.mock.calls.map((c) => sqlText(c[0]));
     expect(inserts.every((q) => q.includes("ON CONFLICT (reply_id, question) DO NOTHING"))).toBe(true);
@@ -180,7 +180,7 @@ describe("reply judgments (Jev, once per reply)", () => {
       judgeReply({ replyId: "r", orgId: null, instantlyCampaignId: "self:r", subject: null, body: "what?", missing: ["question"] }),
     ).rejects.toThrow(/unreadable answer/);
     // No org on the reply row: the sequence names the org's run.
-    expect(mockRunForSequence).toHaveBeenCalledWith("self:r");
+    expect(mockRunForSequence).toHaveBeenCalledWith("self:r", { fallbackOrgId: null });
     expect(mockDbExecute).not.toHaveBeenCalled();
   });
 

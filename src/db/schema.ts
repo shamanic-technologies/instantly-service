@@ -2161,7 +2161,8 @@ export const placementAlertEpisodes = pgTable(
 );
 
 // COST-ACCOUNTING-1023 (migration 0092): one `reply-judging` run of ours per
-// (org, UTC day) (lib/reply-judging-run.ts). The reply classifier's chat-service
+// (org, UTC day, pipe) (lib/reply-judging-run.ts; the pipe = campaign x workflow
+// since migration 0094, '' = none recorded). The reply classifier's chat-service
 // calls nest under it and that day's positive replies declare `conversation`
 // on it, so the judging spend rolls into Positive reply.
 export const replyJudgingRuns = pgTable(
@@ -2169,10 +2170,12 @@ export const replyJudgingRuns = pgTable(
   {
     orgId: text("org_id").notNull(),
     day: date("day").notNull(),
+    campaignId: text("campaign_id").notNull().default(""),
+    workflowSlug: text("workflow_slug").notNull().default(""),
     runId: text("run_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [primaryKey({ columns: [table.orgId, table.day] })],
+  (table) => [primaryKey({ columns: [table.orgId, table.day, table.campaignId, table.workflowSlug] })],
 );
 
 // LEDGER-HISTORY-1024 (migration 0093): one spend-free anchor run of ours per

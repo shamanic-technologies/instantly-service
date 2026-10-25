@@ -2,9 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const execute = vi.fn();
 vi.mock("../../src/db", () => ({ db: { execute: (...a: unknown[]) => execute(...a) } }));
-const replyJudgingRunForOrg = vi.fn();
-vi.mock("../../src/lib/reply-judging-run", () => ({
-  replyJudgingRunForOrg: (...a: unknown[]) => replyJudgingRunForOrg(...a),
+const replyJudgingRunFor = vi.fn();
+vi.mock("../../src/lib/reply-judging-run", async (orig) => ({
+  ...(await orig<typeof import("../../src/lib/reply-judging-run")>()),
+  replyJudgingRunFor: (...a: unknown[]) => replyJudgingRunFor(...a),
+}));
+const sendInputStates = vi.fn();
+vi.mock("../../src/lib/send-input", async (orig) => ({
+  ...(await orig<typeof import("../../src/lib/send-input")>()),
+  sendInputStates: (...a: unknown[]) => sendInputStates(...a),
 }));
 
 import {
@@ -38,7 +44,8 @@ describe("declarePositiveReplies: the sweep", () => {
   beforeEach(() => {
     execute.mockReset();
     fetchMock.mockReset();
-    replyJudgingRunForOrg.mockReset();
+    replyJudgingRunFor.mockReset();
+    sendInputStates.mockReset().mockImplementation(async (ids: string[]) => new Map(ids.map((id) => [id, "declared"])));
     vi.stubGlobal("fetch", fetchMock);
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -50,12 +57,15 @@ describe("declarePositiveReplies: the sweep", () => {
     lead_id: LEAD,
     brand_id: "brand-1",
     campaign_id: "camp-1",
+    workflow_slug: "cold-email-v3",
+    feature_slug: "sales-cold-email",
+    brand_ids: ["brand-1"],
     conversation_run_id: null,
     ...over,
   });
 
-  it("declares on the org's reply-judging run of the day (where the judging spend nests), persisted BEFORE declaring", async () => {
-    replyJudgingRunForOrg.mockResolvedValue(RUN);
+  it("declares on the org's reply-judging run of the day ON THE SEQUENCE'S PIPE (where the judging spend nests), persisted BEFORE declaring", async () => {
+    replyJudgingRunFor.mockResolvedValue(RUN);
     execute
       .mockResolvedValueOnce(pgResult([row()])) // pending
       .mockResolvedValueOnce(pgResult([{ conversation_run_id: RUN }])) // persist run
@@ -65,7 +75,12 @@ describe("declarePositiveReplies: the sweep", () => {
     const s = await declarePositiveReplies();
 
     expect(s).toMatchObject({ read: 1, declared: 1 });
-    expect(replyJudgingRunForOrg).toHaveBeenCalledWith(ORG);
+    expect(replyJudgingRunFor).toHaveBeenCalledWith(ORG, {
+      campaignId: "camp-1",
+      workflowSlug: "cold-email-v3",
+      brandIds: ["brand-1"],
+      featureSlug: "sales-cold-email",
+    });
     expect(sqlText(execute.mock.calls[1])).toContain("SET conversation_run_id");
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toMatch(new RegExp(`/v1/platform-runs/${RUN}/outcomes$`));
@@ -77,7 +92,7 @@ describe("declarePositiveReplies: the sweep", () => {
     execute.mockResolvedValueOnce(pgResult([row({ conversation_run_id: RUN })])).mockResolvedValue(pgResult([]));
     fetchMock.mockResolvedValue(new Response('{"recordedCount":0,"alreadyRecordedCount":2}', { status: 200 }));
     const s = await declarePositiveReplies();
-    expect(replyJudgingRunForOrg).not.toHaveBeenCalled();
+    expect(replyJudgingRunFor).not.toHaveBeenCalled();
     expect(s.declared).toBe(1);
   });
 
@@ -93,8 +108,28 @@ describe("declarePositiveReplies: the sweep", () => {
     execute.mockResolvedValueOnce(pgResult([row({ lead_id: null })])).mockResolvedValue(pgResult([]));
     const s = await declarePositiveReplies();
     expect(s.noLeadId).toBe(1);
-    expect(replyJudgingRunForOrg).not.toHaveBeenCalled();
+    expect(replyJudgingRunFor).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a send of ours no run can ever declare: declared consuming NOTHING, marked declared_no_send (LEDGER-RESIDUAL-1025)", async () => {
+    sendInputStates.mockResolvedValue(new Map([[LEAD, "unplaceable"]]));
+    execute.mockResolvedValueOnce(pgResult([row({ conversation_run_id: RUN })])).mockResolvedValue(pgResult([]));
+    fetchMock.mockResolvedValue(new Response('{"recordedCount":1}', { status: 201 }));
+    const s = await declarePositiveReplies();
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(buildPositiveReplyDeclaration(LEAD, false));
+    expect(buildPositiveReplyDeclaration(LEAD, false).consumed).toEqual([]);
+    expect(JSON.stringify(execute.mock.calls[1][0])).toContain("declared_no_send");
+    expect(s).toMatchObject({ declared: 1, declaredNoSend: 1 });
+  });
+
+  it("a send of ours not declared YET: waits, nothing posted, nothing marked", async () => {
+    sendInputStates.mockResolvedValue(new Map([[LEAD, "pending"]]));
+    execute.mockResolvedValueOnce(pgResult([row({ conversation_run_id: RUN })]));
+    const s = await declarePositiveReplies();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(s.waitingForSend).toBe(1);
   });
 
   it("reads only sequences classified positive and not yet declared (a re-judgment never declares twice)", async () => {
