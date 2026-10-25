@@ -115,3 +115,15 @@ describe("restateUnplacedSendInputs: the past consumptions of a send nobody can 
     expect(JSON.stringify(execute.mock.calls[2][0])).toContain("conversation_declaration");
   });
 });
+
+describe("the ledger read stays under runs-service's statement timeout", () => {
+  it("asks at most 20 runs a call (200 timed out in prod)", async () => {
+    const { LEDGER_READ_RUNS, fetchUnknownSendConsumptions } = await import("../../src/lib/send-input");
+    expect(LEDGER_READ_RUNS).toBe(20);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ occurrences: [], nextCursor: null }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchUnknownSendConsumptions(Array.from({ length: 45 }, (_, i) => `run-${i}`));
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    vi.unstubAllGlobals();
+  });
+});
