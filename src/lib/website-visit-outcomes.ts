@@ -37,17 +37,22 @@ import {
   type DeclarationMark,
   type SendOutcomeDeclaration,
 } from "./send-outcomes";
+import { DECLARED_NO_SEND, sendInputStates } from "./send-input";
 
 export const WEBSITE_VISIT_OUTCOME = "website_visit";
 export const WEBSITE_VISIT_TASK = "website-visit";
 export const WEBSITE_VISIT_BATCH_LIMIT = 200;
 
-/** What a sequence's website visit declares about the person. */
-export function buildWebsiteVisitDeclaration(leadId: string): SendOutcomeDeclaration {
+/**
+ * What a sequence's website visit declares about the person. `consumeSend`
+ * false = no send of ours to this lead can ever be placed in the ledger
+ * (lib/send-input.ts): the visit is declared consuming nothing.
+ */
+export function buildWebsiteVisitDeclaration(leadId: string, consumeSend = true): SendOutcomeDeclaration {
   const subject = { subjectService: SEND_OUTCOME_SUBJECT_SERVICE, subjectId: leadId };
   return {
     produced: [{ outcomeKey: WEBSITE_VISIT_OUTCOME, ...subject }],
-    consumed: [{ outcomeKey: SEND_PRODUCED_OUTCOME, ...subject }],
+    consumed: consumeSend ? [{ outcomeKey: SEND_PRODUCED_OUTCOME, ...subject }] : [],
   };
 }
 
@@ -89,7 +94,7 @@ async function loadPending(limit: number): Promise<PendingWebsiteVisit[]> {
   }));
 }
 
-async function mark(id: string, outcome: DeclarationMark): Promise<void> {
+async function mark(id: string, outcome: DeclarationMark | typeof DECLARED_NO_SEND): Promise<void> {
   await db.execute(sql`
     UPDATE instantly_campaigns SET website_visit_declared_at = now(), website_visit_declaration = ${outcome}
     WHERE id = ${id} AND website_visit_declared_at IS NULL
@@ -120,20 +125,30 @@ export interface WebsiteVisitSummary {
   noLeadId: number;
   refused: number;
   retry: number;
+  /** Declared consuming nothing: no send of ours to the lead can be placed. */
+  declaredNoSend: number;
+  /** A send of ours to the lead is not declared yet: next tick. */
+  waitingForSend: number;
 }
 
-async function declareOne(row: PendingWebsiteVisit, summary: WebsiteVisitSummary): Promise<void> {
+async function declareOne(row: PendingWebsiteVisit, summary: WebsiteVisitSummary, sendInput: Map<string, string>): Promise<void> {
   if (!row.leadId) {
     await mark(row.id, "no_lead_id");
     summary.noLeadId++;
     console.error(`[website-visit-outcomes] sequence ${row.id}: no lead id held, website_visit NOT declared`);
     return;
   }
+  const input = sendInput.get(row.leadId);
+  if (input === "pending") {
+    summary.waitingForSend++;
+    return;
+  }
+  const consumeSend = input === "declared";
   let runId: string;
   let answer: { status: number; body: string };
   try {
     runId = await ensureRun(row);
-    answer = await postRunOutcomes(runId, row.orgId, buildWebsiteVisitDeclaration(row.leadId), row.visitedAt);
+    answer = await postRunOutcomes(runId, row.orgId, buildWebsiteVisitDeclaration(row.leadId, consumeSend), row.visitedAt);
   } catch (error: unknown) {
     summary.retry++;
     console.error(`[website-visit-outcomes] sequence ${row.id} declaration failed (retried next tick): ${errorMessage(error)}`);
@@ -148,8 +163,11 @@ async function declareOne(row: PendingWebsiteVisit, summary: WebsiteVisitSummary
   if (verdict !== "declared") {
     console.error(`[website-visit-outcomes] run ${runId} declaration ${answer.status} -> ${verdict}: ${answer.body.slice(0, 300)}`);
   }
-  await mark(row.id, verdict);
-  if (verdict === "declared") summary.declared++;
+  await mark(row.id, verdict === "declared" && !consumeSend ? DECLARED_NO_SEND : verdict);
+  if (verdict === "declared") {
+    summary.declared++;
+    if (!consumeSend) summary.declaredNoSend++;
+  }
   else if (verdict === "run_gone") summary.runGone++;
   else summary.refused++;
 }
@@ -161,8 +179,9 @@ export function declareWebsiteVisits(limit = WEBSITE_VISIT_BATCH_LIMIT): Promise
   if (inFlight) return inFlight;
   inFlight = (async () => {
     const rows = await loadPending(limit);
-    const summary: WebsiteVisitSummary = { read: rows.length, declared: 0, runGone: 0, noLeadId: 0, refused: 0, retry: 0 };
-    for (const row of rows) await declareOne(row, summary);
+    const summary: WebsiteVisitSummary = { read: rows.length, declared: 0, runGone: 0, noLeadId: 0, refused: 0, retry: 0, declaredNoSend: 0, waitingForSend: 0 };
+    const sendInput = await sendInputStates(rows.flatMap((r) => (r.leadId ? [r.leadId] : [])));
+    for (const row of rows) await declareOne(row, summary, sendInput);
     if (rows.length > 0) console.log(`[website-visit-outcomes] pass done ${JSON.stringify(summary)}`);
     return summary;
   })().finally(() => {

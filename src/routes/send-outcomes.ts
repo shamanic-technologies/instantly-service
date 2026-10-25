@@ -15,6 +15,7 @@ import { declarePastBookingCalls } from "../lib/booking-call-outcomes";
 import { backfillMissingLeadIds } from "../lib/lead-id-backfill";
 import { redatePastPositiveReplies } from "../lib/positive-reply-outcomes";
 import { restateSendAddressConsumption } from "../lib/send-check-restate";
+import { restateUnplacedSendInputs } from "../lib/send-input";
 import { runSendOutcomesBackfill } from "../lib/send-outcomes";
 
 const router = Router();
@@ -120,6 +121,23 @@ router.post("/address-consumption/restate", async (req: Request, res: Response) 
   restateSendAddressConsumption({ dryRun: false, limit }).catch((error) =>
     console.error(`[instantly-service] send-check-restate: FAILED ${error?.message ?? error}`),
   );
+});
+
+/**
+ * POST /internal/send-outcomes/unplaced-send-inputs — LEDGER-RESIDUAL-1025: a
+ * positive reply / website visit declared consuming a send of ours that no run
+ * can ever declare (the ledger names no producer, our records hold no send to
+ * place) takes that consumption back (lib/send-input.ts). Body
+ * `{dryRun (default TRUE)}`, synchronous (tens of rows).
+ */
+router.post("/unplaced-send-inputs", async (req: Request, res: Response) => {
+  const dryRun = (req.body ?? {}).dryRun !== false;
+  try {
+    return res.json(await restateUnplacedSendInputs({ dryRun }));
+  } catch (error: any) {
+    console.error(`[instantly-service] unplaced-send-inputs failed: ${error?.message ?? error}`);
+    return res.status(500).json({ error: error?.message ?? "unplaced send inputs failed" });
+  }
 });
 
 export default router;

@@ -13,7 +13,7 @@ vi.mock("../../src/lib/chat-client", () => ({
 const JUDGING_RUN = "5a4b3c2d-1111-4222-8333-444455556666";
 const runForOrgMock = vi.fn(async () => JUDGING_RUN);
 vi.mock("../../src/lib/reply-judging-run", () => ({
-  replyJudgingRunForOrg: (...a: unknown[]) => runForOrgMock(...(a as [])),
+  replyJudgingRunForSequence: (...a: unknown[]) => runForOrgMock(...(a as [])),
 }));
 vi.mock("../../src/lib/self-send/own-mail-domains", () => ({
   loadOwnMailDomains: async () => new Set(["saviolabsco.com"]),
@@ -111,8 +111,9 @@ describe("runOrphanReplySweep", () => {
 
     expect(judgmentMock).toHaveBeenCalledTimes(1);
     // Judging which lead a stranger's email answers is reply judging: made FOR
-    // the likeliest lead's org's reply-judging run (PLATFORM-CALLER-RUN-1024).
-    expect(runForOrgMock).toHaveBeenCalledWith("org-doc");
+    // the likeliest lead's org's reply-judging run on that lead's sequence pipe
+    // (PLATFORM-CALLER-RUN-1024, LEDGER-RESIDUAL-1025).
+    expect(runForOrgMock).toHaveBeenCalledWith("self:stacy", { fallbackOrgId: "org-doc" });
     expect(judgmentMock.mock.calls[0][1]).toEqual({ runId: JUDGING_RUN });
     const asked = JSON.stringify(judgmentMock.mock.calls[0]);
     expect(asked).toContain("stacy.blecher@twinhealth.com");

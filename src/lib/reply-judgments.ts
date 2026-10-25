@@ -28,7 +28,7 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../db";
 import { platformJudgment, type JudgmentChoiceQuestion } from "./chat-client";
-import { replyJudgingRunForOrg, replyJudgingRunForSequence } from "./reply-judging-run";
+import { replyJudgingRunForSequence } from "./reply-judging-run";
 import { AUTOMATED_REPLY_KINDS, OFF_TOPIC_REPLY_KINDS } from "./reply-kind";
 import { htmlToText } from "./forward-positive-reply";
 import { stripQuotedHistory, withSubject } from "./self-send/qualify-reply";
@@ -205,11 +205,10 @@ export async function judgeReply(reply: ReplyToJudge): Promise<number> {
 
   const questions: Record<string, JudgmentChoiceQuestion> = {};
   for (const key of reply.missing) questions[key] = QUESTION_BY_KEY[key];
-  // Judging a reply is production: the org's reply-judging run of the day,
-  // where its positive replies declare `conversation` (PLATFORM-CALLER-RUN-1024).
-  const runId = reply.orgId
-    ? await replyJudgingRunForOrg(reply.orgId)
-    : await replyJudgingRunForSequence(reply.instantlyCampaignId);
+  // Judging a reply is production: the org's reply-judging run of the day on
+  // the sequence's pipe, where its positive replies declare `conversation`
+  // (PLATFORM-CALLER-RUN-1024, LEDGER-RESIDUAL-1025).
+  const runId = await replyJudgingRunForSequence(reply.instantlyCampaignId, { fallbackOrgId: reply.orgId });
   const result = await platformJudgment({ state, questions }, { runId });
 
   let stored = 0;
