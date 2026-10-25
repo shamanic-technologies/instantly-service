@@ -7,6 +7,12 @@ vi.mock("../../src/lib/outcome-anchor-run", () => ({
   outcomeAnchorRun: (...a: unknown[]) => outcomeAnchorRun(...a),
 }));
 
+const sendInputStates = vi.fn();
+vi.mock("../../src/lib/send-input", async (orig) => ({
+  ...(await orig<typeof import("../../src/lib/send-input")>()),
+  sendInputStates: (...a: unknown[]) => sendInputStates(...a),
+}));
+
 import { buildWebsiteVisitDeclaration, declareWebsiteVisits } from "../../src/lib/website-visit-outcomes";
 
 const pgResult = (rows: unknown[]) => ({ rows, rowCount: rows.length, command: "SELECT", fields: [] });
@@ -31,6 +37,7 @@ describe("declareWebsiteVisits: the sweep, past included", () => {
     execute.mockReset();
     fetchMock.mockReset();
     outcomeAnchorRun.mockReset();
+    sendInputStates.mockReset().mockImplementation(async (ids: string[]) => new Map(ids.map((id) => [id, "declared"])));
     vi.stubGlobal("fetch", fetchMock);
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -85,6 +92,25 @@ describe("declareWebsiteVisits: the sweep, past included", () => {
     expect(s.noLeadId).toBe(1);
     expect(outcomeAnchorRun).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a send of ours no run can ever declare: the visit consumes NOTHING, marked declared_no_send (LEDGER-RESIDUAL-1025)", async () => {
+    sendInputStates.mockResolvedValue(new Map([[LEAD, "unplaceable"]]));
+    execute.mockResolvedValueOnce(pgResult([row({ website_visit_run_id: RUN })])).mockResolvedValue(pgResult([]));
+    fetchMock.mockResolvedValue(new Response('{"recordedCount":1}', { status: 201 }));
+    const s = await declareWebsiteVisits();
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ ...buildWebsiteVisitDeclaration(LEAD, false), occurredAt: CLICK });
+    expect(buildWebsiteVisitDeclaration(LEAD, false).consumed).toEqual([]);
+    expect(JSON.stringify(execute.mock.calls[1][0])).toContain("declared_no_send");
+    expect(s).toMatchObject({ declared: 1, declaredNoSend: 1 });
+  });
+
+  it("a send of ours not declared YET: waits, nothing posted", async () => {
+    sendInputStates.mockResolvedValue(new Map([[LEAD, "pending"]]));
+    execute.mockResolvedValueOnce(pgResult([row({ website_visit_run_id: RUN })]));
+    const s = await declareWebsiteVisits();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(s.waitingForSend).toBe(1);
   });
 
   it("reads only REAL clicks (measured, not withdrawn) on sequences not yet declared", async () => {

@@ -32,7 +32,7 @@ import { simpleParser } from "mailparser";
 import { db } from "../../db";
 import { promoteEvent } from "../silver-promote";
 import { platformJudgment } from "../chat-client";
-import { replyJudgingRunForOrg } from "../reply-judging-run";
+import { replyJudgingRunForSequence } from "../reply-judging-run";
 import type { CallerInfo } from "../key-client";
 import { htmlToText } from "../forward-positive-reply";
 import { actOnInboundReply, emptyPollSummary, type KnownSend, type PollSummary } from "./imap-poller";
@@ -484,6 +484,8 @@ export async function runOrphanReplySweep(
 
       const judgingOrg = orphanJudgmentOrg(ranked);
       if (!judgingOrg) throw new Error("no candidate lead carries an org: no reply-judging run to judge it for");
+      // The judgment is made for the likeliest lead of that org: its sequence's pipe.
+      const judgingSequence = ranked.find(({ lead }) => lead.orgId === judgingOrg)!.lead.instantlyCampaignId;
       const result = await platformJudgment(
         {
           state: buildOrphanReplyState({
@@ -495,7 +497,7 @@ export async function runOrphanReplySweep(
           }),
           questions: { [ORPHAN_REPLY_QUESTION_KEY]: buildOrphanReplyQuestion(ranked) },
         },
-        { runId: await replyJudgingRunForOrg(judgingOrg) },
+        { runId: await replyJudgingRunForSequence(judgingSequence, { fallbackOrgId: judgingOrg }) },
       );
       summary.judged += 1;
       summary.judgmentInputTokens += result.usage?.inputTokens ?? 0;

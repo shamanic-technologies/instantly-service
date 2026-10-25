@@ -32,7 +32,8 @@
 import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { errorMessage } from "./db-error.js";
-import { replyJudgingRunForOrg } from "./reply-judging-run";
+import { pipeOfRow, replyJudgingRunFor, type ReplyJudgingPipe } from "./reply-judging-run";
+import { DECLARED_NO_SEND, sendInputStates } from "./send-input";
 import { LEGACY_DEAL_PROGRESS_STATUSES, REPLY_KIND_CLASSIFICATION } from "./reply-kind";
 import {
   SEND_OUTCOME_SUBJECT_SERVICE,
@@ -48,12 +49,16 @@ import {
 export const POSITIVE_REPLY_OUTCOME = "conversation";
 export const POSITIVE_REPLY_BATCH_LIMIT = 100;
 
-/** What a sequence's positive reply declares about the person. */
-export function buildPositiveReplyDeclaration(leadId: string): SendOutcomeDeclaration {
+/**
+ * What a sequence's positive reply declares about the person. `consumeSend`
+ * false = no send of ours to this lead can ever be placed in the ledger
+ * (lib/send-input.ts): the reply is declared consuming nothing.
+ */
+export function buildPositiveReplyDeclaration(leadId: string, consumeSend = true): SendOutcomeDeclaration {
   const subject = { subjectService: SEND_OUTCOME_SUBJECT_SERVICE, subjectId: leadId };
   return {
     produced: [{ outcomeKey: POSITIVE_REPLY_OUTCOME, ...subject }],
-    consumed: [{ outcomeKey: SEND_PRODUCED_OUTCOME, ...subject }],
+    consumed: consumeSend ? [{ outcomeKey: SEND_PRODUCED_OUTCOME, ...subject }] : [],
   };
 }
 
@@ -64,12 +69,14 @@ interface PendingPositiveReply {
   leadId: string | null;
   brandId: string | null;
   campaignId: string | null;
+  pipe: ReplyJudgingPipe;
   runId: string | null;
 }
 
 async function loadPending(limit: number): Promise<PendingPositiveReply[]> {
   const result = await db.execute(sql`
-    SELECT id, org_id, user_id, lead_id, brand_ids[1] AS brand_id, campaign_id, conversation_run_id
+    SELECT id, org_id, user_id, lead_id, brand_ids[1] AS brand_id, campaign_id, conversation_run_id,
+      workflow_slug, feature_slug, to_jsonb(brand_ids) AS brand_ids
     FROM instantly_campaigns
     WHERE reply_classification = 'positive' AND conversation_declared_at IS NULL
     ORDER BY updated_at DESC
@@ -82,11 +89,12 @@ async function loadPending(limit: number): Promise<PendingPositiveReply[]> {
     leadId: (r.lead_id as string | null) ?? null,
     brandId: (r.brand_id as string | null) ?? null,
     campaignId: (r.campaign_id as string | null) ?? null,
+    pipe: pipeOfRow(r),
     runId: (r.conversation_run_id as string | null) ?? null,
   }));
 }
 
-async function mark(id: string, outcome: DeclarationMark): Promise<void> {
+async function mark(id: string, outcome: DeclarationMark | typeof DECLARED_NO_SEND): Promise<void> {
   await db.execute(sql`
     UPDATE instantly_campaigns SET conversation_declared_at = now(), conversation_declaration = ${outcome}
     WHERE id = ${id} AND conversation_declared_at IS NULL
@@ -95,12 +103,12 @@ async function mark(id: string, outcome: DeclarationMark): Promise<void> {
 
 /**
  * The sequence's run: the persisted one, else the org's `reply-judging` run of
- * the day (the run the classifier's spend nests under), persisted before any
- * declaration so a retry reuses it.
+ * the day on the sequence's pipe (the run the classifier's spend nests under),
+ * persisted before any declaration so a retry reuses it.
  */
 async function ensureRun(row: PendingPositiveReply): Promise<string> {
   if (row.runId) return row.runId;
-  const runId = await replyJudgingRunForOrg(row.orgId);
+  const runId = await replyJudgingRunFor(row.orgId, row.pipe);
   const result = await db.execute(sql`
     UPDATE instantly_campaigns SET conversation_run_id = ${runId}
     WHERE id = ${row.id} AND conversation_run_id IS NULL
@@ -120,20 +128,30 @@ export interface PositiveReplySummary {
   noLeadId: number;
   refused: number;
   retry: number;
+  /** Declared consuming nothing: no send of ours to the lead can be placed. */
+  declaredNoSend: number;
+  /** A send of ours to the lead is not declared yet: next tick. */
+  waitingForSend: number;
 }
 
-async function declareOne(row: PendingPositiveReply, summary: PositiveReplySummary): Promise<void> {
+async function declareOne(row: PendingPositiveReply, summary: PositiveReplySummary, sendInput: Map<string, string>): Promise<void> {
   if (!row.leadId) {
     await mark(row.id, "no_lead_id");
     summary.noLeadId++;
     console.error(`[positive-reply-outcomes] sequence ${row.id}: no lead id held, conversation NOT declared`);
     return;
   }
+  const input = sendInput.get(row.leadId);
+  if (input === "pending") {
+    summary.waitingForSend++;
+    return;
+  }
+  const consumeSend = input === "declared";
   let runId: string;
   let answer: { status: number; body: string };
   try {
     runId = await ensureRun(row);
-    answer = await postRunOutcomes(runId, row.orgId, buildPositiveReplyDeclaration(row.leadId));
+    answer = await postRunOutcomes(runId, row.orgId, buildPositiveReplyDeclaration(row.leadId, consumeSend));
   } catch (error: unknown) {
     summary.retry++;
     console.error(`[positive-reply-outcomes] sequence ${row.id} declaration failed (retried next tick): ${errorMessage(error)}`);
@@ -148,8 +166,11 @@ async function declareOne(row: PendingPositiveReply, summary: PositiveReplySumma
   if (verdict !== "declared") {
     console.error(`[positive-reply-outcomes] run ${runId} declaration ${answer.status} -> ${verdict}: ${answer.body.slice(0, 300)}`);
   }
-  await mark(row.id, verdict);
-  if (verdict === "declared") summary.declared++;
+  await mark(row.id, verdict === "declared" && !consumeSend ? DECLARED_NO_SEND : verdict);
+  if (verdict === "declared") {
+    summary.declared++;
+    if (!consumeSend) summary.declaredNoSend++;
+  }
   else if (verdict === "run_gone") summary.runGone++;
   else summary.refused++;
 }
@@ -161,8 +182,9 @@ export function declarePositiveReplies(limit = POSITIVE_REPLY_BATCH_LIMIT): Prom
   if (inFlight) return inFlight;
   inFlight = (async () => {
     const rows = await loadPending(limit);
-    const summary: PositiveReplySummary = { read: rows.length, declared: 0, runGone: 0, noLeadId: 0, refused: 0, retry: 0 };
-    for (const row of rows) await declareOne(row, summary);
+    const summary: PositiveReplySummary = { read: rows.length, declared: 0, runGone: 0, noLeadId: 0, refused: 0, retry: 0, declaredNoSend: 0, waitingForSend: 0 };
+    const sendInput = await sendInputStates(rows.flatMap((r) => (r.leadId ? [r.leadId] : [])));
+    for (const row of rows) await declareOne(row, summary, sendInput);
     if (rows.length > 0) console.log(`[positive-reply-outcomes] pass done ${JSON.stringify(summary)}`);
     return summary;
   })().finally(() => {
