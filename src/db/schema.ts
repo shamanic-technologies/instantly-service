@@ -794,6 +794,8 @@ export const imapMessagesRaw = pgTable(
     index("imap_messages_raw_polled_at_idx").on(table.polledAt),
     // DOMAIN-BLOCKLIST-1016 staff read: bounces by day (migration 0080, hand-written).
     index("imap_messages_raw_bounce_received_idx").on(table.polledAt).where(sql`kind = 'bounce'`),
+    // The per-reply projection's IMAP source (migration 0095, hand-written, BOX-DB-LOAD-1027).
+    index("imap_messages_raw_replies_idx").on(table.instantlyCampaignId).where(sql`kind IN ('reply', 'auto_reply')`),
   ],
 );
 
@@ -930,6 +932,11 @@ export const instantlyEmailsRaw = pgTable(
   (table) => [
     uniqueIndex("instantly_emails_raw_email_id_idx").on(table.instantlyEmailId),
     index("instantly_emails_raw_campaign_id_idx").on(table.instantlyCampaignId),
+    // The per-reply projection's Unibox source: inbound mail only (migration 0095, hand-written,
+    // BOX-DB-LOAD-1027).
+    index("instantly_emails_raw_inbound_idx")
+      .on(table.instantlyCampaignId)
+      .where(sql`(payload->>'ue_type') = '2'`),
     // NOTE: a hand-written EXPRESSION index on `(payload->>'eaccount')` exists
     // in migration 0065 (drizzle has no expression-index form). It serves the
     // per-mailbox reads in self-send (`loadKnownSends`, `loadMailboxLeads`),
