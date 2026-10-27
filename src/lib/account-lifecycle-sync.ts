@@ -194,7 +194,7 @@ export interface AccountDelivery {
 }
 
 /**
- * Placement delivery per account, over its newest tests pooled to 10 seeds
+ * Placement delivery per account, over its newest tests pooled to 30 seeds
  * (`deliveryFromSilverRows`). Reads ONE ROW PER (account, test, ESP) and pools
  * them in JS via `isDeliveryAtBar`. The SQL keeps
  * the per-ESP grain deliberately: it is the raw silver shape, and the per-leg
@@ -236,10 +236,10 @@ export async function fetchLatestDeliveryByAccount(
 /**
  * Pure: the gate's delivery per account from silver rows (one per test x ESP).
  *
- * ⚠️ POOLED OVER THE NEWEST TESTS UNTIL 10 SEEDS, not the newest test alone
- * (SENDER-HEALTH-1019, `poolPlacementTests`). A test the relay throttled to one
- * seed promoted klourd@growthagency.agency to production on "1/1 = 100 %"
- * (2026-10-18) after five tests at 0-10 %. The newest test always counts and a
+ * ⚠️ POOLED OVER THE NEWEST TESTS UNTIL 30 SEEDS (~3 tests), not the newest
+ * test alone (`poolPlacementTests`, PLACEMENT_EVIDENCE_MIN_SEEDS). One test
+ * promoted klourd@growthagency.agency on "1/1 = 100 %" (2026-10-18), then 37
+ * mailboxes at 0-70 % all October on one 10/10 Sunday (2026-10-25). The newest test always counts and a
  * mailbox with nothing older still grades: sample size is still not a gate, a
  * small test just cannot erase a bigger history.
  */

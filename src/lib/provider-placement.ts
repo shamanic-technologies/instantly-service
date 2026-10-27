@@ -26,7 +26,7 @@
  *      sending there, never send where it is junked" (GlockApps, Mailreach,
  *      Instantly, Lemlist placement guides).
  *   2. NO email at all, follow-ups included, from a mailbox measured MOSTLY in
- *      spam there (more than half of at least PLACEMENT_EVIDENCE_MIN_SEEDS seeds
+ *      spam there (more than half of at least MOSTLY_SPAM_MIN_FOUND_SEEDS seeds
  *      found). Its follow-up would land in spam anyway and every such landing
  *      costs the domain reputation; a follow-up is never moved to another sender
  *      (a thread keeps one sender), so it waits for the mailbox to measure better.
@@ -47,14 +47,27 @@ export type RecipientProvider = "google" | "microsoft" | "microsoft_consumer";
 export const RECIPIENT_PROVIDERS: readonly RecipientProvider[] = ["google", "microsoft", "microsoft_consumer"];
 
 /**
- * Evidence is pooled newest test first until it holds this many seeds: one full
- * Google receiver set (MAX_SEED_RECEIVERS). A test the relay throttled to one or
- * two seeds can no longer overturn the history before it on its own
- * (klourd@growthagency.agency: 1/1 Inbox on 2026-10-18 after 1/10, 1/10, 0/2,
- * 0/10, 1/10 promoted it to production at "100 %"). Statistically a 1-seed
- * sample says nothing: its 95 % interval is 2.5-100 %.
+ * Evidence is pooled newest test first until it holds this many seeds: three
+ * full Google receiver sets (MAX_SEED_RECEIVERS = 10), i.e. about three weekly
+ * tests, still bounded by DELIVERY_EVIDENCE_MAX_AGE_DAYS.
+ *
+ * ⚠️ ONE TEST, EVEN A FULL ONE, MUST NOT OVERTURN THE HISTORY BEFORE IT.
+ * At 10 seeds (SENDER-HEALTH-1019) a single 10/10 Sunday stood alone: on
+ * 2026-10-25, 37 mailboxes at 0-70 % Inbox all October were promoted to
+ * production on one good test and started 358 sequences in three days
+ * (kevin.lourd@growthagency.news: 1/10, 0/10, 5/10, 4/6, 5/10, then 10/10).
+ * Before that, at 1 seed, klourd@growthagency.agency was promoted on a
+ * throttled 1/1 after five tests at 0-10 %. At 30 seeds the 90 % bar allows at
+ * most 3 spam seeds over three tests: a mailbox earns production by staying
+ * in the Inbox, not by one lucky run.
  */
-export const PLACEMENT_EVIDENCE_MIN_SEEDS = 10;
+export const PLACEMENT_EVIDENCE_MIN_SEEDS = 30;
+
+/**
+ * "Mostly spam" (rule 2) needs at least this many FOUND seeds: one Junk seed is
+ * no proof, one full Google set mostly in Junk is.
+ */
+export const MOSTLY_SPAM_MIN_FOUND_SEEDS = 10;
 
 /** One placement test of one mailbox at one provider. */
 export interface PlacementTest {
@@ -118,7 +131,7 @@ export type PlacementVerdict = "inbox" | "junk" | "unmeasured";
 export interface ProviderPlacement {
   verdict: PlacementVerdict;
   /**
-   * More than half of at least PLACEMENT_EVIDENCE_MIN_SEEDS found seeds sat in
+   * More than half of at least MOSTLY_SPAM_MIN_FOUND_SEEDS found seeds sat in
    * spam, on fresh evidence: the mailbox sends nothing to this provider.
    */
   mostlySpam: boolean;
@@ -141,7 +154,7 @@ export function providerPlacement(evidence: PooledPlacement | null, asOf: Date):
   if (found <= 0) return unmeasured;
   return {
     verdict: evidence.inboxCount * 100 >= found * PRODUCTION_DELIVERY_PCT_BAR ? "inbox" : "junk",
-    mostlySpam: found >= PLACEMENT_EVIDENCE_MIN_SEEDS && evidence.spamCount * 2 > found,
+    mostlySpam: found >= MOSTLY_SPAM_MIN_FOUND_SEEDS && evidence.spamCount * 2 > found,
   };
 }
 
