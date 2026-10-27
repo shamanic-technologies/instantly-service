@@ -4888,3 +4888,65 @@ registry.registerPath({
     500: { description: "Server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
+
+// ─── Reply ownership (EMAIL-REPLY-ORPHAN-1027) ──────────────────────────────
+
+export const ReplyOwnershipRequestSchema = z
+  .object({
+    messages: z
+      .array(
+        z.object({
+          from: z.string().min(3).describe("The sender of the mail (the person), bare address or `Name <address>`"),
+          to: z.array(z.string()).min(1).max(50).describe("Every recipient of the mail (To + Cc)"),
+          at: z.string().datetime({ offset: true }).describe("When the mail was sent (ISO 8601)"),
+          references: z
+            .array(z.string())
+            .max(100)
+            .optional()
+            .describe("RFC Message-Ids from In-Reply-To / References, when the caller holds them"),
+        }),
+      )
+      .min(1)
+      .max(200),
+  })
+  .openapi("ReplyOwnershipRequest");
+
+export const ReplyOwnershipResponseSchema = z
+  .object({
+    messages: z.array(
+      z.object({
+        from: z.string().describe("The sender, lowercased bare address"),
+        owner: z
+          .enum(["email_path", "none"])
+          .describe("`email_path` = this service files and acts on the mail (or it is our own mail); `none` = nobody here acts on it, the caller does"),
+        reason: z
+          .enum(["our_own_mail", "lead_sequence", "sending_mailbox_sequence", "org_mailbox_sequence", "ambiguous_orgs", "no_sequence"])
+          .describe("Why, in the email path's own rule"),
+      }),
+    ),
+  })
+  .openapi("ReplyOwnershipResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/reply-ownership",
+  summary: "Does the email path act on these mails a person sent us?",
+  description:
+    "For each mail a person sent to one of our addresses, whether THIS service files it and acts on it (stop, classification, trigger), in its own rule, so a caller that also reads the mailbox never drops nor doubles it (EMAIL-REPLY-ORPHAN-1027).\n\n" +
+    "**`email_path`** when the sender is our own mail (staff, a domain we send from or own: warmup, seeds), or we hold a sequence that really emailed the person by then and a reader of ours sees the mail: a staff recipient (any org's sequence, one org only), a sending mailbox we read (a sequence sent from that same mailbox), any other recipient (the org's own connected Gmail: this org's sequences).\n\n" +
+    "**`none`** otherwise (`no_sequence`, or `ambiguous_orgs`: sequences in several orgs and no reference names one). The caller acts on it.\n\n" +
+    "A recipient merely being one of our sending addresses is NOT ownership. Fails loud (500): never guess.\n\n**Cost:** none.",
+  request: {
+    headers: TrackingHeadersSchema,
+    body: { content: { "application/json": { schema: ReplyOwnershipRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description: "One answer per mail, in request order",
+      content: { "application/json": { schema: ReplyOwnershipResponseSchema } },
+    },
+    400: { description: "Invalid body", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "Ownership could not be read", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
