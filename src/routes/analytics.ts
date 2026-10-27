@@ -389,6 +389,39 @@ export interface CampaignAggregates {
 const ZERO_CAMPAIGN_AGGREGATES: CampaignAggregates = { contacted: 0, notSending: 0, cancelled: 0 };
 
 /**
+ * A column a grouped read is ALSO split by, so ONE statement answers every value of a filter at
+ * once (BOX-DB-LOAD-1027). Only `audienceId` exists: features-service reads each campaign once per
+ * audience (`?campaignId=X&audienceId=A&groupBy=workflowSlug`, ~21 audiences a campaign), 88
+ * reads/s on 2026-10-27, every key read once per sweep so the per-key cache never hit, and each read
+ * ran the same four statements over the same campaign. Splitting by the audience column groups the
+ * SAME rows the `audienceId = A` filter selects (a NULL audience matches no filter and is never
+ * served), so each slice is the per-audience answer, figure for figure.
+ */
+export type StatsPartition = "audienceId";
+
+const PARTITION_COLUMNS: Record<StatsPartition, string> = {
+  audienceId: "c.metadata->>'audienceId'",
+};
+
+/** Partitions are for column groupings only: the day grouping's CTE shape binds a zone (see localDayKey). */
+function assertPartitionable(groupBy: string, partition: StatsPartition | undefined): void {
+  if (partition && groupBy === "day") throw new Error("A partitioned stats read cannot group by day");
+}
+
+function partitionSelect(partition: StatsPartition | undefined): SQL {
+  return partition ? sql.raw(`${PARTITION_COLUMNS[partition]} AS "partKey", `) : sql``;
+}
+
+function partitionGroupBy(partition: StatsPartition | undefined): SQL {
+  return partition ? sql.raw(`${PARTITION_COLUMNS[partition]}, `) : sql``;
+}
+
+/** Map key of one (partition value, group key) pair; JSON keeps a NULL partition apart from "". */
+function partitionedKey(partKey: unknown, groupKey: unknown): string {
+  return JSON.stringify([partKey ?? null, String(groupKey)]);
+}
+
+/**
  * Aggregate per-lead counts derived from the campaigns table (NOT the events
  * table). One DB roundtrip:
  *   - `contacted` = row count (lead pushed to Instantly).
@@ -422,9 +455,11 @@ export async function queryGroupedCampaignAggregates(
   audience: StatsAudience,
   groupBy: string,
   timezone = "UTC",
+  partition?: StatsPartition,
 ): Promise<Map<string, CampaignAggregates>> {
   const groupCol = campaignGroupColumn(groupBy, timezone);
   if (!groupCol) return new Map();
+  assertPartitionable(groupBy, partition);
 
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
   // For groupBy=day, groupCol is the parameterized localDayKey fragment (it
@@ -457,7 +492,7 @@ export async function queryGroupedCampaignAggregates(
     GROUP BY c.group_key
   ` : sql`
     SELECT
-      ${groupCol} AS "groupKey",
+      ${partitionSelect(partition)}${groupCol} AS "groupKey",
       COUNT(*)::int AS "emailsContacted",
       COUNT(DISTINCT c.lead_email) FILTER (WHERE c.not_sending_status IS NOT NULL)::int AS "notSending",
       COUNT(*) FILTER (WHERE c.delivery_status = 'cancelled')::int AS "cancelled"
@@ -466,13 +501,13 @@ export async function queryGroupedCampaignAggregates(
     WHERE ${whereClause}
       AND ${campaignExclusionClause(audience)}
       AND ${groupCol} IS NOT NULL
-    GROUP BY ${groupCol}
+    GROUP BY ${partitionGroupBy(partition)}${groupCol}
   `;
   const result = await db.execute(query);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
   return new Map(
     rows.map((r: any) => [
-      r.groupKey,
+      partition ? partitionedKey(r.partKey, r.groupKey) : r.groupKey,
       {
         contacted: r.emailsContacted ?? 0,
         notSending: r.notSending ?? 0,
@@ -777,9 +812,11 @@ export async function queryGroupedSentiment(
   audience: StatsAudience,
   groupBy: string,
   timezone = "UTC",
+  partition?: StatsPartition,
 ): Promise<Map<string, SentimentDetail>> {
   const groupCol = sentimentGroupColumn(groupBy, timezone);
   if (!groupCol) return new Map();
+  assertPartitionable(groupBy, partition);
 
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
   if (groupBy === "day") {
@@ -809,18 +846,21 @@ export async function queryGroupedSentiment(
   const result = await db.execute(sql`
     WITH latest_sentiment AS (${latestSentimentCteBody(audience)})
     SELECT
-      ${groupCol} AS "groupKey",
+      ${partitionSelect(partition)}${groupCol} AS "groupKey",
       ${SENTIMENT_COUNT_COLUMNS}
     FROM latest_sentiment ls
     JOIN instantly_campaigns c ON c.instantly_campaign_id = ls.campaign_id
     ${lateralJoin}
     WHERE ${whereClause}
       AND ${groupCol} IS NOT NULL
-    GROUP BY ${groupCol}
+    GROUP BY ${partitionGroupBy(partition)}${groupCol}
   `);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
   return new Map(
-    rows.map((r: any) => [String(r.groupKey), rowToSentimentDetail(r)]),
+    rows.map((r: any) => [
+      partition ? partitionedKey(r.partKey, r.groupKey) : String(r.groupKey),
+      rowToSentimentDetail(r),
+    ]),
   );
 }
 
@@ -886,15 +926,44 @@ export async function queryStepSentiment(whereClause: SQL, audience: StatsAudien
   return map;
 }
 
+export type GroupedStat = { key: string; recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS };
+
 /** Execute grouped stats query and return array of { key, recipientStats, emailStats } */
 export async function queryGroupedStats(
   whereClause: SQL,
   audience: StatsAudience,
   groupBy: string,
   timezone = "UTC",
-): Promise<Array<{ key: string; recipientStats: typeof ZERO_RECIPIENT_STATS; emailStats: typeof ZERO_EMAIL_STATS }>> {
+): Promise<GroupedStat[]> {
+  const groups = await queryGroupedStatsCore(whereClause, audience, groupBy, timezone, undefined);
+  return groups.get(null) ?? [];
+}
+
+/**
+ * The grouped read for EVERY value of `partition` at once: partition value -> the groups
+ * `queryGroupedStats` returns with `AND <partition column> = value` added to `whereClause`, byte for
+ * byte (same statements, the partition column added to each SELECT and GROUP BY). A value with no
+ * row is absent, where the per-value read returns `[]`. See {@link StatsPartition}.
+ */
+export async function queryGroupedStatsByPartition(
+  whereClause: SQL,
+  audience: StatsAudience,
+  groupBy: string,
+  partition: StatsPartition,
+): Promise<Map<string | null, GroupedStat[]>> {
+  return queryGroupedStatsCore(whereClause, audience, groupBy, "UTC", partition);
+}
+
+async function queryGroupedStatsCore(
+  whereClause: SQL,
+  audience: StatsAudience,
+  groupBy: string,
+  timezone: string,
+  partition: StatsPartition | undefined,
+): Promise<Map<string | null, GroupedStat[]>> {
   const groupCol = eventGroupColumn(groupBy, timezone);
-  if (!groupCol) return [];
+  if (!groupCol) return new Map();
+  assertPartitionable(groupBy, partition);
 
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
   const eventsQuery = groupBy === "day" ? sql`
@@ -931,7 +1000,7 @@ export async function queryGroupedStats(
       ORDER BY e.group_key
     ` : sql`
       SELECT
-        ${groupCol} AS "groupKey",
+        ${partitionSelect(partition)}${groupCol} AS "groupKey",
         COALESCE(COUNT(*) FILTER (WHERE e.event_type = 'email_sent'), 0)::int AS "esSent",
         ${DELIVERED_AGGREGATES},
         COALESCE(COUNT(DISTINCT CONCAT(e.lead_email, '::', e.campaign_id, '::', e.step)) FILTER (WHERE e.event_type = 'email_opened'), 0)::int AS "esOpened",
@@ -951,8 +1020,8 @@ export async function queryGroupedStats(
       WHERE ${whereClause}
         AND ${internalExclusionClause(audience)}
         AND ${groupCol} IS NOT NULL
-      GROUP BY ${groupCol}
-      ORDER BY ${groupCol}
+      GROUP BY ${partitionGroupBy(partition)}${groupCol}
+      ORDER BY ${partitionGroupBy(partition)}${groupCol}
     `;
   // These three reads are independent — run them concurrently. aggregatesMap is
   // campaign-level (contacted + notSending + cancelled), derived independently
@@ -964,16 +1033,19 @@ export async function queryGroupedStats(
   // (issued LAST so the existing db.execute call order is unchanged).
   const [result, aggregatesMap, sentimentMap, queuedMap] = await Promise.all([
     db.execute(eventsQuery),
-    queryGroupedCampaignAggregates(whereClause, audience, groupBy, timezone),
-    queryGroupedSentiment(whereClause, audience, groupBy, timezone),
+    queryGroupedCampaignAggregates(whereClause, audience, groupBy, timezone, partition),
+    queryGroupedSentiment(whereClause, audience, groupBy, timezone, partition),
     groupBy === "day"
       ? Promise.resolve(undefined)
-      : queryGroupedQueuedEmails(whereClause, audience, groupBy),
+      : queryGroupedQueuedEmails(whereClause, audience, groupBy, partition),
   ]);
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+  // Unpartitioned, every row is in the one partition `null` and the helper maps are keyed by the
+  // group key alone, exactly as before the partition existed.
+  const mapKey = (part: string | null, key: string) => (partition ? partitionedKey(part, key) : String(key));
 
-  const buildGroup = (key: string, row: any | undefined) => {
-    const sentiment = sentimentMap.get(String(key)) ?? ZERO_SENTIMENT_DETAIL;
+  const buildGroup = (part: string | null, key: string, row: any | undefined): GroupedStat => {
+    const sentiment = sentimentMap.get(mapKey(part, key)) ?? ZERO_SENTIMENT_DETAIL;
     const detail = {
       interested: sentiment.interested,
       referral: sentiment.referral,
@@ -1001,7 +1073,7 @@ export async function queryGroupedStats(
     // the zero.
     const rsDelivered = row?.rsDelivered ?? 0;
     const esDelivered = row?.esDelivered ?? 0;
-    const aggregates = aggregatesMap.get(key) ?? ZERO_CAMPAIGN_AGGREGATES;
+    const aggregates = aggregatesMap.get(partition ? mapKey(part, key) : key) ?? ZERO_CAMPAIGN_AGGREGATES;
     return {
       key,
       recipientStats: {
@@ -1024,33 +1096,56 @@ export async function queryGroupedStats(
         bounced: esBounced,
         unsubscribed: row?.esUnsubscribed ?? 0,
         ...(queuedMap !== undefined && {
-          queued: queuedMap === null ? null : queuedMap.get(String(key)) ?? 0,
+          queued: queuedMap === null ? null : queuedMap.get(mapKey(part, key)) ?? 0,
         }),
       },
     };
   };
 
-  const eventGroups = rows.map((row: any) => buildGroup(row.groupKey as string, row));
+  const partOf = (row: any): string | null => (partition ? (row.partKey ?? null) : null);
+  const eventRowsByPart = new Map<string | null, any[]>();
+  for (const row of rows) {
+    const part = partOf(row);
+    const list = eventRowsByPart.get(part);
+    if (list) list.push(row);
+    else eventRowsByPart.set(part, [row]);
+  }
+  // Aggregate-only keys, per partition (decoded back from the helper's map key).
+  const aggregateKeysByPart = new Map<string | null, string[]>();
+  for (const k of aggregatesMap.keys()) {
+    const [part, key] = partition ? (JSON.parse(k) as [string | null, string]) : [null, k];
+    const list = aggregateKeysByPart.get(part);
+    if (list) list.push(key);
+    else aggregateKeysByPart.set(part, [key]);
+  }
 
-  // `contacted` is a campaign-table fact (lead pushed), not an event. A key with
-  // contacted leads but zero email events would be dropped if we built groups
-  // from the events query alone — so UNION the aggregate-only keys
-  // (contacted/notSending/cancelled present, every event metric 0). This applies
-  // to EVERY grouping dimension, not just `day`: leads are pushed to Instantly
-  // minutes-to-hours before Instantly emits their first send event, so an
-  // audience/campaign/feature whose leads were just pushed has campaign rows and
-  // no events at all. Returning nothing for that key reads downstream as
-  // "contacted = 0" while the serve-time suppression list has already dropped
-  // those leads from "Remaining" — two surfaces contradicting each other for the
-  // same audience.
-  const eventKeys = new Set(rows.map((r: any) => String(r.groupKey)));
-  const extraGroups = [...aggregatesMap.keys()]
-    .filter((key) => !eventKeys.has(String(key)))
-    .map((key) => buildGroup(key, undefined));
+  const byPart = new Map<string | null, GroupedStat[]>();
+  for (const part of new Set([...eventRowsByPart.keys(), ...aggregateKeysByPart.keys()])) {
+    const partRows = eventRowsByPart.get(part) ?? [];
+    const eventGroups = partRows.map((row: any) => buildGroup(part, row.groupKey as string, row));
 
-  return [...eventGroups, ...extraGroups].sort((a, b) =>
-    a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
-  );
+    // `contacted` is a campaign-table fact (lead pushed), not an event. A key with
+    // contacted leads but zero email events would be dropped if we built groups
+    // from the events query alone — so UNION the aggregate-only keys
+    // (contacted/notSending/cancelled present, every event metric 0). This applies
+    // to EVERY grouping dimension, not just `day`: leads are pushed to Instantly
+    // minutes-to-hours before Instantly emits their first send event, so an
+    // audience/campaign/feature whose leads were just pushed has campaign rows and
+    // no events at all. Returning nothing for that key reads downstream as
+    // "contacted = 0" while the serve-time suppression list has already dropped
+    // those leads from "Remaining" — two surfaces contradicting each other for the
+    // same audience.
+    const eventKeys = new Set(partRows.map((r: any) => String(r.groupKey)));
+    const extraGroups = (aggregateKeysByPart.get(part) ?? [])
+      .filter((key) => !eventKeys.has(String(key)))
+      .map((key) => buildGroup(part, key, undefined));
+
+    byPart.set(
+      part,
+      [...eventGroups, ...extraGroups].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)),
+    );
+  }
+  return byPart;
 }
 
 /** Execute the aggregate stats query and return { recipientStats, emailStats } */
@@ -1213,14 +1308,16 @@ export async function queryGroupedQueuedEmails(
   whereClause: SQL,
   audience: StatsAudience,
   groupBy: string,
+  partition?: StatsPartition,
 ): Promise<Map<string, number> | null> {
   const col = CAMPAIGN_GROUP_BY_COLUMNS[groupBy];
   if (!col || groupBy === "day") return null;
+  assertPartitionable(groupBy, partition);
   const groupCol = sql.raw(col);
   const lateralJoin = groupBy === "brandId" ? BRAND_LATERAL_JOIN : sql``;
   try {
     const result = await db.execute(sql`
-      SELECT ${groupCol} AS "groupKey", COALESCE(SUM(q.steps), 0)::int AS "queued"
+      SELECT ${partitionSelect(partition)}${groupCol} AS "groupKey", COALESCE(SUM(q.steps), 0)::int AS "queued"
       FROM instantly_campaigns c
       ${lateralJoin}
       ${QUEUED_STEPS_LATERAL}
@@ -1228,14 +1325,19 @@ export async function queryGroupedQueuedEmails(
         AND ${LIVE_SEQUENCE_GATE}
         AND ${campaignExclusionClause(audience)}
         AND ${groupCol} IS NOT NULL
-      GROUP BY ${groupCol}
+      GROUP BY ${partitionGroupBy(partition)}${groupCol}
     `);
     const rows = Array.isArray(result) ? result : (result as any)?.rows;
     if (!Array.isArray(rows)) {
       console.error("[instantly-service] grouped queued-emails read returned no rows array; serving null (unknown)");
       return null;
     }
-    return new Map(rows.map((r: any) => [String(r.groupKey), Number(r.queued) || 0]));
+    return new Map(
+      rows.map((r: any) => [
+        partition ? partitionedKey(r.partKey, r.groupKey) : String(r.groupKey),
+        Number(r.queued) || 0,
+      ]),
+    );
   } catch (error: any) {
     console.error(
       `[instantly-service] grouped queued-emails read failed; serving null (unknown): ${error?.cause?.message ?? error?.message ?? error}`,
@@ -1399,6 +1501,34 @@ export function timezoneCacheKeyPart(groupBy: string | undefined, timezone: stri
 }
 
 /**
+ * One audience's grouped stats, read from its AUDIENCE FAMILY (BOX-DB-LOAD-1027): the same scope
+ * without the audience filter, grouped by audience then `groupBy`, computed once and cached under a
+ * key that names no audience, so the ~21 audience reads of one campaign share one computation. The
+ * slice is the per-audience answer figure for figure (see {@link StatsPartition}); an audience
+ * with no row reads `[]`, as before. `groupBy=day` never comes here (it keeps its per-key read).
+ */
+export async function readAudienceSlice(
+  familyCacheKey: string,
+  familyWhereClause: SQL,
+  audience: StatsAudience,
+  groupBy: string,
+  audienceId: string,
+): Promise<GroupedStat[]> {
+  const family = await getOrSetCachedStats(
+    familyCacheKey,
+    () => queryGroupedStatsByPartition(familyWhereClause, audience, groupBy, "audienceId"),
+    STATS_CACHE_TTL_MS,
+    { refreshAfterMs: STATS_REFRESH_AFTER_MS },
+  );
+  return family.get(audienceId) ?? [];
+}
+
+/** Whether a stats read is served from its audience family (see {@link readAudienceSlice}). */
+export function readsAudienceFamily(groupBy: string | undefined, audienceId: string | undefined): groupBy is string {
+  return !!groupBy && groupBy !== "day" && !!audienceId;
+}
+
+/**
  * GET /stats
  * Aggregated stats from webhook events. Filters via query params; runIds comma-separated.
  */
@@ -1435,9 +1565,12 @@ router.get("/stats", async (req: Request, res: Response) => {
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
   if (goal) conditions.push(sql`c.metadata->>'goal' = ${goal}`);
   if (brandProfileId) conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
+  // The scope minus the audience: what an audience family read groups by audience.
+  const familyConditions = [...conditions];
   if (audienceId) conditions.push(sql`c.metadata->>'audienceId' = ${audienceId}`);
 
   addSlugConditions(conditions, { workflowSlugs, featureSlugs });
+  addSlugConditions(familyConditions, { workflowSlugs, featureSlugs });
 
   const whereClause = sql.join(conditions, sql` AND `);
 
@@ -1457,6 +1590,20 @@ router.get("/stats", async (req: Request, res: Response) => {
     timezone: timezoneCacheKeyPart(groupBy, timezone),
   });
   try {
+    if (readsAudienceFamily(groupBy, audienceId)) {
+      const familyKey = statsCacheKey(`stats-audience-family:${orgId}`, {
+        runIds: runIdsRaw,
+        brandId,
+        campaignId,
+        goal,
+        brandProfileId,
+        workflowSlugs,
+        featureSlugs,
+        groupBy,
+      });
+      const groups = await readAudienceSlice(familyKey, sql.join(familyConditions, sql` AND `), "org", groupBy, audienceId!);
+      return res.json({ groups });
+    }
     const payload = await getOrSetCachedStats(cacheKey, async () => {
       if (groupBy) {
         const groups = await queryGroupedStats(whereClause, "org", groupBy, timezone);
