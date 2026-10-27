@@ -108,3 +108,23 @@ describe("instantly_events sent-steps index (migration 0089)", () => {
     expect(lateral).toContain("WHERE e.campaign_id = s.instantly_campaign_id\n      AND e.event_type = 'email_sent'\n      AND e.lead_email = s.lead_email");
   });
 });
+
+describe("reply projection source indexes (migration 0095, BOX-DB-LOAD-1027)", () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, "..", "..", rel), "utf-8");
+
+  it("indexes the exact predicates the per-reply projection scans its two sources with", () => {
+    const migration = read("drizzle/0095_reply_source_indexes.sql");
+    expect(migration).toContain(
+      "CREATE INDEX IF NOT EXISTS instantly_emails_raw_inbound_idx\n  ON instantly_emails_raw (instantly_campaign_id)\n  WHERE (payload->>'ue_type') = '2';",
+    );
+    expect(migration).toContain(
+      "CREATE INDEX IF NOT EXISTS imap_messages_raw_replies_idx\n  ON imap_messages_raw (instantly_campaign_id)\n  WHERE kind IN ('reply', 'auto_reply');",
+    );
+    // A different literal (or a bound parameter) leaves the partial index unusable and sends the
+    // projection back to reading both tables whole every 2 minutes (12.9 s a tick on prod).
+    const projection = read("src/lib/reply-verdicts.ts");
+    const upsert = projection.slice(projection.indexOf("async function upsertReplies"), projection.indexOf("ON CONFLICT (id) DO UPDATE"));
+    expect(upsert).toContain("WHERE r.payload->>'ue_type' = '2'");
+    expect(upsert).toContain("WHERE m.kind IN ('reply', 'auto_reply')");
+  });
+});
