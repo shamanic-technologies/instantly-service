@@ -198,7 +198,7 @@ async function loadLeadsByOrg(): Promise<Map<string, string[]>> {
   return out;
 }
 
-async function loadCandidates(leadEmail: string, at: Date): Promise<SequenceCandidate[]> {
+export async function loadCandidates(leadEmail: string, at: Date): Promise<SequenceCandidate[]> {
   const result = await db.execute(sql`
     SELECT c.instantly_campaign_id AS "instantlyCampaignId",
            c.org_id AS "orgId",
@@ -235,7 +235,7 @@ async function loadCandidates(leadEmail: string, at: Date): Promise<SequenceCand
 }
 
 /** Sequences one of these Message-Ids belongs to (our sends, and messages already filed on a thread). */
-async function referencedCampaigns(ids: string[]): Promise<Set<string>> {
+export async function referencedCampaigns(ids: string[]): Promise<Set<string>> {
   if (ids.length === 0) return new Set();
   const result = await db.execute(sql`
     SELECT instantly_campaign_id AS id FROM smtp_dispatch_raw
