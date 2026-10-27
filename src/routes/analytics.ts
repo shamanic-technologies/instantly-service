@@ -389,19 +389,26 @@ export interface CampaignAggregates {
 const ZERO_CAMPAIGN_AGGREGATES: CampaignAggregates = { contacted: 0, notSending: 0, cancelled: 0 };
 
 /**
- * A column a grouped read is ALSO split by, so ONE statement answers every value of a filter at
- * once (BOX-DB-LOAD-1027). Only `audienceId` exists: features-service reads each campaign once per
- * audience (`?campaignId=X&audienceId=A&groupBy=workflowSlug`, ~21 audiences a campaign), 88
- * reads/s on 2026-10-27, every key read once per sweep so the per-key cache never hit, and each read
- * ran the same four statements over the same campaign. Splitting by the audience column groups the
- * SAME rows the `audienceId = A` filter selects (a NULL audience matches no filter and is never
- * served), so each slice is the per-audience answer, figure for figure.
+ * Columns a grouped read is ALSO split by, so ONE statement answers every value of those filters at
+ * once (BOX-DB-LOAD-1027). features-service reads each campaign once per audience
+ * (`?campaignId=X&audienceId=A&groupBy=workflowSlug`, ~21 audiences a campaign, plus one read per
+ * campaign without audience; the public twin per campaign): 88 reads/s on 2026-10-27, every key read
+ * once per sweep, so the per-key cache never hit and each read re-ran the same four statements. Split
+ * by the filter columns, each group holds the SAME rows the `= value` filters select (a NULL value
+ * matches no filter and is never served), so each slice is the per-key answer, figure for figure.
+ * `campaignId` stands for the `c.campaign_id` half of the campaign filter only: see
+ * {@link campaignIdNamesARow} for the `c.id` half.
  */
-export type StatsPartition = "audienceId";
+export type StatsPartitionColumn = "campaignId" | "audienceId";
+export type StatsPartition = readonly StatsPartitionColumn[];
 
-const PARTITION_COLUMNS: Record<StatsPartition, string> = {
+const PARTITION_COLUMNS: Record<StatsPartitionColumn, string> = {
+  campaignId: "c.campaign_id",
   audienceId: "c.metadata->>'audienceId'",
 };
+
+/** Partition id of an unpartitioned read: every row is in this one partition. */
+const WHOLE_SCOPE = "[]";
 
 /** Partitions are for column groupings only: the day grouping's CTE shape binds a zone (see localDayKey). */
 function assertPartitionable(groupBy: string, partition: StatsPartition | undefined): void {
@@ -409,16 +416,27 @@ function assertPartitionable(groupBy: string, partition: StatsPartition | undefi
 }
 
 function partitionSelect(partition: StatsPartition | undefined): SQL {
-  return partition ? sql.raw(`${PARTITION_COLUMNS[partition]} AS "partKey", `) : sql``;
+  if (!partition) return sql``;
+  return sql.raw(partition.map((col, i) => `${PARTITION_COLUMNS[col]} AS "partKey${i}", `).join(""));
 }
 
 function partitionGroupBy(partition: StatsPartition | undefined): SQL {
-  return partition ? sql.raw(`${PARTITION_COLUMNS[partition]}, `) : sql``;
+  if (!partition) return sql``;
+  return sql.raw(partition.map((col) => `${PARTITION_COLUMNS[col]}, `).join(""));
 }
 
-/** Map key of one (partition value, group key) pair; JSON keeps a NULL partition apart from "". */
-function partitionedKey(partKey: unknown, groupKey: unknown): string {
-  return JSON.stringify([partKey ?? null, String(groupKey)]);
+/** The partition id of a row: its partition values, in order, as JSON (keeps NULL apart from ""). */
+export function partitionId(values: readonly (string | null)[]): string {
+  return JSON.stringify(values);
+}
+
+function partitionIdOfRow(row: any, partition: StatsPartition): string {
+  return partitionId(partition.map((_, i) => (row[`partKey${i}`] ?? null) as string | null));
+}
+
+/** Map key of one (partition, group key) pair in a partitioned helper's answer. */
+function partitionedKey(row: any, partition: StatsPartition): string {
+  return JSON.stringify([partitionIdOfRow(row, partition), String(row.groupKey)]);
 }
 
 /**
@@ -507,7 +525,7 @@ export async function queryGroupedCampaignAggregates(
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
   return new Map(
     rows.map((r: any) => [
-      partition ? partitionedKey(r.partKey, r.groupKey) : r.groupKey,
+      partition ? partitionedKey(r, partition) : r.groupKey,
       {
         contacted: r.emailsContacted ?? 0,
         notSending: r.notSending ?? 0,
@@ -858,7 +876,7 @@ export async function queryGroupedSentiment(
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
   return new Map(
     rows.map((r: any) => [
-      partition ? partitionedKey(r.partKey, r.groupKey) : String(r.groupKey),
+      partition ? partitionedKey(r, partition) : String(r.groupKey),
       rowToSentimentDetail(r),
     ]),
   );
@@ -936,21 +954,22 @@ export async function queryGroupedStats(
   timezone = "UTC",
 ): Promise<GroupedStat[]> {
   const groups = await queryGroupedStatsCore(whereClause, audience, groupBy, timezone, undefined);
-  return groups.get(null) ?? [];
+  return groups.get(WHOLE_SCOPE) ?? [];
 }
 
 /**
- * The grouped read for EVERY value of `partition` at once: partition value -> the groups
- * `queryGroupedStats` returns with `AND <partition column> = value` added to `whereClause`, byte for
- * byte (same statements, the partition column added to each SELECT and GROUP BY). A value with no
- * row is absent, where the per-value read returns `[]`. See {@link StatsPartition}.
+ * The grouped read for EVERY combination of the partition columns at once: {@link partitionId} of the
+ * values -> the groups `queryGroupedStats` returns with `AND <column> = value` for each partition
+ * column added to `whereClause`, byte for byte (same statements, the partition columns added to each
+ * SELECT and GROUP BY). A combination with no row is absent, where the per-key read returns `[]`.
+ * See {@link StatsPartition}.
  */
 export async function queryGroupedStatsByPartition(
   whereClause: SQL,
   audience: StatsAudience,
   groupBy: string,
   partition: StatsPartition,
-): Promise<Map<string | null, GroupedStat[]>> {
+): Promise<Map<string, GroupedStat[]>> {
   return queryGroupedStatsCore(whereClause, audience, groupBy, "UTC", partition);
 }
 
@@ -960,7 +979,7 @@ async function queryGroupedStatsCore(
   groupBy: string,
   timezone: string,
   partition: StatsPartition | undefined,
-): Promise<Map<string | null, GroupedStat[]>> {
+): Promise<Map<string, GroupedStat[]>> {
   const groupCol = eventGroupColumn(groupBy, timezone);
   if (!groupCol) return new Map();
   assertPartitionable(groupBy, partition);
@@ -1042,9 +1061,9 @@ async function queryGroupedStatsCore(
   const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
   // Unpartitioned, every row is in the one partition `null` and the helper maps are keyed by the
   // group key alone, exactly as before the partition existed.
-  const mapKey = (part: string | null, key: string) => (partition ? partitionedKey(part, key) : String(key));
+  const mapKey = (part: string, key: string) => (partition ? JSON.stringify([part, String(key)]) : String(key));
 
-  const buildGroup = (part: string | null, key: string, row: any | undefined): GroupedStat => {
+  const buildGroup = (part: string, key: string, row: any | undefined): GroupedStat => {
     const sentiment = sentimentMap.get(mapKey(part, key)) ?? ZERO_SENTIMENT_DETAIL;
     const detail = {
       interested: sentiment.interested,
@@ -1102,8 +1121,8 @@ async function queryGroupedStatsCore(
     };
   };
 
-  const partOf = (row: any): string | null => (partition ? (row.partKey ?? null) : null);
-  const eventRowsByPart = new Map<string | null, any[]>();
+  const partOf = (row: any): string => (partition ? partitionIdOfRow(row, partition) : WHOLE_SCOPE);
+  const eventRowsByPart = new Map<string, any[]>();
   for (const row of rows) {
     const part = partOf(row);
     const list = eventRowsByPart.get(part);
@@ -1111,15 +1130,15 @@ async function queryGroupedStatsCore(
     else eventRowsByPart.set(part, [row]);
   }
   // Aggregate-only keys, per partition (decoded back from the helper's map key).
-  const aggregateKeysByPart = new Map<string | null, string[]>();
+  const aggregateKeysByPart = new Map<string, string[]>();
   for (const k of aggregatesMap.keys()) {
-    const [part, key] = partition ? (JSON.parse(k) as [string | null, string]) : [null, k];
+    const [part, key] = partition ? (JSON.parse(k) as [string, string]) : [WHOLE_SCOPE, k];
     const list = aggregateKeysByPart.get(part);
     if (list) list.push(key);
     else aggregateKeysByPart.set(part, [key]);
   }
 
-  const byPart = new Map<string | null, GroupedStat[]>();
+  const byPart = new Map<string, GroupedStat[]>();
   for (const part of new Set([...eventRowsByPart.keys(), ...aggregateKeysByPart.keys()])) {
     const partRows = eventRowsByPart.get(part) ?? [];
     const eventGroups = partRows.map((row: any) => buildGroup(part, row.groupKey as string, row));
@@ -1334,7 +1353,7 @@ export async function queryGroupedQueuedEmails(
     }
     return new Map(
       rows.map((r: any) => [
-        partition ? partitionedKey(r.partKey, r.groupKey) : String(r.groupKey),
+        partition ? partitionedKey(r, partition) : String(r.groupKey),
         Number(r.queued) || 0,
       ]),
     );
@@ -1500,32 +1519,67 @@ export function timezoneCacheKeyPart(groupBy: string | undefined, timezone: stri
   return groupBy === "day" ? timezone : undefined;
 }
 
+/** Which family serves a grouped read, and which slice of it is the read's answer. */
+export interface StatsFamilyPlan {
+  partition: StatsPartition;
+  values: string[];
+}
+
 /**
- * One audience's grouped stats, read from its AUDIENCE FAMILY (BOX-DB-LOAD-1027): the same scope
- * without the audience filter, grouped by audience then `groupBy`, computed once and cached under a
- * key that names no audience, so the ~21 audience reads of one campaign share one computation. The
- * slice is the per-audience answer figure for figure (see {@link StatsPartition}); an audience
- * with no row reads `[]`, as before. `groupBy=day` never comes here (it keeps its per-key read).
+ * A non-day grouped read scoped to a campaign and/or an audience is served from its FAMILY
+ * (BOX-DB-LOAD-1027): the same scope without those two filters, split by them. The ~21 audience
+ * reads of a campaign, and every campaign of an org/brand/feature, then share one computation.
  */
-export async function readAudienceSlice(
+export function statsFamilyPlan(
+  groupBy: string | undefined,
+  campaignId: string | undefined,
+  audienceId: string | undefined,
+): StatsFamilyPlan | null {
+  if (!groupBy || groupBy === "day") return null;
+  if (campaignId && audienceId) return { partition: ["campaignId", "audienceId"], values: [campaignId, audienceId] };
+  if (campaignId) return { partition: ["campaignId"], values: [campaignId] };
+  if (audienceId) return { partition: ["audienceId"], values: [audienceId] };
+  return null;
+}
+
+/**
+ * The campaign filter is `c.id = X OR c.campaign_id = X`; a family splits on `c.campaign_id` only.
+ * So a family answers for X only when no row is named X by its OWN id under another campaign
+ * (2026-10-27: 23 rows have `id = campaign_id`, which both halves select alike; none other). When one
+ * is, the read keeps its per-key statements. Cached like the stats it guards.
+ */
+export async function campaignIdNamesARow(campaignId: string): Promise<boolean> {
+  return getOrSetCachedStats(`stats-campaign-id-row:${campaignId}`, async () => {
+    const result = await db.execute(sql`
+      SELECT EXISTS (
+        SELECT 1 FROM instantly_campaigns
+        WHERE id = ${campaignId} AND campaign_id IS DISTINCT FROM ${campaignId}
+      ) AS "namesARow"
+    `);
+    const rows = Array.isArray(result) ? result : (result as any).rows ?? [];
+    return rows[0]?.namesARow === true;
+  });
+}
+
+/**
+ * The read's slice of its family (see {@link statsFamilyPlan}), the family computed once and cached
+ * under `familyCacheKey`, which must name every filter of `familyWhereClause` and the partition, and
+ * no partition value. A combination with no row reads `[]`, as the per-key read did.
+ */
+export async function readFamilySlice(
   familyCacheKey: string,
   familyWhereClause: SQL,
   audience: StatsAudience,
   groupBy: string,
-  audienceId: string,
+  plan: StatsFamilyPlan,
 ): Promise<GroupedStat[]> {
   const family = await getOrSetCachedStats(
     familyCacheKey,
-    () => queryGroupedStatsByPartition(familyWhereClause, audience, groupBy, "audienceId"),
+    () => queryGroupedStatsByPartition(familyWhereClause, audience, groupBy, plan.partition),
     STATS_CACHE_TTL_MS,
     { refreshAfterMs: STATS_REFRESH_AFTER_MS },
   );
-  return family.get(audienceId) ?? [];
-}
-
-/** Whether a stats read is served from its audience family (see {@link readAudienceSlice}). */
-export function readsAudienceFamily(groupBy: string | undefined, audienceId: string | undefined): groupBy is string {
-  return !!groupBy && groupBy !== "day" && !!audienceId;
+  return family.get(partitionId(plan.values)) ?? [];
 }
 
 /**
@@ -1560,13 +1614,26 @@ router.get("/stats", async (req: Request, res: Response) => {
 
   // Build WHERE clauses — always scope by org from header
   const conditions: SQL[] = [sql`c.org_id = ${orgId}`];
-  if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
-  if (brandId) conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
+  // The scope minus the campaign and the audience: what a family read splits by them.
+  const familyConditions: SQL[] = [sql`c.org_id = ${orgId}`];
+  if (runIds?.length) {
+    const runFilter = sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`;
+    conditions.push(runFilter);
+    familyConditions.push(runFilter);
+  }
+  if (brandId) {
+    conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
+    familyConditions.push(sql`${brandId} = ANY(c.brand_ids)`);
+  }
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
-  if (goal) conditions.push(sql`c.metadata->>'goal' = ${goal}`);
-  if (brandProfileId) conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
-  // The scope minus the audience: what an audience family read groups by audience.
-  const familyConditions = [...conditions];
+  if (goal) {
+    conditions.push(sql`c.metadata->>'goal' = ${goal}`);
+    familyConditions.push(sql`c.metadata->>'goal' = ${goal}`);
+  }
+  if (brandProfileId) {
+    conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
+    familyConditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
+  }
   if (audienceId) conditions.push(sql`c.metadata->>'audienceId' = ${audienceId}`);
 
   addSlugConditions(conditions, { workflowSlugs, featureSlugs });
@@ -1590,18 +1657,19 @@ router.get("/stats", async (req: Request, res: Response) => {
     timezone: timezoneCacheKeyPart(groupBy, timezone),
   });
   try {
-    if (readsAudienceFamily(groupBy, audienceId)) {
-      const familyKey = statsCacheKey(`stats-audience-family:${orgId}`, {
+    const plan = statsFamilyPlan(groupBy, campaignId, audienceId);
+    if (plan && !(campaignId && (await campaignIdNamesARow(campaignId)))) {
+      const familyKey = statsCacheKey(`stats-family:${orgId}`, {
         runIds: runIdsRaw,
         brandId,
-        campaignId,
         goal,
         brandProfileId,
         workflowSlugs,
         featureSlugs,
         groupBy,
+        partition: plan.partition.join(","),
       });
-      const groups = await readAudienceSlice(familyKey, sql.join(familyConditions, sql` AND `), "org", groupBy, audienceId!);
+      const groups = await readFamilySlice(familyKey, sql.join(familyConditions, sql` AND `), "org", groupBy!, plan);
       return res.json({ groups });
     }
     const payload = await getOrSetCachedStats(cacheKey, async () => {
