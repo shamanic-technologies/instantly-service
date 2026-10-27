@@ -5,6 +5,8 @@ import { EngagementLatencyGroupedRequestSchema, StatsQuerySchema } from "../sche
 import {
   computeStatsPayload,
   queryGroupedStats,
+  readAudienceSlice,
+  readsAudienceFamily,
   queryEngagementLatencyGroups,
   addSlugConditions,
   timezoneCacheKeyPart,
@@ -119,9 +121,12 @@ router.get("/stats", async (req: Request, res: Response) => {
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
   if (goal) conditions.push(sql`c.metadata->>'goal' = ${goal}`);
   if (brandProfileId) conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
+  // The scope minus the audience: what an audience family read groups by audience.
+  const familyConditions = [...conditions];
   if (audienceId) conditions.push(sql`c.metadata->>'audienceId' = ${audienceId}`);
 
   addSlugConditions(conditions, { workflowSlugs, featureSlugs });
+  addSlugConditions(familyConditions, { workflowSlugs, featureSlugs });
 
   const whereClause = conditions.length > 0
     ? sql.join(conditions, sql` AND `)
@@ -144,6 +149,21 @@ router.get("/stats", async (req: Request, res: Response) => {
     timezone: timezoneCacheKeyPart(groupBy, timezone),
   });
   try {
+    if (readsAudienceFamily(groupBy, audienceId)) {
+      const familyKey = statsCacheKey("public-stats-audience-family", {
+        runIds: runIdsRaw,
+        brandId,
+        campaignId,
+        goal,
+        brandProfileId,
+        workflowSlugs,
+        featureSlugs,
+        groupBy,
+      });
+      const familyWhere = familyConditions.length > 0 ? sql.join(familyConditions, sql` AND `) : sql`TRUE`;
+      const groups = await readAudienceSlice(familyKey, familyWhere, "fleet", groupBy, audienceId!);
+      return res.json({ groups });
+    }
     const payload = await getOrSetCachedStats(cacheKey, async () => {
       if (groupBy) {
         const groups = await queryGroupedStats(whereClause, "fleet", groupBy, timezone);
