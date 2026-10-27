@@ -173,3 +173,63 @@ describe("audience family read (BOX-DB-LOAD-1027)", () => {
     }
   });
 });
+
+describe("feature family read on the fleet (BOX-DB-LOAD-1027, round 2)", () => {
+  beforeEach(() => {
+    mockExecute.mockReset();
+    clearStatsCache();
+  });
+
+  it("serves every one-feature fleet read from ONE set of four statements, split by feature", async () => {
+    mockExecute.mockImplementation(async (q: unknown) => {
+      const text = extractSqlText(q);
+      if (text.includes("latest_sentiment")) return { rows: [{ partKey0: "sales", groupKey: "wf-1", rdInterested: 1 }] };
+      if (text.includes("SUM(q.steps)")) return { rows: [{ partKey0: "hiring", groupKey: "wf-9", queued: 4 }] };
+      if (text.includes("emailsContacted"))
+        return {
+          rows: [
+            { partKey0: "sales", groupKey: "wf-1", emailsContacted: 20, notSending: 0, cancelled: 0 },
+            { partKey0: "hiring", groupKey: "wf-9", emailsContacted: 6, notSending: 0, cancelled: 0 },
+          ],
+        };
+      return { rows: [{ ...events("x", "wf-1", 12), partKey0: "sales" }, { ...events("x", "wf-9", 2), partKey0: "hiring" }] };
+    });
+    const a = await app();
+    const sales = await request(a).get("/public/stats?featureSlugs=sales&groupBy=workflowSlug");
+    const hiring = await request(a).get("/public/stats?featureSlugs=hiring&groupBy=workflowSlug");
+    const none = await request(a).get("/public/stats?featureSlugs=unknown&groupBy=workflowSlug");
+
+    expect(mockExecute.mock.calls).toHaveLength(4);
+    for (const call of mockExecute.mock.calls) {
+      const text = extractSqlText(call[0]);
+      expect(text).toContain(`c.feature_slug AS "partKey0"`);
+      expect(text).toContain("GROUP BY c.feature_slug, c.workflow_slug");
+      expect(text).not.toContain("c.feature_slug IN");
+    }
+    expect(sales.body.groups.map((g: any) => [g.key, g.emailStats.sent, g.recipientStats.contacted, g.emailStats.queued])).toEqual([
+      ["wf-1", 12, 20, 0],
+    ]);
+    expect(sales.body.groups[0].recipientStats.repliesPositive).toBe(1);
+    expect(hiring.body.groups.map((g: any) => [g.key, g.emailStats.sent, g.recipientStats.contacted, g.emailStats.queued])).toEqual([
+      ["wf-9", 2, 6, 4],
+    ]);
+    expect(none.body).toEqual({ groups: [] });
+  });
+
+  it("keeps the per-key read for several features, groupBy=day, an org read, or a campaign read", async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+    const a = await app();
+    await request(a).get("/public/stats?featureSlugs=sales,hiring&groupBy=workflowSlug");
+    await request(a).get("/public/stats?featureSlugs=sales&groupBy=day");
+    await request(a).get("/stats?featureSlugs=sales&groupBy=workflowSlug").set(headers);
+    for (const call of mockExecute.mock.calls) {
+      const text = extractSqlText(call[0]);
+      expect(text).not.toContain("c.feature_slug AS");
+    }
+    mockExecute.mockClear();
+    await request(a).get("/public/stats?featureSlugs=sales&groupBy=workflowSlug&campaignId=camp-1");
+    const stats = statsCalls();
+    expect(stats.length).toBeGreaterThan(0);
+    for (const call of stats) expect(extractSqlText(call[0])).not.toContain("c.feature_slug AS");
+  });
+});

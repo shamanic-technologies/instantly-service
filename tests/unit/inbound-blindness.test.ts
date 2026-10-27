@@ -64,9 +64,11 @@ describe("selectInboundBlindMailboxes", () => {
 
 // Prod 2026-10-13: a correlated EXISTS per sending address re-walked the whole
 // 14-day inbound window 120 times (87 s) on the POST /orgs/send path; every send
-// took minutes and the gateway gave up. The read must be ONE pass, joined.
+// took minutes and the gateway gave up. A one-pass DISTINCT over the window then read the 3.7 GB heap
+// (9-12 s a call, BOX-DB-LOAD-1027). The read is ONE backward index probe per address for its latest
+// non-recovered message, compared to the window.
 describe("loadAddressInboundRows", () => {
-  it("reads the inbound window ONCE and joins it, never a correlated EXISTS per address", async () => {
+  it("probes each address's LATEST inbound message, never an EXISTS or a DISTINCT over the window", async () => {
     mockExecute.mockReset().mockResolvedValue({
       rows: [
         { accountEmail: "klourd@pressbeat.ai", sent: 22, hasInbound: false },
@@ -83,8 +85,10 @@ describe("loadAddressInboundRows", () => {
     const { PgDialect } = await import("drizzle-orm/pg-core");
     const text = new PgDialect().sqlToQuery(mockExecute.mock.calls[0]![0] as never).sql;
     expect(text).not.toMatch(/EXISTS/i);
-    expect(text).toMatch(/SELECT DISTINCT account_email\s+FROM imap_messages_raw/);
-    expect(text).toMatch(/LEFT JOIN inbound/);
-    expect(text).toMatch(/NOT \(payload \? 'recoveredFrom'\)/);
+    expect(text).not.toMatch(/DISTINCT/i);
+    expect(text).toMatch(/LEFT JOIN LATERAL \(\s+SELECT m\.polled_at\s+FROM imap_messages_raw m\s+WHERE m\.account_email = s\.account_email/);
+    expect(text).toMatch(/ORDER BY m\.polled_at DESC\s+LIMIT 1/);
+    // The literal is the predicate of imap_messages_raw_inbound_account_idx (migration 0096).
+    expect(text).toMatch(/NOT \(m\.payload \? 'recoveredFrom'\)/);
   });
 });

@@ -128,3 +128,25 @@ describe("reply projection source indexes (migration 0095, BOX-DB-LOAD-1027)", (
     expect(upsert).toContain("WHERE m.kind IN ('reply', 'auto_reply')");
   });
 });
+
+describe("queue and inbound indexes (migration 0096, BOX-DB-LOAD-1027 round 2)", () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, "..", "..", rel), "utf-8");
+
+  it("indexes the exact predicates the queue and inbound-blindness readers use", () => {
+    const migration = read("drizzle/0096_queue_and_inbound_indexes.sql");
+    expect(migration).toContain(
+      "CREATE INDEX IF NOT EXISTS sequence_costs_provisioned_campaign_idx\n  ON sequence_costs (instantly_campaign_id, step)\n  WHERE status = 'provisioned';",
+    );
+    expect(migration).toContain(
+      "CREATE INDEX IF NOT EXISTS sequence_costs_provisioned_legacy_idx\n  ON sequence_costs (campaign_id, lead_email, step)\n  WHERE status = 'provisioned' AND instantly_campaign_id IS NULL;",
+    );
+    expect(migration).toContain(
+      "CREATE INDEX IF NOT EXISTS imap_messages_raw_inbound_account_idx\n  ON imap_messages_raw (account_email, polled_at)\n  WHERE NOT (payload ? 'recoveredFrom');",
+    );
+    // A bound value or another literal cannot match a partial index: the reader goes back to the heap.
+    expect(read("src/routes/analytics.ts")).toContain("WHERE sc.status = 'provisioned' AND sc.instantly_campaign_id IS NOT NULL");
+    expect(read("src/routes/analytics.ts")).toContain("WHERE sc.status = 'provisioned' AND sc.instantly_campaign_id IS NULL");
+    expect(read("src/lib/self-send/inbound-blindness.ts")).toContain("AND NOT (m.payload ? 'recoveredFrom')");
+    expect(read("src/lib/account-sending-stats.ts")).toContain("WHERE p.status = 'provisioned'");
+  });
+});
