@@ -1637,7 +1637,12 @@ describe("GET /stats — emailStats.queued (emails queued right now, not yet sen
     expect(queuedSql).toContain("sc.status = 'provisioned'");
     expect(queuedSql).toContain("c.status = 'active'");
     expect(queuedSql).toContain("c.delivery_status IN ('contacted', 'sent')");
-    expect(queuedSql).toContain("COUNT(DISTINCT sc.step)");
+    // Distinct steps per lead campaign, the queue gathered once and hash-joined (BOX-DB-LOAD-1027),
+    // a historical hold without its per-lead id matched on (caller campaign, lead).
+    expect(queuedSql).toContain("COUNT(DISTINCT h.step)");
+    expect(queuedSql).toContain("lc.campaign_id = sc.campaign_id AND lc.lead_email = sc.lead_email");
+    expect(queuedSql).toContain("q ON q.instantly_campaign_id = c.instantly_campaign_id");
+    expect(queuedSql).not.toContain("LATERAL");
     // Same scope as the rest of the read.
     expect(queuedSql).toContain("c.org_id =");
     expect(queuedSql).toContain("ANY(c.brand_ids)");

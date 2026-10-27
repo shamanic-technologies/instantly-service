@@ -671,6 +671,16 @@ export const sequenceCosts = pgTable(
       table.instantlyCampaignId,
     ),
     uniqueIndex("sequence_costs_cost_id_idx").on(table.costId),
+    // The send queue (~1 % of rows) and the capacity join (migration 0096, hand-written,
+    // BOX-DB-LOAD-1027).
+    index("sequence_costs_provisioned_campaign_idx")
+      .on(table.instantlyCampaignId, table.step)
+      .where(sql`status = 'provisioned'`),
+    index("sequence_costs_provisioned_legacy_idx")
+      .on(table.campaignId, table.leadEmail, table.step)
+      .where(sql`status = 'provisioned' AND instantly_campaign_id IS NULL`),
+    index("sequence_costs_provisioned_lead_idx").on(table.leadEmail).where(sql`status = 'provisioned'`),
+    index("sequence_costs_lead_email_idx").on(table.leadEmail),
   ],
 );
 
@@ -796,6 +806,10 @@ export const imapMessagesRaw = pgTable(
     index("imap_messages_raw_bounce_received_idx").on(table.polledAt).where(sql`kind = 'bounce'`),
     // The per-reply projection's IMAP source (migration 0095, hand-written, BOX-DB-LOAD-1027).
     index("imap_messages_raw_replies_idx").on(table.instantlyCampaignId).where(sql`kind IN ('reply', 'auto_reply')`),
+    // The inbound-blindness probe: each address's latest read message (migration 0096, hand-written).
+    index("imap_messages_raw_inbound_account_idx")
+      .on(table.accountEmail, table.polledAt)
+      .where(sql`NOT (payload ? 'recoveredFrom')`),
   ],
 );
 

@@ -132,17 +132,7 @@ export async function fetchNewSequencesTodayByAccount(): Promise<Map<string, num
  */
 export async function fetchQueueSizeByAccount(): Promise<Map<string, number>> {
   const result = await db.execute(sql`
-    WITH campaign_account AS (
-      SELECT e.campaign_id AS instantly_campaign_id,
-             MIN(e.account_email) AS account_email
-      FROM instantly_events e
-      WHERE e.event_type = 'email_sent'
-        AND e.inferred = false
-        AND e.account_email IS NOT NULL
-        AND e.campaign_id IS NOT NULL
-      GROUP BY e.campaign_id
-    ),
-    pending AS (
+    WITH pending AS (
       SELECT c.instantly_campaign_id,
              MIN(c.account_email) AS persisted_account,
              COUNT(DISTINCT sc.step) AS pending_steps
@@ -158,8 +148,14 @@ export async function fetchQueueSizeByAccount(): Promise<Map<string, number>> {
     SELECT COALESCE(p.persisted_account, ca.account_email) AS account_email,
            SUM(p.pending_steps)::int AS count
     FROM pending p
-    LEFT JOIN campaign_account ca
-      ON ca.instantly_campaign_id = p.instantly_campaign_id
+    LEFT JOIN LATERAL (
+      SELECT MIN(e.account_email) AS account_email
+      FROM instantly_events e
+      WHERE e.campaign_id = p.instantly_campaign_id
+        AND e.event_type = 'email_sent'
+        AND e.inferred = false
+        AND e.account_email IS NOT NULL
+    ) ca ON true
     WHERE COALESCE(p.persisted_account, ca.account_email) IS NOT NULL
     GROUP BY COALESCE(p.persisted_account, ca.account_email)
   `);
@@ -228,15 +224,17 @@ async function fetchQueuedSequenceInputs(): Promise<QueuedSequenceInput[]> {
 /** The same rows as `fetchQueuedSequenceInputs`, with the sequence's identity. */
 export async function fetchQueuedSequenceDetails(): Promise<QueuedSequenceDetail[]> {
   const result = await db.execute(sql`
-    WITH campaign_account AS (
-      SELECT e.campaign_id AS instantly_campaign_id,
-             MIN(e.account_email) AS account_email
-      FROM instantly_events e
-      WHERE e.event_type = 'email_sent'
-        AND e.inferred = false
-        AND e.account_email IS NOT NULL
-        AND e.campaign_id IS NOT NULL
-      GROUP BY e.campaign_id
+    WITH queued AS (
+      SELECT c.*
+      FROM instantly_campaigns c
+      WHERE c.status = 'active'
+        AND c.delivery_status IN ('contacted', 'sent')
+        AND EXISTS (
+          SELECT 1 FROM sequence_costs p
+          WHERE p.status = 'provisioned'
+            AND p.lead_email = c.lead_email
+            AND p.campaign_id IS NOT DISTINCT FROM c.campaign_id
+        )
     ),
     seq AS (
       SELECT c.instantly_campaign_id,
@@ -251,11 +249,9 @@ export async function fetchQueuedSequenceDetails(): Promise<QueuedSequenceDetail
              array_agg(DISTINCT sc.step) FILTER (WHERE sc.status = 'provisioned')
                AS provisioned_steps
       FROM sequence_costs sc
-      JOIN instantly_campaigns c
+      JOIN queued c
         ON c.lead_email = sc.lead_email
        AND c.campaign_id IS NOT DISTINCT FROM sc.campaign_id
-       AND c.status = 'active'
-       AND c.delivery_status IN ('contacted', 'sent')
       GROUP BY c.instantly_campaign_id
       HAVING array_agg(DISTINCT sc.step) FILTER (WHERE sc.status = 'provisioned')
                IS NOT NULL
@@ -279,8 +275,14 @@ export async function fetchQueuedSequenceDetails(): Promise<QueuedSequenceDetail
              cfg.payload->'campaign_schedule'->'schedules'->0->>'timezone'
            ) AS lead_timezone
     FROM seq s
-    LEFT JOIN campaign_account ca
-      ON ca.instantly_campaign_id = s.instantly_campaign_id
+    LEFT JOIN LATERAL (
+      SELECT MIN(e.account_email) AS account_email
+      FROM instantly_events e
+      WHERE e.campaign_id = s.instantly_campaign_id
+        AND e.event_type = 'email_sent'
+        AND e.inferred = false
+        AND e.account_email IS NOT NULL
+    ) ca ON true
     LEFT JOIN LATERAL (
       SELECT payload FROM instantly_campaigns_config_raw r
       WHERE r.instantly_campaign_id = s.instantly_campaign_id

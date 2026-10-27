@@ -399,12 +399,13 @@ const ZERO_CAMPAIGN_AGGREGATES: CampaignAggregates = { contacted: 0, notSending:
  * `campaignId` stands for the `c.campaign_id` half of the campaign filter only: see
  * {@link campaignIdNamesARow} for the `c.id` half.
  */
-export type StatsPartitionColumn = "campaignId" | "audienceId";
+export type StatsPartitionColumn = "campaignId" | "audienceId" | "featureSlug";
 export type StatsPartition = readonly StatsPartitionColumn[];
 
 const PARTITION_COLUMNS: Record<StatsPartitionColumn, string> = {
   campaignId: "c.campaign_id",
   audienceId: "c.metadata->>'audienceId'",
+  featureSlug: "c.feature_slug",
 };
 
 /** Partition id of an unpartitioned read: every row is in this one partition. */
@@ -1276,16 +1277,31 @@ export async function queryStats(whereClause: SQL, audience: StatsAudience): Pro
  * campaign_id + lead). `COUNT(DISTINCT step)` because pre-0038 rows are doubled.
  * Scoped for its audience exactly like every other stats figure.
  */
-const QUEUED_STEPS_LATERAL = sql`
-  CROSS JOIN LATERAL (
-    SELECT COUNT(DISTINCT sc.step)::int AS steps
-    FROM sequence_costs sc
-    WHERE sc.status = 'provisioned'
-      AND (sc.instantly_campaign_id = c.instantly_campaign_id
-           OR (sc.instantly_campaign_id IS NULL
-               AND sc.campaign_id = c.campaign_id
-               AND sc.lead_email = c.lead_email))
-  ) q
+/**
+ * ⚠️ BOX-DB-LOAD-1027 (round 2): the queue (~3k provisioned holds) is gathered ONCE and hash-joined
+ * per lead campaign, never probed per campaign row (a CROSS JOIN LATERAL ran ~13k index probes per
+ * fleet read, 3 s on the loaded box). Same match as `matchesHoldCampaign`: a hold with its per-lead id
+ * counts for that campaign; a historical hold without one counts for every campaign row of its
+ * (caller campaign, lead). A campaign with nothing queued has no row here, so it adds nothing to the
+ * SUM (the per-row lateral added 0): every sum, and every non-zero group, is the same (prod diff
+ * 2026-10-27: 45 groups, 2,866 emails, 0 differences). Both halves ride the partial
+ * `status = 'provisioned'` indexes of migration 0096: keep the literal.
+ */
+const QUEUED_STEPS_JOIN = sql`
+  JOIN (
+    SELECT h.instantly_campaign_id, COUNT(DISTINCT h.step)::int AS steps
+    FROM (
+      SELECT sc.instantly_campaign_id, sc.step
+      FROM sequence_costs sc
+      WHERE sc.status = 'provisioned' AND sc.instantly_campaign_id IS NOT NULL
+      UNION ALL
+      SELECT lc.instantly_campaign_id, sc.step
+      FROM sequence_costs sc
+      JOIN instantly_campaigns lc ON lc.campaign_id = sc.campaign_id AND lc.lead_email = sc.lead_email
+      WHERE sc.status = 'provisioned' AND sc.instantly_campaign_id IS NULL
+    ) h
+    GROUP BY h.instantly_campaign_id
+  ) q ON q.instantly_campaign_id = c.instantly_campaign_id
 `;
 const LIVE_SEQUENCE_GATE = sql`c.status = 'active' AND c.delivery_status IN ('contacted', 'sent')`;
 
@@ -1298,7 +1314,7 @@ export async function queryQueuedEmails(whereClause: SQL, audience: StatsAudienc
     const result = await db.execute(sql`
       SELECT COALESCE(SUM(q.steps), 0)::int AS "queued"
       FROM instantly_campaigns c
-      ${QUEUED_STEPS_LATERAL}
+      ${QUEUED_STEPS_JOIN}
       WHERE ${whereClause}
         AND ${LIVE_SEQUENCE_GATE}
         AND ${campaignExclusionClause(audience)}
@@ -1339,7 +1355,7 @@ export async function queryGroupedQueuedEmails(
       SELECT ${partitionSelect(partition)}${groupCol} AS "groupKey", COALESCE(SUM(q.steps), 0)::int AS "queued"
       FROM instantly_campaigns c
       ${lateralJoin}
-      ${QUEUED_STEPS_LATERAL}
+      ${QUEUED_STEPS_JOIN}
       WHERE ${whereClause}
         AND ${LIVE_SEQUENCE_GATE}
         AND ${campaignExclusionClause(audience)}
@@ -1540,6 +1556,27 @@ export function statsFamilyPlan(
   if (campaignId) return { partition: ["campaignId"], values: [campaignId] };
   if (audienceId) return { partition: ["audienceId"], values: [audienceId] };
   return null;
+}
+
+/**
+ * A fleet read (`GET /public/stats`) of ONE feature with a non-day grouping and no campaign or
+ * audience is served from the fleet FAMILY split by feature (BOX-DB-LOAD-1027, round 2): features-service
+ * reads `?featureSlugs=<one>&groupBy=workflowSlug` for every feature, each key refreshed every 45 s,
+ * and each small feature paid the same fixed cost as the whole fleet (bounce sets, campaign scan:
+ * ~0.35 s a statement, four statements, nine features). `c.feature_slug IN (X)` selects exactly the
+ * partition `X`, so the slice is the per-key answer. A list of several features is left alone (a
+ * distinct count over two partitions is not a sum of theirs).
+ */
+export function featureFamilyPlan(
+  groupBy: string | undefined,
+  featureSlugs: string | undefined,
+  campaignId: string | undefined,
+  audienceId: string | undefined,
+): StatsFamilyPlan | null {
+  if (!groupBy || groupBy === "day" || campaignId || audienceId || !featureSlugs) return null;
+  const slugs = Array.from(new Set(featureSlugs.split(",").filter(Boolean)));
+  if (slugs.length !== 1) return null;
+  return { partition: ["featureSlug"], values: [slugs[0]] };
 }
 
 /**

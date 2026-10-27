@@ -8,6 +8,7 @@ import {
   campaignIdNamesARow,
   readFamilySlice,
   statsFamilyPlan,
+  featureFamilyPlan,
   queryEngagementLatencyGroups,
   addSlugConditions,
   timezoneCacheKeyPart,
@@ -119,28 +120,35 @@ router.get("/stats", async (req: Request, res: Response) => {
   const conditions: SQL[] = [];
   // The scope minus the campaign and the audience: what a family read splits by them.
   const familyConditions: SQL[] = [];
+  // The scope minus the feature: what the feature family splits by it.
+  const featureFamilyConditions: SQL[] = [];
   if (runIds?.length) {
     const runFilter = sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`;
     conditions.push(runFilter);
     familyConditions.push(runFilter);
+    featureFamilyConditions.push(runFilter);
   }
   if (brandId) {
     conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
     familyConditions.push(sql`${brandId} = ANY(c.brand_ids)`);
+    featureFamilyConditions.push(sql`${brandId} = ANY(c.brand_ids)`);
   }
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
   if (goal) {
     conditions.push(sql`c.metadata->>'goal' = ${goal}`);
     familyConditions.push(sql`c.metadata->>'goal' = ${goal}`);
+    featureFamilyConditions.push(sql`c.metadata->>'goal' = ${goal}`);
   }
   if (brandProfileId) {
     conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
     familyConditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
+    featureFamilyConditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
   }
   if (audienceId) conditions.push(sql`c.metadata->>'audienceId' = ${audienceId}`);
 
   addSlugConditions(conditions, { workflowSlugs, featureSlugs });
   addSlugConditions(familyConditions, { workflowSlugs, featureSlugs });
+  addSlugConditions(featureFamilyConditions, { workflowSlugs });
 
   const whereClause = conditions.length > 0
     ? sql.join(conditions, sql` AND `)
@@ -177,6 +185,21 @@ router.get("/stats", async (req: Request, res: Response) => {
       });
       const familyWhere = familyConditions.length > 0 ? sql.join(familyConditions, sql` AND `) : sql`TRUE`;
       const groups = await readFamilySlice(familyKey, familyWhere, "fleet", groupBy!, plan);
+      return res.json({ groups });
+    }
+    const featurePlan = featureFamilyPlan(groupBy, featureSlugs, campaignId, audienceId);
+    if (featurePlan) {
+      const familyKey = statsCacheKey("public-stats-family", {
+        runIds: runIdsRaw,
+        brandId,
+        goal,
+        brandProfileId,
+        workflowSlugs,
+        groupBy,
+        partition: featurePlan.partition.join(","),
+      });
+      const familyWhere = featureFamilyConditions.length > 0 ? sql.join(featureFamilyConditions, sql` AND `) : sql`TRUE`;
+      const groups = await readFamilySlice(familyKey, familyWhere, "fleet", groupBy!, featurePlan);
       return res.json({ groups });
     }
     const payload = await getOrSetCachedStats(cacheKey, async () => {
