@@ -25,6 +25,7 @@
 
 import { errorMessage } from "./db-error.js";
 import { deleteCachedStatsWhere } from "./stats-cache";
+import { invalidateStatusEmailResults } from "./status-email-cache";
 
 /** Producer ceiling on one call. */
 export const EVIDENCE_CHANGED_MAX_EMAILS = 1000;
@@ -92,6 +93,8 @@ export async function notifyEvidenceChanged(orgId: string, emails: string[]): Pr
 export function invalidateOrgStatusCache(orgId: string, emails: ReadonlyArray<string>): number {
   const wanted = new Set(normalizeEvidenceEmails(emails));
   if (wanted.size === 0) return 0;
+  // The per-address answers (lib/status-email-cache) go stale with the batch answers naming them.
+  invalidateStatusEmailResults(orgId, wanted);
   return deleteCachedStatsWhere((key) => {
     const [prefix, query] = key.split("|", 2);
     if (prefix !== "orgs-status" || query === undefined) return false;

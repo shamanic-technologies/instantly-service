@@ -18,6 +18,8 @@
  * materialized table.
  */
 
+import { clearStatusEmailCache } from "./status-email-cache";
+
 const DEFAULT_TTL_MS = 60_000;
 
 interface CacheEntry {
@@ -195,9 +197,10 @@ export function deleteCachedStatsWhere(predicate: (key: string) => boolean): num
   return dropped;
 }
 
-/** Drop all cached entries. Used by tests for isolation. */
+/** Drop all cached entries (the per-address status answers too). Used by tests for isolation. */
 export function clearStatsCache(): void {
   store.clear();
   inFlight.clear();
   lastSweepAt = 0;
+  clearStatusEmailCache();
 }
