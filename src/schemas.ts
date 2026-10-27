@@ -3851,7 +3851,7 @@ const MicrosoftPlacementSchema = z
     verdict: z
       .enum(["inbox", "junk", "unmeasured"])
       .describe(
-        "Where this provider puts this mailbox's mail, over the newest seed tests pooled until 10 seeds (under 16 days): inbox = at least 90% of the seeds found sat in Inbox (Focused or Other at Microsoft); junk = below; unmeasured = no seed found or evidence too old. A FIRST email to a prospect this provider hosts needs inbox; never a demotion.",
+        "Where this provider puts this mailbox's mail, over the newest seed tests pooled until 30 seeds (under 16 days): inbox = at least 90% of the seeds found sat in Inbox (Focused or Other at Microsoft); junk = below; unmeasured = no seed found or evidence too old. A FIRST email to a prospect this provider hosts needs inbox; never a demotion.",
       ),
     mostlySpam: z
       .boolean()

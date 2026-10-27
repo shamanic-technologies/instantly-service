@@ -27,7 +27,7 @@ const PROVIDER_OF_ESP = new Map<number, RecipientProvider>([
 export interface ProviderPlacementDetail {
   verdict: PlacementVerdict;
   mostlySpam: boolean;
-  /** Pooled evidence (newest tests until 10 seeds, `poolPlacementTests`). */
+  /** Pooled evidence (newest tests until 30 seeds, `poolPlacementTests`). */
   seedTotal: number;
   inboxCount: number;
   spamCount: number;

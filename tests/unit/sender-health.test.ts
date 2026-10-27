@@ -6,6 +6,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  MOSTLY_SPAM_MIN_FOUND_SEEDS,
   PLACEMENT_EVIDENCE_MIN_SEEDS,
   mayWriteFirstEmail,
   mayWriteFollowUp,
@@ -39,22 +40,46 @@ const KLOURD = [
   test("seed:4835", "2026-09-19T12:18:27Z", 2, 0),
 ];
 
-describe("evidence pooled until 10 seeds (a throttled 1-seed test cannot overturn history)", () => {
-  it("klourd@growthagency.agency: 1/1 on 10-18 pools with 1/10 on 10-10 = 2/11, not 100 %", () => {
+describe("evidence pooled until 30 seeds (one test, small or full, cannot overturn history)", () => {
+  it("klourd@growthagency.agency: 1/1 on 10-18 pools with 1/10 and 1/10 = 3/21, not 100 %", () => {
     const pooled = poolPlacementTests(KLOURD, ASOF)!;
-    expect(pooled.testIds).toEqual(["seed:657a", "seed:e66c"]);
-    expect([pooled.inboxCount, pooled.seedTotal]).toEqual([2, 11]);
+    expect(pooled.testIds).toEqual(["seed:657a", "seed:e66c", "seed:862a"]);
+    expect([pooled.inboxCount, pooled.seedTotal]).toEqual([3, 21]);
     expect(pooled.testedAt.toISOString()).toBe("2026-10-18T12:28:03.000Z");
   });
 
   it("the lifecycle gate reads the pooled figure: klourd is below the bar (it was promoted on 1/1)", () => {
     const rows = KLOURD.map((t) => ({ accountEmail: "klourd@growthagency.agency", testId: t.testId, inboxCount: t.inboxCount, spamCount: t.spamCount, seedTotal: t.seedTotal, testedAt: t.testedAt }));
     const d = deliveryFromSilverRows(rows, ASOF).get("klourd@growthagency.agency")!;
-    expect(d).toMatchObject({ inboxCount: 2, seedTotal: 11, deliveryPct: 18, atBar: false, testedAt: "2026-10-18T12:28:03.000Z" });
+    expect(d).toMatchObject({ inboxCount: 3, seedTotal: 21, deliveryPct: 14, atBar: false, testedAt: "2026-10-18T12:28:03.000Z" });
   });
 
-  it("a full newest test stands alone; a small test with nothing older still grades (sample size is not a gate)", () => {
-    expect(poolPlacementTests([test("a", "2026-10-18T00:00:00Z", 10, 10), test("b", "2026-10-10T00:00:00Z", 10, 0)], ASOF)!.testIds).toEqual(["a"]);
+  it("kevin.lourd@growthagency.news, 2026-10-28: one 10/10 Sunday after 5/10, 4/6, 5/10 stays below the bar (it was promoted on 10/10)", () => {
+    const asOf = new Date("2026-10-28T12:00:00Z");
+    const news = [
+      test("seed:969f", "2026-10-25T13:00:00Z", 10, 10),
+      test("seed:ad19", "2026-10-19T13:00:00Z", 10, 5),
+      test("seed:8179", "2026-10-19T11:00:00Z", 6, 4, 2),
+      test("seed:657a", "2026-10-18T12:00:00Z", 10, 5),
+      test("seed:e66c", "2026-10-10T14:00:00Z", 10, 0),
+    ];
+    const rows = news.map((t) => ({ accountEmail: "kevin.lourd@growthagency.news", testId: t.testId, inboxCount: t.inboxCount, spamCount: t.spamCount, seedTotal: t.seedTotal, testedAt: t.testedAt }));
+    const d = deliveryFromSilverRows(rows, asOf).get("kevin.lourd@growthagency.news")!;
+    expect(d).toMatchObject({ inboxCount: 24, seedTotal: 36, atBar: false });
+  });
+
+  it("three good tests in a row pass: 10/10, 10/10, 9/10 = 29/30", () => {
+    expect(PLACEMENT_EVIDENCE_MIN_SEEDS).toBe(30);
+    const rows = [
+      test("a", "2026-10-18T00:00:00Z", 10, 10),
+      test("b", "2026-10-11T00:00:00Z", 10, 10),
+      test("c", "2026-10-05T00:00:00Z", 10, 9),
+    ].map((t) => ({ accountEmail: "x@y.com", testId: t.testId, inboxCount: t.inboxCount, spamCount: t.spamCount, seedTotal: t.seedTotal, testedAt: t.testedAt }));
+    expect(deliveryFromSilverRows(rows, ASOF).get("x@y.com")).toMatchObject({ inboxCount: 29, seedTotal: 30, atBar: true });
+  });
+
+  it("a newest test holding 30 seeds stands alone; a small test with nothing older still grades (sample size is not a gate)", () => {
+    expect(poolPlacementTests([test("a", "2026-10-18T00:00:00Z", 30, 30), test("b", "2026-10-10T00:00:00Z", 10, 0)], ASOF)!.testIds).toEqual(["a"]);
     const alone = poolPlacementTests([test("a", "2026-10-18T00:00:00Z", 1, 1)], ASOF)!;
     expect(alone.seedTotal).toBe(1);
     const rows = [{ accountEmail: "x@y.com", testId: "a", inboxCount: 1, spamCount: 0, seedTotal: 1, testedAt: new Date("2026-10-18T00:00:00Z") }];
@@ -91,7 +116,7 @@ describe("mostly spam at a provider", () => {
     expect(mayWriteFirstEmail(p(5, 5), false)).toBe(false);
   });
 
-  it(`never on fewer than ${PLACEMENT_EVIDENCE_MIN_SEEDS} found seeds (one Junk seed is no proof)`, () => {
+  it(`never on fewer than ${MOSTLY_SPAM_MIN_FOUND_SEEDS} found seeds (one Junk seed is no proof)`, () => {
     expect(p(0, 2).mostlySpam).toBe(false);
     expect(p(0, 2).verdict).toBe("junk");
     expect(mayWriteFollowUp(undefined)).toBe(true);
