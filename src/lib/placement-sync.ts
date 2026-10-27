@@ -190,7 +190,7 @@ function toLatestEspRow(r: SilverReadRow): LatestEspRow {
 
 /**
  * Gold: placement per account over the SAME pooled tests the lifecycle gate
- * reads (newest tests until 10 seeds, `poolPlacementTests`), so the displayed
+ * reads (newest tests until 30 seeds, `poolPlacementTests`), so the displayed
  * percentage and `lifecycle_reason` cannot disagree. Returns a Map keyed by
  * account email; an account with no placement data is simply absent (→ null in
  * the account-health mapper).
