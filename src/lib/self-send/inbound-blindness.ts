@@ -80,24 +80,19 @@ export function selectInboundBlindMailboxes(
 /**
  * Every sending address with its window.
  *
- * ⚠️ The inbound side is ONE pass over the window, hash-joined, NEVER a
- * correlated `EXISTS` per sending address. The planner served the EXISTS from
- * the `polled_at` index and re-walked the whole 14-day window (~174k rows, each
- * `payload` detoasted for the `?` test) once per address: 120 loops, 26M buffer
- * hits, 87 s (prod 2026-10-13). It sits on the `POST /orgs/send` path, so every
- * send took 1.5 to 4 min and the gateway gave up on them. One pass: 1.5 s.
+ * ⚠️ The inbound side is ONE index probe per sending address: its LATEST non-recovered message, read
+ * backward off the partial `imap_messages_raw_inbound_account_idx` (migration 0096), then compared to
+ * the window. A message exists in the window iff the latest one is in it, so the answer is the one
+ * the window scan gave. NEVER a correlated `EXISTS` over the window or a DISTINCT over it: the EXISTS
+ * re-walked the 14-day window (~174k rows, each `payload` detoasted for the `?` test) once per
+ * address, 87 s on every `POST /orgs/send` (prod 2026-10-13); the one-pass DISTINCT that replaced it
+ * still read the window off the 3.7 GB heap, 9-12 s per call and ~0.1 core of the box
+ * (BOX-DB-LOAD-1027). This probe: 37 ms, index only. Keep the `recoveredFrom` test LITERAL: it is
+ * the index predicate.
  */
 export async function loadAddressInboundRows(): Promise<AddressInboundRow[]> {
   const result = await db.execute(sql`
-    WITH inbound AS (
-      SELECT DISTINCT account_email
-      FROM imap_messages_raw
-      WHERE polled_at > now() - make_interval(days => ${INBOUND_BLIND_WINDOW_DAYS})
-        -- A reply RECOVERED from elsewhere (forwarded-replies.ts) is not
-        -- evidence that this mailbox is read: it is the opposite.
-        AND NOT (payload ? 'recoveredFrom')
-    ),
-    sent AS (
+    WITH sent AS (
       SELECT account_email, COUNT(*)::int AS sent
       FROM smtp_dispatch_raw
       WHERE outcome = 'sent'
@@ -106,9 +101,21 @@ export async function loadAddressInboundRows(): Promise<AddressInboundRow[]> {
     )
     SELECT s.account_email                  AS "accountEmail",
            s.sent                           AS "sent",
-           (inb.account_email IS NOT NULL)  AS "hasInbound"
+           COALESCE(
+             latest.polled_at > now() - make_interval(days => ${INBOUND_BLIND_WINDOW_DAYS}),
+             false
+           )                                AS "hasInbound"
     FROM sent s
-    LEFT JOIN inbound inb ON inb.account_email = s.account_email
+    LEFT JOIN LATERAL (
+      SELECT m.polled_at
+      FROM imap_messages_raw m
+      WHERE m.account_email = s.account_email
+        -- A reply RECOVERED from elsewhere (forwarded-replies.ts) is not
+        -- evidence that this mailbox is read: it is the opposite.
+        AND NOT (m.payload ? 'recoveredFrom')
+      ORDER BY m.polled_at DESC
+      LIMIT 1
+    ) latest ON true
   `);
   return (result.rows as Record<string, unknown>[]).map((row) => ({
     accountEmail: String(row.accountEmail),
