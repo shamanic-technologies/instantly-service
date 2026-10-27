@@ -26,6 +26,7 @@ import repliesRoutes from "./routes/replies";
 import leadConversationsRoutes from "./routes/lead-conversations";
 import engagedLeadsRoutes from "./routes/engaged-leads";
 import writtenToLeadsRoutes from "./routes/written-to-leads";
+import replyOwnershipRoutes from "./routes/reply-ownership";
 import emailSequencesRoutes from "./routes/email-sequences";
 import emailSignatureRoutes from "./routes/email-signature";
 import leadSendingScheduleRoutes from "./routes/lead-sending-schedule";
@@ -126,6 +127,7 @@ app.use("/orgs/email-signature", serviceAuth, requireOrgId, emailSignatureRoutes
 app.use("/orgs/sending-schedule", serviceAuth, requireOrgId, leadSendingScheduleRoutes);
 app.use("/orgs/send-queue", serviceAuth, requireOrgId, campaignSendQueueRoutes); // what is queued to send for some campaigns, and when the window opens (CAMPAIGN-NEXT-STEPS-1018)
 app.use("/orgs/reply-verdicts", serviceAuth, requireOrgId, replyVerdictsRoutes);
+app.use("/orgs/reply-ownership", serviceAuth, requireOrgId, replyOwnershipRoutes); // does the email path act on a person's mail? (EMAIL-REPLY-ORPHAN-1027)
 app.use("/orgs", serviceAuth, requireOrgId, analyticsRoutes);
 app.use(queryErrorHandler);
 
