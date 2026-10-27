@@ -5,6 +5,7 @@ import { StatusRequestSchema } from "../schemas";
 import { getOrSetCachedStats, statsCacheKey } from "../lib/stats-cache";
 import { isDisqualifyingReplyKind, isReplyKind } from "../lib/reply-kind";
 import { findSendRefusals } from "../lib/send-refusal";
+import { getStatusEmailResult, setStatusEmailResults, type StatusScope } from "../lib/status-email-cache";
 
 const router = Router();
 
@@ -438,6 +439,32 @@ router.post("/", async (req: Request, res: Response) => {
 
   try {
     const payload = await getOrSetCachedStats(cacheKey, async () => {
+    // Per-ADDRESS reuse (lib/status-email-cache, BOX-DB-LOAD-1027): every statement below keys on
+    // the address, so an address answered for this scope in another batch within the minute is
+    // served from there and only the others are queried. Same answer, same 60 s bound.
+    const scope: StatusScope = {
+      orgId,
+      brandId: brandId ?? "",
+      campaignId: campaignId ?? "",
+      refusalBrandIds: [...refusalBrandIds].sort().join(","),
+    };
+    const answered = new Map<string, unknown>();
+    const toQuery: string[] = [];
+    for (const email of new Set(emails)) {
+      const cached = getStatusEmailResult(scope, email);
+      if (cached === undefined) toQuery.push(email);
+      else answered.set(email, cached);
+    }
+    if (toQuery.length > 0) {
+      const loadStartedAt = Date.now();
+      const fresh = await computeStatusResults(toQuery);
+      setStatusEmailResults(scope, fresh, loadStartedAt);
+      for (const [email, result] of fresh) answered.set(email, result);
+    }
+    return { results: items.map((item) => answered.get(item.email)) };
+    });
+
+    async function computeStatusResults(emails: string[]): Promise<Map<string, Record<string, unknown>>> {
     // Global: bounced + unsubscribed across the entire org, read from Gold.
     const globalEmailPromise = db.execute(sql`
       SELECT
@@ -495,7 +522,9 @@ router.post("/", async (req: Request, res: Response) => {
       }
     }
 
-    const results = items.map((item) => {
+    const results = new Map<string, Record<string, unknown>>();
+    for (const email of emails) {
+      const item = { email };
       const ge = globalEmailMap.get(item.email);
 
       const result: Record<string, unknown> = {
@@ -534,11 +563,11 @@ router.post("/", async (req: Request, res: Response) => {
         result.campaign = campaignScope;
       }
 
-      return result;
-    });
+      results.set(email, result);
+    }
 
-      return { results };
-    });
+      return results;
+    }
 
     res.json(payload);
   } catch (error: any) {
