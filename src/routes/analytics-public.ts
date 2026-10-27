@@ -5,8 +5,9 @@ import { EngagementLatencyGroupedRequestSchema, StatsQuerySchema } from "../sche
 import {
   computeStatsPayload,
   queryGroupedStats,
-  readAudienceSlice,
-  readsAudienceFamily,
+  campaignIdNamesARow,
+  readFamilySlice,
+  statsFamilyPlan,
   queryEngagementLatencyGroups,
   addSlugConditions,
   timezoneCacheKeyPart,
@@ -116,13 +117,26 @@ router.get("/stats", async (req: Request, res: Response) => {
   const runIds = runIdsRaw ? runIdsRaw.split(",").filter(Boolean) : undefined;
 
   const conditions: SQL[] = [];
-  if (runIds?.length) conditions.push(sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`);
-  if (brandId) conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
+  // The scope minus the campaign and the audience: what a family read splits by them.
+  const familyConditions: SQL[] = [];
+  if (runIds?.length) {
+    const runFilter = sql`c.run_id IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`;
+    conditions.push(runFilter);
+    familyConditions.push(runFilter);
+  }
+  if (brandId) {
+    conditions.push(sql`${brandId} = ANY(c.brand_ids)`);
+    familyConditions.push(sql`${brandId} = ANY(c.brand_ids)`);
+  }
   if (campaignId) conditions.push(sql`(c.id = ${campaignId} OR c.campaign_id = ${campaignId})`);
-  if (goal) conditions.push(sql`c.metadata->>'goal' = ${goal}`);
-  if (brandProfileId) conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
-  // The scope minus the audience: what an audience family read groups by audience.
-  const familyConditions = [...conditions];
+  if (goal) {
+    conditions.push(sql`c.metadata->>'goal' = ${goal}`);
+    familyConditions.push(sql`c.metadata->>'goal' = ${goal}`);
+  }
+  if (brandProfileId) {
+    conditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
+    familyConditions.push(sql`c.metadata->>'brandProfileId' = ${brandProfileId}`);
+  }
   if (audienceId) conditions.push(sql`c.metadata->>'audienceId' = ${audienceId}`);
 
   addSlugConditions(conditions, { workflowSlugs, featureSlugs });
@@ -149,19 +163,20 @@ router.get("/stats", async (req: Request, res: Response) => {
     timezone: timezoneCacheKeyPart(groupBy, timezone),
   });
   try {
-    if (readsAudienceFamily(groupBy, audienceId)) {
-      const familyKey = statsCacheKey("public-stats-audience-family", {
+    const plan = statsFamilyPlan(groupBy, campaignId, audienceId);
+    if (plan && !(campaignId && (await campaignIdNamesARow(campaignId)))) {
+      const familyKey = statsCacheKey("public-stats-family", {
         runIds: runIdsRaw,
         brandId,
-        campaignId,
         goal,
         brandProfileId,
         workflowSlugs,
         featureSlugs,
         groupBy,
+        partition: plan.partition.join(","),
       });
       const familyWhere = familyConditions.length > 0 ? sql.join(familyConditions, sql` AND `) : sql`TRUE`;
-      const groups = await readAudienceSlice(familyKey, familyWhere, "fleet", groupBy, audienceId!);
+      const groups = await readFamilySlice(familyKey, familyWhere, "fleet", groupBy!, plan);
       return res.json({ groups });
     }
     const payload = await getOrSetCachedStats(cacheKey, async () => {
