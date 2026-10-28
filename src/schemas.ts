@@ -3154,6 +3154,52 @@ const ProviderListsSchema = z.object({
 
 registry.registerPath({
   method: "get",
+  path: "/internal/sent-messages",
+  summary: "Exact messages we sent and why they left then (staff, read-only)",
+  description:
+    "FACTORY-RECORD-SEND-1028. Platform-scoped, read-only, newest first. One row per email sent from our own mailboxes since the record shipped (sequence steps and one-to-one replies), kept 180 days. `rawMessageBase64` = the MIME bytes exactly as the receiving SMTP server reconstructed them from DATA (headers incl. Message-ID/Date, encoded body, signature, List-Unsubscribe), `rawSha256` over those bytes. `messageInputs` = what the message was built from (body, subject, pinned signature, sender name, thread ids, the built message). `decision` (`send-decision/v1`) = why it left at that moment: the queued sequence as selected, the step's cadence (first email due when queued, else gap after the last sent step), the prospect's local window, the sending mailbox's alias capacity rows and its room at selection start (limit, ramp volume incl. warmup, cap, sent today), steps placed on it earlier in the same run, the rules in force.",
+  request: {
+    query: z.object({
+      instantlyCampaignId: z.string().optional(),
+      leadEmail: z.string().optional(),
+      messageId: z.string().optional(),
+      limit: z.string().optional().describe("1..500, default 50"),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Sent messages",
+      content: {
+        "application/json": {
+          schema: z.object({
+            messages: z.array(
+              z.object({
+                id: z.string(),
+                dispatchId: z.string().describe("The smtp_dispatch_raw row of the same send"),
+                instantlyCampaignId: z.string(),
+                leadEmail: z.string(),
+                accountEmail: z.string(),
+                step: z.number().int(),
+                kind: z.enum(["sequence_step", "manual_reply"]),
+                messageId: z.string(),
+                sentAt: z.string(),
+                rawMessageBase64: z.string(),
+                rawSha256: z.string(),
+                rawBytes: z.number().int(),
+                messageInputs: z.record(z.string(), z.unknown()),
+                decision: z.record(z.string(), z.unknown()),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+    400: { description: "Invalid limit" },
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/internal/sender-health",
   summary: "Mailboxes kept out of prospect mail, and why (staff chart)",
   description:

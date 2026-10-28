@@ -18,6 +18,7 @@
 
 import { errorMessage } from "../db-error.js";
 import nodemailer from "nodemailer";
+import { pipeline, Transform, type Readable } from "node:stream";
 
 import { GMAIL_SMTP_PORT, loginFor, type MailboxCredential } from "./mailbox-credentials";
 import type { BuiltMessage } from "./message";
@@ -29,6 +30,14 @@ export interface DispatchResult {
   response: string;
   accepted: string[];
   rejected: string[];
+  /**
+   * The message EXACTLY as it was streamed into SMTP DATA (FACTORY-RECORD-SEND-1028):
+   * every header nodemailer composed (Message-ID, Date, MIME boundaries) and the
+   * encoded body, before the SMTP layer's dot-stuffing. What the server received,
+   * byte for byte. Kept OUT of any bronze `payload` (a Buffer is not JSON): it is
+   * stored by `send-record.ts`.
+   */
+  rawMessage: Buffer;
 }
 
 export type DispatchFailureKind = "permanent" | "transient";
@@ -89,6 +98,16 @@ export function classifyDispatchFailure(error: unknown): DispatchFailureKind {
 }
 
 /**
+ * The bytes a receiving SMTP server reconstructs from DATA. nodemailer's DATA
+ * stream turns every bare CR and bare LF into CRLF (and dot-stuffs, which the
+ * receiver undoes): applying the same line-ending rule to the composed message
+ * gives exactly what the server stored. latin1 keeps every byte as one char.
+ */
+export function asReceivedBySmtp(composed: Buffer): Buffer {
+  return Buffer.from(composed.toString("latin1").replace(/\r\n|\r|\n/g, "\r\n"), "latin1");
+}
+
+/**
  * Send one message from one mailbox.
  *
  * Throws `SmtpDispatchError` on any failure — including a server that accepts
@@ -111,6 +130,24 @@ export async function dispatchMessage(
     secure: false,
     requireTLS: true,
     auth: { user: loginFor(credential), pass: credential.appPassword },
+  });
+
+  // Tee the final byte stream on its way to the socket. A process function is
+  // the LAST stage nodemailer runs (after transforms and the trailing newline;
+  // we sign nothing and set no `newline`), so what it sees is what DATA carries.
+  // Pure pass-through: nothing about the message or the send changes.
+  const chunks: Buffer[] = [];
+  transport.use("stream", (mail, done) => {
+    mail.message.processFunc((input: Readable) => {
+      const tee = new Transform({
+        transform(chunk: Buffer | string, _encoding, callback) {
+          chunks.push(Buffer.from(chunk));
+          callback(null, chunk);
+        },
+      });
+      return pipeline(input, tee, () => {});
+    });
+    done();
   });
 
   try {
@@ -153,6 +190,7 @@ export async function dispatchMessage(
       response: info.response ?? "",
       accepted: (info.accepted ?? []).map(String),
       rejected,
+      rawMessage: asReceivedBySmtp(Buffer.concat(chunks)),
     };
   } catch (error) {
     if (error instanceof SmtpDispatchError) throw error;

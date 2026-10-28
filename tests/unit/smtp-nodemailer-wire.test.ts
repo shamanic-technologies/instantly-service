@@ -194,6 +194,45 @@ describe("dispatchMessage over a real SMTP conversation", () => {
     expect(raw).toContain(`Message-ID: ${result.messageId}`);
   });
 
+  // FACTORY-RECORD-SEND-1028: the recorded message IS what the server got.
+  // The fake keeps DATA as transmitted (dot-stuffed, without the final CRLF of
+  // the terminator); undoing the stuffing must give back the recorded bytes.
+  const received = (session: Session): Buffer =>
+    Buffer.from(`${session.data.replace(/\r\n\.\./g, "\r\n.")}\r\n`, "utf8");
+
+  it("records the message byte-equal to what SMTP DATA carried (first email)", async () => {
+    const result = await dispatchMessage(credential, {
+      from: '"Amy Moore" <amy@sender.test>',
+      to: "prospect@lead.test",
+      subject: "Quick question",
+      html: "<p>Hi there</p>\n.a line that starts with a dot\n<p>--</p><p>Amy Moore<br>Distribute.you</p>",
+      headers: {
+        "List-Unsubscribe": "<https://unsub.test/u/x/y>",
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
+
+    expect(sessions).toHaveLength(1);
+    expect(result.rawMessage.length).toBeGreaterThan(0);
+    expect(result.rawMessage.equals(received(sessions[0]!))).toBe(true);
+    expect(result.rawMessage.toString("utf8")).toContain(`Message-ID: ${result.messageId}`);
+  });
+
+  it("records the message byte-equal to what SMTP DATA carried (follow-up, threaded)", async () => {
+    const result = await dispatchMessage(credential, {
+      from: '"Amy Moore" <amy@sender.test>',
+      to: "prospect@lead.test",
+      subject: "Re: Quick question",
+      html: "<p>Following up</p>",
+      headers: { "List-Unsubscribe": "<https://unsub.test/u/x/y>" },
+      inReplyTo: "<first@sender.test>",
+      references: ["<first@sender.test>"],
+    });
+
+    expect(result.rawMessage.equals(received(sessions[0]!))).toBe(true);
+    expect(result.rawMessage.toString("utf8")).toMatch(/^In-Reply-To: <first@sender\.test>$/m);
+  });
+
   it("a 550 on the prospect is a PERMANENT failure", async () => {
     rejectRcpt.add("dead@lead.test");
     const error = await dispatchMessage(credential, {

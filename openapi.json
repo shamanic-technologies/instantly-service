@@ -12268,6 +12268,145 @@
         }
       }
     },
+    "/internal/sent-messages": {
+      "get": {
+        "summary": "Exact messages we sent and why they left then (staff, read-only)",
+        "description": "FACTORY-RECORD-SEND-1028. Platform-scoped, read-only, newest first. One row per email sent from our own mailboxes since the record shipped (sequence steps and one-to-one replies), kept 180 days. `rawMessageBase64` = the MIME bytes exactly as the receiving SMTP server reconstructed them from DATA (headers incl. Message-ID/Date, encoded body, signature, List-Unsubscribe), `rawSha256` over those bytes. `messageInputs` = what the message was built from (body, subject, pinned signature, sender name, thread ids, the built message). `decision` (`send-decision/v1`) = why it left at that moment: the queued sequence as selected, the step's cadence (first email due when queued, else gap after the last sent step), the prospect's local window, the sending mailbox's alias capacity rows and its room at selection start (limit, ramp volume incl. warmup, cap, sent today), steps placed on it earlier in the same run, the rules in force.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "instantlyCampaignId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "leadEmail",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "messageId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "1..500, default 50"
+            },
+            "required": false,
+            "description": "1..500, default 50",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sent messages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "messages": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "dispatchId": {
+                            "type": "string",
+                            "description": "The smtp_dispatch_raw row of the same send"
+                          },
+                          "instantlyCampaignId": {
+                            "type": "string"
+                          },
+                          "leadEmail": {
+                            "type": "string"
+                          },
+                          "accountEmail": {
+                            "type": "string"
+                          },
+                          "step": {
+                            "type": "integer"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "sequence_step",
+                              "manual_reply"
+                            ]
+                          },
+                          "messageId": {
+                            "type": "string"
+                          },
+                          "sentAt": {
+                            "type": "string"
+                          },
+                          "rawMessageBase64": {
+                            "type": "string"
+                          },
+                          "rawSha256": {
+                            "type": "string"
+                          },
+                          "rawBytes": {
+                            "type": "integer"
+                          },
+                          "messageInputs": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "nullable": true
+                            }
+                          },
+                          "decision": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "nullable": true
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "dispatchId",
+                          "instantlyCampaignId",
+                          "leadEmail",
+                          "accountEmail",
+                          "step",
+                          "kind",
+                          "messageId",
+                          "sentAt",
+                          "rawMessageBase64",
+                          "rawSha256",
+                          "rawBytes",
+                          "messageInputs",
+                          "decision"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "messages"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid limit"
+          }
+        }
+      }
+    },
     "/internal/sender-health": {
       "get": {
         "summary": "Mailboxes kept out of prospect mail, and why (staff chart)",

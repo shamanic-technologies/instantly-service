@@ -33,6 +33,8 @@ import { runPoll } from "./imap-poller";
 import { runOrphanReplySweep } from "./orphan-reply-sweep";
 import { runDsnJudgmentSweep } from "./dsn-judgment-sweep";
 import { dispatchMessage, SmtpDispatchError } from "./smtp";
+import { buildSendDecision, type SendTrigger } from "./send-decision";
+import { recordSentMessage } from "./send-record";
 import {
   classifyPermanentFailure,
   isAnswerOwed,
@@ -1059,8 +1061,14 @@ async function runDispatchExclusive(
     // identical round-trips for a single sweep.
     const credentials = new Map<string, MailboxCredential>();
 
+    const selectionContext: SelectionContext = {
+      trigger: "sweep",
+      sequences: new Map(sequences.map((s) => [s.instantlyCampaignId, s])),
+      capacities: current.capacities,
+      selected: due,
+    };
     for (const step of batch) {
-      await sendDueStep(step, { accounts, credentials, summary, asOf });
+      await sendDueStep(step, { accounts, credentials, summary, asOf, selection: selectionContext });
     }
 
     console.log(
@@ -1069,6 +1077,14 @@ async function runDispatchExclusive(
 
     return summary;
   });
+}
+
+/** What the selection that picked a step saw, kept for the send record. */
+interface SelectionContext {
+  trigger: SendTrigger;
+  sequences: ReadonlyMap<string, PendingSequence>;
+  capacities: readonly AccountCapacity[];
+  selected: readonly DueStep[];
 }
 
 /**
@@ -1084,6 +1100,7 @@ async function sendDueStep(
     credentials: Map<string, MailboxCredential>;
     summary: DispatchSummary;
     asOf: Date;
+    selection: SelectionContext;
   },
 ): Promise<void> {
   const { accounts, credentials, summary, asOf } = ctx;
@@ -1162,8 +1179,12 @@ async function sendDueStep(
     });
 
     const result = await dispatchMessage(credential, message);
+    const sentAt = new Date();
     rememberSent(step);
 
+    // The raw bytes stay out of the bronze payload (a Buffer is not JSON): they
+    // are stored by the send record below.
+    const { rawMessage, ...dispatched } = result;
     const sourceRowId = await recordDispatch({
       instantlyCampaignId: step.instantlyCampaignId,
       leadEmail: step.leadEmail,
@@ -1172,7 +1193,7 @@ async function sendDueStep(
       outcome: "sent",
       messageId: result.messageId,
       response: result.response,
-      payload: result,
+      payload: dispatched,
     });
 
     // Real, not inferred — this is what actualizes the hold via handleEmailSent.
@@ -1189,6 +1210,42 @@ async function sendDueStep(
     });
 
     summary.sent += 1;
+
+    // The exact message and why it left now (FACTORY-RECORD-SEND-1028). Last,
+    // and fail-soft: the email is out and promoted, a lost record changes nothing.
+    await recordSentMessage({
+      dispatchId: sourceRowId,
+      instantlyCampaignId: step.instantlyCampaignId,
+      leadEmail: step.leadEmail,
+      accountEmail: step.accountEmail,
+      step: step.step,
+      kind: "sequence_step",
+      messageId: result.messageId,
+      rawMessage,
+      messageInputs: {
+        subject: content.subject,
+        bodyHtml: content.bodyHtml,
+        signatureHtml: content.signatureHtml,
+        priorMessageIds: content.priorMessageIds,
+        account: {
+          email: account.email,
+          first_name: account.first_name ?? null,
+          last_name: account.last_name ?? null,
+          signature: account.signature ?? null,
+        },
+        built: message,
+      },
+      decision: buildSendDecision({
+        trigger: ctx.selection.trigger,
+        step,
+        sequence: ctx.selection.sequences.get(step.instantlyCampaignId),
+        capacities: ctx.selection.capacities,
+        selected: ctx.selection.selected,
+        selectedAt: asOf,
+        sentAt,
+      }),
+      sentAt,
+    });
   } catch (error) {
     if (!(error instanceof SmtpDispatchError)) {
       console.error(
@@ -1300,8 +1357,14 @@ export async function dispatchAnswerNow(
       heldMostlySpam: selection.heldMostlySpam,
     };
     const credentials = new Map<string, MailboxCredential>();
+    const selectionContext: SelectionContext = {
+      trigger: "answer_now",
+      sequences: new Map(sequences.map((s) => [s.instantlyCampaignId, s])),
+      capacities,
+      selected: selection.selected,
+    };
     for (const step of selection.selected) {
-      await sendDueStep(step, { accounts, credentials, summary, asOf });
+      await sendDueStep(step, { accounts, credentials, summary, asOf, selection: selectionContext });
     }
 
     console.log(

@@ -98,6 +98,13 @@ vi.mock("../../src/lib/self-send/mailbox-credentials", async (importOriginal) =>
   loadMailboxLogins: (...args: unknown[]) => mockLoadMailboxLogins(...args),
 }));
 
+// The exact-message record (FACTORY-RECORD-SEND-1028) has its own tests
+// (send-decision.test.ts, smtp-nodemailer-wire.test.ts); asserted on here.
+const mockRecordSentMessage = vi.hoisted(() => vi.fn(async () => true));
+vi.mock("../../src/lib/self-send/send-record", () => ({
+  recordSentMessage: (...args: unknown[]) => mockRecordSentMessage(...(args as [])),
+}));
+
 vi.mock("../../src/lib/self-send/smtp", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
   dispatchMessage: (...args: unknown[]) => mockDispatchMessage(...args),
@@ -133,7 +140,14 @@ const NOW = new Date("2026-08-17T15:00:00Z");
  * mailboxes for — it runs on EVERY sweep, before the poll, and its answer is
  * "there is a step to send OR a reply owed".
  */
-function primeReads(options: { hasBody?: boolean; signatureHtml?: string | null } = {}) {
+function primeReads(
+  options: {
+    hasBody?: boolean;
+    signatureHtml?: string | null;
+    sequence?: Record<string, unknown>;
+    priorMessageIds?: string[];
+  } = {},
+) {
   const { hasBody = true } = options;
 
   mockExecute
@@ -154,6 +168,7 @@ function primeReads(options: { hasBody?: boolean; signatureHtml?: string | null 
           lastSentStep: null,
           lastSentAt: null,
           stepDelays: [2, null],
+          ...options.sequence,
         },
       ],
     })
@@ -182,7 +197,7 @@ function primeReads(options: { hasBody?: boolean; signatureHtml?: string | null 
         {
           bodyHtml: hasBody ? "<p>Hi there</p>" : "",
           subject: "Quick question",
-          priorMessageIds: [],
+          priorMessageIds: options.priorMessageIds ?? [],
           signatureHtml: options.signatureHtml ?? null,
         },
       ],
@@ -210,6 +225,7 @@ beforeEach(() => {
     failed: 0,
   });
   mockInsertValues.mockReturnValue([{ id: "bronze-1" }]);
+  mockRecordSentMessage.mockResolvedValue(true);
   mockPromoteEvent.mockResolvedValue({ promoted: true, silverEventId: "ev-1" });
   mockResolveCredential.mockResolvedValue({
     address: "amy@saviolabsco.com",
@@ -384,6 +400,99 @@ describe("runDispatch — success", () => {
     // Real, not inferred — this is what actualizes the hold.
     expect(event.inferred).toBeUndefined();
     expect(event.sourceRowId).toBe("bronze-1");
+  });
+
+  // FACTORY-RECORD-SEND-1028: every sent email keeps its exact bytes and the
+  // inputs that decided its moment, stored with the send.
+  it("records a FIRST email's exact bytes and why it left now", async () => {
+    primeReads();
+    const raw = Buffer.from("Message-ID: <m1@mail>\r\nSubject: Quick question\r\n\r\nHi there\r\n");
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<m1@mail>",
+      response: "250 OK",
+      accepted: ["prospect@example.com"],
+      rejected: [],
+      rawMessage: raw,
+    });
+
+    await runDispatch({ asOf: NOW });
+
+    // Bronze keeps the server's answer, never the raw bytes.
+    const bronze = mockInsertValues.mock.calls[0]![0] as { payload: Record<string, unknown> };
+    expect(bronze.payload).not.toHaveProperty("rawMessage");
+
+    expect(mockRecordSentMessage).toHaveBeenCalledTimes(1);
+    const record = (mockRecordSentMessage.mock.calls[0] as unknown[])[0] as Record<string, any>;
+    expect(record).toMatchObject({
+      dispatchId: "bronze-1",
+      instantlyCampaignId: "camp-1",
+      leadEmail: "prospect@example.com",
+      accountEmail: "amy@saviolabsco.com",
+      step: 1,
+      kind: "sequence_step",
+      messageId: "<m1@mail>",
+    });
+    expect(record.rawMessage).toBe(raw);
+    expect(record.messageInputs).toMatchObject({ subject: "Quick question", bodyHtml: "<p>Hi there</p>", priorMessageIds: [] });
+    expect(record.messageInputs.built.subject).toBe("Quick question");
+    expect(record.decision).toMatchObject({
+      trigger: "sweep",
+      selectedAt: NOW.toISOString(),
+      step: { step: 1, isFirstEmail: true, cadence: { rule: "first_email_due_when_queued" } },
+      mailbox: { address: "amy@saviolabsco.com", login: "amy@saviolabsco.com", selectedBeforeInRun: 0 },
+    });
+    expect(record.decision.mailbox.room).toMatchObject({ limit: 45, sentToday: 0 });
+    // Recorded after the send was promoted: a lost record never touches the lead.
+    expect(mockRecordSentMessage.mock.invocationCallOrder[0]!).toBeGreaterThan(
+      mockPromoteEvent.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("records a FOLLOW-UP's exact bytes, its thread and the gap that made it due", async () => {
+    const lastSentAt = new Date(NOW.getTime() - 3 * 24 * 60 * 60 * 1000);
+    primeReads({
+      sequence: { provisionedSteps: [2], lastSentStep: 1, lastSentAt },
+      priorMessageIds: ["<m0@mail>"],
+    });
+    const raw = Buffer.from("Message-ID: <m2@mail>\r\nIn-Reply-To: <m0@mail>\r\n\r\nHi again\r\n");
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<m2@mail>",
+      response: "250 OK",
+      accepted: ["prospect@example.com"],
+      rejected: [],
+      rawMessage: raw,
+    });
+
+    const summary = await runDispatch({ asOf: NOW });
+
+    expect(summary.sent).toBe(1);
+    const record = (mockRecordSentMessage.mock.calls[0] as unknown[])[0] as Record<string, any>;
+    expect(record).toMatchObject({ step: 2, messageId: "<m2@mail>", kind: "sequence_step" });
+    expect(record.rawMessage).toBe(raw);
+    expect(record.messageInputs.priorMessageIds).toEqual(["<m0@mail>"]);
+    expect(record.messageInputs.built).toMatchObject({ subject: "Re: Quick question", inReplyTo: "<m0@mail>" });
+    expect(record.decision.step).toMatchObject({
+      step: 2,
+      isFirstEmail: false,
+      cadence: { rule: "gap_after_last_sent_step", lastSentStep: 1, lastSentAt: lastSentAt.toISOString(), gapDays: 2 },
+    });
+  });
+
+  it("a failed record changes nothing about the send", async () => {
+    primeReads();
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<m1@mail>",
+      response: "250 OK",
+      accepted: ["prospect@example.com"],
+      rejected: [],
+      rawMessage: Buffer.from("x"),
+    });
+    mockRecordSentMessage.mockResolvedValue(false);
+
+    const summary = await runDispatch({ asOf: NOW });
+
+    expect(summary).toMatchObject({ sent: 1, failed: 0 });
+    expect(mockPromoteEvent).toHaveBeenCalledTimes(1);
   });
 
   it("signs with the account's own name, not a fallback", async () => {
