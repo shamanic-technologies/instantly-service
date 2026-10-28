@@ -14,6 +14,7 @@ import {
   bigserial,
   bigint,
   cidr,
+  customType,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -761,6 +762,52 @@ export const smtpDispatchRaw = pgTable(
     index("smtp_dispatch_raw_dispatched_at_idx").on(table.dispatchedAt),
     // Correlates an inbound DSN back to the dispatch it bounced from.
     index("smtp_dispatch_raw_message_id_idx").on(table.messageId),
+  ],
+);
+
+// Raw bytes (Postgres `bytea`): node-postgres hands a Buffer both ways.
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
+
+// Bronze: the EXACT message one of our sends put on the wire, and the inputs
+// that decided its moment (FACTORY-RECORD-SEND-1028, migration `0097`).
+//
+// `smtp_dispatch_raw` keeps what the server ANSWERED; this keeps what we SENT:
+// the MIME bytes as the receiving server reconstructs them from DATA
+// (`rawMessage` of `dispatchMessage`, byte-equal, sha256 beside it), plus a
+// `decision` document (the queued sequence, the mailbox's alias capacity rows
+// and room, the cadence and window that made the step due, the rules in force)
+// and the `message_inputs` the body was built from. One row per SENT email of
+// a sequence (dispatch worker) or a one-to-one reply (`reply-to-lead.ts`).
+// Kept 180 days (`SENT_MESSAGE_RETENTION_DAYS`), pruned by its own worker.
+// Write is fail-soft: the email has already left, a missing record never
+// changes what happens to the lead. Staff read: `GET /internal/sent-messages`.
+export const smtpSentMessages = pgTable(
+  "smtp_sent_messages",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    // The `smtp_dispatch_raw` row of the same send.
+    dispatchId: text("dispatch_id").notNull(),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    accountEmail: text("account_email").notNull(),
+    step: integer("step").notNull(),
+    // `sequence_step` (dispatch worker) | `manual_reply` (reply-to-lead).
+    kind: text("kind").notNull(),
+    messageId: text("message_id").notNull(),
+    rawMessage: bytea("raw_message").notNull(),
+    rawSha256: text("raw_sha256").notNull(),
+    rawBytes: integer("raw_bytes").notNull(),
+    messageInputs: jsonb("message_inputs").notNull(),
+    decision: jsonb("decision").notNull(),
+    sentAt: timestamp("sent_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("smtp_sent_messages_dispatch_idx").on(table.dispatchId),
+    index("smtp_sent_messages_campaign_idx").on(table.instantlyCampaignId),
+    index("smtp_sent_messages_sent_at_idx").on(table.sentAt),
   ],
 );
 
