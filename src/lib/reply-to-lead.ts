@@ -45,6 +45,7 @@
  * row would assert something false (see CLAUDE.md, "Sending declares NO cost").
  */
 
+import { randomUUID } from "node:crypto";
 import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
@@ -75,6 +76,7 @@ import {
 } from "./self-send/mailbox-credentials";
 import { buildFromHeader, subjectForStep } from "./self-send/message";
 import { dispatchMessage } from "./self-send/smtp";
+import { recordSentMessage } from "./self-send/send-record";
 import {
   resolveTransportForSend,
   SEND_TRANSPORT_SMTP,
@@ -903,11 +905,14 @@ async function deliverSmtpReply(
 
   try {
     const sent = await dispatchMessage(credential, message);
+    const sentAt = new Date();
+    const dispatchId = randomUUID();
 
     // Bronze, at step 0. Two things depend on it: the IMAP poller correlates the
     // prospect's next answer through the Message-Id it records, and the
     // forwarded thread reads our reply back out of it.
     await db.insert(smtpDispatchRaw).values({
+      id: dispatchId,
       instantlyCampaignId: campaign.instantlyCampaignId,
       leadEmail: campaign.leadEmail,
       accountEmail,
@@ -928,6 +933,37 @@ async function deliverSmtpReply(
         accepted: sent.accepted,
         ...(sentAttachments ? { attachments: sentAttachments } : {}),
       },
+    });
+
+    // The exact message (FACTORY-RECORD-SEND-1028). A one-to-one answer leaves
+    // the moment it is asked for: no cadence, cap or window decided it.
+    // Fail-soft: the reply is out.
+    await recordSentMessage({
+      dispatchId,
+      instantlyCampaignId: campaign.instantlyCampaignId,
+      leadEmail: campaign.leadEmail,
+      accountEmail,
+      step: MANUAL_REPLY_STEP,
+      kind: "manual_reply",
+      messageId: sent.messageId,
+      rawMessage: sent.rawMessage,
+      messageInputs: {
+        subject,
+        bodyHtml,
+        from,
+        cc,
+        bcc: bcc || null,
+        inReplyTo: anchor.inReplyTo,
+        references: anchor.references,
+        attachments: sentAttachments ?? [],
+      },
+      decision: {
+        schema: "send-decision/v1",
+        trigger: "manual_reply",
+        sentBy,
+        sentAt: sentAt.toISOString(),
+      },
+      sentAt,
     });
 
     return {

@@ -680,6 +680,13 @@
       "when": 1794000000000,
       "tag": "0096_queue_and_inbound_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1794100000000,
+      "tag": "0097_smtp_sent_messages",
+      "breakpoints": true
     }
   ]
 }
