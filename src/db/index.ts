@@ -46,6 +46,13 @@ const pool = new Pool({
   // and enable TCP keepalive so they survive between bursts.
   idleTimeoutMillis: 60_000,
   keepAlive: true,
+  // Recycle every connection after 5 min (BOX-LOAD-1028-PG-CONNS). A Postgres
+  // backend keeps the memory of the biggest query it ever ran (these sorts run
+  // at work_mem 32MB) until it exits, and node-postgres has no lifetime by
+  // default: on 2026-10-28 all 20 instantly_service backends were 3.5 h old and
+  // held ~0.5 GB private memory on the shared box, ~0.34 GB of it swapped. pg-pool
+  // closes an expired client only when it is released or idle, never mid-query.
+  maxLifetimeSeconds: 300,
 });
 
 // Retry only connection-ACQUISITION failures (cold Neon resume). drizzle runs
