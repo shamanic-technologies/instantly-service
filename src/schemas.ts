@@ -3154,6 +3154,54 @@ const ProviderListsSchema = z.object({
 
 registry.registerPath({
   method: "get",
+  path: "/internal/reply-qualifications/recorded",
+  summary: "Every reply judgment with its exact chat-service request and answer (service key, read-only)",
+  description:
+    "FACTORY-P3 next outcomes (lead_interested). Every org, oldest first in (createdAt, id) order, settled 60 s. One row per reply judgment since the record shipped, on either path: `service` (our own code, on its own `reply-qualification` run) or `script` (the stored script `lead_interested/<dynasty>` while workflow-service says it is switched for this service). `inputs` = what it was judged from (`replyText`, `subject`, `ourOutreach`), `request` = the exact completion body sent to chat-service, `response` = chat-service's whole answer, `kind` = the label (null = no usable label). Read by workflow-service's case recorder. Personal data.",
+  request: {
+    query: z.object({
+      from: z.string().describe("ISO date, inclusive"),
+      to: z.string().optional().describe("ISO date, inclusive"),
+      cursor: z.string().optional().describe("`nextCursor` of the previous page"),
+      limit: z.string().optional().describe("1..200, default 50"),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Recorded judgments",
+      content: {
+        "application/json": {
+          schema: z.object({
+            qualifications: z.array(
+              z.object({
+                id: z.string(),
+                createdAt: z.string(),
+                orgId: z.string().nullable(),
+                instantlyCampaignId: z.string(),
+                source: z.string().nullable(),
+                path: z.enum(["service", "script"]),
+                runId: z.string().nullable().describe("The judgment's own run (service: `reply-qualification`; script: the script's run)"),
+                scriptSlug: z.string().nullable(),
+                inputs: z.object({ replyText: z.string(), subject: z.string().nullable(), ourOutreach: z.string().nullable() }),
+                request: z.record(z.string(), z.unknown()).nullable(),
+                response: z.record(z.string(), z.unknown()).nullable(),
+                kind: z.string().nullable(),
+                classification: z.enum(["positive", "negative", "neutral"]).nullable().describe("What the label means for the reply, as `replies.current_classification` stores it"),
+                error: z.string().nullable(),
+              }),
+            ),
+            nextCursor: z.string().nullable(),
+            hasMore: z.boolean(),
+          }),
+        },
+      },
+    },
+    400: { description: "Invalid query" },
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/internal/sent-messages",
   summary: "Exact messages we sent and why they left then (staff, read-only)",
   description:

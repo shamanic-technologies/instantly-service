@@ -12268,6 +12268,194 @@
         }
       }
     },
+    "/internal/reply-qualifications/recorded": {
+      "get": {
+        "summary": "Every reply judgment with its exact chat-service request and answer (service key, read-only)",
+        "description": "FACTORY-P3 next outcomes (lead_interested). Every org, oldest first in (createdAt, id) order, settled 60 s. One row per reply judgment since the record shipped, on either path: `service` (our own code, on its own `reply-qualification` run) or `script` (the stored script `lead_interested/<dynasty>` while workflow-service says it is switched for this service). `inputs` = what it was judged from (`replyText`, `subject`, `ourOutreach`), `request` = the exact completion body sent to chat-service, `response` = chat-service's whole answer, `kind` = the label (null = no usable label). Read by workflow-service's case recorder. Personal data.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "ISO date, inclusive"
+            },
+            "required": true,
+            "description": "ISO date, inclusive",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "ISO date, inclusive"
+            },
+            "required": false,
+            "description": "ISO date, inclusive",
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "`nextCursor` of the previous page"
+            },
+            "required": false,
+            "description": "`nextCursor` of the previous page",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "1..200, default 50"
+            },
+            "required": false,
+            "description": "1..200, default 50",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recorded judgments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "qualifications": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "orgId": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "instantlyCampaignId": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "path": {
+                            "type": "string",
+                            "enum": [
+                              "service",
+                              "script"
+                            ]
+                          },
+                          "runId": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "The judgment's own run (service: `reply-qualification`; script: the script's run)"
+                          },
+                          "scriptSlug": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "inputs": {
+                            "type": "object",
+                            "properties": {
+                              "replyText": {
+                                "type": "string"
+                              },
+                              "subject": {
+                                "type": "string",
+                                "nullable": true
+                              },
+                              "ourOutreach": {
+                                "type": "string",
+                                "nullable": true
+                              }
+                            },
+                            "required": [
+                              "replyText",
+                              "subject",
+                              "ourOutreach"
+                            ]
+                          },
+                          "request": {
+                            "type": "object",
+                            "nullable": true,
+                            "additionalProperties": {
+                              "nullable": true
+                            }
+                          },
+                          "response": {
+                            "type": "object",
+                            "nullable": true,
+                            "additionalProperties": {
+                              "nullable": true
+                            }
+                          },
+                          "kind": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "classification": {
+                            "type": "string",
+                            "nullable": true,
+                            "enum": [
+                              "positive",
+                              "negative",
+                              "neutral",
+                              null
+                            ],
+                            "description": "What the label means for the reply, as `replies.current_classification` stores it"
+                          },
+                          "error": {
+                            "type": "string",
+                            "nullable": true
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "createdAt",
+                          "orgId",
+                          "instantlyCampaignId",
+                          "source",
+                          "path",
+                          "runId",
+                          "scriptSlug",
+                          "inputs",
+                          "request",
+                          "response",
+                          "kind",
+                          "classification",
+                          "error"
+                        ]
+                      }
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "hasMore": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "qualifications",
+                    "nextCursor",
+                    "hasMore"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query"
+          }
+        }
+      }
+    },
     "/internal/sent-messages": {
       "get": {
         "summary": "Exact messages we sent and why they left then (staff, read-only)",
