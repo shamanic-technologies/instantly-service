@@ -19,10 +19,38 @@ vi.mock("../../src/lib/self-send/our-outreach", () => ({
   loadOurOutreach: (...a: unknown[]) => mockLoadOurOutreach(...a),
 }));
 
-// The org's reply-judging run of the day (COST-ACCOUNTING-1023), mocked.
+// The org's reply-judging run of the day (COST-ACCOUNTING-1023), mocked: it
+// resolves to a run id, and the org the run is for.
 const mockJudgingRun = vi.fn();
 vi.mock("../../src/lib/reply-judging-run", () => ({
-  replyJudgingRunForSequence: (...a: unknown[]) => mockJudgingRun(...a),
+  replyJudgingContextForSequence: async (...a: unknown[]) => ({ runId: await mockJudgingRun(...a), orgId: "org-1" }),
+}));
+
+// Each judgment on our own code opens its own `reply-qualification` run, a
+// child of the reply-judging run (FACTORY-P3: Monitoring's service path).
+const mockCreateRun = vi.fn();
+const mockUpdateRun = vi.fn();
+vi.mock("../../src/lib/runs-client", () => ({
+  createRun: (...a: unknown[]) => mockCreateRun(...a),
+  updateRun: (...a: unknown[]) => mockUpdateRun(...a),
+}));
+
+// The stored-script switch (FACTORY-P3 next outcomes): off unless a test turns it on.
+const mockSwitch = vi.fn();
+const mockJudgeWithScript = vi.fn();
+vi.mock("../../src/lib/reply-judge-script", () => ({
+  replyJudgeSwitch: (...a: unknown[]) => mockSwitch(...a),
+  judgeWithScript: (...a: unknown[]) => mockJudgeWithScript(...a),
+  ReplyJudgeScriptError: class extends Error {
+    constructor(message: string, readonly runId: string | null, readonly scriptSlug: string | null) {
+      super(message);
+    }
+  },
+}));
+
+const mockRecord = vi.fn();
+vi.mock("../../src/lib/reply-qualification-record", () => ({
+  recordReplyQualification: (...a: unknown[]) => mockRecord(...a),
 }));
 
 import {
@@ -41,6 +69,7 @@ import {
 } from "../helpers/bottom-posted-reply";
 
 const JUDGING_RUN = "9d0c1b2a-1111-4222-8333-444455556666";
+const QUAL_RUN = "aaaa1111-1111-4222-8333-444455556666";
 /** Every reply is judged on a sequence: it names the reply-judging run. */
 const SEQ = { instantlyCampaignId: "self:seq" };
 
@@ -48,6 +77,10 @@ beforeEach(() => {
   vi.resetAllMocks();
   mockJudgingRun.mockResolvedValue(JUDGING_RUN);
   mockLoadOurOutreach.mockResolvedValue(null);
+  mockCreateRun.mockResolvedValue({ id: QUAL_RUN });
+  mockUpdateRun.mockResolvedValue({});
+  mockSwitch.mockResolvedValue({ switched: false, dynasty: null });
+  mockRecord.mockResolvedValue(undefined);
 });
 
 /**
@@ -86,8 +119,14 @@ describe("qualifyReply", () => {
         temperature: 0,
         disableThinking: true,
       }),
-      { runId: JUDGING_RUN },
+      { runId: QUAL_RUN },
     );
+    // The judgment's own run is a child of the org's reply-judging run, closed completed.
+    expect(mockCreateRun).toHaveBeenCalledWith(
+      { serviceName: "instantly-service", taskName: "reply-qualification" },
+      { orgId: "org-1", userId: "", runId: JUDGING_RUN },
+    );
+    expect(mockUpdateRun).toHaveBeenCalledWith(QUAL_RUN, "completed", { orgId: "org-1", userId: "", runId: JUDGING_RUN }, undefined);
   });
 
   it("is made FOR the org's reply-judging run when the sequence is known (COST-ACCOUNTING-1023)", async () => {
@@ -98,7 +137,8 @@ describe("qualifyReply", () => {
     await qualifyReply("Interested", { ...SEQ, instantlyCampaignId: "self:abc" });
 
     expect(mockJudgingRun).toHaveBeenCalledWith("self:abc");
-    expect(mockPlatformComplete.mock.calls.at(-1)?.[1]).toEqual({ runId: "4c8b7a1e-1111-4222-8333-444455556666" });
+    expect(mockCreateRun.mock.calls.at(-1)?.[1]).toMatchObject({ runId: "4c8b7a1e-1111-4222-8333-444455556666" });
+    expect(mockPlatformComplete.mock.calls.at(-1)?.[1]).toEqual({ runId: QUAL_RUN });
   });
 
   // An unusable answer must not become a fabricated neutral — a wrong "neutral"
@@ -505,5 +545,81 @@ describe("the classifier reads what we sent them", () => {
   it("knows a competitor's customer is a decline, not one of ours", () => {
     const prompt = SYSTEM_PROMPT;
     expect(prompt).toContain("Using the same kind of product bought from ANOTHER company is not this");
+  });
+});
+
+// FACTORY-P3 next outcomes (lead_interested): every judgment is recorded with its
+// exact request and answer, and while switched the stored script judges instead.
+describe("the reply judge's record and its stored-script switch", () => {
+  const ANSWER = { content: "{\"classification\":\"lead_interested\"}", json: { classification: "lead_interested" }, tokensInput: 3, tokensOutput: 2, model: "deepseek-v4-flash" };
+
+  it("records our own judgment with the EXACT request sent and the whole answer", async () => {
+    mockLoadOurOutreach.mockResolvedValue("Our pitch");
+    mockPlatformComplete.mockResolvedValue(ANSWER);
+    const kind = await qualifyReply("Yes, interested", { instantlyCampaignId: "self:abc", leadEmail: "a@b.co", source: "imap_poller", subject: "Re: hi" });
+    expect(kind).toBe("lead_interested");
+    const sentBody = mockPlatformComplete.mock.calls[0][0];
+    expect(mockRecord).toHaveBeenCalledWith({
+      orgId: "org-1",
+      instantlyCampaignId: "self:abc",
+      leadEmail: "a@b.co",
+      source: "imap_poller",
+      path: "service",
+      runId: QUAL_RUN,
+      inputs: { replyText: "Yes, interested", subject: "Re: hi", ourOutreach: "Our pitch" },
+      request: sentBody,
+      response: ANSWER,
+      kind: "lead_interested",
+    });
+    expect(sentBody).toEqual({
+      message: "Subject: Re: hi\n\nOur email:\nOur pitch\n\nTheir reply:\nYes, interested",
+      systemPrompt: SYSTEM_PROMPT,
+      provider: "deepseek",
+      model: "deepseek-flash",
+      responseFormat: "json",
+      temperature: 0,
+      disableThinking: true,
+    });
+    expect(mockJudgeWithScript).not.toHaveBeenCalled();
+  });
+
+  it("a failed call closes its run failed, is recorded with the error, and still throws (the fallback sweep asks again)", async () => {
+    mockPlatformComplete.mockRejectedValue(new Error("chat 502"));
+    await expect(qualifyReply("Yes", SEQ)).rejects.toThrow("chat 502");
+    expect(mockUpdateRun).toHaveBeenCalledWith(QUAL_RUN, "failed", expect.anything(), "chat 502");
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({ path: "service", kind: null, response: null, error: "chat 502" }));
+  });
+
+  it("while switched, the stored script judges: our code asks nothing, the label and the exact exchange are recorded", async () => {
+    mockSwitch.mockResolvedValue({ switched: true, dynasty: "dy_reply_judge" });
+    mockLoadOurOutreach.mockResolvedValue("Our pitch");
+    const sent = { message: "Subject: Re: hi\n\nOur email:\nOur pitch\n\nTheir reply:\nYes", systemPrompt: SYSTEM_PROMPT, provider: "deepseek", model: "deepseek-flash", responseFormat: "json", temperature: 0, disableThinking: true };
+    mockJudgeWithScript.mockResolvedValue({ runId: "script-run", scriptSlug: "lead_interested/dy_reply_judge/v2", status: "made", kind: "lead_meeting_requested", request: sent, response: ANSWER });
+    const kind = await qualifyReply("Yes", { instantlyCampaignId: "self:abc", subject: "Re: hi" });
+    expect(kind).toBe("lead_meeting_requested");
+    expect(mockPlatformComplete).not.toHaveBeenCalled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockJudgeWithScript).toHaveBeenCalledWith({
+      dynasty: "dy_reply_judge",
+      orgId: "org-1",
+      judgingRunId: JUDGING_RUN,
+      instantlyCampaignId: "self:abc",
+      replyText: "Yes",
+      subject: "Re: hi",
+      ourOutreach: "Our pitch",
+    });
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({ path: "script", runId: "script-run", scriptSlug: "lead_interested/dy_reply_judge/v2", request: sent, response: ANSWER, kind: "lead_meeting_requested" }));
+    // The shadow measures the message the judge sent, as on our own path.
+    await drainDetached();
+    expect(mockShadowJudgeReply).toHaveBeenCalledWith(expect.objectContaining({ replyText: sent.message, llmClassification: "lead_meeting_requested" }));
+  });
+
+  it("a script answer outside the vocabulary promotes nothing; a refused script run throws like a failed call", async () => {
+    mockSwitch.mockResolvedValue({ switched: true, dynasty: "dy_reply_judge" });
+    mockJudgeWithScript.mockResolvedValueOnce({ runId: "r", scriptSlug: "s", status: "made", kind: "lead_ecstatic", request: null, response: null });
+    expect(await qualifyReply("Yes", SEQ)).toBeNull();
+    mockJudgeWithScript.mockRejectedValueOnce(new Error("workflow-service POST /internal/scripts/run -> 502"));
+    await expect(qualifyReply("Yes", SEQ)).rejects.toThrow("-> 502");
+    expect(mockRecord).toHaveBeenLastCalledWith(expect.objectContaining({ path: "script", kind: null, error: expect.stringContaining("502") }));
   });
 });

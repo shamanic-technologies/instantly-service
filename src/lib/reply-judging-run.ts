@@ -120,6 +120,14 @@ export async function replyJudgingRunForSequence(
   instantlyCampaignId: string,
   opts: { fallbackOrgId?: string | null; asOf?: Date } = {},
 ): Promise<string> {
+  return (await replyJudgingContextForSequence(instantlyCampaignId, opts)).runId;
+}
+
+/** The same run, with the org it is for (a judgment's own run and the script door need both). */
+export async function replyJudgingContextForSequence(
+  instantlyCampaignId: string,
+  opts: { fallbackOrgId?: string | null; asOf?: Date } = {},
+): Promise<{ runId: string; orgId: string }> {
   const asOf = opts.asOf ?? new Date();
   const result = await db.execute(sql`
     SELECT org_id, campaign_id, workflow_slug, feature_slug, to_jsonb(brand_ids) AS brand_ids
@@ -129,9 +137,11 @@ export async function replyJudgingRunForSequence(
   const orgId = row?.org_id ? String(row.org_id) : null;
   // The reply row's own org, when its sequence row holds none: that org's
   // pipe-less run (nothing records a pipe for it).
-  if (!orgId && opts.fallbackOrgId) return replyJudgingRunFor(opts.fallbackOrgId, NO_PIPE, asOf);
+  if (!orgId && opts.fallbackOrgId) {
+    return { runId: await replyJudgingRunFor(opts.fallbackOrgId, NO_PIPE, asOf), orgId: opts.fallbackOrgId };
+  }
   if (!orgId) {
     throw new Error(`[reply-judging-run] sequence ${instantlyCampaignId} has no org: no reply-judging run to judge it for`);
   }
-  return replyJudgingRunFor(orgId, pipeOfRow(row), asOf);
+  return { runId: await replyJudgingRunFor(orgId, pipeOfRow(row), asOf), orgId };
 }

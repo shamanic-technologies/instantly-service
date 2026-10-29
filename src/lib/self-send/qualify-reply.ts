@@ -13,8 +13,11 @@
  * inbox and the gold sentiment stats. Do not make the stop conditional on it.
  */
 
-import { platformComplete } from "../chat-client";
-import { replyJudgingRunForSequence } from "../reply-judging-run";
+import { platformComplete, type ChatCompleteParams } from "../chat-client";
+import { replyJudgingContextForSequence } from "../reply-judging-run";
+import { createRun, updateRun } from "../runs-client";
+import { judgeWithScript, replyJudgeSwitch, ReplyJudgeScriptError } from "../reply-judge-script";
+import { recordReplyQualification } from "../reply-qualification-record";
 import { loadOurOutreach } from "./our-outreach";
 import type { ShadowJudgmentContext } from "../shadow-judgment";
 
@@ -328,15 +331,28 @@ export function parseQualification(result: {
  *
  * The spend is chat-service's, on a platform run: this runs inside a sweep with
  * no inbound org request, so there is no customer to bill for classifying a
- * reply to our own outreach. That platform run is made a CHILD of the org's
- * `reply-judging` run of the day (lib/reply-judging-run.ts), so its cost
+ * reply to our own outreach. The org's `reply-judging` run of the day
+ * (lib/reply-judging-run.ts) is the parent of every judgment, so its cost
  * reaches the Positive reply outcome; billing is unchanged.
+ *
+ * Two paths, one verdict (FACTORY-P3 next outcomes, lead_interested): while
+ * workflow-service says the reply judge is switched (lib/reply-judge-script.ts),
+ * the stored script judges (its own run, platform-billed the same way); else
+ * this code does, on its own `reply-qualification` run (one per judgment, so
+ * Monitoring can hold the script to this path's error rate and cost). Either
+ * way the judgment is recorded with its exact request and answer
+ * (lib/reply-qualification-record.ts) and the caller gets the same label type.
  */
+export const REPLY_QUALIFICATION_TASK = "reply-qualification";
+
 export async function qualifyReply(
   replyText: string,
   context: QualifyReplyContext,
 ): Promise<QualificationEventType | null> {
   const { subject, ...shadowContext } = context;
+  const judge = await replyJudgeSwitch();
+  if (judge.switched && judge.dynasty) return qualifyWithScript(judge.dynasty, replyText, context);
+
   const body = stripQuotedHistory(replyText).slice(0, 4000);
   // An empty body with a subject THEY typed: the subject IS the message
   // (prod 2026-09-24: a reply whose whole text was the subject "Stop" went
@@ -357,31 +373,100 @@ export async function qualifyReply(
   // positive replies declare `conversation` (COST-ACCOUNTING-1023). Judging a
   // reply is production: no run = no call (throws; every caller already treats
   // a failed classification as absent and the fallback sweep asks again).
-  const runId = await replyJudgingRunForSequence(shadowContext.instantlyCampaignId);
-  const result = await platformComplete(
-    {
-      message,
-      systemPrompt: SYSTEM_PROMPT,
-      provider: "deepseek",
-      model: "deepseek-flash",
-      responseFormat: "json",
-      temperature: 0,
-      disableThinking: true,
-    },
-    { runId },
-  );
+  const judging = await replyJudgingContextForSequence(shadowContext.instantlyCampaignId);
+  const identity = { orgId: judging.orgId, userId: "", runId: judging.runId };
+  const run = await createRun({ serviceName: "instantly-service", taskName: REPLY_QUALIFICATION_TASK }, identity);
+  const request: ChatCompleteParams = {
+    message,
+    systemPrompt: SYSTEM_PROMPT,
+    provider: "deepseek",
+    model: "deepseek-flash",
+    responseFormat: "json",
+    temperature: 0,
+    disableThinking: true,
+  };
+  const record = {
+    orgId: judging.orgId,
+    instantlyCampaignId: shadowContext.instantlyCampaignId,
+    leadEmail: shadowContext.leadEmail ?? null,
+    source: shadowContext.source ?? null,
+    path: "service" as const,
+    runId: run.id,
+    inputs: { replyText, subject: subject ?? null, ourOutreach },
+    request: { ...request },
+  };
+  let result: Awaited<ReturnType<typeof platformComplete>>;
+  try {
+    result = await platformComplete(request, { runId: run.id });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await closeQualificationRun(run.id, "failed", identity, message);
+    await recordReplyQualification({ ...record, response: null, kind: null, error: message });
+    throw error;
+  }
+  await closeQualificationRun(run.id, "completed", identity);
 
   const classification = parseQualification(result);
+  await recordReplyQualification({ ...record, response: result as unknown as Record<string, unknown>, kind: classification });
+  launchShadow(shadowContext, message, classification);
+  return classification;
+}
 
-  // Ask the calibrated judgment engine the SAME question and record what both
-  // said, so the disagreement rate and the confidence distribution can be
-  // measured on real replies. It decides NOTHING — `classification` below is
-  // returned unchanged whatever the judgment says, and unchanged when it fails.
-  //
-  // DETACHED, never awaited: one caller runs inside Instantly's webhook, where a
-  // slow delivery counts toward disabling the whole subscription. Imported
-  // dynamically so the measurement module can import this vocabulary without a
-  // load-time cycle.
+/** Close a judgment's own run. A close that fails is logged: the judgment (and its spend, on chat's run) stands. */
+async function closeQualificationRun(runId: string, status: "completed" | "failed", identity: { orgId: string; userId: string }, error?: string): Promise<void> {
+  try {
+    await updateRun(runId, status, identity, error?.slice(0, 500));
+  } catch (closeError) {
+    console.error(`[instantly-service] reply-qualification run ${runId} not closed ${status}: ${closeError instanceof Error ? closeError.message : String(closeError)}`);
+  }
+}
+
+/** The stored script judges (switched): same inputs, same label vocabulary, recorded the same way. */
+async function qualifyWithScript(dynasty: string, replyText: string, context: QualifyReplyContext): Promise<QualificationEventType | null> {
+  const { subject, ...shadowContext } = context;
+  if (!shadowContext.instantlyCampaignId) {
+    throw new Error("[instantly-service] qualifyReply: no sequence, so no reply-judging run to judge it for");
+  }
+  const ourOutreach = await loadOurOutreach(shadowContext.instantlyCampaignId);
+  const judging = await replyJudgingContextForSequence(shadowContext.instantlyCampaignId);
+  const inputs = { replyText, subject: subject ?? null, ourOutreach };
+  const record = {
+    orgId: judging.orgId,
+    instantlyCampaignId: shadowContext.instantlyCampaignId,
+    leadEmail: shadowContext.leadEmail ?? null,
+    source: shadowContext.source ?? null,
+    path: "script" as const,
+    inputs,
+  };
+  let out: Awaited<ReturnType<typeof judgeWithScript>>;
+  try {
+    out = await judgeWithScript({ dynasty, orgId: judging.orgId, judgingRunId: judging.runId, instantlyCampaignId: shadowContext.instantlyCampaignId, ...inputs });
+  } catch (error) {
+    const e = error instanceof ReplyJudgeScriptError ? error : null;
+    await recordReplyQualification({ ...record, runId: e?.runId ?? null, scriptSlug: e?.scriptSlug ?? null, request: null, response: null, kind: null, error: error instanceof Error ? error.message : String(error) });
+    throw error;
+  }
+  // The script answers a label of the same vocabulary; anything else promotes nothing, as a model's stray answer.
+  const classification = isQualificationEventType(out.kind) ? out.kind : null;
+  await recordReplyQualification({ ...record, runId: out.runId, scriptSlug: out.scriptSlug, request: out.request, response: out.response, kind: classification });
+  // The shadow is asked about the message the judge sent (nothing sent = nothing to measure, as on our own path).
+  const sent = typeof out.request?.message === "string" ? out.request.message : null;
+  if (sent) launchShadow(shadowContext, sent, classification);
+  return classification;
+}
+
+/**
+ * Ask the calibrated judgment engine the SAME question and record what both
+ * said, so the disagreement rate and the confidence distribution can be
+ * measured on real replies. It decides NOTHING — the classification is
+ * returned unchanged whatever the judgment says, and unchanged when it fails.
+ *
+ * DETACHED, never awaited: one caller runs inside Instantly's webhook, where a
+ * slow delivery counts toward disabling the whole subscription. Imported
+ * dynamically so the measurement module can import this vocabulary without a
+ * load-time cycle.
+ */
+function launchShadow(shadowContext: Omit<QualifyReplyContext, "subject">, message: string, classification: QualificationEventType | null): void {
   void import("../shadow-judgment")
     .then((m) =>
       m.shadowJudgeReply({ ...shadowContext, replyText: message, llmClassification: classification }),
@@ -392,6 +477,4 @@ export async function qualifyReply(
         error,
       );
     });
-
-  return classification;
 }
