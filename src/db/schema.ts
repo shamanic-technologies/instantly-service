@@ -783,6 +783,30 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
 // Kept 180 days (`SENT_MESSAGE_RETENTION_DAYS`), pruned by its own worker.
 // Write is fail-soft: the email has already left, a missing record never
 // changes what happens to the lead. Staff read: `GET /internal/sent-messages`.
+// Bronze (FACTORY-P3 next outcomes, migration 0098): every reply judgment with the exact chat-service request it sent,
+// the whole answer and the label, on either path (`service` = our own code, `script` = the stored script while the
+// outcome is switched). Read only by GET /internal/reply-qualifications/recorded. Personal data: never logged.
+export const replyQualifications = pgTable(
+  "reply_qualifications",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    orgId: text("org_id"),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email"),
+    source: text("source"),
+    path: text("path").notNull(),
+    runId: text("run_id"),
+    scriptSlug: text("script_slug"),
+    inputs: jsonb("inputs").notNull(),
+    request: jsonb("request"),
+    response: jsonb("response"),
+    kind: text("kind"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("reply_qualifications_created_idx").on(table.createdAt, table.id)],
+);
+
 export const smtpSentMessages = pgTable(
   "smtp_sent_messages",
   {
