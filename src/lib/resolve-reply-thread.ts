@@ -18,6 +18,9 @@
  *  - never emailed by this org: `campaign_not_found`.
  *
  * Naming the campaign skips all of this and behaves exactly as before.
+ *
+ * `GET /orgs/conversations` without a campaign reads the SAME candidates
+ * (`loadReplyThreadCandidates`), so the read and the reply agree on the threads.
  */
 import { sql } from "drizzle-orm";
 

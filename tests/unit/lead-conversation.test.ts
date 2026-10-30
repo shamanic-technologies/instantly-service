@@ -1035,3 +1035,122 @@ describe("fetchLeadConversation — a prospect message our IMAP poller filed on 
     await expect(fetchLeadConversation(INPUT)).rejects.toBeInstanceOf(LeadConversationError);
   });
 });
+
+// ─── No campaign named: every thread of the org (REPLY-READ-ANY-THREAD-1030) ──
+
+describe("fetchLeadConversation — no campaign named", () => {
+  const UNNAMED = { orgId: "org-1", userId: "user-1", leadEmail: "Alice@Media.com" };
+
+  /** Candidates (the reply door's query) and the sequence rows, by query text. */
+  function routeUnnamed(
+    candidates: Record<string, unknown>[],
+    campaigns: Record<string, unknown>[],
+  ) {
+    mockDbExecute.mockReset();
+    mockDbExecute.mockImplementation((query: unknown) => {
+      const text = extractSqlText(query);
+      if (text.includes("BOOL_OR")) return Promise.resolve(pgResult(candidates));
+      if (text.includes("instantly_campaigns")) return Promise.resolve(pgResult(campaigns));
+      return Promise.resolve(pgResult([]));
+    });
+  }
+
+  function msg(direction: "inbound" | "outbound", date: string, bodyText: string) {
+    return {
+      direction,
+      from: direction === "inbound" ? "alice@media.com" : "amy@boostdistribute.com",
+      to: direction === "inbound" ? "amy@boostdistribute.com" : "alice@media.com",
+      date,
+      subject: "quick question",
+      bodyText,
+    };
+  }
+
+  it("reads the one thread by email alone, each message carrying its campaign", async () => {
+    routeUnnamed(
+      [{ campaignId: "camp-a", lastMessageAt: "2026-10-02T09:00:00.000Z", replied: true }],
+      [campaignRow({ campaignId: "camp-a", instantlyCampaignId: "self:a", sendTransport: "smtp" })],
+    );
+    mockFetchSelfSendThread.mockResolvedValue([
+      msg("outbound", "2026-10-01T10:00:00.000Z", "worth a chat?"),
+      msg("inbound", "2026-10-02T09:00:00.000Z", "Sure"),
+    ]);
+
+    const conv = await fetchLeadConversation(UNNAMED);
+
+    // Campaign-service is never asked: there is no named campaign to expand.
+    expect(mockGetCampaignFamily).not.toHaveBeenCalled();
+    expect(conv.campaignId).toBe("camp-a");
+    expect(conv.messages.map((m) => m.campaignId)).toEqual(["camp-a", "camp-a"]);
+    expect(conv.threads).toEqual([
+      {
+        campaignId: "camp-a",
+        lastMessageAt: "2026-10-02T09:00:00.000Z",
+        lastInboundAt: "2026-10-02T09:00:00.000Z",
+        replied: true,
+      },
+    ]);
+  });
+
+  it("two campaigns of different families: names the thread they wrote in LAST", async () => {
+    // camp-email holds the NEWEST message (our bump), but the prospect last
+    // wrote in camp-other: that is where the answer goes.
+    routeUnnamed(
+      [
+        { campaignId: "camp-email", lastMessageAt: "2026-10-05T10:00:00.000Z", replied: true },
+        { campaignId: "camp-other", lastMessageAt: "2026-10-04T10:00:00.000Z", replied: true },
+      ],
+      [
+        campaignRow({ campaignId: "camp-email", instantlyCampaignId: "self:e", sendTransport: "smtp" }),
+        campaignRow({ campaignId: "camp-other", instantlyCampaignId: "self:o", sendTransport: "smtp" }),
+      ],
+    );
+    mockFetchSelfSendThread.mockImplementation(async (id: string) =>
+      id === "self:e"
+        ? [
+            msg("outbound", "2026-10-01T10:00:00.000Z", "first"),
+            msg("inbound", "2026-10-02T10:00:00.000Z", "not now"),
+            msg("outbound", "2026-10-05T10:00:00.000Z", "bump"),
+          ]
+        : [
+            msg("outbound", "2026-10-03T10:00:00.000Z", "other"),
+            msg("inbound", "2026-10-04T10:00:00.000Z", "let's talk"),
+          ],
+    );
+
+    const conv = await fetchLeadConversation(UNNAMED);
+
+    expect(conv.campaignId).toBe("camp-other");
+    expect(conv.instantlyCampaignId).toBe("self:o");
+    expect(conv.threads?.map((t) => [t.campaignId, t.lastInboundAt])).toEqual([
+      ["camp-other", "2026-10-04T10:00:00.000Z"],
+      ["camp-email", "2026-10-02T10:00:00.000Z"],
+    ]);
+    expect(conv.messages.map((m) => m.campaignId)).toEqual([
+      "camp-email",
+      "camp-email",
+      "camp-other",
+      "camp-other",
+      "camp-email",
+    ]);
+  });
+
+  it("an address this org never wrote to is the same 404 campaign_not_found", async () => {
+    routeUnnamed([], []);
+
+    await expect(fetchLeadConversation(UNNAMED)).rejects.toMatchObject({
+      code: "campaign_not_found",
+      status: 404,
+    });
+  });
+
+  it("a NAMED campaign stays authoritative: no threads, family read as before", async () => {
+    routeDb({ campaigns: [campaignRow()], mirror: { "ic-1": [email({ id: "s1" })] } });
+
+    const conv = await fetchLeadConversation(INPUT);
+
+    expect(mockGetCampaignFamily).toHaveBeenCalledWith("camp-1", "org-1");
+    expect(conv.campaignId).toBe("camp-1");
+    expect("threads" in conv).toBe(false);
+  });
+});

@@ -1890,7 +1890,10 @@ export const LeadConversationQuerySchema = z
     campaign_id: z
       .string()
       .min(1)
-      .describe("Logical campaign id — the same key POST /orgs/replies takes"),
+      .optional()
+      .describe(
+        "Logical campaign id — the same key POST /orgs/replies takes. Optional: omit it to read every thread this org holds with the address, whatever campaign wrote to them (the answer then carries `threads`). Named, it is authoritative and the answer is exactly as before.",
+      ),
     email: z.string().email().describe("The lead whose conversation to read"),
   })
   .openapi("LeadConversationQuery");
@@ -1955,9 +1958,22 @@ const ConversationSequenceSchema = z
   })
   .openapi("ConversationSequence");
 
+const ConversationThreadSchema = z
+  .object({
+    campaignId: z.string().describe("A campaign of this org that holds the prospect: pass it as `campaign_id` to POST /orgs/replies to answer in this thread"),
+    lastMessageAt: z.string().nullable().describe("Newest message of this thread, either direction (ISO 8601 UTC). Null when none is recorded."),
+    lastInboundAt: z.string().nullable().describe("Newest message the PROSPECT wrote in this thread (ISO 8601 UTC). Null when they never wrote in it."),
+    replied: z.boolean().describe("True when the prospect wrote back in this campaign — the same test POST /orgs/replies uses to find a thread"),
+  })
+  .openapi("ConversationThread");
+
 const LeadConversationSchema = z
   .object({
-    campaignId: z.string().describe("The campaign id asked for"),
+    campaignId: z
+      .string()
+      .describe(
+        "The campaign id asked for, unchanged. When none was named: the campaign the prospect wrote in LAST (`threads[0]`), else the one with the newest message.",
+      ),
     campaignIds: z
       .array(z.string())
       .describe(
@@ -1984,6 +2000,12 @@ const LeadConversationSchema = z
     sequences: z
       .array(ConversationSequenceSchema)
       .describe("What each contributing row carried, oldest first"),
+    threads: z
+      .array(ConversationThreadSchema)
+      .optional()
+      .describe(
+        "ONLY when `campaign_id` was omitted: every campaign of this org holding the prospect (the population POST /orgs/replies resolves a thread from), the one they wrote in LAST first, then by newest message. Absent on a named read.",
+      ),
   })
   .openapi("LeadConversation");
 
@@ -2010,10 +2032,11 @@ const LeadConversationErrorSchema = z
 registry.registerPath({
   method: "get",
   path: "/orgs/conversations",
-  summary: "Read the messages exchanged with a lead on a campaign",
+  summary: "Read the messages exchanged with a lead, on a campaign or on every campaign",
   description:
     "Return what a prospect wrote and what we sent, oldest first, for one (campaign, lead) pair — the exact identity `POST /orgs/replies` takes. Intended for a worker about to answer a reply: it reads the conversation so its answer can address what that person actually said.\n\n" +
     "**The whole campaign, not one stored row.** campaign-service mints a fresh campaign row every time the campaign's workflow changes and keeps the ancestors, so a campaign as the customer knows it is routinely dozens of rows and a prospect emailed over months sits in several. The answer spans every row of the campaign that holds this lead, merged into one ordered thread — so its earliest outbound message is the send the delivery evidence reports as first. `campaignIds` names the rows it drew from and each message carries its own; a single-row campaign answers as it always did.\n\n" +
+    "**No campaign named: every thread.** Omit `campaign_id` and the read spans every campaign of this org that holds the address — whatever channel, leg or family wrote to them — merged into one ordered thread, each message carrying its `campaignId`. `threads` lists those campaigns with when the prospect last wrote in each, the one they wrote in last first, and `campaignId` names it: pass it to POST /orgs/replies to answer where they wrote. Unknown address = the same 404 `campaign_not_found`. Naming a campaign is authoritative and answers exactly as before (no `threads`).\n\n" +
     "**Both transports.** The consumer cannot know which pipe carried a given prospect, exactly as the reply endpoint cannot. On the Instantly transport the messages come from Instantly's Unibox; on the self-send transport they are interleaved from what we dispatched and what we read back over IMAP. One response shape either way.\n\n" +
     "**Text, not HTML.** Every `text` is markup-stripped so it drops straight into a prompt. No truncation is applied here; note that a self-send inbound body is stored as the first 4000 characters of the message at ingestion time.\n\n" +
     "**Absent is not empty.** A conversation this org has no record of is a 404 (`campaign_not_found`); an exchange that exists with nothing said is a 200 with an empty `messages`; one we hold but cannot read is a 502 (`thread_unavailable`, or `campaign_identity_unavailable` when campaign-service could not say which rows the campaign is made of). No path returns an empty list to stand in for a failure.\n\n" +
