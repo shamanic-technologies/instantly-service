@@ -336,3 +336,26 @@ export async function incurredCosts(
   }
   return response.json() as Promise<IncurredCostsResult>;
 }
+
+/**
+ * A PLATFORM run of ours (no org: the dispatch queue is the fleet's). FACTORY-P3 next outcomes: a send selection's
+ * run (`dispatch-selection`), the stored script's run its child. Spends nothing. Throws on failure.
+ */
+export async function createPlatformRun(taskName: string): Promise<{ id: string }> {
+  const response = await fetch(`${RUNS_SERVICE_URL}/v1/platform-runs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": RUNS_SERVICE_API_KEY, "x-service-name": "instantly-service" },
+    body: JSON.stringify({ serviceName: "instantly-service", taskName }),
+  });
+  if (!response.ok) throw new Error(`runs-service POST /v1/platform-runs failed: ${response.status} - ${await response.text()}`);
+  return (await response.json()) as { id: string };
+}
+
+export async function closePlatformRun(runId: string, status: "completed" | "failed"): Promise<void> {
+  const response = await fetch(`${RUNS_SERVICE_URL}/v1/platform-runs/${runId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "X-API-Key": RUNS_SERVICE_API_KEY, "x-service-name": "instantly-service" },
+    body: JSON.stringify({ status }),
+  });
+  if (!response.ok) throw new Error(`runs-service PATCH /v1/platform-runs/${runId} failed: ${response.status} - ${await response.text()}`);
+}
