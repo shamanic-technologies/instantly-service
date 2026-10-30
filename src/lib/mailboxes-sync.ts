@@ -225,7 +225,7 @@ function toDate(value: unknown): Date | null {
 
 /** Read every input from its own source, derive, upsert. */
 export async function syncMailboxes(caller: CallerInfo): Promise<MailboxSyncSummary> {
-  const entries = await loadMailboxLoginEntries(caller);
+  const entries = await loadMailboxLoginEntries(caller, { onVendorRefusal: "throw" });
   const credentials: CredentialInput[] = [...entries].map(([address, e]) => ({
     address,
     login: e.login,

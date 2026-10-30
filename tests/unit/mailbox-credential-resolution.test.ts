@@ -33,6 +33,9 @@ import {
   loginFor,
   loadMailboxLogins,
   loadCredentialedMailboxes,
+  loadMailboxLoginEntries,
+  currentVendorRefusals,
+  resetVendorRefusals,
 } from "../../src/lib/self-send/mailbox-credentials";
 
 const CALLER = { method: "POST", path: "/test" } as const;
@@ -51,6 +54,7 @@ function manualKey(entries: unknown[]): string {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  resetVendorRefusals();
   mockListPrimeforgeRawMailboxes.mockResolvedValue([
     { address: "kevin@boostdistribute.com", appPassword: "abcd efgh ijkl mnop" },
   ]);
@@ -219,5 +223,91 @@ describe("loadMailboxLogins", () => {
     const logins = await loadMailboxLogins(CALLER);
     const addresses = await loadCredentialedMailboxes(CALLER);
     expect(addresses).toEqual(new Set(logins.keys()));
+  });
+});
+
+// SEND-PRIMEFORGE-402-1030 — prod 2026-10-29 ~15:00 UTC: Primeforge answered
+// 402 "active subscription required", this loader threw, and every send of every
+// client failed, Gandi mailboxes included. A vendor refusing us takes out ITS
+// mailboxes only, loudly.
+describe("a mailbox vendor refusing us (SEND-PRIMEFORGE-402-1030)", () => {
+  const PRIMEFORGE_402 = new Error(
+    'Primeforge GET /mailboxes?limit=100&offset=0 failed: 402 - {"message":"active subscription required"}',
+  );
+
+  beforeEach(() => {
+    mockResolvePlatformKey.mockImplementation(async (provider: string) =>
+      provider === MANUAL_CREDENTIALS_PROVIDER ? manualKey([GANDI_ALIAS]) : "pf-key",
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("keeps every manual (Gandi/Mailforge) mailbox and drops only Primeforge's", async () => {
+    mockListPrimeforgeRawMailboxes.mockRejectedValue(PRIMEFORGE_402);
+
+    const logins = await loadMailboxLogins(CALLER);
+
+    expect([...logins.keys()]).toEqual(["kevinl@marketingagency.life"]);
+    expect(logins.has("kevin@boostdistribute.com")).toBe(false);
+  });
+
+  it("stays loud: the refusal is logged and served verbatim with when it began", async () => {
+    mockListPrimeforgeRawMailboxes.mockRejectedValue(PRIMEFORGE_402);
+
+    await loadMailboxLogins(CALLER);
+    const first = currentVendorRefusals();
+    await loadMailboxLogins(CALLER);
+    const second = currentVendorRefusals();
+
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("Primeforge REFUSED us"));
+    expect(second).toHaveLength(1);
+    expect(second[0].vendor).toBe("primeforge");
+    expect(second[0].error).toContain('402 - {"message":"active subscription required"}');
+    // The streak keeps its start.
+    expect(second[0].since).toBe(first[0].since);
+  });
+
+  it("a key-service failure for the Primeforge key is the same: that vendor only", async () => {
+    mockResolvePlatformKey.mockImplementation(async (provider: string) => {
+      if (provider === MANUAL_CREDENTIALS_PROVIDER) return manualKey([GANDI_ALIAS]);
+      throw new KeyServiceError(503, "key-service unavailable");
+    });
+
+    const logins = await loadMailboxLogins(CALLER);
+    expect([...logins.keys()]).toEqual(["kevinl@marketingagency.life"]);
+    expect(currentVendorRefusals()).toHaveLength(1);
+  });
+
+  it("clears the refusal the moment the vendor answers again", async () => {
+    mockListPrimeforgeRawMailboxes.mockRejectedValueOnce(PRIMEFORGE_402);
+    await loadMailboxLogins(CALLER);
+    expect(currentVendorRefusals()).toHaveLength(1);
+
+    mockListPrimeforgeRawMailboxes.mockResolvedValue([
+      { address: "kevin@boostdistribute.com", appPassword: "abcd efgh ijkl mnop" },
+    ]);
+    const logins = await loadMailboxLogins(CALLER);
+    expect(logins.has("kevin@boostdistribute.com")).toBe(true);
+    expect(currentVendorRefusals()).toEqual([]);
+  });
+
+  it("every vendor healthy: nothing recorded, both vendors in the map", async () => {
+    const logins = await loadMailboxLogins(CALLER);
+    expect(logins.has("kevinl@marketingagency.life")).toBe(true);
+    expect(logins.has("kevin@boostdistribute.com")).toBe(true);
+    expect(currentVendorRefusals()).toEqual([]);
+  });
+
+  it("the provenance writer (mailbox sync) still fails loud: it must not rewrite Primeforge rows as credential-less", async () => {
+    mockListPrimeforgeRawMailboxes.mockRejectedValue(PRIMEFORGE_402);
+    await expect(
+      loadMailboxLoginEntries(CALLER, { onVendorRefusal: "throw" }),
+    ).rejects.toThrow("402");
+    expect(currentVendorRefusals()).toHaveLength(1);
+  });
+
+  it("the manual layer failing is NOT a vendor refusal: it still fails the whole read", async () => {
+    mockResolvePlatformKey.mockRejectedValue(new KeyServiceError(500, "boom"));
+    await expect(loadMailboxLogins(CALLER)).rejects.toThrow("boom");
   });
 });

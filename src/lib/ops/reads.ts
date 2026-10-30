@@ -25,7 +25,7 @@ import { fetchQueueBreakdownByAccount, fetchQueueSizeByAccount } from "../accoun
 import { fetchRecentDailyVolume, sustainedForMailbox } from "../recent-send-volume";
 import { warmupBudgetFor } from "../warmup/plan";
 import { computeCapacitySummary } from "../sending-forecast";
-import { loadMailboxLogins } from "../self-send/mailbox-credentials";
+import { currentVendorRefusals, loadMailboxLogins } from "../self-send/mailbox-credentials";
 import type { CallerInfo } from "../key-client";
 import { loadAccountHealth } from "./account-health-read";
 import {
@@ -528,6 +528,12 @@ export async function readInfra(caller: CallerInfo, asOf: Date = new Date()) {
     },
     pools: perPool,
     exclusions: policies,
+    /**
+     * Mailbox vendors refusing us right now (read fresh by `loadMailboxLogins`
+     * above): their mailboxes are out of the send pool, every other vendor
+     * sends on. Empty = every vendor answered. Red on Monitoring when non-empty.
+     */
+    vendorRefusals: currentVendorRefusals(),
   };
 }
 
