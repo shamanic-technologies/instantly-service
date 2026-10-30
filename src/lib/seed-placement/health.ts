@@ -13,7 +13,10 @@
  *   - the newest test that graded a gate provider (anything but Microsoft) is
  *     older than {@link SEED_TEST_OVERDUE_AGE_DAYS}: the weekly cadence missed;
  *   - or no Google receiver can be read today (their vendor refusing us): the
- *     next test cannot grade the gate, whatever the calendar says.
+ *     next test cannot grade the gate, whatever the calendar says;
+ *   - or a Microsoft receiver can no longer be read (its token refused for
+ *     more than {@link MICROSOFT_RECEIVER_STALE_DAYS} days): prod 2026-10-25,
+ *     the Microsoft 365 one read 0 of 227 seeds, refused since 10-19.
  * The registry also turns the check red on its own when this service stops
  * reporting (3 x the hourly cadence). Never an email.
  */
@@ -24,6 +27,7 @@ import { currentVendorRefusals } from "../self-send/mailbox-credentials";
 import { loadSeedCredentialResolver } from "./credentials";
 import { MAX_SEED_RECEIVERS, selectSeedReceivers } from "./seeds";
 import { fetchLastSeedTestAt } from "./run";
+import { listMicrosoftSeedMailboxes } from "./microsoft-oauth";
 import { SEED_TEST_INTERVAL_DAYS } from "./due";
 
 /**
@@ -32,6 +36,9 @@ import { SEED_TEST_INTERVAL_DAYS } from "./due";
  * the day the sync takes to read it.
  */
 export const SEED_TEST_OVERDUE_AGE_DAYS = SEED_TEST_INTERVAL_DAYS + 2;
+
+/** A Microsoft receiver whose token has not refreshed for this long is broken (refreshed daily after each sync). */
+export const MICROSOFT_RECEIVER_STALE_DAYS = 2;
 
 export const SEED_PLACEMENT_CHECK = "seed-placement-test";
 export const SEED_PLACEMENT_CHECK_LABEL = "Inbox placement test";
@@ -44,6 +51,8 @@ export interface SeedPlacementHealthInput {
   googleReceivers: number;
   /** Vendors refusing us right now, with their verbatim answer. */
   vendorRefusals: ReadonlyArray<{ vendor: string; error: string; since: string }>;
+  /** Every Microsoft receiver on file (a pending or never-authorized one is not a receiver yet). */
+  microsoftReceivers: ReadonlyArray<{ email: string; status: string; lastRefreshedAt: string | null; lastError: string | null }>;
   asOf: Date;
 }
 
@@ -73,6 +82,17 @@ export function judgeSeedPlacementHealth(input: SeedPlacementHealthInput): SeedP
       `No Google mailbox can receive test emails${refusal ? `: ${refusal}` : ""}. The next test cannot grade any mailbox at Google`,
     );
   }
+  for (const r of input.microsoftReceivers) {
+    const refreshedAgeDays = r.lastRefreshedAt
+      ? (input.asOf.getTime() - new Date(r.lastRefreshedAt).getTime()) / MS_PER_DAY
+      : null;
+    const dead = r.status === "expired" || (r.status === "authorized" && r.lastError !== null && (refreshedAgeDays === null || refreshedAgeDays > MICROSOFT_RECEIVER_STALE_DAYS));
+    if (dead) {
+      problems.push(
+        `Microsoft test mailbox ${r.email} cannot be read${r.lastRefreshedAt ? ` since ${r.lastRefreshedAt.slice(0, 10)}` : ""}${r.lastError ? ` (${r.lastError.slice(0, 160)})` : ""}`,
+      );
+    }
+  }
   if (ageDays === null || ageDays > SEED_TEST_OVERDUE_AGE_DAYS) {
     problems.push(`The weekly test stopped: ${lastWords}, limit ${SEED_TEST_OVERDUE_AGE_DAYS} days`);
   }
@@ -98,9 +118,9 @@ export async function readSeedPlacementHealth(asOf: Date = new Date()): Promise<
   // The receivers first: reading them refreshes the vendor refusal state.
   const googleReceivers = await countGoogleReceivers();
   // The same "last test" the cadence decides on: one that graded a gate provider.
-  const lastGateTestAt = await fetchLastSeedTestAt();
+  const [lastGateTestAt, microsoftReceivers] = await Promise.all([fetchLastSeedTestAt(), listMicrosoftSeedMailboxes()]);
   return {
-    ...judgeSeedPlacementHealth({ lastGateTestAt, googleReceivers, vendorRefusals: currentVendorRefusals(), asOf }),
+    ...judgeSeedPlacementHealth({ lastGateTestAt, googleReceivers, vendorRefusals: currentVendorRefusals(), microsoftReceivers, asOf }),
     googleReceivers,
   };
 }
