@@ -27,6 +27,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../../db";
 import { htmlToText, type ImapThreadMessage, type ThreadMessage } from "../forward-positive-reply";
 import { sentAttachmentsOf, type SentAttachment } from "../offer-documents";
+import { logUnsignedSteps, sentBodyHtml, type SentBody } from "./sent-body";
 
 /**
  * Every message of one self-dispatched conversation, oldest first.
@@ -52,10 +53,18 @@ export async function fetchSelfSendThread(
       d.dispatched_at                     AS "at",
       d.id                                AS "dispatchId",
       (d.step > 0)                        AS "sequenceStep",
-      d.payload->'attachments'            AS "attachments"
+      d.payload->'attachments'            AS "attachments",
+      sm.message_inputs->'built'->>'html' AS "sentHtml",
+      c.signature_html                    AS "pinnedSignatureHtml",
+      (a.email IS NOT NULL)               AS "accountKnown",
+      a.first_name                        AS "accountFirstName",
+      a.last_name                         AS "accountLastName"
     FROM smtp_dispatch_raw d
     LEFT JOIN sequence_steps s
       ON s.instantly_campaign_id = d.instantly_campaign_id AND s.step = d.step
+    LEFT JOIN smtp_sent_messages sm ON sm.dispatch_id = d.id
+    LEFT JOIN instantly_campaigns c ON c.instantly_campaign_id = d.instantly_campaign_id
+    LEFT JOIN instantly_accounts a ON a.email = d.account_email
     WHERE d.instantly_campaign_id = ${instantlyCampaignId}
       AND d.outcome = 'sent'
 
@@ -70,7 +79,12 @@ export async function fetchSelfSendThread(
       COALESCE(m.received_at, m.polled_at)             AS "at",
       NULL                                             AS "dispatchId",
       false                                            AS "sequenceStep",
-      NULL::jsonb                                      AS "attachments"
+      NULL::jsonb                                      AS "attachments",
+      NULL                                             AS "sentHtml",
+      NULL                                             AS "pinnedSignatureHtml",
+      NULL::boolean                                    AS "accountKnown",
+      NULL                                             AS "accountFirstName",
+      NULL                                             AS "accountLastName"
     FROM imap_messages_raw m
     WHERE m.instantly_campaign_id = ${instantlyCampaignId}
       AND m.kind IN ('reply', 'auto_reply')
@@ -88,7 +102,12 @@ export async function fetchSelfSendThread(
       COALESCE(m.received_at, m.polled_at)             AS "at",
       NULL                                             AS "dispatchId",
       false                                            AS "sequenceStep",
-      NULL::jsonb                                      AS "attachments"
+      NULL::jsonb                                      AS "attachments",
+      NULL                                             AS "sentHtml",
+      NULL                                             AS "pinnedSignatureHtml",
+      NULL::boolean                                    AS "accountKnown",
+      NULL                                             AS "accountFirstName",
+      NULL                                             AS "accountLastName"
     FROM imap_messages_raw m
     WHERE m.instantly_campaign_id = ${instantlyCampaignId}
       AND m.kind = 'staff_reply'
@@ -96,7 +115,40 @@ export async function fetchSelfSendThread(
     ORDER BY "at"
   `);
 
-  return (result.rows as Record<string, unknown>[]).map(toThreadMessage);
+  return withSentBodies(instantlyCampaignId, result.rows as Record<string, unknown>[]).map(
+    toThreadMessage,
+  );
+}
+
+/**
+ * Every row WE dispatched carries the body the prospect received, signature
+ * included (UNIBOX-SIGNED-BODY-1030, `sent-body.ts`): the stored step body is
+ * unsigned, the signature is added at dispatch. Rows not dispatched by us
+ * (inbound, a staff answer read over IMAP) pass through untouched.
+ */
+function withSentBodies(
+  instantlyCampaignId: string,
+  rows: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  const served: { body: SentBody; dispatchId: string }[] = [];
+  const out = rows.map((row) => {
+    if (typeof row.dispatchId !== "string" || row.dispatchId.length === 0) return row;
+    const body = sentBodyHtml({
+      bodyHtml: String(row.bodyHtml ?? ""),
+      sentHtml: typeof row.sentHtml === "string" ? row.sentHtml : null,
+      sequenceStep: row.sequenceStep === true,
+      dispatchedAt: (row.at as Date | string | null) ?? null,
+      pinnedSignatureHtml: typeof row.pinnedSignatureHtml === "string" ? row.pinnedSignatureHtml : null,
+      accountKnown: row.accountKnown === true,
+      accountEmail: String(row.from ?? ""),
+      accountFirstName: typeof row.accountFirstName === "string" ? row.accountFirstName : null,
+      accountLastName: typeof row.accountLastName === "string" ? row.accountLastName : null,
+    });
+    served.push({ body, dispatchId: row.dispatchId });
+    return { ...row, bodyHtml: body.bodyHtml };
+  });
+  logUnsignedSteps(instantlyCampaignId, served);
+  return out;
 }
 
 /**
@@ -168,16 +220,24 @@ export async function fetchOwnDispatchedMessages(
       d.id                                               AS "dispatchId",
       (d.step > 0)                                       AS "sequenceStep",
       d.payload->>'instantlyEmailId'                     AS "instantlyEmailId",
-      d.payload->'attachments'                           AS "attachments"
+      d.payload->'attachments'                           AS "attachments",
+      sm.message_inputs->'built'->>'html'                AS "sentHtml",
+      c.signature_html                                   AS "pinnedSignatureHtml",
+      (a.email IS NOT NULL)                              AS "accountKnown",
+      a.first_name                                       AS "accountFirstName",
+      a.last_name                                        AS "accountLastName"
     FROM smtp_dispatch_raw d
     LEFT JOIN sequence_steps s
       ON s.instantly_campaign_id = d.instantly_campaign_id AND s.step = d.step
+    LEFT JOIN smtp_sent_messages sm ON sm.dispatch_id = d.id
+    LEFT JOIN instantly_campaigns c ON c.instantly_campaign_id = d.instantly_campaign_id
+    LEFT JOIN instantly_accounts a ON a.email = d.account_email
     WHERE d.instantly_campaign_id = ${instantlyCampaignId}
       AND d.outcome = 'sent'
     ORDER BY d.dispatched_at
   `);
 
-  return (result.rows as Record<string, unknown>[]).map((row) => ({
+  return withSentBodies(instantlyCampaignId, result.rows as Record<string, unknown>[]).map((row) => ({
     instantlyEmailId:
       typeof row.instantlyEmailId === "string" && row.instantlyEmailId.length > 0
         ? row.instantlyEmailId
