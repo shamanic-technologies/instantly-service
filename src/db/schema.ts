@@ -2250,6 +2250,22 @@ export const senderHealthDaily = pgTable("sender_health_daily", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
+// How many mailboxes the sender could hand a new email to, per UTC day and send
+// pool (lib/send-pool-daily.ts, migration 0100, SEND-POOL-VENDOR-402-1030).
+export const sendPoolDaily = pgTable(
+  "send_pool_daily",
+  {
+    day: date("day").notNull(),
+    pool: text("pool").notNull(),
+    sendableMin: integer("sendable_min").notNull(),
+    sendableLast: integer("sendable_last").notNull(),
+    byVendor: jsonb("by_vendor").default(sql`'{}'::jsonb`).notNull(),
+    samples: integer("samples").default(1).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ name: "send_pool_daily_pk", columns: [table.day, table.pool] })],
+);
+
 // One fall of inbox placement at one inbox provider below the market bar, among
 // the mailboxes still allowed to mail it (lib/placement-alert.ts, migration
 // 0087, MAILBOX-MONITORING-1019). The staff alert fires once per row. The
