@@ -22,12 +22,11 @@ import { type CallerInfo } from "../key-client";
 import {
   MailboxCredentialError,
   loadManualCredentials,
+  loadPrimeforgeMailboxes,
   selectMailboxCredential,
   selectManualCredential,
   type MailboxCredential,
 } from "../self-send/mailbox-credentials";
-import { resolvePlatformKey } from "../key-client";
-import { listPrimeforgeRawMailboxes } from "../providers/primeforge-client";
 
 // Re-exported so the manual-credential vocabulary keeps ONE home while callers
 // (and their tests) can reach it from either module.
@@ -66,8 +65,12 @@ export async function loadSeedCredentialResolver(
   caller: CallerInfo,
 ): Promise<SeedCredentialResolver> {
   const manual = await loadManualCredentials(caller);
-  const primeforgeKey = await resolvePlatformKey("primeforge", caller);
-  const mailboxes = await listPrimeforgeRawMailboxes(primeforgeKey);
+  // A vendor refusing us (Primeforge 402 "active subscription required" since
+  // 2026-10-29) takes out ITS mailboxes only, loudly, exactly as on the send
+  // path (GANDI-OPEN-1030). The unguarded read threw here, so the next weekly
+  // test would have died before sending a single seed and the Gandi mailboxes
+  // (manual credentials) and the Microsoft receivers would go unmeasured too.
+  const mailboxes = await loadPrimeforgeMailboxes(caller, "skip");
 
   return (email: string): MailboxCredential | null => {
     // Manual wins, so an operator can override a vendor-reported password

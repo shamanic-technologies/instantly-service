@@ -307,6 +307,14 @@ async function start() {
         const message = errorMessage(err);
         console.error(`[instantly-service] failed to start placement-alert worker: ${message}`);
       });
+    // Is the seed placement test still measuring? Red on Monitoring when the
+    // weekly test missed or no Google receiver is readable (GANDI-OPEN-1030).
+    import("./lib/seed-placement-health-worker")
+      .then(({ startSeedPlacementHealthWorker }) => startSeedPlacementHealthWorker())
+      .catch((err: unknown) => {
+        const message = errorMessage(err);
+        console.error(`[instantly-service] failed to start seed-placement-health worker: ${message}`);
+      });
     // Copy of lead-service's lead provenance for GET /internal/lead-source-yield
     // (SOURCE-YIELD-1016). Armed after listen.
     import("./lib/lead-provenance-sync-worker")

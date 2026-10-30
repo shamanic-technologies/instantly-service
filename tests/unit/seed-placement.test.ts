@@ -452,6 +452,21 @@ describe("loadSeedCredentialResolver", () => {
 
     await expect(loadSeedCredentialResolver(caller)).rejects.toThrow(/unauthorized/);
   });
+
+  it("a REFUSING Primeforge (402) drops only its mailboxes: the Gandi ones are still measured (GANDI-OPEN-1030)", async () => {
+    // Prod 2026-10-29: Primeforge answered 402 "active subscription required";
+    // the unguarded read threw, so the next weekly test would have sent nothing.
+    mocks.resolvePlatformKey.mockImplementation(async (provider: string) =>
+      provider === MANUAL_CREDENTIALS_PROVIDER ? manualPayload : "pf-key",
+    );
+    mocks.listPrimeforgeRawMailboxes.mockRejectedValue(
+      new Error('402 - {"message":"active subscription required"}'),
+    );
+
+    const resolve = await loadSeedCredentialResolver(caller);
+    expect(resolve("klourd@pressbeat.ai")).toMatchObject({ imapHost: "mail.gandi.net" });
+    expect(resolve("amy@growdistribute.com")).toBeNull();
+  });
 });
 
 describe("alias logins (authUser)", () => {

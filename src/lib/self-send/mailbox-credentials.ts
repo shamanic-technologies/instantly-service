@@ -287,7 +287,7 @@ export function resetVendorRefusals(): void {
  * sync): there a missing vendor would rewrite every Primeforge row as
  * credential-less.
  */
-async function loadPrimeforgeMailboxes(
+export async function loadPrimeforgeMailboxes(
   caller: CallerInfo,
   onRefusal: "skip" | "throw",
 ): Promise<PrimeforgeRawMailbox[]> {
