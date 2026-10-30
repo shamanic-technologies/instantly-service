@@ -895,18 +895,33 @@ async function preferBounceBudget(
   return affordable.length > 0 ? affordable : accounts;
 }
 
+/**
+ * The mailboxes a NEW sequence can be given right now, for one pool (a reserved
+ * feature slug, or null = the shared pool every org sends from). ONE chain, read
+ * by the sender AND by Monitoring (`sendPools` on `/internal/ops/infra`), so the
+ * hub can never say "35 healthy" while the sender finds none (2026-10-29/30: 35
+ * in production, 0 sendable, every org's send refused).
+ *
+ * Only mailboxes we can send from ourselves: the Instantly plan is gone, so a
+ * mailbox without a credential would take the lead and never send it. … and
+ * never a mailbox whose replies we cannot read (`inbound-blindness.ts`): a
+ * prospect who answers there is invisible and keeps getting follow-ups.
+ */
+export async function fetchSendablePool(
+  featureSlug: string | null,
+  caller: { method: string; path: string },
+): Promise<PooledAccount[]> {
+  return dropInboundBlind(
+    await keepSelfSendCapable(await fetchInProductionAccounts(featureSlug), caller),
+    caller,
+  );
+}
+
 export async function selectSendingAccount(
   opts: SelectAccountOptions = {},
 ): Promise<PooledAccount | null> {
-  // Only mailboxes we can send from ourselves: the Instantly plan is gone, so a
-  // mailbox without a credential would take the lead and never send it.
-  // … and never a mailbox whose replies we cannot read (`inbound-blindness.ts`):
-  // a prospect who answers there is invisible and keeps getting follow-ups.
   const caller = { method: "POST", path: "/orgs/send" };
-  const accounts = await dropInboundBlind(
-    await keepSelfSendCapable(await fetchInProductionAccounts(opts.featureSlug ?? null), caller),
-    caller,
-  );
+  const accounts = await fetchSendablePool(opts.featureSlug ?? null, caller);
   if (accounts.length === 0) return null;
 
   if (opts.preferAccountEmail) {
