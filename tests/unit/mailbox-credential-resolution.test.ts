@@ -26,6 +26,13 @@ vi.mock("../../src/lib/providers/primeforge-client", () => ({
   listPrimeforgeRawMailboxes: (...a: unknown[]) => mockListPrimeforgeRawMailboxes(...a),
 }));
 
+// The listing the infra sync last stored (bronze). Empty by default: a refusal
+// with nothing stored takes the vendor's mailboxes out.
+const mockLoadLastPrimeforgeListing = vi.fn();
+vi.mock("../../src/lib/self-send/primeforge-last-listing", () => ({
+  loadLastPrimeforgeListing: (...a: unknown[]) => mockLoadLastPrimeforgeListing(...a),
+}));
+
 import {
   MANUAL_CREDENTIALS_PROVIDER,
   MailboxCredentialError,
@@ -55,6 +62,7 @@ function manualKey(entries: unknown[]): string {
 beforeEach(() => {
   vi.resetAllMocks();
   resetVendorRefusals();
+  mockLoadLastPrimeforgeListing.mockResolvedValue({ fetchedAt: null, mailboxes: [] });
   mockListPrimeforgeRawMailboxes.mockResolvedValue([
     { address: "kevin@boostdistribute.com", appPassword: "abcd efgh ijkl mnop" },
   ]);
@@ -304,6 +312,48 @@ describe("a mailbox vendor refusing us (SEND-PRIMEFORGE-402-1030)", () => {
       loadMailboxLoginEntries(CALLER, { onVendorRefusal: "throw" }),
     ).rejects.toThrow("402");
     expect(currentVendorRefusals()).toHaveLength(1);
+  });
+
+  // SEND-POOL-VENDOR-402-1030 — the 402 is a refusal of Primeforge's API, not
+  // of its mailboxes: their app passwords kept authenticating Gmail (IMAP LOGIN
+  // OK 2026-10-30). Dropping them emptied the pool for every org, since every
+  // in-production mailbox was Primeforge's.
+  it("serves the listing Primeforge last gave us: its mailboxes keep their credential", async () => {
+    mockListPrimeforgeRawMailboxes.mockRejectedValue(PRIMEFORGE_402);
+    mockLoadLastPrimeforgeListing.mockResolvedValue({
+      fetchedAt: "2026-10-29T11:22:12.532Z",
+      mailboxes: [{ address: "kevin@boostdistribute.com", appPassword: "abcd efgh ijkl mnop" }],
+    });
+
+    const logins = await loadMailboxLogins(CALLER);
+    expect(logins.has("kevinl@marketingagency.life")).toBe(true);
+    expect(logins.has("kevin@boostdistribute.com")).toBe(true);
+
+    const credential = await resolveMailboxCredential("kevin@boostdistribute.com", CALLER);
+    expect(credential.appPassword).toBe("abcdefghijklmnop");
+    expect(credential.smtpHost).toBe("smtp.gmail.com");
+
+    // Still loud: the refusal is served, with the listing it sends on.
+    const [refusal] = currentVendorRefusals();
+    expect(refusal.vendor).toBe("primeforge");
+    expect(refusal.lastListingAt).toBe("2026-10-29T11:22:12.532Z");
+    expect(refusal.lastListingMailboxes).toBe(1);
+  });
+
+  it("the stored listing unreadable: only Primeforge's mailboxes leave, loudly", async () => {
+    mockListPrimeforgeRawMailboxes.mockRejectedValue(PRIMEFORGE_402);
+    mockLoadLastPrimeforgeListing.mockRejectedValue(new Error("db down"));
+
+    const logins = await loadMailboxLogins(CALLER);
+    expect([...logins.keys()]).toEqual(["kevinl@marketingagency.life"]);
+    expect(currentVendorRefusals()[0].lastListingAt).toBeNull();
+  });
+
+  it("the send path on a refusal with nothing stored still throws for a Primeforge mailbox", async () => {
+    mockListPrimeforgeRawMailboxes.mockRejectedValue(PRIMEFORGE_402);
+    await expect(resolveMailboxCredential("kevin@boostdistribute.com", CALLER)).rejects.toThrow(
+      MailboxCredentialError,
+    );
   });
 
   it("the manual layer failing is NOT a vendor refusal: it still fails the whole read", async () => {
