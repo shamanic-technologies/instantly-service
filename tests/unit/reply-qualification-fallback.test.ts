@@ -13,8 +13,11 @@ vi.mock("../../src/lib/mirror-emails", () => ({
 }));
 
 const mockFetchInbound = vi.fn();
+const mockRecordOptOut = vi.fn();
 vi.mock("../../src/lib/reply-opt-out", () => ({
+  OPT_OUT_REPLY_KIND: "lead_opt_out_requested",
   fetchLatestMirroredInbound: (...a: unknown[]) => mockFetchInbound(...a),
+  recordOptOutFromReply: (...a: unknown[]) => mockRecordOptOut(...a),
 }));
 
 const mockPromote = vi.fn();
@@ -320,5 +323,43 @@ describe("runReplyQualificationFallback — the sweep", () => {
     expect(summary.failed).toBe(0);
     expect(mockSendEmail).not.toHaveBeenCalled();
     expect(mockPromote).not.toHaveBeenCalled();
+  });
+});
+
+describe("qualifyOneReply: the body only OUR mailbox holds (VENDOR-CREDIT-1030)", () => {
+  // Prod 2026-10-29: the IMAP poller read Jordan's reply on a real Instantly
+  // sequence, its judgment got DeepSeek's 402, and this sweep then logged
+  // noBody every tick: the Instantly mirror held nothing.
+  it("reads the reply from imap_messages_raw and promotes it as the poller would", async () => {
+    mockFetchInbound.mockResolvedValue(null);
+    mockDbExecute.mockResolvedValueOnce(pgResult([{ id: "imap-1", subject: "Re: Podcast guest", text: "For other clients, sure." }]));
+    mockQualify.mockResolvedValue("lead_not_interested");
+
+    const outcome = await qualifyOneReply(reply());
+
+    expect(outcome).toEqual({ classified: true, eventType: "lead_not_interested" });
+    const text = extractSqlText(mockDbExecute.mock.calls[0]?.[0]);
+    expect(text).toContain("FROM imap_messages_raw");
+    expect(text).toContain("kind = 'reply'");
+    expect(mockQualify).toHaveBeenCalledWith("For other clients, sure.", expect.objectContaining({ subject: "Re: Podcast guest" }));
+    expect(mockPromote).toHaveBeenCalledWith(expect.objectContaining({ source: "self_send", sourceRowId: "imap-1", eventType: "lead_not_interested" }));
+    expect(mockRecordOptOut).not.toHaveBeenCalled();
+  });
+
+  it("records the opt-out consent when the reply asks us to stop", async () => {
+    mockFetchInbound.mockResolvedValue(null);
+    mockDbExecute.mockResolvedValueOnce(pgResult([{ id: "imap-2", subject: null, text: "STOP" }]));
+    mockQualify.mockResolvedValue("lead_opt_out_requested");
+
+    await qualifyOneReply(reply());
+
+    expect(mockRecordOptOut).toHaveBeenCalledWith(expect.objectContaining({ qualification: "lead_opt_out_requested", replyText: "STOP" }));
+  });
+
+  it("still says no_body when neither mirror holds the words", async () => {
+    mockFetchInbound.mockResolvedValue(null);
+    mockDbExecute.mockResolvedValueOnce(pgResult([]));
+    expect(await qualifyOneReply(reply())).toEqual({ classified: false, reason: "no_body" });
+    expect(mockQualify).not.toHaveBeenCalled();
   });
 });
