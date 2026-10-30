@@ -11,7 +11,7 @@ vi.mock("../../src/lib/ops/account-health-read", () => ({ loadAccountHealth: vi.
 vi.mock("../../src/lib/infra-gold", () => ({ loadEffectiveRates: vi.fn(), loadInventoryDomains: vi.fn() }));
 vi.mock("../../src/lib/account-lifecycle-sync", () => ({ fetchLatestDeliveryByAccount: vi.fn(), fetchLifecycleByEmail: vi.fn(), TESTABLE_MIN_AGE_DAYS: 7 }));
 vi.mock("../../src/lib/recent-send-volume", () => ({ fetchRecentDailyVolume: vi.fn(), sustainedForMailbox: vi.fn() }));
-vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({ loadMailboxLogins: vi.fn() }));
+vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({ loadMailboxLogins: vi.fn(), currentVendorRefusals: () => [] }));
 
 import opsRoutes from "../../src/routes/ops";
 import { clearStatsCache } from "../../src/lib/stats-cache";

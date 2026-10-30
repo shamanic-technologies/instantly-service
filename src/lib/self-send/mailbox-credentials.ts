@@ -26,7 +26,10 @@
  * the one nobody remembers to update is the one that breaks.
  *
  * Fail loud throughout: a mailbox we cannot authenticate must abort the send,
- * never degrade to some other sender.
+ * never degrade to some other sender. One exception, by design: a VENDOR that
+ * refuses to list our mailboxes (Primeforge 402) takes only ITS mailboxes out of
+ * the fleet maps, loudly (see `loadPrimeforgeMailboxes`), so the other vendors'
+ * mailboxes keep sending.
  */
 
 import { errorMessage } from "../db-error.js";
@@ -211,10 +214,13 @@ export interface MailboxLoginEntry {
  */
 export async function loadMailboxLoginEntries(
   caller: CallerInfo,
+  options: { onVendorRefusal?: "skip" | "throw" } = {},
 ): Promise<Map<string, MailboxLoginEntry>> {
   const manual = await loadManualCredentials(caller);
-  const key = await resolvePlatformKey("primeforge", caller);
-  const mailboxes = await listPrimeforgeRawMailboxes(key);
+  const mailboxes = await loadPrimeforgeMailboxes(
+    caller,
+    options.onVendorRefusal ?? "skip",
+  );
 
   const logins = new Map<string, MailboxLoginEntry>();
 
@@ -234,6 +240,77 @@ export async function loadMailboxLoginEntries(
     }
   }
   return logins;
+}
+
+// ─── Vendor refusals (SEND-PRIMEFORGE-402-1030) ─────────────────────────────
+
+/**
+ * A mailbox vendor whose API refused to list our mailboxes, as last seen by
+ * THIS replica. Cleared the moment the vendor answers again.
+ */
+export interface VendorRefusal {
+  vendor: "primeforge";
+  /** The vendor's answer, verbatim (e.g. `402 - {"message":"active subscription required"}`). */
+  error: string;
+  /** First refusal of the current streak. */
+  since: string;
+  /** Latest refusal. */
+  lastSeenAt: string;
+}
+
+const vendorRefusals = new Map<VendorRefusal["vendor"], VendorRefusal>();
+
+/** Every vendor currently refusing us (empty = every vendor answered on its last read). */
+export function currentVendorRefusals(): VendorRefusal[] {
+  return [...vendorRefusals.values()];
+}
+
+/** Test seam: forget every recorded refusal. */
+export function resetVendorRefusals(): void {
+  vendorRefusals.clear();
+}
+
+/**
+ * Primeforge's mailbox list, or NOTHING when Primeforge refuses us.
+ *
+ * ⚠️ One vendor refusing us (402 "active subscription required", 401, 5xx,
+ * timeout) must take out ITS mailboxes only, never the whole fleet. Prod
+ * 2026-10-29 ~15:00 UTC: Primeforge answered 402, this read threw, and with it
+ * every `POST /orgs/send` and every dispatch tick, so the 42 Gandi mailboxes
+ * (manual credentials, cheapest fill rank) sent nothing either, for every
+ * client. A Primeforge mailbox missing from the map is simply not credentialed:
+ * it gets no capacity row, takes no new sequence, and its queued first emails
+ * are rehomed (dispatch rule). The refusal stays LOUD: `console.error` on every
+ * read and `currentVendorRefusals()` served on the Monitoring infra read.
+ *
+ * `throw` is for a caller that WRITES the credential provenance (the mailbox
+ * sync): there a missing vendor would rewrite every Primeforge row as
+ * credential-less.
+ */
+async function loadPrimeforgeMailboxes(
+  caller: CallerInfo,
+  onRefusal: "skip" | "throw",
+): Promise<PrimeforgeRawMailbox[]> {
+  try {
+    const key = await resolvePlatformKey("primeforge", caller);
+    const mailboxes = await listPrimeforgeRawMailboxes(key);
+    vendorRefusals.delete("primeforge");
+    return mailboxes;
+  } catch (error) {
+    const now = new Date().toISOString();
+    const message = errorMessage(error);
+    vendorRefusals.set("primeforge", {
+      vendor: "primeforge",
+      error: message,
+      since: vendorRefusals.get("primeforge")?.since ?? now,
+      lastSeenAt: now,
+    });
+    if (onRefusal === "throw") throw error;
+    console.error(
+      `[instantly-service] mailbox-credentials: Primeforge REFUSED us, its mailboxes are out of the send pool, every other vendor sends on: ${message}`,
+    );
+    return [];
+  }
 }
 
 // ─── Manual credentials (non-Primeforge mailboxes) ──────────────────────────
