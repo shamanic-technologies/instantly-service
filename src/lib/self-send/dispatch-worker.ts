@@ -34,6 +34,7 @@ import { runOrphanReplySweep } from "./orphan-reply-sweep";
 import { runDsnJudgmentSweep } from "./dsn-judgment-sweep";
 import { dispatchMessage, SmtpDispatchError } from "./smtp";
 import { buildSendDecision, type SendTrigger } from "./send-decision";
+import { selectionToSend } from "./send-select-script";
 import { recordSentMessage } from "./send-record";
 import {
   classifyPermanentFailure,
@@ -890,11 +891,13 @@ async function runDispatchExclusive(
     const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
     // Fresh per selection (never the 60 s cache): the budget is spent in memory
     // as steps are planned, so it must start from what has really happened.
-    const bounceBudget = new BounceBudget(await loadFleetBounceHistory());
+    const bounceHistory = await loadFleetBounceHistory();
+    const bounceBudget = new BounceBudget(bounceHistory);
     return {
       sequences,
       accounts,
       capacities,
+      bounceHistory,
       selection: selectDueSteps(sequences, capacities, asOf, skippedMailboxes, bounceBudget),
     };
   };
@@ -1018,6 +1021,19 @@ async function runDispatchExclusive(
       // already gone from it.
       current = await plan();
     }
+
+    // FACTORY-P3 next outcomes (message_sent): the stored send-selection script, switched or asked in shadow
+    // (send-select-script.ts). Ours unless switched.
+    current = {
+      ...current,
+      selection: await selectionToSend(current.selection, {
+        asOf,
+        sequences: current.sequences,
+        capacities: current.capacities,
+        skippedMailboxes,
+        bounceHistory: current.bounceHistory,
+      }),
+    };
 
     const { sequences, accounts, selection } = current;
     const due = selection.selected;
