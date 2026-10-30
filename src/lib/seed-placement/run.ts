@@ -26,6 +26,7 @@ import { buildSeedMessage } from "./message";
 import { loadSeedCredentialResolver } from "./credentials";
 import {
   MAX_SEED_RECEIVERS,
+  MICROSOFT_ESPS,
   type SeedReceiver,
   mintSeedTestId,
   planSeedSends,
@@ -56,10 +57,18 @@ export function isSeedPlacementEnabled(): boolean {
  * Reads the DISPATCH side rather than silver: a test that was sent but whose
  * results have not been read yet still counts as "measured recently", and
  * keying on silver would re-send every day until the sync caught up.
+ *
+ * Only a test that SENT a seed the lifecycle gate grades counts (any provider
+ * but Microsoft, which is a routing signal only; GANDI-OPEN-1030). A test whose
+ * Google receivers were all unreadable (their vendor refusing us) measures
+ * nothing the 16-day evidence limit is about; counting it would push the next
+ * real test a week out while the fleet's evidence ages.
  */
 export async function fetchLastSeedTestAt(): Promise<Date | null> {
   const result = await db.execute(sql`
     SELECT max(dispatched_at) AS "lastAt" FROM seed_placement_dispatches
+    WHERE outcome = 'sent'
+      AND recipient_esp NOT IN (${sql.join(MICROSOFT_ESPS.map((e) => sql`${e}`), sql`, `)})
   `);
   const rows = (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as {
     lastAt: string | Date | null;
