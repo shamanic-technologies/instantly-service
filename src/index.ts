@@ -315,6 +315,14 @@ async function start() {
         const message = errorMessage(err);
         console.error(`[instantly-service] failed to start seed-placement-health worker: ${message}`);
       });
+    // The send pool per day (SEND-POOL-VENDOR-402-1030): sampled 60 s after boot,
+    // then every 15 min, through the sender's own selection. Red on Monitoring at 0.
+    import("./lib/send-pool-daily")
+      .then(({ startSendPoolDailyWorker }) => startSendPoolDailyWorker())
+      .catch((err: unknown) => {
+        const message = errorMessage(err);
+        console.error(`[instantly-service] failed to start send-pool-daily worker: ${message}`);
+      });
     // Copy of lead-service's lead provenance for GET /internal/lead-source-yield
     // (SOURCE-YIELD-1016). Armed after listen.
     import("./lib/lead-provenance-sync-worker")
