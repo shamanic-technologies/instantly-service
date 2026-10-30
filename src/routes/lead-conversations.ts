@@ -57,7 +57,7 @@ router.get("/", async (req: Request, res: Response) => {
     // request hanging.
     const message = errorMessage(error);
     console.error(
-      `[instantly-service] lead-conversation: failed for campaign=${campaign_id} lead=${email}: ${message}`,
+      `[instantly-service] lead-conversation: failed for campaign=${campaign_id ?? "(any)"} lead=${email}: ${message}`,
     );
     return res.status(500).json({ error: message });
   }

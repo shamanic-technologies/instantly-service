@@ -84,6 +84,10 @@ import {
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { loadCampaignSequences, type CampaignRow } from "./reply-to-lead";
 import {
+  loadReplyThreadCandidates,
+  type ReplyThreadCandidate,
+} from "./resolve-reply-thread";
+import {
   fetchImapThreadMessages,
   fetchOwnDispatchedMessages,
   fetchSelfSendThread,
@@ -228,13 +232,34 @@ export interface ConversationSequence {
 export interface LeadConversationInput {
   orgId: string;
   userId: string;
-  /** Logical campaign id — the same key `POST /orgs/replies` takes. */
-  campaignId: string;
+  /**
+   * Logical campaign id — the same key `POST /orgs/replies` takes. Absent = read
+   * every thread this org holds with the address (REPLY-READ-ANY-THREAD-1030).
+   */
+  campaignId?: string;
   leadEmail: string;
 }
 
+/**
+ * One campaign this org wrote to the prospect under, when the caller named none.
+ * The population is the reply door's own (`loadReplyThreadCandidates`), so both
+ * doors see the same threads.
+ */
+export interface ConversationThread {
+  campaignId: string;
+  /** Newest message of this thread, either direction. Null if none recorded. */
+  lastMessageAt: string | null;
+  /** Newest message the PROSPECT wrote in this thread. Null if they never did. */
+  lastInboundAt: string | null;
+  /** True when the prospect wrote back in this campaign (the reply door's test). */
+  replied: boolean;
+}
+
 export interface LeadConversation {
-  /** The campaign id asked for. Unchanged, whatever else it turned out to be part of. */
+  /**
+   * The campaign id asked for, unchanged. Named none: the thread the prospect
+   * wrote in LAST (`threads[0]`), else the newest one.
+   */
   campaignId: string;
   /**
    * Every stored campaign row of this campaign that holds this lead, oldest
@@ -255,6 +280,52 @@ export interface LeadConversation {
   messages: ConversationMessage[];
   /** What each contributing row carried, oldest first. */
   sequences: ConversationSequence[];
+  /**
+   * ONLY when no campaign was named: every campaign holding this prospect, the
+   * one they wrote in last first. Absent on a named read (byte-identical to before).
+   */
+  threads?: ConversationThread[];
+}
+
+function newer(a: string | null, b: string | null): string | null {
+  if (!a) return b;
+  if (!b) return a;
+  return Date.parse(b) > Date.parse(a) ? b : a;
+}
+
+/**
+ * Pure: the threads of an unnamed read, the prospect's latest message first,
+ * then the newest exchange, then the candidates' own order.
+ */
+export function rankConversationThreads(
+  candidates: ReplyThreadCandidate[],
+  messages: ConversationMessage[],
+): ConversationThread[] {
+  const threads = candidates.map((c) => {
+    let lastMessageAt = c.lastMessageAt;
+    let lastInboundAt: string | null = null;
+    for (const m of messages) {
+      if (m.campaignId !== c.campaignId || !m.at) continue;
+      lastMessageAt = newer(lastMessageAt, m.at);
+      if (m.direction === "inbound") lastInboundAt = newer(lastInboundAt, m.at);
+    }
+    return {
+      campaignId: c.campaignId,
+      lastMessageAt,
+      lastInboundAt,
+      replied: c.replied || lastInboundAt !== null,
+    };
+  });
+  const time = (t: string | null) => (t ? Date.parse(t) : -Infinity);
+  return threads
+    .map((t, i) => ({ t, i }))
+    .sort(
+      (a, b) =>
+        time(b.t.lastInboundAt) - time(a.t.lastInboundAt) ||
+        time(b.t.lastMessageAt) - time(a.t.lastMessageAt) ||
+        a.i - b.i,
+    )
+    .map(({ t }) => t);
 }
 
 /**
@@ -567,14 +638,14 @@ async function fetchSelfSendConversation(
  * fraction of the conversation looking exactly like all of it — the precise
  * failure this read exists to remove, so it must not be the degraded mode.
  */
-async function resolveFamily(input: LeadConversationInput): Promise<string[]> {
+async function resolveFamily(campaignId: string, orgId: string): Promise<string[]> {
   try {
-    return await getCampaignFamily(input.campaignId, input.orgId);
+    return await getCampaignFamily(campaignId, orgId);
   } catch (error: unknown) {
     throw new LeadConversationError(
       "campaign_identity_unavailable",
       502,
-      `Could not resolve which campaigns ${input.campaignId} is part of: ${
+      `Could not resolve which campaigns ${campaignId} is part of: ${
         errorMessage(error)
       }`,
     );
@@ -629,18 +700,27 @@ async function fetchSequenceThread(
 export async function fetchLeadConversation(
   input: LeadConversationInput,
 ): Promise<LeadConversation> {
-  const campaignIds = await resolveFamily(input);
-  const sequences = await loadCampaignSequences(
-    input.orgId,
-    campaignIds,
-    input.leadEmail,
-  );
+  // Named: that campaign's family, authoritative. Unnamed: every campaign of
+  // this org holding the address, the reply door's own population.
+  const candidates = input.campaignId
+    ? null
+    : await loadReplyThreadCandidates(input.orgId, input.leadEmail);
+  const campaignIds = input.campaignId
+    ? await resolveFamily(input.campaignId, input.orgId)
+    : candidates!.map((c) => c.campaignId);
+  const scope = input.campaignId ? `campaign ${input.campaignId}` : "this org";
+  const sequences =
+    campaignIds.length === 0
+      ? []
+      : await loadCampaignSequences(input.orgId, campaignIds, input.leadEmail);
 
   if (sequences.length === 0) {
     throw new LeadConversationError(
       "campaign_not_found",
       404,
-      `No campaign ${input.campaignId} in this org for ${input.leadEmail}`,
+      input.campaignId
+        ? `No campaign ${input.campaignId} in this org for ${input.leadEmail}`
+        : `No campaign in this org for ${input.leadEmail}`,
     );
   }
 
@@ -648,7 +728,7 @@ export async function fetchLeadConversation(
     throw new LeadConversationError(
       "too_many_sequences",
       502,
-      `${input.leadEmail} sits in ${sequences.length} sequences of campaign ${input.campaignId}, over the ${MAX_CONVERSATION_SEQUENCES} this read will fan out to`,
+      `${input.leadEmail} sits in ${sequences.length} sequences of ${scope}, over the ${MAX_CONVERSATION_SEQUENCES} this read will fan out to`,
     );
   }
 
@@ -674,14 +754,16 @@ export async function fetchLeadConversation(
 
   // The asked row still describes itself, so a single-row campaign answers byte
   // for byte as it did before this read learned about families.
+  const ranked = candidates ? rankConversationThreads(candidates, messages) : null;
+  const campaignId = input.campaignId ?? ranked![0].campaignId;
   const askedIndex = Math.max(
-    threads.findIndex((t) => t.sequence.campaignId === input.campaignId),
+    threads.findIndex((t) => t.sequence.campaignId === campaignId),
     0,
   );
   const asked = threads[askedIndex];
 
   return {
-    campaignId: input.campaignId,
+    campaignId,
     campaignIds: sequences.map((s) => s.campaignId),
     instantlyCampaignId: asked.sequence.instantlyCampaignId,
     // The stored casing, not the caller's — the lookup is case-insensitive on
@@ -700,5 +782,6 @@ export async function fetchLeadConversation(
       source,
       messageCount: thread.length,
     })),
+    ...(ranked ? { threads: ranked } : {}),
   };
 }

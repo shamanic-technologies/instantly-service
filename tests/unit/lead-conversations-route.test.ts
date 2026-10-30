@@ -122,10 +122,25 @@ describe("GET /orgs/conversations", () => {
     expect(res.body.code).toBe("thread_unavailable");
   });
 
-  it("400s on a missing campaign_id, and never reaches the lookup", async () => {
+  it("reads by email alone when no campaign_id is named (every thread of the org)", async () => {
+    mockFetch.mockResolvedValue(CONVERSATION);
     const app = await createApp();
 
     const res = await request(app).get("/").query({ email: "alice@media.com" });
+
+    expect(res.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalledWith({
+      orgId: "org-1",
+      userId: "user-1",
+      campaignId: undefined,
+      leadEmail: "alice@media.com",
+    });
+  });
+
+  it("400s on a missing email, and never reaches the lookup", async () => {
+    const app = await createApp();
+
+    const res = await request(app).get("/").query({ campaign_id: "camp-1" });
 
     expect(res.status).toBe(400);
     expect(mockFetch).not.toHaveBeenCalled();
