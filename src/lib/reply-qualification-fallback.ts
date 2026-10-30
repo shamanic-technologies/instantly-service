@@ -27,7 +27,7 @@ import { sql } from "drizzle-orm";
 
 import { db } from "../db";
 import { maybeMirrorCampaignEmails } from "./mirror-emails";
-import { fetchLatestMirroredInbound } from "./reply-opt-out";
+import { OPT_OUT_REPLY_KIND, fetchLatestMirroredInbound, recordOptOutFromReply } from "./reply-opt-out";
 import { promoteEvent } from "./silver-promote";
 import { QUALIFICATION_EVENT_TYPES, qualifyReply } from "./self-send/qualify-reply";
 
@@ -248,7 +248,17 @@ export async function qualifyOneReply(reply: UnqualifiedReply): Promise<QualifyO
   const inbound = await fetchLatestMirroredInbound(reply.instantlyCampaignId);
   // The bronze id is what attributes the promoted event to the message it was
   // read from; without it the kind would be an assertion with no provenance.
-  if (!inbound || !inbound.instantlyEmailId) return { classified: false, reason: "no_body" };
+  if (!inbound || !inbound.instantlyEmailId) {
+    // Instantly holds no words for it, but OUR mailbox may: a reply the IMAP
+    // poller read (it judges inline, once) whose judgment FAILED had no other
+    // retry. Prod 2026-10-29: DeepSeek ran out of credit, a reply on a real
+    // Instantly sequence was read by the poller, its judgment got a 402, and
+    // this sweep then saw `noBody` every tick because the Instantly mirror was
+    // unreadable (VENDOR-CREDIT-1030).
+    const own = await fetchOwnMailboxReply(reply.instantlyCampaignId, reply.repliedAt);
+    if (!own) return { classified: false, reason: "no_body" };
+    return qualifyOwnMailboxReply(reply, own);
+  }
 
   const kind = await qualifyReply(inbound.text, {
     instantlyCampaignId: reply.instantlyCampaignId,
@@ -282,6 +292,75 @@ export async function qualifyOneReply(reply: UnqualifiedReply): Promise<QualifyO
     },
   });
 
+  return { classified: true, eventType: kind };
+}
+
+/** A reply our own IMAP poller stored (`imap_messages_raw`, kind `reply`). */
+export interface OwnMailboxReply {
+  rowId: string;
+  text: string;
+  subject: string | null;
+}
+
+/**
+ * The reply this sweep is about, read from OUR mailbox mirror: the latest
+ * `reply` row on the thread at or after the reply's moment (the poller stores
+ * the message's own date, which is what `reply_received` carries).
+ */
+export async function fetchOwnMailboxReply(
+  instantlyCampaignId: string,
+  repliedAt: Date,
+): Promise<OwnMailboxReply | null> {
+  const result = await db.execute(sql`
+    SELECT id, subject, payload->>'textSnippet' AS text
+    FROM imap_messages_raw
+    WHERE instantly_campaign_id = ${instantlyCampaignId}
+      AND kind = 'reply'
+      AND received_at >= ${repliedAt.toISOString()}::timestamptz
+    ORDER BY received_at DESC
+    LIMIT 1
+  `);
+  const [row] = rowsOf(result);
+  const text = typeof row?.text === "string" ? row.text.trim() : "";
+  if (!row || !text) return null;
+  return { rowId: String(row.id), text, subject: typeof row.subject === "string" ? row.subject : null };
+}
+
+/**
+ * Judge a reply read from our own mailbox and promote it exactly as the IMAP
+ * poller would have (`self_send`, the imap row as provenance), including the
+ * opt-out CONSENT record when the reply asks us to stop.
+ */
+async function qualifyOwnMailboxReply(reply: UnqualifiedReply, own: OwnMailboxReply): Promise<QualifyOutcome> {
+  const kind = await qualifyReply(own.text, {
+    instantlyCampaignId: reply.instantlyCampaignId,
+    leadEmail: reply.leadEmail,
+    source: "qualification_fallback",
+    subject: own.subject,
+  });
+  if (kind === null) return { classified: false, reason: "unqualified", bodyText: own.text };
+
+  await promoteEvent({
+    eventType: kind,
+    instantlyCampaignId: reply.instantlyCampaignId,
+    leadEmail: reply.leadEmail,
+    accountEmail: reply.accountEmail,
+    step: null,
+    variant: null,
+    timestamp: reply.repliedAt,
+    source: "self_send",
+    sourceRowId: own.rowId,
+    rawPayload: { classifiedBy: "reply-classifier", reason: "own_mailbox_judgment_retried" },
+  });
+
+  if (kind === OPT_OUT_REPLY_KIND && reply.orgId) {
+    await recordOptOutFromReply({
+      campaign: { instantlyCampaignId: reply.instantlyCampaignId, leadEmail: reply.leadEmail, orgId: reply.orgId },
+      replyText: own.text,
+      qualification: kind,
+      evidence: { source: "self_send_reply", instantlyCampaignId: reply.instantlyCampaignId, imapMessageRowId: own.rowId },
+    });
+  }
   return { classified: true, eventType: kind };
 }
 
