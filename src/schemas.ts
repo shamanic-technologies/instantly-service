@@ -3154,6 +3154,15 @@ const ProviderListsSchema = z.object({
 
 registry.registerPath({
   method: "get",
+  path: "/internal/dispatch-selections/recorded",
+  summary: "Each dispatch selection asked of the stored send-selection script, with its material and both answers (service key)",
+  description: "FACTORY-P3 next outcomes (message_sent). Oldest first by `seq`, 60 s settle, kept 14 days. `path` = shadow (ours sent, the script asked beside it) or script (the script's sent). `material` = the exact inputs of the selection, `ours` / `script` = both selections in the same words, `same` = identical (order, recipients, mailbox, step, counts). Read by workflow-service's case recorder. `GET /internal/dispatch-selections/proof` = selections and emails same vs different, per path.",
+  request: { query: z.object({ after: z.string().optional(), limit: z.string().optional().describe("1..100, default 20") }) },
+  responses: { 200: { description: "{decisions, nextAfter, hasMore}" }, 400: { description: "Invalid query" } },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/internal/reply-qualifications/recorded",
   summary: "Every reply judgment with its exact chat-service request and answer (service key, read-only)",
   description:

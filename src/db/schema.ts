@@ -807,6 +807,28 @@ export const replyQualifications = pgTable(
   (table) => [index("reply_qualifications_created_idx").on(table.createdAt, table.id)],
 );
 
+// FACTORY-P3 next outcomes (message_sent, migration 0099): each dispatch selection the stored script was asked, with
+// its material, our selection and the script's, compared. Kept 14 days. Read by GET /internal/dispatch-selections/recorded.
+export const dispatchSelections = pgTable(
+  "dispatch_selections",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    seq: bigserial("seq", { mode: "number" }).notNull(),
+    path: text("path").notNull(),
+    runId: text("run_id"),
+    scriptRunId: text("script_run_id"),
+    scriptSlug: text("script_slug"),
+    material: jsonb("material").notNull(),
+    ours: jsonb("ours").notNull(),
+    script: jsonb("script"),
+    same: boolean("same"),
+    sends: integer("sends").notNull(),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("dispatch_selections_seq_idx").on(table.seq), index("dispatch_selections_created_idx").on(table.createdAt)],
+);
+
 export const smtpSentMessages = pgTable(
   "smtp_sent_messages",
   {

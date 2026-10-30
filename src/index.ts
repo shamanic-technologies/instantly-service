@@ -42,6 +42,7 @@ import seedPlacementRoutes from "./routes/seed-placement";
 import senderHealthRoutes from "./routes/sender-health";
 import sentMessagesRoutes from "./routes/sent-messages";
 import replyQualificationsRoutes from "./routes/reply-qualifications";
+import dispatchSelectionsRoutes from "./routes/dispatch-selections";
 import infraRoutes from "./routes/infra";
 import opsRoutes from "./routes/ops";
 import outreachFactsRoutes from "./routes/outreach-facts";
@@ -101,7 +102,8 @@ app.use("/internal/bounced-emails", serviceAuth, bouncedEmailsRoutes); // fleet-
 app.use("/internal/outreach-facts", serviceAuth, outreachFactsRoutes); // fleet fact feed lead-service copies by cursor
 app.use("/internal/seed-placement", serviceAuth, seedPlacementRoutes); // Microsoft seed receivers (OAuth) + daily placement series (MS-SEED-PLACEMENT-1018)
 app.use("/internal/sender-health", serviceAuth, senderHealthRoutes); // SENDER-HEALTH-1019: mailboxes out of prospect mail + daily series
-app.use("/internal/reply-qualifications", serviceAuth, replyQualificationsRoutes); // FACTORY-P3 next outcomes: every reply judgment, exact request + answer (service key, read-only)
+app.use("/internal/reply-qualifications", serviceAuth, replyQualificationsRoutes);
+app.use("/internal/dispatch-selections", serviceAuth, dispatchSelectionsRoutes); // FACTORY-P3 next outcomes: send selections asked of the stored script (service key, read-only) // FACTORY-P3 next outcomes: every reply judgment, exact request + answer (service key, read-only)
 app.use("/internal/sent-messages", serviceAuth, sentMessagesRoutes); // FACTORY-RECORD-SEND-1028: exact sent messages + why they left then (staff, read-only)
 app.use("/internal", serviceAuth, domainBlocklistRoutes);      // sending domains on public blocklists (staff console)
 app.use("/internal", serviceAuth, leadSourceYieldRoutes);      // lead sources ranked by bounces / refusals / blocklist hits (staff console)
