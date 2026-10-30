@@ -26,10 +26,11 @@
  * the one nobody remembers to update is the one that breaks.
  *
  * Fail loud throughout: a mailbox we cannot authenticate must abort the send,
- * never degrade to some other sender. One exception, by design: a VENDOR that
- * refuses to list our mailboxes (Primeforge 402) takes only ITS mailboxes out of
- * the fleet maps, loudly (see `loadPrimeforgeMailboxes`), so the other vendors'
- * mailboxes keep sending.
+ * never degrade to some other sender. A VENDOR that refuses to list our
+ * mailboxes (Primeforge 402) is not a mailbox outage: its mailboxes keep their
+ * credential from the vendor's last stored listing, loudly (see
+ * `loadPrimeforgeMailboxes`), and with no stored listing only ITS mailboxes leave
+ * the fleet maps, so the other vendors' mailboxes keep sending.
  */
 
 import { errorMessage } from "../db-error.js";
@@ -38,6 +39,7 @@ import {
   listPrimeforgeRawMailboxes,
   type PrimeforgeRawMailbox,
 } from "../providers/primeforge-client";
+import { loadLastPrimeforgeListing } from "./primeforge-last-listing";
 
 export const GMAIL_SMTP_HOST = "smtp.gmail.com";
 export const GMAIL_IMAP_HOST = "imap.gmail.com";
@@ -150,8 +152,9 @@ export async function resolveMailboxCredential(
   const override = selectManualCredential(email, manual);
   if (override) return override;
 
-  const key = await resolvePlatformKey("primeforge", caller);
-  const mailboxes = await listPrimeforgeRawMailboxes(key);
+  // Through the vendor-refusal path: a Primeforge 402 must not stop the
+  // dispatch, IMAP poll or reply of a mailbox whose password still works.
+  const mailboxes = await loadPrimeforgeMailboxes(caller, "skip");
   return selectMailboxCredential(email, mailboxes);
 }
 
@@ -256,6 +259,13 @@ export interface VendorRefusal {
   since: string;
   /** Latest refusal. */
   lastSeenAt: string;
+  /**
+   * When the stored listing its mailboxes are sending on was fetched (ISO), or
+   * null when we hold none and its mailboxes are out of the pool.
+   */
+  lastListingAt: string | null;
+  /** How many of its mailboxes that stored listing still credentials. */
+  lastListingMailboxes: number;
 }
 
 const vendorRefusals = new Map<VendorRefusal["vendor"], VendorRefusal>();
@@ -271,10 +281,18 @@ export function resetVendorRefusals(): void {
 }
 
 /**
- * Primeforge's mailbox list, or NOTHING when Primeforge refuses us.
+ * Primeforge's mailbox list; when Primeforge refuses us, the list it last gave us.
  *
- * ⚠️ One vendor refusing us (402 "active subscription required", 401, 5xx,
- * timeout) must take out ITS mailboxes only, never the whole fleet. Prod
+ * ⚠️ A vendor refusing its API (402 "active subscription required") is not its
+ * mailboxes dying: they are Google Workspace accounts whose app passwords keep
+ * working (IMAP LOGIN OK on 2026-10-30, a day into the 402). So a refusal serves
+ * the last listing stored by the infra sync (`primeforge-last-listing.ts`,
+ * SEND-POOL-VENDOR-402-1030): before it, the 13 in-production Primeforge
+ * mailboxes, the WHOLE send pool, left it and no org sent anything. Only with no
+ * stored listing do its mailboxes leave the pool.
+ *
+ * ⚠️ One vendor refusing us (402, 401, 5xx, timeout) must never take out more
+ * than ITS mailboxes, never the whole fleet. Prod
  * 2026-10-29 ~15:00 UTC: Primeforge answered 402, this read threw, and with it
  * every `POST /orgs/send` and every dispatch tick, so the 42 Gandi mailboxes
  * (manual credentials, cheapest fill rank) sent nothing either, for every
@@ -299,17 +317,36 @@ export async function loadPrimeforgeMailboxes(
   } catch (error) {
     const now = new Date().toISOString();
     const message = errorMessage(error);
-    vendorRefusals.set("primeforge", {
-      vendor: "primeforge",
-      error: message,
-      since: vendorRefusals.get("primeforge")?.since ?? now,
-      lastSeenAt: now,
-    });
-    if (onRefusal === "throw") throw error;
+    const record = (lastListingAt: string | null, lastListingMailboxes: number) =>
+      vendorRefusals.set("primeforge", {
+        vendor: "primeforge",
+        error: message,
+        since: vendorRefusals.get("primeforge")?.since ?? now,
+        lastSeenAt: now,
+        lastListingAt,
+        lastListingMailboxes,
+      });
+    if (onRefusal === "throw") {
+      record(vendorRefusals.get("primeforge")?.lastListingAt ?? null, vendorRefusals.get("primeforge")?.lastListingMailboxes ?? 0);
+      throw error;
+    }
+    let last: Awaited<ReturnType<typeof loadLastPrimeforgeListing>>;
+    try {
+      last = await loadLastPrimeforgeListing();
+    } catch (readError) {
+      record(null, 0);
+      console.error(
+        `[instantly-service] mailbox-credentials: Primeforge REFUSED us (${message}) and its stored listing is unreadable (${errorMessage(readError)}): its mailboxes are out of the send pool, every other vendor sends on`,
+      );
+      return [];
+    }
+    record(last.fetchedAt, last.mailboxes.length);
     console.error(
-      `[instantly-service] mailbox-credentials: Primeforge REFUSED us, its mailboxes are out of the send pool, every other vendor sends on: ${message}`,
+      last.mailboxes.length > 0
+        ? `[instantly-service] mailbox-credentials: Primeforge REFUSED us, its ${last.mailboxes.length} mailboxes send on the listing stored ${last.fetchedAt}: ${message}`
+        : `[instantly-service] mailbox-credentials: Primeforge REFUSED us and we hold no stored listing, its mailboxes are out of the send pool, every other vendor sends on: ${message}`,
     );
-    return [];
+    return last.mailboxes;
   }
 }
 

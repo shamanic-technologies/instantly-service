@@ -28,6 +28,7 @@ import { computeCapacitySummary } from "../sending-forecast";
 import { currentVendorRefusals, loadMailboxLogins } from "../self-send/mailbox-credentials";
 import type { CallerInfo } from "../key-client";
 import { loadAccountHealth } from "./account-health-read";
+import { fetchSendablePool } from "../send-lead";
 import {
   estimatePaidToDate,
   evidenceExpiresAt,
@@ -474,7 +475,7 @@ async function loadLifecycleHistory(limitPerAccount = 10) {
 // ─── Sending infra ───────────────────────────────────────────────────────────
 
 export async function readInfra(caller: CallerInfo, asOf: Date = new Date()) {
-  const [health, mailboxes, addresses, recentVolume, mailboxOf, volume7, queue, policies] = await Promise.all([
+  const [health, mailboxes, addresses, recentVolume, mailboxOf, volume7, queue, policies, sendPools] = await Promise.all([
     loadAccountHealth(caller),
     loadMailboxRows(),
     loadAddressRows(),
@@ -483,6 +484,7 @@ export async function readInfra(caller: CallerInfo, asOf: Date = new Date()) {
     loadVolume("account_email", 7),
     loadQueueByAccount(),
     loadExclusions(),
+    loadSendPools(caller),
   ]);
   const poolOfLogin = new Map(mailboxes.map((m) => [m.login, m.poolType ?? "unknown"]));
   const poolOfEmail = new Map(addresses.map((a) => [a.email, poolOfLogin.get(a.mailboxLogin ?? a.email) ?? "unknown"]));
@@ -534,7 +536,32 @@ export async function readInfra(caller: CallerInfo, asOf: Date = new Date()) {
      * sends on. Empty = every vendor answered. Red on Monitoring when non-empty.
      */
     vendorRefusals: currentVendorRefusals(),
+    /**
+     * What the SENDER can hand a new sequence to right now, per send pool, read
+     * through the sender's own chain (`fetchSendablePool`): `shared` is the pool
+     * every org sends from, any other entry a feature slug with mailboxes
+     * reserved to it. `sendable: 0` = every org on that pool has its sends
+     * refused ("No active Instantly accounts available"). Red on Monitoring.
+     */
+    sendPools,
   };
+}
+
+/** One row per send pool: the shared pool plus every reserved feature slug. */
+async function loadSendPools(caller: CallerInfo) {
+  const reserved = rowsOf<{ slug: string }>(
+    await db.execute(sql`SELECT DISTINCT feature_slug AS slug FROM instantly_account_feature_policy ORDER BY 1`),
+  ).map((r) => String(r.slug));
+  return Promise.all(
+    [null, ...reserved].map(async (slug) => {
+      const pool = await fetchSendablePool(slug, caller);
+      return {
+        pool: slug ?? "shared",
+        sendable: pool.length,
+        byVendor: countBy(pool, (a) => a.infraProvider ?? null),
+      };
+    }),
+  );
 }
 
 async function loadQueueByAccount(): Promise<Map<string, number>> {

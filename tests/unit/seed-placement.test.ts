@@ -28,6 +28,11 @@ vi.mock("../../src/lib/providers/primeforge-client", async (importOriginal) => (
   listPrimeforgeRawMailboxes: mocks.listPrimeforgeRawMailboxes,
 }));
 
+// Nothing stored: a refusing Primeforge takes its mailboxes out (SEND-POOL-VENDOR-402-1030).
+vi.mock("../../src/lib/self-send/primeforge-last-listing", () => ({
+  loadLastPrimeforgeListing: async () => ({ fetchedAt: null, mailboxes: [] }),
+}));
+
 import {
   ESP_GOOGLE,
   ESP_OUTLOOK,
