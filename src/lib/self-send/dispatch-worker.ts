@@ -32,6 +32,7 @@ import { buildMessage } from "./message";
 import { runPoll } from "./imap-poller";
 import { runOrphanReplySweep } from "./orphan-reply-sweep";
 import { runDsnJudgmentSweep } from "./dsn-judgment-sweep";
+import { judgeStoredAbsences } from "./absence-judgment";
 import { dispatchMessage, SmtpDispatchError } from "./smtp";
 import { buildSendDecision, type SendTrigger } from "./send-decision";
 import { selectionToSend } from "./send-select-script";
@@ -40,6 +41,7 @@ import {
   classifyPermanentFailure,
   isAnswerOwed,
   selectDueSteps,
+  isHeldForAbsence,
   type AccountCapacity,
   type DueStep,
   type PendingSequence,
@@ -251,7 +253,21 @@ async function loadPendingSequences(
         SELECT COALESCE(jsonb_agg(s.delay_days ORDER BY s.step), '[]'::jsonb)
         FROM sequence_steps s
         WHERE s.instantly_campaign_id = p.instantly_campaign_id
-      ) AS "stepDelays"
+      ) AS "stepDelays",
+      -- Their out-of-office stated a return date (OOO-RETURN-DATE-1101,
+      -- absence-judgment.ts): nothing leaves before it. Per ADDRESS, any
+      -- sequence; void once they wrote a real reply after it.
+      (
+        SELECT MAX(a.hold_until) FROM lead_absences a
+        WHERE a.lead_email = lower(p.lead_email)
+          AND a.hold_until > now()
+          AND NOT EXISTS (
+            SELECT 1 FROM instantly_events e
+            WHERE e.lead_email = p.lead_email AND e.event_type = 'reply_received'
+              AND e.inferred = false AND e.withdrawn_at IS NULL
+              AND e."timestamp" > a.received_at
+          )
+      ) AS "awayUntil"
     FROM pending p
   `);
 
@@ -281,6 +297,7 @@ async function loadPendingSequences(
     verdict: typeof row.verdict === "string" ? row.verdict : null,
     addressProven: row.addressProven === true,
     recipientProvider: recipientProviderOf(row.recipientMailHost),
+    awayUntil: toDate(row.awayUntil),
   }));
 }
 
@@ -885,8 +902,10 @@ async function runDispatchExclusive(
 
   const plan = async () => {
     // A stopped campaign's sequence the sweep has not reached yet is never sent.
+    // A person away until a stated return date (OOO-RETURN-DATE-1101) is left out
+    // of the selection itself, so the stored selection script never sees them either.
     const sequences = (await loadPendingSequences()).filter(
-      (s) => !notYetStopped.has(s.instantlyCampaignId),
+      (s) => !notYetStopped.has(s.instantlyCampaignId) && !isHeldForAbsence(s, asOf),
     );
     const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
     // Fresh per selection (never the 60 s cache): the budget is spent in memory
@@ -1006,6 +1025,17 @@ async function runDispatchExclusive(
     // A permanent DSN the poll filed is judged here: a dead address stops its
     // sequence before the re-selection, a refused message stops nothing.
     await settleDsns("pre-dispatch");
+
+    // An out-of-office the poll just filed is read for its return date here, so
+    // the re-selection already holds that person (OOO-RETURN-DATE-1101).
+    // Fail-soft: an unjudged autoresponder is offered again next run.
+    await judgeStoredAbsences().catch((error) => {
+      console.error(
+        `[instantly-service] self-send: out-of-office judgment failed, sending on the holds already judged: ${
+          errorMessage(error)
+        }`,
+      );
+    });
   }
 
   // Selecting and sending happen under the SEND LOCK, shared with the answer

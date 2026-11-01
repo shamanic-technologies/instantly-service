@@ -87,11 +87,30 @@ export interface PendingSequence {
    * host we do not measure (a gateway, unknown): no placement rule applies.
    */
   recipientProvider?: RecipientProvider | null;
+  /**
+   * The person's out-of-office stated a return date (OOO-RETURN-DATE-1101,
+   * `absence.ts`): no email of ours leaves before this instant (first day back
+   * + margin). Read per ADDRESS, any sequence, any org; void once they wrote
+   * a real reply after it. Null / absent / past = no hold.
+   */
+  awayUntil?: Date | null;
 }
 
 /** The first email of a sequence that answers a person: owed now, like a reply. */
 export function isAnswerOwed(sequence: PendingSequence): boolean {
   return sequence.answersPerson === true && sequence.lastSentStep === null;
+}
+
+/**
+ * The person said they are away until after `asOf`: nothing of this sequence
+ * leaves yet. Every later step chains off the step that really goes out, so the
+ * sequence keeps its spacing after the return. An answer owed to their own
+ * action (a form they just filled) is never held: acting proves they are there.
+ */
+export function isHeldForAbsence(sequence: PendingSequence, asOf: Date): boolean {
+  if (isAnswerOwed(sequence)) return false;
+  const until = sequence.awayUntil ?? null;
+  return until !== null && until.getTime() > asOf.getTime();
 }
 
 export interface DueStep {
@@ -124,6 +143,8 @@ export interface DueStep {
 export function nextDueStep(sequence: PendingSequence, asOf: Date): DueStep | null {
   const pending = [...sequence.provisionedSteps].sort((a, b) => a - b);
   if (pending.length === 0) return null;
+  // Away until a stated return date: nothing leaves before it.
+  if (isHeldForAbsence(sequence, asOf)) return null;
 
   const step = pending[0]!;
 

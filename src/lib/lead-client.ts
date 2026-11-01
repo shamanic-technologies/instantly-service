@@ -623,3 +623,71 @@ export async function resolveLeadIds(items: LeadIdResolveItem[]): Promise<Array<
   }
   return body.people.map((p) => p.leadId ?? null);
 }
+
+/** The person's next follow-up date at one brand, as lead-service holds it (LEAD-FOLLOWUP-DATE-1016). */
+export interface LeadFollowupDate {
+  /** ISO; null only when the follow-ups are stopped (`basis` `stopped`). */
+  nextFollowupAt: string | null;
+  basis: string;
+}
+
+function followupDatePath(leadRowId: string, brandId: string): string {
+  return `${LEAD_SERVICE_URL}/orgs/leads/${encodeURIComponent(leadRowId)}/followup-date?brandId=${encodeURIComponent(brandId)}`;
+}
+
+/** Read the person's next follow-up date at the brand. Throws on any non-2xx, with the status and body. */
+export async function readLeadFollowupDate(params: {
+  orgId: string;
+  leadRowId: string;
+  brandId: string;
+}): Promise<LeadFollowupDate> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+  const response = await fetch(followupDatePath(params.leadRowId, params.brandId), {
+    headers: { "x-api-key": LEAD_SERVICE_API_KEY, "x-org-id": params.orgId },
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(
+      `lead-service GET /orgs/leads/{id}/followup-date failed: ${response.status} - ${detail.slice(0, 200)}`,
+    );
+  }
+  const body = (await response.json()) as { followupDate?: LeadFollowupDate };
+  if (!body.followupDate) throw new Error("lead-service GET /orgs/leads/{id}/followup-date answered no followupDate");
+  return body.followupDate;
+}
+
+/**
+ * State the person's next follow-up date at the brand (`{nextFollowupAt, reason}`).
+ * Throws on any non-2xx (400 `date_out_of_range` included), with the status and body.
+ */
+export async function stateLeadFollowupDate(params: {
+  orgId: string;
+  leadRowId: string;
+  brandId: string;
+  nextFollowupAt: string;
+  reason: string;
+}): Promise<LeadFollowupDate> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+  const response = await fetch(followupDatePath(params.leadRowId, params.brandId), {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": LEAD_SERVICE_API_KEY,
+      "x-org-id": params.orgId,
+    },
+    body: JSON.stringify({ nextFollowupAt: params.nextFollowupAt, reason: params.reason }),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(
+      `lead-service PUT /orgs/leads/{id}/followup-date failed: ${response.status} - ${detail.slice(0, 200)}`,
+    );
+  }
+  const body = (await response.json()) as { followupDate?: LeadFollowupDate };
+  if (!body.followupDate) throw new Error("lead-service PUT /orgs/leads/{id}/followup-date answered no followupDate");
+  return body.followupDate;
+}

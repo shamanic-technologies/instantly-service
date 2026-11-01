@@ -2266,6 +2266,38 @@ export const sendPoolDaily = pgTable(
   (table) => [primaryKey({ name: "send_pool_daily_pk", columns: [table.day, table.pool] })],
 );
 
+// An out-of-office that states a return date (OOO-RETURN-DATE-1101, migration
+// 0101, lib/self-send/absence*.ts). One row per stored autoresponder, judged
+// ONCE through chat-service; `hold_until` keeps every email of ours to that
+// address waiting until the person is back (dispatch), and lead-service's next
+// follow-up date is moved to it (`followup_*`).
+export const leadAbsences = pgTable(
+  "lead_absences",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    imapMessageId: text("imap_message_id").notNull(),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    orgId: text("org_id"),
+    leadEmail: text("lead_email").notNull(),
+    receivedAt: timestamp("received_at").notNull(),
+    // 'return_date' | 'no_date' | 'stale' | 'unreadable'
+    outcome: text("outcome").notNull(),
+    stated: jsonb("stated"),
+    firstDayBack: date("first_day_back"),
+    holdUntil: timestamp("hold_until", { withTimezone: true }),
+    runId: text("run_id"),
+    judgedAt: timestamp("judged_at", { withTimezone: true }).defaultNow().notNull(),
+    followupStatedAt: timestamp("followup_stated_at", { withTimezone: true }),
+    followupStatement: text("followup_statement"),
+  },
+  (table) => [
+    uniqueIndex("lead_absences_imap_message_idx").on(table.imapMessageId),
+    index("lead_absences_lead_email_hold_idx")
+      .on(table.leadEmail, table.holdUntil)
+      .where(sql`hold_until IS NOT NULL`),
+  ],
+);
+
 // One fall of inbox placement at one inbox provider below the market bar, among
 // the mailboxes still allowed to mail it (lib/placement-alert.ts, migration
 // 0087, MAILBOX-MONITORING-1019). The staff alert fires once per row. The
