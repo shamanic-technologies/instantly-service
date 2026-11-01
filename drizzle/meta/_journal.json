@@ -708,6 +708,13 @@
       "when": 1794400000000,
       "tag": "0100_send_pool_daily",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1794500000000,
+      "tag": "0101_lead_absences",
+      "breakpoints": true
     }
   ]
 }

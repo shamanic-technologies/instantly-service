@@ -95,6 +95,9 @@ vi.mock("../../src/lib/self-send/orphan-reply-sweep", () => ({
 }));
 
 const mockDsnSweep = vi.fn(async () => ({ judgedNow: 0, judgmentFailed: 0, bouncesPromoted: 0, bounceEventsRetracted: 0 }));
+vi.mock("../../src/lib/self-send/absence-judgment", () => ({
+  judgeStoredAbsences: async () => ({}),
+}));
 vi.mock("../../src/lib/self-send/dsn-judgment-sweep", () => ({
   runDsnJudgmentSweep: async (...args: unknown[]) => mockDsnSweep(...(args as [])),
 }));

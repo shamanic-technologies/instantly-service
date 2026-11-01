@@ -317,6 +317,14 @@ async function start() {
       });
     // The send pool per day (SEND-POOL-VENDOR-402-1030): sampled 60 s after boot,
     // then every 15 min, through the sender's own selection. Red on Monitoring at 0.
+    // An out-of-office stating a return date holds the person until they are back
+    // (OOO-RETURN-DATE-1101): judged 60 s after boot, then every 5 min.
+    import("./lib/self-send/absence-judgment-worker")
+      .then(({ startAbsenceJudgmentWorker }) => startAbsenceJudgmentWorker())
+      .catch((err: unknown) => {
+        const message = errorMessage(err);
+        console.error(`[instantly-service] failed to start absence worker: ${message}`);
+      });
     import("./lib/send-pool-daily")
       .then(({ startSendPoolDailyWorker }) => startSendPoolDailyWorker())
       .catch((err: unknown) => {
