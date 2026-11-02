@@ -242,6 +242,22 @@ describe("POST /orgs/replies/escalate", () => {
     );
   });
 
+  it("forwards the booking link and the caller-written hand-over (MB-HANDOFF-EMAIL-1102)", async () => {
+    await request(app())
+      .post("/orgs/replies/escalate")
+      .send({
+        campaign_id: "camp-1",
+        email: "alice@media.com",
+        question: "How much?",
+        booking_url: "https://calendly.com/x/15",
+        handoff_text: "Hi Alice,\n\nBest,",
+      })
+      .expect(200);
+    expect(mockEscalateReply).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingUrl: "https://calendly.com/x/15", handoffText: "Hi Alice,\n\nBest," }),
+    );
+  });
+
   it("refuses an escalation carrying no run, before touching anything", async () => {
     const res = await request(app())
       .post("/orgs/replies/escalate")
