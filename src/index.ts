@@ -267,6 +267,14 @@ async function start() {
         console.error(`[instantly-service] failed to start sent-message retention worker: ${message}`);
       });
 
+    // Trims duplicate copies in the raw tables, keeping the latest per item (BOX-DISK-1101).
+    import("./lib/raw-snapshot-retention")
+      .then(({ startRawRetentionWorker }) => startRawRetentionWorker())
+      .catch((err: unknown) => {
+        const message = errorMessage(err);
+        console.error(`[instantly-service] failed to start raw-retention worker: ${message}`);
+      });
+
     // Send the self-send steps that have come due. An in-process interval, NOT
     // a cron: `self-send-cron.yml` declares hourly and GitHub Actions delivered
     // 6.2 runs a day, leaving leads hours past due and the fleet queue growing.

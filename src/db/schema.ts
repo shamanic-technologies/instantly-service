@@ -895,6 +895,8 @@ export const imapMessagesRaw = pgTable(
     ),
     index("imap_messages_raw_campaign_idx").on(table.instantlyCampaignId),
     index("imap_messages_raw_polled_at_idx").on(table.polledAt),
+    // The raw-retention newer-copy probe + gmail-threads lookups (migration 0102, BOX-DISK-1101).
+    index("imap_messages_raw_message_id_idx").on(table.messageId),
     // DOMAIN-BLOCKLIST-1016 staff read: bounces by day (migration 0080, hand-written).
     index("imap_messages_raw_bounce_received_idx").on(table.polledAt).where(sql`kind = 'bounce'`),
     // The per-reply projection's IMAP source (migration 0095, hand-written, BOX-DB-LOAD-1027).
