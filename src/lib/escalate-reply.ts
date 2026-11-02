@@ -13,9 +13,9 @@
  *      agency inbox in Bcc) — a reply we cannot answer is still good news, and
  *      the celebration's own claim makes it one email however many paths fire;
  *   2. when the brand names a rep, the prospect gets an IMMEDIATE hand-over in
- *      their own thread, from the mailbox that wrote to them: it acknowledges
- *      what they asked, says the client's team is copied and will answer, and
- *      answers nothing. The rep is in Cc, the agency inbox in Bcc, the history
+ *      their own thread, from the mailbox that wrote to them: 2-3 short lines
+ *      that name who is copied, offer the booking link when the caller gives
+ *      one, restate nothing and answer nothing. The rep is in Cc, the agency inbox in Bcc, the history
  *      quoted below. The rep replies-all from their own inbox;
  *   3. when the brand names NO rep (or the hand-over could not go out), the
  *      prospect gets nothing and every member of the org that owns the brand
@@ -28,8 +28,8 @@
  * never writes on that thread again (`handed_over`, lib/reply-to-lead).
  *
  * ⚠️ NEVER A PARAPHRASE AS THEIR WORDS. The caller's `question` is the drafting
- * model's own reading; it is given to the hand-over model as a hint and shown
- * to nobody. Every email that shows the conversation carries the prospect's
+ * model's own reading; it is shown to nobody and never given to the hand-over
+ * writer (it licensed the parroting, MB-HANDOFF-EMAIL-1102). Every email that shows the conversation carries the prospect's
  * reply verbatim, waited on until readable (lib/prospect-history).
  *
  * ⚠️ WHAT THIS DOES *NOT* DO IS DECIDE. Whether a question is answerable is a
@@ -94,9 +94,19 @@ export interface EscalateReplyInput {
   /**
    * The caller's reading of what could not be answered. Required and non-empty
    * (an escalation with nothing to answer is not actionable), but it is a MODEL
-   * PARAPHRASE: it is a hint for the hand-over draft and is shown to nobody.
+   * PARAPHRASE: it is recorded on the hand-over reason and shown to nobody, never given to the hand-over writer.
    */
   question: string;
+  /**
+   * The offer's booking page, offered to the prospect in the hand-over. The caller omits it when the thread must
+   * not reveal the client (a blind thread) or the offer has none.
+   */
+  bookingUrl?: string | null;
+  /**
+   * The hand-over as the CALLER's writer wrote it (plain text, the pipe's picked template + LLM). When given, it is
+   * sent as written (dash strip only) and this service drafts nothing; absent = the in-house draft below.
+   */
+  handoffText?: string | null;
 }
 
 /** rep: hand-over in the thread; team: the brand's org members were emailed; none: nobody was emailed. */
@@ -168,16 +178,30 @@ export function colleagueLine(brand: BrandHandoffContext | null): string {
   return `There is no individual name: say you have copied ${team}, who will answer their questions directly. Never invent or guess a person's name.`;
 }
 
+/**
+ * MB-HANDOFF-EMAIL-1102 (owner 2026-11-02, Beyond Logic / Edmund): the hand-over read as one block that parroted the
+ * prospect back ("You'd like a clearer picture of who we are..."). The line that licensed it ("One sentence
+ * acknowledging what they asked") is DELETED, and so is the drafter's paraphrase of the question in the message: a
+ * hand-over restates nothing. Never add a validator or rewrite after this model (the writer is trusted); only the
+ * deterministic dash strip in `handoffTextToHtml` runs on its text.
+ */
 export const HANDOFF_SYSTEM_PROMPT = `You write one short email reply on behalf of a sales rep's assistant.
-Situation: a prospect replied to our cold outreach with questions only the client's team can answer. You hand the conversation over to the client's team, who are copied on this email and will reply to everyone.
-Write like a busy, competent person typing in Gmail. Plain, warm, specific.
-- 40 to 80 words. No subject line. Plain text only.
+Situation: a prospect replied to our cold outreach and the client's team takes it from here. They are copied on this email and will reply to everyone.
+Write like a busy person typing a quick note in Gmail: short, plain, relaxed.
+- 2 or 3 short lines, each its own paragraph with a blank line between them. 15 to 45 words in total, greeting and sign-off excluded. No subject line. Plain text only.
 - Start with "Hi <first name or how they signed>," on its own line.
-- One sentence acknowledging what they asked, in your own words, specific to their message. No praise of their questions.
-- One sentence introducing who is copied (as instructed below), saying they will answer directly.
-- Do not answer any of their questions. Do not promise numbers, dates, documents or outcomes. Do not restate their list.
+- Say who is copied (as instructed below) and that they will answer on this thread.
+- When a booking link is given below, offer it as the easy next step, with the link written out in full on its own line. When none is given, never mention a link or a booking page.
+- Never repeat, summarise or rephrase what they wrote or asked. Do not answer any of their questions. Do not promise numbers, dates, documents or outcomes.
 - End with "Best," on its own line and nothing after it: the sender's name and signature are added automatically.
-Banned: em-dashes, "great question", "thoughtful", "exactly the right", "loop in", "looping in", "over to you", "reach out", "happy to", "don't hesitate", "I hope", "delve", "seamless", exclamation marks, bullet points.`;
+Banned: em-dashes, en-dashes, "thanks for getting back", "thanks for your reply", "great question", "thoughtful", "exactly the right", "loop in", "looping in", "over to you", "reach out", "happy to", "don't hesitate", "I hope", "delve", "seamless", exclamation marks, bullet points.`;
+
+/** Pure: the booking line the hand-over draft is given. A blind thread's caller sends none. */
+export function bookingLine(bookingUrl: string | null): string {
+  return bookingUrl
+    ? `Booking link to offer: ${bookingUrl}`
+    : "No booking link: do not mention booking, a calendar or any link.";
+}
 
 /** Pure: the model's plain text → the reply's HTML. Em-dashes never survive. */
 export function handoffTextToHtml(text: string): string {
@@ -215,7 +239,7 @@ export function renderQuotedHistory(messages: ThreadMessage[]): string {
 async function draftHandoff(input: {
   reply: ThreadMessage;
   brand: BrandHandoffContext | null;
-  question: string;
+  bookingUrl: string | null;
   identity: { orgId: string; userId: string; runId: string };
 }): Promise<string> {
   const words = stripQuotedHistory(input.reply.bodyText).trim() || input.reply.bodyText;
@@ -227,7 +251,7 @@ async function draftHandoff(input: {
     ``,
     `Who is copied: ${colleagueLine(input.brand)}`,
     ``,
-    `Our assistant's note on what it could not answer (a hint, not their words): ${input.question}`,
+    bookingLine(input.bookingUrl),
   ].join("\n");
 
   const result = await orgComplete(
@@ -325,12 +349,15 @@ export async function escalateReply(
     const repEmail = brand?.rep.email ?? null;
     if (repEmail && latestReply) {
       try {
-        const text = await draftHandoff({
-          reply: latestReply,
-          brand,
-          question,
-          identity: { orgId: input.orgId, userId: input.userId, runId: input.runId },
-        });
+        const written = input.handoffText?.trim();
+        const text = written
+          ? written
+          : await draftHandoff({
+              reply: latestReply,
+              brand,
+              bookingUrl: input.bookingUrl?.trim() || null,
+              identity: { orgId: input.orgId, userId: input.userId, runId: input.runId },
+            });
         const agency = agencyInbox();
         await replyToLead({
           orgId: input.orgId,

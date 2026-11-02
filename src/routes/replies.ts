@@ -145,7 +145,7 @@ router.post("/escalate", async (req: Request, res: Response) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.message });
   }
-  const { campaign_id, email, question } = parsed.data;
+  const { campaign_id, email, question, booking_url, handoff_text } = parsed.data;
 
   try {
     const escalation = await escalateReply({
@@ -155,6 +155,8 @@ router.post("/escalate", async (req: Request, res: Response) => {
       campaignId: campaign_id,
       leadEmail: email,
       question,
+      bookingUrl: booking_url ?? null,
+      handoffText: handoff_text ?? null,
     });
     return res.status(200).json({ success: true, escalation });
   } catch (error: unknown) {
