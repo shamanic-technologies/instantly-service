@@ -1799,6 +1799,23 @@ export const EscalateReplyBodySchema = z
       .describe(
         "What they asked, in their own words. Required — it is the whole content of the notification, and lead-service refuses a stop with no reason.",
       ),
+    booking_url: z
+      .string()
+      .url()
+      .nullable()
+      .optional()
+      .describe(
+        "The offer's booking page, offered to the prospect in the hand-over email. Omit it (or null) when the thread must not reveal the client (blind thread) or the offer has none.",
+      ),
+    handoff_text: z
+      .string()
+      .min(1)
+      .max(4000)
+      .nullable()
+      .optional()
+      .describe(
+        "The hand-over email as the caller's writer wrote it (plain text, blank line between paragraphs, ends on the sign-off; the signature is added). When given it is sent as written after the dash strip and this service drafts nothing. Ignored when the brand names no rep (the brand's team is emailed instead).",
+      ),
   })
   .openapi("EscalateReplyBody", {
     example: {

@@ -71,6 +71,7 @@ import {
   handThreadToHuman,
   handoffTextToHtml,
   HANDOFF_SYSTEM_PROMPT,
+  bookingLine,
   renderQuotedHistory,
 } from "../../src/lib/escalate-reply";
 
@@ -185,6 +186,37 @@ describe("escalating a reply when the brand names a rep", () => {
     expect(params).toMatchObject({ provider: "anthropic", model: "opus", systemPrompt: HANDOFF_SYSTEM_PROMPT });
     expect(params.message).toContain("1. Comparable clinic results?");
     expect(identity).toEqual({ orgId: "org-1", userId: "user-1", runId: "run-1" });
+  });
+
+  it("never licenses parroting: no acknowledgement line, no paraphrase of the question (MB-HANDOFF-EMAIL-1102)", async () => {
+    expect(HANDOFF_SYSTEM_PROMPT).not.toMatch(/acknowledg/i);
+    expect(HANDOFF_SYSTEM_PROMPT).toContain("Never repeat, summarise or rephrase what they wrote or asked");
+    expect(HANDOFF_SYSTEM_PROMPT).toContain("2 or 3 short lines");
+    await escalateReply(INPUT);
+    const [params] = mockComplete.mock.calls[0];
+    // the drafter's own reading of the question never reaches the hand-over writer
+    expect(params.message).not.toContain(INPUT.question);
+    expect(params.message).toContain("No booking link");
+  });
+
+  it("gives the hand-over writer the offer's booking link when the caller sends one", async () => {
+    await escalateReply({ ...INPUT, bookingUrl: "https://calendly.com/chaim-beyondlogic/15-minute-intro" });
+    const [params] = mockComplete.mock.calls[0];
+    expect(params.message).toContain("Booking link to offer: https://calendly.com/chaim-beyondlogic/15-minute-intro");
+    expect(bookingLine(null)).toContain("do not mention");
+  });
+
+  it("sends the caller's written hand-over as written (dash strip only) and drafts nothing", async () => {
+    await escalateReply({
+      ...INPUT,
+      handoffText: "Hi Edmund,\n\nChaim at Beyond Logic is copied and will answer here.\n\nGrab a time — https://calendly.com/x\n\nBest,",
+    });
+    expect(mockComplete).not.toHaveBeenCalled();
+    const [reply] = mockReplyToLead.mock.calls[0];
+    expect(reply.bodyHtml).toBe(
+      "<p>Hi Edmund,</p><p>Chaim at Beyond Logic is copied and will answer here.</p><p>Grab a time, https://calendly.com/x</p><p>Best,</p>",
+    );
+    expect(reply.copy.cc).toEqual(["rep@docdinners.com"]);
   });
 
   it("names the team, never an invented person, when the rep has no name", () => {
