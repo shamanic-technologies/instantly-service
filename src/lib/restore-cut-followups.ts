@@ -11,9 +11,9 @@
  *   - a bounce later retracted as "the receiver refused the MESSAGE, the address
  *     is fine" (`bounce-retraction.ts`) had already cancelled the rest of the
  *     sequence (Olive: 22 leads, step 1 only);
- *   - 2026-10-22, 19 Primeforge mailboxes deleted: their 374 sequences were
- *     stopped because a follow-up was never moved to another mailbox (the
- *     dispatcher now moves it).
+ *   (a sequence whose mailbox we no longer have is NOT owed anything: owner
+ *   2026-11-03, "cancel them when we dont have the mailbox anymore". The
+ *   2026-10-22 stop of 374 sequences on 19 deleted Primeforge mailboxes stands.)
  *
  * The population is one RULE, never a list: a self-sent sequence
  *   - that really emailed the lead (a real `email_sent`);
@@ -27,14 +27,16 @@
  *     qualification, a follow-up cut naming them (LEAK-1012), a refused latest
  *     verdict, a newer sequence of the same org to the same address, a row
  *     closed by the Instantly plan cut or as a stalled first email;
- *   - whose campaign was not stopped for an org teardown (campaign-service).
+ *   - whose campaign was not stopped for an org teardown (campaign-service);
+ *   - whose sending mailbox we still hold a credential for (else nothing could
+ *     send it, and its follow-ups are cancelled, never moved).
  * A person who booked a meeting is stopped again by the booked sweep before
  * anything leaves (`booked-stops-cold.ts`, top of every dispatch tick).
  *
  * Each one goes back through `restoreOne` (fresh provisioned holds billed to
  * the org, row back to `active`); the dispatcher then sends at its normal pace,
- * from the lead's mailbox, or from a production mailbox when that one cannot
- * send any more. Idempotent: a restored step holds a provisioned row, so it is
+ * from the lead's mailbox (or a production mailbox when that one, still ours,
+ * is refused or mostly in spam there). Idempotent: a restored step holds a provisioned row, so it is
  * no longer a candidate. Dry-run by default.
  */
 
@@ -45,6 +47,7 @@ import { db } from "../db";
 import { listCampaignStatuses } from "./campaign-client";
 import type { CallerInfo } from "./key-client";
 import { restoreOne, type RestoreCandidate } from "./restore-stopped-followups";
+import { loadCredentialedMailboxes } from "./self-send/mailbox-credentials";
 import { stopCutsStartedSequences, stoppedCampaignIds } from "./stopped-campaigns";
 
 /** Cuts before this were judged at the 2026-10-06 restore; only later ones are taken back by date. */
@@ -59,6 +62,8 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
 export interface CutFollowupCandidate extends RestoreCandidate {
   /** The row was marked `paused` by the cut (else still `active`, holds cancelled). */
   paused: boolean;
+  /** The mailbox the sequence is pinned to. */
+  accountEmail: string | null;
 }
 
 /**
@@ -142,6 +147,7 @@ export async function loadCutFollowupCandidates(
            s.run_id                AS "runId",
            s.brand_ids             AS "brandIds",
            s.lead_email            AS "leadEmail",
+           s.account_email         AS "accountEmail",
            (s.status = 'paused')   AS "paused",
            cut.steps               AS "steps"
     FROM seqs s
@@ -205,6 +211,7 @@ export async function loadCutFollowupCandidates(
     brandIds: Array.isArray(r.brandIds) ? (r.brandIds as string[]) : null,
     leadEmail: String(r.leadEmail),
     paused: r.paused === true,
+    accountEmail: typeof r.accountEmail === "string" ? r.accountEmail : null,
     steps: Array.isArray(r.steps) ? (r.steps as unknown[]).map(Number) : [],
   }));
 }
@@ -215,6 +222,14 @@ export function withoutTornDownOrgs<T extends { campaignId: string }>(
   stopped: Map<string, string | null>,
 ): T[] {
   return candidates.filter((c) => !stopCutsStartedSequences(stopped.get(c.campaignId) ?? null));
+}
+
+/** Keep only the candidates whose mailbox we still hold a credential for. Pure. */
+export function onHeldMailboxes<T extends { accountEmail: string | null }>(
+  candidates: T[],
+  held: ReadonlySet<string>,
+): T[] {
+  return candidates.filter((c) => c.accountEmail !== null && held.has(c.accountEmail));
 }
 
 export interface CutFollowupRestoreSummary {
@@ -244,7 +259,12 @@ export async function restoreCutFollowups(options: {
     orgId: options.orgId,
   });
   const all =
-    loaded.length === 0 ? loaded : withoutTornDownOrgs(loaded, stoppedCampaignIds(await listCampaignStatuses()));
+    loaded.length === 0
+      ? loaded
+      : onHeldMailboxes(
+          withoutTornDownOrgs(loaded, stoppedCampaignIds(await listCampaignStatuses())),
+          await loadCredentialedMailboxes(options.caller),
+        );
   const candidates = options.limit ? all.slice(0, options.limit) : all;
 
   const byOrg: CutFollowupRestoreSummary["byOrg"] = {};

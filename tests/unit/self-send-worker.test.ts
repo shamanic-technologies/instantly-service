@@ -86,6 +86,10 @@ vi.mock("../../src/lib/scheduled-replies-worker", () => ({
     mockDispatchScheduledReplies(...args),
 }));
 
+const mockStopSelfSendSequence = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../../src/lib/self-send/stop-sequence", () => ({
+  stopSelfSendSequence: (...args: unknown[]) => mockStopSelfSendSequence(...(args as [])),
+}));
 vi.mock("../../src/lib/silver-promote", () => ({
   promoteEvent: (...args: unknown[]) => mockPromoteEvent(...args),
 }));
@@ -120,7 +124,7 @@ vi.mock("../../src/lib/self-send/imap-poller", () => ({
   runPoll: (...args: unknown[]) => mockRunPoll(...args),
 }));
 
-const { runDispatch, dispatchAnswerNow, __resetDispatchInFlight, repinStrandedFollowUps } = await import(
+const { runDispatch, dispatchAnswerNow, __resetDispatchInFlight, repinStrandedFollowUps, cancelFollowUpsOfGoneMailboxes } = await import(
   "../../src/lib/self-send/dispatch-worker"
 );
 const { SmtpDispatchError } = await import("../../src/lib/self-send/smtp");
@@ -794,12 +798,17 @@ describe("repinStrandedFollowUps — a follow-up leaves a mailbox that cannot se
     stepDelays: [3, 7, null],
   });
 
-  it("its mailbox was deleted (no capacity row): the row is re-pinned with its reason, the selection reads the new sender", async () => {
+  it("its mailbox is mostly in spam at the prospect's provider: the row is re-pinned with its reason, the selection reads the new sender", async () => {
     mockExecute.mockReset();
     mockExecute.mockResolvedValue({ rows: [{ id: "row-1" }] });
-    const sequences = [followUp()];
+    const sequences = [{ ...followUp(), recipientProvider: "google" as const }];
+    const spam = {
+      ...prodCap, accountEmail: GONE, mailbox: GONE, adoptsFirstEmails: false,
+      placement: { google: { verdict: "junk" as const, mostlySpam: true } },
+    };
+    const inbox = { ...prodCap, placement: { google: { verdict: "inbox" as const, mostlySpam: false } } };
 
-    const moved = await repinStrandedFollowUps(sequences, [prodCap], NOW, new Set());
+    const moved = await repinStrandedFollowUps(sequences, [spam, inbox], NOW, new Set());
 
     expect(moved).toBe(1);
     expect(sequences[0]!.accountEmail).toBe(PROD);
@@ -808,6 +817,15 @@ describe("repinStrandedFollowUps — a follow-up leaves a mailbox that cannot se
     expect(text).toContain("follow_up_mailbox_cannot_send");
     // Never guarded on "nothing sent": a follow-up has a thread by definition.
     expect(text).not.toContain("smtp_dispatch_raw");
+  });
+
+  it("its mailbox is GONE (no credential): never re-pinned", async () => {
+    mockExecute.mockReset();
+    const sequences = [followUp()];
+    const moved = await repinStrandedFollowUps(sequences, [prodCap], NOW, new Set());
+    expect(moved).toBe(0);
+    expect(sequences[0]!.accountEmail).toBe(GONE);
+    expect(mockExecute).not.toHaveBeenCalled();
   });
 
   it("control: a follow-up on a mailbox that is merely full stays where it is", async () => {
@@ -827,6 +845,58 @@ describe("repinStrandedFollowUps — a follow-up leaves a mailbox that cannot se
     const sequences = [{ ...followUp(), provisionedSteps: [1, 2, 3], lastSentStep: null, lastSentAt: null }];
     const moved = await repinStrandedFollowUps(sequences, [prodCap], NOW, new Set());
     expect(moved).toBe(0);
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+});
+
+// Owner 2026-11-03: "cancel them when we dont have the mailbox anymore".
+describe("cancelFollowUpsOfGoneMailboxes — a mailbox we no longer have: its follow-ups are cancelled and refunded", () => {
+  const GONE = "ezekiel@plainsignalco.com";
+  const PROD = "lyla@alphaflowco.com";
+  const prodCap = { accountEmail: PROD, mailbox: PROD, cap: 50, recentSustainedDaily: 50, sentToday: 0, adoptsFirstEmails: true };
+  const seq = (accountEmail: string, lastSentStep: number | null) => ({
+    instantlyCampaignId: `self:${accountEmail}-${lastSentStep}`,
+    leadEmail: "gabriel.costa@flowdesk.co",
+    accountEmail,
+    provisionedSteps: [3],
+    lastSentStep,
+    lastSentAt: lastSentStep === null ? null : new Date("2026-08-05T15:00:00Z"),
+    stepDelays: [3, 7, null],
+  });
+
+  it("a contacted sequence on a gone mailbox: holds cancelled (refund), row paused, out of the selection", async () => {
+    mockExecute.mockReset();
+    mockStopSelfSendSequence.mockClear();
+    mockExecute.mockImplementation(async (query: unknown) => {
+      const text = JSON.stringify(query);
+      if (text.includes("FROM instantly_campaigns") && text.includes("run_id AS")) {
+        return { rows: [{ instantlyCampaignId: `self:${GONE}-2`, campaignId: "804fac74", orgId: "org-1", userId: "u", runId: "r" }] };
+      }
+      return { rows: [] };
+    });
+
+    const cancelled = await cancelFollowUpsOfGoneMailboxes([seq(GONE, 2), seq(PROD, 2)], [prodCap]);
+
+    expect([...cancelled]).toEqual([`self:${GONE}-2`]);
+    expect(mockStopSelfSendSequence).toHaveBeenCalledTimes(1);
+    expect(mockStopSelfSendSequence).toHaveBeenCalledWith(
+      expect.objectContaining({ instantlyCampaignId: `self:${GONE}-2`, campaignId: "804fac74" }),
+      "gabriel.costa@flowdesk.co",
+      expect.stringContaining("is gone"),
+    );
+  });
+
+  it("control: a first email on a gone mailbox is NOT cancelled (the selection moves it)", async () => {
+    mockExecute.mockReset();
+    const cancelled = await cancelFollowUpsOfGoneMailboxes([seq(GONE, null)], [prodCap]);
+    expect(cancelled.size).toBe(0);
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it("an EMPTY pool cancels nothing (never read 'no account loaded' as 'every mailbox gone')", async () => {
+    mockExecute.mockReset();
+    const cancelled = await cancelFollowUpsOfGoneMailboxes([seq(GONE, 2)], []);
+    expect(cancelled.size).toBe(0);
     expect(mockExecute).not.toHaveBeenCalled();
   });
 });
