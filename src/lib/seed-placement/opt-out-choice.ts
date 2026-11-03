@@ -4,9 +4,9 @@
  *
  * Every seed carries one of the three variants (`seedOptOutVariant`), stored on
  * its dispatch row and in the daily series. Until EVERY variant has
- * `OPT_OUT_MIN_FOUND_SEEDS` seeds found at Google, prospect mail keeps today's
- * `tracker_link`. Once it has, prospect mail takes the variant with the best
- * inbox rate.
+ * `OPT_OUT_MIN_FOUND_SEEDS` seeds found at Google, prospect mail carries the
+ * default (`mailbox_only`, owner 2026-11-03). Once it has, prospect mail takes
+ * the variant with the best inbox rate.
  *
  * Sample size (cited in the PR, UNSUB-3WAY-1103): there is no vendor-published
  * seed count for a placement A/B, so the floor is the standard two-proportion
