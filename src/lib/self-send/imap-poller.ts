@@ -46,6 +46,8 @@ import { OPT_OUT_REPLY_KIND, recordOptOutFromReply } from "../reply-opt-out";
 import { isSelfSendCampaignId, SEND_TRANSPORT_SMTP } from "./transport";
 import { isStaffSender } from "../staff-senders";
 import { senderIsOurSide } from "./our-side-sender";
+import { isMailtoUnsubscribeSubject, mailtoUnsubscribeSends } from "./opt-out-variant";
+import { bareAddress } from "../staff-senders";
 import { orphanReplyExclusion } from "./orphan-reply";
 import { loadOwnMailDomains } from "./own-mail-domains";
 
@@ -552,7 +554,17 @@ async function pollAccount(
         // sent it or how says it is noise. Those keep their words, so the
         // judgment can read them and so a lost reply can always be read later.
         // ~104 a day fleet-wide (prod, 30 days to 2026-10-08), not the 80k.
+        // The unsubscribe button of a `mailto:` List-Unsubscribe (UNSUB-3WAY-1103):
+        // a fresh email, subject `unsubscribe`, from the very address this
+        // mailbox wrote to. Not a reply to judge: an opt-out, promoted below.
+        const unsubscribeSends =
+          classification.kind === "unrelated" &&
+          correlation.outcome === "none" &&
+          isMailtoUnsubscribeSubject(candidate.head.subject)
+            ? mailtoUnsubscribeSends(bareAddress(sender), knownSends.values())
+            : [];
         const orphanCandidate =
+          unsubscribeSends.length === 0 &&
           classification.kind === "unrelated" &&
           correlation.outcome === "none" &&
           orphanReplyExclusion(
@@ -589,6 +601,9 @@ async function pollAccount(
               // Read by `orphan-reply-sweep.ts`, which judges it right after
               // this poll inside the same dispatch run.
               ...(orphanCandidate ? { orphanCandidate: true } : {}),
+              ...(unsubscribeSends.length > 0
+                ? { mailtoUnsubscribe: unsubscribeSends.map((s) => s.instantlyCampaignId) }
+                : {}),
             },
             receivedAt: parsed.date ?? null,
           })
@@ -603,6 +618,29 @@ async function pollAccount(
 
         if (correlation.outcome === "ambiguous") {
           summary.ambiguous += 1;
+          continue;
+        }
+
+        if (unsubscribeSends.length > 0) {
+          // Same promotion as the one-click link (`routes/unsubscribe.ts`): a real
+          // `lead_unsubscribed`, which stops the sequence and records the opt-out.
+          for (const s of unsubscribeSends) {
+            await promoteEvent({
+              eventType: "lead_unsubscribed",
+              instantlyCampaignId: s.instantlyCampaignId,
+              leadEmail: s.leadEmail,
+              accountEmail,
+              step: null,
+              variant: null,
+              timestamp: parsed.date ?? new Date(),
+              source: "self_send",
+              sourceRowId: row.id,
+            });
+            summary.optOutsRecorded += 1;
+            console.log(
+              `[instantly-service] self-send-poll: mailto unsubscribe campaign=${s.instantlyCampaignId} lead=${s.leadEmail} account=${accountEmail}`,
+            );
+          }
           continue;
         }
 

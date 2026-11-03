@@ -28,17 +28,17 @@ function variant(v: OptOutVariant, found: number, inboxPct: number, ms?: { found
 describe("chooseOptOutVariant (UNSUB-3WAY-1103)", () => {
   const N = OPT_OUT_MIN_FOUND_SEEDS;
 
-  it("keeps today's tracker link until EVERY variant has the sample at Google", () => {
+  it("carries the default (the sending mailbox) until EVERY variant has the sample at Google", () => {
     const d = chooseOptOutVariant([
       variant("tracker_link", N, 60),
       variant("mailbox_only", N, 95),
       variant("none", N - 1, 99),
     ]);
-    expect(d).toMatchObject({ variant: "tracker_link", reason: "sample_not_reached", scoredProviders: [] });
+    expect(d).toMatchObject({ variant: "mailbox_only", reason: "sample_not_reached", scoredProviders: [] });
   });
 
   it("keeps it when a variant has no row at all", () => {
-    expect(chooseOptOutVariant([variant("mailbox_only", N, 95)]).variant).toBe("tracker_link");
+    expect(chooseOptOutVariant([variant("tracker_link", N, 95)])).toMatchObject({ variant: "mailbox_only", reason: "sample_not_reached" });
   });
 
   it("switches AWAY from the tracker link when another variant lands better", () => {

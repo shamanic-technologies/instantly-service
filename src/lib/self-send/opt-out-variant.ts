@@ -5,10 +5,11 @@
  *
  * - `tracker_link`: the RFC 8058 one-click pair on our neutral opt-out domain
  *   (`SELF_SEND_PUBLIC_URL`, link.agent-base.ai). What every email carried
- *   until this experiment, so it stays the default until the seeds decide.
+ *   until this experiment.
  * - `mailbox_only`: `List-Unsubscribe: <mailto:the sending mailbox>`. No outside
  *   domain in the message at all; the mailbox client's unsubscribe button sends
- *   an email to our own mailbox, which the reply reader files as an opt-out.
+ *   an email (subject `unsubscribe`) to our own mailbox, from the address we
+ *   wrote to; the poll promotes a real `lead_unsubscribed` for it.
  *   No `List-Unsubscribe-Post`: RFC 8058 one-click is defined for https only.
  * - `none`: no List-Unsubscribe header. A reply asking us to stop still ends
  *   every follow-up (reply opt-out classifier).
@@ -20,8 +21,44 @@
 export const OPT_OUT_VARIANTS = ["tracker_link", "mailbox_only", "none"] as const;
 export type OptOutVariant = (typeof OPT_OUT_VARIANTS)[number];
 
-/** Today's behaviour, kept until every variant has the expert-cited sample. */
-export const DEFAULT_OPT_OUT_VARIANT: OptOutVariant = "tracker_link";
+/**
+ * What prospect mail carries until every variant has the expert-cited sample:
+ * the sending mailbox only, no outside domain (owner 2026-11-03, « En attendant
+ * le test, quel est le défaut à mettre en prod ? » → « go » on mailbox_only).
+ * `none` stays test-only (fewer easy exits = more spam complaints).
+ */
+export const DEFAULT_OPT_OUT_VARIANT: OptOutVariant = "mailbox_only";
+
+/** Subject of the email a mailbox client's unsubscribe button sends us. */
+export const MAILTO_UNSUBSCRIBE_SUBJECT = "unsubscribe";
+
+/**
+ * True iff an inbound subject is our `mailto:` unsubscribe (the client copies
+ * the `?subject=` we minted; Gmail/Outlook send it as-is).
+ */
+export function isMailtoUnsubscribeSubject(subject: string | null | undefined): boolean {
+  return (subject ?? "").trim().toLowerCase() === MAILTO_UNSUBSCRIBE_SUBJECT;
+}
+
+/**
+ * The sequences a mailto unsubscribe stops (pure): every sequence THIS mailbox
+ * sent to the sender's exact address, latest step each. The sender's address
+ * is the proof: the button sends from the address we wrote to.
+ */
+export function mailtoUnsubscribeSends<T extends { instantlyCampaignId: string; leadEmail: string; step: number }>(
+  senderAddress: string | null,
+  knownSends: Iterable<T>,
+): T[] {
+  if (!senderAddress) return [];
+  const wanted = senderAddress.trim().toLowerCase();
+  const byCampaign = new Map<string, T>();
+  for (const send of knownSends) {
+    if (send.leadEmail.trim().toLowerCase() !== wanted) continue;
+    const held = byCampaign.get(send.instantlyCampaignId);
+    if (!held || send.step > held.step) byCampaign.set(send.instantlyCampaignId, send);
+  }
+  return [...byCampaign.values()];
+}
 
 export function isOptOutVariant(value: unknown): value is OptOutVariant {
   return typeof value === "string" && (OPT_OUT_VARIANTS as readonly string[]).includes(value);
@@ -33,7 +70,7 @@ export function optOutTarget(
   input: { trackerUrl: () => string; senderEmail: string },
 ): string | null {
   if (variant === "tracker_link") return input.trackerUrl();
-  if (variant === "mailbox_only") return `mailto:${input.senderEmail}?subject=unsubscribe`;
+  if (variant === "mailbox_only") return `mailto:${input.senderEmail}?subject=${MAILTO_UNSUBSCRIBE_SUBJECT}`;
   return null;
 }
 
