@@ -11,6 +11,12 @@ const mockLoadMailboxLogins = vi.fn();
 // its own tests (stopped-campaigns.test.ts). Stubbed so the queued reads below
 // stay aligned with the dispatch path.
 const mockStopStoppedCampaigns = vi.fn();
+// The opt-out header choice reads the seed series (UNSUB-3WAY-1103); its own
+// suite covers it. Here every email carries today's default.
+vi.mock("../../src/lib/seed-placement/opt-out-choice", () => ({
+  currentOptOutVariant: async () => "tracker_link",
+}));
+
 vi.mock("../../src/lib/stopped-campaigns", () => ({
   stopQueuedSequencesOfStoppedCampaigns: (...args: unknown[]) => mockStopStoppedCampaigns(...args),
 }));

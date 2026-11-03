@@ -45,6 +45,7 @@ import {
   mintSeedTestId,
   planSeedSends,
   selectSeedReceivers,
+  withOptOutVariants,
 } from "../../src/lib/seed-placement/seeds";
 import {
   aggregateSeedPlacement,
@@ -60,10 +61,13 @@ import {
 } from "../../src/lib/seed-placement/credentials";
 import { KeyServiceError } from "../../src/lib/key-client";
 import {
-  SEED_SENDER_HEADER,
-  SEED_TEST_HEADER,
+  SEED_BODY_HTML,
   buildSeedMessage,
+  seedSubject,
 } from "../../src/lib/seed-placement/message";
+import { buildMessage } from "../../src/lib/self-send/message";
+import { OPT_OUT_VARIANTS } from "../../src/lib/self-send/opt-out-variant";
+import type { Account } from "../../src/lib/instantly-client";
 
 describe("seed test id", () => {
   it("carries the seed: prefix so silver keeps our results distinguishable from Instantly's", () => {
@@ -358,29 +362,77 @@ describe("manual mailbox credentials", () => {
   });
 });
 
-describe("buildSeedMessage", () => {
-  const message = buildSeedMessage({
-    testId: "seed:abc",
-    senderEmail: "s@one.com",
-    receiverEmail: "r@two.com",
+describe("buildSeedMessage — the seed IS the email a prospect gets (UNSUB-3WAY-1103)", () => {
+  const ACCOUNT = { email: "amy@one.com", first_name: "Amy", last_name: "Moore" } as Account;
+  const URL = "https://link.test/u/p/s";
+
+  // The proof the AC asks for: a seed and a real step built from the same
+  // inputs are byte-equal, because both go through `buildMessage`.
+  it.each(OPT_OUT_VARIANTS)("is byte-equal to a real first email built by buildMessage (%s)", (variant) => {
+    const seed = buildSeedMessage({
+      testId: "seed:abc",
+      account: ACCOUNT,
+      receiverEmail: "r@two.com",
+      optOut: variant,
+      unsubscribeUrl: URL,
+    });
+    const real = buildMessage({
+      account: ACCOUNT,
+      signatureHtml: null,
+      leadEmail: "r@two.com",
+      subject: seedSubject(),
+      bodyHtml: SEED_BODY_HTML,
+      step: 1,
+      identity: { instantlyCampaignId: "self:x", leadEmail: "r@two.com" },
+      optOut: variant,
+      unsubscribeUrl: URL,
+    });
+    expect(seed).toEqual(real);
   });
 
-  it("carries the test id and sender in headers, for attribution without a DB read", () => {
-    expect(message.headers[SEED_TEST_HEADER]).toBe("seed:abc");
-    expect(message.headers[SEED_SENDER_HEADER]).toBe("s@one.com");
+  it("carries the prospect machinery: From name, our signature, the variant's header", () => {
+    const seed = buildSeedMessage({ testId: "seed:abc", account: ACCOUNT, receiverEmail: "r@two.com", optOut: "tracker_link", unsubscribeUrl: URL });
+    expect(seed.from).toBe('"Amy Moore" <amy@one.com>');
+    expect(seed.html).toContain("<p>--</p>");
+    expect(seed.html).toContain("Distribute.you | Marketing Agency");
+    expect(seed.headers["List-Unsubscribe"]).toBe(`<${URL}>`);
   });
 
-  it("does NOT drag in the prospect-mail machinery", () => {
-    // No unresolved Instantly merge variable, no signature separator, no anchors
-    // — a seed must measure the mailbox, not the footer.
-    expect(message.html).not.toContain("{unsubscribe_link}");
-    expect(message.html).not.toContain("<p>--</p>");
-    expect(message.html).not.toContain("<a ");
+  it("adds no seed-only header a filter could read", () => {
+    for (const optOut of OPT_OUT_VARIANTS) {
+      const seed = buildSeedMessage({ testId: "seed:abc", account: ACCOUNT, receiverEmail: "r@two.com", optOut, unsubscribeUrl: URL });
+      expect(Object.keys(seed.headers).every((h) => h.startsWith("List-Unsubscribe"))).toBe(true);
+      expect(JSON.stringify(seed)).not.toContain("seed:abc");
+    }
   });
 
   it("keeps the subject free of machine-generated markers", () => {
-    expect(message.subject).not.toContain("seed:");
-    expect(message.subject).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
+    expect(seedSubject()).not.toContain("seed:");
+    expect(seedSubject()).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
+  });
+});
+
+describe("withOptOutVariants — every seed carries one variant, balanced", () => {
+  const receivers = Array.from({ length: 10 }, (_, i) => ({ email: `r${i}@x${i}.com`, recipientEsp: 1 }));
+  const senders = Array.from({ length: 30 }, (_, i) => `s${String(i).padStart(2, "0")}@send.com`);
+
+  it("spreads each sender and each receiver over all three variants", () => {
+    const tagged = withOptOutVariants(planSeedSends(senders, receivers), 0);
+    const count = (k: string) => tagged.filter((t) => t.optOut === k).length;
+    expect(count("tracker_link") + count("mailbox_only") + count("none")).toBe(300);
+    for (const v of OPT_OUT_VARIANTS) expect(count(v)).toBe(100);
+    for (const s of senders) {
+      expect(new Set(tagged.filter((t) => t.senderEmail === s).map((t) => t.optOut)).size).toBe(3);
+    }
+    for (const r of receivers) {
+      expect(new Set(tagged.filter((t) => t.receiverEmail === r.email).map((t) => t.optOut)).size).toBe(3);
+    }
+  });
+
+  it("moves a pair to another variant on the next test day", () => {
+    const day1 = withOptOutVariants(planSeedSends(senders, receivers), 1)[0].optOut;
+    const day2 = withOptOutVariants(planSeedSends(senders, receivers), 2)[0].optOut;
+    expect(day1).not.toBe(day2);
   });
 });
 

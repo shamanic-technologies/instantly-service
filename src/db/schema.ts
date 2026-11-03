@@ -1641,6 +1641,10 @@ export const seedPlacementDispatches = pgTable(
     // Recipient ESP, same enum as the Instantly silver rows (1=Google, 2=Outlook).
     recipientEsp: integer("recipient_esp").notNull(),
     messageId: text("message_id").notNull(),
+    // The opt-out header the seed carried (`tracker_link` | `mailbox_only` |
+    // `none`, UNSUB-3WAY-1103). Null = a seed from before the experiment (the
+    // old plain, header-less seed).
+    optOutVariant: text("opt_out_variant"),
     // `sent` counts toward the denominator. A `permanent` / `transient` failure
     // is recorded but NOT counted — we never learned anything about placement,
     // and scoring an SMTP refusal as a missing inbox would blame the receiver
@@ -2217,6 +2221,8 @@ export const seedPlacementDaily = pgTable(
     day: date("day").notNull(),
     recipientEsp: integer("recipient_esp").notNull(),
     senderVendor: text("sender_vendor").notNull(),
+    // '' = a seed from before UNSUB-3WAY-1103 (no variant recorded).
+    optOutVariant: text("opt_out_variant").notNull().default(""),
     seeds: integer("seeds").notNull(),
     inbox: integer("inbox").notNull(),
     spam: integer("spam").notNull(),
@@ -2225,7 +2231,12 @@ export const seedPlacementDaily = pgTable(
     inboxOther: integer("inbox_other").notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [primaryKey({ columns: [table.day, table.recipientEsp, table.senderVendor] })],
+  (table) => [
+    primaryKey({
+      name: "seed_placement_daily_pk",
+      columns: [table.day, table.recipientEsp, table.senderVendor, table.optOutVariant],
+    }),
+  ],
 );
 
 // Who hosts a prospect domain's mail, from its MX records
