@@ -236,8 +236,28 @@ describe("stopQueuedSequencesOfStoppedCampaigns", () => {
       });
     }
 
-    for (const stopReason of ["org_teardown", "payment_declined", "no_payment_method"]) {
-      it(`stop_reason=${stopReason}: EVERY queued sequence is stopped, contacted or not`, async () => {
+    it("stop_reason=org_teardown: EVERY queued sequence is stopped, contacted or not", async () => {
+      mockListCampaignStatuses.mockResolvedValue([
+        campaign("camp-stopped", "stopped", { stopReason: "org_teardown" }),
+      ]);
+      mockExecute.mockResolvedValue({
+        rows: [
+          queued("self:emailed", "camp-stopped", "emailed@x.com", "org-1", true),
+          queued("self:new", "camp-stopped", "new@x.com", "org-1", false),
+        ],
+      });
+
+      const { summary } = await stopQueuedSequencesOfStoppedCampaigns(CALLER);
+
+      expect(summary).toMatchObject({ keptFollowups: 0, stoppedSelfSend: 2 });
+      expect(mockCancelRemainingProvisions).toHaveBeenCalledTimes(2);
+    });
+
+    // OLIVE-FOLLOWUPS-1103: the follow-ups were paid for at the first email
+    // (provisioned then), so an empty balance or a refused card is never a reason
+    // to cut them. 29 campaigns stopped this way cut their contacted leads.
+    for (const stopReason of ["payment_declined", "no_payment_method"]) {
+      it(`stop_reason=${stopReason}: no new first email, the contacted leads KEEP their follow-ups`, async () => {
         mockListCampaignStatuses.mockResolvedValue([campaign("camp-stopped", "stopped", { stopReason })]);
         mockExecute.mockResolvedValue({
           rows: [
@@ -248,8 +268,12 @@ describe("stopQueuedSequencesOfStoppedCampaigns", () => {
 
         const { summary } = await stopQueuedSequencesOfStoppedCampaigns(CALLER);
 
-        expect(summary).toMatchObject({ keptFollowups: 0, stoppedSelfSend: 2 });
-        expect(mockCancelRemainingProvisions).toHaveBeenCalledTimes(2);
+        expect(summary).toMatchObject({ keptFollowups: 1, stoppedSelfSend: 1 });
+        expect(mockCancelRemainingProvisions).toHaveBeenCalledTimes(1);
+        expect(mockCancelRemainingProvisions).toHaveBeenCalledWith(
+          expect.objectContaining({ instantlyCampaignId: "self:new" }),
+          "new@x.com",
+        );
       });
     }
   });

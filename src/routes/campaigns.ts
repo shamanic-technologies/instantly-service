@@ -16,6 +16,7 @@ import { backfillStopOnClick } from "../lib/stop-on-click-backfill";
 import { actualizeOrphanedSends } from "../lib/actualize-orphaned-sends";
 import { reconcileProvisionedHolds } from "../lib/reconcile-provisioned-holds";
 import { restoreStoppedFollowups } from "../lib/restore-stopped-followups";
+import { restoreCutFollowups } from "../lib/restore-cut-followups";
 
 const router = Router();
 
@@ -334,6 +335,47 @@ router.post("/restore-stopped-followups", async (req: Request, res: Response) =>
   restoreStoppedFollowups({ campaignIds, dryRun, limit, caller }).catch((error: unknown) => {
     const message = errorMessage(error);
     console.error(`[instantly-service] restore-stopped-followups run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/campaigns/restore-cut-followups
+ * Fleet-wide: put back the follow-ups of contacted leads that were cut while
+ * nothing about the lead said stop (OLIVE-FOLLOWUPS-1103). The population is a
+ * RULE, never a list: see `lib/restore-cut-followups.ts`. Normal cost path
+ * (fresh provisioned holds billed to the org), no new credit authorization (the
+ * follow-ups were authorized with the first email).
+ *
+ * Body: `{ dryRun?: boolean (default true), limit?: number, orgId?: string }`.
+ *   - dryRun (default) → the plan per org, synchronously.
+ *   - dryRun:false → 202 + background; log `restore-cut-followups: done`.
+ */
+router.post("/restore-cut-followups", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { dryRun?: unknown; limit?: unknown; orgId?: unknown };
+  const dryRun = body.dryRun !== false;
+  const limit =
+    typeof body.limit === "number" && body.limit > 0 ? Math.floor(body.limit) : undefined;
+  const orgId = typeof body.orgId === "string" && body.orgId.length > 0 ? body.orgId : undefined;
+  const caller = { method: req.method, path: req.path };
+
+  if (dryRun) {
+    try {
+      return res.status(200).json(await restoreCutFollowups({ dryRun, limit, orgId, caller }));
+    } catch (error: unknown) {
+      const message = errorMessage(error);
+      console.error(`[instantly-service] restore-cut-followups dry-run failed: ${message}`);
+      return res.status(500).json({ error: message });
+    }
+  }
+
+  const runId = randomUUID();
+  console.log(
+    `[instantly-service] restore-cut-followups: dispatched run=${runId} org=${orgId ?? "all"} limit=${limit ?? "all"}`,
+  );
+  res.status(202).json({ runId, dryRun: false, orgId: orgId ?? null, limit: limit ?? null });
+  restoreCutFollowups({ dryRun, limit, orgId, caller }).catch((error: unknown) => {
+    const message = errorMessage(error);
+    console.error(`[instantly-service] restore-cut-followups run=${runId} failed: ${message}`);
   });
 });
 

@@ -120,7 +120,7 @@ vi.mock("../../src/lib/self-send/imap-poller", () => ({
   runPoll: (...args: unknown[]) => mockRunPoll(...args),
 }));
 
-const { runDispatch, dispatchAnswerNow, __resetDispatchInFlight } = await import(
+const { runDispatch, dispatchAnswerNow, __resetDispatchInFlight, repinStrandedFollowUps } = await import(
   "../../src/lib/self-send/dispatch-worker"
 );
 const { SmtpDispatchError } = await import("../../src/lib/self-send/smtp");
@@ -772,5 +772,61 @@ describe("dispatchAnswerNow — an answer to a person leaves at once (FORM-ANSWE
     const summary = await dispatchAnswerNow("self:cold", SUNDAY_NIGHT);
     expect(summary.sent).toBe(0);
     expect(mockDispatchMessage).not.toHaveBeenCalled();
+  });
+});
+
+
+// OLIVE-FOLLOWUPS-1103: the send selection may be the stored script's, which
+// never moves a follow-up, so a follow-up whose mailbox cannot send it is
+// re-pinned on the queue BEFORE any selection reads it.
+describe("repinStrandedFollowUps — a follow-up leaves a mailbox that cannot send it, before the selection", () => {
+  const NOW = new Date("2026-08-17T15:00:00Z"); // a Monday, inside the window
+  const GONE = "ezekiel@plainsignalco.com";
+  const PROD = "lyla@alphaflowco.com";
+  const prodCap = { accountEmail: PROD, mailbox: PROD, cap: 50, recentSustainedDaily: 50, sentToday: 0, adoptsFirstEmails: true };
+  const followUp = () => ({
+    instantlyCampaignId: "self:fu",
+    leadEmail: "gabriel.costa@flowdesk.co",
+    accountEmail: GONE,
+    provisionedSteps: [3],
+    lastSentStep: 2,
+    lastSentAt: new Date(NOW.getTime() - 12 * 24 * 3600 * 1000),
+    stepDelays: [3, 7, null],
+  });
+
+  it("its mailbox was deleted (no capacity row): the row is re-pinned with its reason, the selection reads the new sender", async () => {
+    mockExecute.mockReset();
+    mockExecute.mockResolvedValue({ rows: [{ id: "row-1" }] });
+    const sequences = [followUp()];
+
+    const moved = await repinStrandedFollowUps(sequences, [prodCap], NOW, new Set());
+
+    expect(moved).toBe(1);
+    expect(sequences[0]!.accountEmail).toBe(PROD);
+    const text = JSON.stringify(mockExecute.mock.calls[0]![0]);
+    expect(text).toContain("SET account_email");
+    expect(text).toContain("follow_up_mailbox_cannot_send");
+    // Never guarded on "nothing sent": a follow-up has a thread by definition.
+    expect(text).not.toContain("smtp_dispatch_raw");
+  });
+
+  it("control: a follow-up on a mailbox that is merely full stays where it is", async () => {
+    mockExecute.mockReset();
+    const sequences = [followUp()];
+    const full = { ...prodCap, accountEmail: GONE, mailbox: GONE, adoptsFirstEmails: false, sentToday: 50 };
+
+    const moved = await repinStrandedFollowUps(sequences, [full, prodCap], NOW, new Set());
+
+    expect(moved).toBe(0);
+    expect(sequences[0]!.accountEmail).toBe(GONE);
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it("a first email is never re-pinned here (the selection moves it at send time)", async () => {
+    mockExecute.mockReset();
+    const sequences = [{ ...followUp(), provisionedSteps: [1, 2, 3], lastSentStep: null, lastSentAt: null }];
+    const moved = await repinStrandedFollowUps(sequences, [prodCap], NOW, new Set());
+    expect(moved).toBe(0);
+    expect(mockExecute).not.toHaveBeenCalled();
   });
 });

@@ -16,17 +16,22 @@
  *  3. the campaign row's `delivery_status` goes back from `bounced` to `sent`
  *     while nothing else still says it bounced (a DSN proves the email left);
  *  4. gold is rebuilt (`POST /orgs/status`, what lead-service's suppression
- *     reads live) and lead-service is told the address's evidence changed.
- *
- * NOT undone: the bounce already stopped that sequence and refunded its
- * remaining holds. Restarting outreach is a new decision (a new send), not a
- * correction.
+ *     reads live) and lead-service is told the address's evidence changed;
+ *  5. the follow-ups the bounce cancelled go back in the queue
+ *     (`restore-cut-followups.ts`, normal cost path), unless something else
+ *     about the lead says stop. The lead got our first email and nothing about
+ *     them said stop: they are owed the sequence (OLIVE-FOLLOWUPS-1103: 22 of
+ *     Olive's leads were left on step 1 by a retracted bounce). A failure here
+ *     is logged loud and left to `POST /internal/campaigns/restore-cut-followups`
+ *     (the retraction itself is already done and correct).
  */
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
 import { instantlyEventsRetracted } from "../db/schema";
+import { errorMessage } from "./db-error.js";
 import { announceEvidenceChanged } from "./evidence-changed";
+import { restoreCutFollowups } from "./restore-cut-followups";
 import { refreshLeadStatusCurrent } from "./status-gold";
 
 function rowsOf(result: unknown): Record<string, unknown>[] {
@@ -112,5 +117,22 @@ export async function retractBouncedEvents(
   const orgOf = new Map(orgs.map((r) => [String(r.instantly_campaign_id), r.org_id as string | null]));
   for (const [campaignId, leadEmail] of touched) {
     await announceEvidenceChanged(orgOf.get(campaignId) ?? null, [leadEmail], announceTag);
+  }
+
+  try {
+    const restored = await restoreCutFollowups({
+      dryRun: false,
+      instantlyCampaignIds: [...touched.keys()],
+      caller: { method: "POST", path: `/bounce-retraction/${announceTag}` },
+    });
+    if (restored.failed > 0) {
+      console.error(
+        `[instantly-service] bounce-retraction: ${restored.failed} sequence(s) NOT re-queued after ${announceTag}; run restore-cut-followups`,
+      );
+    }
+  } catch (error: unknown) {
+    console.error(
+      `[instantly-service] bounce-retraction: follow-ups NOT re-queued after ${announceTag}: ${errorMessage(error)}`,
+    );
   }
 }
