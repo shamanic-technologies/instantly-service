@@ -21,10 +21,14 @@ vi.mock("../../src/lib/campaign-client", () => ({
   listCampaignStatuses: (...a: unknown[]) => mockListCampaignStatuses(...a),
 }));
 vi.mock("../../src/lib/campaign-identity", () => ({ identityKeyOf: () => null }));
+const mockCredentialed = vi.fn();
+vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({
+  loadCredentialedMailboxes: (...a: unknown[]) => mockCredentialed(...a),
+}));
 vi.mock("../../src/lib/status-gold", () => ({ refreshLeadStatusCurrent: vi.fn(async () => {}) }));
 vi.mock("../../src/lib/evidence-changed", () => ({ announceEvidenceChanged: vi.fn(async () => {}) }));
 
-const { restoreCutFollowups, withoutTornDownOrgs, CUT_SINCE } = await import(
+const { restoreCutFollowups, withoutTornDownOrgs, onHeldMailboxes, CUT_SINCE } = await import(
   "../../src/lib/restore-cut-followups"
 );
 const { retractBouncedEvents } = await import("../../src/lib/bounce-retraction");
@@ -42,6 +46,7 @@ function row(id: string, over: Record<string, unknown> = {}) {
     runId: "run-1",
     brandIds: ["c4b5284d-5add-440d-917e-0c79d920a0d4"],
     leadEmail: `${id}@flowdesk.co`,
+    accountEmail: "lyla@alphaflowco.com",
     paused: true,
     steps: [2, 3],
     ...over,
@@ -57,6 +62,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mockListCampaignStatuses.mockResolvedValue([]);
   mockRestoreOne.mockResolvedValue("restored");
+  mockCredentialed.mockResolvedValue(new Set(["lyla@alphaflowco.com"]));
 });
 
 describe("the population is one rule, never a list", () => {
@@ -132,6 +138,24 @@ describe("the population is one rule, never a list", () => {
       new Map<string, string | null>([["a", "org_teardown"], ["b", "no_payment_method"]]),
     );
     expect(kept.map((k) => k.campaignId)).toEqual(["b", "c"]);
+  });
+});
+
+// Owner 2026-11-03: "cancel them when we dont have the mailbox anymore".
+describe("a sequence whose mailbox we no longer have is never put back", () => {
+  it("only the candidates on a mailbox we still hold are restored", async () => {
+    mockExecute.mockResolvedValue({
+      rows: [row("held"), row("gone", { accountEmail: "ezekiel@plainsignalco.com" })],
+    });
+    const summary = await restoreCutFollowups({ dryRun: false, caller: CALLER });
+    expect(summary).toMatchObject({ candidates: 1, restored: 1 });
+    expect((mockRestoreOne.mock.calls[0]![0] as { leadEmail: string }).leadEmail).toBe("held@flowdesk.co");
+  });
+
+  it("onHeldMailboxes is pure", () => {
+    expect(
+      onHeldMailboxes([{ accountEmail: "a@x.com" }, { accountEmail: "b@x.com" }, { accountEmail: null }], new Set(["a@x.com"])),
+    ).toEqual([{ accountEmail: "a@x.com" }]);
   });
 });
 

@@ -129,9 +129,9 @@ export interface DueStep {
   rehomedFrom?: string;
   /**
    * Why it moved: a FIRST email stranded (no room, refused, no credential,
-   * placement), or a FOLLOW-UP whose mailbox can no longer send it (no
-   * credential, refused by the relay, mostly in spam at the prospect's
-   * provider). Set iff `rehomedFrom` is.
+   * placement), or a FOLLOW-UP whose mailbox, still ours, cannot send it
+   * (refused by the relay, blind, mostly in spam at the prospect's provider).
+   * Set iff `rehomedFrom` is.
    */
   rehomeReason?: RehomeReason;
 }
@@ -367,8 +367,10 @@ export interface DueSelection {
    * Steps moved this run onto a production mailbox with room: first emails from
    * a mailbox that could not send them (no room left today, silenced by the
    * relay, no credential, placement), and follow-ups from a mailbox that cannot
-   * send them at all (no credential, silenced, mostly in spam at the prospect's
-   * provider). Each one is in `selected` with `rehomedFrom` set.
+   * send them (silenced, blind, mostly in spam at the prospect's provider). A
+   * follow-up whose mailbox is GONE (no credential) is never moved: its
+   * sequence is cancelled and refunded (`cancelFollowUpsOfGoneMailboxes`).
+   * Each one is in `selected` with `rehomedFrom` set.
    */
   rehomed: number;
   /**
@@ -584,9 +586,11 @@ export function selectDueSteps(
     // No capacity row ⇒ no mailbox ⇒ no room, per the invariant above. An
     // account whose limits we could not establish must not be sent from.
     const mailbox = mailboxOf.get(step.accountEmail);
+    // A follow-up here is never moved (owner 2026-11-03: a mailbox we no
+    // longer have = its follow-ups are cancelled, by the worker, before this).
     if (mailbox === undefined) {
       blockedNoCapacityRow += 1;
-      stranded.push(step);
+      if (isFirstEmail(step)) stranded.push(step);
       continue;
     }
 
@@ -649,14 +653,14 @@ export function selectDueSteps(
   // ~3,700 unused sends a day.
   //
   // A FOLLOW-UP keeps its mailbox while that mailbox can send it, even late (a
-  // full mailbox drains by itself). It moves only when its mailbox cannot send
-  // it at all: no credential (the vendor deleted it), refused by the relay, or
-  // mostly in spam at the prospect's provider. The lead was promised the whole
-  // sequence (OLIVE-FOLLOWUPS-1103: 374 contacted leads lost every follow-up on
-  // 2026-10-22 when 19 Primeforge mailboxes were deleted, and 22 of Olive's sat
-  // weeks behind a mailbox mostly in spam at Google). The thread survives the
-  // move: step 2+ is `Re: <subject>` with In-Reply-To/References on every
-  // Message-Id we sent the person, whoever sent it.
+  // full mailbox drains by itself). It moves only when its mailbox, still ours,
+  // cannot send it: refused by the relay, blind, or mostly in spam at the
+  // prospect's provider (OLIVE-FOLLOWUPS-1103: 22 of Olive's sat weeks behind
+  // a mailbox mostly in spam at Google). A mailbox we no longer HAVE (no
+  // credential) never hands its follow-ups over: owner 2026-11-03, "cancel
+  // them when we dont have the mailbox anymore". The thread survives a move:
+  // step 2+ is `Re: <subject>` with In-Reply-To/References on every Message-Id
+  // we sent the person, whoever sent it.
   //
   // Only a production mailbox that is not silenced adopts — the same gate the
   // assignment of a NEW sequence applies — and only with room left AFTER its own
