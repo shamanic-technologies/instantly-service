@@ -71,7 +71,7 @@ export interface CutFollowupCandidate extends RestoreCandidate {
  * or one org. Pure SQL; the org-teardown exclusion is applied by the caller.
  */
 export async function loadCutFollowupCandidates(
-  filter: { instantlyCampaignIds?: string[]; orgId?: string } = {},
+  filter: { instantlyCampaignIds?: string[]; orgId?: string; awaitingVerdict?: boolean } = {},
 ): Promise<CutFollowupCandidate[]> {
   const ids = filter.instantlyCampaignIds ?? null;
   if (ids !== null && ids.length === 0) return [];
@@ -194,11 +194,19 @@ export async function loadCutFollowupCandidates(
             )
           )
       )
-      AND COALESCE((
+      AND ${
+        filter.awaitingVerdict
+          ? sql`(
+        SELECT v.reason FROM email_send_verifications v
+        WHERE v.org_id = s.org_id AND v.email = lower(s.lead_email)
+        ORDER BY v.created_at DESC LIMIT 1
+      ) = 'verifier_failed'`
+          : sql`COALESCE((
         SELECT v.accepted FROM email_send_verifications v
         WHERE v.org_id = s.org_id AND v.email = lower(s.lead_email)
         ORDER BY v.created_at DESC LIMIT 1
-      ), true)
+      ), true)`
+      }
     ORDER BY s.org_id, s.campaign_id, s.lead_email
   `);
   return rowsOf(result).map((r) => ({
@@ -252,10 +260,18 @@ export async function restoreCutFollowups(options: {
   limit?: number;
   orgId?: string;
   instantlyCampaignIds?: string[];
+  /**
+   * Only the candidates whose address got NO verdict last time (the verifier
+   * failed: vendor down, or the org could not pay the check). Owner 2026-11-03
+   * (option 1): they wait and go out once the check can be made; the worker
+   * asks again (`restore-cut-followups-worker.ts`).
+   */
+  awaitingVerdict?: boolean;
   caller: CallerInfo;
 }): Promise<CutFollowupRestoreSummary> {
   const loaded = await loadCutFollowupCandidates({
     instantlyCampaignIds: options.instantlyCampaignIds,
+    awaitingVerdict: options.awaitingVerdict,
     orgId: options.orgId,
   });
   const all =
