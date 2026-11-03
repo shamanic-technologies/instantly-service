@@ -82,13 +82,11 @@ beforeEach(() => {
 });
 
 describe("restoreOne — the cut follow-ups go back through the normal cost path", () => {
-  it("self-send: one provisioned hold per cut step, one authorize, row back to active; no Instantly call", async () => {
+  it("self-send: one provisioned hold per cut step, row back to active; no Instantly call", async () => {
     const outcome = await restoreOne(candidate("self:aaa"), CALLER);
 
     expect(outcome).toBe("restored");
     expect(mockProvision).toHaveBeenCalledTimes(2);
-    expect(mockAuthorize).toHaveBeenCalledTimes(1);
-    expect(mockAuthorize.mock.calls[0]![0]).toEqual([{ costName: "x", quantity: 2 }]);
     expect(mockInsertValues).toHaveBeenCalledTimes(2);
     expect(mockInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -115,32 +113,17 @@ describe("restoreOne — the cut follow-ups go back through the normal cost path
     );
   });
 
-  it("an org out of credit: holds given back, nothing queued, row stays paused", async () => {
+  // OLIVE-FOLLOWUPS-1103: the follow-ups were authorized with the first email;
+  // an empty balance never keeps them from the lead.
+  it("an org with an EMPTY balance still gets its cut follow-ups back: no new credit authorization", async () => {
     mockAuthorize.mockResolvedValue({ sufficient: false, balance_cents: 0, required_cents: 4 });
 
     const outcome = await restoreOne(candidate("self:aaa"), CALLER);
 
-    expect(outcome).toBe("insufficient_credits");
-    expect(mockUpdateCostStatus).toHaveBeenCalledTimes(4);
-    expect(mockUpdateCostStatus).toHaveBeenCalledWith("run-1", "acc-run-1", "cancelled", expect.anything());
-    expect(mockInsertValues).not.toHaveBeenCalled();
-    expect(mockExecute).not.toHaveBeenCalled();
-  });
-
-  it("a sales funnel max-budget refusal is counted as such, never as insufficient credits", async () => {
-    mockAuthorize.mockResolvedValue({
-      sufficient: false,
-      balance_cents: 9999,
-      required_cents: 4,
-      reason: "sales_funnel_max_budget_reached",
-      sales_funnel_cap: { salesFunnelId: "sf-1" },
-    });
-
-    const outcome = await restoreOne(candidate("self:aaa"), CALLER);
-
-    expect(outcome).toBe("sales_funnel_max_budget");
-    expect(mockUpdateCostStatus).toHaveBeenCalledTimes(4);
-    expect(mockInsertValues).not.toHaveBeenCalled();
+    expect(outcome).toBe("restored");
+    expect(mockAuthorize).not.toHaveBeenCalled();
+    expect(mockInsertValues).toHaveBeenCalledTimes(2);
+    expect(mockUpdateCostStatus).not.toHaveBeenCalled();
   });
 
   it("BYOK: no authorize (the org pays its vendor), still provisioned", async () => {

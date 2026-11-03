@@ -98,7 +98,7 @@ describe("a first email its mailbox cannot send is moved to a production mailbox
     ]);
   });
 
-  it("NEVER moves a followup — its prospect already heard from one mailbox", () => {
+  it("does NOT move a followup whose mailbox is only FULL today (it drains; OLIVE-FOLLOWUPS-1103 moves only one that cannot send)", () => {
     const out = selectDueSteps([followup(1, "kevin@growthagency.ch")], [full, prod], NOW);
     expect(out.selected).toEqual([]);
     expect(out.rehomed).toBe(0);
