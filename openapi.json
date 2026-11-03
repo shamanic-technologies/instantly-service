@@ -11934,6 +11934,349 @@
         }
       }
     },
+    "/internal/seed-placement/opt-out": {
+      "get": {
+        "summary": "The three opt-out headers compared on seeds, and the one prospect mail carries (staff chart)",
+        "description": "UNSUB-3WAY-1103. Platform-scoped, read-only. Every seed carries one opt-out header: `tracker_link` (RFC 8058 one-click on our neutral link domain, today's), `mailbox_only` (List-Unsubscribe mailto the sending mailbox, no outside domain), `none` (no header). `variants` = totals since the experiment began, per receiving provider; `days` = the same per UTC day the seeds left. `decision.variant` = what prospect mail carries now: `tracker_link` until every variant has `minFoundSeedsPerVariant` seeds found at Google (`reason: sample_not_reached`), then the best inbox rate (inbox / found; Google, plus Microsoft 365 once it has the same sample) (`reason: measured`). The service switches by itself.",
+        "responses": {
+          "200": {
+            "description": "Comparison",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "asOf": {
+                      "type": "string"
+                    },
+                    "minFoundSeedsPerVariant": {
+                      "type": "integer"
+                    },
+                    "defaultVariant": {
+                      "type": "string",
+                      "enum": [
+                        "tracker_link",
+                        "mailbox_only",
+                        "none"
+                      ]
+                    },
+                    "decision": {
+                      "type": "object",
+                      "properties": {
+                        "variant": {
+                          "type": "string",
+                          "enum": [
+                            "tracker_link",
+                            "mailbox_only",
+                            "none"
+                          ]
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "sample_not_reached",
+                            "measured"
+                          ]
+                        },
+                        "scoredProviders": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "google",
+                              "microsoft"
+                            ]
+                          }
+                        },
+                        "scores": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "number",
+                            "nullable": true
+                          },
+                          "description": "Per variant, the compared inbox % (null before the sample)"
+                        }
+                      },
+                      "required": [
+                        "variant",
+                        "reason",
+                        "scoredProviders",
+                        "scores"
+                      ]
+                    },
+                    "variants": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "variant": {
+                            "type": "string",
+                            "enum": [
+                              "tracker_link",
+                              "mailbox_only",
+                              "none"
+                            ]
+                          },
+                          "google": {
+                            "type": "object",
+                            "properties": {
+                              "seeds": {
+                                "type": "integer"
+                              },
+                              "inbox": {
+                                "type": "integer"
+                              },
+                              "spam": {
+                                "type": "integer"
+                              },
+                              "found": {
+                                "type": "integer",
+                                "description": "inbox + spam"
+                              },
+                              "inboxPct": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "inbox / found, 0..100; null when nothing was found"
+                              }
+                            },
+                            "required": [
+                              "seeds",
+                              "inbox",
+                              "spam",
+                              "found",
+                              "inboxPct"
+                            ]
+                          },
+                          "microsoft": {
+                            "type": "object",
+                            "properties": {
+                              "seeds": {
+                                "type": "integer"
+                              },
+                              "inbox": {
+                                "type": "integer"
+                              },
+                              "spam": {
+                                "type": "integer"
+                              },
+                              "found": {
+                                "type": "integer",
+                                "description": "inbox + spam"
+                              },
+                              "inboxPct": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "inbox / found, 0..100; null when nothing was found"
+                              }
+                            },
+                            "required": [
+                              "seeds",
+                              "inbox",
+                              "spam",
+                              "found",
+                              "inboxPct"
+                            ],
+                            "description": "Microsoft 365"
+                          },
+                          "microsoftConsumer": {
+                            "type": "object",
+                            "properties": {
+                              "seeds": {
+                                "type": "integer"
+                              },
+                              "inbox": {
+                                "type": "integer"
+                              },
+                              "spam": {
+                                "type": "integer"
+                              },
+                              "found": {
+                                "type": "integer",
+                                "description": "inbox + spam"
+                              },
+                              "inboxPct": {
+                                "type": "number",
+                                "nullable": true,
+                                "description": "inbox / found, 0..100; null when nothing was found"
+                              }
+                            },
+                            "required": [
+                              "seeds",
+                              "inbox",
+                              "spam",
+                              "found",
+                              "inboxPct"
+                            ],
+                            "description": "Outlook.com (shown, never scored)"
+                          }
+                        },
+                        "required": [
+                          "variant",
+                          "google",
+                          "microsoft",
+                          "microsoftConsumer"
+                        ]
+                      }
+                    },
+                    "days": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "day": {
+                            "type": "string",
+                            "description": "YYYY-MM-DD (UTC)"
+                          },
+                          "variants": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "variant": {
+                                  "type": "string",
+                                  "enum": [
+                                    "tracker_link",
+                                    "mailbox_only",
+                                    "none"
+                                  ]
+                                },
+                                "google": {
+                                  "type": "object",
+                                  "properties": {
+                                    "seeds": {
+                                      "type": "integer"
+                                    },
+                                    "inbox": {
+                                      "type": "integer"
+                                    },
+                                    "spam": {
+                                      "type": "integer"
+                                    },
+                                    "found": {
+                                      "type": "integer",
+                                      "description": "inbox + spam"
+                                    },
+                                    "inboxPct": {
+                                      "type": "number",
+                                      "nullable": true,
+                                      "description": "inbox / found, 0..100; null when nothing was found"
+                                    }
+                                  },
+                                  "required": [
+                                    "seeds",
+                                    "inbox",
+                                    "spam",
+                                    "found",
+                                    "inboxPct"
+                                  ]
+                                },
+                                "microsoft": {
+                                  "type": "object",
+                                  "properties": {
+                                    "seeds": {
+                                      "type": "integer"
+                                    },
+                                    "inbox": {
+                                      "type": "integer"
+                                    },
+                                    "spam": {
+                                      "type": "integer"
+                                    },
+                                    "found": {
+                                      "type": "integer",
+                                      "description": "inbox + spam"
+                                    },
+                                    "inboxPct": {
+                                      "type": "number",
+                                      "nullable": true,
+                                      "description": "inbox / found, 0..100; null when nothing was found"
+                                    }
+                                  },
+                                  "required": [
+                                    "seeds",
+                                    "inbox",
+                                    "spam",
+                                    "found",
+                                    "inboxPct"
+                                  ],
+                                  "description": "Microsoft 365"
+                                },
+                                "microsoftConsumer": {
+                                  "type": "object",
+                                  "properties": {
+                                    "seeds": {
+                                      "type": "integer"
+                                    },
+                                    "inbox": {
+                                      "type": "integer"
+                                    },
+                                    "spam": {
+                                      "type": "integer"
+                                    },
+                                    "found": {
+                                      "type": "integer",
+                                      "description": "inbox + spam"
+                                    },
+                                    "inboxPct": {
+                                      "type": "number",
+                                      "nullable": true,
+                                      "description": "inbox / found, 0..100; null when nothing was found"
+                                    }
+                                  },
+                                  "required": [
+                                    "seeds",
+                                    "inbox",
+                                    "spam",
+                                    "found",
+                                    "inboxPct"
+                                  ],
+                                  "description": "Outlook.com (shown, never scored)"
+                                }
+                              },
+                              "required": [
+                                "variant",
+                                "google",
+                                "microsoft",
+                                "microsoftConsumer"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "day",
+                          "variants"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "asOf",
+                    "minFoundSeedsPerVariant",
+                    "defaultVariant",
+                    "decision",
+                    "variants",
+                    "days"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Read failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/internal/seed-placement/daily": {
       "get": {
         "summary": "Seed inbox placement per day, Google and Microsoft (staff chart)",

@@ -28,6 +28,7 @@ import {
   type MailboxCredential,
 } from "./mailbox-credentials";
 import { loadPendingScheduledReplies } from "../scheduled-replies";
+import { currentOptOutVariant } from "../seed-placement/opt-out-choice";
 import { buildMessage } from "./message";
 import { runPoll } from "./imap-poller";
 import { runOrphanReplySweep } from "./orphan-reply-sweep";
@@ -1328,6 +1329,9 @@ async function sendDueStep(
       },
       previousMessageId: content.priorMessageIds.at(-1) ?? null,
       priorMessageIds: content.priorMessageIds,
+      // The opt-out header the seeds picked (UNSUB-3WAY-1103); today's tracker
+      // link until every variant has its sample. Cached 10 min, fails loud.
+      optOut: await currentOptOutVariant(),
     });
 
     const result = await dispatchMessage(credential, message);

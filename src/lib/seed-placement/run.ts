@@ -31,7 +31,10 @@ import {
   mintSeedTestId,
   planSeedSends,
   selectSeedReceivers,
+  withOptOutVariants,
 } from "./seeds";
+import type { Account } from "../instantly-client";
+import { seedTestOffset } from "../self-send/opt-out-variant";
 import { decideSeedTestDue, type SeedDueReason } from "./due";
 import { loadAuthorizedMicrosoftReceiverEsps } from "./microsoft-oauth";
 
@@ -75,6 +78,37 @@ export async function fetchLastSeedTestAt(): Promise<Date | null> {
   }[];
   const raw = rows[0]?.lastAt ?? null;
   return raw ? new Date(raw) : null;
+}
+
+/**
+ * Persona names of the senders, read from silver like the dispatch worker's
+ * `loadSendingAccounts`. A mailbox silver does not name signs with the default
+ * name, exactly as its prospect mail would.
+ */
+async function loadSeedSenderAccounts(emails: readonly string[]): Promise<Map<string, Account>> {
+  const wanted = [...new Set(emails.map((e) => e.trim().toLowerCase()))];
+  const out = new Map<string, Account>();
+  if (wanted.length === 0) return out;
+  const result = await db.execute(sql`
+    SELECT DISTINCT ON (lower(email)) lower(email) AS email, first_name AS "firstName", last_name AS "lastName"
+    FROM instantly_accounts
+    WHERE lower(email) = ANY(${sql.param(wanted)}::text[])
+    ORDER BY lower(email), absent_since NULLS FIRST
+  `);
+  for (const row of ((result as { rows?: unknown[] }).rows ?? []) as {
+    email: string;
+    firstName: string | null;
+    lastName: string | null;
+  }[]) {
+    out.set(row.email, {
+      email: row.email,
+      warmup_status: 1,
+      status: 1,
+      first_name: row.firstName ?? undefined,
+      last_name: row.lastName ?? undefined,
+    } as Account);
+  }
+  return out;
 }
 
 export interface SeedPlacementRunSummary {
@@ -198,8 +232,11 @@ export async function runSeedPlacementTest(
     );
     return summary;
   }
-  const planned = planSeedSends(sendable, receivers);
+  // Every seed carries one of the three opt-out variants (UNSUB-3WAY-1103),
+  // rotated over sender x receiver x test so no variant rides one mailbox.
+  const planned = withOptOutVariants(planSeedSends(sendable, receivers), seedTestOffset(asOf));
   const work = options.limit ? planned.slice(0, options.limit) : planned;
+  const accounts = await loadSeedSenderAccounts(work.map((w) => w.senderEmail));
 
   summary.senders = new Set(work.map((w) => w.senderEmail)).size;
   summary.receivers = receivers.length;
@@ -217,10 +254,13 @@ export async function runSeedPlacementTest(
       const credential = credentials.get(send.senderEmail);
       if (!credential) continue;
 
+      // The sending account as the dispatcher holds it (persona name), so the
+      // From and the signature match what this mailbox sends a prospect.
       const message = buildSeedMessage({
         testId,
-        senderEmail: send.senderEmail,
+        account: accounts.get(send.senderEmail) ?? ({ email: send.senderEmail } as Account),
         receiverEmail: send.receiverEmail,
+        optOut: send.optOut,
       });
 
       const result = await dispatchMessage(credential, message);
@@ -231,6 +271,7 @@ export async function runSeedPlacementTest(
         receiverEmail: send.receiverEmail,
         recipientEsp: send.recipientEsp,
         messageId: result.messageId,
+        optOutVariant: send.optOut,
         outcome: "sent",
         response: result.response,
       });
@@ -257,6 +298,7 @@ export async function runSeedPlacementTest(
         // No Message-Id exists for a send that failed, and the column is unique,
         // so a synthetic one keeps the audit row without colliding.
         messageId: `failed:${crypto.randomUUID()}`,
+        optOutVariant: send.optOut,
         outcome: kind,
         response,
       });

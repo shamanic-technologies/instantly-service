@@ -722,6 +722,13 @@
       "when": 1794600000000,
       "tag": "0102_imap_message_id_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1794700000000,
+      "tag": "0103_seed_opt_out_variant",
+      "breakpoints": true
     }
   ]
 }

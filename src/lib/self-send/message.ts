@@ -8,16 +8,21 @@
  * incidents (stacked signatures, a body reduced to a stray anchor) exist to
  * protect, and the two copies would drift on the next change to either.
  *
- * The opt-out URL never appears in the body (the body ends on the signature,
- * no footer); it ships only in the RFC 8058
- * `List-Unsubscribe` header. `resolveUnsubscribePlaceholder` is kept so a body
- * that still carries Instantly's `{unsubscribe_link}` never ships it verbatim.
+ * The opt-out never appears in the body (the body ends on the signature, no
+ * footer); how the HEADER offers it is the measured variant
+ * (`opt-out-variant.ts`, UNSUB-3WAY-1103). `resolveUnsubscribePlaceholder` is
+ * kept so a body that still carries Instantly's `{unsubscribe_link}` never
+ * ships it verbatim.
+ *
+ * ONE build path for every email of ours to a mailbox: a prospect's sequence
+ * step AND the inbox-placement seed (`seed-placement/message.ts` calls this),
+ * so a seed measures the email a prospect gets.
  */
 
 import type { Account } from "../instantly-client";
 import { buildEmailBodyWithSignature } from "../send-lead";
-import { rewriteLinksForTracking } from "./click-tracking";
-import { buildUnsubscribeUrl, unsubscribeOrigin, unsubscribeSecret, type UnsubscribeIdentity } from "./unsubscribe";
+import { optOutHeaders, optOutTarget, type OptOutVariant } from "./opt-out-variant";
+import { buildUnsubscribeUrl, type UnsubscribeIdentity } from "./unsubscribe";
 
 /** Instantly's placeholder, single-braced. The `{{...}}` form never resolved. */
 export const INSTANTLY_UNSUBSCRIBE_PLACEHOLDER = "{unsubscribe_link}";
@@ -53,11 +58,10 @@ export interface BuildMessageInput {
   previousMessageId?: string | null;
   /** Every earlier Message-Id, oldest first (RFC 5322 References). */
   priorMessageIds?: readonly string[];
+  /** How the List-Unsubscribe header offers the opt-out (UNSUB-3WAY-1103). */
+  optOut: OptOutVariant;
   /** Injected so the URL builder can be exercised without the environment. */
   unsubscribeUrl?: string;
-  /** Injected in tests. `null` disables link rewriting entirely. */
-  trackingOrigin?: string | null;
-  trackingSecret?: string;
 }
 
 /**
@@ -97,45 +101,26 @@ export function buildFromHeader(account: Account): string {
 /**
  * Assemble the message.
  *
- * `List-Unsubscribe` + `List-Unsubscribe-Post` are the RFC 8058 one-click pair
- * that drives the mailbox-native unsubscribe button, and Gmail requires them of
- * bulk senders. Instantly set them for us via `insert_unsubscribe_header`; when
- * we dispatch, we set them ourselves. They complement the visible footer link
- * rather than replacing it — the footer is what a prospect actually clicks.
+ * NO body link is rewritten (UNSUB-3WAY-1103, owner 2026-11-03): a link leaves
+ * as written, never through our tracking domain (link.agent-base.ai), whatever
+ * opt-out variant wins. The opt-out rides the List-Unsubscribe header only, in
+ * the shape the variant says (tracker one-click pair, the sending mailbox
+ * itself, or none).
  */
 export function buildMessage(input: BuildMessageInput): BuiltMessage {
-  const url = input.unsubscribeUrl ?? buildUnsubscribeUrl(input.identity);
+  const target = optOutTarget(input.optOut, {
+    trackerUrl: () => input.unsubscribeUrl ?? buildUnsubscribeUrl(input.identity),
+    senderEmail: input.account.email,
+  });
 
   const withSignature = buildEmailBodyWithSignature(
     input.bodyHtml,
     input.account,
     input.signatureHtml ?? null,
   );
-  const withOptOut = resolveUnsubscribePlaceholder(withSignature, url);
+  const html = resolveUnsubscribePlaceholder(withSignature, target ?? "");
 
-  // Route every OUTBOUND link through our own redirect so clicks are observable.
-  // Runs last, on the final html, and skips anything already on our origin —
-  // which is exactly the opt-out link we just resolved. Without this,
-  // `email_link_clicked` never fires on this transport, so `stop-on-click` would
-  // silently never pause a self-sent lead whose leg lands on a website visit.
-  const html =
-    input.trackingOrigin === null
-      ? withOptOut
-      : rewriteLinksForTracking(
-          withOptOut,
-          {
-            instantlyCampaignId: input.identity.instantlyCampaignId,
-            leadEmail: input.identity.leadEmail,
-            step: input.step,
-          },
-          input.trackingOrigin ?? unsubscribeOrigin(),
-          input.trackingSecret ?? unsubscribeSecret(),
-        );
-
-  const headers: Record<string, string> = {
-    "List-Unsubscribe": `<${url}>`,
-    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-  };
+  const headers = optOutHeaders(input.optOut, target);
 
   const references = [...(input.priorMessageIds ?? [])];
 

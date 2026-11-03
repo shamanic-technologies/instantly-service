@@ -1,67 +1,61 @@
 /**
- * The seed message (pure — no IO).
+ * The seed message (pure, no IO).
  *
- * ⚠️ A SEED IS NOT PROSPECT MAIL, so it deliberately does NOT go through
- * `buildEmailBodyWithSignature`. That pipeline appends a signature and an
- * unsubscribe footer carrying `{unsubscribe_link}` — a merge variable only
- * Instantly resolves — plus routes every link through our click redirect. None
- * of it belongs on a message sent to ourselves, and the opt-out placeholder
- * would ship unresolved. Reusing it would also mean a seed measures the footer
- * as much as the mailbox.
+ * A SEED IS THE EMAIL A PROSPECT GETS (UNSUB-3WAY-1103, owner 2026-11-03). It is
+ * built by the SAME `buildMessage` as a sequence step: the sending account's
+ * From name, our signature block, the List-Unsubscribe header of the variant
+ * under test, no rewritten link. The old plain, header-less seed measured a
+ * message no prospect ever received, so the opt-out domain every real email
+ * carries (link.agent-base.ai) was never measured.
  *
- * What the seed DOES have to be is ORDINARY. A placement test is only
- * meaningful if the probe looks like the mail whose fate we are predicting, so
- * this is a short, plain, link-free business message — no tracking pixel, no
- * anchors, no marketing vocabulary. Anything that makes the seed unusual makes
- * the verdict a fact about the seed rather than about the mailbox.
+ * Nothing seed-only is added: no custom header (a filter reads every header).
+ * Correlation rides on the RFC 5322 `Message-Id` the server assigns, stored on
+ * the dispatch row; the receiver and the test are known from that row.
  *
- * Correlation rides on the RFC 5322 `Message-Id` the server assigns, not on the
- * body: a body marker would be one more thing a filter can score, and Gmail
- * rewrites nothing in the header we key on. The test id travels in a custom
- * header purely so a reader can attribute a message without a database lookup.
+ * The body is a short cold-email first step like the ones the writer produces
+ * (no link: 0 of 2,650 bodies written in 24 h on 2026-11-03 carried one).
  */
 
-import type { BuiltMessage } from "../self-send/message";
-
-/** Custom header carrying the seed test id, for attribution without a DB round-trip. */
-export const SEED_TEST_HEADER = "X-Seed-Placement-Test";
-
-/** Custom header naming the sending mailbox, so a receiver can attribute the seed. */
-export const SEED_SENDER_HEADER = "X-Seed-Placement-Sender";
+import type { Account } from "../instantly-client";
+import { buildMessage, type BuiltMessage } from "../self-send/message";
+import type { OptOutVariant } from "../self-send/opt-out-variant";
 
 export interface SeedMessageInput {
   testId: string;
-  senderEmail: string;
+  /** The sending account as the dispatcher holds it (email + persona name). */
+  account: Account;
   receiverEmail: string;
+  optOut: OptOutVariant;
+  /** Injected in tests; else minted like a prospect's opt-out link. */
+  unsubscribeUrl?: string;
 }
 
 /**
- * Subject line.
- *
- * Carries no test id and no serial number: a subject that looks machine
- * generated is itself a spam signal, which would bias the measurement toward
- * spam for every mailbox equally and make the score useless.
+ * Subject line. No test id or serial number: a subject that looks machine
+ * generated is itself a spam signal.
  */
 export function seedSubject(): string {
   return "Quick question about your Q3 planning";
 }
 
-export function buildSeedMessage(input: SeedMessageInput): BuiltMessage {
-  const html = [
-    "<p>Hi,</p>",
-    "<p>I wanted to check whether you are the right person to speak to about how your team plans capacity for the next quarter.</p>",
-    "<p>If it makes sense, I can send over a short summary of what we do. If not, no problem at all.</p>",
-    "<p>Best,<br>Kevin</p>",
-  ].join("");
+export const SEED_BODY_HTML = [
+  "<p>Hi,</p>",
+  "<p>I wanted to check whether you are the right person to speak to about how your team plans capacity for the next quarter.</p>",
+  "<p>If it makes sense, I can send over a short summary of what we do. If not, no problem at all.</p>",
+].join("");
 
-  return {
-    from: input.senderEmail,
-    to: input.receiverEmail,
+export function buildSeedMessage(input: SeedMessageInput): BuiltMessage {
+  return buildMessage({
+    account: input.account,
+    signatureHtml: null,
+    leadEmail: input.receiverEmail,
     subject: seedSubject(),
-    html,
-    headers: {
-      [SEED_TEST_HEADER]: input.testId,
-      [SEED_SENDER_HEADER]: input.senderEmail,
-    },
-  };
+    bodyHtml: SEED_BODY_HTML,
+    step: 1,
+    // The opt-out link a prospect's email would carry, minted for this seed
+    // (`seed:` campaign ids are not ours to unsubscribe: the route 404s them).
+    identity: { instantlyCampaignId: input.testId, leadEmail: input.receiverEmail },
+    optOut: input.optOut,
+    ...(input.unsubscribeUrl ? { unsubscribeUrl: input.unsubscribeUrl } : {}),
+  });
 }

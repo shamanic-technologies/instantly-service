@@ -3125,6 +3125,53 @@ const SeedPlacementMsCountsSchema = SeedPlacementCountsSchema.extend({
   inboxOther: z.number().int().describe("Inbox seeds Microsoft sorted to Other"),
 });
 
+const OptOutVariantSchema = z.enum(["tracker_link", "mailbox_only", "none"]);
+const OptOutProviderCountsSchema = z.object({
+  seeds: z.number().int(),
+  inbox: z.number().int(),
+  spam: z.number().int(),
+  found: z.number().int().describe("inbox + spam"),
+  inboxPct: z.number().nullable().describe("inbox / found, 0..100; null when nothing was found"),
+});
+const OptOutVariantCountsSchema = z.object({
+  variant: OptOutVariantSchema,
+  google: OptOutProviderCountsSchema,
+  microsoft: OptOutProviderCountsSchema.describe("Microsoft 365"),
+  microsoftConsumer: OptOutProviderCountsSchema.describe("Outlook.com (shown, never scored)"),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/seed-placement/opt-out",
+  summary: "The three opt-out headers compared on seeds, and the one prospect mail carries (staff chart)",
+  description:
+    "UNSUB-3WAY-1103. Platform-scoped, read-only. Every seed carries one opt-out header: `tracker_link` (RFC 8058 one-click on our neutral link domain, today's), `mailbox_only` (List-Unsubscribe mailto the sending mailbox, no outside domain), `none` (no header). `variants` = totals since the experiment began, per receiving provider; `days` = the same per UTC day the seeds left. `decision.variant` = what prospect mail carries now: `tracker_link` until every variant has `minFoundSeedsPerVariant` seeds found at Google (`reason: sample_not_reached`), then the best inbox rate (inbox / found; Google, plus Microsoft 365 once it has the same sample) (`reason: measured`). The service switches by itself.",
+  responses: {
+    200: {
+      description: "Comparison",
+      content: {
+        "application/json": {
+          schema: z.object({
+            asOf: z.string(),
+            minFoundSeedsPerVariant: z.number().int(),
+            defaultVariant: OptOutVariantSchema,
+            decision: z.object({
+              variant: OptOutVariantSchema,
+              reason: z.enum(["sample_not_reached", "measured"]),
+              scoredProviders: z.array(z.enum(["google", "microsoft"])),
+              scores: z.record(z.string(), z.number().nullable()).describe("Per variant, the compared inbox % (null before the sample)"),
+            }),
+            variants: z.array(OptOutVariantCountsSchema),
+            days: z.array(z.object({ day: z.string().describe("YYYY-MM-DD (UTC)"), variants: z.array(OptOutVariantCountsSchema) })),
+          }),
+        },
+      },
+    },
+    401: { description: "Unauthorized" },
+    500: { description: "Read failed", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 registry.registerPath({
   method: "get",
   path: "/internal/seed-placement/daily",

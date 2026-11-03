@@ -21,6 +21,8 @@
  * over the same IMAP path) — NOT lowering the bar.
  */
 
+import { seedOptOutVariant, type OptOutVariant } from "../self-send/opt-out-variant";
+
 /**
  * Marks a placement result this service measured itself.
  *
@@ -189,4 +191,30 @@ export function planSeedSends(
   }
 
   return out;
+}
+
+/**
+ * Tag every planned seed with the opt-out variant it carries (UNSUB-3WAY-1103).
+ * Pure. Indices follow the plan's own deterministic order (senders sorted,
+ * receivers as selected), rotated by the test offset so a pair moves to another
+ * variant on the next test.
+ */
+export function withOptOutVariants(
+  sends: readonly SeedSend[],
+  testOffset: number,
+): (SeedSend & { optOut: OptOutVariant })[] {
+  const senderIndex = new Map<string, number>();
+  const receiverIndex = new Map<string, number>();
+  for (const s of sends) {
+    if (!senderIndex.has(s.senderEmail)) senderIndex.set(s.senderEmail, senderIndex.size);
+    if (!receiverIndex.has(s.receiverEmail)) receiverIndex.set(s.receiverEmail, receiverIndex.size);
+  }
+  return sends.map((s) => ({
+    ...s,
+    optOut: seedOptOutVariant(
+      senderIndex.get(s.senderEmail) as number,
+      receiverIndex.get(s.receiverEmail) as number,
+      testOffset,
+    ),
+  }));
 }

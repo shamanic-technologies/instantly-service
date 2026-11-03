@@ -162,11 +162,7 @@ describe("buildMessage", () => {
       step: 1,
       identity: IDENTITY,
       unsubscribeUrl: URL,
-      // Injected rather than read from the environment, and deliberately the
-      // SAME origin the opt-out URL sits on — that is what makes the "leaves our
-      // own link alone" rule observable here.
-      trackingOrigin: "https://opt.test",
-      trackingSecret: "message-test-secret",
+      optOut: "tracker_link",
       ...overrides,
     });
   }
@@ -190,13 +186,27 @@ describe("buildMessage", () => {
     expect(twice).toBe(once);
   });
 
-  // Without this, `email_link_clicked` never fires on the self-send transport, so
-  // stop-on-click would silently never pause a lead whose leg lands on a website visit.
-  it("routes a prospect-facing link through the click redirect", () => {
-    const message = build({ bodyHtml: '<p>See <a href="https://distribute.you/pricing">pricing</a></p>' });
+  // UNSUB-3WAY-1103 (owner 2026-11-03): no body link is ever rewritten through
+  // our tracking domain again, whatever opt-out variant wins.
+  it.each(["tracker_link", "mailbox_only", "none"])("leaves a prospect-facing link as written (%s)", (optOut) => {
+    const message = build({ optOut, bodyHtml: '<p>See <a href="https://distribute.you/pricing">pricing</a></p>' });
 
-    expect(message.html).toContain("https://opt.test/c/");
-    expect(message.html).not.toContain('href="https://distribute.you/pricing"');
+    // The body pipeline's own UTM tag stays; the host is the prospect's link.
+    expect(message.html).toContain('href="https://distribute.you/pricing?utm_source=cold_email');
+    expect(message.html).not.toContain("/c/");
+    expect(message.html).not.toContain("opt.test");
+  });
+
+  it("mailbox_only: the header points at the sending mailbox, no outside domain, no one-click POST", () => {
+    const message = build({ optOut: "mailbox_only" });
+    expect(message.headers).toEqual({ "List-Unsubscribe": "<mailto:amy@saviolabsco.com?subject=unsubscribe>" });
+    expect(JSON.stringify(message)).not.toContain("opt.test");
+  });
+
+  it("none: no List-Unsubscribe header at all", () => {
+    const message = build({ optOut: "none" });
+    expect(message.headers).toEqual({});
+    expect(JSON.stringify(message)).not.toContain("opt.test");
   });
 
   // Measured 2026-09-24: our opt-out URL as a visible link in the body was the
@@ -282,7 +292,7 @@ describe("a sequence send carries NO cc", () => {
       step: 1,
       identity: IDENTITY,
       unsubscribeUrl: "https://opt.test/u/payload/sig",
-      trackingOrigin: null,
+      optOut: "tracker_link",
     });
     // The agency inbox rides the one-to-one REPLY (lib/reply-to-lead), never
     // the sequence. A prospect who has not spoken to us yet would see a
