@@ -45,6 +45,7 @@ import {
   type AccountCapacity,
   type DueStep,
   type PendingSequence,
+  type RehomeReason,
 } from "./dispatch";
 import {
   selectSilencedSmtpSenders,
@@ -588,24 +589,42 @@ async function loadSendingAccounts(
 }
 
 /**
- * Move a never-sent sequence to another mailbox, recording why.
+ * Move a sequence to another mailbox, recording why.
  *
- * Returns false (and moves nothing) when the row no longer sits on `from` or
- * any email of the sequence has already gone out — both mean a thread may now
- * exist, and a thread must stay on one sender.
+ * A FIRST email (`first_email_stranded`): returns false (and moves nothing)
+ * when the row no longer sits on `from` or any email of the sequence has
+ * already gone out — both mean a thread may now exist.
+ *
+ * A FOLLOW-UP (`follow_up_mailbox_cannot_send`): its mailbox cannot send it at
+ * all (deleted, refused, mostly in spam there), so the thread moves with it;
+ * guarded on the row still sitting on `from` and still active. Its later steps
+ * follow the new sender (the pin moves with the row).
  */
-async function rehomeFirstEmail(
+async function rehomeSequence(
   instantlyCampaignId: string,
   from: string,
   to: string,
   asOf: Date,
+  reason: RehomeReason,
 ): Promise<boolean> {
-  const entry = JSON.stringify({
-    from,
-    to,
-    at: asOf.toISOString(),
-    reason: "first_email_stranded",
-  });
+  const entry = JSON.stringify({ from, to, at: asOf.toISOString(), reason });
+  if (reason === "follow_up_mailbox_cannot_send") {
+    const moved = await db.execute(sql`
+      UPDATE instantly_campaigns c
+      SET account_email = ${to},
+          metadata = jsonb_set(
+            COALESCE(c.metadata, '{}'::jsonb),
+            '{rehomed}',
+            COALESCE(c.metadata->'rehomed', '[]'::jsonb) || jsonb_build_array(${entry}::jsonb)
+          ),
+          updated_at = now()
+      WHERE c.instantly_campaign_id = ${instantlyCampaignId}
+        AND c.account_email = ${from}
+        AND c.status = 'active'
+      RETURNING c.id
+    `);
+    return rowsOf(moved).length > 0;
+  }
   const result = await db.execute(sql`
     UPDATE instantly_campaigns c
     SET account_email = ${to},
@@ -629,6 +648,43 @@ async function rehomeFirstEmail(
     RETURNING c.id
   `);
   return rowsOf(result).length > 0;
+}
+
+/**
+ * Re-pin every due FOLLOW-UP whose mailbox cannot send it (no credential: the
+ * vendor deleted it; refused by the relay; blind; mostly in spam at the
+ * prospect's provider) to the production mailbox `selectDueSteps` would move it
+ * to, and persist the move (`rehomeSequence`, reason on the row). Mutates the
+ * in-memory sequences so the selection that follows reads the new sender.
+ *
+ * Why before the selection rather than inside it: the selection that is SENT
+ * may be the stored script's (send-select-script.ts, a port of
+ * `selectDueSteps` that never moves a follow-up). The pin is a fact about the
+ * queue (which mailbox carries this thread now), so it is set on the queue, and
+ * both selections then agree. Bounce budget is not read: it gates first emails
+ * only. A full mailbox is never a reason (it drains); see `selectDueSteps`.
+ */
+export async function repinStrandedFollowUps(
+  sequences: PendingSequence[],
+  capacities: readonly AccountCapacity[],
+  asOf: Date,
+  skippedMailboxes: ReadonlySet<string>,
+): Promise<number> {
+  const moves = selectDueSteps(sequences, capacities, asOf, skippedMailboxes, null).selected.filter(
+    (step) => step.rehomeReason === "follow_up_mailbox_cannot_send" && step.rehomedFrom !== undefined,
+  );
+  let moved = 0;
+  for (const step of moves) {
+    const ok = await rehomeSequence(step.instantlyCampaignId, step.rehomedFrom!, step.accountEmail, asOf, "follow_up_mailbox_cannot_send");
+    if (!ok) continue;
+    const sequence = sequences.find((s) => s.instantlyCampaignId === step.instantlyCampaignId);
+    if (sequence) sequence.accountEmail = step.accountEmail;
+    moved += 1;
+    console.log(
+      `[instantly-service] self-send: follow-up of campaign=${step.instantlyCampaignId} step=${step.step} moved from ${step.rehomedFrom} to ${step.accountEmail} (its mailbox cannot send it)`,
+    );
+  }
+  return moved;
 }
 
 /** Body + subject for one step, plus the thread it belongs to. */
@@ -908,6 +964,10 @@ async function runDispatchExclusive(
       (s) => !notYetStopped.has(s.instantlyCampaignId) && !isHeldForAbsence(s, asOf),
     );
     const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
+    // A follow-up whose mailbox cannot send it is re-pinned to a production
+    // mailbox BEFORE the selection, so whichever selection is sent (ours or
+    // the stored script) sees it on a mailbox that can (OLIVE-FOLLOWUPS-1103).
+    await repinStrandedFollowUps(sequences, capacities, asOf, skippedMailboxes);
     // Fresh per selection (never the 60 s cache): the budget is spent in memory
     // as steps are planned, so it must start from what has really happened.
     const bounceHistory = await loadFleetBounceHistory();
@@ -1173,14 +1233,14 @@ async function sendDueStep(
 
     if (step.rehomedFrom !== undefined) {
       // Persist the move BEFORE the send, guarded on the row still being where
-      // we found it and on nothing having gone out yet — a first email is the
-      // only step that may change mailbox, and only while there is no thread.
+      // we found it (and, for a first email, on nothing having gone out yet).
       // The reason is recorded on the row so nobody reads the move as drift.
-      const moved = await rehomeFirstEmail(
+      const moved = await rehomeSequence(
         step.instantlyCampaignId,
         step.rehomedFrom,
         step.accountEmail,
         asOf,
+        step.rehomeReason ?? "first_email_stranded",
       );
       if (!moved) {
         console.warn(

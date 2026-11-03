@@ -191,10 +191,31 @@ describe("dispatcher: no email to a provider that puts the mailbox mostly in spa
   });
   const followUp = { provisionedSteps: [2, 3], lastSentStep: 1, lastSentAt: new Date(NOW.getTime() - 5 * DAY) };
 
-  it("a follow-up to a Google prospect waits on its thread, never moved, never sent from the spam mailbox", () => {
+  // OLIVE-FOLLOWUPS-1103: 22 of Olive's step-3 follow-ups sat weeks on
+  // hidistribute.com mailboxes mostly in spam at Google. The lead was promised
+  // the sequence: the follow-up moves (same thread), never from the spam mailbox.
+  it("a follow-up to a Google prospect moves to a production mailbox Google puts in Inbox, never sent from the spam mailbox", () => {
     const out = selectDueSteps(
       [seq("fu", SPAM, { recipientProvider: "google", ...followUp })],
       [cap(SPAM, { adoptsFirstEmails: false, placement: { google: spam } }), cap(GOOD, { placement: { google: inbox } })],
+      NOW,
+    );
+    expect(out.heldMostlySpam).toBe(1);
+    expect(out.rehomed).toBe(1);
+    expect(out.selected).toEqual([
+      expect.objectContaining({
+        accountEmail: GOOD,
+        step: 2,
+        rehomedFrom: SPAM,
+        rehomeReason: "follow_up_mailbox_cannot_send",
+      }),
+    ]);
+  });
+
+  it("a mostly-spam follow-up waits when no production mailbox is better there (never sent from the spam one)", () => {
+    const out = selectDueSteps(
+      [seq("fu", SPAM, { recipientProvider: "google", ...followUp })],
+      [cap(SPAM, { adoptsFirstEmails: false, placement: { google: spam } }), cap(GOOD, { placement: { google: spam } })],
       NOW,
     );
     expect(out.selected).toEqual([]);
