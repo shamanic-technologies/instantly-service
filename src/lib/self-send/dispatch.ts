@@ -254,7 +254,10 @@ export interface AccountCapacity {
 
 /** One real mailbox's room for the day, as the selection counts it. */
 export interface MailboxRoom {
-  /** Operator limit: the MINIMUM `daily_limit` across the mailbox's aliases. */
+  /**
+   * Operator limit: the MINIMUM `daily_limit` across the mailbox's aliases in
+   * PRODUCTION (`adoptsFirstEmails`); across every alias only when none is.
+   */
   limit: number;
   /** Ramp volume: the SUM of its aliases' `recentSustainedDaily`. */
   sustainedDaily: number;
@@ -272,15 +275,27 @@ export interface MailboxRoom {
  * as the counters that decided a send (FACTORY-RECORD-SEND-1028).
  */
 export function mailboxRoom(capacities: readonly AccountCapacity[]): Map<string, MailboxRoom> {
+  // The limit is read off the aliases in PRODUCTION when the mailbox has one.
+  // A recovering alias carries the LIFECYCLE's limit (20 = 50 minus its warmup
+  // share), not an operator's statement about the mailbox: once one alias of
+  // the login is in production the login's warmup goes to 0 and the 50 belongs
+  // to the mailbox. Taking the minimum over every alias held
+  // klourd@growthagency.agency (production, 50) to its four recovering
+  // siblings' 20 while the selector kept booking it at 50: 296 first emails
+  // waited, 20 left a day (prod 2026-11-03, MAILBOX-CAP-PROD-ALIAS-1103).
   const limitByMailbox = new Map<string, number>();
+  const productionLimitByMailbox = new Map<string, number>();
   const peakByMailbox = new Map<string, number>();
   const sentByMailbox = new Map<string, number>();
+  const minInto = (map: Map<string, number>, mailbox: string, value: number) => {
+    const known = map.get(mailbox);
+    map.set(mailbox, known === undefined ? value : Math.min(known, value));
+  };
   for (const capacity of capacities) {
-    const knownLimit = limitByMailbox.get(capacity.mailbox);
-    limitByMailbox.set(
-      capacity.mailbox,
-      knownLimit === undefined ? capacity.cap : Math.min(knownLimit, capacity.cap),
-    );
+    minInto(limitByMailbox, capacity.mailbox, capacity.cap);
+    if (capacity.adoptsFirstEmails === true) {
+      minInto(productionLimitByMailbox, capacity.mailbox, capacity.cap);
+    }
     // Volume SUMS where the operator limit takes the MINIMUM, and the asymmetry
     // is the point: every alias's send came out of the one quota, so the mailbox
     // has demonstrably carried their total — while an operator who lowers one
@@ -296,7 +311,8 @@ export function mailboxRoom(capacities: readonly AccountCapacity[]): Map<string,
   }
 
   const rooms = new Map<string, MailboxRoom>();
-  for (const [mailbox, limit] of limitByMailbox) {
+  for (const [mailbox, anyAliasLimit] of limitByMailbox) {
+    const limit = productionLimitByMailbox.get(mailbox) ?? anyAliasLimit;
     const sustainedDaily = peakByMailbox.get(mailbox) ?? 0;
     const sentToday = sentByMailbox.get(mailbox) ?? 0;
     const cap = Math.min(limit, rampCapForVolume(sustainedDaily, limit));

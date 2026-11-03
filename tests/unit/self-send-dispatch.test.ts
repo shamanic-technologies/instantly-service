@@ -4,6 +4,7 @@ import {
   classifyPermanentFailure,
   nextDueStep,
   selectDueSteps,
+  mailboxRoom,
   type AccountCapacity,
   type PendingSequence,
 } from "../../src/lib/self-send/dispatch";
@@ -572,6 +573,40 @@ describe("selectDueSteps — the volume ramp is applied per real mailbox", () =>
       alias("alias4@ga.forum"),
     ];
     expect(pick(leads(40), capacities, NOW)).toHaveLength(7);
+  });
+
+  it("reads the limit off the aliases in PRODUCTION only: a recovering alias's lifecycle limit does not throttle the mailbox", () => {
+    // Prod 2026-11-03, klourd@growthagency.agency: the production alias has 50,
+    // the four recovering aliases of the same login carry the lifecycle's 20.
+    // Taking the MINIMUM over all five held the mailbox to 20 while the page,
+    // and the selector that books new sequences on it, said 50: 296 first
+    // emails waited, 20 sent a day.
+    const capacities = [
+      alias("kevin@ga.forum", { cap: 20, recentSustainedDaily: 40, adoptsFirstEmails: false }),
+      alias("alias1@ga.forum", { cap: 50, recentSustainedDaily: 40, adoptsFirstEmails: true }),
+      alias("alias2@ga.forum", { cap: 20, recentSustainedDaily: 40, adoptsFirstEmails: false }),
+      alias("alias3@ga.forum", { cap: 20, recentSustainedDaily: 40, adoptsFirstEmails: false }),
+      alias("alias4@ga.forum", { cap: 20, recentSustainedDaily: 40, adoptsFirstEmails: false }),
+    ];
+    expect(mailboxRoom(capacities).get("kevin@ga.forum")).toMatchObject({ limit: 50, cap: 50 });
+    expect(pick(leads(80), capacities, NOW)).toHaveLength(50);
+  });
+
+  it("keeps the MINIMUM across every alias when none is in production", () => {
+    const capacities = [
+      alias("kevin@ga.forum", { cap: 20, adoptsFirstEmails: false }),
+      alias("alias1@ga.forum", { cap: 30, adoptsFirstEmails: false }),
+    ];
+    expect(mailboxRoom(capacities).get("kevin@ga.forum")?.limit).toBe(20);
+  });
+
+  it("still lets an operator-lowered PRODUCTION alias hold the mailbox", () => {
+    const capacities = [
+      alias("kevin@ga.forum", { cap: 7, adoptsFirstEmails: true }),
+      alias("alias1@ga.forum", { cap: 50, adoptsFirstEmails: true }),
+      alias("alias2@ga.forum", { cap: 20, adoptsFirstEmails: false }),
+    ];
+    expect(mailboxRoom(capacities).get("kevin@ga.forum")?.limit).toBe(7);
   });
 
   it("floors a mailbox that has sent nothing rather than granting it a full cap", () => {
