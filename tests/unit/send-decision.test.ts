@@ -17,9 +17,9 @@ const NOW = new Date("2026-08-17T15:00:00Z");
 const DAY = 24 * 60 * 60 * 1000;
 
 const capacities: AccountCapacity[] = [
-  // Two aliases of ONE mailbox: limit = MIN, volume and sends = SUM.
+  // Two production aliases of ONE mailbox: limit = MIN, volume and sends = SUM.
   { accountEmail: "amy@a.test", mailbox: "box@a.test", cap: 45, recentSustainedDaily: 30, sentToday: 4, adoptsFirstEmails: true },
-  { accountEmail: "amy.m@a.test", mailbox: "box@a.test", cap: 40, recentSustainedDaily: 20, sentToday: 3 },
+  { accountEmail: "amy.m@a.test", mailbox: "box@a.test", cap: 40, recentSustainedDaily: 20, sentToday: 3, adoptsFirstEmails: true },
   { accountEmail: "bob@b.test", mailbox: "bob@b.test", cap: 50, recentSustainedDaily: 50, sentToday: 0 },
 ];
 
