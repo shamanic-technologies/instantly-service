@@ -44,6 +44,13 @@ vi.mock("../../src/lib/self-send/smtp", () => ({
   dispatchMessage: (...a: unknown[]) => mockDispatchMessage(...a),
 }));
 
+// QUOTE-THREAD-1103: every reply without its own quote reads the lead's
+// conversation. Mocked here so the mechanics tests keep their queued db reads.
+const mockLoadQuoted = vi.fn();
+vi.mock("../../src/lib/quoted-conversation", () => ({
+  loadQuotedConversation: (...a: unknown[]) => mockLoadQuoted(...a),
+}));
+
 import {
   MANUAL_REPLY_STEP,
   replySubject,
@@ -146,6 +153,7 @@ beforeEach(() => {
   mockResolveKey.mockResolvedValue({ key: "k", keySource: "platform" });
   mockGetAccount.mockResolvedValue(ACCOUNT);
   mockInsertValues.mockResolvedValue(undefined);
+  mockLoadQuoted.mockResolvedValue("");
 });
 
 // ─── Pure ────────────────────────────────────────────────────────────────────
@@ -960,5 +968,76 @@ describe("an answer goes where the prospect wrote last (owner 2026-10-13)", () =
     await replyToLead(LUKAS);
     expect(mockResolveCredential).toHaveBeenCalledWith("allie@leansignalio.com", expect.anything());
     expect(mockDispatchMessage.mock.calls[0][1].inReplyTo).toBe("<lukas-1@mail>");
+  });
+});
+
+// ─── QUOTE-THREAD-1103: every reply quotes the conversation ─────────────────
+
+describe("every reply quotes the conversation below the signature (QUOTE-THREAD-1103)", () => {
+  const QUOTE =
+    '<br><blockquote><div>On Oct 30, amy@boostdistribute.com wrote:</div><div>Doc Dinners hosts dinners for chiropractors</div></blockquote>';
+
+  it("an ordinary reply reads the lead's conversation and quotes it after the signature", async () => {
+    mockDbExecute.mockResolvedValueOnce(
+      pgResult([campaignRow({ campaignId: "camp-1", brandId: "brand-dd" })]),
+    );
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Dinner" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+    mockLoadQuoted.mockResolvedValue(QUOTE);
+
+    await sendNow();
+
+    expect(mockLoadQuoted).toHaveBeenCalledWith({
+      orgId: "org-1",
+      userId: "user-1",
+      campaignId: "camp-1",
+      instantlyCampaignId: "ic-1",
+      brandId: "brand-dd",
+      leadEmail: "alice@media.com",
+    });
+    const [, params] = mockReplyToEmail.mock.calls[0];
+    expect(params.bodyHtml.startsWith("<p>Thursday works.</p>")).toBe(true);
+    expect(params.bodyHtml.endsWith(QUOTE)).toBe(true);
+    expect(params.bodyHtml.indexOf("Amy Moore")).toBeLessThan(params.bodyHtml.indexOf("Doc Dinners"));
+  });
+
+  it("our own sender carries the quote too", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow({ sendTransport: "smtp", instantlyCampaignId: "self:1" })]))
+      .mockResolvedValueOnce(pgResult([{ messageId: "<in@x>", subject: "Hello", at: "2026-09-01" }]))
+      .mockResolvedValueOnce(pgResult([{ messageId: "<out@x>" }, { messageId: "<in@x>" }]))
+      .mockResolvedValueOnce(pgResult([{ email: "amy@boostdistribute.com", firstName: "Amy", lastName: "Moore" }]));
+    mockResolveCredential.mockResolvedValue({ smtpHost: "h", appPassword: "p" });
+    mockDispatchMessage.mockResolvedValue({ messageId: "<m>", response: "250", accepted: ["alice@media.com"] });
+    mockLoadQuoted.mockResolvedValue(QUOTE);
+
+    await sendNow();
+
+    const [, message] = mockDispatchMessage.mock.calls[0];
+    expect(message.html.endsWith(QUOTE)).toBe(true);
+    expect(message.cc).toBe("kevin@distribute.you");
+  });
+
+  it("a caller's own quote (hand-over, not-a-prospect) is kept and nothing is re-read", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Dinner" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    await sendNow({ ...INPUT, quotedHtml: "<blockquote>THEIRS</blockquote>" } as typeof INPUT);
+
+    expect(mockLoadQuoted).not.toHaveBeenCalled();
+    const [, params] = mockReplyToEmail.mock.calls[0];
+    expect(params.bodyHtml.endsWith("<blockquote>THEIRS</blockquote>")).toBe(true);
+  });
+
+  it("a conversation that holds nothing leaves the reply as before", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Dinner" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    await sendNow();
+
+    const [, params] = mockReplyToEmail.mock.calls[0];
+    expect(params.bodyHtml).toBe(buildReplyBodyWithSignature(INPUT.bodyHtml, ACCOUNT, null));
   });
 });
