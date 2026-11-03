@@ -159,6 +159,22 @@ describe("a sequence whose mailbox we no longer have is never put back", () => {
   });
 });
 
+// Owner 2026-11-03 option 1: a lead whose address got no verdict (the org could
+// not pay the check) waits, and goes out once the check can be made.
+describe("awaiting a verdict", () => {
+  it("the retry reads ONLY the leads whose last check got no verdict; the normal read excludes them", async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+    await restoreCutFollowups({ dryRun: true, awaitingVerdict: true, caller: CALLER });
+    await restoreCutFollowups({ dryRun: true, caller: CALLER });
+    const retry = sqlText(mockExecute.mock.calls[0]!);
+    const normal = sqlText(mockExecute.mock.calls[1]!);
+    expect(retry).toContain("= 'verifier_failed'");
+    expect(retry).not.toContain("), true)");
+    expect(normal).toContain("), true)");
+    expect(normal).not.toContain("= 'verifier_failed'");
+  });
+});
+
 describe("a retracted bounce gives the lead their follow-ups back", () => {
   it("after the retraction, the sequence's cut follow-ups are re-queued (Olive: 22 leads left on step 1)", async () => {
     // archive select, archive insert (mocked away), delete, delivery_status update,

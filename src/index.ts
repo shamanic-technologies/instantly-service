@@ -369,6 +369,15 @@ async function start() {
         console.error(`[instantly-service] failed to start booked-stops-cold worker: ${message}`);
       });
 
+    // Follow-ups put back whose address got no verdict (org could not pay the
+    // check) go out once the check can be made (lib/restore-cut-followups).
+    import("./lib/restore-cut-followups-worker")
+      .then(({ startRestoreAwaitingVerdictWorker }) => startRestoreAwaitingVerdictWorker())
+      .catch((err: unknown) => {
+        const message = errorMessage(err);
+        console.error(`[instantly-service] failed to start restore-cut-followups worker: ${message}`);
+      });
+
     // A send the process died in the middle of (OOM, deploy): its reservation is
     // released and its orphan step costs cancelled (lib/stale-reservations).
     import("./lib/stale-reservation-worker")
