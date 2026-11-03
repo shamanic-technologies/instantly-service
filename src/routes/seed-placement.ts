@@ -16,6 +16,7 @@ import {
   loadSeedPlacementDaily,
   refreshSeedPlacementDaily,
 } from "../lib/seed-placement/daily";
+import { loadOptOutComparison } from "../lib/seed-placement/opt-out-choice";
 
 const router = Router();
 
@@ -62,6 +63,20 @@ router.get("/daily", async (req: Request, res: Response) => {
   } catch (error) {
     const message = errorMessage(error);
     console.error(`[instantly-service] seed placement daily read failed: ${message}`);
+    return res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * The three opt-out headers compared on seeds (UNSUB-3WAY-1103): totals per
+ * variant and provider, the daily series, and the variant prospect mail carries.
+ */
+router.get("/opt-out", async (_req: Request, res: Response) => {
+  try {
+    return res.json(await loadOptOutComparison());
+  } catch (error) {
+    const message = errorMessage(error);
+    console.error(`[instantly-service] seed opt-out comparison read failed: ${message}`);
     return res.status(500).json({ error: message });
   }
 });

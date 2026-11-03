@@ -2,7 +2,9 @@
  * The stored daily series of seed placement, and its staff read.
  * MS-SEED-PLACEMENT-1018.
  *
- * One row per (UTC day the seeds left, receiving provider, sending vendor):
+ * One row per (UTC day the seeds left, receiving provider, sending vendor,
+ * opt-out variant the seed carried, UNSUB-3WAY-1103; '' before it). Readers
+ * here SUM over the variant (`add`); `opt-out-choice.ts` reads it apart:
  * seeds sent, found in Inbox (Focused / Other split for Microsoft), in spam, and
  * never found. Recomputed from the two bronze tables on every seed sync, so a
  * seed read a day late moves out of `missing` on the row it belongs to.
@@ -35,16 +37,18 @@ export async function refreshSeedPlacementDaily(): Promise<number> {
     WHERE NOT EXISTS (
       SELECT 1 FROM seed_placement_dispatches d
       WHERE d.outcome = 'sent' AND d.recipient_esp = s.recipient_esp
+        AND COALESCE(d.opt_out_variant, '') = s.opt_out_variant
         AND (d.dispatched_at AT TIME ZONE 'UTC')::date = s.day
     )
   `);
   const result = await db.execute(sql`
     INSERT INTO seed_placement_daily
-      (day, recipient_esp, sender_vendor, seeds, inbox, spam, missing, inbox_focused, inbox_other, updated_at)
+      (day, recipient_esp, sender_vendor, opt_out_variant, seeds, inbox, spam, missing, inbox_focused, inbox_other, updated_at)
     SELECT
       (d.dispatched_at AT TIME ZONE 'UTC')::date,
       d.recipient_esp,
       COALESCE(v.provider, 'unknown'),
+      COALESCE(d.opt_out_variant, ''),
       count(*)::int,
       count(o.id) FILTER (WHERE o.placement = 'inbox')::int,
       count(o.id) FILTER (WHERE o.placement = 'spam')::int,
@@ -63,8 +67,8 @@ export async function refreshSeedPlacementDaily(): Promise<number> {
       LIMIT 1
     ) v ON true
     WHERE d.outcome = 'sent'
-    GROUP BY 1, 2, 3
-    ON CONFLICT (day, recipient_esp, sender_vendor) DO UPDATE SET
+    GROUP BY 1, 2, 3, 4
+    ON CONFLICT (day, recipient_esp, sender_vendor, opt_out_variant) DO UPDATE SET
       seeds = EXCLUDED.seeds, inbox = EXCLUDED.inbox, spam = EXCLUDED.spam, missing = EXCLUDED.missing,
       inbox_focused = EXCLUDED.inbox_focused, inbox_other = EXCLUDED.inbox_other, updated_at = EXCLUDED.updated_at
   `);

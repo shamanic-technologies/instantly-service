@@ -129,7 +129,7 @@ describe("sender placeholders: the signature names the mailbox that sends", () =
         step: 1,
         identity: { instantlyCampaignId: "camp-1", leadEmail: "prospect@example.com" },
         unsubscribeUrl: "https://opt.test/u/p/s",
-        trackingOrigin: null,
+        optOut: "tracker_link",
       });
     const ruth = build(RUTH);
     const fallon = build(FALLON);

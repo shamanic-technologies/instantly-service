@@ -121,7 +121,7 @@ export function removalFormFields(input: {
     justify: ascii(
       `Every email from ${domain} is a one-to-one message to a business address, written for that recipient. ` +
         "Every address is checked by an email verifier before we send; addresses found invalid or risky are never emailed. " +
-        "Every email carries a one-click unsubscribe (RFC 8058 List-Unsubscribe), honoured at once, and any reply stops the sequence. " +
+        "Any reply asking us to stop, or the mailbox's own unsubscribe button where the email carries one, is honoured at once, and any reply stops the sequence. " +
         `When we learned this domain was listed, it stopped taking new contacts (${input.stoppedNewContactsOn}); ` +
         "only follow-ups to people already in a conversation continue. No affiliate or third party sends from this domain.",
     ),
@@ -268,8 +268,9 @@ export async function loadSampleMessage(domain: string): Promise<SampleMessage |
     bodyHtml: row.bodyHtml,
     step: 1,
     identity: { instantlyCampaignId: "redacted", leadEmail: "recipient@redacted.invalid" } as never,
+    // The opt-out header our prospect mail carries today (UNSUB-3WAY-1103).
+    optOut: await (await import("./seed-placement/opt-out-choice")).currentOptOutVariant(),
     unsubscribeUrl: "https://link.distribute.you/u/redacted",
-    trackingOrigin: null,
   });
   const sentAt = row.sentAt instanceof Date ? row.sentAt : new Date(`${String(row.sentAt).replace(" ", "T")}Z`);
   const headers = [

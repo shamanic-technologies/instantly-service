@@ -30,7 +30,7 @@ function dispatched(account: Account, signatureHtml: string | null): string {
     step: 3,
     identity: { instantlyCampaignId: "self:e88fd08a", leadEmail: "stefan.schweigert@vertigis.com" },
     unsubscribeUrl: "https://u.test/u/x/y",
-    trackingOrigin: null,
+    optOut: "tracker_link",
   }).html;
 }
 
