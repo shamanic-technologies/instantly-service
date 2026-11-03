@@ -178,7 +178,11 @@ export interface ReplyToLeadInput {
    * observing. Never set by the reply route: the wire cannot reach it.
    */
   copy?: { cc: string[]; bcc: string[] };
-  /** Pre-rendered quote of the conversation, appended AFTER the signature. */
+  /**
+   * Pre-rendered quote of the conversation, appended AFTER the signature.
+   * Absent = the lead's whole conversation is read and quoted here
+   * (lib/quoted-conversation, QUOTE-THREAD-1103); "" = no quote.
+   */
   quotedHtml?: string;
   /**
    * The escalation's own hand-over. It is the one automated write allowed on a
@@ -1104,11 +1108,31 @@ export async function replyToLead(
   }
   const attachments = await resolveReplyAttachments(input.orgId, documentIds);
 
+  // ⚠️ EVERY REPLY QUOTES THE CONVERSATION (QUOTE-THREAD-1103). A caller that
+  // brings its own quote (the hand-over, the not-a-prospect answer) keeps it;
+  // every other reply gets the lead's whole conversation, the cold email
+  // included, below the signature, like any mail client. Without it the copy
+  // in the agency inbox read as OUR thread, not the brand's (Doc Dinners).
+  const quoted: ReplyToLeadInput =
+    input.quotedHtml === undefined
+      ? {
+          ...input,
+          quotedHtml: await (await import("./quoted-conversation")).loadQuotedConversation({
+            orgId: input.orgId,
+            userId: input.userId,
+            campaignId: campaign.campaignId,
+            instantlyCampaignId: campaign.instantlyCampaignId,
+            brandId: campaign.brandId,
+            leadEmail: campaign.leadEmail,
+          }),
+        }
+      : input;
+
   const prepared = elsewhere
-    ? await prepareOwnAddressReply(campaign, input, elsewhere)
+    ? await prepareOwnAddressReply(campaign, quoted, elsewhere)
     : campaign.sendTransport === SEND_TRANSPORT_SMTP
-      ? await prepareSmtpReply(campaign, input)
-      : await prepareInstantlyReply(campaign, input);
+      ? await prepareSmtpReply(campaign, quoted)
+      : await prepareInstantlyReply(campaign, quoted);
 
   const reply =
     prepared.transport === SEND_TRANSPORT_SMTP
