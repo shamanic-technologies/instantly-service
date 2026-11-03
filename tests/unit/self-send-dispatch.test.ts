@@ -663,3 +663,70 @@ describe("selectDueSteps — a throttled run is distinguishable from an idle one
     });
   });
 });
+
+// OLIVE-FOLLOWUPS-1103: a lead who got our first email gets every follow-up.
+// 2026-10-22 Primeforge deleted 19 mailboxes; 374 contacted leads lost every
+// follow-up because a follow-up was never moved off its mailbox.
+describe("selectDueSteps — a follow-up whose mailbox cannot send it moves, same thread", () => {
+  const NOW = new Date("2026-08-17T15:00:00Z"); // a Monday, inside the window
+  const GONE = "ezekiel@plainsignalco.com";
+  const PROD = "lyla@alphaflowco.com";
+  const prod: AccountCapacity = {
+    accountEmail: PROD,
+    mailbox: PROD,
+    cap: 50,
+    recentSustainedDaily: 50,
+    sentToday: 0,
+    adoptsFirstEmails: true,
+  };
+  const followUp = sequence({
+    instantlyCampaignId: "self:fu",
+    accountEmail: GONE,
+    provisionedSteps: [3],
+    lastSentStep: 2,
+    lastSentAt: new Date(NOW.getTime() - 12 * DAY),
+  });
+
+  it("its mailbox is gone (no credential, no capacity row): moved to a production mailbox with room", () => {
+    const out = selectDueSteps([followUp], [prod], NOW);
+    expect(out.blockedNoCapacityRow).toBe(1);
+    expect(out.rehomed).toBe(1);
+    expect(out.selected).toEqual([
+      expect.objectContaining({
+        instantlyCampaignId: "self:fu",
+        accountEmail: PROD,
+        step: 3,
+        rehomedFrom: GONE,
+        rehomeReason: "follow_up_mailbox_cannot_send",
+      }),
+    ]);
+  });
+
+  it("its mailbox is refused by the relay (silenced): moved", () => {
+    const gone: AccountCapacity = { ...prod, accountEmail: GONE, mailbox: GONE, adoptsFirstEmails: false };
+    const out = selectDueSteps([followUp], [gone, prod], NOW, new Set([GONE]));
+    expect(out.skippedSilenced).toBe(1);
+    expect(out.selected).toEqual([expect.objectContaining({ accountEmail: PROD, rehomedFrom: GONE })]);
+  });
+
+  it("control: its mailbox is merely FULL today: it keeps its sender and waits (a full mailbox drains)", () => {
+    const full: AccountCapacity = { ...prod, accountEmail: GONE, mailbox: GONE, adoptsFirstEmails: false, sentToday: 50 };
+    const out = selectDueSteps([followUp], [full, prod], NOW);
+    expect(out.selected).toEqual([]);
+    expect(out.rehomed).toBe(0);
+  });
+
+  it("no production mailbox has room: it waits, never dropped", () => {
+    const out = selectDueSteps([followUp], [{ ...prod, sentToday: 50 }], NOW);
+    expect(out.selected).toEqual([]);
+    expect(out.blockedNoCapacityRow).toBe(1);
+  });
+
+  it("a moved first email still carries its own reason", () => {
+    const first = sequence({ instantlyCampaignId: "self:first", accountEmail: GONE });
+    const out = selectDueSteps([first], [prod], NOW);
+    expect(out.selected).toEqual([
+      expect.objectContaining({ rehomedFrom: GONE, rehomeReason: "first_email_stranded" }),
+    ]);
+  });
+});

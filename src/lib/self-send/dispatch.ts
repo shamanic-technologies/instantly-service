@@ -121,12 +121,19 @@ export interface DueStep {
   /** When this step became due. Earlier = more overdue = sent first. */
   dueAt: Date;
   /**
-   * Set when this is a FIRST email moved off the mailbox it was assigned to,
-   * because that mailbox could not send it this run — see {@link selectDueSteps}.
+   * Set when this step was moved off the mailbox it was assigned to, because
+   * that mailbox could not send it this run — see {@link selectDueSteps}.
    * `accountEmail` is then the NEW sender; this is the one it was parked on.
    * The worker persists the move (and its reason) before sending.
    */
   rehomedFrom?: string;
+  /**
+   * Why it moved: a FIRST email stranded (no room, refused, no credential,
+   * placement), or a FOLLOW-UP whose mailbox can no longer send it (no
+   * credential, refused by the relay, mostly in spam at the prospect's
+   * provider). Set iff `rehomedFrom` is.
+   */
+  rehomeReason?: RehomeReason;
 }
 
 /**
@@ -184,6 +191,8 @@ export function nextDueStep(sequence: PendingSequence, asOf: Date): DueStep | nu
         dueAt,
       };
 }
+
+export type RehomeReason = "first_email_stranded" | "follow_up_mailbox_cannot_send";
 
 /** Room left on one mailbox today. */
 export interface AccountCapacity {
@@ -355,9 +364,11 @@ export interface DueSelection {
    */
   skippedSilenced: number;
   /**
-   * First emails moved this run from a mailbox that could not send them (no
-   * room left today, silenced by the relay, or no credential) onto a production
-   * mailbox with room. Each one is in `selected` with `rehomedFrom` set.
+   * Steps moved this run onto a production mailbox with room: first emails from
+   * a mailbox that could not send them (no room left today, silenced by the
+   * relay, no credential, placement), and follow-ups from a mailbox that cannot
+   * send them at all (no credential, silenced, mostly in spam at the prospect's
+   * provider). Each one is in `selected` with `rehomedFrom` set.
    */
   rehomed: number;
   /**
@@ -382,9 +393,9 @@ export interface DueSelection {
    */
   heldPlacement: number;
   /**
-   * Follow-ups NOT sent because their mailbox is measured mostly in spam at the
-   * prospect's provider. Never moved (the thread keeps its sender): they wait
-   * until the mailbox measures better.
+   * Follow-ups NOT sent from their mailbox because it is measured mostly in spam
+   * at the prospect's provider. Each one is offered to a production mailbox
+   * that is not (same thread, `Re:` + References), else it waits.
    */
   heldMostlySpam: number;
 }
@@ -521,7 +532,9 @@ export function selectDueSteps(
     );
 
   const selected: DueStep[] = [];
-  // First emails whose own mailbox cannot send them this run, in due order.
+  // Steps whose own mailbox cannot send them this run, in due order: first
+  // emails for any reason, follow-ups only when the mailbox cannot send them at
+  // all (not merely full today: that drains by itself).
   const stranded: DueStep[] = [];
   let blockedNoCapacityRow = 0;
   let skippedSilenced = 0;
@@ -573,7 +586,7 @@ export function selectDueSteps(
     const mailbox = mailboxOf.get(step.accountEmail);
     if (mailbox === undefined) {
       blockedNoCapacityRow += 1;
-      if (isFirstEmail(step)) stranded.push(step);
+      stranded.push(step);
       continue;
     }
 
@@ -583,7 +596,7 @@ export function selectDueSteps(
     // works. Counted, never silently dropped.
     if (silencedMailboxes.has(mailbox)) {
       skippedSilenced += 1;
-      if (isFirstEmail(step)) stranded.push(step);
+      stranded.push(step);
       continue;
     }
 
@@ -597,15 +610,13 @@ export function selectDueSteps(
     }
 
     // The prospect's provider does not put this mailbox's mail in Inbox. A
-    // first email is offered below to a mailbox measured Inbox there, else it
-    // waits; a follow-up (mailbox mostly in spam there) waits on its thread.
+    // first email is offered below to a mailbox measured Inbox there; a
+    // follow-up (mailbox mostly in spam there) to a mailbox that is not. Else
+    // it waits.
     if (placementRefuses(step, step.accountEmail)) {
-      if (isFirstEmail(step)) {
-        heldPlacement += 1;
-        stranded.push(step);
-      } else {
-        heldMostlySpam += 1;
-      }
+      if (isFirstEmail(step)) heldPlacement += 1;
+      else heldMostlySpam += 1;
+      stranded.push(step);
       continue;
     }
 
@@ -628,17 +639,25 @@ export function selectDueSteps(
     remaining.set(mailbox, room - 1);
   }
 
-  // ── Second pass: move stranded FIRST emails to a production mailbox with room.
+  // ── Second pass: move stranded steps to a production mailbox with room.
   //
-  // A sequence is pinned to its mailbox for its whole life because its followups
-  // must thread from the same sender — but until the first email goes out there
-  // is no thread, so the pin protects nothing and only strands the lead. Prod
-  // 2026-09-24: 678 first emails waiting, some since 2026-08-30, on recovering
-  // Gandi mailboxes capped at 20/day and carrying 100+ sequences each, while the
-  // production fleet had ~3,700 unused sends a day. Waiting for room that
-  // arrives at 20/day is not a queue, it is a loss the customer cannot see.
+  // A sequence is pinned to its mailbox so its follow-ups thread from the same
+  // sender — but until the first email goes out there is no thread, so the pin
+  // protects nothing and only strands the lead. Prod 2026-09-24: 678 first
+  // emails waiting, some since 2026-08-30, on recovering Gandi mailboxes capped
+  // at 20/day and carrying 100+ sequences each, while the production fleet had
+  // ~3,700 unused sends a day.
   //
-  // A FOLLOWUP is never moved: its prospect has already heard from one mailbox.
+  // A FOLLOW-UP keeps its mailbox while that mailbox can send it, even late (a
+  // full mailbox drains by itself). It moves only when its mailbox cannot send
+  // it at all: no credential (the vendor deleted it), refused by the relay, or
+  // mostly in spam at the prospect's provider. The lead was promised the whole
+  // sequence (OLIVE-FOLLOWUPS-1103: 374 contacted leads lost every follow-up on
+  // 2026-10-22 when 19 Primeforge mailboxes were deleted, and 22 of Olive's sat
+  // weeks behind a mailbox mostly in spam at Google). The thread survives the
+  // move: step 2+ is `Re: <subject>` with In-Reply-To/References on every
+  // Message-Id we sent the person, whoever sent it.
+  //
   // Only a production mailbox that is not silenced adopts — the same gate the
   // assignment of a NEW sequence applies — and only with room left AFTER its own
   // due steps were served, so moving a lead never delays a sequence already
@@ -668,6 +687,7 @@ export function selectDueSteps(
       ...step,
       accountEmail: adopter,
       rehomedFrom: step.accountEmail,
+      rehomeReason: isFirstEmail(step) ? "first_email_stranded" : "follow_up_mailbox_cannot_send",
     });
     spendBudget(step, adopter);
     remaining.set(target, targetRoom - 1);

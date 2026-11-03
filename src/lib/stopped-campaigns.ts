@@ -1,6 +1,6 @@
 /**
  * What a stopped campaign stops: NEW first emails always; the queued follow-ups
- * only when the org cannot go on (torn down, or billing cannot charge it).
+ * only when the org is gone (torn down).
  *
  * ⚠️ OWNER RULE (2026-10-06, verbatim): "stopping a campaign SHOULD NOT pause
  * the followups!!!" A customer stop (`stop_reason` `manual`, or none) means no
@@ -18,13 +18,15 @@
  * (`runDispatch`). One `GET /campaigns/list` answers for the whole fleet.
  *
  * Which queued sequences of a stopped campaign are stopped here:
- *   - stop reason in {@link CUT_ALL_STOP_REASONS} (`org_teardown`,
- *     `payment_declined`, `no_payment_method`): EVERY queued sequence. The org
- *     is gone or cannot pay. Prod 2026-10-02: a torn-down throwaway org's first
- *     emails left three minutes after the teardown.
- *   - any other reason (`manual`, null): ONLY a sequence that never sent a real
- *     email (its first email is a NEW first email). A contacted lead is left
- *     alone and its follow-ups go out.
+ *   - stop reason in {@link CUT_ALL_STOP_REASONS} (`org_teardown`): EVERY
+ *     queued sequence. The org is gone. Prod 2026-10-02: a torn-down throwaway
+ *     org's first emails left three minutes after the teardown.
+ *   - any other reason (`manual`, `payment_declined`, `no_payment_method`,
+ *     null): ONLY a sequence that never sent a real email (its first email is a
+ *     NEW first email). A contacted lead is left alone and its follow-ups go
+ *     out. A follow-up was provisioned (paid for) with the first email, so an
+ *     empty balance or a refused card never cuts it (OLIVE-FOLLOWUPS-1103: 29
+ *     campaigns stopped for payment cut their contacted leads).
  * Stopping one:
  *   - self-send (`self:`): `stopSelfSendSequence` — holds cancelled (refund),
  *     row marked `paused`, out of the dispatcher's reach.
@@ -84,15 +86,13 @@ export function stoppedCampaignIds(rows: CampaignStatusRow[]): Map<string, strin
 
 /**
  * The stop reasons that cut a campaign's ALREADY-STARTED sequences too: the org
- * is torn down, or billing cannot charge it. Every other stop (a person's
- * `manual` decision, or no reason) stops only NEW first emails — owner rule
- * 2026-10-06. campaign-service owns the vocabulary; read verbatim.
+ * is torn down. Every other stop (a person's `manual` decision, a payment
+ * refusal, or no reason) stops only NEW first emails — owner rule 2026-10-06
+ * ("stopping a campaign SHOULD NOT pause the followups!!!"), and a follow-up is
+ * paid for at the first email, so a payment stop never cuts it
+ * (OLIVE-FOLLOWUPS-1103). campaign-service owns the vocabulary; read verbatim.
  */
-export const CUT_ALL_STOP_REASONS: ReadonlySet<string> = new Set([
-  "org_teardown",
-  "payment_declined",
-  "no_payment_method",
-]);
+export const CUT_ALL_STOP_REASONS: ReadonlySet<string> = new Set(["org_teardown"]);
 
 /** Whether a stop with this reason cuts a sequence that already emailed its lead. */
 export function stopCutsStartedSequences(stopReason: string | null): boolean {

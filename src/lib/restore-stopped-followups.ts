@@ -20,10 +20,12 @@
  *
  * Restoring one goes through the normal cost path, billed to the org as before:
  * per step a fresh step run + PROVISIONED `instantly-account-email-sent` +
- * `instantly-domain-email-sent` (`provisionStepEmailCosts`), then ONE
- * `authorizeCreditSpend` for the steps (platform key only; refused = holds
- * cancelled, lead skipped), then the Instantly campaign is RESUMED (Instantly
- * transport), then the row goes back to `active`. The dispatcher (self-send)
+ * `instantly-domain-email-sent` (`provisionStepEmailCosts`), then the Instantly
+ * campaign is RESUMED (Instantly transport), then the row goes back to
+ * `active`. NO new credit authorization: these follow-ups were authorized with
+ * the lead's first email (one authorize per sequence at `POST /orgs/send`), so
+ * an empty balance never keeps them from the lead (OLIVE-FOLLOWUPS-1103, owner
+ * 2026-11-03: "les followups sont provisionnés en terme de coût"). The dispatcher (self-send)
  * and Instantly then send at their normal per-mailbox pace; a self-send step's
  * schedule is computed off the last sent step, so the original schedule holds
  * and anything overdue just becomes due.
@@ -33,17 +35,15 @@
  */
 
 import { errorMessage } from "./db-error.js";
-import { fundingRefusalCause, isSalesFunnelCapReason } from "./funding-refusal";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
 import { sequenceCosts } from "../db/schema";
-import { authorizeCreditSpend } from "./billing-client";
 import { updateCampaignStatus } from "./instantly-client";
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { createRun, updateCostStatus, updateRun, type IdentityContext } from "./runs-client";
 import { requireSendableVerdict } from "./email-verification-gate";
-import { provisionStepEmailCosts, sendAuthorizeItems } from "./send-costs";
+import { provisionStepEmailCosts } from "./send-costs";
 import { isSelfSendCampaignId } from "./self-send/transport";
 
 /** The day the cutting sweep shipped (commit 065b431). Nothing before it is ours to undo. */
@@ -171,9 +171,6 @@ export interface RestoreSummary {
   byCampaign: Record<string, { leads: number; steps: number }>;
   restored: number;
   restoredSteps: number;
-  refusedInsufficientCredits: number;
-  /** Refused because the sales funnel campaign reached its max budget (billing's `reason`), not the balance. */
-  refusedSalesFunnelMaxBudget: number;
   failed: number;
 }
 
@@ -193,8 +190,6 @@ function summarize(candidates: RestoreCandidate[], dryRun: boolean): RestoreSumm
     byCampaign,
     restored: 0,
     restoredSteps: 0,
-    refusedInsufficientCredits: 0,
-    refusedSalesFunnelMaxBudget: 0,
     failed: 0,
   };
 }
@@ -222,14 +217,10 @@ async function abandon(holds: NewHold[], identity: IdentityContext): Promise<voi
 }
 
 /**
- * Re-queue ONE lead's cut follow-ups. Returns "restored", "insufficient_credits", or
- * "sales_funnel_max_budget" (billing named the campaign's max budget, not the balance).
- * Throws on any other failure, after giving back what it provisioned.
+ * Re-queue ONE lead's cut follow-ups. Throws on any failure, after giving back
+ * what it provisioned.
  */
-export async function restoreOne(
-  c: RestoreCandidate,
-  caller: CallerInfo,
-): Promise<"restored" | "insufficient_credits" | "sales_funnel_max_budget"> {
+export async function restoreOne(c: RestoreCandidate, caller: CallerInfo): Promise<"restored"> {
   const userId = c.userId ?? SYSTEM_USER_ID;
   const brandId = c.brandIds?.join(",") || undefined;
   const tracking = { campaignId: c.campaignId, ...(brandId ? { brandId } : {}) };
@@ -269,19 +260,6 @@ export async function restoreOne(
       );
       hold.costId = ids.costId;
       hold.domainCostId = ids.domainCostId;
-    }
-
-    if (keySource === "platform") {
-      const auth = await authorizeCreditSpend(
-        sendAuthorizeItems(c.steps.length, verdict),
-        "instantly-send",
-        parent,
-      );
-      if (!auth.sufficient) {
-        await abandon(holds, parent);
-        const cause = fundingRefusalCause(auth);
-        return cause && isSalesFunnelCapReason(cause.reason) ? "sales_funnel_max_budget" : "insufficient_credits";
-      }
     }
 
     // Instantly transport: the campaign was paused on Instantly; resume it so
@@ -336,21 +314,9 @@ export async function restoreStoppedFollowups(options: {
 
   for (const c of candidates) {
     try {
-      const outcome = await restoreOne(c, options.caller);
-      if (outcome === "restored") {
-        summary.restored += 1;
-        summary.restoredSteps += c.steps.length;
-      } else if (outcome === "sales_funnel_max_budget") {
-        summary.refusedSalesFunnelMaxBudget += 1;
-        console.warn(
-          `[instantly-service] restore-stopped-followups: refused, sales funnel max budget reached (raise campaign ${c.campaignId}'s max budget) org=${c.orgId} lead=${c.leadEmail}`,
-        );
-      } else {
-        summary.refusedInsufficientCredits += 1;
-        console.warn(
-          `[instantly-service] restore-stopped-followups: refused, insufficient credits org=${c.orgId} lead=${c.leadEmail}`,
-        );
-      }
+      await restoreOne(c, options.caller);
+      summary.restored += 1;
+      summary.restoredSteps += c.steps.length;
     } catch (error: unknown) {
       summary.failed += 1;
       console.error(
