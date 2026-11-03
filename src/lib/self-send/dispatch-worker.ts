@@ -53,6 +53,7 @@ import {
   type SmtpSenderHealth,
 } from "./sender-health";
 import { SEND_TRANSPORT_SMTP } from "./transport";
+import { stopSelfSendSequence, type SelfSendStopTarget } from "./stop-sequence";
 import {
   INBOUND_BLIND_MIN_SENT,
   INBOUND_BLIND_WINDOW_DAYS,
@@ -651,11 +652,49 @@ async function rehomeSequence(
 }
 
 /**
- * Re-pin every due FOLLOW-UP whose mailbox cannot send it (no credential: the
- * vendor deleted it; refused by the relay; blind; mostly in spam at the
- * prospect's provider) to the production mailbox `selectDueSteps` would move it
- * to, and persist the move (`rehomeSequence`, reason on the row). Mutates the
- * in-memory sequences so the selection that follows reads the new sender.
+ * Cancel (stop + refund) every CONTACTED queued sequence whose mailbox we no
+ * longer have: no capacity row = no credential = the vendor deleted it (a
+ * refusing vendor keeps its last listing, a failed credential read throws
+ * before this). Owner 2026-11-03: "cancel them when we dont have the mailbox
+ * anymore" — its follow-ups are never handed to another mailbox. A first email
+ * is not touched here (no thread yet: the selection moves it). An EMPTY pool
+ * cancels nothing (never read "no account loaded" as "every mailbox gone").
+ * Returns the cancelled sequences' ids.
+ */
+export async function cancelFollowUpsOfGoneMailboxes(
+  sequences: readonly PendingSequence[],
+  capacities: readonly AccountCapacity[],
+): Promise<Set<string>> {
+  const cancelled = new Set<string>();
+  if (capacities.length === 0) return cancelled;
+  const held = new Set(capacities.map((c) => c.accountEmail));
+  for (const sequence of sequences) {
+    if (sequence.lastSentStep === null || held.has(sequence.accountEmail)) continue;
+    const [row] = rowsOf(
+      await db.execute(sql`
+        SELECT instantly_campaign_id AS "instantlyCampaignId", campaign_id AS "campaignId",
+               org_id AS "orgId", user_id AS "userId", run_id AS "runId"
+        FROM instantly_campaigns
+        WHERE instantly_campaign_id = ${sequence.instantlyCampaignId} AND status = 'active'
+      `),
+    );
+    if (!row) continue;
+    await stopSelfSendSequence(
+      row as unknown as SelfSendStopTarget,
+      sequence.leadEmail,
+      `sending mailbox ${sequence.accountEmail} is gone: follow-ups cancelled and refunded`,
+    );
+    cancelled.add(sequence.instantlyCampaignId);
+  }
+  return cancelled;
+}
+
+/**
+ * Re-pin every due FOLLOW-UP whose mailbox, still ours, cannot send it
+ * (refused by the relay; blind; mostly in spam at the prospect's provider) to
+ * the production mailbox `selectDueSteps` would move it to, and persist the
+ * move (`rehomeSequence`, reason on the row). Mutates the in-memory sequences
+ * so the selection that follows reads the new sender.
  *
  * Why before the selection rather than inside it: the selection that is SENT
  * may be the stored script's (send-select-script.ts, a port of
@@ -964,9 +1003,16 @@ async function runDispatchExclusive(
       (s) => !notYetStopped.has(s.instantlyCampaignId) && !isHeldForAbsence(s, asOf),
     );
     const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
-    // A follow-up whose mailbox cannot send it is re-pinned to a production
-    // mailbox BEFORE the selection, so whichever selection is sent (ours or
-    // the stored script) sees it on a mailbox that can (OLIVE-FOLLOWUPS-1103).
+    // A contacted sequence whose mailbox we no longer have is cancelled and
+    // refunded; one whose mailbox, still ours, cannot send it is re-pinned to a
+    // production mailbox. Both BEFORE the selection, so whichever selection is
+    // sent (ours or the stored script) agrees (OLIVE-FOLLOWUPS-1103).
+    const gone = await cancelFollowUpsOfGoneMailboxes(sequences, capacities);
+    if (gone.size > 0) {
+      for (let i = sequences.length - 1; i >= 0; i -= 1) {
+        if (gone.has(sequences[i]!.instantlyCampaignId)) sequences.splice(i, 1);
+      }
+    }
     await repinStrandedFollowUps(sequences, capacities, asOf, skippedMailboxes);
     // Fresh per selection (never the 60 s cache): the budget is spent in memory
     // as steps are planned, so it must start from what has really happened.

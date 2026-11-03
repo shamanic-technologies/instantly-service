@@ -687,26 +687,21 @@ describe("selectDueSteps — a follow-up whose mailbox cannot send it moves, sam
     lastSentAt: new Date(NOW.getTime() - 12 * DAY),
   });
 
-  it("its mailbox is gone (no credential, no capacity row): moved to a production mailbox with room", () => {
+  // Owner 2026-11-03: "cancel them when we dont have the mailbox anymore".
+  it("its mailbox is GONE (no credential, no capacity row): never moved (the worker cancels it)", () => {
     const out = selectDueSteps([followUp], [prod], NOW);
     expect(out.blockedNoCapacityRow).toBe(1);
-    expect(out.rehomed).toBe(1);
-    expect(out.selected).toEqual([
-      expect.objectContaining({
-        instantlyCampaignId: "self:fu",
-        accountEmail: PROD,
-        step: 3,
-        rehomedFrom: GONE,
-        rehomeReason: "follow_up_mailbox_cannot_send",
-      }),
-    ]);
+    expect(out.rehomed).toBe(0);
+    expect(out.selected).toEqual([]);
   });
 
-  it("its mailbox is refused by the relay (silenced): moved", () => {
-    const gone: AccountCapacity = { ...prod, accountEmail: GONE, mailbox: GONE, adoptsFirstEmails: false };
-    const out = selectDueSteps([followUp], [gone, prod], NOW, new Set([GONE]));
+  it("its mailbox, still ours, is refused by the relay (silenced): moved, same thread", () => {
+    const refused: AccountCapacity = { ...prod, accountEmail: GONE, mailbox: GONE, adoptsFirstEmails: false };
+    const out = selectDueSteps([followUp], [refused, prod], NOW, new Set([GONE]));
     expect(out.skippedSilenced).toBe(1);
-    expect(out.selected).toEqual([expect.objectContaining({ accountEmail: PROD, rehomedFrom: GONE })]);
+    expect(out.selected).toEqual([
+      expect.objectContaining({ accountEmail: PROD, rehomedFrom: GONE, rehomeReason: "follow_up_mailbox_cannot_send" }),
+    ]);
   });
 
   it("control: its mailbox is merely FULL today: it keeps its sender and waits (a full mailbox drains)", () => {
@@ -717,9 +712,10 @@ describe("selectDueSteps — a follow-up whose mailbox cannot send it moves, sam
   });
 
   it("no production mailbox has room: it waits, never dropped", () => {
-    const out = selectDueSteps([followUp], [{ ...prod, sentToday: 50 }], NOW);
+    const refused: AccountCapacity = { ...prod, accountEmail: GONE, mailbox: GONE, adoptsFirstEmails: false };
+    const out = selectDueSteps([followUp], [refused, { ...prod, sentToday: 50 }], NOW, new Set([GONE]));
     expect(out.selected).toEqual([]);
-    expect(out.blockedNoCapacityRow).toBe(1);
+    expect(out.skippedSilenced).toBe(1);
   });
 
   it("a moved first email still carries its own reason", () => {
