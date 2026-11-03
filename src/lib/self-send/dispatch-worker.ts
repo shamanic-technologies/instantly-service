@@ -1329,8 +1329,8 @@ async function sendDueStep(
       },
       previousMessageId: content.priorMessageIds.at(-1) ?? null,
       priorMessageIds: content.priorMessageIds,
-      // The opt-out header the seeds picked (UNSUB-3WAY-1103); today's tracker
-      // link until every variant has its sample. Cached 10 min, fails loud.
+      // The opt-out header the seeds picked (UNSUB-3WAY-1103); the sending
+      // mailbox (mailto) until every variant has its sample. Cached 10 min, fails loud.
       optOut: await currentOptOutVariant(),
     });
 

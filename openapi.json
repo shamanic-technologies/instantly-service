@@ -11937,7 +11937,7 @@
     "/internal/seed-placement/opt-out": {
       "get": {
         "summary": "The three opt-out headers compared on seeds, and the one prospect mail carries (staff chart)",
-        "description": "UNSUB-3WAY-1103. Platform-scoped, read-only. Every seed carries one opt-out header: `tracker_link` (RFC 8058 one-click on our neutral link domain, today's), `mailbox_only` (List-Unsubscribe mailto the sending mailbox, no outside domain), `none` (no header). `variants` = totals since the experiment began, per receiving provider; `days` = the same per UTC day the seeds left. `decision.variant` = what prospect mail carries now: `tracker_link` until every variant has `minFoundSeedsPerVariant` seeds found at Google (`reason: sample_not_reached`), then the best inbox rate (inbox / found; Google, plus Microsoft 365 once it has the same sample) (`reason: measured`). The service switches by itself.",
+        "description": "UNSUB-3WAY-1103. Platform-scoped, read-only. Every seed carries one opt-out header: `tracker_link` (RFC 8058 one-click on our neutral link domain, today's), `mailbox_only` (List-Unsubscribe mailto the sending mailbox, no outside domain), `none` (no header). `variants` = totals since the experiment began, per receiving provider; `days` = the same per UTC day the seeds left. `decision.variant` = what prospect mail carries now: `mailbox_only` (the default, owner 2026-11-03) until every variant has `minFoundSeedsPerVariant` seeds found at Google (`reason: sample_not_reached`), then the best inbox rate (inbox / found; Google, plus Microsoft 365 once it has the same sample) (`reason: measured`). The service switches by itself.",
         "responses": {
           "200": {
             "description": "Comparison",
