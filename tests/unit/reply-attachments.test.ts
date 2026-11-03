@@ -36,6 +36,8 @@ vi.mock("../../src/lib/reply-destination", () => ({
   findProspectWroteElsewhere: async () => null,
 }));
 
+// The quoted conversation (QUOTE-THREAD-1103) is its own read; none here.
+vi.mock("../../src/lib/quoted-conversation", () => ({ loadQuotedConversation: async () => "" }));
 import { replyToLead } from "../../src/lib/reply-to-lead";
 import {
   filenameFromDisposition,
