@@ -16,6 +16,12 @@ import { normalizeLeadEmail } from "./lead-email";
 export const CRM_STATED_MAX_EMAILS = 1000;
 export const CRM_STATED_MAX_BRANDS = 50;
 const CRM_STATED_TIMEOUT_MS = 10_000;
+export const CRM_STATED_TRANSPORT_RETRIES = 2;
+
+function isTimeout(error: unknown): boolean {
+  const name = (error as { name?: string } | null)?.name;
+  return name === "TimeoutError" || name === "AbortError";
+}
 
 /** A statement crm-service holds for one asked address. */
 export interface StatedNotToBrandRecord {
@@ -57,9 +63,12 @@ async function readOneChunk(
   runId: string | null,
 ): Promise<Array<{ email: string; stated: boolean; brandId: string | null; correctionId: string | null }>> {
   const path = "POST /internal/people/stated-not-to-brand";
-  let response: Response;
-  try {
-    response = await fetch(`${config.url}/internal/people/stated-not-to-brand`, {
+  // A read, so a TRANSPORT failure is retried (twice, short backoff) before it fails the send / status read:
+  // in prod the first hour showed bursts of bare `fetch failed` (a reused keep-alive socket the server had
+  // closed, while this process ran near 100% CPU) on reads that succeed at once when asked again. An HTTP
+  // answer (any status) is never retried; a timeout is not retried either (crm-service is slow, not gone).
+  const request = () =>
+    fetch(`${config.url}/internal/people/stated-not-to-brand`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -69,9 +78,23 @@ async function readOneChunk(
       body: JSON.stringify({ orgId, brandIds, emails }),
       signal: AbortSignal.timeout(CRM_STATED_TIMEOUT_MS),
     });
-  } catch (error: unknown) {
+  let response: Response | null = null;
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= CRM_STATED_TRANSPORT_RETRIES; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+    try {
+      response = await request();
+      break;
+    } catch (error: unknown) {
+      lastError = error;
+      if (isTimeout(error)) break;
+    }
+  }
+  if (!response) {
+    const cause = (lastError as { cause?: { code?: string; message?: string } } | null)?.cause;
     throw new CrmStatedReadError(
-      `crm-service ${path} unreachable: ${error instanceof Error ? error.message : String(error)}`,
+      `crm-service ${path} unreachable: ${lastError instanceof Error ? lastError.message : String(lastError)}` +
+        `${cause ? ` (${cause.code ?? cause.message})` : ""}`,
     );
   }
   if (!response.ok) {
