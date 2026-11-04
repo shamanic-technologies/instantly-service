@@ -14,7 +14,9 @@ export class ReplyToLeadError extends Error {
       | "attachment_not_found"
       | "attachment_too_large"
       | "attachment_unavailable"
-      | "attachments_unsupported_on_transport",
+      | "attachments_unsupported_on_transport"
+      | "stated_not_to_brand"
+      | "stated_not_to_brand_unreadable",
     public readonly status: number,
     message: string,
   ) {

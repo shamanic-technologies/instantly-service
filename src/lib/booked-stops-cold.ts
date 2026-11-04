@@ -98,7 +98,7 @@ export function isBookedSequence(
  * Every active sequence still holding a provisioned step, with the brands it is sent for. The hold
  * match mirrors `matchesHoldCampaign` (historical org holds carry no per-lead id).
  */
-async function loadQueuedBrandSequences(): Promise<QueuedBrandSequence[]> {
+export async function loadQueuedBrandSequences(): Promise<QueuedBrandSequence[]> {
   const result = await db.execute(sql`
     SELECT c.instantly_campaign_id AS "instantlyCampaignId",
            c.campaign_id           AS "campaignId",

@@ -61,6 +61,13 @@ vi.mock("../../src/lib/booked-stops-cold", () => ({
   stopQueuedSequencesOfBookedPeople: (...args: unknown[]) => mockStopBooked(...args),
 }));
 
+// DUALIST-WA-SILENCE-EMAIL: the stated-not-to-brand sweep has its own tests
+// (stated-not-to-brand.test.ts). Defaults to "nobody stated".
+const mockStopStated = vi.hoisted(() => vi.fn());
+vi.mock("../../src/lib/stated-not-to-brand", () => ({
+  stopQueuedSequencesOfStatedPeople: (...args: unknown[]) => mockStopStated(...args),
+}));
+
 const mockHealZones = vi.fn();
 vi.mock("../../src/lib/queued-sequence-timezone", () => ({
   healQueuedSequenceTimezones: (...args: unknown[]) => mockHealZones(...args),
@@ -200,6 +207,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mockStopStoppedCampaigns.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   mockStopBooked.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
+  mockStopStated.mockResolvedValue({ summary: {}, notYetStopped: new Set() });
   mockVerifyQueued.mockResolvedValue({ summary: {}, notCleared: new Set<string>() });
   mockHealZones.mockResolvedValue({ candidates: 0, resolved: 0, unknown: 0, failed: 0 });
   __resetDispatchInFlight();

@@ -512,7 +512,7 @@ export const SendRequestSchema = z
       .describe(
         "`true` = this email CONTINUES the brand's own earlier outreach to this person (a follow-up), it is not a new cold pitch. " +
           "Every send gate applies to it " +
-          "(409 `lead_opted_out` org-wide, 409 `lead_not_a_prospect`, the address verifier, 402 `insufficient_credits`). " +
+          "(409 `lead_opted_out` org-wide, 409 `lead_not_a_prospect`, 409 `stated_not_to_brand`, the address verifier, 402 `insufficient_credits`). " +
           "Refused 409 `brand_sequence_queued` while a step of this brand's sequence to the person is still waiting to leave (two of our emails would race). " +
           "Lands in the SAME thread as the brand's latest email to the person (same mailbox, `Re:` that subject, In-Reply-To/References) when that mailbox can still send; else a new thread with this `subject`. " +
           "Each follow-up is its own send keyed on the caller's `x-run-id` (a retry with the same run = `200 duplicate`; the next follow-up of the same campaign = a new run). Billed like any send. Absent/false = a normal send.",
@@ -561,7 +561,7 @@ const SendResponseSchema = z
 const SendRefusalSchema = z
   .object({
     error: z.string(),
-    code: z.enum(["lead_opted_out", "lead_not_a_prospect", "email_not_verified"]),
+    code: z.enum(["lead_opted_out", "lead_not_a_prospect", "stated_not_to_brand", "email_not_verified"]),
     details: z.string(),
     verdict: z
       .string()
@@ -649,6 +649,7 @@ registry.registerPath({
         "tactic \"Fresh contacts only\" (lead-service), never a send gate; a person the caller names is sent to. " +
         "`code: \"lead_opted_out\"` = the recipient asked this org to stop. " +
         "`code: \"lead_not_a_prospect\"` = the recipient told the brand they are not a prospect. " +
+        "`code: \"stated_not_to_brand\"` = the brand's team stated (crm-service people correction) that the recipient is not someone of the brand; never lapses, lifts when the statement is undone. " +
         "`code: \"email_signature_conflict\"` = two brands of this send set different email signatures (PUT /orgs/email-signature). " +
         "`code: \"email_not_verified\"` = our verifier (BounceVerify, via apollo-service) calls the " +
         "address `invalid` or `risky`: no email ever leaves our mailboxes for it. Every address is " +
@@ -665,7 +666,8 @@ registry.registerPath({
     502: {
       description:
         "No verdict could be obtained for the address (verifier, runs or billing unreachable): " +
-        "NOT sent, nothing queued or billed for the email. Body `{ error, code: \"email_verification_unavailable\", details }`. Retry later.",
+        "NOT sent, nothing queued or billed for the email. Body `{ error, code: \"email_verification_unavailable\", details }`. Retry later. " +
+        "Same posture when crm-service cannot say whether the brand stated the person is not theirs: `code: \"stated_not_to_brand_unreadable\"`.",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -1416,11 +1418,11 @@ const ScopedStatusSchema = StatusScopeSchema.extend({
     .object({
       code: z
         .string()
-        .describe("The 409 `code` `POST /orgs/send` would answer: `lead_opted_out`, `lead_not_a_prospect` or `email_not_verified` (our verifier called the address invalid / risky; until = when it may be re-verified)."),
+        .describe("The 409 `code` `POST /orgs/send` would answer: `lead_opted_out`, `lead_not_a_prospect`, `stated_not_to_brand` (the brand's team stated the person is not someone of the brand; until null) or `email_not_verified` (our verifier called the address invalid / risky; until = when it may be re-verified)."),
       until: z
         .string()
         .nullable()
-        .describe("ISO 8601 instant the refusal lapses (the moment the send gate lets the send through again, e.g. when the address may be re-verified). Null = never lapses on its own (opt-out, not a prospect)."),
+        .describe("ISO 8601 instant the refusal lapses (the moment the send gate lets the send through again, e.g. when the address may be re-verified). Null = never lapses on its own (opt-out, not a prospect, stated not to the brand)."),
     })
     .optional()
     .describe(
@@ -1718,9 +1720,11 @@ const ReplyToLeadErrorSchema = z
         "attachment_too_large",
         "attachment_unavailable",
         "attachments_unsupported_on_transport",
+        "stated_not_to_brand",
+        "stated_not_to_brand_unreadable",
       ])
       .describe(
-        "campaign_not_found: no campaign in this org for the given email. ambiguous_thread: `campaign_id` was omitted and the prospect wrote back in several campaigns; `candidates` lists them, name one. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. human_took_over: a person already answered this thread since the prospect last wrote, so an automated reply is refused; that answer counts as our touch and the next follow-up is scheduled from it (a thread held in a person's own mailbox is handed to them instead). prospect_wrote_elsewhere: the prospect's newest message went to one of our people's own mailbox (their Gmail), which we cannot send from; refused for every sender, answer from that mailbox. reply_dispatch_failed: the transport refused the send. attachment_not_found: a named offer document does not exist in this org (or is another org's). attachment_too_large: more than 5 documents, or over 10 MB together. attachment_unavailable: brand-service could not serve a document. attachments_unsupported_on_transport: the thread runs on Instantly, which cannot carry a file. Every attachment refusal sends nothing.",
+        "campaign_not_found: no campaign in this org for the given email. ambiguous_thread: `campaign_id` was omitted and the prospect wrote back in several campaigns; `candidates` lists them, name one. no_reply_to_thread: the lead never wrote back, so there is nothing to thread onto. sending_account_unresolved: we cannot tell which mailbox contacted them. mailbox_credential_unavailable: the mailbox is on our own sender and we hold no credential for it. human_took_over: a person already answered this thread since the prospect last wrote, so an automated reply is refused; that answer counts as our touch and the next follow-up is scheduled from it (a thread held in a person's own mailbox is handed to them instead). prospect_wrote_elsewhere: the prospect's newest message went to one of our people's own mailbox (their Gmail), which we cannot send from; refused for every sender, answer from that mailbox. reply_dispatch_failed: the transport refused the send. attachment_not_found: a named offer document does not exist in this org (or is another org's). attachment_too_large: more than 5 documents, or over 10 MB together. attachment_unavailable: brand-service could not serve a document. attachments_unsupported_on_transport: the thread runs on Instantly, which cannot carry a file. Every attachment refusal sends nothing. stated_not_to_brand: an AUTOMATED reply to a person the brand's team stated (crm-service people correction) is not someone of the brand; nothing sent, a `sent_by: human` reply is never refused for it. stated_not_to_brand_unreadable: crm-service could not answer that question, nothing sent.",
       ),
     candidates: z
       .array(
@@ -1776,11 +1780,11 @@ registry.registerPath({
     },
     409: {
       description:
-        "Refused, nothing sent: `ambiguous_thread` (several threads, see `candidates`), `no_reply_to_thread`, `sending_account_unresolved`, `mailbox_credential_unavailable`, or `human_took_over` (a person already answered this thread).",
+        "Refused, nothing sent: `ambiguous_thread` (several threads, see `candidates`), `no_reply_to_thread`, `sending_account_unresolved`, `mailbox_credential_unavailable`, `human_took_over` (a person already answered this thread), or `stated_not_to_brand` (an AUTOMATED reply to a person the brand's team stated is not someone of the brand; a `sent_by: \"human\"` reply is never refused for it).",
       content: { "application/json": { schema: ReplyToLeadErrorSchema } },
     },
     502: {
-      description: "The transport refused the send (`reply_dispatch_failed`), or brand-service could not serve a named document (`attachment_unavailable`)",
+      description: "The transport refused the send (`reply_dispatch_failed`), brand-service could not serve a named document (`attachment_unavailable`), or crm-service could not say whether the brand stated the person is not theirs (`stated_not_to_brand_unreadable`, automated replies only)",
       content: { "application/json": { schema: ReplyToLeadErrorSchema } },
     },
   },
