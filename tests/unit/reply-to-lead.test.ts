@@ -51,6 +51,13 @@ vi.mock("../../src/lib/quoted-conversation", () => ({
   loadQuotedConversation: (...a: unknown[]) => mockLoadQuoted(...a),
 }));
 
+// DUALIST-WA-SILENCE-EMAIL: crm-service's "stated not to the brand" read. Only
+// asked when the thread carries a brand (most fixtures here carry none).
+const mockReadStated = vi.fn();
+vi.mock("../../src/lib/crm-client", () => ({
+  readStatedNotToBrand: (...a: unknown[]) => mockReadStated(...a) ?? Promise.resolve(new Map()),
+}));
+
 import {
   MANUAL_REPLY_STEP,
   replySubject,
@@ -807,6 +814,89 @@ describe("a human took over, so the automated responder stops", () => {
     };
     expect(row.payload.kind).toBe("manual_reply");
     expect(row.payload.sentBy).toBe("automation");
+  });
+});
+
+describe("a person the brand stated is not theirs gets no AUTOMATED reply (DUALIST-WA-SILENCE-EMAIL)", () => {
+  const AUTOMATED = { ...INPUT, sentBy: "automation" as const };
+  const BRANDED = { brandId: "brand-1", brandIds: ["brand-1", "brand-2"] };
+
+  beforeEach(() => {
+    mockReadStated.mockReset().mockResolvedValue(new Map());
+  });
+
+  it("refuses 409 stated_not_to_brand, nothing prepared or sent, asked on every brand of the thread", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]))
+      .mockResolvedValueOnce(pgResult([])) // no human takeover
+      .mockResolvedValueOnce(pgResult([])); // not handed over
+    mockReadStated.mockResolvedValue(new Map([["alice@media.com", { brandId: "brand-2", correctionId: "corr-1" }]]));
+
+    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({ code: "stated_not_to_brand", status: 409 });
+    expect(mockReadStated).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: "org-1", brandIds: ["brand-1", "brand-2"], emails: ["alice@media.com"] }),
+    );
+    expect(mockListEmails).not.toHaveBeenCalled();
+    expect(mockReplyToEmail).not.toHaveBeenCalled();
+    expect(mockDispatchMessage).not.toHaveBeenCalled();
+    expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("refuses the hand-over too (it is an automated email to the person)", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]))
+      .mockResolvedValueOnce(pgResult([])); // no human takeover; hand-over skips the escalation gate
+    mockReadStated.mockResolvedValue(new Map([["alice@media.com", { brandId: "brand-1", correctionId: null }]]));
+
+    await expect(replyToLead({ ...AUTOMATED, handoff: true })).rejects.toMatchObject({ code: "stated_not_to_brand" });
+    expect(mockReplyToEmail).not.toHaveBeenCalled();
+  });
+
+  it("NEVER refuses a person of the brand replying by hand: crm-service is not even asked", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]));
+    mockReadStated.mockResolvedValue(new Map([["alice@media.com", { brandId: "brand-1", correctionId: "corr-1" }]]));
+    mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    const outcome = await replyToLead({ ...INPUT, sentBy: "human" });
+
+    expect(outcome.status).toBe("sent");
+    expect(mockReadStated).not.toHaveBeenCalled();
+  });
+
+  it("an unstated person is answered exactly as before", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]))
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([]));
+    mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    const outcome = await replyToLead(AUTOMATED);
+
+    expect(outcome.status).toBe("sent");
+    expect(mockReadStated).toHaveBeenCalledTimes(1);
+  });
+
+  it("a human takeover keeps its own answer (the stated gate runs after it)", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]))
+      .mockResolvedValueOnce(pgResult([{ at: "2026-09-04T17:51:31.000Z", source: "instantly_unibox" }]));
+    mockReadStated.mockResolvedValue(new Map([["alice@media.com", { brandId: "brand-1", correctionId: "corr-1" }]]));
+
+    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({ code: "human_took_over" });
+    expect(mockReadStated).not.toHaveBeenCalled();
+  });
+
+  it("crm-service unreadable = 502 stated_not_to_brand_unreadable, nothing sent", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]))
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([]));
+    mockReadStated.mockRejectedValue(new Error("crm-service POST /internal/people/stated-not-to-brand failed: 503"));
+
+    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({ code: "stated_not_to_brand_unreadable", status: 502 });
+    expect(mockReplyToEmail).not.toHaveBeenCalled();
   });
 });
 

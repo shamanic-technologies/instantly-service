@@ -21,6 +21,7 @@ import {
   type FollowUpThread,
 } from "../lib/follow-up-send";
 import { findNotAProspect, notAProspectRefusal } from "../lib/not-a-prospect";
+import { findStatedNotToBrand, statedNotToBrandRefusal } from "../lib/stated-not-to-brand";
 import { findStandingOptOut, optOutRefusal } from "../lib/lead-optouts";
 import { emailNotVerifiedRefusal, gateAddressForSend } from "../lib/email-verification-gate";
 import { resolveTransportForNewSequence } from "../lib/self-send/capability";
@@ -356,6 +357,40 @@ router.post("/", async (req: Request, res: Response) => {
       if (notAProspect) {
         const refusal = notAProspectRefusal(body.to, notAProspect);
         console.warn(`[send] Refused — ${refusal.details}`);
+        return res.status(409).json(refusal);
+      }
+
+      // 3c-bis. STATED NOT TO THE BRAND — the brand's user stated in crm-service
+      //     that this person is not someone of the brand (DUALIST-WA-SILENCE-EMAIL).
+      //     Never lapses; undoing the statement lifts it. Placed AFTER the
+      //     opt-out and not-a-prospect gates so a person carrying those keeps
+      //     the exact answer they had. crm-service unreadable = 502, nothing
+      //     sent (an unreadable statement is not "none"). See
+      //     src/lib/stated-not-to-brand.ts.
+      let statedNotToBrand;
+      try {
+        statedNotToBrand = await findStatedNotToBrand(orgId, body.to, brandIds, sendRunId);
+      } catch (error: unknown) {
+        const message = messageOf(error);
+        console.error(`[send] Refused — cannot read whether ${body.to} was stated not to brand(s) ${brandIds.join(",")}: ${message}`);
+        return res.status(502).json({
+          error: "Could not read whether the brand stated this person is not theirs",
+          code: "stated_not_to_brand_unreadable",
+          details: `${message}. No email was sent and nothing was billed.`,
+        });
+      }
+      if (statedNotToBrand) {
+        const refusal = statedNotToBrandRefusal(body.to, statedNotToBrand);
+        console.warn(`[send] Refused — ${refusal.details}`);
+        traceEvent(
+          res.locals.runId as string,
+          {
+            service: "instantly-service",
+            event: "send-refused-stated-not-to-brand",
+            detail: `to=${body.to}, brandId=${statedNotToBrand.brandId ?? "-"}, correctionId=${statedNotToBrand.correctionId ?? "-"}`,
+          },
+          req.headers,
+        ).catch(() => {});
         return res.status(409).json(refusal);
       }
 

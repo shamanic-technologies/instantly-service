@@ -111,6 +111,14 @@ vi.mock("../../src/lib/lead-optouts", async (importOriginal) => ({
   findStandingOptOut: (...a: unknown[]) => mockFindStandingOptOut(...a),
 }));
 
+// DUALIST-WA-SILENCE-EMAIL: crm-service's "stated not to the brand" read. Nobody
+// is stated unless a test says otherwise.
+const mockReadStated = vi.hoisted(() => vi.fn());
+vi.mock("../../src/lib/crm-client", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  readStatedNotToBrand: (...a: unknown[]) => mockReadStated(...a) ?? Promise.resolve(new Map()),
+}));
+
 // The brand signature lookup has its own tests (brand-email-signature.test.ts).
 // Here no brand states one (our default) unless a test says otherwise; the
 // conflict error class stays real.
@@ -3133,6 +3141,108 @@ describe("POST /send — a person who asked us to stop", () => {
 
     expect(res.status).toBe(500);
     expect(mockCreateCampaign).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /send — a person the brand stated is not theirs (DUALIST-WA-SILENCE-EMAIL)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockReadStated.mockResolvedValue(new Map());
+    mockFindStandingOptOut.mockResolvedValue(null);
+    mockGateAddressForSend.mockResolvedValue(VALID_DECISION);
+    mockResolveInstantlyApiKey.mockResolvedValue({ key: "test-instantly-key", keySource: "platform" });
+    mockDbExecute.mockResolvedValue({ rows: [] });
+    mockCreateRun.mockResolvedValue({ id: "step-run-1" });
+    mockAddLeads.mockResolvedValue({ added: 1 });
+    mockListAccounts.mockResolvedValue([
+      acct({ email: "sender@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+    ]);
+    mockUpdateCampaign.mockResolvedValue({ id: "inst-camp-new", email_list: [], bcc_list: [], not_sending_status: null, status: "active" });
+    mockCreateCampaign.mockResolvedValue({ id: "inst-camp-new", status: "draft" });
+    mockGetCampaign.mockResolvedValue({ email_list: ["sender@example.com"], not_sending_status: null });
+    mockUpdateCampaignStatus.mockResolvedValue({});
+    mockDbWhere.mockResolvedValue([]);
+    mockDbReturning.mockResolvedValue([{ id: "row-1" }]);
+  });
+
+  it("refuses 409 stated_not_to_brand — nothing reserved, verified, billed or sent", async () => {
+    mockReadStated.mockResolvedValue(new Map([["test@example.com", { brandId: "brand-1", correctionId: "corr-1" }]]));
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send({ ...validBody, to: "Test@Example.com" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("stated_not_to_brand");
+    expect(res.body.brandId).toBe("brand-1");
+    expect(res.body.correctionId).toBe("corr-1");
+    // Asked for this org, the send's brands, the address as normalised, on the send's run.
+    expect(mockReadStated).toHaveBeenCalledWith({
+      orgId: "org-1",
+      brandIds: ["brand-1"],
+      emails: ["test@example.com"],
+      runId: "run-1",
+    });
+    expect(mockGateAddressForSend).not.toHaveBeenCalled();
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(mockAddLeads).not.toHaveBeenCalled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("lets an unstated person through, exactly as before", async () => {
+    mockNewCampaignFlow();
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockReadStated).toHaveBeenCalledTimes(1);
+  });
+
+  it("an opted-out person who is ALSO stated keeps the opt-out answer (gate runs after it)", async () => {
+    mockFindStandingOptOut.mockResolvedValue({
+      id: "optout-1",
+      orgId: "org-1",
+      email: "test@example.com",
+      channel: "email_reply" as const,
+      statedBy: "reply-classifier",
+      notes: null,
+      statedAt: new Date("2026-08-01T10:00:00.000Z"),
+      withdrawnAt: null,
+      withdrawnBy: null,
+    });
+    mockReadStated.mockResolvedValue(new Map([["test@example.com", { brandId: "brand-1", correctionId: "corr-1" }]]));
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("lead_opted_out");
+    expect(mockReadStated).not.toHaveBeenCalled();
+  });
+
+  it("crm-service 5xx = 502, nothing sent (an unreadable statement is not 'none')", async () => {
+    mockReadStated.mockRejectedValue(new Error("crm-service POST /internal/people/stated-not-to-brand failed: 503 - down"));
+
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe("stated_not_to_brand_unreadable");
+    expect(mockGateAddressForSend).not.toHaveBeenCalled();
+    expect(mockCreateCampaign).not.toHaveBeenCalled();
+    expect(mockAddLeads).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("a send with no brand asks nothing and is not refused for it", async () => {
+    mockNewCampaignFlow();
+    const { "x-brand-id": _omit, ...noBrand } = identityHeadersObj;
+
+    const app = await createSendApp();
+    await request(app).post("/send").set(noBrand).send(validBody);
+
+    expect(mockReadStated).not.toHaveBeenCalled();
   });
 });
 

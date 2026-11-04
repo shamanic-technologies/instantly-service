@@ -63,6 +63,7 @@ import {
 import { dispatchScheduledReplies } from "../scheduled-replies-worker";
 import { stopQueuedSequencesOfStoppedCampaigns } from "../stopped-campaigns";
 import { stopQueuedSequencesOfBookedPeople } from "../booked-stops-cold";
+import { stopQueuedSequencesOfStatedPeople } from "../stated-not-to-brand";
 import { healQueuedSequenceTimezones } from "../queued-sequence-timezone";
 import { verifyQueuedSequences } from "../queued-verification";
 import { fetchPlacementByProvider } from "../provider-placement-read";
@@ -927,11 +928,15 @@ async function runDispatchExclusive(
   // transport: ask lead-service's ledger and stop their queued sequences. Fails LOUD — an
   // unreadable ledger is not "nobody booked", so the run sends nothing.
   const { notYetStopped: bookedLeft } = await stopQueuedSequencesOfBookedPeople(CALLER);
+  // A person the brand's team stated is not someone of the brand gets no more email from it
+  // (DUALIST-WA-SILENCE-EMAIL): ask crm-service per (org, brand) and stop their queued
+  // sequences. A pair crm-service cannot answer is HELD this tick, never sent on a guess.
+  const { notYetStopped: statedLeft } = await stopQueuedSequencesOfStatedPeople(CALLER);
   // No email leaves for an address without a verdict from our verifier: a queued
   // sequence with no accepted verdict is verified now (refused = stopped and
   // refunded; no verdict = held). Fails LOUD on an unreadable queue.
   const { notCleared: unverifiedLeft } = await verifyQueuedSequences(CALLER);
-  const notYetStopped = new Set<string>([...stoppedCampaignLeft, ...bookedLeft, ...unverifiedLeft]);
+  const notYetStopped = new Set<string>([...stoppedCampaignLeft, ...bookedLeft, ...statedLeft, ...unverifiedLeft]);
 
   // Which prospect domains Microsoft hosts (MX), read for the queued first
   // emails that have no fresh reading, BEFORE selection: such a prospect is
