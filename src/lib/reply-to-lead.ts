@@ -53,6 +53,7 @@ import { db } from "../db";
 import { smtpDispatchRaw } from "../db/schema";
 import { agencyInbox } from "./agency-inbox";
 import { HumanTookOverError, ReplyToLeadError } from "./reply-to-lead-error";
+import { findStatedNotToBrand } from "./stated-not-to-brand";
 import {
   describeAttachment,
   resolveReplyAttachments,
@@ -292,6 +293,13 @@ export interface CampaignRow {
    */
   brandId: string | null;
   /**
+   * EVERY brand this sequence was sent for (`brandId` is the first of them).
+   * What the "stated not to the brand" gate asks crm-service about.
+   * Optional: rows built elsewhere (tests, other readers) may not carry it, and
+   * the gate then falls back to `brandId`.
+   */
+  brandIds?: string[];
+  /**
    * The signature block this thread was sent with (migration 0073): the
    * client's own, pinned at send. Null = our default, built from the account.
    */
@@ -335,6 +343,7 @@ export async function loadCampaignSequences(
       c.send_transport        AS "sendTransport",
       c.timezone              AS "timezone",
       c.brand_ids[1]          AS "brandId",
+      to_jsonb(c.brand_ids)   AS "brandIds",
       c.signature_html        AS "signatureHtml",
       c.created_at            AS "createdAt"
     FROM instantly_campaigns c
@@ -369,6 +378,7 @@ export async function loadCampaignSequences(
       row.brandId === null || row.brandId === undefined
         ? null
         : String(row.brandId),
+    brandIds: Array.isArray(row.brandIds) ? (row.brandIds as unknown[]).map(String) : [],
     signatureHtml:
       row.signatureHtml === null || row.signatureHtml === undefined
         ? null
@@ -1082,6 +1092,37 @@ export async function replyToLead(
         "handed_over",
         409,
         `The thread with ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} was handed to a person (${handedTo.handedTo ?? "hand-over in progress"}) at ${handedTo.at}; the automated responder does not write on it again`,
+      );
+    }
+  }
+
+  // ⚠️ NO AUTOMATED EMAIL TO A PERSON THE BRAND STATED IS NOT THEIRS
+  // (DUALIST-WA-SILENCE-EMAIL, owner 2026-11-04). The responder, the hand-over
+  // and the not-a-prospect reassurance are all `automation`; a person of the
+  // brand typing a reply (`human`) is never refused for it. After the takeover
+  // and hand-over gates so their answers (and the route's side effects on them)
+  // are unchanged. crm-service unreadable = nothing sent (lib/stated-not-to-brand).
+  if (input.sentBy === "automation") {
+    const brandIds = campaign.brandIds && campaign.brandIds.length > 0
+      ? campaign.brandIds
+      : campaign.brandId
+        ? [campaign.brandId]
+        : [];
+    let stated;
+    try {
+      stated = await findStatedNotToBrand(input.orgId, campaign.leadEmail, brandIds);
+    } catch (error: unknown) {
+      throw new ReplyToLeadError(
+        "stated_not_to_brand_unreadable",
+        502,
+        `Could not read whether the brand stated ${campaign.leadEmail} is not theirs (${errorMessage(error)}); nothing was sent`,
+      );
+    }
+    if (stated) {
+      throw new ReplyToLeadError(
+        "stated_not_to_brand",
+        409,
+        `The brand's team stated that ${campaign.leadEmail} is not someone of brand ${stated.brandId ?? "(unnamed)"}${stated.correctionId ? ` (correction ${stated.correctionId})` : ""}; no automated reply is sent to them until that is undone`,
       );
     }
   }
