@@ -3363,6 +3363,20 @@ registry.registerPath({
   responses: { 200: { description: "{decisions, nextAfter, hasMore}" }, 400: { description: "Invalid query" } },
 });
 
+for (const [outcome, what] of [
+  ["message_queued", "the step rows a written sequence becomes on `POST /orgs/send` (thread subject + rows). Material: `callerSubject`, `sequence[]` {step, bodyHtml, daysSinceLastStep}, `followUpThread` {instantlyCampaignId, accountEmail, subject, reason} | null, `sendingAccountEmail`, `transport`. Answer: {followUpOf, threadSubject, steps[] {step, subject, bodyHtml, delayDays}}. One decision per enrolled sequence, run task `queue-decision`."],
+  ["reply_received", "what each new message in one poll batch of one mailbox IS. Material: `accountEmail`, `staffAddresses`, `staffDomains`, `ownMailDomains`, `knownSends[]` {messageId, instantlyCampaignId, leadEmail, step} (the sends the batch can reach), `messages[]` {messageId, headers (lowercased names), body (a DSN's text+html, else \"\"), from, subject, senderOurSide?}. Answer: {decisions[] {messageId, kind, referencedMessageIds, correlation {outcome matched|ambiguous|none, ...}, mailtoUnsubscribe[], orphanCandidate}}. One decision per poll batch with new messages, run task `inbound-decision`."],
+] as const) {
+  registry.registerPath({
+    method: "get",
+    path: `/internal/script-decisions/${outcome}/recorded`,
+    summary: `Each ${outcome} decision on the live path, with its material and both answers (service key)`,
+    description: `MIGRATE-1105 (${outcome}): ${what} Oldest first by \`seq\`, 60 s settle, kept 14 days. \`path\` = service (ours, no script asked: no switch row), shadow (ours used, the script asked beside it) or script (the script's used). \`ours\` / \`script\` = both answers in the same words, \`same\` = identical (key order aside). Read by workflow-service's case recorder. \`GET /internal/script-decisions/${outcome}/proof\` = decisions same vs different per path.`,
+    request: { query: z.object({ after: z.string().optional(), limit: z.string().optional().describe("1..100, default 20") }) },
+    responses: { 200: { description: "{decisions, nextAfter, hasMore}" }, 400: { description: "Invalid query" } },
+  });
+}
+
 registry.registerPath({
   method: "get",
   path: "/internal/reply-qualifications/recorded",
