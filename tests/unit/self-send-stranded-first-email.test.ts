@@ -170,3 +170,61 @@ describe("a first email its mailbox cannot send is moved to a production mailbox
     expect(out.rehomed).toBe(0);
   });
 });
+
+describe("a thread continuation never changes sender because its mailbox is full (REPLY-SAME-THREAD-1105)", () => {
+  // James Barnett, 2026-11-05: the follow-up answering his reply (metadata.followUpOf)
+  // was moved off kevin.lourd@hellodistribute.com, full that hour, to another
+  // domain: a "Re:" from an address he never wrote to.
+  const threadMailbox = "kevin.lourd@hellodistribute.com";
+  const adopter = "kevin.lourd@marketingagency.group";
+  const continuation = seq({
+    instantlyCampaignId: "self:reply",
+    leadEmail: "james@jcurve.com",
+    accountEmail: threadMailbox,
+    provisionedSteps: [1],
+    stepDelays: [null],
+    queuedAt: new Date(NOW.getTime() - DAY),
+    continuesThread: true,
+    addressProven: true,
+  });
+  const capacities = [
+    cap({ accountEmail: threadMailbox, cap: 50, sentToday: 50, adoptsFirstEmails: true }),
+    cap({ accountEmail: adopter, cap: 50, sentToday: 0, adoptsFirstEmails: true }),
+  ];
+
+  it("waits on its own full mailbox instead of moving", () => {
+    const out = selectDueSteps([continuation], capacities, NOW);
+    expect(out.selected).toEqual([]);
+    expect(out.rehomed).toBe(0);
+  });
+
+  it("CONTROL: the same sequence opening a thread IS moved", () => {
+    const out = selectDueSteps([{ ...continuation, continuesThread: false }], capacities, NOW);
+    expect(out.selected.map((s) => [s.accountEmail, s.rehomedFrom, s.rehomeReason])).toEqual([
+      [adopter, threadMailbox, "first_email_stranded"],
+    ]);
+  });
+
+  it("goes out first on its mailbox, ahead of older cold steps", () => {
+    const cold = seq({
+      instantlyCampaignId: "cold-old",
+      accountEmail: threadMailbox,
+      queuedAt: new Date(NOW.getTime() - 20 * DAY),
+    });
+    const out = selectDueSteps(
+      [cold, continuation],
+      [cap({ accountEmail: threadMailbox, cap: 50, sentToday: 49, adoptsFirstEmails: true })],
+      NOW,
+    );
+    expect(out.selected.map((s) => [s.instantlyCampaignId, s.accountEmail])).toEqual([
+      ["self:reply", threadMailbox],
+    ]);
+  });
+
+  it("still moves when its mailbox cannot send at all (silenced), as a follow-up", () => {
+    const out = selectDueSteps([continuation], capacities, NOW, new Set([threadMailbox]));
+    expect(out.selected.map((s) => [s.accountEmail, s.rehomeReason])).toEqual([
+      [adopter, "follow_up_mailbox_cannot_send"],
+    ]);
+  });
+});

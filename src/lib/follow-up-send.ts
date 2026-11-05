@@ -40,7 +40,10 @@ export interface FollowUpThread {
   instantlyCampaignId: string;
   /** The mailbox that wrote to the person in it. */
   accountEmail: string | null;
-  /** Its first email's subject (null = we never stored one: no thread). */
+  /**
+   * The thread's subject: the one the person wrote under LAST when we read
+   * their reply, else our first email's (null = we never stored one: no thread).
+   */
   subject: string | null;
   /**
    * Why this thread: `their_last_reply` = the person wrote in it last;
@@ -62,6 +65,12 @@ export interface FollowUpThreadCandidate {
   lastReplyAt: Date | null;
   /** The mailbox that reply reached (null = unknown: the sequence's own). */
   replyAccountEmail: string | null;
+  /**
+   * The subject of the person's latest reply in it, as they sent it (null =
+   * not read by us, e.g. an Instantly webhook reply). Their reply may sit in a
+   * thread a staff member started by hand, not under our first email's subject.
+   */
+  replySubject?: string | null;
 }
 
 function rowsOf<T>(result: unknown): T[] {
@@ -122,13 +131,18 @@ export function pickFollowUpThread(
         ? candidates.reduce((a, b) => (time(b.lastSentAt) > time(a.lastSentAt) ? b : a))
         : null;
   if (!pick) return null;
-  const subject =
-    typeof pick.subject === "string" && pick.subject.trim() !== "" ? pick.subject : null;
+  const usable = (v: string | null | undefined): string | null =>
+    typeof v === "string" && v.trim() !== "" ? v : null;
+  const subject = usable(pick.subject);
+  // The thread they wrote in last is the one their REPLY carries (REPLY-SAME-THREAD-1105:
+  // James Barnett answered in "Re: JCurve Solutions <> Distribute.you", a thread
+  // Kevin started by hand; our answer went out as "Re: Launching Jcurve's first
+  // campaign", a thread he never saw).
   return replied.length > 0
     ? {
         instantlyCampaignId: pick.instantlyCampaignId,
         accountEmail: pick.replyAccountEmail ?? pick.accountEmail ?? null,
-        subject,
+        subject: usable(pick.replySubject) ?? subject,
         reason: "their_last_reply",
       }
     : {
@@ -168,7 +182,12 @@ export async function findFollowUpThread(
              WHERE s.instantly_campaign_id = c.instantly_campaign_id AND s.step = 1) AS "subject",
            sent.last_sent AS "lastSentAt",
            reply.last_reply AS "lastReplyAt",
-           reply.account_email AS "replyAccountEmail"
+           reply.account_email AS "replyAccountEmail",
+           (SELECT r.subject FROM imap_messages_raw r
+             WHERE r.instantly_campaign_id = c.instantly_campaign_id
+               AND r.kind = 'reply'
+             ORDER BY COALESCE(r.received_at, r.polled_at) DESC
+             LIMIT 1) AS "replySubject"
     FROM instantly_campaigns c
     JOIN LATERAL (
       SELECT MAX(e.timestamp) AS last_sent
@@ -205,6 +224,7 @@ export async function findFollowUpThread(
           typeof row.replyAccountEmail === "string" && row.replyAccountEmail.trim() !== ""
             ? row.replyAccountEmail
             : null,
+        replySubject: typeof row.replySubject === "string" ? row.replySubject : null,
       },
     ];
   });

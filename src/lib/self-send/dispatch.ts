@@ -94,6 +94,38 @@ export interface PendingSequence {
    * a real reply after it. Null / absent / past = no hold.
    */
   awayUntil?: Date | null;
+  /**
+   * The sequence CONTINUES an earlier thread with the person (a follow-up,
+   * `metadata.followUpOf`, src/lib/follow-up-send.ts): its step 1 is a `Re:`
+   * in a conversation that already exists, from the mailbox that holds it.
+   * So it is never a FIRST email for the queue (REPLY-SAME-THREAD-1105):
+   * a full mailbox makes it wait (it goes out first there, see
+   * `isThreadReplyOwed`), never hands it to another sender. James Barnett
+   * 2026-11-05: the answer to his reply left from an address he never wrote
+   * to because the thread's mailbox was full that hour. It still moves when
+   * its mailbox cannot send it at all, like any follow-up.
+   */
+  continuesThread?: boolean;
+}
+
+/**
+ * The sequence's next email OPENS a thread: nothing of it went out and it does
+ * not continue an earlier conversation. Only such an email may be moved to
+ * another mailbox because its own is full, blocklisted for new prospects, or
+ * not Inbox at the prospect's provider.
+ */
+export function opensThread(sequence: PendingSequence): boolean {
+  return sequence.lastSentStep === null && sequence.continuesThread !== true;
+}
+
+/**
+ * The first email of a thread continuation, not sent yet: a `Re:` the brand
+ * decided to write NOW in a live conversation. It goes out ahead of other due
+ * steps on its mailbox (after answers owed to a fresh action), since it may not
+ * take another mailbox's room.
+ */
+export function isThreadReplyOwed(sequence: PendingSequence): boolean {
+  return sequence.continuesThread === true && sequence.lastSentStep === null;
 }
 
 /** The first email of a sequence that answers a person: owed now, like a reply. */
@@ -499,6 +531,10 @@ export function selectDueSteps(
     const sequence = sequenceByCampaign.get(step.instantlyCampaignId);
     return sequence !== undefined && isAnswerOwed(sequence);
   };
+  const threadReplyOwed = (step: DueStep): boolean => {
+    const sequence = sequenceByCampaign.get(step.instantlyCampaignId);
+    return sequence !== undefined && isThreadReplyOwed(sequence);
+  };
 
   const due = sequences
     // A step due by cadence still waits for its prospect's business hours. The
@@ -529,6 +565,7 @@ export function selectDueSteps(
         // decays in minutes, and a busy mailbox must not spend its room on
         // overdue cold steps ahead of them.
         Number(answerOwed(b)) - Number(answerOwed(a)) ||
+        Number(threadReplyOwed(b)) - Number(threadReplyOwed(a)) ||
         a.dueAt.getTime() - b.dueAt.getTime() ||
         a.instantlyCampaignId.localeCompare(b.instantlyCampaignId),
     );
@@ -541,7 +578,15 @@ export function selectDueSteps(
   let blockedNoCapacityRow = 0;
   let skippedSilenced = 0;
 
+  // Opens a thread: the only step a FULL (or first-email-refusing) mailbox
+  // hands to another sender. A thread continuation is a follow-up here.
   const isFirstEmail = (step: DueStep): boolean => {
+    const sequence = sequenceByCampaign.get(step.instantlyCampaignId);
+    return sequence !== undefined && opensThread(sequence);
+  };
+  // Nothing of the sequence has left yet (a thread continuation included):
+  // with no capacity row its mailbox is gone, and nobody else cancels it.
+  const nothingSent = (step: DueStep): boolean => {
     const sequence = sequenceByCampaign.get(step.instantlyCampaignId);
     return sequence !== undefined && sequence.lastSentStep === null;
   };
@@ -578,7 +623,7 @@ export function selectDueSteps(
     const provider = sequence?.recipientProvider;
     if (sequence === undefined || provider === undefined || provider === null) return false;
     const placement = placementOf.get(accountEmail)?.[provider];
-    if (sequence.lastSentStep !== null) return !mayWriteFollowUp(placement);
+    if (!opensThread(sequence)) return !mayWriteFollowUp(placement);
     return !mayWriteFirstEmail(placement, coldStartOf.get(provider) ?? true);
   };
 
@@ -590,7 +635,7 @@ export function selectDueSteps(
     // longer have = its follow-ups are cancelled, by the worker, before this).
     if (mailbox === undefined) {
       blockedNoCapacityRow += 1;
-      if (isFirstEmail(step)) stranded.push(step);
+      if (nothingSent(step)) stranded.push(step);
       continue;
     }
 

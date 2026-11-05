@@ -197,7 +197,8 @@ async function loadPendingSequences(
         MAX(sc.updated_at) FILTER (WHERE sc.status = 'actual') AS last_sent_at,
         MIN(c.timezone) AS timezone,
         MIN(c.created_at) AS queued_at,
-        COALESCE(bool_or(c.metadata->>'answersPerson' = 'true'), false) AS answers_person
+        COALESCE(bool_or(c.metadata->>'answersPerson' = 'true'), false) AS answers_person,
+        COALESCE(bool_or(c.metadata->>'followUpOf' IS NOT NULL), false) AS continues_thread
       FROM sequence_costs sc
       JOIN instantly_campaigns c
         ON c.instantly_campaign_id = sc.instantly_campaign_id
@@ -219,6 +220,7 @@ async function loadPendingSequences(
       p.timezone              AS "timezone",
       p.queued_at             AS "queuedAt",
       p.answers_person        AS "answersPerson",
+      p.continues_thread      AS "continuesThread",
       -- Microsoft hosts the prospect's mail (MX, lib/recipient-mail-host.ts): the
       -- first email then goes only from a mailbox Microsoft puts in Inbox.
       (
@@ -298,6 +300,9 @@ async function loadPendingSequences(
     // A sequence answering a person's own action (`answer-now.ts`): its first
     // email is owed now, like a reply.
     answersPerson: row.answersPerson === true,
+    // A follow-up continuing an earlier thread (metadata.followUpOf): never a
+    // first email for the queue, so never moved off its mailbox for want of room.
+    continuesThread: row.continuesThread === true,
     verdict: typeof row.verdict === "string" ? row.verdict : null,
     addressProven: row.addressProven === true,
     recipientProvider: recipientProviderOf(row.recipientMailHost),
@@ -758,11 +763,25 @@ async function loadStepContent(
           JOIN instantly_campaigns c ON c.instantly_campaign_id = chain.id
           WHERE c.metadata->>'followUpOf' IS NOT NULL AND chain.depth < 50
         )
-        SELECT jsonb_agg(d.message_id ORDER BY d.dispatched_at)
-        FROM smtp_dispatch_raw d
-        WHERE d.instantly_campaign_id IN (SELECT id FROM chain)
-          AND d.outcome = 'sent'
-          AND d.message_id IS NOT NULL
+        -- The thread holds THEIR messages too (REPLY-SAME-THREAD-1105): the
+        -- person's reply filed on the chain, and a staff hand reply in it, so
+        -- our next email goes In-Reply-To the message they wrote LAST, in the
+        -- thread they wrote in (their reply may sit in a thread a staff
+        -- member started by hand, not in ours). Autoreplies are not them.
+        SELECT jsonb_agg(m.message_id ORDER BY m.at, m.message_id)
+        FROM (
+          SELECT d.message_id, d.dispatched_at AS at
+          FROM smtp_dispatch_raw d
+          WHERE d.instantly_campaign_id IN (SELECT id FROM chain)
+            AND d.outcome = 'sent'
+            AND d.message_id IS NOT NULL
+          UNION
+          SELECT r.message_id, COALESCE(r.received_at, r.polled_at) AS at
+          FROM imap_messages_raw r
+          WHERE r.instantly_campaign_id IN (SELECT id FROM chain)
+            AND r.kind IN ('reply', 'staff_reply')
+            AND r.message_id IS NOT NULL
+        ) m
       ), '[]'::jsonb) AS "priorMessageIds"
   `);
 
