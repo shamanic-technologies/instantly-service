@@ -2382,6 +2382,264 @@
           "code"
         ]
       },
+      "LeadConversationIndexResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "conversation": {
+            "$ref": "#/components/schemas/LeadConversationIndex"
+          }
+        },
+        "required": [
+          "success",
+          "conversation"
+        ]
+      },
+      "LeadConversationIndex": {
+        "type": "object",
+        "properties": {
+          "campaignId": {
+            "type": "string",
+            "description": "The campaign id asked for, unchanged. When none was named: the campaign the prospect wrote in LAST (`threads[0]`), else the one with the newest message."
+          },
+          "campaignIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every stored campaign row of this campaign holding this lead, oldest first. campaign-service keeps an ancestor row per workflow change, so one campaign is routinely many rows and a prospect emailed over months sits in several — the exchange spans all of them."
+          },
+          "instantlyCampaignId": {
+            "type": "string",
+            "description": "The asked row's sequence id; each message carries the row it came from"
+          },
+          "leadEmail": {
+            "type": "string",
+            "description": "The stored casing, which may differ from the one asked for"
+          },
+          "accountEmail": {
+            "type": "string",
+            "nullable": true,
+            "description": "The asked row's mailbox; null on a row predating the account persist"
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "instantly",
+              "smtp"
+            ],
+            "description": "The asked row's pipe — the caller does not need to know this to ask"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mirror",
+              "self_send",
+              "provider"
+            ],
+            "description": "Where the ASKED row's messages were read from; `sequences` says it per row."
+          },
+          "messageCount": {
+            "type": "integer"
+          },
+          "sequences": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationSequence"
+            },
+            "description": "What each contributing row carried, oldest first"
+          },
+          "threads": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationThread"
+            },
+            "description": "ONLY when `campaign_id` was omitted: every campaign of this org holding the prospect (the population POST /orgs/replies resolves a thread from), the one they wrote in LAST first, then by newest message. Absent on a named read."
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "newest_first"
+            ]
+          },
+          "inboundCount": {
+            "type": "integer",
+            "description": "Messages the prospect wrote"
+          },
+          "outboundCount": {
+            "type": "integer",
+            "description": "Messages we sent"
+          },
+          "lastMessageAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Newest message, either direction. Null when none is dated."
+          },
+          "lastInboundAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Newest message the prospect wrote. Null when they never wrote."
+          },
+          "lastOutboundAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Newest message we sent. Null when we sent none."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationIndexEntry"
+            },
+            "description": "EVERY message of the conversation, short, NEWEST FIRST (undated ones last)."
+          }
+        },
+        "required": [
+          "campaignId",
+          "campaignIds",
+          "instantlyCampaignId",
+          "leadEmail",
+          "accountEmail",
+          "transport",
+          "source",
+          "messageCount",
+          "sequences",
+          "order",
+          "inboundCount",
+          "outboundCount",
+          "lastMessageAt",
+          "lastInboundAt",
+          "lastOutboundAt",
+          "messages"
+        ]
+      },
+      "ConversationIndexEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "This message's id: pass it to GET /orgs/conversations/messages to read it in full. Derived from the message itself, so it is the same on every read."
+          },
+          "at": {
+            "type": "string",
+            "description": "ISO 8601 UTC. Empty only when the source carried no timestamp."
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "inbound",
+              "outbound"
+            ],
+            "description": "inbound: the prospect wrote it. outbound: we did."
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "preview": {
+            "type": "string",
+            "description": "The message's own words on one line (quoted history cut), at most 140 characters."
+          },
+          "chars": {
+            "type": "integer",
+            "description": "Length of the full text, in characters"
+          },
+          "campaignId": {
+            "type": "string",
+            "description": "The stored campaign row this message was exchanged under"
+          },
+          "hasAttachments": {
+            "type": "boolean",
+            "description": "True when this answer of ours carried offer documents as files"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "direction",
+          "from",
+          "to",
+          "subject",
+          "preview",
+          "chars",
+          "campaignId",
+          "hasAttachments"
+        ]
+      },
+      "LeadConversationMessagesResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "campaignId": {
+            "type": "string"
+          },
+          "leadEmail": {
+            "type": "string"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ConversationMessage"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "success",
+          "campaignId",
+          "leadEmail",
+          "messages"
+        ]
+      },
+      "LeadConversationMessagesError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "missingIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "error",
+          "code"
+        ]
+      },
       "LeadSendingScheduleResponse": {
         "type": "object",
         "properties": {
@@ -10358,6 +10616,307 @@
           },
           "502": {
             "description": "The sequence exists but its thread could not be read (`thread_unavailable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadConversationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/conversations/index": {
+      "get": {
+        "summary": "List every message of a conversation with a lead, short, newest first",
+        "description": "Step 1 of reading a long conversation (an LLM agent with a size-capped tool). Same lookup, same query and same refusals as GET /orgs/conversations, but each message is a short line: `id`, when, direction, from/to, subject, a one-line `preview` and its length. NEWEST FIRST, so a reader that truncates only ever loses the oldest messages, never the latest answers. Read any message in full with GET /orgs/conversations/messages and its `id`. `inboundCount`, `outboundCount`, `lastInboundAt`, `lastOutboundAt` say at a glance who wrote last. Cost: none.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Logical campaign id — the same key POST /orgs/replies takes. Optional: omit it to read every thread this org holds with the address, whatever campaign wrote to them (the answer then carries `threads`). Named, it is authoritative and the answer is exactly as before."
+            },
+            "required": false,
+            "description": "Logical campaign id — the same key POST /orgs/replies takes. Optional: omit it to read every thread this org holds with the address, whatever campaign wrote to them (the answer then carries `threads`). Named, it is authoritative and the answer is exactly as before.",
+            "name": "campaign_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "email",
+              "description": "The lead whose conversation to read"
+            },
+            "required": true,
+            "description": "The lead whose conversation to read",
+            "name": "email",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every message, short, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadConversationIndexResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query or missing x-user-id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "`campaign_not_found`, as GET /orgs/conversations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadConversationError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`thread_unavailable` and the other refusals of GET /orgs/conversations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadConversationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/conversations/messages": {
+      "get": {
+        "summary": "Read one or several messages of a conversation in full, by id",
+        "description": "Step 2: the messages named in `ids` (from GET /orgs/conversations/index), each in full exactly as GET /orgs/conversations serves it (markup-stripped `text`, attachments) plus its `id`, in the order asked. Any id this conversation does not hold = 404 `message_not_found` naming them in `missingIds`; nothing partial. Cost: none.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Logical campaign id — the same key POST /orgs/replies takes. Optional: omit it to read every thread this org holds with the address, whatever campaign wrote to them (the answer then carries `threads`). Named, it is authoritative and the answer is exactly as before."
+            },
+            "required": false,
+            "description": "Logical campaign id — the same key POST /orgs/replies takes. Optional: omit it to read every thread this org holds with the address, whatever campaign wrote to them (the answer then carries `threads`). Named, it is authoritative and the answer is exactly as before.",
+            "name": "campaign_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "email",
+              "description": "The lead whose conversation to read"
+            },
+            "required": true,
+            "description": "The lead whose conversation to read",
+            "name": "email",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Comma-separated message ids from GET /orgs/conversations/index (`messages[].id`), 1 to 50. Returned in the order asked."
+            },
+            "required": true,
+            "description": "Comma-separated message ids from GET /orgs/conversations/index (`messages[].id`), 1 to 50. Returned in the order asked.",
+            "name": "ids",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The asked messages, in full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadConversationMessagesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query (ids missing or more than 50) or missing x-user-id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "`campaign_not_found`, or `message_not_found` with `missingIds`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadConversationMessagesError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "As GET /orgs/conversations",
             "content": {
               "application/json": {
                 "schema": {
