@@ -98,6 +98,8 @@ export function selectionMaterial(input: {
       ...(s.verdict !== undefined ? { verdict: s.verdict } : {}),
       ...(s.addressProven !== undefined ? { addressProven: s.addressProven } : {}),
       ...(s.recipientProvider !== undefined ? { recipientProvider: s.recipientProvider } : {}),
+      // Present only when true: a material without it reads as before (recorded cases replay unchanged).
+      ...(s.continuesThread === true ? { continuesThread: true } : {}),
     })),
     capacities: input.capacities.map((c) => ({ ...c })),
     skippedMailboxes: [...input.skippedMailboxes].sort(),

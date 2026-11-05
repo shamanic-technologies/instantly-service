@@ -88,3 +88,35 @@ describe("pickFollowUpThread (RIGHT-MOMENT-OR-LATER-1014)", () => {
     expect(pickFollowUpThread([{ ...threadB, subject: "  " }])?.subject).toBeNull();
   });
 });
+
+describe("the thread they wrote in last carries THEIR reply's subject (REPLY-SAME-THREAD-1105)", () => {
+  const base: FollowUpThreadCandidate = {
+    instantlyCampaignId: "self:first",
+    accountEmail: "kevin.lourd@hellodistribute.com",
+    subject: "Launching Jcurve's first campaign",
+    lastSentAt: new Date("2026-11-01T22:48:08Z"),
+    lastReplyAt: new Date("2026-11-03T23:39:48Z"),
+    replyAccountEmail: "kevin.lourd@hellodistribute.com",
+    replySubject: "Re: JCurve Solutions <> Distribute.you",
+  };
+
+  it("answers under the subject the person wrote under, Re: not doubled", () => {
+    const thread = pickFollowUpThread([base]);
+    expect(thread?.subject).toBe("Re: JCurve Solutions <> Distribute.you");
+    expect(threadSubjectFor(thread, "kevin.lourd@hellodistribute.com")).toBe(
+      "Re: JCurve Solutions <> Distribute.you",
+    );
+  });
+
+  it("CONTROL: a reply we never read (no subject) keeps our first email's subject", () => {
+    expect(pickFollowUpThread([{ ...base, replySubject: null }])?.subject).toBe(
+      "Launching Jcurve's first campaign",
+    );
+  });
+
+  it("they never wrote back: our own subject, whatever is stored", () => {
+    expect(
+      pickFollowUpThread([{ ...base, lastReplyAt: null, replySubject: "Re: something" }])?.subject,
+    ).toBe("Launching Jcurve's first campaign");
+  });
+});
