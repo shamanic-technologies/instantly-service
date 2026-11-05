@@ -13255,6 +13255,74 @@
         }
       }
     },
+    "/internal/script-decisions/message_queued/recorded": {
+      "get": {
+        "summary": "Each message_queued decision on the live path, with its material and both answers (service key)",
+        "description": "MIGRATE-1105 (message_queued): the step rows a written sequence becomes on `POST /orgs/send` (thread subject + rows). Material: `callerSubject`, `sequence[]` {step, bodyHtml, daysSinceLastStep}, `followUpThread` {instantlyCampaignId, accountEmail, subject, reason} | null, `sendingAccountEmail`, `transport`. Answer: {followUpOf, threadSubject, steps[] {step, subject, bodyHtml, delayDays}}. One decision per enrolled sequence, run task `queue-decision`. Oldest first by `seq`, 60 s settle, kept 14 days. `path` = service (ours, no script asked: no switch row), shadow (ours used, the script asked beside it) or script (the script's used). `ours` / `script` = both answers in the same words, `same` = identical (key order aside). Read by workflow-service's case recorder. `GET /internal/script-decisions/message_queued/proof` = decisions same vs different per path.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "after",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "1..100, default 20"
+            },
+            "required": false,
+            "description": "1..100, default 20",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{decisions, nextAfter, hasMore}"
+          },
+          "400": {
+            "description": "Invalid query"
+          }
+        }
+      }
+    },
+    "/internal/script-decisions/reply_received/recorded": {
+      "get": {
+        "summary": "Each reply_received decision on the live path, with its material and both answers (service key)",
+        "description": "MIGRATE-1105 (reply_received): what each new message in one poll batch of one mailbox IS. Material: `accountEmail`, `staffAddresses`, `staffDomains`, `ownMailDomains`, `knownSends[]` {messageId, instantlyCampaignId, leadEmail, step} (the sends the batch can reach), `messages[]` {messageId, headers (lowercased names), body (a DSN's text+html, else \"\"), from, subject, senderOurSide?}. Answer: {decisions[] {messageId, kind, referencedMessageIds, correlation {outcome matched|ambiguous|none, ...}, mailtoUnsubscribe[], orphanCandidate}}. One decision per poll batch with new messages, run task `inbound-decision`. Oldest first by `seq`, 60 s settle, kept 14 days. `path` = service (ours, no script asked: no switch row), shadow (ours used, the script asked beside it) or script (the script's used). `ours` / `script` = both answers in the same words, `same` = identical (key order aside). Read by workflow-service's case recorder. `GET /internal/script-decisions/reply_received/proof` = decisions same vs different per path.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "after",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "1..100, default 20"
+            },
+            "required": false,
+            "description": "1..100, default 20",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{decisions, nextAfter, hasMore}"
+          },
+          "400": {
+            "description": "Invalid query"
+          }
+        }
+      }
+    },
     "/internal/reply-qualifications/recorded": {
       "get": {
         "summary": "Every reply judgment with its exact chat-service request and answer (service key, read-only)",

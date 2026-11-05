@@ -729,6 +729,13 @@
       "when": 1794700000000,
       "tag": "0103_seed_opt_out_variant",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1794800000000,
+      "tag": "0104_script_decisions",
+      "breakpoints": true
     }
   ]
 }
