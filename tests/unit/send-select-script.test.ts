@@ -44,6 +44,13 @@ describe("the send selection's material", () => {
     expect(m.sequences[0]!.timezone).toBe("Europe/Paris");
     expect(m.bounceHistory).toEqual({ "m.co": { "24": { sends: 3, bounces: 0 } } });
   });
+
+  it("names a thread continuation only when it is one (recorded cases without it replay unchanged)", () => {
+    const plain = selectionMaterial(input as never) as { sequences: Array<Record<string, unknown>> };
+    expect("continuesThread" in plain.sequences[0]!).toBe(false);
+    const cont = selectionMaterial({ ...input, sequences: [{ ...input.sequences[0]!, continuesThread: true }] } as never) as { sequences: Array<Record<string, unknown>> };
+    expect(cont.sequences[0]!.continuesThread).toBe(true);
+  });
 });
 
 describe("selectionToSend", () => {
