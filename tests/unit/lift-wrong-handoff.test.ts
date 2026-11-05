@@ -1,9 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const mockFindHumanTakeover = vi.fn();
-vi.mock("../../src/lib/human-takeover", () => ({
-  findHumanTakeover: (...a: unknown[]) => mockFindHumanTakeover(...a),
-}));
 const mockFindLead = vi.fn();
 const mockWithdraw = vi.fn();
 vi.mock("../../src/lib/lead-client", () => ({
@@ -21,7 +17,6 @@ const CAMPAIGN = { instantlyCampaignId: "self:abc", campaignId: "camp-1", orgId:
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mockFindHumanTakeover.mockResolvedValue(null);
   mockFindLead.mockResolvedValue({ id: "row-1" });
 });
 
@@ -55,15 +50,14 @@ describe("liftWrongEscalationHandoff", () => {
     expect(await liftWrongEscalationHandoff(CAMPAIGN, "sam@carter.co")).toBe("nothing_to_lift");
   });
 
-  it("NEVER lifts when a person answered on the thread: it is theirs", async () => {
-    mockFindHumanTakeover.mockResolvedValue({ at: "2026-10-13T21:00:00Z", source: "dispatched" });
-    expect(await liftWrongEscalationHandoff(CAMPAIGN, "sam@carter.co")).toBe("person_answered");
-    expect(mockWithdraw).not.toHaveBeenCalled();
+  it("a person's hand reply on the thread does not keep the hand-over (EVERY-REPLY-LEAD-EVENT-1105)", async () => {
+    mockWithdraw.mockResolvedValueOnce(true);
+    expect(await liftWrongEscalationHandoff(CAMPAIGN, "sam@carter.co")).toBe("lifted");
   });
 
   it("does nothing on a platform send (no org or caller campaign)", async () => {
     expect(await liftWrongEscalationHandoff({ ...CAMPAIGN, campaignId: null }, "x@y.z")).toBe("no_lead_row");
-    expect(mockFindHumanTakeover).not.toHaveBeenCalled();
+    expect(mockFindLead).not.toHaveBeenCalled();
   });
 
   it("fails loud when lead-service cannot be told", async () => {

@@ -18,12 +18,26 @@
  * (an Instantly-held sequence) returns null and the classifier judges as
  * before. A DB error throws: a classification without context it should have
  * had is the bug this module exists to fix.
+ *
+ * ⚠️ OUR LAST MESSAGE BEFORE THEIR REPLY COMES FIRST (EVERY-REPLY-LEAD-EVENT-1105).
+ * The prospect answers the last thing we wrote, and that is often not a stored
+ * step: one of our people answered by hand (their own mailbox, the Unibox, a
+ * CC; filed `staff_reply`), or the responder did. Prod 2026-11-03, James
+ * Barnett: the judge was shown our automated first email while James was
+ * answering Kevin's own mail of 2026-11-02. So the conversation is read (both
+ * transports, hand answers included) and every message of ours sent BEFORE the
+ * reply is rendered, newest first. A thread with no message of ours falls back
+ * to the stored steps.
  */
 
 import { sql } from "drizzle-orm";
 
 import { db } from "../../db";
-import { htmlToText } from "../forward-positive-reply";
+import { htmlToText, selectThreadMessages, type ThreadMessage } from "../forward-positive-reply";
+import { fetchMirroredEmailRecords } from "../mirror-emails";
+import { stripQuotedHistory } from "./qualify-reply";
+import { fetchSelfSendThread } from "./thread";
+import { isSelfSendCampaignId } from "./transport";
 
 /** A reply's verdict needs our offer, not our whole sequence verbatim. */
 export const OUR_OUTREACH_MAX_CHARS = 3000;
@@ -44,7 +58,51 @@ export function renderOurOutreach(
   return parts.join("\n\n---\n\n").slice(0, OUR_OUTREACH_MAX_CHARS);
 }
 
-export async function loadOurOutreach(instantlyCampaignId: string): Promise<string | null> {
+/**
+ * Pure: every message of ours sent strictly BEFORE the reply (`replyAt`; null =
+ * every message of ours), NEWEST first, quoted history stripped, as one text
+ * block, capped. Null when none carries words. Entry 0 is the message the reply
+ * answers.
+ */
+export function renderOurLatestEmails(
+  thread: ThreadMessage[],
+  replyAt: Date | string | null | undefined,
+): string | null {
+  const cut = replyAt == null ? null : new Date(replyAt).getTime();
+  const ours = thread
+    .filter((m) => m.direction === "outbound")
+    .filter((m) => {
+      if (cut === null || !Number.isFinite(cut)) return true;
+      const at = Date.parse(m.date);
+      return Number.isFinite(at) && at < cut;
+    })
+    .sort((a, b) => Date.parse(b.date) - Date.parse(a.date))
+    .map((m) => stripQuotedHistory(m.bodyText ?? "").trim())
+    .filter((text) => text.length > 0 && text !== "(no body)");
+  if (ours.length === 0) return null;
+  return ours.join("\n\n---\n\n").slice(0, OUR_OUTREACH_MAX_CHARS);
+}
+
+async function readConversation(instantlyCampaignId: string): Promise<ThreadMessage[]> {
+  return isSelfSendCampaignId(instantlyCampaignId)
+    ? await fetchSelfSendThread(instantlyCampaignId)
+    : selectThreadMessages(await fetchMirroredEmailRecords(instantlyCampaignId));
+}
+
+/**
+ * What we sent them, for the judge: our messages before `replyAt`, newest first
+ * (see above), else the stored steps. `replyAt` absent = every message of ours.
+ */
+export async function loadOurOutreach(
+  instantlyCampaignId: string,
+  replyAt?: Date | string | null,
+): Promise<string | null> {
+  const latest = renderOurLatestEmails(await readConversation(instantlyCampaignId), replyAt);
+  if (latest) return latest;
+  return loadOurSteps(instantlyCampaignId);
+}
+
+async function loadOurSteps(instantlyCampaignId: string): Promise<string | null> {
   const result = await db.execute(sql`
     SELECT s.subject, s.body_html
       FROM sequence_steps s

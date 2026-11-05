@@ -497,7 +497,7 @@ describe("the classifier reads what we sent them", () => {
     });
 
     expect(kind).toBe("lead_meeting_requested");
-    expect(mockLoadOurOutreach).toHaveBeenCalledWith("self:abc");
+    expect(mockLoadOurOutreach).toHaveBeenCalledWith("self:abc", undefined);
     const [{ message, systemPrompt }] = mockPlatformComplete.mock.calls[0];
     expect(message).toBe(
       `Subject: Re: Hiring at Carter & Co this month?\n\nOur email:\n${OUR_EMAIL}\n\nTheir reply:\nHi, yes we are hiring two warehouse operatives in Leeds. A quick call this week?`,

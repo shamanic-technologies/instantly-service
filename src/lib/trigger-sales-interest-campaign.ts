@@ -63,7 +63,14 @@ import {
   type PositiveReplyItem,
 } from "./positive-reply-item";
 import type { ThreadMessage } from "./forward-positive-reply";
-import { REPLY_KIND_CLASSIFICATION, isReplyKind } from "./reply-kind";
+import {
+  AUTOMATED_REPLY_KINDS,
+  NOT_A_PROSPECT_REPLY_KINDS,
+  REPLY_KIND_CLASSIFICATION,
+  STOP_REQUEST_REPLY_KINDS,
+  isReplyKind,
+} from "./reply-kind";
+import { findStandingOptOut } from "./lead-optouts";
 
 /**
  * features-service's trigger for "a prospect answers with interest"
@@ -71,6 +78,38 @@ import { REPLY_KIND_CLASSIFICATION, isReplyKind } from "./reply-kind";
  * refuses a trigger nobody declares (400 `unknown_trigger`).
  */
 export const POSITIVE_REPLY_TRIGGER_ID = "positive_reply_received";
+
+/**
+ * features-service's trigger for "a person wrote to the brand" (any words that
+ * are not a sales interest). The SAME trigger crm-service reports for a reply on
+ * a thread it owns (WhatsApp, a client Gmail): both it and
+ * `positive_reply_received` are "Lead event" members (ONE-AI-CONVERSES-1029),
+ * so the ONE AI hears about every reply and decides write now / later / nothing
+ * (EVERY-REPLY-LEAD-EVENT-1105). Carried VERBATIM.
+ */
+export const MESSAGE_RECEIVED_TRIGGER_ID = "message_received";
+
+/**
+ * True iff this reply kind is a PERSON's words that are not a sales interest and
+ * leave the conversation open, so it is reported as `message_received`.
+ *
+ * Not reported, and only these (nothing is decided here by sentiment: a "not
+ * now", a neutral question, a wrong person, an off-topic note all reach the AI):
+ *  - a sales interest: reported as `positive_reply_received` instead;
+ *  - a request to stop (`STOP_REQUEST_REPLY_KINDS`): the consent ends the
+ *    sequence, exactly as before;
+ *  - a machine answering (`AUTOMATED_REPLY_KINDS`): nobody wrote;
+ *  - not a prospect at all (`NOT_A_PROSPECT_REPLY_KINDS`): every email of the
+ *    brand to them is refused and the apology is already sent.
+ */
+export function isLeadMessageQualification(eventType: string): boolean {
+  if (!isReplyKind(eventType)) return false;
+  if (REPLY_KIND_CLASSIFICATION[eventType] === "positive") return false;
+  if (STOP_REQUEST_REPLY_KINDS.has(eventType)) return false;
+  if ((AUTOMATED_REPLY_KINDS as readonly string[]).includes(eventType)) return false;
+  if ((NOT_A_PROSPECT_REPLY_KINDS as readonly string[]).includes(eventType)) return false;
+  return true;
+}
 
 /**
  * True iff this event says a buyer opened a conversation — i.e. its reply kind is
@@ -94,6 +133,7 @@ export interface SalesInterestTriggerCampaign {
 function logOutcome(
   campaign: SalesInterestTriggerCampaign,
   leadEmail: string,
+  triggerId: string,
   event: RecordedTriggerEvent,
   replayed: boolean,
 ): void {
@@ -101,7 +141,7 @@ function logOutcome(
   const skipped = (event.detail?.skipped ?? []).map((s) => `${s.campaignId}:${s.reason}`).join(", ");
   console.log(
     `[instantly-service] sales-interest-trigger: campaign=${campaign.instantlyCampaignId} ` +
-      `lead=${leadEmail} trigger=${POSITIVE_REPLY_TRIGGER_ID} event=${event.id}${replayed ? " (replayed)" : ""} ` +
+      `lead=${leadEmail} trigger=${triggerId} event=${event.id}${replayed ? " (replayed)" : ""} ` +
       `status=${event.status} outcome=${event.outcome ?? "-"} skip=${event.skipReason ?? "-"} ` +
       `triggered=[${triggered}] skipped=[${skipped}]`,
   );
@@ -170,6 +210,43 @@ export async function triggerSalesInterestLeg(
   leadEmail: string,
   opts: { idempotencyKey?: string } = {},
 ): Promise<ResponderVerdict> {
+  return reportReplyOccurrence(campaign, leadEmail, POSITIVE_REPLY_TRIGGER_ID, opts);
+}
+
+/**
+ * Report a reply the person wrote that is NOT a sales interest, as
+ * `message_received` (EVERY-REPLY-LEAD-EVENT-1105). No-op on any other kind, and
+ * when the person stands opted out for this org (a "please remove me" read out of
+ * a "not interested" reply records the consent just before this runs). Same
+ * scope, item and per-reply key as the positive report: a reply re-judged
+ * positive later replays this occurrence, never a second Lead event. Fully
+ * fail-soft: never throws.
+ */
+export async function maybeTriggerMessageReceived(
+  campaign: SalesInterestTriggerCampaign,
+  leadEmail: string,
+  eventType: string,
+): Promise<ResponderVerdict | undefined> {
+  if (!isLeadMessageQualification(eventType)) return undefined;
+  if (!campaign.orgId) return "unknown";
+  try {
+    if (await findStandingOptOut(campaign.orgId, leadEmail)) return undefined;
+  } catch (error: unknown) {
+    console.warn(
+      `[instantly-service] message-received-trigger: opt-out read failed for campaign=${campaign.instantlyCampaignId} ` +
+        `lead=${leadEmail} — ${describe(error)}; not reported`,
+    );
+    return "unknown";
+  }
+  return reportReplyOccurrence(campaign, leadEmail, MESSAGE_RECEIVED_TRIGGER_ID);
+}
+
+async function reportReplyOccurrence(
+  campaign: SalesInterestTriggerCampaign,
+  leadEmail: string,
+  triggerId: string,
+  opts: { idempotencyKey?: string } = {},
+): Promise<ResponderVerdict> {
   // A platform send belongs to no org and no caller campaign: nobody to ask.
   if (!campaign.orgId) return "unknown";
   if (!campaign.campaignId) return "unknown";
@@ -215,7 +292,7 @@ export async function triggerSalesInterestLeg(
 
     const { event, replayed } = await recordTriggerEvent({
       orgId,
-      triggerId: POSITIVE_REPLY_TRIGGER_ID,
+      triggerId,
       brandId,
       offerId,
       leadId: campaign.leadId ?? null,
@@ -226,7 +303,7 @@ export async function triggerSalesInterestLeg(
       item,
     });
 
-    logOutcome(campaign, leadEmail, event, replayed);
+    logOutcome(campaign, leadEmail, triggerId, event, replayed);
 
     const taking = campaignsTakingEvent(event);
     if (taking.length === 0) return campaignsAsked(event) ? "nobody" : "unknown";

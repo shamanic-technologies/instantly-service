@@ -118,9 +118,8 @@ describe("mapSmtpDispatch — our own dispatcher", () => {
   });
 
   it("MANUAL_REPLY_STEP mirrors its one declaration", () => {
-    // The constant moved into its own module so the human-takeover gate could
-    // read it without importing `reply-to-lead`, which imports the gate. This
-    // pins the declaration at its new home AND that `reply-to-lead` still
+    // The constant lives in its own module so readers can take it without
+    // importing `reply-to-lead`. This pins the declaration at its new home AND that `reply-to-lead` still
     // re-exports it, so every existing importer keeps working.
     const src = readFileSync("src/lib/manual-reply-step.ts", "utf8");
     expect(src).toContain(`export const MANUAL_REPLY_STEP = ${MANUAL_REPLY_STEP};`);

@@ -265,6 +265,7 @@ export async function qualifyOneReply(reply: UnqualifiedReply): Promise<QualifyO
     leadEmail: reply.leadEmail,
     source: "qualification_fallback",
     subject: inbound.subject,
+    replyAt: reply.repliedAt,
   });
   if (kind === null) return { classified: false, reason: "unqualified", bodyText: inbound.text };
 
@@ -337,6 +338,7 @@ async function qualifyOwnMailboxReply(reply: UnqualifiedReply, own: OwnMailboxRe
     leadEmail: reply.leadEmail,
     source: "qualification_fallback",
     subject: own.subject,
+    replyAt: reply.repliedAt,
   });
   if (kind === null) return { classified: false, reason: "unqualified", bodyText: own.text };
 
