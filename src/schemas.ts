@@ -2086,6 +2086,118 @@ registry.registerPath({
   },
 });
 
+export const LeadConversationMessagesQuerySchema = LeadConversationQuerySchema.extend({
+  ids: z
+    .string()
+    .min(1)
+    .transform((v) =>
+      Array.from(new Set(v.split(",").map((x) => x.trim()).filter(Boolean))),
+    )
+    .refine((a) => a.length >= 1 && a.length <= 50, {
+      message: "ids must name 1 to 50 message ids",
+    })
+    .describe(
+      "Comma-separated message ids from GET /orgs/conversations/index (`messages[].id`), 1 to 50. Returned in the order asked.",
+    ),
+}).openapi("LeadConversationMessagesQuery");
+
+const ConversationIndexEntrySchema = z
+  .object({
+    id: z
+      .string()
+      .describe("This message's id: pass it to GET /orgs/conversations/messages to read it in full. Derived from the message itself, so it is the same on every read."),
+    at: z.string().describe("ISO 8601 UTC. Empty only when the source carried no timestamp."),
+    direction: z.enum(["inbound", "outbound"]).describe("inbound: the prospect wrote it. outbound: we did."),
+    from: z.string(),
+    to: z.string(),
+    subject: z.string(),
+    preview: z
+      .string()
+      .describe("The message's own words on one line (quoted history cut), at most 140 characters."),
+    chars: z.number().int().describe("Length of the full text, in characters"),
+    campaignId: z.string().describe("The stored campaign row this message was exchanged under"),
+    hasAttachments: z.boolean().describe("True when this answer of ours carried offer documents as files"),
+  })
+  .openapi("ConversationIndexEntry");
+
+const LeadConversationIndexSchema = LeadConversationSchema.omit({ messages: true })
+  .extend({
+    order: z.literal("newest_first"),
+    inboundCount: z.number().int().describe("Messages the prospect wrote"),
+    outboundCount: z.number().int().describe("Messages we sent"),
+    lastMessageAt: z.string().nullable().describe("Newest message, either direction. Null when none is dated."),
+    lastInboundAt: z.string().nullable().describe("Newest message the prospect wrote. Null when they never wrote."),
+    lastOutboundAt: z.string().nullable().describe("Newest message we sent. Null when we sent none."),
+    messages: z
+      .array(ConversationIndexEntrySchema)
+      .describe("EVERY message of the conversation, short, NEWEST FIRST (undated ones last)."),
+  })
+  .openapi("LeadConversationIndex");
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/conversations/index",
+  summary: "List every message of a conversation with a lead, short, newest first",
+  description:
+    "Step 1 of reading a long conversation (an LLM agent with a size-capped tool). Same lookup, same query and same refusals as GET /orgs/conversations, but each message is a short line: `id`, when, direction, from/to, subject, a one-line `preview` and its length. NEWEST FIRST, so a reader that truncates only ever loses the oldest messages, never the latest answers. Read any message in full with GET /orgs/conversations/messages and its `id`. `inboundCount`, `outboundCount`, `lastInboundAt`, `lastOutboundAt` say at a glance who wrote last. Cost: none.",
+  request: { headers: TrackingHeadersSchema, query: LeadConversationQuerySchema },
+  responses: {
+    200: {
+      description: "Every message, short, newest first",
+      content: {
+        "application/json": {
+          schema: z
+            .object({ success: z.literal(true), conversation: LeadConversationIndexSchema })
+            .openapi("LeadConversationIndexResponse"),
+        },
+      },
+    },
+    400: { description: "Invalid query or missing x-user-id", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    404: { description: "`campaign_not_found`, as GET /orgs/conversations", content: { "application/json": { schema: LeadConversationErrorSchema } } },
+    502: { description: "`thread_unavailable` and the other refusals of GET /orgs/conversations", content: { "application/json": { schema: LeadConversationErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/conversations/messages",
+  summary: "Read one or several messages of a conversation in full, by id",
+  description:
+    "Step 2: the messages named in `ids` (from GET /orgs/conversations/index), each in full exactly as GET /orgs/conversations serves it (markup-stripped `text`, attachments) plus its `id`, in the order asked. Any id this conversation does not hold = 404 `message_not_found` naming them in `missingIds`; nothing partial. Cost: none.",
+  request: { headers: TrackingHeadersSchema, query: LeadConversationMessagesQuerySchema },
+  responses: {
+    200: {
+      description: "The asked messages, in full",
+      content: {
+        "application/json": {
+          schema: z
+            .object({
+              success: z.literal(true),
+              campaignId: z.string(),
+              leadEmail: z.string(),
+              messages: z.array(ConversationMessageSchema.extend({ id: z.string() })),
+            })
+            .openapi("LeadConversationMessagesResponse"),
+        },
+      },
+    },
+    400: { description: "Invalid query (ids missing or more than 50) or missing x-user-id", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    404: {
+      description: "`campaign_not_found`, or `message_not_found` with `missingIds`",
+      content: {
+        "application/json": {
+          schema: z
+            .object({ error: z.string(), code: z.string(), missingIds: z.array(z.string()).optional() })
+            .openapi("LeadConversationMessagesError"),
+        },
+      },
+    },
+    502: { description: "As GET /orgs/conversations", content: { "application/json": { schema: LeadConversationErrorSchema } } },
+  },
+});
+
 export const LeadSendingScheduleQuerySchema = z
   .object({
     email: z
