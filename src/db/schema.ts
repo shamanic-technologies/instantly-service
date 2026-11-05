@@ -829,6 +829,34 @@ export const dispatchSelections = pgTable(
   (table) => [uniqueIndex("dispatch_selections_seq_idx").on(table.seq), index("dispatch_selections_created_idx").on(table.createdAt)],
 );
 
+// MIGRATE-1105: every decision of this service a stored factory Script can take (message_queued, reply_received),
+// either path: its exact material, our answer, the script's when asked, compared. `path` = service (ours, nothing
+// asked), shadow (ours used, the script asked beside it) or script (the script's used). Kept 14 days. Read by
+// GET /internal/script-decisions/<outcome>/recorded (workflow-service's case recorder). Migration 0104.
+export const scriptDecisions = pgTable(
+  "script_decisions",
+  {
+    id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
+    seq: bigserial("seq", { mode: "number" }).notNull(),
+    outcome: text("outcome").notNull(),
+    path: text("path").notNull(),
+    runId: text("run_id"),
+    scriptRunId: text("script_run_id"),
+    scriptSlug: text("script_slug"),
+    material: jsonb("material").notNull(),
+    ours: jsonb("ours").notNull(),
+    script: jsonb("script"),
+    same: boolean("same"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("script_decisions_seq_idx").on(table.seq),
+    index("script_decisions_outcome_seq_idx").on(table.outcome, table.seq),
+    index("script_decisions_created_idx").on(table.createdAt),
+  ],
+);
+
 export const smtpSentMessages = pgTable(
   "smtp_sent_messages",
   {

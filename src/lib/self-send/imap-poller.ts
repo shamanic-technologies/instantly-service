@@ -30,9 +30,6 @@ import {
   type MailboxCredential,
 } from "./mailbox-credentials";
 import {
-  classifyInbound,
-  correlateSend,
-  refileStaffReply,
   STAFF_REPLY_KIND,
   eventTypeForInbound,
   isDeliveryStatusNotification,
@@ -44,12 +41,9 @@ import { parseInstantlySequenceStep } from "./instantly-sends";
 import { qualifyReply } from "./qualify-reply";
 import { OPT_OUT_REPLY_KIND, recordOptOutFromReply } from "../reply-opt-out";
 import { isSelfSendCampaignId, SEND_TRANSPORT_SMTP } from "./transport";
-import { isStaffSender } from "../staff-senders";
 import { senderIsOurSide } from "./our-side-sender";
-import { isMailtoUnsubscribeSubject, mailtoUnsubscribeSends } from "./opt-out-variant";
-import { bareAddress } from "../staff-senders";
-import { orphanReplyExclusion } from "./orphan-reply";
 import { loadOwnMailDomains } from "./own-mail-domains";
+import { inboundDecisionsToAct, needsOurSideLookup, type InboundMessageFacts } from "./inbound-decision";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/poll" };
 
@@ -378,6 +372,18 @@ export async function loadSelfSendAccounts(): Promise<string[]> {
   return (result.rows as Record<string, unknown>[]).map((row) => String(row.email));
 }
 
+/** The Message-Ids of this batch already filed for this mailbox (bronze is the dedup key). */
+async function loadFiledMessageIds(accountEmail: string, messageIds: readonly string[]): Promise<Set<string>> {
+  if (messageIds.length === 0) return new Set();
+  const result = await db.execute(sql`
+    SELECT message_id AS "messageId"
+    FROM imap_messages_raw
+    WHERE account_email = ${accountEmail}
+      AND message_id = ANY(${sql.param([...messageIds])}::text[])
+  `);
+  return new Set(rowsOf(result).map((r) => String(r.messageId)));
+}
+
 /** Lowercase every header name once, so the pure classifier can index directly. */
 function normalizeHeaders(headers: Map<string, unknown>): InboundHeaders {
   const out: Record<string, string> = {};
@@ -492,28 +498,82 @@ async function pollAccount(
         candidates.push({ uid: message.uid, head, messageId });
       }
 
-      for (const candidate of candidates) {
-        const { uid, messageId } = candidate;
-        summary.messagesRead += 1;
+      // Messages already filed on an earlier read are decided by nothing: the
+      // window is re-read every poll and bronze is the dedup key. Asking it here
+      // only saves their body fetch and sender lookup (the insert below still
+      // dedups a concurrent read).
+      summary.messagesRead += candidates.length;
+      const filed = await loadFiledMessageIds(accountEmail, candidates.map((c) => c.messageId));
+      const fresh = candidates.filter((c) => !filed.has(c.messageId));
 
+      // PASS 2, first reason to pay for a body: a DSN names the message it
+      // bounced in its QUOTED HEADERS, inside the body. `classifyInbound`
+      // reads `body` on that branch and on no other — the reply / auto-reply /
+      // unrelated split is decided entirely by headers. Fetched BEFORE the
+      // decision: it is one of its inputs.
+      //
+      // Who wrote it, not just which thread it is in: a reply-all by OUR side
+      // (staff, the brand's own people, the rep we handed the prospect to) is
+      // our answer, never the prospect's reply (`our-side-sender.ts`,
+      // SENDER-NOT-PROSPECT-1015). Looked up only where the rule reads it, and
+      // fail-loud: a failed lookup leaves that message and every later one
+      // unfiled (the earlier ones are filed), the next read decides them.
+      const prepared: Array<{ uid: number; head: ParsedMail; parsed: ParsedMail; facts: InboundMessageFacts }> = [];
+      let lookupFailure: unknown = null;
+      for (const candidate of fresh) {
         const headers = normalizeHeaders(candidate.head.headers as Map<string, unknown>);
-
-        // PASS 2, first reason to pay for a body: a DSN names the message it
-        // bounced in its QUOTED HEADERS, inside the body. `classifyInbound`
-        // reads `body` on that branch and on no other — the reply / auto-reply /
-        // unrelated split is decided entirely by headers.
         let parsed = candidate.head;
         let body = "";
         if (isDeliveryStatusNotification(headers)) {
-          parsed = await fetchMessageSource(client, uid, parsed);
+          parsed = await fetchMessageSource(client, candidate.uid, parsed);
           body = `${parsed.text ?? ""}\n${parsed.html || ""}`;
         }
+        const facts: InboundMessageFacts = {
+          messageId: candidate.messageId,
+          headers,
+          body,
+          from: candidate.head.from?.text ?? null,
+          subject: candidate.head.subject ?? null,
+        };
+        const askAbout = needsOurSideLookup(facts, knownSends);
+        if (askAbout) {
+          try {
+            facts.senderOurSide = await senderIsOurSide(facts.from ?? headers["from"], askAbout);
+          } catch (error) {
+            lookupFailure = error;
+            break;
+          }
+        }
+        prepared.push({ uid: candidate.uid, head: candidate.head, parsed, facts });
+      }
 
-        const classified = classifyInbound(headers, body, new Set(knownSends.keys()));
-        const correlation = correlateSend(
-          classified.referencedMessageIds,
-          knownSends,
-        );
+      // The DECISION for the batch: ours, or the stored reply_received script's
+      // while workflow-service has it switched (MIGRATE-1105,
+      // `inbound-decision.ts`), recorded either way.
+      const decisions =
+        prepared.length === 0
+          ? []
+          : await inboundDecisionsToAct({
+              accountEmail,
+              knownSends,
+              ownMailDomains: await loadOwnMailDomains(),
+              messages: prepared.map((p) => p.facts),
+            });
+      if (decisions.length !== prepared.length) {
+        throw new Error(`reply_received: ${decisions.length} decisions for ${prepared.length} messages on ${accountEmail}`);
+      }
+      const sendsByKey = new Map<string, KnownSend>();
+      for (const k of knownSends.values()) sendsByKey.set(`${k.instantlyCampaignId}|${k.step}|${k.leadEmail}`, k);
+
+      for (let i = 0; i < prepared.length; i += 1) {
+        const { uid, head } = prepared[i]!;
+        let parsed = prepared[i]!.parsed;
+        const { headers, messageId } = { headers: prepared[i]!.facts.headers, messageId: prepared[i]!.facts.messageId };
+        const decision = decisions[i]!;
+        if (decision.messageId !== messageId) {
+          throw new Error(`reply_received: decision ${i} names ${decision.messageId}, the message is ${messageId}`);
+        }
+        const correlation = decision.correlation;
 
         // Ambiguous is NOT "pick the first". Two live sequences on one mailbox
         // both claiming this message means we cannot say whose reply it is, and
@@ -525,22 +585,12 @@ async function pollAccount(
           );
         }
 
-        const send = correlation.outcome === "matched" ? correlation.send : undefined;
-
-        // Who wrote it, not just which thread it is in: a reply-all by OUR side
-        // (staff, the brand's own people, the rep we handed the prospect to) is
-        // our answer, never the prospect's reply (`our-side-sender.ts`,
-        // SENDER-NOT-PROSPECT-1015). Read before bronze so a failed lookup
-        // leaves the message unfiled and the next read decides it.
-        const sender = candidate.head.from?.text ?? headers["from"];
-        const classification = {
-          ...classified,
-          kind: refileStaffReply(
-            classified.kind,
-            isStaffSender(sender, send?.leadEmail) ||
-              (classified.kind === "reply" && send !== undefined && (await senderIsOurSide(sender, send))),
-          ),
-        };
+        let send: KnownSend | undefined;
+        if (correlation.outcome === "matched") {
+          send = sendsByKey.get(`${correlation.instantlyCampaignId}|${correlation.step}|${correlation.leadEmail}`);
+          if (!send) throw new Error(`reply_received: decision on ${messageId} names a send this mailbox never made (${correlation.instantlyCampaignId} step ${correlation.step})`);
+        }
+        const classification = { kind: decision.kind, referencedMessageIds: decision.referencedMessageIds };
 
         // PASS 2, second reason: a message that CONCERNS us keeps its words.
         // `unrelated` does not — measured 2026-09-18, 80,697 of the 80,891
@@ -558,26 +608,10 @@ async function pollAccount(
         // The unsubscribe button of a `mailto:` List-Unsubscribe (UNSUB-3WAY-1103):
         // a fresh email, subject `unsubscribe`, from the very address this
         // mailbox wrote to. Not a reply to judge: an opt-out, promoted below.
-        const unsubscribeSends =
-          classification.kind === "unrelated" &&
-          correlation.outcome === "none" &&
-          isMailtoUnsubscribeSubject(candidate.head.subject)
-            ? mailtoUnsubscribeSends(bareAddress(sender), knownSends.values())
-            : [];
-        const orphanCandidate =
-          unsubscribeSends.length === 0 &&
-          classification.kind === "unrelated" &&
-          correlation.outcome === "none" &&
-          orphanReplyExclusion(
-            {
-              fromAddress: candidate.head.from?.text ?? null,
-              subject: candidate.head.subject ?? null,
-              headers,
-            },
-            await loadOwnMailDomains(),
-          ) === null;
+        const unsubscribeSends = decision.mailtoUnsubscribe;
+        const orphanCandidate = decision.orphanCandidate;
         const keepsWords = classification.kind !== "unrelated" || orphanCandidate;
-        if (keepsWords && parsed === candidate.head) {
+        if (keepsWords && parsed === head) {
           parsed = await fetchMessageSource(client, uid, parsed);
         }
 
@@ -704,6 +738,7 @@ async function pollAccount(
           });
         } else if (classification.kind === "auto_reply") summary.autoReplies += 1;
       }
+      if (lookupFailure) throw lookupFailure;
     } finally {
       lock.release();
     }

@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// MIGRATE-1105: the stored-script switch is pinned in service-script-decisions.test.ts; here the decision is ours,
+// byte-identical to the code before the switch existed, and nothing is recorded.
+vi.mock("../../src/lib/service-script", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/lib/service-script")>()),
+  decideThroughScript: async (_engine: unknown, ours: unknown) => ours,
+}));
+
 const mockDbExecute = vi.fn();
 /** Bronze rows the poll wrote, in order — the record of what it chose to keep. */
 const mockInserted: Array<Record<string, unknown>> = [];

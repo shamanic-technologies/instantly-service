@@ -12,12 +12,11 @@ import {
   Lead,
 } from "../lib/instantly-client";
 import { selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
-import { stepRowsFromSendPayload } from "../lib/self-send/sequence-steps";
+import { queuedStepsToStore } from "../lib/queued-steps-script";
 import {
   findFollowUpThread,
   findQueuedBrandSequence,
   followUpQueuedRefusal,
-  threadSubjectFor,
   type FollowUpThread,
 } from "../lib/follow-up-send";
 import { findNotAProspect, notAProspectRefusal } from "../lib/not-a-prospect";
@@ -767,10 +766,19 @@ router.post("/", async (req: Request, res: Response) => {
       // every step carries `Re: <thread subject>` and the row points at the
       // thread, which the dispatcher reads for the headers. Otherwise a new
       // thread with the caller's subject.
-      const threadSubject =
-        transport === SEND_TRANSPORT_SMTP
-          ? threadSubjectFor(followUpThread, sendResult.value.account.email)
-          : null;
+      //
+      // This DECISION (the thread subject and the step rows below) is the
+      // message_queued Engine's: ours, or the stored script's while
+      // workflow-service has it switched for this service, recorded either
+      // way (lib/queued-steps-script.ts, MIGRATE-1105).
+      const queued = await queuedStepsToStore({
+        callerSubject: body.subject,
+        sequence: sortedSequence,
+        followUpThread,
+        sendingAccountEmail: sendResult.value.account.email,
+        transport,
+      });
+      const threadSubject = queued.threadSubject;
       if (isFollowUp) {
         console.log(
           `[send] Follow-up to ${body.to}: ${
@@ -804,9 +812,9 @@ router.post("/", async (req: Request, res: Response) => {
           // The SAME value the branch above acted on, not a re-resolution:
           // the frozen column and the pipe actually taken can never disagree.
           sendTransport: transport,
-          ...(threadSubject
+          ...(queued.followUpOf
             ? {
-                metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object('followUpOf', ${followUpThread!.instantlyCampaignId}::text)`,
+                metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object('followUpOf', ${queued.followUpOf}::text)`,
               }
             : {}),
           updatedAt: new Date(),
@@ -823,7 +831,7 @@ router.post("/", async (req: Request, res: Response) => {
       //     there is what makes a later flip a data change rather than a
       //     migration. Idempotent on (campaign, step), so a redispatch re-upserts
       //     instead of stacking a duplicate the scheduler would send twice.
-      const stepRows = stepRowsFromSendPayload(threadSubject ?? body.subject, sortedSequence);
+      const stepRows = queued.steps;
       if (stepRows.length > 0) {
         await db
           .insert(sequenceSteps)
