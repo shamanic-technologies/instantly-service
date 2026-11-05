@@ -89,7 +89,6 @@ vi.mock("../../src/lib/website-visit-trigger", () => ({
 }));
 
 // A thread held by a person from their own mailbox: none here (gmail-threads).
-vi.mock("../../src/lib/human-takeover", () => ({ isHeldInOwnMailbox: () => Promise.resolve(false) }));
 vi.mock("../../src/lib/status-gold", () => ({
   refreshLeadStatusCurrent: (...args: unknown[]) => mockRefreshLeadStatusCurrent(...args),
 }));

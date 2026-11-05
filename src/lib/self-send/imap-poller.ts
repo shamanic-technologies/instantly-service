@@ -310,6 +310,7 @@ export async function actOnInboundReply(input: {
       leadEmail: send.leadEmail,
       source: "imap_poller",
       subject,
+      replyAt: timestamp,
     });
     if (qualification) {
       await promoteEvent({

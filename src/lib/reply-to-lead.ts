@@ -52,7 +52,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { smtpDispatchRaw } from "../db/schema";
 import { agencyInbox } from "./agency-inbox";
-import { HumanTookOverError, ReplyToLeadError } from "./reply-to-lead-error";
+import { ReplyToLeadError } from "./reply-to-lead-error";
 import { findStatedNotToBrand } from "./stated-not-to-brand";
 import {
   describeAttachment,
@@ -85,10 +85,7 @@ import {
 } from "./self-send/transport";
 import { MANUAL_REPLY_STEP } from "./manual-reply-step";
 import { findProspectWroteElsewhere, type ElsewhereDestination } from "./reply-destination";
-import {
-  findHumanTakeover,
-  type ReplySender,
-} from "./human-takeover";
+import type { ReplySender } from "./reply-sender";
 
 const CALLER: CallerInfo = { method: "POST", path: "/orgs/replies" };
 
@@ -146,13 +143,13 @@ function signedBody(
 }
 
 /**
- * The `step` a manual reply is recorded under — defined in its own module so the
- * human-takeover gate can read it without importing this one. Re-exported here
- * because every existing importer takes it from this module.
+ * The `step` a manual reply is recorded under — defined in its own module so
+ * readers can take it without importing this one. Re-exported here because
+ * every existing importer takes it from this module.
  */
 export { MANUAL_REPLY_STEP };
 
-export { HumanTookOverError, ReplyToLeadError };
+export { ReplyToLeadError };
 
 export interface ReplyToLeadInput {
   orgId: string;
@@ -165,11 +162,11 @@ export interface ReplyToLeadInput {
   /**
    * Who asked for this to be sent — a person, or the automated responder.
    *
-   * It decides ONE thing: whether the human-takeover gate applies. An
-   * `automation` reply is refused once a person has answered the thread; a
-   * `human` one never is. Frozen onto the bronze row so a later gate can read
-   * who wrote what. Absent on the wire resolves to `automation`, see
-   * `DEFAULT_REPLY_SENDER`.
+   * It decides which gates apply: only an `automation` reply goes through the
+   * hand-over and stated-not-to-brand gates; a `human` one never does. A
+   * person's earlier hand reply never refuses either (lib/reply-sender).
+   * Frozen onto the bronze row so a reader can tell who wrote what. Absent on
+   * the wire resolves to `automation`, see `DEFAULT_REPLY_SENDER`.
    */
   sentBy: ReplySender;
   /**
@@ -1056,30 +1053,10 @@ export async function replyToLead(
     );
   }
 
-  // ⚠️ THE TAKEOVER GATE RUNS BEFORE ANYTHING IS PREPARED. A refused reply
-  // resolves no credential, makes no Instantly read and writes no bronze row —
-  // the same placement, for the same reason, as the opt-out and
-  // not-a-prospect gates on `POST /orgs/send`.
-  //
-  // Only an `automation` reply is gated. A person answering their own thread is
-  // never refused, whatever else is on it: the whole point of the gate is to
-  // stop the machine writing over them, and refusing them instead would be the
-  // one way to be wrong that nobody could work around.
-  if (input.sentBy === "automation") {
-    const takeover = await findHumanTakeover(campaign.instantlyCampaignId);
-    if (takeover) {
-      throw new HumanTookOverError(
-        takeover.source === "own_mailbox"
-          ? `A person holds the conversation with ${campaign.leadEmail} (sequence ${campaign.instantlyCampaignId}) from their own mailbox since ${takeover.at} — the automated responder does not write into it`
-          : `A person answered ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} at ${takeover.at} (${takeover.source}), after their last message — the automated responder does not write over a human conversation; that answer now counts as our touch and the next follow-up is scheduled from it`,
-        {
-          instantlyCampaignId: campaign.instantlyCampaignId,
-          at: takeover.at,
-          heldInOwnMailbox: takeover.source === "own_mailbox",
-        },
-      );
-    }
-  }
+  // ⚠️ NO TAKEOVER GATE (EVERY-REPLY-LEAD-EVENT-1105, owner 2026-11-05): a
+  // person's hand reply on the thread never refuses an automated one. It stays
+  // in the person's Unibox timeline, which the AI reads before deciding to
+  // write now, later or nothing (lib/reply-sender).
 
   // ⚠️ A THREAD HANDED TO A PERSON IS THEIRS. Once an escalation is claimed on
   // this thread (lib/escalate-reply), the responder never writes on it again —
@@ -1099,9 +1076,9 @@ export async function replyToLead(
   // ⚠️ NO AUTOMATED EMAIL TO A PERSON THE BRAND STATED IS NOT THEIRS
   // (DUALIST-WA-SILENCE-EMAIL, owner 2026-11-04). The responder, the hand-over
   // and the not-a-prospect reassurance are all `automation`; a person of the
-  // brand typing a reply (`human`) is never refused for it. After the takeover
-  // and hand-over gates so their answers (and the route's side effects on them)
-  // are unchanged. crm-service unreadable = nothing sent (lib/stated-not-to-brand).
+  // brand typing a reply (`human`) is never refused for it. After the
+  // hand-over gate so its answer (and the route's side effects on it) is
+  // unchanged. crm-service unreadable = nothing sent (lib/stated-not-to-brand).
   if (input.sentBy === "automation") {
     const brandIds = campaign.brandIds && campaign.brandIds.length > 0
       ? campaign.brandIds

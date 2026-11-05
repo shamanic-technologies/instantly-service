@@ -15,6 +15,10 @@ vi.mock("../../src/lib/campaign-client", async (importOriginal) => ({
 vi.mock("../../src/lib/lead-client", () => ({
   findLeadOnCampaignByEmail: (...args: unknown[]) => mockFindLead(...args),
 }));
+const mockFindStandingOptOut = vi.fn();
+vi.mock("../../src/lib/lead-optouts", () => ({
+  findStandingOptOut: (...args: unknown[]) => mockFindStandingOptOut(...args),
+}));
 vi.mock("../../src/lib/positive-reply-item", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
   readReplyThread: (...args: unknown[]) => mockReadThread(...args),
@@ -24,6 +28,9 @@ const {
   maybeTriggerSalesInterestCampaign,
   triggerSalesInterestLeg,
   isSalesInterestQualification,
+  isLeadMessageQualification,
+  maybeTriggerMessageReceived,
+  MESSAGE_RECEIVED_TRIGGER_ID,
   POSITIVE_REPLY_TRIGGER_ID,
 } = await import("../../src/lib/trigger-sales-interest-campaign");
 const { POSITIVE_REPLY_KINDS, REPLY_KIND_CLASSIFICATION, REPLY_KINDS } = await import(
@@ -67,6 +74,7 @@ beforeEach(() => {
   mockFindResponders.mockResolvedValue(["responder-1"]);
   mockFindLead.mockResolvedValue({ id: "lc-1", email: "p@x.com", name: "Dana Reid" });
   mockReadThread.mockResolvedValue(THREAD);
+  mockFindStandingOptOut.mockResolvedValue(null);
 });
 
 // ─── which replies count as a sales interest (pure) ───────────────────────────
@@ -236,5 +244,73 @@ describe("responder verdict, read off the recorded occurrence", () => {
   it("no campaign asked yet (person not known to the brand yet): unknown, never nobody", async () => {
     mockRecordTriggerEvent.mockResolvedValueOnce(event({ status: "pending", outcome: null, skipReason: null, detail: { person: {}, item: {} } }));
     expect(await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested")).toBe("unknown");
+  });
+});
+
+// ─── every other reply the person wrote is a Lead event too (EVERY-REPLY-LEAD-EVENT-1105) ───
+
+describe("message_received: a reply that is not a sales interest still reaches the AI", () => {
+  it("reports a not-interested reply as message_received, with the person, words and per-reply key", async () => {
+    // Prod 2026-11-03, James Barnett: "I'm currently testing Explee... found it
+    // hard to understand where to get started" = lead_not_interested, nothing
+    // reported, unanswered 30 h.
+    await maybeTriggerMessageReceived(CAMPAIGN, "p@x.com", "lead_not_interested");
+    expect(mockRecordTriggerEvent).toHaveBeenCalledTimes(1);
+    const body = mockRecordTriggerEvent.mock.calls[0][0];
+    expect(body).toMatchObject({
+      orgId: "org-1",
+      triggerId: MESSAGE_RECEIVED_TRIGGER_ID,
+      brandId: "brand-1",
+      offerId: "offer-1",
+      leadId: "lead-1",
+      requestedByCampaignId: "camp-1",
+      person: { email: "p@x.com", name: "Dana Reid" },
+    });
+    expect(body.item.replyText).toBe("Yes, interested.");
+  });
+
+  it("uses the SAME per-reply key as the positive report: a reply re-judged positive replays, never a second Lead event", async () => {
+    await maybeTriggerMessageReceived(CAMPAIGN, "p@x.com", "lead_neutral");
+    await maybeTriggerSalesInterestCampaign(CAMPAIGN, "p@x.com", "lead_interested");
+    const [a, b] = mockRecordTriggerEvent.mock.calls.map((c) => c[0].idempotencyKey);
+    expect(a).toBe(b);
+  });
+
+  it("covers every reply kind a person writes that leaves the conversation open, and nothing else", () => {
+    const reported = (REPLY_KINDS as readonly string[]).filter((k) => isLeadMessageQualification(k));
+    expect(reported.sort()).toEqual(
+      [
+        "lead_changed_job",
+        "lead_neutral",
+        "lead_not_interested",
+        "lead_off_topic",
+        "lead_referral",
+        "lead_wrong_person",
+      ].sort(),
+    );
+    // Disjoint from the positive report: one fact, one trigger.
+    for (const k of REPLY_KINDS as readonly string[]) {
+      expect(isLeadMessageQualification(k) && isSalesInterestQualification(k)).toBe(false);
+    }
+  });
+
+  it.each([["lead_opt_out_requested"], ["lead_out_of_office"], ["auto_reply_received"], ["lead_already_customer"], ["lead_interested"], ["reply_received"]])(
+    "reports nothing on %s",
+    async (kind) => {
+      await maybeTriggerMessageReceived(CAMPAIGN, "p@x.com", kind);
+      expect(mockRecordTriggerEvent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reports nothing for a person who stands opted out (a stop read out of a 'not interested' reply)", async () => {
+    mockFindStandingOptOut.mockResolvedValue({ id: "opt-1" });
+    await maybeTriggerMessageReceived(CAMPAIGN, "p@x.com", "lead_not_interested");
+    expect(mockFindStandingOptOut).toHaveBeenCalledWith("org-1", "p@x.com");
+    expect(mockRecordTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it("never throws: campaign-service down is logged", async () => {
+    mockRecordTriggerEvent.mockRejectedValue(new Error("campaign-service 503"));
+    await expect(maybeTriggerMessageReceived(CAMPAIGN, "p@x.com", "lead_neutral")).resolves.toBe("unknown");
   });
 });

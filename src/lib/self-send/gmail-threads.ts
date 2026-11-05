@@ -37,12 +37,11 @@
  * Older than {@link LATE_AFTER_MS} = `deliveredLate`, exactly like the blind
  * recovery (a backfill never celebrates last month's reply).
  *
- * THE RESPONDER (owner's call delegated, 2026-10-13): a thread a person moved to
- * their own mailbox STAYS theirs. The prospect now writes to that person; an
- * automated answer from the sending alias would arrive from someone else, on
- * another thread. So `human-takeover.ts` holds such a thread for good
- * (`own_mailbox`) and the responder is not asked to take a new reply on it: the
- * person who holds it answers (no email asks them, REPLY-NOTIFS-1013).
+ * THE RESPONDER: a thread a person moved to their own mailbox is NOT theirs for
+ * good any more (owner 2026-11-05, EVERY-REPLY-LEAD-EVENT-1105, undoing the
+ * 2026-10-13 hold): their answer stays in the Unibox timeline, the prospect's
+ * next reply is a Lead event like any other, and the AI decides now / later /
+ * nothing. An answer goes where the prospect wrote LAST (`reply-destination.ts`).
  */
 
 import { errorMessage } from "../db-error.js";

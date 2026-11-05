@@ -26,6 +26,7 @@ vi.mock("../../src/db/schema", () => ({
 
 const live = {
   trigger: vi.fn(),
+  message: vi.fn(),
   enqueue: vi.fn(),
   forward: vi.fn(),
   escalate: vi.fn(),
@@ -37,10 +38,7 @@ const optOut = vi.fn();
 vi.mock("../../src/lib/trigger-sales-interest-campaign", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
   maybeTriggerSalesInterestCampaign: (...a: unknown[]) => live.trigger(...a),
-}));
-const heldInOwnMailbox = vi.fn();
-vi.mock("../../src/lib/human-takeover", () => ({
-  isHeldInOwnMailbox: (...a: unknown[]) => heldInOwnMailbox(...a),
+  maybeTriggerMessageReceived: (...a: unknown[]) => live.message(...a),
 }));
 vi.mock("../../src/lib/enqueue-followup-on-interest", () => ({
   maybeEnqueueFollowupOnInterest: (...a: unknown[]) => live.enqueue(...a),
@@ -102,7 +100,6 @@ describe("promoteEvent: a reply delivered late", () => {
     for (const fn of Object.values(live)) fn.mockResolvedValue(undefined);
     decline.mockResolvedValue(undefined);
     optOut.mockResolvedValue(undefined);
-    heldInOwnMailbox.mockResolvedValue(false);
   });
 
   it("records the fact without acting as if they had just written", async () => {
@@ -124,27 +121,25 @@ describe("promoteEvent: a reply delivered late", () => {
     expect(mirror).toHaveBeenCalled();
   });
 
-  it("a thread a person holds from their own mailbox: the responder is not asked, the client is celebrated", async () => {
-    // STAFF-GMAIL-THREAD-1013: Lukas answered Kevin's own Gmail "Thurs/Fri?".
-    // The responder would answer from the sending alias on another thread, so
-    // it is not asked and nothing is queued; the person holding it answers
-    // (REPLY-NOTIFS-1013: no email asks them).
+  it("every reply reaches the AI: a not-interested reply is reported as a Lead event too (EVERY-REPLY-LEAD-EVENT-1105)", async () => {
+    // Prod 2026-11-03, James Barnett: "I'm testing Explee... found it hard to
+    // understand where to get started" was judged not interested, reported
+    // nothing, and sat unanswered 30 h.
     arrange();
-    heldInOwnMailbox.mockResolvedValueOnce(true);
-    await promoteEvent(base);
-    expect(heldInOwnMailbox).toHaveBeenCalledWith("inst-1");
-    expect(live.trigger).not.toHaveBeenCalled();
-    expect(live.enqueue).not.toHaveBeenCalled();
-    expect(live.forward).toHaveBeenCalledWith(
+    await promoteEvent({ ...base, eventType: "lead_not_interested" });
+    expect(live.message).toHaveBeenCalledWith(
       expect.objectContaining({ instantlyCampaignId: "inst-1" }),
       "laura@fusionmedcare.com",
-      "lead_interested",
+      "lead_not_interested",
     );
   });
 
-  it("a reply that opens no conversation never reads the hold", async () => {
+  it("a thread a person answered by hand is NOT held: the responder is asked and the buyer queued", async () => {
+    // Owner 2026-11-05: a hand reply never locks a thread (it used to be held
+    // for good once a person answered from their own mailbox).
     arrange();
-    await promoteEvent({ ...base, eventType: "lead_not_interested" });
-    expect(heldInOwnMailbox).not.toHaveBeenCalled();
+    await promoteEvent(base);
+    expect(live.trigger).toHaveBeenCalled();
+    expect(live.enqueue).toHaveBeenCalled();
   });
 });

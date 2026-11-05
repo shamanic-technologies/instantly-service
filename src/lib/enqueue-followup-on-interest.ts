@@ -83,10 +83,10 @@ export async function maybeEnqueueFollowupOnInterest(
   // before the schedule so the schedule re-enters them (lib/lift-wrong-handoff).
   try {
     const lift = await liftWrongEscalationHandoff(campaign, leadEmail);
-    if (lift === "lifted" || lift === "person_answered") {
+    if (lift === "lifted") {
       console.log(
         `[instantly-service] followup-enqueue: campaign=${campaign.instantlyCampaignId} lead=${leadEmail} ` +
-          `escalation hand-over ${lift === "lifted" ? "LIFTED, the reply is now a sales interest" : "kept, a person answered on the thread"}`,
+          `escalation hand-over LIFTED, the reply is now a sales interest`,
       );
     }
   } catch (error: unknown) {
