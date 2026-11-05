@@ -116,10 +116,9 @@ const INPUT = {
   leadEmail: "Alice@Media.com",
   bodyHtml: "<p>Thursday works.</p>",
   // These cases exercise the reply MECHANICS, which are orthogonal to the
-  // human-takeover gate — so they declare `human` and the gate never runs,
-  // keeping each test's queued db.execute responses where they were. The gate
-  // has its own describe at the end of this file, and the automated default is
-  // covered there end to end.
+  // gates an automated reply alone goes through (hand-over, stated-not-to-brand)
+  // — so they declare `human`, keeping each test's queued db.execute responses
+  // where they were.
   sentBy: "human" as const,
 };
 
@@ -691,91 +690,18 @@ describe("an answer is never held for the prospect's business hours", () => {
   });
 });
 
-// ─── The human-takeover gate ─────────────────────────────────────────────────
+// ─── A hand reply never locks a thread (EVERY-REPLY-LEAD-EVENT-1105) ─────────
 
-describe("a human took over, so the automated responder stops", () => {
-  /**
-   * The db.execute queue an `automation` reply consumes, in order:
-   *   1. loadCampaign
-   *   2. findHumanTakeover   ← the gate
-   *   3. onward (prepare, on the self-send transport)
-   */
-  function queueAutomationReply(takeover: Record<string, unknown>[]) {
-    mockDbExecute
-      .mockResolvedValueOnce(pgResult([campaignRow()]))
-      .mockResolvedValueOnce(pgResult(takeover));
-  }
-
+describe("a person's hand reply never refuses an automated one", () => {
   const AUTOMATED = { ...INPUT, sentBy: "automation" as const };
 
-  it("refuses an automated reply once a person has answered", async () => {
-    queueAutomationReply([
-      { at: "2026-09-04T17:51:31.000Z", source: "instantly_unibox" },
-    ]);
-
-    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({
-      code: "human_took_over",
-      status: 409,
-    });
-  });
-
-  it("the refusal names the answer, so it can be counted as our touch (REPLY-ANY-LEAD-1015)", async () => {
-    queueAutomationReply([{ at: "2026-09-04T17:51:31.000Z", source: "instantly_unibox" }]);
-
-    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({
-      code: "human_took_over",
-      answer: { at: "2026-09-04T17:51:31.000Z", heldInOwnMailbox: false },
-    });
-  });
-
-  it("an own-mailbox hold is named as such (never counted)", async () => {
-    queueAutomationReply([{ at: "2026-09-04T17:51:31.000Z", source: "own_mailbox" }]);
-
-    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({
-      code: "human_took_over",
-      answer: { heldInOwnMailbox: true },
-    });
-  });
-
-  it("refuses an automated reply once one of our own people CC'd an answer to the thread", async () => {
-    queueAutomationReply([{ at: "2026-09-21T19:07:27.000Z", source: "staff_cc" }]);
-
-    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({
-      code: "human_took_over",
-      status: 409,
-    });
-    expect(mockReplyToEmail).not.toHaveBeenCalled();
-  });
-
-  it("sends NOTHING and prepares NOTHING on a refusal", async () => {
-    // The gate runs before anything is prepared, so a refused reply resolves no
-    // credential, makes no Instantly read and writes no bronze row — the same
-    // placement as the opt-out and not-a-prospect gates on POST /orgs/send.
-    queueAutomationReply([{ at: "2026-09-04T17:51:31.000Z", source: "dispatched" }]);
-
-    await expect(replyToLead(AUTOMATED)).rejects.toThrow();
-
-    expect(mockListEmails).not.toHaveBeenCalled();
-    expect(mockReplyToEmail).not.toHaveBeenCalled();
-    expect(mockResolveCredential).not.toHaveBeenCalled();
-    expect(mockDispatchMessage).not.toHaveBeenCalled();
-    expect(mockInsertValues).not.toHaveBeenCalled();
-  });
-
-  it("names WHEN a person answered and WHERE we learned it", async () => {
-    // A bare refusal sends whoever reads it hunting. The message carries the
-    // timestamp and the source so the thread can be found.
-    queueAutomationReply([
-      { at: "2026-09-04T17:51:31.000Z", source: "instantly_unibox" },
-    ]);
-
-    await expect(replyToLead(AUTOMATED)).rejects.toThrow(
-      /2026-09-04T17:51:31.000Z.*instantly_unibox/,
-    );
-  });
-
-  it("sends an automated reply when the only answers since are ours", async () => {
-    queueAutomationReply([]);
+  it("sends the automated reply: no takeover is read, only the hand-over gate", async () => {
+    // Owner 2026-11-05: Kevin answered James from his own mailbox, James wrote
+    // back, and nobody answered for 30 h because the thread was "held". The
+    // hand reply stays in the Unibox the AI reads; nothing here refuses on it.
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow()])) // loadCampaign
+      .mockResolvedValueOnce(pgResult([])); // not handed over
     mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
@@ -783,13 +709,10 @@ describe("a human took over, so the automated responder stops", () => {
 
     expect(outcome.status).toBe("sent");
     expect(mockReplyToEmail).toHaveBeenCalledTimes(1);
+    expect(mockDbExecute).toHaveBeenCalledTimes(2);
   });
 
   it("NEVER gates a person answering their own thread", async () => {
-    // The whole point is to stop the machine writing over a human. Refusing the
-    // human instead would be the one way to be wrong that nobody can work
-    // around — so the gate is not even consulted, and the queue proves it: only
-    // loadCampaign is answered before the reply goes out.
     mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
     mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
@@ -801,9 +724,9 @@ describe("a human took over, so the automated responder stops", () => {
   });
 
   it("freezes who sent it onto the bronze row", async () => {
-    // Persist-at-write: the caller knows, and nothing downstream can re-derive
-    // it. Without this the next gate reads its own dispatches as human answers.
-    queueAutomationReply([]);
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow()]))
+      .mockResolvedValueOnce(pgResult([]));
     mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
@@ -828,7 +751,6 @@ describe("a person the brand stated is not theirs gets no AUTOMATED reply (DUALI
   it("refuses 409 stated_not_to_brand, nothing prepared or sent, asked on every brand of the thread", async () => {
     mockDbExecute
       .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]))
-      .mockResolvedValueOnce(pgResult([])) // no human takeover
       .mockResolvedValueOnce(pgResult([])); // not handed over
     mockReadStated.mockResolvedValue(new Map([["alice@media.com", { brandId: "brand-2", correctionId: "corr-1" }]]));
 
@@ -843,9 +765,7 @@ describe("a person the brand stated is not theirs gets no AUTOMATED reply (DUALI
   });
 
   it("refuses the hand-over too (it is an automated email to the person)", async () => {
-    mockDbExecute
-      .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]))
-      .mockResolvedValueOnce(pgResult([])); // no human takeover; hand-over skips the escalation gate
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow(BRANDED)])); // hand-over skips the escalation gate
     mockReadStated.mockResolvedValue(new Map([["alice@media.com", { brandId: "brand-1", correctionId: null }]]));
 
     await expect(replyToLead({ ...AUTOMATED, handoff: true })).rejects.toMatchObject({ code: "stated_not_to_brand" });
@@ -867,7 +787,6 @@ describe("a person the brand stated is not theirs gets no AUTOMATED reply (DUALI
   it("an unstated person is answered exactly as before", async () => {
     mockDbExecute
       .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]))
-      .mockResolvedValueOnce(pgResult([]))
       .mockResolvedValueOnce(pgResult([]));
     mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
@@ -878,20 +797,9 @@ describe("a person the brand stated is not theirs gets no AUTOMATED reply (DUALI
     expect(mockReadStated).toHaveBeenCalledTimes(1);
   });
 
-  it("a human takeover keeps its own answer (the stated gate runs after it)", async () => {
-    mockDbExecute
-      .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]))
-      .mockResolvedValueOnce(pgResult([{ at: "2026-09-04T17:51:31.000Z", source: "instantly_unibox" }]));
-    mockReadStated.mockResolvedValue(new Map([["alice@media.com", { brandId: "brand-1", correctionId: "corr-1" }]]));
-
-    await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({ code: "human_took_over" });
-    expect(mockReadStated).not.toHaveBeenCalled();
-  });
-
   it("crm-service unreadable = 502 stated_not_to_brand_unreadable, nothing sent", async () => {
     mockDbExecute
       .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]))
-      .mockResolvedValueOnce(pgResult([]))
       .mockResolvedValueOnce(pgResult([]));
     mockReadStated.mockRejectedValue(new Error("crm-service POST /internal/people/stated-not-to-brand failed: 503"));
 
@@ -906,7 +814,6 @@ describe("a thread handed to a person (escalation)", () => {
   it("refuses every automated reply once the escalation is claimed", async () => {
     mockDbExecute
       .mockResolvedValueOnce(pgResult([campaignRow()]))
-      .mockResolvedValueOnce(pgResult([])) // no human takeover
       .mockResolvedValueOnce(
         pgResult([{ at: "2026-09-29T15:01:00.000Z", handedTo: "rep@docdinners.com" }]),
       );
@@ -916,9 +823,7 @@ describe("a thread handed to a person (escalation)", () => {
   });
 
   it("lets the hand-over itself through, rep in Cc, agency in Bcc, history after the signature", async () => {
-    mockDbExecute
-      .mockResolvedValueOnce(pgResult([campaignRow()]))
-      .mockResolvedValueOnce(pgResult([])); // no human takeover; the escalation gate is skipped
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()])); // the escalation gate is skipped
     mockListEmails.mockResolvedValue([email({ id: "in-1", subject: "Re: Hello" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
@@ -941,7 +846,6 @@ describe("a thread handed to a person (escalation)", () => {
   it("carries Cc and Bcc on our own transport too", async () => {
     mockDbExecute
       .mockResolvedValueOnce(pgResult([campaignRow({ sendTransport: "smtp", instantlyCampaignId: "self:1" })]))
-      .mockResolvedValueOnce(pgResult([])) // takeover
       .mockResolvedValueOnce(pgResult([{ messageId: "<in@x>", subject: "Hello", at: "2026-09-01" }]))
       .mockResolvedValueOnce(pgResult([{ messageId: "<out@x>" }, { messageId: "<in@x>" }]))
       .mockResolvedValueOnce(pgResult([{ email: "amy@boostdistribute.com", firstName: "Amy", lastName: "Moore" }]));

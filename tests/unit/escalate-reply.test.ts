@@ -336,7 +336,7 @@ describe("escalating when the brand names no rep", () => {
 
 describe("a hand-over that cannot go out", () => {
   it("falls back to the brand's team when the in-thread reply is refused", async () => {
-    mockReplyToLead.mockRejectedValue(new FakeReplyToLeadError("human_took_over", 409, "a person answered"));
+    mockReplyToLead.mockRejectedValue(new FakeReplyToLeadError("prospect_wrote_elsewhere", 409, "wrote to a person's Gmail"));
     const result = await escalateReply(INPUT);
     expect(mockSendEmail).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({ handoff: "team" });

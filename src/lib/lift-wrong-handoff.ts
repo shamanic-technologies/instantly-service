@@ -18,15 +18,13 @@
  *     wrote (`ESCALATION_HANDOFF_REASONS`). lead-service lifts nothing else: a
  *     person's own hand-over, its pre-responder debt hand-over, a hand-over
  *     because a person answered.
- *   - NEVER when a person has answered on the thread (`findHumanTakeover`): the
- *     thread is theirs, whatever the verdict became (the Shockwavecenters
- *     guarantee).
+ *   - A person's hand reply on the thread does NOT keep the hand-over: a hand
+ *     reply never locks a thread (EVERY-REPLY-LEAD-EVENT-1105, lib/reply-sender).
  *
  * Runs before the follow-up is scheduled, so the `scheduled` that follows
  * re-enters the person. Fail-soft and loud, like the enqueue it precedes.
  */
 
-import { findHumanTakeover } from "./human-takeover";
 import { findLeadOnCampaignByEmail, withdrawHandoff } from "./lead-client";
 import { ESCALATION_HANDOFF_REASONS } from "./escalation-handoff-reasons";
 
@@ -40,15 +38,13 @@ export interface LiftHandoffCampaign {
   orgId: string | null;
 }
 
-export type LiftHandoffOutcome = "lifted" | "nothing_to_lift" | "person_answered" | "no_lead_row";
+export type LiftHandoffOutcome = "lifted" | "nothing_to_lift" | "no_lead_row";
 
 export async function liftWrongEscalationHandoff(
   campaign: LiftHandoffCampaign,
   leadEmail: string,
 ): Promise<LiftHandoffOutcome> {
   if (!campaign.orgId || !campaign.campaignId) return "no_lead_row";
-
-  if (await findHumanTakeover(campaign.instantlyCampaignId)) return "person_answered";
 
   const lead = await findLeadOnCampaignByEmail({
     orgId: campaign.orgId,

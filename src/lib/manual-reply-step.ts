@@ -10,9 +10,8 @@
  * dispatch queue.
  *
  * It lives in its own module, rather than beside the code that writes it, so
- * that the human-takeover gate can read it without importing `reply-to-lead` —
- * which imports the gate, and a cycle over a module-scope const is a temporal
- * dead zone waiting to happen. `reply-to-lead` re-exports it, so every existing
- * importer is unchanged.
+ * readers can take it without importing `reply-to-lead` (a cycle over a
+ * module-scope const is a temporal dead zone waiting to happen).
+ * `reply-to-lead` re-exports it, so every existing importer is unchanged.
  */
 export const MANUAL_REPLY_STEP = 0;

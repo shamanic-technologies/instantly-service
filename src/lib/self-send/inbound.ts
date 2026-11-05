@@ -34,8 +34,8 @@ export type InboundKind =
 /**
  * A message on a campaign thread written by one of OUR OWN people (staff domain,
  * see lib/staff-senders) who CC'd the sending mailbox. It is our side of the
- * conversation, never the prospect's reply: it promotes nothing, and the
- * human-takeover gate reads it as a person having taken the thread over.
+ * conversation, never the prospect's reply: it promotes nothing, and it stays
+ * in the thread the AI reads (it never locks the thread, lib/reply-sender).
  */
 export const STAFF_REPLY_KIND = "staff_reply" as const;
 

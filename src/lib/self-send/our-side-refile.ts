@@ -20,9 +20,8 @@
  *    kind is left, so a real meeting request from the prospect later is still
  *    announced. The email already sent cannot be unsent.
  *
- * Nothing is sent. The responder is not asked anything: a `staff_reply` after
- * the prospect's last message is a person's answer, so the takeover gate
- * refuses the responder on that thread (`human-takeover.ts`, `staff_cc`).
+ * Nothing is sent. The responder is not asked anything: a `staff_reply` is our
+ * side of the conversation, read by the AI from the thread.
  * Dry run by default; names every row.
  */
 

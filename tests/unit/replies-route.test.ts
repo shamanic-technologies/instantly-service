@@ -43,10 +43,6 @@ vi.mock("../../src/lib/hand-followups-to-human", () => ({
   handThreadFollowupsToHuman: (...a: unknown[]) => mockHandThread(...a),
 }));
 
-const mockCountHumanAnswer = vi.fn();
-vi.mock("../../src/lib/count-human-answer", () => ({
-  countHumanAnswerAsOurs: (...a: unknown[]) => mockCountHumanAnswer(...a),
-}));
 
 import repliesRoutes from "../../src/routes/replies";
 
@@ -114,44 +110,12 @@ describe("POST /orgs/replies — who asked reaches the gate", () => {
     expect(mockReplyToLead).not.toHaveBeenCalled();
   });
 
-  function takeover(heldInOwnMailbox: boolean) {
-    return Object.assign(new FakeReplyToLeadError("human_took_over", 409, "a person answered"), {
-      answer: { instantlyCampaignId: "seq-1", at: "2026-10-15T09:00:00.000Z", heldInOwnMailbox },
-    });
-  }
-
-  it("a hand-typed answer counts as our touch: the follow-ups go on, nothing is handed (REPLY-ANY-LEAD-1015)", async () => {
-    mockReplyToLead.mockRejectedValue(takeover(false));
-
-    const res = await request(app()).post("/orgs/replies").send(REPLY_BODY).expect(409);
-    expect(res.body.code).toBe("human_took_over");
-    expect(mockCountHumanAnswer).toHaveBeenCalledWith({
-      orgId: "org-1",
-      campaignId: "camp-1",
-      leadEmail: "alice@media.com",
-      instantlyCampaignId: "seq-1",
-      answeredAt: "2026-10-15T09:00:00.000Z",
-    });
-    expect(mockHandThread).not.toHaveBeenCalled();
-  });
-
-  it("a conversation held in a person's own mailbox is still handed over", async () => {
-    mockReplyToLead.mockRejectedValue(takeover(true));
-
-    await request(app()).post("/orgs/replies").send(REPLY_BODY).expect(409);
-    expect(mockHandThread).toHaveBeenCalledWith(
-      expect.objectContaining({ orgId: "org-1", campaignId: "camp-1", leadEmail: "alice@media.com" }),
-    );
-    expect(mockCountHumanAnswer).not.toHaveBeenCalled();
-  });
-
   it("prospect_wrote_elsewhere is still handed over", async () => {
     mockReplyToLead.mockRejectedValue(
       new FakeReplyToLeadError("prospect_wrote_elsewhere", 409, "wrote to a person's Gmail"),
     );
     await request(app()).post("/orgs/replies").send(REPLY_BODY).expect(409);
     expect(mockHandThread).toHaveBeenCalled();
-    expect(mockCountHumanAnswer).not.toHaveBeenCalled();
   });
 
   it("any other refusal hands nothing over", async () => {
@@ -160,7 +124,6 @@ describe("POST /orgs/replies — who asked reaches the gate", () => {
     );
     await request(app()).post("/orgs/replies").send(REPLY_BODY).expect(409);
     expect(mockHandThread).not.toHaveBeenCalled();
-    expect(mockCountHumanAnswer).not.toHaveBeenCalled();
   });
 });
 

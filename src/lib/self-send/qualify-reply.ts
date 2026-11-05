@@ -187,6 +187,12 @@ export interface QualifyReplyContext extends ShadowJudgmentContext {
   /** The sequence the reply came in on: whose reply-judging run the call is for. */
   instantlyCampaignId: string;
   subject?: string | null;
+  /**
+   * When the reply was written: our messages sent BEFORE it are what the judge
+   * reads as "Our email" (lib/self-send/our-outreach). Absent = every message
+   * of ours on the thread.
+   */
+  replyAt?: Date | string | null;
 }
 
 /**
@@ -349,7 +355,7 @@ export async function qualifyReply(
   replyText: string,
   context: QualifyReplyContext,
 ): Promise<QualificationEventType | null> {
-  const { subject, ...shadowContext } = context;
+  const { subject, replyAt, ...shadowContext } = context;
   const judge = await replyJudgeSwitch();
   if (judge.switched && judge.dynasty) return qualifyWithScript(judge.dynasty, replyText, context);
 
@@ -365,7 +371,7 @@ export async function qualifyReply(
   if (!shadowContext.instantlyCampaignId) {
     throw new Error("[instantly-service] qualifyReply: no sequence, so no reply-judging run to judge it for");
   }
-  const ourOutreach = await loadOurOutreach(shadowContext.instantlyCampaignId);
+  const ourOutreach = await loadOurOutreach(shadowContext.instantlyCampaignId, replyAt);
   const framed = withOurOutreach(stripped, ourOutreach);
   const message = typedSubject ? framed : withSubject(framed, subject);
 
@@ -423,11 +429,11 @@ async function closeQualificationRun(runId: string, status: "completed" | "faile
 
 /** The stored script judges (switched): same inputs, same label vocabulary, recorded the same way. */
 async function qualifyWithScript(dynasty: string, replyText: string, context: QualifyReplyContext): Promise<QualificationEventType | null> {
-  const { subject, ...shadowContext } = context;
+  const { subject, replyAt, ...shadowContext } = context;
   if (!shadowContext.instantlyCampaignId) {
     throw new Error("[instantly-service] qualifyReply: no sequence, so no reply-judging run to judge it for");
   }
-  const ourOutreach = await loadOurOutreach(shadowContext.instantlyCampaignId);
+  const ourOutreach = await loadOurOutreach(shadowContext.instantlyCampaignId, replyAt);
   const judging = await replyJudgingContextForSequence(shadowContext.instantlyCampaignId);
   const inputs = { replyText, subject: subject ?? null, ourOutreach };
   const record = {

@@ -30,7 +30,7 @@ import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
-import { resolveReplySender, type ReplySender } from "./human-takeover";
+import { resolveReplySender, type ReplySender } from "./reply-sender";
 
 /** One answer that was held for its prospect's morning. */
 export interface ScheduledReply {
