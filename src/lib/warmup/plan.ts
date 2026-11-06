@@ -316,3 +316,8 @@ export function shouldReplyTo(messageId: string, rate: number = WARMUP_REPLY_RAT
   }
   return h / 0xffffffff < rate;
 }
+
+/** The headroom regime is only for a mailbox owing no prospect step at all (SENDING-INFRA-AUDIT-1106). */
+export function owesNoProspectMail(queuedSteps: number): boolean {
+  return queuedSteps <= 0;
+}
