@@ -68,10 +68,31 @@ describe("replyJudgingRunFor: one reply-judging run per (org, UTC day, pipe) (LE
     expect(await replyJudgingRunFor(ORG, { ...PIPE, workflowSlug: "cold-email-v4" }, AS_OF)).toBe("run-b");
   });
 
-  it("no pipe recorded (or half of one): the org's pipe-less run, created with no tags", async () => {
+  it("no campaign recorded (a workflow alone included): the org's pipe-less run, created with no tags", async () => {
     execute.mockResolvedValueOnce(pgResult([])).mockResolvedValueOnce(pgResult([{ run_id: RUN }]));
-    expect(await replyJudgingRunFor(ORG, { ...NO_PIPE, campaignId: "camp-1" }, AS_OF)).toBe(RUN);
+    expect(await replyJudgingRunFor(ORG, { ...NO_PIPE, workflowSlug: "cold-email-v3" }, AS_OF)).toBe(RUN);
     expect(createRun.mock.calls[0][1]).not.toHaveProperty("tracking");
+    expect(params(execute.mock.calls[1])).not.toContain("cold-email-v3");
+  });
+
+  it("a sequence a campaign's Engine sent (campaign, no workflow): the CAMPAIGN's run of the day, tagged with the campaign only (MIGRATE-1105 S2c)", async () => {
+    execute.mockResolvedValueOnce(pgResult([])).mockResolvedValueOnce(pgResult([{ run_id: RUN }]));
+    expect(await replyJudgingRunFor(ORG, { ...NO_PIPE, campaignId: "camp-1", brandIds: ["brand-1"] }, AS_OF)).toBe(RUN);
+    const identity = createRun.mock.calls[0][1] as { tracking: Record<string, unknown> };
+    expect(identity.tracking).toEqual({ campaignId: "camp-1", brandId: "brand-1" });
+    expect(identity.tracking).not.toHaveProperty("workflowSlug");
+    expect(params(execute.mock.calls[1])).toContain("camp-1");
+  });
+
+  it("the campaign's Engine run and its old workflow run of the same day are two runs (each pools on its own key)", async () => {
+    createRun.mockResolvedValueOnce({ id: "run-wf" }).mockResolvedValueOnce({ id: "run-engine" });
+    execute
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([{ run_id: "run-wf" }]))
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([{ run_id: "run-engine" }]));
+    expect(await replyJudgingRunFor(ORG, PIPE, AS_OF)).toBe("run-wf");
+    expect(await replyJudgingRunFor(ORG, { ...PIPE, workflowSlug: null }, AS_OF)).toBe("run-engine");
   });
 
   it("reuses a stored run: no new run", async () => {
