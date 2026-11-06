@@ -155,13 +155,13 @@ describe("message_queued through the switch", () => {
     let body = { switched: true, dynasty: "dy_x" } as Record<string, unknown>;
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })));
     const t0 = 1_000_000;
-    expect((await serviceScriptSwitch("message_queued", t0)).switched).toBe(true);
+    expect((await serviceScriptSwitch("message_queued", undefined, t0)).switched).toBe(true);
     body = { switched: false, shadow: false, dynasty: null };
-    expect((await serviceScriptSwitch("message_queued", t0 + 30_000)).switched).toBe(true);
-    expect((await serviceScriptSwitch("message_queued", t0 + 61_000)).switched).toBe(false);
+    expect((await serviceScriptSwitch("message_queued", undefined, t0 + 30_000)).switched).toBe(true);
+    expect((await serviceScriptSwitch("message_queued", undefined, t0 + 61_000)).switched).toBe(false);
     // Per outcome: reply_received is read on its own.
     body = { shadow: true, dynasty: "dy_r" };
-    expect(await serviceScriptSwitch("reply_received", t0 + 61_000)).toEqual({ switched: false, shadow: true, dynasty: "dy_r" });
+    expect(await serviceScriptSwitch("reply_received", undefined, t0 + 61_000)).toEqual({ switched: false, shadow: true, dynasty: "dy_r" });
   });
 });
 

@@ -839,6 +839,8 @@ export const scriptDecisions = pgTable(
     id: text("id").primaryKey().default(sql`gen_random_uuid()::text`),
     seq: bigserial("seq", { mode: "number" }).notNull(),
     outcome: text("outcome").notNull(),
+    /** MIGRATE-1105 S2b: the decision (the Engine's task) when one outcome has several (migration 0105). */
+    task: text("task"),
     path: text("path").notNull(),
     runId: text("run_id"),
     scriptRunId: text("script_run_id"),
@@ -848,6 +850,8 @@ export const scriptDecisions = pgTable(
     script: jsonb("script"),
     same: boolean("same"),
     error: text("error"),
+    /** The vendor calls OUR decision made, in the script's words (a paid decision replays with its answers). */
+    calls: jsonb("calls"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [

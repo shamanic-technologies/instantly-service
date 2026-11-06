@@ -31,8 +31,6 @@ import { simpleParser } from "mailparser";
 
 import { db } from "../../db";
 import { promoteEvent } from "../silver-promote";
-import { platformJudgment } from "../chat-client";
-import { replyJudgingRunForSequence } from "../reply-judging-run";
 import type { CallerInfo } from "../key-client";
 import { htmlToText } from "../forward-positive-reply";
 import { actOnInboundReply, emptyPollSummary, type KnownSend, type PollSummary } from "./imap-poller";
@@ -40,18 +38,8 @@ import { connectImapClient, createImapClient } from "./imap-client";
 import { GMAIL_IMAP_PORT, loginFor, resolveMailboxCredential } from "./mailbox-credentials";
 import { parseInstantlySequenceStep } from "./instantly-sends";
 import { loadOwnMailDomains } from "./own-mail-domains";
-import {
-  buildOrphanReplyQuestion,
-  buildOrphanReplyState,
-  INSTANTLY_WARMUP_TAGS,
-  ORPHAN_REPLY_QUESTION_KEY,
-  orphanJudgmentOrg,
-  orphanReplyExclusion,
-  headerRecipients,
-  rankOrphanReplyLeads,
-  readOrphanReplyVerdict,
-  type OrphanReplyLead,
-} from "./orphan-reply";
+import { INSTANTLY_WARMUP_TAGS, orphanReplyExclusion, headerRecipients, type OrphanReplyLead } from "./orphan-reply";
+import { orphanDecisionToAct } from "./orphan-decision";
 import type { InboundHeaders } from "./inbound";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/orphan-replies" };
@@ -444,37 +432,38 @@ export async function runOrphanReplySweep(
 
   for (const row of survivors) {
     try {
-      // The body may carry the warmup tag the subject did not.
-      const reason = orphanReplyExclusion(
-        { fromAddress: row.fromAddress, subject: row.subject, headers: row.headers, text: row.text },
-        ownDomains,
-      );
-      if (reason) {
-        summary.excluded += 1;
-        if (!dryRun) {
-          await persistJudgment(row, { outcome: "excluded", reason, judgedAt: new Date().toISOString() }, backfill);
-        }
-        continue;
-      }
-
       let mailbox = mailboxes.get(row.accountEmail);
       if (!mailbox) {
         const since = new Date(Date.now() - (sinceDays + LEAD_LOOKBACK_DAYS) * 86_400_000);
         mailbox = await loadMailboxLeads(row.accountEmail, since);
         mailboxes.set(row.accountEmail, mailbox);
       }
+      const asOf = leadsAsOf(mailbox.leads, mailbox.steps, row.receivedAt);
 
-      const ranked = rankOrphanReplyLeads(
-        {
+      // The decision (MIGRATE-1105 S2b, `orphan-decision.ts`): the body's exclusion (the warmup tag may live only
+      // there), the leads worth offering, ONE judgment; ours, or the stored script's while switched.
+      const decision = await orphanDecisionToAct({
+        message: {
           fromAddress: row.fromAddress,
+          toAddress: row.accountEmail,
           subject: row.subject,
+          headers: row.headers,
           text: row.text,
           receivedAt: row.receivedAt,
           recipients: headerRecipients(row.headers),
         },
-        leadsAsOf(mailbox.leads, mailbox.steps, row.receivedAt),
-      );
-      if (ranked.length === 0) {
+        ownMailDomains: ownDomains,
+        leads: asOf,
+      });
+      const words = decision.words;
+      if (words.outcome === "excluded") {
+        summary.excluded += 1;
+        if (!dryRun) {
+          await persistJudgment(row, { outcome: "excluded", reason: words.reason, judgedAt: new Date().toISOString() }, backfill);
+        }
+        continue;
+      }
+      if (words.outcome === "no_candidate_lead") {
         summary.noCandidateLead += 1;
         if (!dryRun) {
           await persistJudgment(row, { outcome: "no_candidate_lead", judgedAt: new Date().toISOString() }, backfill);
@@ -482,56 +471,30 @@ export async function runOrphanReplySweep(
         continue;
       }
 
-      const judgingOrg = orphanJudgmentOrg(ranked);
-      if (!judgingOrg) throw new Error("no candidate lead carries an org: no reply-judging run to judge it for");
-      // The judgment is made for the likeliest lead of that org: its sequence's pipe.
-      const judgingSequence = ranked.find(({ lead }) => lead.orgId === judgingOrg)!.lead.instantlyCampaignId;
-      const result = await platformJudgment(
-        {
-          state: buildOrphanReplyState({
-            fromAddress: row.fromAddress,
-            toAddress: row.accountEmail,
-            subject: row.subject,
-            receivedAt: row.receivedAt,
-            text: row.text,
-          }),
-          questions: { [ORPHAN_REPLY_QUESTION_KEY]: buildOrphanReplyQuestion(ranked) },
-        },
-        { runId: await replyJudgingRunForSequence(judgingSequence, { fallbackOrgId: judgingOrg }) },
-      );
       summary.judged += 1;
-      summary.judgmentInputTokens += result.usage?.inputTokens ?? 0;
-      const answer = result.answers[ORPHAN_REPLY_QUESTION_KEY];
-      if (!answer) throw new Error("judgment returned no answer for the orphan-reply question");
-      const verdict = readOrphanReplyVerdict(answer, ranked);
-
+      summary.judgmentInputTokens += words.inputTokens;
       const judgment = {
-        outcome: verdict.outcome,
+        outcome: words.outcome,
         judgedAt: new Date().toISOString(),
-        model: result.model,
-        choice: answer.choice,
-        probability: verdict.probability,
-        confidence: answer.confidence,
-        probabilities: answer.probabilities,
-        candidates: ranked.map(({ lead, score }) => ({
-          instantlyCampaignId: lead.instantlyCampaignId,
-          leadEmail: lead.leadEmail,
-          score,
-        })),
-        ...(verdict.outcome === "matched"
-          ? { instantlyCampaignId: verdict.lead.instantlyCampaignId, leadEmail: verdict.lead.leadEmail }
-          : {}),
+        model: words.model,
+        choice: words.choice,
+        probability: words.probability,
+        confidence: words.confidence,
+        probabilities: words.probabilities,
+        candidates: words.candidates,
+        ...(words.outcome === "matched" ? { instantlyCampaignId: words.instantlyCampaignId, leadEmail: words.leadEmail } : {}),
       };
-
-      if (verdict.outcome !== "matched") {
-        if (verdict.outcome === "none") summary.none += 1;
+      if (words.outcome !== "matched") {
+        if (words.outcome === "none") summary.none += 1;
         else summary.lowConfidence += 1;
         if (!dryRun) await persistJudgment(row, judgment, backfill);
         continue;
       }
 
+      const lead = asOf.find((l) => l.instantlyCampaignId === words.instantlyCampaignId && l.leadEmail === words.leadEmail);
+      if (!lead) throw new Error(`the decision matched a lead this mailbox never wrote to (${words.leadEmail})`);
+      const verdict = { probability: words.probability };
       summary.matched += 1;
-      const lead = verdict.lead;
       const campaign = mailbox.campaigns.get(lead.instantlyCampaignId);
       summary.recovered.push({
         rowId: row.id,
