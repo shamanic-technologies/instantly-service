@@ -16,8 +16,12 @@
  * The run carries no cost of its own and is closed `completed` at creation: it
  * is a cost anchor, not a job. When it cannot be resolved the judgment is not
  * asked (throws): every judging call states its run (PLATFORM-CALLER-RUN-1024).
- * A sequence sent with no campaign or workflow gets the org's pipe-less run of
- * the day ('' key): no pipe exists to pool it on.
+ * A sequence sent with no campaign gets the org's pipe-less run of the day
+ * ('' key): no pipe exists to pool it on. A sequence a campaign's ENGINE sent
+ * (MIGRATE-1105 S2c: a stored script, no workflow, so no workflow slug on its
+ * row) is judged on its CAMPAIGN's run of the day, tagged with the campaign
+ * only: runs-service pools a run with no workflow on its own task within its
+ * campaign, so its replies stay that campaign's, never the org's.
  */
 import { sql } from "drizzle-orm";
 import { db } from "../db";
@@ -49,12 +53,12 @@ export function resetReplyJudgingRunMemo(): void {
   memo.clear();
 }
 
-/** The run tags of a pipe: none at all for a pipe-less run. */
+/** The run tags of a pipe: none at all for a pipe-less run (no campaign); a campaign's Engine names no workflow. */
 function trackingOf(pipe: ReplyJudgingPipe) {
-  if (!pipe.campaignId || !pipe.workflowSlug) return undefined;
+  if (!pipe.campaignId) return undefined;
   return {
     campaignId: pipe.campaignId,
-    workflowSlug: pipe.workflowSlug,
+    ...(pipe.workflowSlug ? { workflowSlug: pipe.workflowSlug } : {}),
     ...(pipe.brandIds.length > 0 ? { brandId: pipe.brandIds.join(",") } : {}),
     ...(pipe.featureSlug ? { featureSlug: pipe.featureSlug } : {}),
   };
@@ -64,9 +68,9 @@ function trackingOf(pipe: ReplyJudgingPipe) {
 export async function replyJudgingRunFor(orgId: string, pipe: ReplyJudgingPipe, asOf: Date = new Date()): Promise<string> {
   const day = utcDay(asOf);
   const tracking = trackingOf(pipe);
-  // A pipe is a campaign AND a workflow; half of one pools nowhere.
+  // A pipe is a campaign (and the workflow that sent it, when one did); a workflow with no campaign pools nowhere.
   const campaignId = tracking ? tracking.campaignId : "";
-  const workflowSlug = tracking ? tracking.workflowSlug : "";
+  const workflowSlug = tracking?.workflowSlug ?? "";
   const key = `${orgId}|${day}|${campaignId}|${workflowSlug}`;
   const cached = memo.get(key);
   if (cached) return cached;
