@@ -16,6 +16,7 @@ import { backfillMissingLeadIds } from "../lib/lead-id-backfill";
 import { redatePastPositiveReplies } from "../lib/positive-reply-outcomes";
 import { restateSendAddressConsumption } from "../lib/send-check-restate";
 import { restateUnplacedSendInputs } from "../lib/send-input";
+import { completeWebsiteVisitPerformers } from "../lib/website-visit-outcomes";
 import { runSendOutcomesBackfill } from "../lib/send-outcomes";
 
 const router = Router();
@@ -137,6 +138,23 @@ router.post("/unplaced-send-inputs", async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error(`[instantly-service] unplaced-send-inputs failed: ${error?.message ?? error}`);
     return res.status(500).json({ error: error?.message ?? "unplaced send inputs failed" });
+  }
+});
+
+/**
+ * POST /internal/send-outcomes/website-visit-performers — OUTCOME-PERFORMER-1106: website visits declared before their
+ * performer was stated. Body `{dryRun (default TRUE), limit (default 10000)}`: the dry run counts them per performer
+ * and writes nothing; `dryRun:false` runs one pass now (the send-outcomes worker runs the same pass every minute).
+ */
+router.post("/website-visit-performers", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const dryRun = body.dryRun !== false;
+  const limit = Number.isInteger(body.limit) && body.limit > 0 ? (body.limit as number) : 10_000;
+  try {
+    return res.json(await completeWebsiteVisitPerformers({ dryRun, limit }));
+  } catch (error: any) {
+    console.error(`[instantly-service] website-visit-performers failed: ${error?.message ?? error}`);
+    return res.status(500).json({ error: error?.message ?? "website visit performers failed" });
   }
 });
 
