@@ -648,7 +648,9 @@ export async function readThreads(f: ThreadFilters) {
                max(m.occurred_at) AS last_at,
                count(*)::int AS message_count,
                count(*) FILTER (WHERE m.direction = 'in')::int AS inbound_count,
-               count(*) FILTER (WHERE m.direction = 'out')::int AS outbound_count,
+               -- A failed send never reads as sent (SENDING-INFRA-AUDIT-1106).
+               count(*) FILTER (WHERE m.direction = 'out' AND m.outcome = 'sent')::int AS outbound_count,
+               count(*) FILTER (WHERE m.direction = 'out' AND m.outcome <> 'sent')::int AS failed_outbound_count,
                min(m.account_email) AS account_email,
                min(COALESCE(m.mailbox_login, m.account_email)) AS mailbox_login,
                min(m.counterparty) AS counterparty,
@@ -696,6 +698,7 @@ export async function readThreads(f: ThreadFilters) {
       messageCount: num(r.message_count),
       inboundCount: num(r.inbound_count),
       outboundCount: num(r.outbound_count),
+      failedOutboundCount: num(r.failed_outbound_count),
       firstAt: iso(r.first_at),
       lastAt: iso(r.last_at),
     })),

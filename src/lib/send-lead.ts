@@ -36,9 +36,11 @@ import {
 import { capForAccount } from "./account-lifecycle";
 import { keepSelfSendCapable } from "./self-send/capability";
 import { dropInboundBlind } from "./self-send/inbound-blindness";
+import { dropRefusedSenders } from "./self-send/refused-senders";
 import { BounceBudget } from "./bounce-budget";
 import { loadFleetBounceHistoryCached } from "./bounce-budget-history";
-import { dateKeyUTC } from "./sending-forecast";
+import { dateKeyUTC, MS_PER_DAY } from "./sending-forecast";
+import { isSendingDay } from "./sending-calendar";
 import { fillSenderPlaceholders } from "./brand-email-signature";
 import { sequenceFootprintDays } from "./sending-window";
 import { tagColdEmailLinks } from "./cold-email-utm";
@@ -114,7 +116,44 @@ function fitsFootprint(
     undefined,
     asOf,
   );
-  return footprint.every((dayKey, i) => cap > 0 && loadOnDay(a, byEmail, dayKey, i === 0) < cap);
+  if (cap <= 0) return false;
+  const load = carriedLoadOnDays(a, byEmail, footprint, cap);
+  return footprint.every((dayKey) => (load.get(dayKey) ?? 0) < cap);
+}
+
+/**
+ * The load each footprint day REALLY carries once a backlog is drained at the
+ * cap, day after day (SENDING-INFRA-AUDIT-1106).
+ *
+ * `byDay` books every overdue step on today, once: a mailbox owing 119 overdue
+ * follow-ups at 50/day read full today and EMPTY tomorrow, so a lead whose
+ * window opened tomorrow (or whose D+3 fell two days out) was handed to it, and
+ * its follow-ups queued behind the backlog: 1,783 follow-ups overdue on
+ * 2026-11-06, the oldest from 2026-10-29, while other production mailboxes had
+ * room. Walking the days and carrying what cannot leave into the next one makes
+ * a backlogged mailbox read full for as many days as its backlog lasts. Nothing
+ * leaves on a non-sending day (Sunday), so the carry crosses it whole.
+ */
+export function carriedLoadOnDays(
+  a: Account,
+  byEmail: Map<string, AccountCapacity>,
+  footprint: readonly string[],
+  cap: number,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  if (footprint.length === 0) return out;
+  const first = Date.parse(`${footprint[0]!}T00:00:00.000Z`);
+  const last = Date.parse(`${footprint[footprint.length - 1]!}T00:00:00.000Z`);
+  const wanted = new Set(footprint);
+  let carry = 0;
+  for (let t = first; t <= last; t += MS_PER_DAY) {
+    const day = new Date(t);
+    const key = dateKeyUTC(day);
+    const load = carry + loadOnDay(a, byEmail, key, t === first);
+    if (wanted.has(key)) out.set(key, load);
+    carry = isSendingDay(day) ? Math.max(0, load - cap) : load;
+  }
+  return out;
 }
 
 /**
@@ -426,17 +465,25 @@ export function pickSequentialFillAccount<T extends FillOrderAccount>(
   // wins tier 1 on almost every lead while the cheap vendor still has room
   // today. Measured 2026-09-26: 487 of 602 new sequences went to Instantly DFY.
   // A later vendor only sees a lead once no account ahead of it has room TODAY.
+  //
+  // ⚠️ SENDING-INFRA-AUDIT-1106 (owner 2026-11-06: no prospect follow-up goes
+  // out days late) moved Tier 1 OUTSIDE the vendor loop: the first mailbox, in
+  // fill order, that carries the WHOLE sequence wins, whatever its vendor.
+  // Before, a cheap mailbox with room today but a booked D+3 / D+10 took the
+  // lead and its follow-ups queued behind the backlog (1,783 overdue on
+  // 2026-11-06). The 2026-09-26 case (Instantly DFY taking 487 of 602) cannot
+  // recur in that shape: DFY is gone, and with the backlog carried forward a
+  // mailbox only reads full while it really is. The vendor order still decides
+  // among the mailboxes that fit, so the expensive tiers stay at the tail.
   for (const group of groupByVendor(ordered)) {
-    // Tier 1 — the whole sequence fits.
+    // Tier 1 — the whole sequence fits, cheapest vendor first.
     for (const a of group) {
       if (fitsFootprint(a, byEmail, days, asOf)) return a;
     }
-
-    // Tier 2 — nobody in this vendor can carry the whole sequence, so fall
-    // back to the question this selector asked before it could see past today.
-    // Deliberately NOT a cascade to the next vendor: a backlogged followup goes
-    // out late on a cheap mailbox, which is the price of never feeding a vendor
-    // we are winding down.
+  }
+  for (const group of groupByVendor(ordered)) {
+    // Tier 2 — nobody in the fleet can carry the whole sequence: fall back to
+    // room on day one, inside the cheapest vendor that has any.
     for (const a of group) {
       if (fitsFootprint(a, byEmail, firstDay, asOf)) return a;
     }
@@ -911,8 +958,13 @@ export async function fetchSendablePool(
   featureSlug: string | null,
   caller: { method: string; path: string },
 ): Promise<PooledAccount[]> {
-  return dropInboundBlind(
-    await keepSelfSendCapable(await fetchInProductionAccounts(featureSlug), caller),
+  // … nor a mailbox the relay refuses (a login failure included,
+  // `refused-senders.ts`): it would take the lead and never send it.
+  return dropRefusedSenders(
+    await dropInboundBlind(
+      await keepSelfSendCapable(await fetchInProductionAccounts(featureSlug), caller),
+      caller,
+    ),
     caller,
   );
 }

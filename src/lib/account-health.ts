@@ -34,6 +34,11 @@ import {
   resolveTransportForSend,
 } from "./self-send/transport";
 
+/** `blockReason` of an address whose mailbox the relay will not let us log into. */
+export const LOGIN_FAILED_REASON = "login_failed";
+/** `blockReason` of an address whose mailbox the relay refuses for another sender-side reason. */
+export const RELAY_REFUSED_REASON = "relay_refused";
+
 /**
  * What SEND SELECTION says about the fleet, injected into the ops row so the
  * table cannot disagree with the selector. Both members are optional: a caller
@@ -67,6 +72,12 @@ export interface SelectionView {
    * the dispatcher both refuse it.
    */
   inboundBlindAddresses?: ReadonlySet<string>;
+  /**
+   * Lowercased address → why the relay refuses its mailbox now
+   * (`self-send/refused-senders.ts`): out of the pool, nothing dispatched from
+   * it, the reason served (SENDING-INFRA-AUDIT-1106).
+   */
+  refusedByAddress?: ReadonlyMap<string, { since: string; response: string; loginFailed: boolean }>;
   /** Lowercased address → its placement per provider (`provider-placement-read.ts`). */
   placementByProviderByEmail?: Map<string, PlacementByProvider>;
 }
@@ -147,6 +158,14 @@ export interface AccountHealth {
   blockReason: string | null;
   /** True when we send from this mailbox but never read its replies (`inbound-blindness.ts`). */
   inboundUnreadable: boolean;
+  /** True when the relay refuses this mailbox now: out of the sending pool, nothing dispatched from it. */
+  refusedByRelay: boolean;
+  /** True when that refusal is a LOGIN failure (535 / 5.7.8): the credential no longer works. */
+  loginFailed: boolean;
+  /** When the relay started refusing (ISO), null when not refused. */
+  refusedByRelaySince: string | null;
+  /** The relay's own words (e.g. `535 5.7.8 ... authentication failed`), null when not refused. */
+  refusedByRelayResponse: string | null;
   /** Auto-derived lifecycle state (null until reconcileLifecycle first runs). */
   lifecycleStatus: LifecycleStatus | null;
   /** Snapshot reason on the latest lifecycle transition (null until classified). */
@@ -347,13 +366,17 @@ export function buildAccountHealth(
   const recentSustainedByEmail = selection.recentSustainedByEmail ?? new Map<string, number>();
   const newSequencesTodayByEmail = selection.newSequencesTodayByEmail ?? new Map<string, number>();
   const inboundBlindAddresses = selection.inboundBlindAddresses ?? new Set<string>();
+  const refusedByAddress = selection.refusedByAddress ?? new Map<string, { since: string; response: string; loginFailed: boolean }>();
   const placementByProviderByEmail = selection.placementByProviderByEmail ?? new Map<string, PlacementByProvider>();
   return accounts.map((a) => {
     const lifecycle = lifecycleByEmail.get(a.email) ?? null;
     const lifecycleStatus = lifecycle?.status ?? null;
     const inboundUnreadable = inboundBlindAddresses.has(a.email.trim().toLowerCase());
-    const blocked = lifecycleStatus !== "in_production" || inboundUnreadable;
-    const blockReason = inboundUnreadable
+    const refused = refusedByAddress.get(a.email.trim().toLowerCase()) ?? null;
+    const blocked = lifecycleStatus !== "in_production" || inboundUnreadable || refused !== null;
+    const blockReason = refused !== null
+      ? (refused.loginFailed ? LOGIN_FAILED_REASON : RELAY_REFUSED_REASON)
+      : inboundUnreadable
       ? INBOUND_UNREADABLE_REASON
       : blocked
         ? (lifecycleStatus ?? "unclassified")
@@ -391,6 +414,10 @@ export function buildAccountHealth(
       blocked,
       blockReason,
       inboundUnreadable,
+      refusedByRelay: refused !== null,
+      loginFailed: refused?.loginFailed ?? false,
+      refusedByRelaySince: refused?.since ?? null,
+      refusedByRelayResponse: refused?.response ?? null,
       lifecycleStatus,
       lifecycleReason: lifecycle?.reason ?? null,
       lifecycleUpdatedAt: lifecycle?.updatedAt ?? null,

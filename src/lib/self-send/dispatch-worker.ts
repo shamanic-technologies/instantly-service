@@ -17,6 +17,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../../db";
 import { smtpDispatchRaw } from "../../db/schema";
 import { fetchRecentDailyVolume, sustainedForMailbox } from "../recent-send-volume";
+import { IN_PRODUCTION_DAILY_LIMIT } from "../account-lifecycle";
 import { promoteEvent } from "../silver-promote";
 import { BounceBudget, PROOF_FRESH_DAYS } from "../bounce-budget";
 import { loadFleetBounceHistory } from "../bounce-budget-history";
@@ -40,7 +41,10 @@ import { selectionToSend } from "./send-select-script";
 import { recordSentMessage } from "./send-record";
 import {
   classifyPermanentFailure,
+  drainLimitFor,
+  holdFirstEmailsBehindFollowUps,
   isAnswerOwed,
+  mailboxesWithOverdueFollowUps,
   selectDueSteps,
   isHeldForAbsence,
   type AccountCapacity,
@@ -82,6 +86,11 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
 
 export interface DispatchSummary {
   sequencesRead: number;
+  /**
+   * First emails left out of this run because the follow-ups already owed take
+   * the room (`holdFirstEmailsBehindFollowUps`). They stay queued.
+   */
+  heldForFollowUps: number;
   /** Steps this run will actually send — what is left AFTER capacity clips. */
   due: number;
   /**
@@ -487,7 +496,10 @@ export async function loadSmtpSenderHealth(
 async function loadSendingAccounts(
   asOf: Date,
   mailboxLogins: ReadonlyMap<string, string>,
-): Promise<{ capacities: AccountCapacity[]; accounts: Map<string, Account> }> {
+  /** Real mailboxes owing a follow-up since before today: a RECOVERING one drains at the production limit (`drainLimitFor`). */
+  overdueMailboxes: ReadonlySet<string> = new Set(),
+): Promise<{ capacities: AccountCapacity[]; accounts: Map<string, Account>; draining: Set<string> }> {
+  const draining = new Set<string>();
   const [result, volume, placementByAddress] = await Promise.all([
     db.execute(sql`
     SELECT
@@ -565,7 +577,14 @@ async function loadSendingAccounts(
     // The OPERATOR limit only. The ramp is applied at mailbox grain inside
     // `selectDueSteps`, which is where the aliases are summed — see
     // `AccountCapacity.cap`.
-    const dailyLimit = row.dailyLimit === null ? 0 : Number(row.dailyLimit);
+    const statedLimit = row.dailyLimit === null ? 0 : Number(row.dailyLimit);
+    const dailyLimit = drainLimitFor(
+      statedLimit,
+      typeof row.lifecycleStatus === "string" ? row.lifecycleStatus : null,
+      overdueMailboxes.has(mailbox),
+      IN_PRODUCTION_DAILY_LIMIT,
+    );
+    if (dailyLimit > statedLimit) draining.add(mailbox);
 
     capacities.push({
       accountEmail: email,
@@ -593,7 +612,7 @@ async function loadSendingAccounts(
     } as Account);
   }
 
-  return { capacities, accounts };
+  return { capacities, accounts, draining };
 }
 
 /**
@@ -901,6 +920,7 @@ function emptySummary(): DispatchSummary {
     heldBlocklisted: 0,
     heldPlacement: 0,
     heldMostlySpam: 0,
+    heldForFollowUps: 0,
     sent: 0,
     bounced: 0,
     senderBlocked: 0,
@@ -1027,7 +1047,12 @@ async function runDispatchExclusive(
     const sequences = (await loadPendingSequences()).filter(
       (s) => !notYetStopped.has(s.instantlyCampaignId) && !isHeldForAbsence(s, asOf),
     );
-    const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
+    const overdueMailboxes = mailboxesWithOverdueFollowUps(
+      sequences,
+      (accountEmail) => mailboxLogins.get(accountEmail.trim().toLowerCase()),
+      asOf,
+    );
+    const { capacities, accounts, draining } = await loadSendingAccounts(asOf, mailboxLogins, overdueMailboxes);
     // A contacted sequence whose mailbox we no longer have is cancelled and
     // refunded; one whose mailbox, still ours, cannot send it is re-pinned to a
     // production mailbox. Both BEFORE the selection, so whichever selection is
@@ -1038,17 +1063,37 @@ async function runDispatchExclusive(
         if (gone.has(sequences[i]!.instantlyCampaignId)) sequences.splice(i, 1);
       }
     }
-    await repinStrandedFollowUps(sequences, capacities, asOf, skippedMailboxes);
     // Fresh per selection (never the 60 s cache): the budget is spent in memory
     // as steps are planned, so it must start from what has really happened.
     const bounceHistory = await loadFleetBounceHistory();
     const bounceBudget = new BounceBudget(bounceHistory);
+    // Follow-ups already owed take the room before any NEW thread opens
+    // (SENDING-INFRA-AUDIT-1106): first emails that would spend it are left out
+    // of this run, so whichever selection is sent cannot make a follow-up late.
+    const room = holdFirstEmailsBehindFollowUps(sequences, capacities, asOf, skippedMailboxes, draining);
+    let held = room.held;
+    const failedMoves = new Set<string>();
+    for (const move of room.moves) {
+      // Persisted BEFORE the selection, guarded on nothing sent: the stored
+      // script then sees it on the mailbox that has the room.
+      const ok = await rehomeSequence(move.instantlyCampaignId, move.from, move.to, asOf, "first_email_stranded");
+      if (!ok) failedMoves.add(move.instantlyCampaignId);
+    }
+    const kept = room.kept.filter((s) => !failedMoves.has(s.instantlyCampaignId));
+    held += failedMoves.size;
+    // AFTER the hold: the room a stranded follow-up is offered is then room no
+    // first email can take ahead of it.
+    await repinStrandedFollowUps(kept, capacities, asOf, skippedMailboxes);
+    if (held > 0) {
+      console.warn(`[instantly-service] self-send-dispatch: ${held} first email(s) wait this run: the follow-ups already owed take the room`);
+    }
     return {
-      sequences,
+      sequences: kept,
+      heldForFollowUps: held,
       accounts,
       capacities,
       bounceHistory,
-      selection: selectDueSteps(sequences, capacities, asOf, skippedMailboxes, bounceBudget),
+      selection: selectDueSteps(kept, capacities, asOf, skippedMailboxes, bounceBudget),
     };
   };
 
@@ -1102,8 +1147,9 @@ async function runDispatchExclusive(
     }
     const idle: DispatchSummary = {
       ...emptySummary(),
-      sequencesRead: current.sequences.length,
-      dueBeforeCapacity: current.selection.dueBeforeCapacity,
+      sequencesRead: current.sequences.length + current.heldForFollowUps,
+      // A first email held behind the follow-ups was due too.
+      dueBeforeCapacity: current.selection.dueBeforeCapacity + current.heldForFollowUps,
       blockedNoCapacityRow: current.selection.blockedNoCapacityRow,
       skippedSilenced: current.selection.skippedSilenced,
       rehomed: current.selection.rehomed,
@@ -1111,6 +1157,7 @@ async function runDispatchExclusive(
       heldBlocklisted: current.selection.heldBlocklisted,
       heldPlacement: current.selection.heldPlacement,
       heldMostlySpam: current.selection.heldMostlySpam,
+      heldForFollowUps: current.heldForFollowUps,
     };
     console.log(
       `[instantly-service] self-send-dispatch: done ${JSON.stringify(idle)}`,
@@ -1202,9 +1249,9 @@ async function runDispatchExclusive(
 
     const summary: DispatchSummary = {
       ...emptySummary(),
-      sequencesRead: sequences.length,
+      sequencesRead: sequences.length + current.heldForFollowUps,
       due: due.length,
-      dueBeforeCapacity: selection.dueBeforeCapacity,
+      dueBeforeCapacity: selection.dueBeforeCapacity + current.heldForFollowUps,
       blockedNoCapacityRow: selection.blockedNoCapacityRow,
       skippedSilenced: selection.skippedSilenced,
       rehomed: selection.rehomed,
@@ -1212,6 +1259,7 @@ async function runDispatchExclusive(
       heldBlocklisted: selection.heldBlocklisted,
       heldPlacement: selection.heldPlacement,
       heldMostlySpam: selection.heldMostlySpam,
+      heldForFollowUps: current.heldForFollowUps,
       polled,
     };
 
