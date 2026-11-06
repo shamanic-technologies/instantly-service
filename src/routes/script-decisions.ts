@@ -3,7 +3,10 @@
  * (`lib/service-script.ts`), served to workflow-service's case recorder. Same family as
  * `GET /internal/dispatch-selections/recorded`:
  *   - `GET /internal/script-decisions/message_queued/recorded?after=<seq>&limit=`
- *   - `GET /internal/script-decisions/reply_received/recorded?after=<seq>&limit=`
+ *   - `GET /internal/script-decisions/reply_received/recorded?after=<seq>&limit=[&task=]`
+ * `task` (MIGRATE-1105 S2b) narrows to one decision of the outcome (`inbound-decision`, `orphan-judgment`); none = every
+ * row of the outcome (rows recorded before tasks carry none). A paid decision's row carries `calls` (its vendor calls in
+ * the script's words).
  * oldest first (60 s settle), `{decisions[], nextAfter, hasMore}`. `GET /internal/script-decisions/<outcome>/proof` =
  * decisions per path, same vs different.
  */
@@ -33,6 +36,7 @@ router.get("/:outcome/recorded", async (req: Request, res: Response) => {
   if (!outcome) return;
   const after = req.query.after === undefined ? 0 : Number(req.query.after);
   const limit = req.query.limit === undefined ? 20 : Number(req.query.limit);
+  const task = typeof req.query.task === "string" && req.query.task ? req.query.task : null;
   if (!Number.isInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
     return res.status(400).json({ error: "after (a seq >= 0) and limit (1..100) must be integers" });
   }
@@ -40,7 +44,7 @@ router.get("/:outcome/recorded", async (req: Request, res: Response) => {
     const rows = await db
       .select()
       .from(scriptDecisions)
-      .where(and(eq(scriptDecisions.outcome, outcome), gt(scriptDecisions.seq, after), sql`${scriptDecisions.createdAt} < now() - interval '60 seconds'`))
+      .where(and(eq(scriptDecisions.outcome, outcome), task ? eq(scriptDecisions.task, task) : undefined, gt(scriptDecisions.seq, after), sql`${scriptDecisions.createdAt} < now() - interval '60 seconds'`))
       .orderBy(asc(scriptDecisions.seq))
       .limit(limit);
     return res.json({ decisions: rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() })), nextAfter: rows.length > 0 ? rows[rows.length - 1]!.seq : after, hasMore: rows.length === limit });
@@ -53,6 +57,7 @@ router.get("/:outcome/recorded", async (req: Request, res: Response) => {
 router.get("/:outcome/proof", async (req: Request, res: Response) => {
   const outcome = outcomeOf(req, res);
   if (!outcome) return;
+  const task = typeof req.query.task === "string" && req.query.task ? req.query.task : null;
   try {
     const rows = await db.execute(sql`
       SELECT path,
@@ -61,7 +66,7 @@ router.get("/:outcome/proof", async (req: Request, res: Response) => {
         count(*) FILTER (WHERE same = false)::int AS different,
         count(*) FILTER (WHERE error IS NOT NULL)::int AS errors,
         max(created_at) AS last_at
-      FROM script_decisions WHERE outcome = ${outcome} GROUP BY path ORDER BY path
+      FROM script_decisions WHERE outcome = ${outcome} ${task ? sql`AND task = ${task}` : sql``} GROUP BY path ORDER BY path
     `);
     return res.json({ outcome, paths: (rows as unknown as { rows: unknown[] }).rows ?? rows });
   } catch (error) {

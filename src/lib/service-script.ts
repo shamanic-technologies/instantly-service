@@ -49,13 +49,18 @@ function workflow(): { base: string; key: string } {
   return { base, key };
 }
 
-/** Whether `outcome` is the stored script's now, for this service. Unreadable = the last state read; never read = our own code. */
-export async function serviceScriptSwitch(outcome: string, now = Date.now()): Promise<ServiceScriptSwitch> {
-  const held = memo.get(outcome);
+/**
+ * Whether `outcome` is the stored script's now, for this service. Unreadable = the last state read; never read = our own
+ * code. `task` names the decision (MIGRATE-1105 S2b: reply_received is made by two, `inbound-decision` and
+ * `orphan-judgment`): workflow-service keys the switch by it.
+ */
+export async function serviceScriptSwitch(outcome: string, task?: string, now = Date.now()): Promise<ServiceScriptSwitch> {
+  const memoKey = task ? `${outcome}|${task}` : outcome;
+  const held = memo.get(memoKey);
   if (held && now - held.at < STATE_TTL_MS) return held.state;
   try {
     const { base, key } = workflow();
-    const q = new URLSearchParams({ outcome, callerService: CALLER_SERVICE });
+    const q = new URLSearchParams({ outcome, callerService: CALLER_SERVICE, ...(task ? { callerTask: task } : {}) });
     const res = await fetch(`${base}/internal/scripts/switches/service?${q}`, { headers: { "x-api-key": key }, signal: AbortSignal.timeout(10_000) });
     const text = await res.text();
     if (!res.ok) throw new Error(`GET /internal/scripts/switches/service -> ${res.status}: ${text.slice(0, 200)}`);
@@ -63,12 +68,12 @@ export async function serviceScriptSwitch(outcome: string, now = Date.now()): Pr
     const dynasty = typeof body.dynasty === "string" && body.dynasty ? body.dynasty : null;
     const state: ServiceScriptSwitch =
       body.switched === true && dynasty ? { switched: true, shadow: false, dynasty } : body.shadow === true && dynasty ? { switched: false, shadow: true, dynasty } : NOT_SWITCHED;
-    memo.set(outcome, { state, at: now });
+    memo.set(memoKey, { state, at: now });
     return state;
   } catch (error) {
     const kept = held?.state ?? NOT_SWITCHED;
     console.error(`[instantly-service] ${outcome} switch: state unreadable, keeping ${kept.switched ? `the script ${kept.dynasty}` : "our own code"}: ${error instanceof Error ? error.message : String(error)}`);
-    memo.set(outcome, { state: kept, at: now });
+    memo.set(memoKey, { state: kept, at: now });
     return kept;
   }
 }
@@ -140,6 +145,8 @@ export type DecisionPath = "service" | "shadow" | "script";
 
 export interface DecisionRecord {
   outcome: string;
+  /** The decision (the Engine's task). */
+  task?: string | null;
   path: DecisionPath;
   runId: string | null;
   scriptRunId: string | null;
@@ -149,6 +156,8 @@ export interface DecisionRecord {
   script: Record<string, unknown> | null;
   same: boolean | null;
   error: string | null;
+  /** The vendor calls OUR decision made, in the script's words (null for a pure decision). */
+  calls?: unknown[] | null;
 }
 
 /** Fail-soft: a decision is never failed by its record. */
@@ -156,6 +165,7 @@ export async function recordDecision(r: DecisionRecord): Promise<void> {
   try {
     await db.insert(scriptDecisions).values({
       outcome: r.outcome,
+      task: r.task ?? null,
       path: r.path,
       runId: r.runId,
       scriptRunId: r.scriptRunId,
@@ -165,6 +175,7 @@ export async function recordDecision(r: DecisionRecord): Promise<void> {
       script: r.script,
       same: r.same,
       error: r.error ? r.error.slice(0, 1000) : null,
+      calls: r.calls ?? null,
     });
     await db.delete(scriptDecisions).where(lt(scriptDecisions.createdAt, new Date(Date.now() - SCRIPT_DECISION_RETENTION_DAYS * 86_400_000)));
   } catch (error) {
@@ -180,10 +191,24 @@ export interface ServiceScriptEngine<T> {
   consumes: string;
   /** The caller's value as the script answers it. */
   fromWords(words: Record<string, unknown>): T;
+  /**
+   * The decision calls a PAID vendor (the orphan-reply judgment's Jev): once switched, ours is not computed beside the
+   * script (it would pay twice); in shadow both are asked, ours used.
+   */
+  paidVendor?: boolean;
+  /** What two answers are compared on (default the whole answer): a vendor's probabilities differ call to call. */
+  compareOn?(words: Record<string, unknown>): Record<string, unknown>;
+}
+
+/** Our own decision's words, its material, and the vendor calls it made (in the script's words). */
+export interface BuiltDecision {
+  material: Record<string, unknown>;
+  oursWords: Record<string, unknown>;
+  calls?: unknown[] | null;
 }
 
 export interface DecideDeps {
-  switchState?: (outcome: string) => Promise<ServiceScriptSwitch>;
+  switchState?: (outcome: string, task?: string) => Promise<ServiceScriptSwitch>;
   run?: typeof runServiceScript;
   openRun?: (task: string) => Promise<{ id: string }>;
   closeRun?: (runId: string, status: "completed" | "failed") => Promise<void>;
@@ -193,11 +218,14 @@ export interface DecideDeps {
 /**
  * The decision to ACT on: ours while not switched (recorded; the script asked beside it in shadow), the stored
  * script's while switched. `material` and `oursWords` are built lazily, only where they are recorded.
+ *
+ * `ours` is our value, or (a paid decision) how to compute it: computed only where it is used or compared. `build`
+ * receives it (null when a switched paid decision never computed it: then only the material is read).
  */
 export async function decideThroughScript<T>(
   engine: ServiceScriptEngine<T>,
-  ours: T,
-  build: () => { material: Record<string, unknown>; oursWords: Record<string, unknown> },
+  ours: T | (() => Promise<T>),
+  build: (ours: T | null) => { material: Record<string, unknown>; oursWords: Record<string, unknown> | null; calls?: unknown[] | null },
   deps: DecideDeps = {},
 ): Promise<T> {
   // Resolved at use, never up front: nothing on our own path may fail the caller.
@@ -206,43 +234,49 @@ export async function decideThroughScript<T>(
   const record = (r: DecisionRecord) => (deps.record ?? recordDecision)(r);
   const run = (input: Parameters<typeof runServiceScript>[0]) => (deps.run ?? runServiceScript)(input);
 
-  const choose = await (deps.switchState ?? serviceScriptSwitch)(engine.outcome);
+  const choose = await (deps.switchState ?? serviceScriptSwitch)(engine.outcome, engine.task);
   const dynasty = choose.dynasty;
+  const ourValue = (): Promise<T> => (typeof ours === "function" ? (ours as () => Promise<T>)() : Promise.resolve(ours));
+  const task = engine.task;
+  const compared = (w: Record<string, unknown>) => (engine.compareOn ? engine.compareOn(w) : w);
 
   if (!dynasty || (!choose.switched && !choose.shadow)) {
+    const value = await ourValue();
     // Our own path, recorded with its exact material; never delays nor fails the caller.
     void (async () => {
-      const { material, oursWords } = build();
+      const { material, oursWords, calls } = build(value);
       const opened = await openRun(engine.task).catch((error: unknown) => {
         console.error(`[instantly-service] ${engine.outcome}: run not opened: ${error instanceof Error ? error.message : String(error)}`);
         return null;
       });
-      await record({ outcome: engine.outcome, path: "service", runId: opened?.id ?? null, scriptRunId: null, scriptSlug: null, material, ours: oursWords, script: null, same: null, error: null });
+      await record({ outcome: engine.outcome, task, path: "service", runId: opened?.id ?? null, scriptRunId: null, scriptSlug: null, material, ours: oursWords ?? {}, script: null, same: null, error: null, calls: calls ?? null });
       if (opened) await closeRun(opened.id, "completed").catch(() => undefined);
     })().catch((error: unknown) => console.error(`[instantly-service] ${engine.outcome}: decision not recorded: ${error instanceof Error ? error.message : String(error)}`));
-    return ours;
+    return value;
   }
 
   const path: DecisionPath = choose.switched ? "script" : "shadow";
+  // A switched paid decision runs the script alone; every other path computes ours (used, or compared).
+  const value = path === "script" && engine.paidVendor ? null : await ourValue();
   const ask = async (): Promise<T> => {
-    const { material, oursWords } = build();
+    const { material, oursWords, calls } = build(value);
     const opened = await openRun(engine.task);
     try {
       const out = await run({ outcome: engine.outcome, dynasty, parentRunId: opened.id, consumes: engine.consumes, material });
-      const same = sameWords(oursWords, out.words);
-      const value = path === "script" ? engine.fromWords(out.words) : ours;
-      await record({ outcome: engine.outcome, path, runId: opened.id, scriptRunId: out.runId, scriptSlug: out.scriptSlug, material, ours: oursWords, script: out.words, same, error: null });
-      if (!same) console.error(`[instantly-service] ${engine.outcome}: the script's answer differs from ours (run ${opened.id}, ${path === "script" ? "the script's is used" : "ours is used"})`);
+      const same = oursWords ? sameWords(compared(oursWords), compared(out.words)) : null;
+      const used = path === "script" ? engine.fromWords(out.words) : (value as T);
+      await record({ outcome: engine.outcome, task, path, runId: opened.id, scriptRunId: out.runId, scriptSlug: out.scriptSlug, material, ours: oursWords ?? {}, script: out.words, same, error: null, calls: calls ?? null });
+      if (same === false) console.error(`[instantly-service] ${engine.outcome}: the script's answer differs from ours (run ${opened.id}, ${path === "script" ? "the script's is used" : "ours is used"})`);
       await closeRun(opened.id, "completed").catch(() => undefined);
-      return value;
+      return used;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await record({ outcome: engine.outcome, path, runId: opened.id, scriptRunId: error instanceof ServiceScriptError ? error.runId : null, scriptSlug: null, material, ours: oursWords, script: null, same: null, error: message });
+      await record({ outcome: engine.outcome, task, path, runId: opened.id, scriptRunId: error instanceof ServiceScriptError ? error.runId : null, scriptSlug: null, material, ours: oursWords ?? {}, script: null, same: null, error: message, calls: calls ?? null });
       await closeRun(opened.id, "failed").catch(() => undefined);
       throw error;
     }
   };
   if (path === "script") return ask();
   void ask().catch((error: unknown) => console.error(`[instantly-service] ${engine.outcome} shadow failed (ours was used): ${error instanceof Error ? error.message : String(error)}`));
-  return ours;
+  return value as T;
 }
