@@ -808,6 +808,15 @@ async function loadStepContent(
           WHERE r.instantly_campaign_id IN (SELECT id FROM chain)
             AND r.kind IN ('reply', 'staff_reply')
             AND r.message_id IS NOT NULL
+          UNION
+          -- A thread Instantly carried (before our own sender): the emails it
+          -- reported, ours and theirs (THREAD-MAILBOX-1107).
+          SELECT x.payload->>'message_id', (x.payload->>'timestamp_email')::timestamptz
+          FROM instantly_emails_raw x
+          WHERE x.instantly_campaign_id IN (SELECT id FROM chain)
+            AND x.payload->>'ue_type' IN ('1', '2', '3')
+            AND COALESCE(x.payload->>'message_id', '') <> ''
+            AND COALESCE(x.payload->>'timestamp_email', '') <> ''
         ) m
       ), '[]'::jsonb) AS "priorMessageIds"
   `);

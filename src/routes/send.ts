@@ -338,7 +338,14 @@ router.post("/", async (req: Request, res: Response) => {
       //     A FOLLOW-UP (`followUp: true`) is refused while a step of the
       //     brand's sequence to the person is still queued (two of our emails
       //     would race), with its own code (src/lib/follow-up-send.ts).
-      let followUpThread: FollowUpThread | null = null;
+      //
+      //     EVERY send to a person the brand already wrote to continues their
+      //     LAST thread with it (THREAD-MAILBOX-1107, owner: « reply in the
+      //     lead's last thread, from the address they wrote to / we wrote
+      //     from »), whoever asked: a cold-email campaign re-serving contacted
+      //     prospects states no `followUp` and used to open a NEW thread from
+      //     another mailbox (Doc Dinners 2026-11-06, 4 of 4 sends). The flag
+      //     only adds the race refusal above and its own reservation key.
       if (isFollowUp) {
         const queued = await findQueuedBrandSequence(orgId, body.to, brandIds, sendRunId);
         if (queued) {
@@ -346,8 +353,8 @@ router.post("/", async (req: Request, res: Response) => {
           console.warn(`[send] Refused — ${refusal.details}`);
           return res.status(409).json(refusal);
         }
-        followUpThread = await findFollowUpThread(orgId, body.to, brandIds);
       }
+      const followUpThread: FollowUpThread | null = await findFollowUpThread(orgId, body.to, brandIds);
 
       // 3c. NOT A PROSPECT — the person told this brand they already buy from
       //     the client, or are the client. Permanent for the brand. Same
@@ -779,9 +786,9 @@ router.post("/", async (req: Request, res: Response) => {
         transport,
       });
       const threadSubject = queued.threadSubject;
-      if (isFollowUp) {
+      if (isFollowUp || followUpThread) {
         console.log(
-          `[send] Follow-up to ${body.to}: ${
+          `[send] ${isFollowUp ? "Follow-up" : "Send"} to ${body.to}: ${
             threadSubject
               ? `continues thread ${followUpThread!.instantlyCampaignId} from ${sendResult.value.account.email} (${followUpThread!.reason === "their_last_reply" ? "the thread they wrote in last" : "they never wrote back: our latest thread"})`
               : `new thread (${followUpThread ? `${followUpThread.reason === "their_last_reply" ? "the thread they wrote in last" : "our latest thread"} ${followUpThread.instantlyCampaignId}: mailbox ${followUpThread.accountEmail ?? "unknown"} not usable${followUpThread.subject ? "" : ", no subject"}` : "no earlier email for this brand"})`
@@ -816,7 +823,14 @@ router.post("/", async (req: Request, res: Response) => {
             ? {
                 metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object('followUpOf', ${queued.followUpOf}::text)`,
               }
-            : {}),
+            : followUpThread
+              ? {
+                  // Never a SILENT new thread: the thread it could not continue
+                  // and why stay on the row (its mailbox is not ours any more,
+                  // or it holds no subject).
+                  metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object('threadNotContinued', jsonb_build_object('instantlyCampaignId', ${followUpThread.instantlyCampaignId}::text, 'mailbox', ${followUpThread.accountEmail}::text, 'hasSubject', ${followUpThread.subject !== null}::boolean, 'sentFrom', ${sendResult.value.account.email}::text, 'transport', ${transport}::text))`,
+                }
+              : {}),
           updatedAt: new Date(),
         })
         .where(eq(instantlyCampaigns.id, reservedId));

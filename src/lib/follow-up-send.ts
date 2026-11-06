@@ -177,24 +177,55 @@ export async function findFollowUpThread(
   if (!email || brandIds.length === 0) return null;
   const result = await db.execute(sql`
     SELECT c.instantly_campaign_id AS "instantlyCampaignId",
-           c.account_email AS "accountEmail",
-           (SELECT s.subject FROM sequence_steps s
-             WHERE s.instantly_campaign_id = c.instantly_campaign_id AND s.step = 1) AS "subject",
+           -- A sequence Instantly sent (before our own sender) holds no mailbox
+           -- nor step rows here: its mailbox and subject are the ones on the
+           -- emails Instantly reported (THREAD-MAILBOX-1107: 28.8k such rows,
+           -- Doc Dinners' May threads among them).
+           COALESCE(
+             c.account_email,
+             (SELECT x.payload->>'eaccount' FROM instantly_emails_raw x
+               WHERE x.instantly_campaign_id = c.instantly_campaign_id
+                 AND x.payload->>'ue_type' IN ('1', '3')
+                 AND COALESCE(x.payload->>'eaccount', '') <> ''
+               ORDER BY x.payload->>'timestamp_email' DESC NULLS LAST
+               LIMIT 1),
+             sent.account_email
+           ) AS "accountEmail",
+           COALESCE(
+             (SELECT s.subject FROM sequence_steps s
+               WHERE s.instantly_campaign_id = c.instantly_campaign_id AND s.step = 1),
+             (SELECT x.payload->>'subject' FROM instantly_emails_raw x
+               WHERE x.instantly_campaign_id = c.instantly_campaign_id
+                 AND x.payload->>'ue_type' IN ('1', '3')
+                 AND COALESCE(x.payload->>'subject', '') <> ''
+               ORDER BY x.payload->>'timestamp_email' DESC NULLS LAST
+               LIMIT 1)
+           ) AS "subject",
            sent.last_sent AS "lastSentAt",
            reply.last_reply AS "lastReplyAt",
            reply.account_email AS "replyAccountEmail",
-           (SELECT r.subject FROM imap_messages_raw r
-             WHERE r.instantly_campaign_id = c.instantly_campaign_id
-               AND r.kind = 'reply'
-             ORDER BY COALESCE(r.received_at, r.polled_at) DESC
-             LIMIT 1) AS "replySubject"
+           COALESCE(
+             (SELECT r.subject FROM imap_messages_raw r
+               WHERE r.instantly_campaign_id = c.instantly_campaign_id
+                 AND r.kind = 'reply'
+               ORDER BY COALESCE(r.received_at, r.polled_at) DESC
+               LIMIT 1),
+             (SELECT x.payload->>'subject' FROM instantly_emails_raw x
+               WHERE x.instantly_campaign_id = c.instantly_campaign_id
+                 AND x.payload->>'ue_type' = '2'
+                 AND COALESCE(x.payload->>'subject', '') <> ''
+               ORDER BY x.payload->>'timestamp_email' DESC NULLS LAST
+               LIMIT 1)
+           ) AS "replySubject"
     FROM instantly_campaigns c
     JOIN LATERAL (
-      SELECT MAX(e.timestamp) AS last_sent
+      SELECT e.timestamp AS last_sent, e.account_email
       FROM instantly_events e
       WHERE e.campaign_id = c.instantly_campaign_id
         AND e.event_type = 'email_sent'
         AND e.inferred = false
+      ORDER BY e.timestamp DESC
+      LIMIT 1
     ) sent ON sent.last_sent IS NOT NULL
     LEFT JOIN LATERAL (
       SELECT e.timestamp AS last_reply, e.account_email
