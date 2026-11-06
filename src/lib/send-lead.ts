@@ -915,17 +915,6 @@ export interface SelectAccountOptions {
   /** The sequence about to be sent, so its whole footprint can be booked. */
   sequence?: readonly { step: number; daysSinceLastStep: number }[];
   /**
-   * The sequence continues the person's last thread with the brand: the mailbox
-   * that wrote it is taken before the fill order, from the eligible pool, else
-   * still ours in RECOVERY (`fetchThreadMailbox`, THREAD-MAILBOX-1107, owner: reply in their last
-   * thread from the address we wrote from; a mailbox in recovery drains
-   * follow-ups, and one that cannot send at all hands the step over in the SAME
-   * thread at dispatch, OLIVE-FOLLOWUPS-1103). Same capability gates as any
-   * send (credential, replies readable, relay accepts). Not ours any more (gone,
-   * deactivated, refused) = the fill order decides, a new thread, logged.
-   */
-  preferAccountEmail?: string | null;
-  /**
    * The verdict our verifier gave this address. When present, mailboxes whose
    * DOMAIN cannot afford its bounce risk right now (`bounce-budget.ts`) are
    * passed over while another domain can; when none can, the fill order decides
@@ -974,26 +963,51 @@ export async function fetchSendablePool(
   );
 }
 
+/** Why the mailbox of a person's last thread cannot send it any more. */
+export type ThreadMailboxUnusableReason =
+  | "not_ours"
+  | "no_credential"
+  | "replies_unreadable"
+  | "relay_refuses";
+
+export type ThreadMailboxResolution =
+  | { ok: true; account: PooledAccount }
+  | { ok: false; reason: ThreadMailboxUnusableReason };
+
+/**
+ * The mailbox that wrote a person's last thread, when we can still send from
+ * it (THREAD-MAILBOX-1107 + THREAD-ANY-ROUTE-1107, owner: « a follow-up replies
+ * in the lead's LAST thread, from the address that thread used »). Any
+ * lifecycle (`fetchThreadMailbox`), the SAME capability gates as the send pool,
+ * in the same order: a credential (an alias authenticates as its real mailbox),
+ * replies we can read, a relay that accepts it. The first gate it fails is the
+ * reason the caller states; the fill order never replaces it (a new thread
+ * from another address is what this exists to stop).
+ */
+export async function resolveThreadMailbox(
+  email: string,
+  caller: { method: string; path: string },
+): Promise<ThreadMailboxResolution> {
+  const row = await fetchThreadMailbox(email.trim().toLowerCase());
+  if (!row) return { ok: false, reason: "not_ours" };
+  if ((await keepSelfSendCapable([row], caller)).length === 0) {
+    return { ok: false, reason: "no_credential" };
+  }
+  if ((await dropInboundBlind([row], caller)).length === 0) {
+    return { ok: false, reason: "replies_unreadable" };
+  }
+  if ((await dropRefusedSenders([row], caller)).length === 0) {
+    return { ok: false, reason: "relay_refuses" };
+  }
+  return { ok: true, account: row };
+}
+
 export async function selectSendingAccount(
   opts: SelectAccountOptions = {},
 ): Promise<PooledAccount | null> {
   const caller = { method: "POST", path: "/orgs/send" };
   const accounts = await fetchSendablePool(opts.featureSlug ?? null, caller);
   if (accounts.length === 0) return null;
-
-  if (opts.preferAccountEmail) {
-    const preferred = opts.preferAccountEmail.trim().toLowerCase();
-    const same = accounts.find((a) => a.email.trim().toLowerCase() === preferred);
-    if (same) return same;
-    const inRecovery = await fetchThreadMailbox(preferred);
-    const [threadMailbox] = inRecovery
-      ? await dropRefusedSenders(
-          await dropInboundBlind(await keepSelfSendCapable([inRecovery], caller), caller),
-          caller,
-        )
-      : [];
-    if (threadMailbox && threadMailbox.email.trim().toLowerCase() === preferred) return threadMailbox;
-  }
 
   const pool =
     opts.verdict === undefined ? accounts : await preferBounceBudget(accounts, opts.verdict);

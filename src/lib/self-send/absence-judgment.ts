@@ -27,11 +27,7 @@ import { db } from "../../db";
 import { errorMessage } from "../db-error.js";
 import { platformComplete, type ChatCompleteParams } from "../chat-client";
 import { replyJudgingRunForSequence } from "../reply-judging-run";
-import {
-  findLeadOnCampaignByEmail,
-  readLeadFollowupDate,
-  stateLeadFollowupDate,
-} from "../lead-client";
+import { moveFollowupDateLater } from "../followup-date-later";
 import { stripQuotedHistory } from "./qualify-reply";
 import {
   ABSENCE_SYSTEM_PROMPT,
@@ -197,31 +193,14 @@ async function markFollowup(id: string, statement: string, done: boolean): Promi
  * a stop. Returns what happened per brand.
  */
 export async function stateHoldAsFollowupDate(hold: UnstatedHold): Promise<string> {
-  if (!hold.orgId || !hold.campaignId) return "no_lead_row: platform send, no caller campaign";
-  if (hold.brandIds.length === 0) return "no_brand";
-  const row = await findLeadOnCampaignByEmail({ orgId: hold.orgId, campaignId: hold.campaignId, email: hold.leadEmail });
-  if (!row || !row.id) return "no_lead_row";
-  const outcomes: string[] = [];
-  for (const brandId of hold.brandIds) {
-    const current = await readLeadFollowupDate({ orgId: hold.orgId, leadRowId: row.id, brandId });
-    if (current.nextFollowupAt === null) {
-      outcomes.push(`${brandId}:kept_stopped`);
-      continue;
-    }
-    if (new Date(current.nextFollowupAt).getTime() >= hold.holdUntil.getTime()) {
-      outcomes.push(`${brandId}:already_later`);
-      continue;
-    }
-    await stateLeadFollowupDate({
-      orgId: hold.orgId,
-      leadRowId: row.id,
-      brandId,
-      nextFollowupAt: hold.holdUntil.toISOString(),
-      reason: `Out of office, back on ${hold.firstDayBack}`,
-    });
-    outcomes.push(`${brandId}:stated`);
-  }
-  return outcomes.join(",");
+  return moveFollowupDateLater({
+    orgId: hold.orgId,
+    campaignId: hold.campaignId,
+    brandIds: hold.brandIds,
+    leadEmail: hold.leadEmail,
+    until: hold.holdUntil,
+    reason: `Out of office, back on ${hold.firstDayBack}`,
+  });
 }
 
 let inFlight: Promise<AbsenceSweepSummary> | null = null;
