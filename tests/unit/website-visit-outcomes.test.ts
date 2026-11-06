@@ -13,13 +13,20 @@ vi.mock("../../src/lib/send-input", async (orig) => ({
   sendInputStates: (...a: unknown[]) => sendInputStates(...a),
 }));
 
-import { buildWebsiteVisitDeclaration, declareWebsiteVisits } from "../../src/lib/website-visit-outcomes";
+import {
+  buildWebsiteVisitDeclaration,
+  completeWebsiteVisitPerformers,
+  declareWebsiteVisits,
+  websiteVisitPerformer,
+} from "../../src/lib/website-visit-outcomes";
 
 const pgResult = (rows: unknown[]) => ({ rows, rowCount: rows.length, command: "SELECT", fields: [] });
 const LEAD = "8911df0f-c8fa-402d-a27f-f939bfa7d9ba";
 const ORG = "06ffd332-0000-4000-8000-000000000001";
 const RUN = "4c8b7a1e-1111-4222-8333-444455556666";
 const CLICK = "2026-06-12T09:14:03.000Z";
+const SLUG = "sales-cold-email-outreach-rampart";
+const SCRIPT = { kind: "script", workflowSlug: SLUG } as const;
 const sqlText = (call: unknown[]) => JSON.stringify((call[0] as { queryChunks?: unknown[] }).queryChunks ?? call[0]);
 
 describe("buildWebsiteVisitDeclaration: what a click on our email declares (LEDGER-HISTORY-1024)", () => {
@@ -48,6 +55,9 @@ describe("declareWebsiteVisits: the sweep, past included", () => {
     lead_id: LEAD,
     website_visit_run_id: null,
     visited_at: CLICK,
+    workflow_slug: SLUG,
+    send_transport: "instantly",
+    website_visit_declaration: null,
     ...over,
   });
 
@@ -66,7 +76,8 @@ describe("declareWebsiteVisits: the sweep, past included", () => {
     expect(sqlText(execute.mock.calls[1])).toContain("SET website_visit_run_id");
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toMatch(new RegExp(`/v1/platform-runs/${RUN}/outcomes$`));
-    expect(JSON.parse(init.body)).toEqual({ ...buildWebsiteVisitDeclaration(LEAD), occurredAt: CLICK });
+    expect(JSON.parse(init.body)).toEqual({ ...buildWebsiteVisitDeclaration(LEAD, true, SCRIPT), occurredAt: CLICK });
+    expect(JSON.parse(init.body).produced[0].performer).toEqual(SCRIPT);
     expect(sqlText(execute.mock.calls[2])).toContain("website_visit_declared_at = now()");
   });
 
@@ -99,7 +110,7 @@ describe("declareWebsiteVisits: the sweep, past included", () => {
     execute.mockResolvedValueOnce(pgResult([row({ website_visit_run_id: RUN })])).mockResolvedValue(pgResult([]));
     fetchMock.mockResolvedValue(new Response('{"recordedCount":1}', { status: 201 }));
     const s = await declareWebsiteVisits();
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ ...buildWebsiteVisitDeclaration(LEAD, false), occurredAt: CLICK });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ ...buildWebsiteVisitDeclaration(LEAD, false, SCRIPT), occurredAt: CLICK });
     expect(buildWebsiteVisitDeclaration(LEAD, false).consumed).toEqual([]);
     expect(JSON.stringify(execute.mock.calls[1][0])).toContain("declared_no_send");
     expect(s).toMatchObject({ declared: 1, declaredNoSend: 1 });
@@ -119,5 +130,121 @@ describe("declareWebsiteVisits: the sweep, past included", () => {
     const q = sqlText(execute.mock.calls[0]);
     expect(q).toContain("e.event_type = 'email_link_clicked' AND e.inferred = false AND e.withdrawn_at IS NULL");
     expect(q).toContain("c.website_visit_declared_at IS NULL");
+  });
+});
+
+describe("websiteVisitPerformer: WHO made the visit happen (OUTCOME-PERFORMER-1106)", () => {
+  it("our script whose email was clicked: the sequence's own workflow slug", () => {
+    expect(websiteVisitPerformer({ workflowSlug: SLUG, sendTransport: "smtp" })).toEqual(SCRIPT);
+  });
+  it("no workflow on the row (an Engine's send): never a guessed script, the tracker that measured the click", () => {
+    expect(websiteVisitPerformer({ workflowSlug: null, sendTransport: "instantly" })).toEqual({ kind: "tracker", name: "instantly" });
+    expect(websiteVisitPerformer({ workflowSlug: " ", sendTransport: "smtp" })).toEqual({ kind: "tracker", name: "distribute.you" });
+  });
+});
+
+describe("declareWebsiteVisits: every NEW occurrence states its performer", () => {
+  const fetchMock = vi.fn();
+  beforeEach(() => {
+    execute.mockReset();
+    fetchMock.mockReset();
+    sendInputStates.mockReset().mockImplementation(async (ids: string[]) => new Map(ids.map((id) => [id, "declared"])));
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  const pending = (over: Record<string, unknown> = {}) =>
+    pgResult([{ id: "seq-1", org_id: ORG, lead_id: LEAD, website_visit_run_id: RUN, visited_at: CLICK, workflow_slug: SLUG, send_transport: "instantly", website_visit_declaration: null, ...over }]);
+
+  it("marks the performer stated only when runs-service PROVES it stored it", async () => {
+    execute.mockResolvedValueOnce(pending()).mockResolvedValue(pgResult([]));
+    fetchMock.mockResolvedValue(new Response('{"recordedCount":2,"alreadyRecordedCount":0,"performerStatedCount":0}', { status: 201 }));
+    const s = await declareWebsiteVisits();
+    expect(s).toMatchObject({ declared: 1, performerStated: 1 });
+    expect(sqlText(execute.mock.calls[2])).toContain("website_visit_performer =");
+    expect(JSON.stringify(execute.mock.calls[2][0])).toContain("stated");
+  });
+
+  it("an older runs-service that drops the field: declared, performer left for the completion pass", async () => {
+    execute.mockResolvedValueOnce(pending()).mockResolvedValue(pgResult([]));
+    fetchMock.mockResolvedValue(new Response('{"recordedCount":2,"alreadyRecordedCount":0}', { status: 201 }));
+    const s = await declareWebsiteVisits();
+    expect(s).toMatchObject({ declared: 1, performerStated: 0 });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("performer_conflict (two sequences folded into one occurrence): re-declared without it, the first performer stands", async () => {
+    execute.mockResolvedValueOnce(pending()).mockResolvedValue(pgResult([]));
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"error":"performer_conflict","conflicts":[]}', { status: 409 }))
+      .mockResolvedValueOnce(new Response('{"recordedCount":0,"alreadyRecordedCount":2}', { status: 200 }));
+    const s = await declareWebsiteVisits();
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).produced[0].performer).toBeUndefined();
+    expect(s).toMatchObject({ declared: 1, performerConflict: 1, refused: 0 });
+    expect(JSON.stringify(execute.mock.calls[2][0])).toContain("conflict");
+  });
+});
+
+describe("completeWebsiteVisitPerformers: past occurrences state their performer once", () => {
+  const fetchMock = vi.fn();
+  beforeEach(() => {
+    execute.mockReset();
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  const past = (over: Record<string, unknown> = {}) => ({
+    id: "seq-1", org_id: ORG, lead_id: LEAD, website_visit_run_id: RUN, visited_at: CLICK,
+    workflow_slug: SLUG, send_transport: "instantly", website_visit_declaration: "declared", ...over,
+  });
+
+  it("dry run counts per performer and writes nothing", async () => {
+    execute.mockResolvedValueOnce(pgResult([past(), past({ id: "seq-2" }), past({ id: "seq-3", workflow_slug: null })]));
+    const s = await completeWebsiteVisitPerformers({ dryRun: true });
+    expect(s).toMatchObject({ read: 3, byPerformer: { [`script:${SLUG}`]: 2, "tracker:instantly": 1 } });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(1);
+    const q = sqlText(execute.mock.calls[0]);
+    expect(q).toContain("website_visit_performer IS NULL");
+    expect(q).toContain("website_visit_declaration IN ('declared'");
+  });
+
+  it("re-posts the PRODUCED item only (same run, same instant) with its performer; marks it stated on proof", async () => {
+    execute.mockResolvedValueOnce(pgResult([past()])).mockResolvedValue(pgResult([]));
+    fetchMock.mockResolvedValue(new Response('{"recordedCount":0,"alreadyRecordedCount":0,"performerStatedCount":1}', { status: 201 }));
+    const s = await completeWebsiteVisitPerformers({ dryRun: false });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toMatch(new RegExp(`/v1/platform-runs/${RUN}/outcomes$`));
+    expect(JSON.parse(init.body)).toEqual({
+      produced: [{ outcomeKey: "website_visit", subjectService: "lead-service", subjectId: LEAD, performer: SCRIPT }],
+      consumed: [],
+      occurredAt: CLICK,
+    });
+    expect(s.stated).toBe(1);
+    expect(JSON.stringify(execute.mock.calls[1][0])).toContain("stated");
+  });
+
+  it("runs-service not reading the field yet: nothing marked, the pass stops", async () => {
+    execute.mockResolvedValueOnce(pgResult([past(), past({ id: "seq-2" })]));
+    fetchMock.mockResolvedValue(new Response('{"recordedCount":0,"alreadyRecordedCount":1}', { status: 200 }));
+    const s = await completeWebsiteVisitPerformers({ dryRun: false });
+    expect(s).toMatchObject({ notServedYet: 1, stated: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("another performer already stored: marked conflict, never overwritten", async () => {
+    execute.mockResolvedValueOnce(pgResult([past()])).mockResolvedValue(pgResult([]));
+    fetchMock.mockResolvedValue(new Response('{"error":"performer_conflict"}', { status: 409 }));
+    const s = await completeWebsiteVisitPerformers({ dryRun: false });
+    expect(s.conflict).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a transient failure leaves the row for the next tick", async () => {
+    execute.mockResolvedValueOnce(pgResult([past()]));
+    fetchMock.mockResolvedValue(new Response("down", { status: 502 }));
+    const s = await completeWebsiteVisitPerformers({ dryRun: false });
+    expect(s.retry).toBe(1);
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 });
