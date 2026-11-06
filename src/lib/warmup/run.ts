@@ -27,6 +27,7 @@ import { db } from "../../db";
 import { warmupDispatches } from "../../db/schema";
 import { rampCapForVolume } from "../account-lifecycle";
 import { fetchRecentDailyVolume, sustainedForMailbox } from "../recent-send-volume";
+import { fetchQueueSizeByAccount } from "../account-sending-stats";
 import type { CallerInfo } from "../key-client";
 import { loadMailboxLogins, loginFor } from "../self-send/mailbox-credentials";
 import { loadSeedCredentialResolver } from "../seed-placement/credentials";
@@ -40,6 +41,7 @@ import {
   planWarmupPairings,
   selectSilencedSenders,
   warmupBudgetFor,
+  owesNoProspectMail,
   warmupDayKey,
   type WarmupSenderHealth,
 } from "./plan";
@@ -141,6 +143,14 @@ async function loadRoom(
     ) st ON st.account_email = a.email
   `);
   const volume = await fetchRecentDailyVolume();
+  // Prospect steps each mailbox still owes (SENDING-INFRA-AUDIT-1106): a
+  // mailbox that owes any keeps warmup to its SHARE, never the headroom.
+  const queuedByMailbox = new Map<string, number>();
+  for (const [address, steps] of await fetchQueueSizeByAccount()) {
+    const mailbox = mailboxLogins.get(address.trim().toLowerCase());
+    if (mailbox === undefined) continue;
+    queuedByMailbox.set(mailbox, (queuedByMailbox.get(mailbox) ?? 0) + steps);
+  }
 
   const room = new Map<string, SenderCapacity>();
   const limits = new Map<
@@ -189,7 +199,14 @@ async function loadRoom(
       cap: Math.min(entry.limit, rampCapForVolume(peak, entry.limit)),
       outreach: entry.outreach,
       warmup: 0,
-      fillsHeadroom: entry.fillsHeadroom,
+      // ⚠️ The headroom regime is for a mailbox with NO prospect mail to
+      // protect. A recovering mailbox still owing follow-ups is not one: on
+      // 2026-11-06 kevin.l@ and k.lourd@smartdistribute.com (cap 20) sent 20
+      // warmup emails at the 07:00 run and 0 of the 44 follow-ups they owed,
+      // which reached the prospects' business hours to find no room left.
+      // Owing any step = the share (`WARMUP_MAX_SHARE_OF_CAP`) like any
+      // mailbox carrying outreach.
+      fillsHeadroom: entry.fillsHeadroom && owesNoProspectMail(queuedByMailbox.get(mailbox) ?? 0),
     });
   }
 

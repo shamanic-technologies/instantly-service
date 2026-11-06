@@ -68,6 +68,10 @@ vi.mock("../../src/lib/self-send/inbound-blindness", async (importOriginal) => (
   ...(await importOriginal<typeof import("../../src/lib/self-send/inbound-blindness")>()),
   dropInboundBlind: vi.fn(async (accounts: unknown[]) => accounts),
 }));
+vi.mock("../../src/lib/self-send/refused-senders", () => ({
+  dropRefusedSenders: vi.fn(async (accounts: unknown[]) => accounts),
+  loadRefusedSenderAddresses: vi.fn(async () => new Map()),
+}));
 vi.mock("../../src/db", () => ({
   db: {
     select: () => ({ from: (table: unknown) => ({ where: (...args: unknown[]) => { const result = mockDbWhere(...args); return Object.assign(result, { limit: () => result }); } }) }),
@@ -256,6 +260,7 @@ import {
   autolinkifyHtml,
   buildEmailBodyWithSignature,
   pickSequentialFillAccount,
+  carriedLoadOnDays,
   gapsFromSequence,
   accountFillOrder,
   providerFillRank,
@@ -2916,18 +2921,57 @@ describe("sequence footprint — booking every day the lead will need the mailbo
     ).toBe("next@x.com");
   });
 
-    it("keeps a cheaper vendor with room TODAY over a later vendor whose whole footprint is empty", () => {
-    // The 2026-09-26 regression: Primeforge carried the backlog, so its D+3 was
-    // booked, while the Instantly DFY tier we are drying up sat empty. Run over
-    // the whole fleet, the footprint check handed DFY 487 of 602 new sequences.
+    it("gives the lead to a later vendor that carries the WHOLE sequence over a cheaper one whose D+3 is full (SENDING-INFRA-AUDIT-1106)", () => {
+    // Owner 2026-11-06: no prospect follow-up goes out days late. A cheaper
+    // mailbox with room today but a booked D+3 used to win "day one fits"
+    // inside its vendor, and the follow-up then queued behind the backlog.
     const cheap = mature("cheap@x.com", "primeforge");
-    const dry = mature("dry@x.com", "instantly-dfy");
+    const later = mature("later@x.com", "instantly-dfy");
     const load = caps2([
       ["cheap@x.com", { byDay: { "2026-08-31": 10, "2026-09-03": 50 } }],
     ]);
     expect(
-      pickSequentialFillAccount([dry, cheap], load, MONDAY, FOOTPRINT).email,
+      pickSequentialFillAccount([later, cheap], load, MONDAY, FOOTPRINT).email,
+    ).toBe("later@x.com");
+  });
+
+  it("still prefers the cheaper vendor when it carries the whole sequence", () => {
+    const cheap = mature("cheap@x.com", "primeforge");
+    const later = mature("later@x.com", "instantly-dfy");
+    const load = caps2([["cheap@x.com", { byDay: { "2026-08-31": 10, "2026-09-03": 40 } }]]);
+    expect(
+      pickSequentialFillAccount([later, cheap], load, MONDAY, FOOTPRINT).email,
     ).toBe("cheap@x.com");
+  });
+
+  it("reads a BACKLOG as full on the days it takes to drain, not only the day it is booked on (SENDING-INFRA-AUDIT-1106)", () => {
+    // 120 steps booked on Wednesday at 50/day still fill Thursday (70 carried):
+    // a lead whose D+3 is Thursday must not be given to it, though Thursday's
+    // own bookings are zero.
+    const backlogged = mature("backlogged@x.com", "gandi");
+    const free = mature("free@x.com", "primeforge");
+    const load = caps2([["backlogged@x.com", { byDay: { "2026-08-31": 30, "2026-09-02": 120 } }]]);
+    expect(pickSequentialFillAccount([backlogged, free], load, MONDAY, FOOTPRINT).email).toBe("free@x.com");
+    expect(carriedLoadOnDays(backlogged, load, ["2026-09-02", "2026-09-03", "2026-09-04"], 50)).toEqual(
+      new Map([
+        ["2026-09-02", 120],
+        ["2026-09-03", 70],
+        ["2026-09-04", 20],
+      ]),
+    );
+  });
+
+  it("carries a backlog across a Sunday whole (nothing leaves that day)", () => {
+    const a = mature("a@x.com", "gandi");
+    const load = caps2([["a@x.com", { byDay: { "2026-09-05": 70 } }]]);
+    // Sat 70 at cap 50 -> 20 left, Sunday sends nothing -> Monday still 20.
+    expect(carriedLoadOnDays(a, load, ["2026-09-05", "2026-09-06", "2026-09-07"], 50)).toEqual(
+      new Map([
+        ["2026-09-05", 70],
+        ["2026-09-06", 20],
+        ["2026-09-07", 20],
+      ]),
+    );
   });
 
   it("reaches the later vendor only once the earlier one has no room today", () => {

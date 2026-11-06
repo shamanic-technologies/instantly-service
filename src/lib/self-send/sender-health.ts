@@ -96,3 +96,50 @@ export function selectSilencedSmtpSenders(
 
   return silenced;
 }
+
+/** Why a silenced mailbox is out: the refusal that started it (SENDING-INFRA-AUDIT-1106). */
+export interface SilencedSenderDetail {
+  mailbox: string;
+  /** The FIRST sender-side refusal in the window: when the relay started refusing. */
+  since: Date;
+  /** The relay's words on the most frequent sender-side refusal (e.g. `535 5.7.8 ... authentication failed`). */
+  response: string;
+  responseCode: number | null;
+  /** The refusal is a LOGIN failure (535 / 5.7.8 / authentication): the credential no longer works. */
+  loginFailed: boolean;
+}
+
+/** A refusal that says the relay would not let us LOG IN (wrong or revoked password, deleted mailbox). */
+export function isLoginFailure(response: string, responseCode: number | null): boolean {
+  if (responseCode === 535) return true;
+  return /(?:^|[\s(])535[\s-]|5\.7\.8|authentication failed|username and password not accepted|invalid login|auth(?:entication)? (?:credentials )?(?:invalid|rejected)/i.test(response);
+}
+
+/**
+ * The same verdict as `selectSilencedSmtpSenders`, with the reason attached, so
+ * a read can say WHY a mailbox is out of the sending pool.
+ */
+export function silencedSenderDetails(
+  health: readonly SmtpSenderHealth[],
+  minFailures: number = SMTP_SILENCE_MIN_FAILURES,
+): Map<string, SilencedSenderDetail> {
+  const silenced = selectSilencedSmtpSenders(health, minFailures);
+  const out = new Map<string, SilencedSenderDetail>();
+  for (const row of health) {
+    if (!silenced.has(row.mailbox)) continue;
+    const senderSide = row.failures.filter(
+      (f) => classifyPermanentFailure(f.response, f.responseCode) === "sender",
+    );
+    if (senderSide.length === 0) continue;
+    const since = senderSide.reduce((min, f) => (f.firstAt < min ? f.firstAt : min), senderSide[0]!.firstAt);
+    const main = [...senderSide].sort((x, y) => y.count - x.count)[0]!;
+    out.set(row.mailbox, {
+      mailbox: row.mailbox,
+      since,
+      response: main.response,
+      responseCode: main.responseCode,
+      loginFailed: senderSide.some((f) => isLoginFailure(f.response, f.responseCode)),
+    });
+  }
+  return out;
+}

@@ -224,6 +224,53 @@ export function nextDueStep(sequence: PendingSequence, asOf: Date): DueStep | nu
       };
 }
 
+/**
+ * Real mailboxes carrying at least one FOLLOW-UP overdue since before today
+ * (UTC): the thread exists, it cannot move (a full mailbox drains, it never
+ * hands a follow-up over), so the only lever is how fast it drains.
+ */
+export function mailboxesWithOverdueFollowUps(
+  sequences: readonly PendingSequence[],
+  mailboxOf: (accountEmail: string) => string | undefined,
+  asOf: Date,
+): Set<string> {
+  const startOfToday = Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth(), asOf.getUTCDate());
+  const out = new Set<string>();
+  for (const sequence of sequences) {
+    if (sequence.lastSentStep === null) continue;
+    const step = nextDueStep(sequence, asOf);
+    if (step === null || step.dueAt.getTime() >= startOfToday) continue;
+    const mailbox = mailboxOf(sequence.accountEmail);
+    if (mailbox !== undefined) out.add(mailbox);
+  }
+  return out;
+}
+
+/**
+ * The limit a RECOVERING mailbox drains its overdue follow-ups at
+ * (SENDING-INFRA-AUDIT-1106).
+ *
+ * `in_recovery` holds a mailbox to 20 campaign emails a day so that 30 stay for
+ * warmup (every state's total is pinned to 50). With follow-ups already late
+ * on it, those 30 are better spent on the prospects it owes: on 2026-11-06 five
+ * leaddistribute mailboxes held 773 overdue follow-ups and drained 20 a day each
+ * while warming close to nothing. The total stays 50 (warmup sent today counts
+ * against the same cap) and the volume ramp still applies on top; no NEW
+ * sequence is ever given to it (the pool is production only). Any other state,
+ * or a mailbox with nothing overdue, keeps its stated limit. A limit of 0 is an
+ * operator's stop and stays 0.
+ */
+export function drainLimitFor(
+  dailyLimit: number,
+  lifecycleStatus: string | null,
+  hasOverdueFollowUps: boolean,
+  productionLimit: number,
+): number {
+  if (dailyLimit <= 0) return dailyLimit;
+  if (lifecycleStatus !== "in_recovery" || !hasOverdueFollowUps) return dailyLimit;
+  return Math.max(dailyLimit, productionLimit);
+}
+
 export type RehomeReason = "first_email_stranded" | "follow_up_mailbox_cannot_send";
 
 /** Room left on one mailbox today. */

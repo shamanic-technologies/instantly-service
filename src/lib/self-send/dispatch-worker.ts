@@ -17,6 +17,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../../db";
 import { smtpDispatchRaw } from "../../db/schema";
 import { fetchRecentDailyVolume, sustainedForMailbox } from "../recent-send-volume";
+import { IN_PRODUCTION_DAILY_LIMIT } from "../account-lifecycle";
 import { promoteEvent } from "../silver-promote";
 import { BounceBudget, PROOF_FRESH_DAYS } from "../bounce-budget";
 import { loadFleetBounceHistory } from "../bounce-budget-history";
@@ -40,7 +41,9 @@ import { selectionToSend } from "./send-select-script";
 import { recordSentMessage } from "./send-record";
 import {
   classifyPermanentFailure,
+  drainLimitFor,
   isAnswerOwed,
+  mailboxesWithOverdueFollowUps,
   selectDueSteps,
   isHeldForAbsence,
   type AccountCapacity,
@@ -487,6 +490,8 @@ export async function loadSmtpSenderHealth(
 async function loadSendingAccounts(
   asOf: Date,
   mailboxLogins: ReadonlyMap<string, string>,
+  /** Real mailboxes owing a follow-up since before today: a RECOVERING one drains at the production limit (`drainLimitFor`). */
+  overdueMailboxes: ReadonlySet<string> = new Set(),
 ): Promise<{ capacities: AccountCapacity[]; accounts: Map<string, Account> }> {
   const [result, volume, placementByAddress] = await Promise.all([
     db.execute(sql`
@@ -565,7 +570,12 @@ async function loadSendingAccounts(
     // The OPERATOR limit only. The ramp is applied at mailbox grain inside
     // `selectDueSteps`, which is where the aliases are summed — see
     // `AccountCapacity.cap`.
-    const dailyLimit = row.dailyLimit === null ? 0 : Number(row.dailyLimit);
+    const dailyLimit = drainLimitFor(
+      row.dailyLimit === null ? 0 : Number(row.dailyLimit),
+      typeof row.lifecycleStatus === "string" ? row.lifecycleStatus : null,
+      overdueMailboxes.has(mailbox),
+      IN_PRODUCTION_DAILY_LIMIT,
+    );
 
     capacities.push({
       accountEmail: email,
@@ -1027,7 +1037,12 @@ async function runDispatchExclusive(
     const sequences = (await loadPendingSequences()).filter(
       (s) => !notYetStopped.has(s.instantlyCampaignId) && !isHeldForAbsence(s, asOf),
     );
-    const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins);
+    const overdueMailboxes = mailboxesWithOverdueFollowUps(
+      sequences,
+      (accountEmail) => mailboxLogins.get(accountEmail.trim().toLowerCase()),
+      asOf,
+    );
+    const { capacities, accounts } = await loadSendingAccounts(asOf, mailboxLogins, overdueMailboxes);
     // A contacted sequence whose mailbox we no longer have is cancelled and
     // refunded; one whose mailbox, still ours, cannot send it is re-pinned to a
     // production mailbox. Both BEFORE the selection, so whichever selection is

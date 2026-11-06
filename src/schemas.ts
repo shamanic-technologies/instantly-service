@@ -4234,13 +4234,21 @@ const AccountHealthSchema = z
       .string()
       .nullable()
       .describe(
-        "Short reason when blocked — 'inbound_unreadable' when we send from this mailbox but never read its replies (see inboundUnreadable), else the account's lifecycle_status (in_recovery / deactivated_by_instantly / deactivated_by_user), or 'unclassified' when the lifecycle has not yet run; null when send-eligible.",
+        "Short reason when blocked — 'login_failed' when the relay refuses the mailbox's login (535), 'relay_refused' when it refuses it for another sender-side reason, 'inbound_unreadable' when we send from this mailbox but never read its replies (see inboundUnreadable), else the account's lifecycle_status (in_recovery / deactivated_by_instantly / deactivated_by_user), or 'unclassified' when the lifecycle has not yet run; null when send-eligible.",
       ),
     inboundUnreadable: z
       .boolean()
       .describe(
         "True when this mailbox sent at least 20 emails in the last 14 days and not one inbound message was ingested from it: prospects' replies there are invisible. Such a mailbox gets no new sequence and the dispatcher sends nothing from it until a message is read again.",
       ),
+    refusedByRelay: z
+      .boolean()
+      .describe("True when the relay refuses this mailbox now (>= 3 sender-side refusals and nothing accepted since): out of the sending pool, nothing dispatched from it, its follow-ups move to a production mailbox. Self-heals on the next accepted send."),
+    loginFailed: z
+      .boolean()
+      .describe("True when that refusal is a LOGIN failure (SMTP 535 / 5.7.8 authentication failed): the stored password no longer works. blockReason is then 'login_failed'."),
+    refusedByRelaySince: z.string().nullable().describe("ISO instant of the first sender-side refusal of the current episode; null when not refused."),
+    refusedByRelayResponse: z.string().nullable().describe("The relay's own reply on the commonest refusal (e.g. '535 5.7.8 Username and Password not accepted'); null when not refused."),
     lifecycleStatus: z
       .enum([
         "in_production",

@@ -12,6 +12,9 @@ vi.mock("../../src/lib/recent-send-volume", () => ({
   fetchRecentDailyVolume: vi.fn(async () => new Map()),
   sustainedForMailbox: vi.fn(() => 0),
 }));
+vi.mock("../../src/lib/account-sending-stats", () => ({
+  fetchQueueSizeByAccount: vi.fn(async () => new Map()),
+}));
 vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({
   loadMailboxLogins: vi.fn(async () => new Map<string, string>()),
   loginFor: vi.fn((email: string) => email),

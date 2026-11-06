@@ -8,6 +8,7 @@
  */
 
 import { loadInboundBlindAddresses } from "../self-send/inbound-blindness";
+import { loadRefusedSenderAddresses } from "../self-send/refused-senders";
 import type { Account } from "../instantly-client";
 import type { CallerInfo } from "../key-client";
 import { listAccountsFromSilver } from "../silver-accounts";
@@ -89,17 +90,18 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
     fetchNewSequencesTodayByAccount(),
     fetchPlacementByProvider(asOf),
   ]);
-  const inboundBlindAddresses = await loadInboundBlindAddresses({
-    method: "GET",
-    path: "/internal/audit/account-health",
-  });
+  const caller2 = { method: "GET", path: "/internal/audit/account-health" };
+  const [inboundBlindAddresses, refusedByAddress] = await Promise.all([
+    loadInboundBlindAddresses(caller2),
+    loadRefusedSenderAddresses(caller2),
+  ]);
 
   // Position in the fill order, 1-based. `accountFillOrder` is the selector's
   // own comparator, so rank 1 is by construction the mailbox a new sequence is
   // offered first. An account outside the pool is simply absent from the map
   // and reports a null rank — never a fabricated position.
   const fillRankByEmail = new Map<string, number>(
-    accountFillOrder(pool.filter((a) => !inboundBlindAddresses.has(a.email.trim().toLowerCase()))).map((a, i) => [a.email, i + 1]),
+    accountFillOrder(pool.filter((a) => !inboundBlindAddresses.has(a.email.trim().toLowerCase()) && !refusedByAddress.has(a.email.trim().toLowerCase()))).map((a, i) => [a.email, i + 1]),
   );
 
   const rows = buildAccountHealth(
@@ -120,6 +122,7 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
       asOf,
       newSequencesTodayByEmail,
       inboundBlindAddresses,
+      refusedByAddress,
       placementByProviderByEmail,
     },
   );
