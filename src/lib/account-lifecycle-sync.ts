@@ -17,7 +17,7 @@
 
 import { loadDrainedCancelledAddresses } from "./ops/exclusions";
 import { errorMessage } from "./db-error.js";
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { MICROSOFT_ESPS } from "./seed-placement/seeds";
 import { poolPlacementTests, type PlacementTest } from "./provider-placement";
 import { db } from "../db";
@@ -394,6 +394,39 @@ export async function fetchInProductionAccounts(
   featureSlug?: string | null,
 ): Promise<PooledAccount[]> {
   const slug = featureSlug ?? null;
+  return selectPooledAccounts(sql`
+    a.lifecycle_status = 'in_production'
+      AND CASE
+            WHEN ${slug}::text IN (
+              SELECT feature_slug FROM instantly_account_feature_policy
+            )
+              THEN p.feature_slug = ${slug}::text
+            ELSE p.account_email IS NULL
+          END
+  `);
+}
+
+/**
+ * THREAD-MAILBOX-1107: ONE mailbox that wrote a person's last thread, in
+ * production OR in recovery. NOT the send pool (that is in_production only,
+ * above): only the send path asks for it, when a new sequence continues the
+ * person's last thread with the brand and that mailbox is not in the pool. A
+ * mailbox in recovery still sends follow-ups (the dispatcher drains them,
+ * `drainLimitFor`) and one that cannot send at all hands the step over in the
+ * SAME thread at dispatch (OLIVE-FOLLOWUPS-1103). The feature carve-out does not
+ * apply: it is that person's thread.
+ */
+export async function fetchThreadMailbox(email: string): Promise<PooledAccount | null> {
+  const address = email.trim().toLowerCase();
+  if (!address) return null;
+  const [row] = await selectPooledAccounts(sql`
+    lower(a.email) = ${address}
+      AND a.lifecycle_status IN ('in_production', 'in_recovery')
+  `);
+  return row ?? null;
+}
+
+async function selectPooledAccounts(where: SQL): Promise<PooledAccount[]> {
   const result = await db.execute(sql`
     SELECT a.email AS "email",
            a.first_name AS "firstName",
@@ -434,14 +467,7 @@ export async function fetchInProductionAccounts(
                d.provider
       LIMIT 1
     ) ip ON TRUE
-    WHERE a.lifecycle_status = 'in_production'
-      AND CASE
-            WHEN ${slug}::text IN (
-              SELECT feature_slug FROM instantly_account_feature_policy
-            )
-              THEN p.feature_slug = ${slug}::text
-            ELSE p.account_email IS NULL
-          END
+    WHERE ${where}
   `);
   return rowsOf<{
     email: string;

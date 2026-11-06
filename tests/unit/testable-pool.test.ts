@@ -14,6 +14,7 @@ vi.mock("../../src/lib/instantly-client", () => ({
 }));
 
 import {
+  fetchThreadMailbox,
   fetchInProductionAccounts,
   fetchTestablePoolEmails,
   TESTABLE_MIN_AGE_DAYS,
@@ -24,7 +25,9 @@ function sqlTextOf(call: unknown): string {
   const q = call as { queryChunks?: unknown[] };
   return (q.queryChunks ?? [])
     .map((c) => {
-      const chunk = c as { value?: unknown };
+      const chunk = c as { value?: unknown; queryChunks?: unknown[] };
+      // A nested sql`` fragment (the pool's WHERE) renders in place.
+      if (Array.isArray(chunk?.queryChunks)) return sqlTextOf(chunk);
       return Array.isArray(chunk?.value) ? chunk.value.join("") : "";
     })
     .join("");
@@ -124,5 +127,14 @@ describe("measuring a brand domain does NOT make it sendable", () => {
     expect(text).toContain("a.lifecycle_status = 'in_production'");
     expect(text).not.toContain("deactivated_by_user");
     expect(text).not.toContain("in_recovery");
+  });
+
+  it("THREAD-MAILBOX-1107: the thread mailbox read is ONE address, production or recovery, never a deactivated one", async () => {
+    await fetchThreadMailbox(" Kevinl@SalesColdEmails.com ");
+    const text = sqlTextOf(mockExecute.mock.calls[0][0]);
+    expect(text).toContain("lower(a.email) =");
+    expect(text).toContain("a.lifecycle_status IN ('in_production', 'in_recovery')");
+    expect(text).not.toContain("deactivated");
+    expect(JSON.stringify(mockExecute.mock.calls[0][0])).toContain("kevinl@salescoldemails.com");
   });
 });
