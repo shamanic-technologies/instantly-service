@@ -225,6 +225,124 @@ export function nextDueStep(sequence: PendingSequence, asOf: Date): DueStep | nu
 }
 
 /**
+ * Keep NEW threads out of a run until the follow-ups already owed have their
+ * room (SENDING-INFRA-AUDIT-1106, owner 2026-11-06: no prospect follow-up goes
+ * out days late).
+ *
+ * The selection orders due steps oldest-due first, and a first email is due
+ * from the day it was queued: a first email queued on 2026-10-30 sorts ahead of
+ * a follow-up due 2026-11-02 and spends the mailbox's room. On 2026-11-04/05
+ * 2,082 first emails went out while follow-ups waited; on 2026-11-06 1,783
+ * follow-ups were overdue. A first email that waits a day harms nobody (no
+ * thread exists yet); a follow-up that waits a week reads as forgotten.
+ *
+ * So, per run: the follow-ups due now are served first (our own selection on
+ * them alone says how much room each mailbox has left), then first emails are
+ * let into the run while room is left: on their own mailbox first (not one
+ * draining late follow-ups at a raised limit), else MOVED
+ * (returned in `moves`) to a production mailbox with room. The rest are LEFT OUT
+ * of the run, so whichever selection is sent (ours or the stored script) cannot
+ * spend a follow-up's room on them; they stay queued and come back next run.
+ * An answer owed to a person (`isAnswerOwed`) and a thread continuation are
+ * never held. Nothing is persisted here.
+ */
+export function holdFirstEmailsBehindFollowUps(
+  sequences: readonly PendingSequence[],
+  capacities: readonly AccountCapacity[],
+  asOf: Date,
+  skippedMailboxes: ReadonlySet<string> = new Set(),
+  /** Mailboxes whose limit `drainLimitFor` raised this run: that room is for follow-ups only. */
+  drainingMailboxes: ReadonlySet<string> = new Set(),
+): { kept: PendingSequence[]; held: number; moves: Array<{ instantlyCampaignId: string; from: string; to: string }> } {
+  const isNewThread = (s: PendingSequence) => opensThread(s) && !isAnswerOwed(s);
+  const owed = sequences.filter((s) => !isNewThread(s));
+  const fresh = sequences.filter(isNewThread);
+  if (fresh.length === 0) return { kept: [...sequences], held: 0, moves: [] };
+
+  const rooms = mailboxRoom(capacities);
+  const mailboxOf = new Map(capacities.map((c) => [c.accountEmail, c.mailbox]));
+  const spare = new Map<string, number>();
+  for (const [mailbox, room] of rooms) spare.set(mailbox, room.roomAtStart);
+  // What the follow-ups (and answers) due now take, per mailbox.
+  for (const step of selectDueSteps(owed, capacities, asOf, skippedMailboxes, null).selected) {
+    const mailbox = mailboxOf.get(step.accountEmail);
+    if (mailbox !== undefined) spare.set(mailbox, (spare.get(mailbox) ?? 0) - 1);
+  }
+  const adopters = new Set(
+    capacities.filter((c) => c.adoptsFirstEmails === true && !skippedMailboxes.has(c.mailbox)).map((c) => c.mailbox),
+  );
+
+  // Oldest-due first, as the selection would take them.
+  const due = fresh
+    .map((s) => ({ s, step: nextDueStep(s, asOf) }))
+    .sort((a, b) => (a.step?.dueAt.getTime() ?? Infinity) - (b.step?.dueAt.getTime() ?? Infinity));
+  const kept: PendingSequence[] = [...owed];
+  const stranded: PendingSequence[] = [];
+  let held = 0;
+  for (const { s, step } of due) {
+    // Not due this run: harmless to the room, keep it (the selection skips it).
+    if (step === null || (isSendingDay(asOf) && !isWithinLocalSendWindow(asOf, s.timezone))) {
+      kept.push(s);
+      continue;
+    }
+    const mailbox = mailboxOf.get(s.accountEmail);
+    // No capacity row: nothing to take from anyone; the selection reports it
+    // (and moves it when a production mailbox has room) as it always did.
+    if (mailbox === undefined) {
+      kept.push(s);
+      continue;
+    }
+    // A mailbox draining late follow-ups at the production limit
+    // (`drainLimitFor`) opens no new thread from that room: it was raised for
+    // the follow-ups. Its first email moves (below) or waits.
+    const own =
+      skippedMailboxes.has(mailbox) || drainingMailboxes.has(mailbox)
+        ? 0
+        : (spare.get(mailbox) ?? 0);
+    if (own > 0) {
+      spare.set(mailbox, own - 1);
+      kept.push(s);
+    } else {
+      stranded.push(s);
+    }
+  }
+  // A first email its own mailbox cannot take now moves to a production
+  // mailbox that still has room after its own follow-ups (most room first,
+  // then name), as the selection always moved a stranded first email. The
+  // move is returned for the caller to persist BEFORE the selection: left on
+  // its own mailbox, an old first email would sort ahead of the follow-ups
+  // there and spend their room. Nobody with room = it waits.
+  const adopterAddress = new Map<string, string>();
+  for (const c of capacities) {
+    if (!adopters.has(c.mailbox)) continue;
+    const known = adopterAddress.get(c.mailbox);
+    if (known === undefined || c.accountEmail < known) adopterAddress.set(c.mailbox, c.accountEmail);
+  }
+  const moves: Array<{ instantlyCampaignId: string; from: string; to: string }> = [];
+  for (const s of stranded) {
+    let target: string | null = null;
+    let best = 0;
+    for (const mailbox of [...adopters].sort()) {
+      if (mailbox === mailboxOf.get(s.accountEmail)) continue;
+      const room = spare.get(mailbox) ?? 0;
+      if (room > best) {
+        best = room;
+        target = mailbox;
+      }
+    }
+    if (target === null) {
+      held += 1;
+      continue;
+    }
+    spare.set(target, best - 1);
+    const to = adopterAddress.get(target)!;
+    moves.push({ instantlyCampaignId: s.instantlyCampaignId, from: s.accountEmail, to });
+    kept.push({ ...s, accountEmail: to });
+  }
+  return { kept, held, moves };
+}
+
+/**
  * Real mailboxes carrying at least one FOLLOW-UP overdue since before today
  * (UTC): the thread exists, it cannot move (a full mailbox drains, it never
  * hands a follow-up over), so the only lever is how fast it drains.

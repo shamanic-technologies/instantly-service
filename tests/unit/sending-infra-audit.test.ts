@@ -81,3 +81,62 @@ describe("warmup keeps to its share on a mailbox that owes prospect mail (kevin.
     expect(warmupBudgetFor(20, { fillsHeadroom: owesNoProspectMail(0) })).toBe(20);
   });
 });
+
+describe("follow-ups already owed take the room before a new thread opens (2026-11-04/05: 2,082 first emails sent while follow-ups waited)", () => {
+  it("leaves out the first emails that would spend a follow-up's room, on its mailbox and across the fleet", async () => {
+    const { holdFirstEmailsBehindFollowUps, selectDueSteps } = await import("../../src/lib/self-send/dispatch");
+    // Friday 15:00 UTC = 10:00 Chicago, inside the window.
+    const asOf = new Date("2026-11-06T15:00:00.000Z");
+    const cap = (accountEmail: string, room: number, adopts: boolean) => ({
+      accountEmail, mailbox: accountEmail, cap: 50, recentSustainedDaily: 50, sentToday: 50 - room, adoptsFirstEmails: adopts,
+    });
+    const followUp = (i: number) => seq({ instantlyCampaignId: `self:f${i}`, leadEmail: `f${i}@x.com`, accountEmail: "busy@x.com", timezone: "America/Chicago" });
+    // A first email queued BEFORE the follow-ups came due: it sorts first.
+    const first = (i: number, account: string) => seq({
+      instantlyCampaignId: `self:n${i}`, leadEmail: `n${i}@x.com`, accountEmail: account, lastSentStep: null, lastSentAt: null,
+      provisionedSteps: [1, 2, 3], queuedAt: new Date("2026-10-20T00:00:00.000Z"), timezone: "America/Chicago",
+    });
+    const sequences = [followUp(1), followUp(2), followUp(3), first(1, "busy@x.com"), first(2, "busy@x.com"), first(3, "busy@x.com")];
+    const capacities = [cap("busy@x.com", 3, true), cap("spare@x.com", 1, true)];
+
+    // Before: the old first emails take busy's 3 slots and the follow-ups wait.
+    const before = selectDueSteps(sequences, capacities, asOf);
+    expect(before.selected.filter((s) => s.instantlyCampaignId.startsWith("self:f"))).toHaveLength(0);
+
+    const { kept, held, moves } = holdFirstEmailsBehindFollowUps(sequences, capacities, asOf);
+    // busy has room for its 3 follow-ups only; spare can adopt ONE first email.
+    expect(held).toBe(2);
+    expect(moves).toEqual([{ instantlyCampaignId: "self:n1", from: "busy@x.com", to: "spare@x.com" }]);
+    const after = selectDueSteps(kept, capacities, asOf);
+    expect(after.selected.filter((s) => s.instantlyCampaignId.startsWith("self:f"))).toHaveLength(3);
+    expect(after.selected.filter((s) => s.accountEmail === "spare@x.com")).toHaveLength(1);
+  });
+
+  it("never holds an answer owed to a person", async () => {
+    const { holdFirstEmailsBehindFollowUps } = await import("../../src/lib/self-send/dispatch");
+    const asOf = new Date("2026-11-06T15:00:00.000Z");
+    const answer = seq({ lastSentStep: null, lastSentAt: null, provisionedSteps: [1], answersPerson: true, timezone: "America/Chicago" });
+    const { held } = holdFirstEmailsBehindFollowUps([answer], [{ accountEmail: "kevin.l@leaddistribute.com", mailbox: "kevin.l@leaddistribute.com", cap: 20, recentSustainedDaily: 20, sentToday: 20 }], asOf);
+    expect(held).toBe(0);
+  });
+});
+
+describe("a draining mailbox's raised room goes to its follow-ups, its first emails move to production", () => {
+  it("moves the first email of a mailbox draining at a raised limit even when that mailbox has room", async () => {
+    const { holdFirstEmailsBehindFollowUps } = await import("../../src/lib/self-send/dispatch");
+    const asOf = new Date("2026-11-06T15:00:00.000Z");
+    const first = seq({ lastSentStep: null, lastSentAt: null, provisionedSteps: [1, 2], queuedAt: new Date("2026-11-05T00:00:00.000Z"), timezone: "America/Chicago" });
+    const res = holdFirstEmailsBehindFollowUps(
+      [first],
+      [
+        { accountEmail: "kevin.l@leaddistribute.com", mailbox: "kevin.l@leaddistribute.com", cap: 50, recentSustainedDaily: 50, sentToday: 0, adoptsFirstEmails: false },
+        { accountEmail: "prod@x.com", mailbox: "prod@x.com", cap: 50, recentSustainedDaily: 50, sentToday: 49, adoptsFirstEmails: true },
+      ],
+      asOf,
+      new Set(),
+      new Set(["kevin.l@leaddistribute.com"]),
+    );
+    expect(res.moves).toEqual([{ instantlyCampaignId: "self:1", from: "kevin.l@leaddistribute.com", to: "prod@x.com" }]);
+    expect(res.held).toBe(0);
+  });
+});

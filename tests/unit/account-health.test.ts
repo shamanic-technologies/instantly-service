@@ -82,6 +82,10 @@ describe("buildAccountHealth", () => {
       blocked: false,
       blockReason: null,
       inboundUnreadable: false,
+      refusedByRelay: false,
+      loginFailed: false,
+      refusedByRelaySince: null,
+      refusedByRelayResponse: null,
       lifecycleStatus: "in_production",
       lifecycleReason: "passed",
       lifecycleUpdatedAt: "2026-07-05T00:00:00.000Z",
@@ -618,5 +622,32 @@ describe("buildAccountHealth — fill rank + effective cap", () => {
 
     expect(row.fillRank).toBeNull();
     expect(row.effectiveDailyCap).toBe(RAMP_FLOOR_PER_DAY);
+  });
+});
+
+describe("a mailbox the relay refuses is blocked and says why (SENDING-INFRA-AUDIT-1106)", () => {
+  it("serves login_failed with the relay's words, even for an in_production address", () => {
+    const [row] = buildAccountHealth(
+      [acc({ email: "kevin@pressbeat.ai", daily_limit: 50 })],
+      new Map(),
+      new Map(),
+      new Map(),
+      new Map([["kevin@pressbeat.ai", lifecycle("in_production", "passed")]]),
+      new Map(),
+      new Map(),
+      {
+        refusedByAddress: new Map([
+          ["kevin@pressbeat.ai", { since: "2026-11-05T08:00:00.000Z", response: "535 5.7.8 Error: authentication failed", loginFailed: true }],
+        ]),
+      },
+    );
+    expect(row).toMatchObject({
+      blocked: true,
+      blockReason: "login_failed",
+      refusedByRelay: true,
+      loginFailed: true,
+      refusedByRelaySince: "2026-11-05T08:00:00.000Z",
+      refusedByRelayResponse: "535 5.7.8 Error: authentication failed",
+    });
   });
 });
