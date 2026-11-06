@@ -407,21 +407,23 @@ export async function fetchInProductionAccounts(
 }
 
 /**
- * THREAD-MAILBOX-1107: ONE mailbox that wrote a person's last thread, in
- * production OR in recovery. NOT the send pool (that is in_production only,
- * above): only the send path asks for it, when a new sequence continues the
- * person's last thread with the brand and that mailbox is not in the pool. A
- * mailbox in recovery still sends follow-ups (the dispatcher drains them,
- * `drainLimitFor`) and one that cannot send at all hands the step over in the
- * SAME thread at dispatch (OLIVE-FOLLOWUPS-1103). The feature carve-out does not
- * apply: it is that person's thread.
+ * THREAD-MAILBOX-1107: ONE mailbox that wrote a person's last thread, WHATEVER
+ * its lifecycle. NOT the send pool (that is in_production only, above): only
+ * the send path asks for it, when a new sequence continues the person's last
+ * thread with the brand. The lifecycle decides where a NEW thread may open
+ * (a brand domain is `deactivated_by_user`: never cold), never whether a
+ * thread we already hold may go on (same rule as the dispatcher's
+ * `loadSendingAccounts`); the capability gates the caller applies (credential,
+ * replies readable, relay accepts) are what say we can still send from it
+ * (THREAD-ANY-ROUTE-1107, Doc Dinners 2026-11-07: 4 threads written in April
+ * from distribute.you aliases, `deactivated_by_user`, opened new threads). The
+ * feature carve-out does not apply: it is that person's thread.
  */
 export async function fetchThreadMailbox(email: string): Promise<PooledAccount | null> {
   const address = email.trim().toLowerCase();
   if (!address) return null;
   const [row] = await selectPooledAccounts(sql`
     lower(a.email) = ${address}
-      AND a.lifecycle_status IN ('in_production', 'in_recovery')
   `);
   return row ?? null;
 }

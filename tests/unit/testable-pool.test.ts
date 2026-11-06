@@ -129,12 +129,11 @@ describe("measuring a brand domain does NOT make it sendable", () => {
     expect(text).not.toContain("in_recovery");
   });
 
-  it("THREAD-MAILBOX-1107: the thread mailbox read is ONE address, production or recovery, never a deactivated one", async () => {
+  it("THREAD-ANY-ROUTE-1107: the thread mailbox read is ONE address, ANY lifecycle (the capability gates decide)", async () => {
     await fetchThreadMailbox(" Kevinl@SalesColdEmails.com ");
     const text = sqlTextOf(mockExecute.mock.calls[0][0]);
     expect(text).toContain("lower(a.email) =");
-    expect(text).toContain("a.lifecycle_status IN ('in_production', 'in_recovery')");
-    expect(text).not.toContain("deactivated");
+    expect(text).not.toContain("lifecycle_status");
     expect(JSON.stringify(mockExecute.mock.calls[0][0])).toContain("kevinl@salescoldemails.com");
   });
 });
