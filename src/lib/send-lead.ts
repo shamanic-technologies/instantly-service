@@ -28,7 +28,7 @@ import {
   type Lead,
   type SequenceStep,
 } from "./instantly-client";
-import { fetchInProductionAccounts, type PooledAccount } from "./account-lifecycle-sync";
+import { fetchInProductionAccounts, fetchThreadMailbox, type PooledAccount } from "./account-lifecycle-sync";
 import {
   fetchAccountCapacityCached,
   type AccountCapacity,
@@ -915,9 +915,14 @@ export interface SelectAccountOptions {
   /** The sequence about to be sent, so its whole footprint can be booked. */
   sequence?: readonly { step: number; daysSinceLastStep: number }[];
   /**
-   * A follow-up continues a thread: the mailbox that wrote it is taken when it
-   * is still in the eligible pool (same gates as any send), before the fill
-   * order. Absent from the pool = the fill order decides, as for any send.
+   * The sequence continues the person's last thread with the brand: the mailbox
+   * that wrote it is taken before the fill order, from the eligible pool, else
+   * still ours in RECOVERY (`fetchThreadMailbox`, THREAD-MAILBOX-1107, owner: reply in their last
+   * thread from the address we wrote from; a mailbox in recovery drains
+   * follow-ups, and one that cannot send at all hands the step over in the SAME
+   * thread at dispatch, OLIVE-FOLLOWUPS-1103). Same capability gates as any
+   * send (credential, replies readable, relay accepts). Not ours any more (gone,
+   * deactivated, refused) = the fill order decides, a new thread, logged.
    */
   preferAccountEmail?: string | null;
   /**
@@ -980,6 +985,14 @@ export async function selectSendingAccount(
     const preferred = opts.preferAccountEmail.trim().toLowerCase();
     const same = accounts.find((a) => a.email.trim().toLowerCase() === preferred);
     if (same) return same;
+    const inRecovery = await fetchThreadMailbox(preferred);
+    const [threadMailbox] = inRecovery
+      ? await dropRefusedSenders(
+          await dropInboundBlind(await keepSelfSendCapable([inRecovery], caller), caller),
+          caller,
+        )
+      : [];
+    if (threadMailbox && threadMailbox.email.trim().toLowerCase() === preferred) return threadMailbox;
   }
 
   const pool =

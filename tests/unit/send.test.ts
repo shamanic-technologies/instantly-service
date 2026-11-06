@@ -239,9 +239,11 @@ vi.mock("../../src/lib/status-gold", () => ({
 // fetchInProductionAccounts. Reuse mockListAccounts as the pool source so the
 // existing POST /send tests that seed accounts via mockListAccounts keep working
 // (both return Account[]); a test can still override it per-case.
+const mockFetchThreadMailbox = vi.hoisted(() => vi.fn(async (_email: string): Promise<unknown> => null));
 vi.mock("../../src/lib/account-lifecycle-sync", () => ({
   fetchInProductionAccounts: (...args: unknown[]) =>
     mockFetchInProductionAccounts(...args),
+  fetchThreadMailbox: (email: string) => mockFetchThreadMailbox(email),
 }));
 
 // Per-account capacity snapshot feeding capacity-aware selection. Defaults to an
@@ -3624,6 +3626,89 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     expect(steps[0].subject).toBe("Re: Quick idea for TestCo");
   });
 
+  it("THREAD-MAILBOX-1107: a plain send (no followUp) to a person the brand wrote to continues their last thread, same mailbox, Re: its subject", async () => {
+    credentialedMailboxes.add("first@example.com");
+    credentialedMailboxes.add("thread@example.com");
+    mockFindFollowUpThread.mockResolvedValue({
+      instantlyCampaignId: "03b09ae5-old",
+      accountEmail: "thread@example.com",
+      subject: "Re: cash-pay shockwave & laser patients",
+      reason: "our_last_email",
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+    expect(res.status).toBe(200);
+    expect(mockFindFollowUpThread).toHaveBeenCalledWith("org-1", "test@example.com", ["brand-1"]);
+    // The race refusal stays the declared follow-up's.
+    expect(mockFindQueuedBrandSequence).not.toHaveBeenCalled();
+    const phase2 = mockDbUpdateSet.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((v) => "sendTransport" in v)!;
+    expect(phase2.accountEmail).toBe("thread@example.com");
+    expect(JSON.stringify(phase2.metadata)).toContain("followUpOf");
+    const steps = mockDbInsertValues.mock.calls
+      .map((c) => c[0])
+      .find((v) => Array.isArray(v) && (v as { subject?: string }[])[0]?.subject !== undefined) as { subject: string }[];
+    // Already a "Re:" subject: never "Re: Re:".
+    expect(steps[0].subject).toBe("Re: cash-pay shockwave & laser patients");
+  });
+
+  it("THREAD-MAILBOX-1107: the thread's mailbox in RECOVERY (out of the pool) still takes it: same mailbox, same thread", async () => {
+    credentialedMailboxes.add("first@example.com");
+    credentialedMailboxes.add("recovering@example.com");
+    mockListAccounts.mockResolvedValue([
+      acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+    ]);
+    mockFetchThreadMailbox.mockImplementation(async (email: string) =>
+      email === "recovering@example.com" ? acct({ email: "recovering@example.com", stat_warmup_score: 100, daily_limit: 20 }) : null,
+    );
+    mockFindFollowUpThread.mockResolvedValue({
+      instantlyCampaignId: "03b09ae5-old",
+      accountEmail: "Recovering@example.com",
+      subject: "Quick idea for TestCo",
+      reason: "our_last_email",
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+    expect(res.status).toBe(200);
+    expect(mockFetchThreadMailbox).toHaveBeenCalledWith("recovering@example.com");
+    const phase2 = mockDbUpdateSet.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((v) => "sendTransport" in v)!;
+    expect(phase2.accountEmail).toBe("recovering@example.com");
+    const steps = mockDbInsertValues.mock.calls
+      .map((c) => c[0])
+      .find((v) => Array.isArray(v) && (v as { subject?: string }[])[0]?.subject !== undefined) as { subject: string }[];
+    expect(steps[0].subject).toBe("Re: Quick idea for TestCo");
+    mockFetchThreadMailbox.mockImplementation(async () => null);
+  });
+
+  it("THREAD-MAILBOX-1107: a thread mailbox in recovery we cannot send from (no credential) is NOT taken", async () => {
+    credentialedMailboxes.add("first@example.com");
+    mockListAccounts.mockResolvedValue([
+      acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+    ]);
+    mockFetchThreadMailbox.mockImplementation(async () => acct({ email: "nocred@example.com", stat_warmup_score: 100, daily_limit: 20 }));
+    mockKeepSelfSendCapable.mockImplementation(async (accounts: readonly { email: string }[]) =>
+      accounts.filter((a) => credentialedMailboxes.has(a.email)),
+    );
+    mockFindFollowUpThread.mockResolvedValue({
+      instantlyCampaignId: "03b09ae5-old",
+      accountEmail: "nocred@example.com",
+      subject: "Quick idea for TestCo",
+      reason: "our_last_email",
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+    expect(res.status).toBe(200);
+    const phase2 = mockDbUpdateSet.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((v) => "sendTransport" in v)!;
+    expect(phase2.accountEmail).toBe("first@example.com");
+    mockFetchThreadMailbox.mockImplementation(async () => null);
+    mockKeepSelfSendCapable.mockImplementation(async (accounts: readonly { email: string }[]) => [...accounts]);
+  });
+
   it("starts a new thread with the caller's subject when the thread's mailbox can no longer send", async () => {
     credentialedMailboxes.add("first@example.com");
     mockListAccounts.mockResolvedValue([
@@ -3642,7 +3727,9 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
       .map((c) => c[0] as Record<string, unknown>)
       .find((v) => "sendTransport" in v)!;
     expect(phase2.accountEmail).toBe("first@example.com");
-    expect(phase2.metadata).toBeUndefined();
+    // Never silent: the thread it could not continue stays on the row.
+    expect(JSON.stringify(phase2.metadata)).toContain("threadNotContinued");
+    expect(JSON.stringify(phase2.metadata)).not.toContain("followUpOf");
     const steps = mockDbInsertValues.mock.calls
       .map((c) => c[0])
       .find((v) => Array.isArray(v) && (v as { subject?: string }[])[0]?.subject !== undefined) as { subject: string }[];
