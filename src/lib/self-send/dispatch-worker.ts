@@ -188,7 +188,7 @@ export interface DispatchSummary {
  * `?? []`, and then throws on `.map`. This exact trap took down the whole fleet
  * forecast once (v0.59.1).
  */
-async function loadPendingSequences(
+export async function loadPendingSequences(
   onlyInstantlyCampaignId: string | null = null,
 ): Promise<PendingSequence[]> {
   const result = await db.execute(sql`
@@ -223,9 +223,13 @@ async function loadPendingSequences(
       p.instantly_campaign_id AS "instantlyCampaignId",
       p.lead_email            AS "leadEmail",
       p.account_email         AS "accountEmail",
-      p.provisioned_steps     AS "provisionedSteps",
-      p.last_sent_step        AS "lastSentStep",
-      p.last_sent_at          AS "lastSentAt",
+      (
+        SELECT COALESCE(jsonb_agg(x.step), '[]'::jsonb)
+        FROM jsonb_array_elements(p.provisioned_steps) AS x(step)
+        WHERE NOT (COALESCE(sent.steps, '[]'::jsonb) @> jsonb_build_array(x.step))
+      )                       AS "provisionedSteps",
+      GREATEST(p.last_sent_step, sent.max_step) AS "lastSentStep",
+      GREATEST(p.last_sent_at, sent.max_at)     AS "lastSentAt",
       p.timezone              AS "timezone",
       p.queued_at             AS "queuedAt",
       p.answers_person        AS "answersPerson",
@@ -284,6 +288,17 @@ async function loadPendingSequences(
           )
       ) AS "awayUntil"
     FROM pending p
+    -- The steps that LEFT, whatever the cost ledger says: a hold whose
+    -- provisioned→actual write failed after a real send read as "never sent",
+    -- and the next dispatch sent the same first email again (2026-11-06 21:35
+    -- UTC, Doc Dinners: 2 prospects got their step 1 twice, 83 min apart, once
+    -- a deploy had cleared the in-process recentlySent guard). The exact
+    -- message record is the proof a step went out (per-campaign index read).
+    LEFT JOIN LATERAL (
+      SELECT jsonb_agg(DISTINCT m.step) AS steps, MAX(m.step) AS max_step, MAX(m.sent_at) AS max_at
+      FROM smtp_sent_messages m
+      WHERE m.instantly_campaign_id = p.instantly_campaign_id AND m.kind = 'sequence_step'
+    ) sent ON TRUE
   `);
 
   return (result.rows as Record<string, unknown>[]).map((row) => ({
