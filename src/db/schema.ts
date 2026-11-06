@@ -155,6 +155,10 @@ export const instantlyCampaigns = pgTable(
     websiteVisitRunId: text("website_visit_run_id"),
     websiteVisitDeclaredAt: timestamp("website_visit_declared_at", { withTimezone: true }),
     websiteVisitDeclaration: text("website_visit_declaration"),
+    // OUTCOME-PERFORMER-1106 (migration 0106): the performer stated on that occurrence at runs-service
+    // (stated | conflict | run_gone | refused; NULL = not stated yet, the completion pass states it).
+    websiteVisitPerformer: text("website_visit_performer"),
+    websiteVisitPerformerAt: timestamp("website_visit_performer_at", { withTimezone: true }),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),

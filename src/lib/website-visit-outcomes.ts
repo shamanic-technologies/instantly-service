@@ -24,6 +24,18 @@
  * (send-outcomes-worker) does it; a failure leaves the row undeclared and the
  * next tick retries. A row with no lead id is marked `no_lead_id`, never
  * declared under an invented subject.
+ *
+ * WHO performed it (OUTCOME-PERFORMER-1106): the anchor run carries no
+ * workflow, so every occurrence states its performer on `produced[]`: the
+ * script whose email was clicked (`script` + the sequence's own
+ * `workflow_slug`, the slug its send runs carry), else (a sequence an Engine
+ * sent, no workflow on its row: never a guessed script) the tracker that
+ * measured the click (`tracker`, named by the transport that carried the
+ * email). Stored by runs-service once per occurrence; a sequence's mark
+ * `website_visit_performer` is set only when runs-service's answer PROVES it
+ * stored it (`performerStatedCount` served), so the completion pass
+ * (`completeWebsiteVisitPerformers`, same worker) states it on every visit
+ * declared before, or declared while runs-service did not know the field yet.
  */
 import { sql } from "drizzle-orm";
 import { db } from "../db";
@@ -35,9 +47,11 @@ import {
   classifyDeclareAnswer,
   postRunOutcomes,
   type DeclarationMark,
+  type OutcomePerformer,
   type SendOutcomeDeclaration,
 } from "./send-outcomes";
 import { DECLARED_NO_SEND, sendInputStates } from "./send-input";
+import { SEND_TRANSPORT_SMTP } from "./self-send/transport";
 
 export const WEBSITE_VISIT_OUTCOME = "website_visit";
 export const WEBSITE_VISIT_TASK = "website-visit";
@@ -48,13 +62,46 @@ export const WEBSITE_VISIT_BATCH_LIMIT = 200;
  * false = no send of ours to this lead can ever be placed in the ledger
  * (lib/send-input.ts): the visit is declared consuming nothing.
  */
-export function buildWebsiteVisitDeclaration(leadId: string, consumeSend = true): SendOutcomeDeclaration {
+export function buildWebsiteVisitDeclaration(
+  leadId: string,
+  consumeSend = true,
+  performer?: OutcomePerformer,
+): SendOutcomeDeclaration {
   const subject = { subjectService: SEND_OUTCOME_SUBJECT_SERVICE, subjectId: leadId };
   return {
-    produced: [{ outcomeKey: WEBSITE_VISIT_OUTCOME, ...subject }],
+    produced: [{ outcomeKey: WEBSITE_VISIT_OUTCOME, ...subject, ...(performer ? { performer } : {}) }],
     consumed: consumeSend ? [{ outcomeKey: SEND_PRODUCED_OUTCOME, ...subject }] : [],
   };
 }
+
+/** The tool named when no script can be read: the click tracker of the transport that carried the email. */
+export const WEBSITE_VISIT_TRACKER_NAMES = { instantly: "instantly", smtp: "distribute.you" } as const;
+
+/**
+ * Who performed a sequence's website visit: our script whose email was clicked (the sequence's own workflow slug),
+ * else the tracker that measured the click. Never a guessed script.
+ */
+export function websiteVisitPerformer(row: { workflowSlug: string | null; sendTransport: string | null }): OutcomePerformer {
+  const slug = row.workflowSlug?.trim();
+  if (slug) return { kind: "script", workflowSlug: slug };
+  return {
+    kind: "tracker",
+    name: row.sendTransport === SEND_TRANSPORT_SMTP ? WEBSITE_VISIT_TRACKER_NAMES.smtp : WEBSITE_VISIT_TRACKER_NAMES.instantly,
+  };
+}
+
+/** runs-service served `performerStatedCount`: it read and stored the performer (an older build drops the field silently). */
+export function answerProvesPerformer(status: number, body: string): boolean {
+  return status >= 200 && status < 300 && body.includes('"performerStatedCount"');
+}
+
+/** runs-service refused the performer because the occurrence already holds another one (never overwritten). */
+export function isPerformerConflict(status: number, body: string): boolean {
+  return status === 409 && body.includes("performer_conflict");
+}
+
+/** `website_visit_performer` marks: stated (stored at runs-service), conflict (another one stored first), run_gone, refused. */
+export type PerformerMark = "stated" | "conflict" | "run_gone" | "refused";
 
 export interface PendingWebsiteVisit {
   id: string;
@@ -63,6 +110,10 @@ export interface PendingWebsiteVisit {
   runId: string | null;
   /** ISO instant of the sequence's first real click. */
   visitedAt: string;
+  workflowSlug: string | null;
+  sendTransport: string | null;
+  /** Mark already held (`declared` / `declared_no_send` on the completion pass), null on the declaration pass. */
+  declaration: string | null;
 }
 
 /**
@@ -70,9 +121,14 @@ export interface PendingWebsiteVisit {
  * the clicks (`event_type` index, a few thousand rows), never a scan of every
  * sequence. The event column holds UTC without a zone: read as an ISO instant.
  */
-async function loadPending(limit: number): Promise<PendingWebsiteVisit[]> {
+async function loadPending(limit: number, mode: "declare" | "performer" = "declare"): Promise<PendingWebsiteVisit[]> {
+  const scope =
+    mode === "declare"
+      ? sql`c.website_visit_declared_at IS NULL`
+      : sql`c.website_visit_declaration IN ('declared', ${DECLARED_NO_SEND}) AND c.website_visit_run_id IS NOT NULL
+          AND c.lead_id IS NOT NULL AND c.website_visit_performer IS NULL`;
   const result = await db.execute(sql`
-    SELECT c.id, c.org_id, c.lead_id, c.website_visit_run_id,
+    SELECT c.id, c.org_id, c.lead_id, c.website_visit_run_id, c.workflow_slug, c.send_transport, c.website_visit_declaration,
       to_char(v.visited_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS visited_at
     FROM (
       SELECT e.campaign_id, e.lead_email, min(e."timestamp") AS visited_at
@@ -81,7 +137,7 @@ async function loadPending(limit: number): Promise<PendingWebsiteVisit[]> {
       GROUP BY e.campaign_id, e.lead_email
     ) v
     JOIN instantly_campaigns c ON c.instantly_campaign_id = v.campaign_id AND lower(c.lead_email) = lower(v.lead_email)
-    WHERE c.website_visit_declared_at IS NULL
+    WHERE ${scope}
     ORDER BY v.visited_at, c.id
     LIMIT ${limit}
   `);
@@ -91,7 +147,17 @@ async function loadPending(limit: number): Promise<PendingWebsiteVisit[]> {
     leadId: (r.lead_id as string | null) ?? null,
     runId: (r.website_visit_run_id as string | null) ?? null,
     visitedAt: String(r.visited_at),
+    workflowSlug: (r.workflow_slug as string | null) ?? null,
+    sendTransport: (r.send_transport as string | null) ?? null,
+    declaration: (r.website_visit_declaration as string | null) ?? null,
   }));
+}
+
+async function markPerformer(id: string, outcome: PerformerMark): Promise<void> {
+  await db.execute(sql`
+    UPDATE instantly_campaigns SET website_visit_performer = ${outcome}, website_visit_performer_at = now()
+    WHERE id = ${id} AND website_visit_performer IS NULL
+  `);
 }
 
 async function mark(id: string, outcome: DeclarationMark | typeof DECLARED_NO_SEND): Promise<void> {
@@ -129,6 +195,10 @@ export interface WebsiteVisitSummary {
   declaredNoSend: number;
   /** A send of ours to the lead is not declared yet: next tick. */
   waitingForSend: number;
+  /** runs-service proved it stored the performer. */
+  performerStated: number;
+  /** The occurrence already held another performer: declared without it (the first one stands). */
+  performerConflict: number;
 }
 
 async function declareOne(row: PendingWebsiteVisit, summary: WebsiteVisitSummary, sendInput: Map<string, string>): Promise<void> {
@@ -144,11 +214,19 @@ async function declareOne(row: PendingWebsiteVisit, summary: WebsiteVisitSummary
     return;
   }
   const consumeSend = input === "declared";
+  const performer = websiteVisitPerformer(row);
   let runId: string;
   let answer: { status: number; body: string };
+  let conflict = false;
   try {
     runId = await ensureRun(row);
-    answer = await postRunOutcomes(runId, row.orgId, buildWebsiteVisitDeclaration(row.leadId, consumeSend), row.visitedAt);
+    answer = await postRunOutcomes(runId, row.orgId, buildWebsiteVisitDeclaration(row.leadId, consumeSend, performer), row.visitedAt);
+    if (isPerformerConflict(answer.status, answer.body)) {
+      // Two sequences of one lead clicked the same day fold into one occurrence on this run: the first performer
+      // stands, this sequence's consumption is still declared.
+      conflict = true;
+      answer = await postRunOutcomes(runId, row.orgId, buildWebsiteVisitDeclaration(row.leadId, consumeSend), row.visitedAt);
+    }
   } catch (error: unknown) {
     summary.retry++;
     console.error(`[website-visit-outcomes] sequence ${row.id} declaration failed (retried next tick): ${errorMessage(error)}`);
@@ -164,6 +242,13 @@ async function declareOne(row: PendingWebsiteVisit, summary: WebsiteVisitSummary
     console.error(`[website-visit-outcomes] run ${runId} declaration ${answer.status} -> ${verdict}: ${answer.body.slice(0, 300)}`);
   }
   await mark(row.id, verdict === "declared" && !consumeSend ? DECLARED_NO_SEND : verdict);
+  if (verdict === "declared" && conflict) {
+    await markPerformer(row.id, "conflict");
+    summary.performerConflict++;
+  } else if (verdict === "declared" && answerProvesPerformer(answer.status, answer.body)) {
+    await markPerformer(row.id, "stated");
+    summary.performerStated++;
+  }
   if (verdict === "declared") {
     summary.declared++;
     if (!consumeSend) summary.declaredNoSend++;
@@ -179,7 +264,10 @@ export function declareWebsiteVisits(limit = WEBSITE_VISIT_BATCH_LIMIT): Promise
   if (inFlight) return inFlight;
   inFlight = (async () => {
     const rows = await loadPending(limit);
-    const summary: WebsiteVisitSummary = { read: rows.length, declared: 0, runGone: 0, noLeadId: 0, refused: 0, retry: 0, declaredNoSend: 0, waitingForSend: 0 };
+    const summary: WebsiteVisitSummary = {
+      read: rows.length, declared: 0, runGone: 0, noLeadId: 0, refused: 0, retry: 0, declaredNoSend: 0, waitingForSend: 0,
+      performerStated: 0, performerConflict: 0,
+    };
     const sendInput = await sendInputStates(rows.flatMap((r) => (r.leadId ? [r.leadId] : [])));
     for (const row of rows) await declareOne(row, summary, sendInput);
     if (rows.length > 0) console.log(`[website-visit-outcomes] pass done ${JSON.stringify(summary)}`);
@@ -188,4 +276,79 @@ export function declareWebsiteVisits(limit = WEBSITE_VISIT_BATCH_LIMIT): Promise
     inFlight = null;
   });
   return inFlight;
+}
+
+export interface PerformerCompletionSummary {
+  dryRun: boolean;
+  read: number;
+  /** Planned performers (dry run and commit): `script:<slug>` / `tracker:<name>` -> occurrences. */
+  byPerformer: Record<string, number>;
+  stated: number;
+  conflict: number;
+  runGone: number;
+  refused: number;
+  retry: number;
+  /** runs-service answered without `performerStatedCount`: it does not read the field yet, the pass stops. */
+  notServedYet: number;
+}
+
+const performerLabel = (p: OutcomePerformer): string => (p.kind === "script" ? `script:${p.workflowSlug}` : `${p.kind}:${p.name ?? ""}`);
+
+/**
+ * OUTCOME-PERFORMER-1106: every website visit declared before its performer was stated (or while runs-service did not
+ * read the field yet) states it once, on the occurrence already recorded (runs-service: `performer_stated`, a replay =
+ * `already_recorded`, another one stored = 409 `performer_conflict`, never overwritten). Re-posts the PRODUCED item
+ * only, same run, same instant: nothing else moves (no consumption, no cost). Runs itself on the worker until no row
+ * is left; `dryRun` plans and counts, writes nothing.
+ */
+export async function completeWebsiteVisitPerformers(
+  opts: { dryRun: boolean; limit?: number } = { dryRun: false },
+): Promise<PerformerCompletionSummary> {
+  const rows = await loadPending(opts.limit ?? WEBSITE_VISIT_BATCH_LIMIT, "performer");
+  const summary: PerformerCompletionSummary = {
+    dryRun: opts.dryRun, read: rows.length, byPerformer: {}, stated: 0, conflict: 0, runGone: 0, refused: 0, retry: 0, notServedYet: 0,
+  };
+  for (const row of rows) {
+    const performer = websiteVisitPerformer(row);
+    const label = performerLabel(performer);
+    summary.byPerformer[label] = (summary.byPerformer[label] ?? 0) + 1;
+    if (opts.dryRun) continue;
+    const declaration = { produced: buildWebsiteVisitDeclaration(row.leadId as string, false, performer).produced, consumed: [] };
+    let answer: { status: number; body: string };
+    try {
+      answer = await postRunOutcomes(row.runId as string, row.orgId, declaration, row.visitedAt);
+    } catch (error: unknown) {
+      summary.retry++;
+      console.error(`[website-visit-performers] sequence ${row.id} failed (retried next tick): ${errorMessage(error)}`);
+      continue;
+    }
+    if (answerProvesPerformer(answer.status, answer.body)) {
+      await markPerformer(row.id, "stated");
+      summary.stated++;
+      continue;
+    }
+    if (isPerformerConflict(answer.status, answer.body)) {
+      await markPerformer(row.id, "conflict");
+      summary.conflict++;
+      console.error(`[website-visit-performers] run ${row.runId}: another performer already stored: ${answer.body.slice(0, 300)}`);
+      continue;
+    }
+    if (answer.status >= 200 && answer.status < 300) {
+      summary.notServedYet++;
+      console.error(`[website-visit-performers] runs-service does not read performer yet (no performerStatedCount): pass stopped`);
+      break;
+    }
+    const verdict = classifyDeclareAnswer(answer.status, answer.body);
+    if (verdict === "retry") {
+      summary.retry++;
+      console.error(`[website-visit-performers] run ${row.runId} ${answer.status} (retried next tick): ${answer.body.slice(0, 300)}`);
+      continue;
+    }
+    await markPerformer(row.id, verdict === "run_gone" ? "run_gone" : "refused");
+    if (verdict === "run_gone") summary.runGone++;
+    else summary.refused++;
+    console.error(`[website-visit-performers] run ${row.runId} ${answer.status} -> ${verdict}: ${answer.body.slice(0, 300)}`);
+  }
+  if (rows.length > 0) console.log(`[website-visit-performers] pass done ${JSON.stringify(summary)}`);
+  return summary;
 }

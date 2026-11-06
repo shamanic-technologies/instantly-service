@@ -1,6 +1,7 @@
 /**
  * In-process drive for the ledger declarations (lib/send-outcomes, then
- * lib/positive-reply-outcomes, then lib/website-visit-outcomes): a first
+ * lib/positive-reply-outcomes, then lib/website-visit-outcomes and its performer
+ * completion): a first
  * pass 60 s after boot (deploys restart longer timers), then every minute. A pass
  * never stacks onto the next (joined in-flight). A failure is logged loud and the
  * next tick retries: the rows stay undeclared until runs-service has them.
@@ -8,7 +9,7 @@
 import { errorMessage } from "./db-error.js";
 import { declarePositiveReplies } from "./positive-reply-outcomes";
 import { declareSendOutcomes } from "./send-outcomes";
-import { declareWebsiteVisits } from "./website-visit-outcomes";
+import { completeWebsiteVisitPerformers, declareWebsiteVisits } from "./website-visit-outcomes";
 
 export const SEND_OUTCOMES_INTERVAL_MS = 60 * 1000;
 export const SEND_OUTCOMES_FIRST_TICK_MS = 60 * 1000;
@@ -29,6 +30,11 @@ function tick(): void {
     .then(() => declareWebsiteVisits())
     .catch((error: unknown) => {
       console.error(`[instantly-service] website-visit-outcomes tick failed: ${errorMessage(error)}`);
+    })
+    // OUTCOME-PERFORMER-1106: visits declared before their performer was stated state it once (drains, then reads nothing).
+    .then(() => completeWebsiteVisitPerformers())
+    .catch((error: unknown) => {
+      console.error(`[instantly-service] website-visit-performers tick failed: ${errorMessage(error)}`);
     });
 }
 

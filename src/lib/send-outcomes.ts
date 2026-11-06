@@ -67,7 +67,18 @@ export interface OutcomeOccurrence {
   outcomeKey: string;
   subjectService: string;
   subjectId: string;
+  /** PRODUCED only: who performed it (runs-service v0.47.133, OUTCOME-PERFORMER-1106). */
+  performer?: OutcomePerformer;
 }
+
+/**
+ * WHO performed an occurrence (OUTCOME-PERFORMER-1106, owner 2026-11-06: "la provenance est clé pour les stats, mais
+ * doit être stockée de façon généralisée, par outcome"). runs-service stores it once per occurrence; stats read it
+ * there. `script` names the workflow slug its runs carry; any other kind is an attester, `name` = the tool (never a person).
+ */
+export type OutcomePerformer =
+  | { kind: "script"; workflowSlug: string; name?: string }
+  | { kind: "client_team" | "crm" | "tracker" | "mailbox" | "organic"; name?: string };
 
 export interface SendOutcomeDeclaration {
   produced: OutcomeOccurrence[];
