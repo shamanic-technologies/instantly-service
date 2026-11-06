@@ -240,6 +240,10 @@ vi.mock("../../src/lib/status-gold", () => ({
 // existing POST /send tests that seed accounts via mockListAccounts keep working
 // (both return Account[]); a test can still override it per-case.
 const mockFetchThreadMailbox = vi.hoisted(() => vi.fn(async (_email: string): Promise<unknown> => null));
+const mockMoveFollowupDateLater = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => "brand-1:stated"));
+vi.mock("../../src/lib/followup-date-later", () => ({
+  moveFollowupDateLater: (...a: unknown[]) => mockMoveFollowupDateLater(...a),
+}));
 vi.mock("../../src/lib/account-lifecycle-sync", () => ({
   fetchInProductionAccounts: (...args: unknown[]) =>
     mockFetchInProductionAccounts(...args),
@@ -3501,6 +3505,11 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     });
     mockFindQueuedBrandSequence.mockResolvedValue(null);
     mockFindFollowUpThread.mockResolvedValue(null);
+    // Every thread mailbox is a row of ours unless a case says otherwise.
+    mockFetchThreadMailbox.mockImplementation(async (email: string) =>
+      acct({ email: email.trim().toLowerCase(), stat_warmup_score: 100, daily_limit: 50 }),
+    );
+    mockMoveFollowupDateLater.mockResolvedValue("brand-1:stated");
     mockCreateRun.mockImplementation(() => {
       runCounter++;
       return Promise.resolve({ id: `step-run-${runCounter}` });
@@ -3683,12 +3692,32 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     mockFetchThreadMailbox.mockImplementation(async () => null);
   });
 
-  it("THREAD-MAILBOX-1107: a thread mailbox in recovery we cannot send from (no credential) is NOT taken", async () => {
+  it("THREAD-ANY-ROUTE-1107: a thread mailbox OUT of every pool (brand domain alias, deactivated_by_user) we hold a login for still takes it: same mailbox, same thread", async () => {
     credentialedMailboxes.add("first@example.com");
+    credentialedMailboxes.add("kevinl@distribute.you");
     mockListAccounts.mockResolvedValue([
       acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
     ]);
-    mockFetchThreadMailbox.mockImplementation(async () => acct({ email: "nocred@example.com", stat_warmup_score: 100, daily_limit: 20 }));
+    mockFindFollowUpThread.mockResolvedValue({
+      instantlyCampaignId: "a27fefbc-april",
+      accountEmail: "kevinl@distribute.you",
+      subject: "Quick idea for TestCo",
+      reason: "our_last_email",
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+    expect(res.status).toBe(200);
+    expect(mockFetchThreadMailbox).toHaveBeenCalledWith("kevinl@distribute.you");
+    const phase2 = mockDbUpdateSet.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((v) => "sendTransport" in v)!;
+    expect(phase2.accountEmail).toBe("kevinl@distribute.you");
+    expect(JSON.stringify(phase2.metadata)).toContain("followUpOf");
+    expect(mockMoveFollowupDateLater).not.toHaveBeenCalled();
+  });
+
+  it("THREAD-ANY-ROUTE-1107: a thread mailbox we hold no login for is REFUSED, the person waits (follow-up date later), never a new thread", async () => {
+    credentialedMailboxes.add("first@example.com");
     mockKeepSelfSendCapable.mockImplementation(async (accounts: readonly { email: string }[]) =>
       accounts.filter((a) => credentialedMailboxes.has(a.email)),
     );
@@ -3699,21 +3728,28 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
       reason: "our_last_email",
     });
     const app = await createSendApp();
+    const before = Date.now();
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-    expect(res.status).toBe(200);
-    const phase2 = mockDbUpdateSet.mock.calls
-      .map((c) => c[0] as Record<string, unknown>)
-      .find((v) => "sendTransport" in v)!;
-    expect(phase2.accountEmail).toBe("first@example.com");
-    mockFetchThreadMailbox.mockImplementation(async () => null);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("thread_mailbox_unavailable");
+    expect(res.body.reason).toBe("no_credential");
+    expect(res.body.mailbox).toBe("nocred@example.com");
+    expect(res.body.followupDate).toBe("brand-1:stated");
+    // Before any reservation, run or cost: nothing sent, nothing billed, the verifier not asked.
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    expect(mockGateAddressForSend).not.toHaveBeenCalled();
+    const wait = mockMoveFollowupDateLater.mock.calls[0][0] as { until: Date; reason: string; leadEmail: string; brandIds: string[] };
+    expect(wait.leadEmail).toBe("test@example.com");
+    expect(wait.brandIds).toEqual(["brand-1"]);
+    expect(wait.reason).toContain("nocred@example.com");
+    expect(wait.until.getTime()).toBeGreaterThanOrEqual(before + 7 * 24 * 3600 * 1000 - 1000);
     mockKeepSelfSendCapable.mockImplementation(async (accounts: readonly { email: string }[]) => [...accounts]);
   });
 
-  it("starts a new thread with the caller's subject when the thread's mailbox can no longer send", async () => {
-    credentialedMailboxes.add("first@example.com");
-    mockListAccounts.mockResolvedValue([
-      acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
-    ]);
+  it("THREAD-ANY-ROUTE-1107: a thread mailbox that is not ours any more is refused too (followUp or not), and a failed date move still refuses", async () => {
+    mockFetchThreadMailbox.mockImplementation(async () => null);
+    mockMoveFollowupDateLater.mockRejectedValue(new Error("lead-service 502"));
     mockFindFollowUpThread.mockResolvedValue({
       instantlyCampaignId: "ss-thread",
       accountEmail: "gone@example.com",
@@ -3722,12 +3758,32 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     });
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(followUpBody);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("thread_mailbox_unavailable");
+    expect(res.body.reason).toBe("not_ours");
+    expect(res.body.followupDate).toMatch(/^failed: .*502/);
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("a thread whose mailbox we never knew (Instantly era, unread) still opens a new thread with the caller's subject, stored on the row", async () => {
+    credentialedMailboxes.add("first@example.com");
+    mockListAccounts.mockResolvedValue([
+      acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+    ]);
+    mockFindFollowUpThread.mockResolvedValue({
+      instantlyCampaignId: "ss-thread",
+      accountEmail: null,
+      subject: "Quick idea for TestCo",
+      reason: "their_last_reply",
+    });
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(followUpBody);
     expect(res.status).toBe(200);
+    expect(mockFetchThreadMailbox).not.toHaveBeenCalled();
     const phase2 = mockDbUpdateSet.mock.calls
       .map((c) => c[0] as Record<string, unknown>)
       .find((v) => "sendTransport" in v)!;
     expect(phase2.accountEmail).toBe("first@example.com");
-    // Never silent: the thread it could not continue stays on the row.
     expect(JSON.stringify(phase2.metadata)).toContain("threadNotContinued");
     expect(JSON.stringify(phase2.metadata)).not.toContain("followUpOf");
     const steps = mockDbInsertValues.mock.calls

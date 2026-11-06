@@ -11,12 +11,16 @@ import { eq, and, ne, isNotNull, sql } from "drizzle-orm";
 import {
   Lead,
 } from "../lib/instantly-client";
-import { selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
+import { resolveThreadMailbox, selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
+import type { PooledAccount } from "../lib/account-lifecycle-sync";
+import { moveFollowupDateLater } from "../lib/followup-date-later";
 import { queuedStepsToStore } from "../lib/queued-steps-script";
 import {
   findFollowUpThread,
   findQueuedBrandSequence,
   followUpQueuedRefusal,
+  threadMailboxRefusal,
+  THREAD_MAILBOX_WAIT_DAYS,
   type FollowUpThread,
 } from "../lib/follow-up-send";
 import { findNotAProspect, notAProspectRefusal } from "../lib/not-a-prospect";
@@ -400,6 +404,62 @@ router.post("/", async (req: Request, res: Response) => {
         return res.status(409).json(refusal);
       }
 
+      // 3c-ter. THE LAST THREAD'S MAILBOX (THREAD-ANY-ROUTE-1107, owner: « a
+      //     follow-up replies in the lead's LAST thread, from the address that
+      //     thread used »). The mailbox that wrote it, ANY lifecycle, when we
+      //     still hold a route (credential, alias of a mailbox we log into,
+      //     readable replies, relay accepts). None = refused here, before the
+      //     verifier spends and before any reservation: the person WAITS (their
+      //     next follow-up date moves later, its reason says why) instead of a
+      //     new thread from another address (Doc Dinners 2026-11-06: 4 of 18
+      //     follow-ups opened new threads, their April threads' mailboxes were
+      //     distribute.you aliases out of the pool). A thread whose mailbox we
+      //     never knew (Instantly era, unread) still opens a new thread, logged.
+      let threadMailbox: PooledAccount | null = null;
+      if (followUpThread?.accountEmail) {
+        const resolved = await resolveThreadMailbox(followUpThread.accountEmail, {
+          method: "POST",
+          path: "/orgs/send",
+        });
+        if (resolved.ok) {
+          threadMailbox = resolved.account;
+        } else {
+          const waitUntil = new Date(Date.now() + THREAD_MAILBOX_WAIT_DAYS * 24 * 60 * 60 * 1000);
+          let followupDate: string;
+          try {
+            followupDate = await moveFollowupDateLater({
+              orgId,
+              campaignId,
+              brandIds,
+              leadEmail: body.to,
+              until: waitUntil,
+              reason: `Waiting: their last thread's mailbox ${followUpThread.accountEmail} cannot send (${resolved.reason})`,
+            });
+          } catch (error: unknown) {
+            followupDate = `failed: ${messageOf(error)}`;
+            console.error(`[send] Could not move ${body.to}'s follow-up date after a thread-mailbox refusal: ${messageOf(error)}`);
+          }
+          const refusal = threadMailboxRefusal(
+            body.to,
+            { ...followUpThread, accountEmail: followUpThread.accountEmail },
+            resolved.reason,
+            waitUntil,
+            followupDate,
+          );
+          console.warn(`[send] Refused — ${refusal.details} (follow-up date: ${followupDate})`);
+          traceEvent(
+            res.locals.runId as string,
+            {
+              service: "instantly-service",
+              event: "send-refused-thread-mailbox-unavailable",
+              detail: `to=${body.to}, mailbox=${followUpThread.accountEmail}, reason=${resolved.reason}, thread=${followUpThread.instantlyCampaignId}, followupDate=${followupDate}`,
+            },
+            req.headers,
+          ).catch(() => {});
+          return res.status(409).json(refusal);
+        }
+      }
+
       // 3d. VERIFIED ADDRESS — no email leaves our shared mailboxes for an
       //     address without a verdict from our verifier, whatever the source
       //     (cold, CRM, waterfall, pushed). Verified now when needed, billed on
@@ -679,16 +739,19 @@ router.post("/", async (req: Request, res: Response) => {
       //    The lead's timezone and its full sequence ride along: capacity is
       //    booked for every day this sequence will need the mailbox (D0, D+3,
       //    D+10 …), each resolved through the prospect's own local window.
-      const account = await selectSendingAccount({
-        featureSlug: tracking.featureSlug ?? null,
-        timezone: body.timezone ?? null,
-        sequence: sortedSequence,
-        // A follow-up stays with the mailbox that wrote the thread when it can.
-        preferAccountEmail: followUpThread?.accountEmail ?? null,
-        // A mailbox whose domain can afford this address's bounce risk is
-        // preferred (bounce-budget.ts); the dispatcher enforces it.
-        verdict: verification.verdict ?? null,
-      });
+      // A send continuing the person's last thread leaves from that thread's
+      // mailbox (resolved at 3c-ter); only a person with no thread gets the
+      // fill order.
+      const account =
+        threadMailbox ??
+        (await selectSendingAccount({
+          featureSlug: tracking.featureSlug ?? null,
+          timezone: body.timezone ?? null,
+          sequence: sortedSequence,
+          // A mailbox whose domain can afford this address's bounce risk is
+          // preferred (bounce-budget.ts); the dispatcher enforces it.
+          verdict: verification.verdict ?? null,
+        }));
       // The pipe for a NEW sequence. With the A/B off this is exactly the
       // account's own policy; with it on, a credentialed mailbox alternates so
       // both pipes carry comparable work on the SAME mailboxes. Frozen on the
