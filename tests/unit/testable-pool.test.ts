@@ -129,11 +129,20 @@ describe("measuring a brand domain does NOT make it sendable", () => {
     expect(text).not.toContain("in_recovery");
   });
 
-  it("THREAD-ANY-ROUTE-1107: the thread mailbox read is ONE address, ANY lifecycle (the capability gates decide)", async () => {
+  it("THREAD-OWNER-DEACTIVATED-1107: the thread mailbox read is ONE address, any lifecycle, returned WITH it (the caller refuses deactivated_by_user)", async () => {
     await fetchThreadMailbox(" Kevinl@SalesColdEmails.com ");
     const text = sqlTextOf(mockExecute.mock.calls[0][0]);
     expect(text).toContain("lower(a.email) =");
     expect(text).not.toContain("lifecycle_status");
     expect(JSON.stringify(mockExecute.mock.calls[0][0])).toContain("kevinl@salescoldemails.com");
+  });
+
+  it("THREAD-OWNER-DEACTIVATED-1107: returns the mailbox's lifecycle beside it", async () => {
+    mockExecute
+      .mockResolvedValueOnce({ rows: [{ email: "kevinl@distribute.you", sendTransport: "smtp" }] })
+      .mockResolvedValueOnce({ rows: [{ lifecycleStatus: "deactivated_by_user" }] });
+    const found = await fetchThreadMailbox("kevinl@distribute.you");
+    expect(found?.account.email).toBe("kevinl@distribute.you");
+    expect(found?.lifecycleStatus).toBe("deactivated_by_user");
   });
 });

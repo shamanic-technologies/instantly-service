@@ -966,6 +966,7 @@ export async function fetchSendablePool(
 /** Why the mailbox of a person's last thread cannot send it any more. */
 export type ThreadMailboxUnusableReason =
   | "not_ours"
+  | "deactivated_by_owner"
   | "no_credential"
   | "replies_unreadable"
   | "relay_refuses";
@@ -977,8 +978,9 @@ export type ThreadMailboxResolution =
 /**
  * The mailbox that wrote a person's last thread, when we can still send from
  * it (THREAD-MAILBOX-1107 + THREAD-ANY-ROUTE-1107, owner: « a follow-up replies
- * in the lead's LAST thread, from the address that thread used »). Any
- * lifecycle (`fetchThreadMailbox`), the SAME capability gates as the send pool,
+ * in the lead's LAST thread, from the address that thread used »). Never a
+ * mailbox the owner deactivated (`deactivated_by_user`, THREAD-OWNER-DEACTIVATED-1107);
+ * any other lifecycle (`fetchThreadMailbox`), the SAME capability gates as the send pool,
  * in the same order: a credential (an alias authenticates as its real mailbox),
  * replies we can read, a relay that accepts it. The first gate it fails is the
  * reason the caller states; the fill order never replaces it (a new thread
@@ -988,8 +990,12 @@ export async function resolveThreadMailbox(
   email: string,
   caller: { method: string; path: string },
 ): Promise<ThreadMailboxResolution> {
-  const row = await fetchThreadMailbox(email.trim().toLowerCase());
-  if (!row) return { ok: false, reason: "not_ours" };
+  const found = await fetchThreadMailbox(email.trim().toLowerCase());
+  if (!found) return { ok: false, reason: "not_ours" };
+  // The owner took this mailbox out of sending (a brand domain): its threads
+  // are never continued from it, whatever route we could still find.
+  if (found.lifecycleStatus === "deactivated_by_user") return { ok: false, reason: "deactivated_by_owner" };
+  const row = found.account;
   if ((await keepSelfSendCapable([row], caller)).length === 0) {
     return { ok: false, reason: "no_credential" };
   }
