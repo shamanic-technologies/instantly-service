@@ -4122,7 +4122,11 @@ const SendingForecastResponseSchema = z
     blockedDomainCount: z
       .number()
       .int()
-      .describe("Accounts blocked by domain policy (lifecycle deactivated_by_user)"),
+      .describe("Distinct DOMAINS the domain policy blocks among present addresses (lifecycle deactivated_by_user). Counted addresses before SENDING-INFRA-AUDIT-1106."),
+    blockedAddressCount: z
+      .number()
+      .int()
+      .describe("Present addresses on those domains (the figure blockedDomainCount used to serve)"),
     days: z
       .array(ForecastDaySchema)
       .describe(

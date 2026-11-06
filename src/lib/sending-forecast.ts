@@ -94,8 +94,10 @@ export interface CapacitySummary {
   healthyAccountCount: number;
   /** All accounts before any filtering. */
   totalAccountCount: number;
-  /** Accounts blocked by domain policy (lifecycle == deactivated_by_user). */
+  /** Distinct DOMAINS of the present addresses the domain policy blocks (lifecycle == deactivated_by_user). */
   blockedDomainCount: number;
+  /** The present ADDRESSES on those domains (what `blockedDomainCount` used to count). */
+  blockedAddressCount: number;
 }
 
 /**
@@ -242,14 +244,16 @@ export function computeCapacitySummary(
     dailyCapacity += Math.min(limit, rampCapForVolume(sustained, IN_PRODUCTION_DAILY_LIMIT));
   }
 
-  const blockedDomainCount = accounts.filter(
-    (a) => statusOf(a.email) === "deactivated_by_user",
-  ).length;
+  // DOMAINS, as the name says (SENDING-INFRA-AUDIT-1106 item 8): it counted
+  // the ADDRESSES on them (55 against 16 domains in the policy, 2026-11-06).
+  const blockedAddresses = accounts.filter((a) => statusOf(a.email) === "deactivated_by_user");
+  const blockedDomainCount = new Set(blockedAddresses.map((a) => emailDomainOf(a.email))).size;
   return {
     dailyCapacity,
     healthyAccountCount: production.length,
     totalAccountCount: accounts.length,
     blockedDomainCount,
+    blockedAddressCount: blockedAddresses.length,
   };
 }
 
@@ -379,4 +383,8 @@ export function projectDailySchedule(leads: PendingLead[], asOf: Date): Forecast
     days.push({ date: key, scheduledCount: buckets.get(key) ?? 0 });
   }
   return days;
+}
+
+function emailDomainOf(email: string): string {
+  return (email.split("@")[1] ?? "").trim().toLowerCase();
 }

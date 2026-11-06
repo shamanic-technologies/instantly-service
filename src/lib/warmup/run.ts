@@ -28,6 +28,7 @@ import { warmupDispatches } from "../../db/schema";
 import { rampCapForVolume } from "../account-lifecycle";
 import { fetchRecentDailyVolume, sustainedForMailbox } from "../recent-send-volume";
 import { fetchQueueSizeByAccount } from "../account-sending-stats";
+import { loadDrainedCancelledAddresses } from "../ops/exclusions";
 import type { CallerInfo } from "../key-client";
 import { loadMailboxLogins, loginFor } from "../self-send/mailbox-credentials";
 import { loadSeedCredentialResolver } from "../seed-placement/credentials";
@@ -298,7 +299,10 @@ export async function runWarmupMesh(
   // held OUT of the mesh — rescuing mail from a receiver's spam folder teaches
   // its filter, and a receiver that both grades and rescues returns a verdict it
   // has been trained to give. See `partnerCandidates`.
-  const addresses = [...mailboxLogins.keys()];
+  // A mailbox on a CANCELLED domain that owes no prospect step is neither
+  // warmed nor used to warm (SENDING-INFRA-AUDIT-1106): nothing left to protect.
+  const drained = await loadDrainedCancelledAddresses();
+  const addresses = [...mailboxLogins.keys()].filter((a) => !drained.has(a.trim().toLowerCase()));
   const judges = selectSeedReceivers(
     addresses
       .map((email) => {

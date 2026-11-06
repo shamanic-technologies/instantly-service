@@ -25,7 +25,8 @@
  *   - Expandi, email KPIs: below 85 % poor for cold email (domain reputation or
  *     authentication problem).
  *   Validity's benchmark puts the global average at 83-87 %. 80 % is the line
- *   every source agrees is a problem; it is the bar. Measured on seeds FOUND
+ *   every source agrees is a problem. Since 2026-11-06 the bar is the
+ *   lifecycle's production bar (90 %, `PRODUCTION_DELIVERY_PCT_BAR`): one bar. Measured on seeds FOUND
  *   (inbox / (inbox + spam)), the same basis the dispatcher's provider routing
  *   grades on, so a seed not read yet never reads as spam; a day needs at least
  *   {@link PLACEMENT_ALERT_MIN_FOUND_SEEDS} found seeds to count.
@@ -44,8 +45,14 @@ import { db } from "../db";
 import { ESP_GOOGLE, ESP_OUTLOOK, ESP_OUTLOOK_CONSUMER } from "./seed-placement/seeds";
 import type { RecipientProvider } from "./provider-placement";
 import { mailboxOf } from "./ops/entity-scope";
+import { PRODUCTION_DELIVERY_PCT_BAR } from "./account-lifecycle";
 
-export const PLACEMENT_ALERT_INBOX_PCT_BAR = 80;
+/**
+ * ONE bar (owner 2026-11-06, SENDING-INFRA-AUDIT-1106 item 9): the lifecycle's
+ * production bar, so the alert and the rule that keeps a mailbox in production
+ * can never disagree (the alert used 80 % while production required 90 %).
+ */
+export const PLACEMENT_ALERT_INBOX_PCT_BAR = PRODUCTION_DELIVERY_PCT_BAR;
 export const PLACEMENT_ALERT_MIN_FOUND_SEEDS = 20;
 /** Days re-evaluated each tick: seeds of yesterday are still being read today. */
 export const PLACEMENT_ALERT_EVAL_DAYS = 3;

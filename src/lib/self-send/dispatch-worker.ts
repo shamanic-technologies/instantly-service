@@ -561,8 +561,11 @@ async function loadSendingAccounts(
     addressesByMailbox.set(mailbox, group);
   }
   const peakByMailbox = new Map<string, number>();
+  // The one alias row that carries the mailbox's peak (first by address).
+  const peakCarrier = new Map<string, string>();
   for (const [mailbox, addresses] of addressesByMailbox) {
     peakByMailbox.set(mailbox, sustainedForMailbox(volume, addresses));
+    peakCarrier.set(mailbox, [...addresses].sort()[0]!);
   }
 
   for (const row of rowsOf(result)) {
@@ -590,7 +593,12 @@ async function loadSendingAccounts(
       accountEmail: email,
       mailbox,
       cap: dailyLimit,
-      recentSustainedDaily: peakByMailbox.get(mailbox) ?? 0,
+      // The mailbox's peak rides on ONE of its rows: `mailboxRoom` SUMS the
+      // rows of a mailbox, so a peak copied on every alias read five times too
+      // high on a five-alias mailbox (kevin@growthagency.group: 27/day read as
+      // 135, cap 50 where the selector and the ops page said 41,
+      // SENDING-INFRA-AUDIT-1106).
+      recentSustainedDaily: peakCarrier.get(mailbox) === email ? (peakByMailbox.get(mailbox) ?? 0) : 0,
       sentToday: Number(row.sentToday) + Number(row.warmupToday ?? 0),
       // Same gate as the assignment of a NEW sequence: only a production mailbox
       // may take over a first email another mailbox cannot send.
