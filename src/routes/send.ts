@@ -20,6 +20,7 @@ import {
   findQueuedBrandSequence,
   followUpQueuedRefusal,
   threadMailboxRefusal,
+  threadMailboxWaitReason,
   THREAD_MAILBOX_WAIT_DAYS,
   type FollowUpThread,
 } from "../lib/follow-up-send";
@@ -406,7 +407,9 @@ router.post("/", async (req: Request, res: Response) => {
 
       // 3c-ter. THE LAST THREAD'S MAILBOX (THREAD-ANY-ROUTE-1107, owner: « a
       //     follow-up replies in the lead's LAST thread, from the address that
-      //     thread used »). The mailbox that wrote it, ANY lifecycle, when we
+      //     thread used »). The mailbox that wrote it, ANY lifecycle except one
+      //     the OWNER deactivated (`deactivated_by_user`: a brand domain kept out
+      //     of sending, THREAD-OWNER-DEACTIVATED-1107), when we
       //     still hold a route (credential, alias of a mailbox we log into,
       //     readable replies, relay accepts). None = refused here, before the
       //     verifier spends and before any reservation: the person WAITS (their
@@ -433,7 +436,7 @@ router.post("/", async (req: Request, res: Response) => {
               brandIds,
               leadEmail: body.to,
               until: waitUntil,
-              reason: `Waiting: their last thread's mailbox ${followUpThread.accountEmail} cannot send (${resolved.reason})`,
+              reason: threadMailboxWaitReason(followUpThread.accountEmail, resolved.reason),
             });
           } catch (error: unknown) {
             followupDate = `failed: ${messageOf(error)}`;

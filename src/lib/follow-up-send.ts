@@ -303,10 +303,16 @@ export const THREAD_MAILBOX_UNAVAILABLE_CODE = "thread_mailbox_unavailable";
 
 const UNUSABLE_WORDS: Record<string, string> = {
   not_ours: "is not one of our mailboxes any more",
+  deactivated_by_owner: "was deactivated by the owner",
   no_credential: "is a mailbox we hold no login for",
   replies_unreadable: "is a mailbox whose replies we cannot read",
   relay_refuses: "is a mailbox its mail server refuses right now",
 };
+
+/** The reason stored on the person's follow-up date while they wait (lead-service). */
+export function threadMailboxWaitReason(mailbox: string, reason: string): string {
+  return `Waiting: their last thread's mailbox ${mailbox} ${UNUSABLE_WORDS[reason] ?? `cannot send (${reason})`}`;
+}
 
 /**
  * The 409 body when the person's last thread with the brand was written from

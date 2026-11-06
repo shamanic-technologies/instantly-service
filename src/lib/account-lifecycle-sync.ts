@@ -407,25 +407,30 @@ export async function fetchInProductionAccounts(
 }
 
 /**
- * THREAD-MAILBOX-1107: ONE mailbox that wrote a person's last thread, WHATEVER
- * its lifecycle. NOT the send pool (that is in_production only, above): only
- * the send path asks for it, when a new sequence continues the person's last
- * thread with the brand. The lifecycle decides where a NEW thread may open
- * (a brand domain is `deactivated_by_user`: never cold), never whether a
- * thread we already hold may go on (same rule as the dispatcher's
- * `loadSendingAccounts`); the capability gates the caller applies (credential,
- * replies readable, relay accepts) are what say we can still send from it
- * (THREAD-ANY-ROUTE-1107, Doc Dinners 2026-11-07: 4 threads written in April
- * from distribute.you aliases, `deactivated_by_user`, opened new threads). The
- * feature carve-out does not apply: it is that person's thread.
+ * THREAD-MAILBOX-1107: ONE mailbox that wrote a person's last thread, with its
+ * lifecycle. NOT the send pool (that is in_production only, above): only the
+ * send path asks for it, when a new sequence continues the person's last
+ * thread with the brand. The caller decides: a mailbox the OWNER deactivated
+ * (`deactivated_by_user`: a brand domain such as distribute.you, kept out of
+ * sending on purpose) never continues a thread (THREAD-OWNER-DEACTIVATED-1107);
+ * any other lifecycle does when the capability gates pass (credential, replies
+ * readable, relay accepts). The feature carve-out does not apply: it is that
+ * person's thread.
  */
-export async function fetchThreadMailbox(email: string): Promise<PooledAccount | null> {
+export async function fetchThreadMailbox(
+  email: string,
+): Promise<{ account: PooledAccount; lifecycleStatus: string | null } | null> {
   const address = email.trim().toLowerCase();
   if (!address) return null;
   const [row] = await selectPooledAccounts(sql`
     lower(a.email) = ${address}
   `);
-  return row ?? null;
+  if (!row) return null;
+  const status = await db.execute(sql`
+    SELECT lifecycle_status AS "lifecycleStatus" FROM instantly_accounts WHERE lower(email) = ${address} LIMIT 1
+  `);
+  const [first] = rowsOf<{ lifecycleStatus: string | null }>(status);
+  return { account: row, lifecycleStatus: first?.lifecycleStatus ?? null };
 }
 
 async function selectPooledAccounts(where: SQL): Promise<PooledAccount[]> {

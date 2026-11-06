@@ -3506,9 +3506,10 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     mockFindQueuedBrandSequence.mockResolvedValue(null);
     mockFindFollowUpThread.mockResolvedValue(null);
     // Every thread mailbox is a row of ours unless a case says otherwise.
-    mockFetchThreadMailbox.mockImplementation(async (email: string) =>
-      acct({ email: email.trim().toLowerCase(), stat_warmup_score: 100, daily_limit: 50 }),
-    );
+    mockFetchThreadMailbox.mockImplementation(async (email: string) => ({
+      account: acct({ email: email.trim().toLowerCase(), stat_warmup_score: 100, daily_limit: 50 }),
+      lifecycleStatus: "in_production",
+    }));
     mockMoveFollowupDateLater.mockResolvedValue("brand-1:stated");
     mockCreateRun.mockImplementation(() => {
       runCounter++;
@@ -3669,7 +3670,9 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
       acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
     ]);
     mockFetchThreadMailbox.mockImplementation(async (email: string) =>
-      email === "recovering@example.com" ? acct({ email: "recovering@example.com", stat_warmup_score: 100, daily_limit: 20 }) : null,
+      email === "recovering@example.com"
+        ? { account: acct({ email: "recovering@example.com", stat_warmup_score: 100, daily_limit: 20 }), lifecycleStatus: "in_recovery" }
+        : null,
     );
     mockFindFollowUpThread.mockResolvedValue({
       instantlyCampaignId: "03b09ae5-old",
@@ -3692,12 +3695,13 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     mockFetchThreadMailbox.mockImplementation(async () => null);
   });
 
-  it("THREAD-ANY-ROUTE-1107: a thread mailbox OUT of every pool (brand domain alias, deactivated_by_user) we hold a login for still takes it: same mailbox, same thread", async () => {
+  it("THREAD-OWNER-DEACTIVATED-1107: a thread mailbox the OWNER deactivated (brand domain) is never continued from, even with a login: refused, the person waits", async () => {
     credentialedMailboxes.add("first@example.com");
     credentialedMailboxes.add("kevinl@distribute.you");
-    mockListAccounts.mockResolvedValue([
-      acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
-    ]);
+    mockFetchThreadMailbox.mockImplementation(async (email: string) => ({
+      account: acct({ email: email.trim().toLowerCase(), stat_warmup_score: 100, daily_limit: 10 }),
+      lifecycleStatus: "deactivated_by_user",
+    }));
     mockFindFollowUpThread.mockResolvedValue({
       instantlyCampaignId: "a27fefbc-april",
       accountEmail: "kevinl@distribute.you",
@@ -3706,14 +3710,14 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     });
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-    expect(res.status).toBe(200);
-    expect(mockFetchThreadMailbox).toHaveBeenCalledWith("kevinl@distribute.you");
-    const phase2 = mockDbUpdateSet.mock.calls
-      .map((c) => c[0] as Record<string, unknown>)
-      .find((v) => "sendTransport" in v)!;
-    expect(phase2.accountEmail).toBe("kevinl@distribute.you");
-    expect(JSON.stringify(phase2.metadata)).toContain("followUpOf");
-    expect(mockMoveFollowupDateLater).not.toHaveBeenCalled();
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("thread_mailbox_unavailable");
+    expect(res.body.reason).toBe("deactivated_by_owner");
+    expect(res.body.details).toContain("was deactivated by the owner");
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+    expect(mockCreateRun).not.toHaveBeenCalled();
+    const wait = mockMoveFollowupDateLater.mock.calls[0][0] as { reason: string };
+    expect(wait.reason).toBe("Waiting: their last thread's mailbox kevinl@distribute.you was deactivated by the owner");
   });
 
   it("THREAD-ANY-ROUTE-1107: a thread mailbox we hold no login for is REFUSED, the person waits (follow-up date later), never a new thread", async () => {
