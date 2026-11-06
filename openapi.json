@@ -6611,7 +6611,11 @@
           },
           "blockedDomainCount": {
             "type": "integer",
-            "description": "Accounts blocked by domain policy (lifecycle deactivated_by_user)"
+            "description": "Distinct DOMAINS the domain policy blocks among present addresses (lifecycle deactivated_by_user). Counted addresses before SENDING-INFRA-AUDIT-1106."
+          },
+          "blockedAddressCount": {
+            "type": "integer",
+            "description": "Present addresses on those domains (the figure blockedDomainCount used to serve)"
           },
           "days": {
             "type": "array",
@@ -6627,6 +6631,7 @@
           "healthyAccountCount",
           "totalAccountCount",
           "blockedDomainCount",
+          "blockedAddressCount",
           "days"
         ]
       },

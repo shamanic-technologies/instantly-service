@@ -36,6 +36,21 @@ vi.mock("../../src/lib/silver-accounts", () => ({
   listAccountsFromSilver: (...args: unknown[]) => mockListAccounts(...args),
 }));
 
+// The rank is read over the SENDER's pool (`fetchSendablePool`): its credential,
+// blindness and relay filters are identity here so the pool is the DB list.
+vi.mock("../../src/lib/self-send/capability", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  keepSelfSendCapable: async (accounts: unknown[]) => accounts,
+}));
+vi.mock("../../src/lib/self-send/inbound-blindness", async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  dropInboundBlind: async (accounts: unknown[]) => accounts,
+}));
+vi.mock("../../src/lib/self-send/refused-senders", () => ({
+  dropRefusedSenders: async (accounts: unknown[]) => accounts,
+  loadRefusedSenderAddresses: async () => new Map(),
+}));
+
 const mockResolvePlatformKey = vi.fn();
 vi.mock("../../src/lib/key-client", () => ({
   resolvePlatformInstantlyApiKey: (...args: unknown[]) =>

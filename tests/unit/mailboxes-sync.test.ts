@@ -197,8 +197,8 @@ describe("syncMailboxes — IO", () => {
     expect(mockInsertValues).toHaveBeenCalledTimes(2);
     const inserted = mockInsertValues.mock.calls.map((c) => (c[0] as { login: string }).login).sort();
     expect(inserted).toEqual(["kevin@marketingagency.life", "lou@dfydomain.com"]);
-    // 3 reads + 3 UPDATEs (one per address)
-    expect(mockExecute).toHaveBeenCalledTimes(6);
+    // 4 reads (incl. the gone domains) + 3 UPDATEs (one per address)
+    expect(mockExecute).toHaveBeenCalledTimes(7);
   });
 
   it("fails loud when the credential map cannot be read", async () => {

@@ -261,8 +261,7 @@ router.get("/sent-per-period", async (req: Request, res: Response) => {
  * alone is ~38k as-of lookups): served for 10 min, refreshed in the background
  * after 5, so a dashboard never waits on a recompute after the first load.
  */
-const MONITORING_TTL_MS = 10 * 60 * 1000;
-const MONITORING_REFRESH_MS = 5 * 60 * 1000;
+import { MONITORING_TTL_MS, MONITORING_REFRESH_MS } from "../lib/ops/reads";
 
 function intParam(raw: unknown, def: number, min: number, max: number): number | null {
   if (raw === undefined || raw === "") return def;

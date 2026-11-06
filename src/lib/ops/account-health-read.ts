@@ -15,10 +15,9 @@ import { listAccountsFromSilver } from "../silver-accounts";
 import { buildAccountHealth, type AccountHealth, type InboxPlacement } from "../account-health";
 import {
   fetchLifecycleByEmail,
-  fetchInProductionAccounts,
   type LifecycleView,
 } from "../account-lifecycle-sync";
-import { accountFillOrder } from "../send-lead";
+import { accountFillOrder, fetchSendablePool } from "../send-lead";
 import {
   fetchSentTodayByAccount,
   fetchSentYesterdayByAccount,
@@ -77,7 +76,10 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
     // unreserved send draws from. Ranking a set we assembled here instead
     // would be a second implementation of the selection gate, free to drift
     // from the one that actually picks the mailbox.
-    fetchInProductionAccounts(null),
+    // Since SENDING-INFRA-AUDIT-1106 the SENDABLE pool (`fetchSendablePool`:
+    // credential held, inbox readable, relay not refusing), the exact chain
+    // `selectSendingAccount` draws from.
+    fetchSendablePool(null, caller),
     // The SAME volume map the selector caps against, so the table cannot
     // report a cap the selector disagrees with for the same mailbox.
     fetchRecentDailyVolume(),
@@ -101,7 +103,7 @@ export async function loadAccountHealth(caller: CallerInfo): Promise<AccountHeal
   // offered first. An account outside the pool is simply absent from the map
   // and reports a null rank — never a fabricated position.
   const fillRankByEmail = new Map<string, number>(
-    accountFillOrder(pool.filter((a) => !inboundBlindAddresses.has(a.email.trim().toLowerCase()) && !refusedByAddress.has(a.email.trim().toLowerCase()))).map((a, i) => [a.email, i + 1]),
+    accountFillOrder(pool).map((a, i) => [a.email, i + 1]),
   );
 
   const rows = buildAccountHealth(
