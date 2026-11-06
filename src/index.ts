@@ -204,6 +204,14 @@ async function start() {
         console.error(`[instantly-service] failed to start outreach-facts worker: ${message}`);
       });
 
+    // Keep the fleet forecast warm: it takes longer to compute than its
+    // callers wait (SENDING-INFRA-AUDIT-1106).
+    import("./routes/audit")
+      .then(({ startSendingForecastWarmer }) => startSendingForecastWarmer())
+      .catch((err: unknown) => {
+        console.error(`[instantly-service] failed to start sending-forecast warmer: ${errorMessage(err)}`);
+      });
+
     import("./lib/messages-sync-worker")
       .then(({ startMessagesSyncWorker }) => startMessagesSyncWorker())
       .catch((err: unknown) => {

@@ -4,6 +4,9 @@ const mockExecute = vi.fn();
 vi.mock("../../src/db", () => ({
   db: { execute: (...a: unknown[]) => mockExecute(...a) },
 }));
+vi.mock("../../src/lib/ops/exclusions", () => ({
+  loadDrainedCancelledAddresses: vi.fn(async () => new Set<string>()),
+}));
 vi.mock("../../src/lib/instantly-client", () => ({
   setWarmupDailyLimit: vi.fn(),
   setDailyLimit: vi.fn(),

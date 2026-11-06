@@ -20,7 +20,6 @@ import {
 import { describeFx, loadLatestEurUsd, toUsdCents } from "../fx-rates";
 import { summarizeDns, type DnsRecordRow, type DnsRecordType, type DnsSummary } from "../domain-dns-sync";
 import { fetchLatestDeliveryByAccount, fetchLifecycleByEmail } from "../account-lifecycle-sync";
-import { capForAccount } from "../account-lifecycle";
 import { fetchQueueBreakdownByAccount, fetchQueueSizeByAccount } from "../account-sending-stats";
 import { fetchRecentDailyVolume, sustainedForMailbox } from "../recent-send-volume";
 import { warmupBudgetFor } from "../warmup/plan";
@@ -35,9 +34,23 @@ import {
   poolDelivery,
   projectNextSeedTest,
   queuedStepsForAddresses,
-  rampProjection,
   ratePerMille,
+  projectCapFrom,
+  compareByPickerOrder,
+  lifecycleListRank,
+  domainState,
 } from "./pure";
+import { loadDomainExclusions } from "./exclusions";
+import { capacityVerdict } from "./capacity-verdict";
+import { readQueuedSteps } from "./schedule";
+import { getOrSetCachedStats } from "../stats-cache";
+
+/** Shared with the `/internal/ops/queued-steps` route: one cached queue read. */
+export const MONITORING_TTL_MS = 10 * 60 * 1000;
+export const MONITORING_REFRESH_MS = 5 * 60 * 1000;
+import { accountFillOrder, fetchSendablePool } from "../send-lead";
+import { drainLimitFor, mailboxRoom } from "../self-send/dispatch";
+import { IN_PRODUCTION_DAILY_LIMIT } from "../account-lifecycle";
 
 function rowsOf<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
@@ -230,7 +243,7 @@ function countBy<T>(rows: T[], key: (r: T) => string | null): Record<string, num
 // ─── Domains ─────────────────────────────────────────────────────────────────
 
 export async function readDomains(asOf: Date = new Date()) {
-  const [inventory, rates, dnsByDomain, addresses, mailboxes, delivery, volume30, fx] = await Promise.all([
+  const [inventory, rates, dnsByDomain, addresses, mailboxes, delivery, volume30, fx, exclusions] = await Promise.all([
     loadInventoryDomains(),
     loadEffectiveRates(asOf),
     loadLatestDns(),
@@ -239,6 +252,7 @@ export async function readDomains(asOf: Date = new Date()) {
     fetchLatestDeliveryByAccount(),
     loadVolume("domain", 30),
     loadLatestEurUsd(),
+    loadDomainExclusions(asOf),
   ]);
   const indexed = indexRates(rates);
   const addressesByDomain = new Map<string, AddressRowDb[]>();
@@ -272,7 +286,12 @@ export async function readDomains(asOf: Date = new Date()) {
         domain: domain.domain,
         provider: domain.provider,
         role: domain.role,
+        /** The registrar's raw status as reported (EPP codes, e.g. clientTransferProhibited). */
         status: domain.status,
+        /** What a person reads as the domain's state: active | expiring | expired | deletion_scheduled | cancelled | gone. */
+        state: domainState(domain, asOf),
+        /** The domain policy on it (cancelled at the vendor / brand), null when none. */
+        exclusion: exclusions.get(domain.domain.toLowerCase()) ?? null,
         expiresAt: domain.expiresAt?.toISOString() ?? null,
         autorenew: domain.autorenew,
         deletionScheduled: domain.deletionScheduled,
@@ -327,8 +346,8 @@ function mailboxMonthlyRate(rates: Map<string, PriceRate>, provider: string | nu
   return provider ? (rates.get(`${provider}|mailbox-month|`) ?? null) : null;
 }
 
-export async function readMailboxes(asOf: Date = new Date()) {
-  const [mailboxes, addresses, rates, delivery, volume7, volume30, recentVolume, lifecycle, queueSize, breakdown] =
+export async function readMailboxes(asOf: Date = new Date(), caller: CallerInfo = { method: "GET", path: "/internal/ops/mailboxes" }) {
+  const [mailboxes, addresses, rates, delivery, volume7, volume30, recentVolume, lifecycle, queueSize, breakdown, exclusions, pool] =
     await Promise.all([
       loadMailboxRows(),
       loadAddressRows(),
@@ -340,6 +359,9 @@ export async function readMailboxes(asOf: Date = new Date()) {
       fetchLifecycleByEmail(),
       fetchQueueSizeByAccount(),
       fetchQueueBreakdownByAccount(asOf),
+      loadDomainExclusions(asOf),
+      // The picker's OWN pool and order, so a row's rank is the one it uses.
+      fetchSendablePool(null, caller),
     ]);
   const breakdownSteps = new Map([...breakdown].map(([email, b]) => [email, b.steps]));
   const indexed = indexRates(rates);
@@ -348,35 +370,50 @@ export async function readMailboxes(asOf: Date = new Date()) {
     const login = a.mailboxLogin ?? a.email;
     addressesByLogin.set(login, [...(addressesByLogin.get(login) ?? []), a]);
   }
+  // Mailbox rank = the order in which the picker first reaches one of its
+  // addresses: 1 = the mailbox the next new sequence goes to while it has room.
+  const loginOfAddress = new Map(addresses.map((a) => [a.email, a.mailboxLogin ?? a.email]));
+  const mailboxRank = new Map<string, number>();
+  for (const account of accountFillOrder(pool)) {
+    const login = loginOfAddress.get(account.email.trim().toLowerCase()) ?? account.email.trim().toLowerCase();
+    if (!mailboxRank.has(login)) mailboxRank.set(login, mailboxRank.size + 1);
+  }
 
-  return {
-    asOf: asOf.toISOString(),
-    mailboxes: mailboxes.map((m) => {
+  const rows = mailboxes.map((m) => {
       const addrs = addressesByLogin.get(m.login) ?? [];
       const live = addrs.filter((a) => !a.absentSince);
       const sustained = sustainedForMailbox(recentVolume, addrs.map((a) => a.email));
-      // The cap the selector would offer: the minimum across the mailbox's
-      // aliases (an operator lowering one means it for the mailbox).
-      const caps = live.map((a) =>
-        capForAccount(
-          {
-            daily_limit: a.dailyLimit,
-            sendTransport: a.sendTransport,
-            vendorPrewarmedAt: a.vendorPrewarmedAt,
-            timestamp_created: a.timestampCreated,
-          },
-          sustained,
-          lifecycle.get(a.email)?.sendTransport,
-          asOf,
-        ),
-      );
-      const cap = caps.length ? Math.min(...caps) : 0;
+      // Cap today = the DISPATCHER's (SENDING-INFRA-AUDIT-1106 item 4), from
+      // its own `mailboxRoom`: the limit is the minimum over the aliases in
+      // PRODUCTION (over all only when none is; MAILBOX-CAP-PROD-ALIAS-1103),
+      // raised for a recovering mailbox draining late follow-ups
+      // (`drainLimitFor`), and the ramp reads the mailbox's own volume.
+      const overdue = live.some((a) => (breakdown.get(a.email)?.nextOverdue ?? 0) > 0);
+      const carrier = [...live.map((a) => a.email)].sort()[0];
+      const room = mailboxRoom(
+        live.map((a) => ({
+          accountEmail: a.email,
+          mailbox: m.login,
+          cap: drainLimitFor(a.dailyLimit ?? 0, a.lifecycleStatus, overdue, IN_PRODUCTION_DAILY_LIMIT),
+          recentSustainedDaily: a.email === carrier ? sustained : 0,
+          sentToday: 0,
+          adoptsFirstEmails: a.lifecycleStatus === "in_production",
+        })),
+      ).get(m.login);
+      const cap = room?.cap ?? 0;
       const rate = mailboxMonthlyRate(indexed, m.provider);
       const pooled = poolDelivery(
         addrs.map((a) => delivery.get(a.email)).filter((d): d is NonNullable<typeof d> => Boolean(d)),
       );
+      const exclusion = exclusions.get(m.domain.toLowerCase()) ?? null;
+      const bestLifecycle =
+        [...live.map((a) => a.lifecycleStatus)].sort((x, y) => lifecycleListRank(x) - lifecycleListRank(y))[0] ?? null;
       return {
         ...m,
+        /** Position in the picker's order (1 = gets the next new sequence while it has room); null = not offered new sequences. */
+        fillRank: mailboxRank.get(m.login) ?? null,
+        /** The domain policy on this mailbox's domain (cancelled / brand), null when none. */
+        exclusion,
         addresses: addrs.map((a) => ({
           email: a.email,
           lifecycleStatus: a.lifecycleStatus,
@@ -384,13 +421,22 @@ export async function readMailboxes(asOf: Date = new Date()) {
           sendTransport: a.sendTransport,
           dailyLimit: a.dailyLimit,
           absentSince: a.absentSince,
+          exclusion,
         })),
         addressesByLifecycle: countBy(live, (a) => a.lifecycleStatus),
         /** Queued-but-unsent steps of the mailbox: the sum of its addresses' `queueSize`. */
         queuedSteps: queuedStepsForAddresses(addrs.map((a) => a.email), breakdownSteps, queueSize),
+        /** Follow-ups of this mailbox due before today and not sent yet. */
+        overdueSteps: live.reduce((n, a) => n + (breakdown.get(a.email)?.nextOverdue ?? 0), 0),
         sustainedDaily: sustained,
         effectiveDailyCap: cap,
-        rampProjection: rampProjection(sustained, undefined, asOf),
+        /** The limit the cap ramps toward (production limit while draining late follow-ups). */
+        dailyLimit: room?.limit ?? 0,
+        /** True when a recovering mailbox drains late follow-ups at the production limit. */
+        drainingFollowUps:
+          !live.some((a) => a.lifecycleStatus === "in_production") &&
+          live.some((a) => drainLimitFor(a.dailyLimit ?? 0, a.lifecycleStatus, overdue, IN_PRODUCTION_DAILY_LIMIT) > (a.dailyLimit ?? 0)),
+        rampProjection: projectCapFrom(cap, room?.limit ?? 0, asOf),
         warmupBudgetToday: warmupBudgetFor(cap),
         delivery: pooled,
         evidenceExpiresAt: evidenceExpiresAt(pooled.testedAt),
@@ -404,41 +450,67 @@ export async function readMailboxes(asOf: Date = new Date()) {
               paidToDate: estimatePaidToDate(rate.unitCents, rate.currency, m.vendorCreatedAt ?? m.importedAt, asOf),
             }
           : null,
+        _order: { lifecycle: bestLifecycle, gone: m.absentSince !== null || live.length === 0 },
       };
-    }),
+    });
+  rows.sort((a, b) =>
+    compareByPickerOrder(
+      { fillRank: a.fillRank, lifecycle: a._order.lifecycle, gone: a._order.gone, name: a.login },
+      { fillRank: b.fillRank, lifecycle: b._order.lifecycle, gone: b._order.gone, name: b.login },
+    ),
+  );
+  return {
+    asOf: asOf.toISOString(),
+    /** Rows in the picker's order: ranked first, then production, recovery, deactivated, gone last. */
+    order: "picker",
+    mailboxes: rows.map(({ _order, ...row }) => row),
   };
 }
 
 // ─── Addresses ───────────────────────────────────────────────────────────────
 
 export async function readAddresses(caller: CallerInfo) {
-  const [health, addresses, delivery, volume7, history] = await Promise.all([
+  const [health, addresses, delivery, volume7, history, exclusions] = await Promise.all([
     loadAccountHealth(caller),
     loadAddressRows(),
     fetchLatestDeliveryByAccount(),
     loadVolume("account_email", 7),
     loadLifecycleHistory(),
+    loadDomainExclusions(),
   ]);
   const asOf = health.asOf;
   const byEmail = new Map(addresses.map((a) => [a.email, a]));
+  const rows = health.accounts.map((row) => {
+    const a = byEmail.get(row.email.toLowerCase());
+    const d = delivery.get(row.email);
+    const testedAt = d?.testedAt ? new Date(d.testedAt) : null;
+    return {
+      ...row,
+      mailboxLogin: a?.mailboxLogin ?? null,
+      sendTransport: a?.sendTransport ?? null,
+      /** The domain policy on this address's domain (cancelled / brand), null when none. */
+      exclusion: exclusions.get((row.domain ?? "").toLowerCase()) ?? null,
+      evidenceExpiresAt: evidenceExpiresAt(d?.testedAt ?? null),
+      nextSeedTest: projectNextSeedTest(testedAt, asOf),
+      // Day 0 IS `effectiveDailyCap`, ramping toward `dailyLimit` (item 5: the
+      // cap used to be fed in as if it were the volume).
+      rampProjection: projectCapFrom(row.effectiveDailyCap ?? 0, row.dailyLimit ?? IN_PRODUCTION_DAILY_LIMIT, asOf),
+      volume7d: summarizeVolume(volume7.get(row.email.toLowerCase())),
+      lifecycleHistory: history.get(row.email.toLowerCase()) ?? [],
+      _gone: a?.absentSince != null,
+    };
+  });
+  rows.sort((x, y) =>
+    compareByPickerOrder(
+      { fillRank: x.fillRank, lifecycle: x.lifecycleStatus, gone: x._gone, name: x.email },
+      { fillRank: y.fillRank, lifecycle: y.lifecycleStatus, gone: y._gone, name: y.email },
+    ),
+  );
   return {
     asOf: asOf.toISOString(),
-    accounts: health.accounts.map((row) => {
-      const a = byEmail.get(row.email.toLowerCase());
-      const d = delivery.get(row.email);
-      const testedAt = d?.testedAt ? new Date(d.testedAt) : null;
-      const sustained = row.effectiveDailyCap ?? 0;
-      return {
-        ...row,
-        mailboxLogin: a?.mailboxLogin ?? null,
-        sendTransport: a?.sendTransport ?? null,
-        evidenceExpiresAt: evidenceExpiresAt(d?.testedAt ?? null),
-        nextSeedTest: projectNextSeedTest(testedAt, asOf),
-        rampProjection: rampProjection(Math.min(sustained, row.dailyLimit ?? sustained), row.dailyLimit ?? undefined, asOf),
-        volume7d: summarizeVolume(volume7.get(row.email.toLowerCase())),
-        lifecycleHistory: history.get(row.email.toLowerCase()) ?? [],
-      };
-    }),
+    /** Rows in the picker's order: ranked first, then production, recovery, deactivated, gone last. */
+    order: "picker",
+    accounts: rows.map(({ _gone, ...row }) => row),
   };
 }
 
@@ -475,7 +547,7 @@ async function loadLifecycleHistory(limitPerAccount = 10) {
 // ─── Sending infra ───────────────────────────────────────────────────────────
 
 export async function readInfra(caller: CallerInfo, asOf: Date = new Date()) {
-  const [health, mailboxes, addresses, recentVolume, mailboxOf, volume7, queue, policies, sendPools, sendPoolHistory] = await Promise.all([
+  const [health, mailboxes, addresses, recentVolume, mailboxOf, volume7, queue, policies, sendPools, sendPoolHistory, queuedSteps] = await Promise.all([
     loadAccountHealth(caller),
     loadMailboxRows(),
     loadAddressRows(),
@@ -486,12 +558,36 @@ export async function readInfra(caller: CallerInfo, asOf: Date = new Date()) {
     loadExclusions(),
     loadSendPools(caller),
     loadSendPoolHistory(),
+    getOrSetCachedStats("ops-queued-steps", () => readQueuedSteps(), MONITORING_TTL_MS, { refreshAfterMs: MONITORING_REFRESH_MS }),
   ]);
   const poolOfLogin = new Map(mailboxes.map((m) => [m.login, m.poolType ?? "unknown"]));
   const poolOfEmail = new Map(addresses.map((a) => [a.email, poolOfLogin.get(a.mailboxLogin ?? a.email) ?? "unknown"]));
   const pools = [...new Set([...poolOfEmail.values()])].sort();
 
   const fleet = computeCapacitySummary(health.rawAccounts, health.lifecycleByEmail, recentVolume, mailboxOf, asOf);
+  // Present addresses only (item 6): an address whose mailbox the vendor no
+  // longer lists kept its last lifecycle, so 22 gone addresses read
+  // "in production" (91 here against 69 everywhere else, 2026-11-06).
+  const presentEmails = new Set(health.rawAccounts.map((a) => String(a.email).toLowerCase()));
+  const lifecycleOfPresent = new Map(
+    [...health.lifecycleByEmail].filter(([email]) => presentEmails.has(email.toLowerCase())),
+  );
+  // The capacity verdict (item 11), from the queue itself.
+  const cannotSend = new Set<string>();
+  for (const a of addresses) {
+    if (a.absentSince || !mailboxOf.has(a.email)) cannotSend.add(a.email);
+  }
+  for (const row of health.accounts) {
+    if (row.refusedByRelay || row.inboundUnreadable) cannotSend.add(row.email.toLowerCase());
+  }
+  const lifecycleByLower = new Map([...health.lifecycleByEmail].map(([e, l]) => [e.toLowerCase(), l.status ?? null]));
+  const verdict = capacityVerdict({
+    steps: queuedSteps.steps,
+    asOf,
+    cannotSend,
+    lifecycleOf: lifecycleByLower,
+    dailyCapacity: fleet.dailyCapacity,
+  });
 
   const perPool = pools.map((pool) => {
     const accounts = health.rawAccounts.filter((a) => poolOfEmail.get(String(a.email).toLowerCase()) === pool);
@@ -526,8 +622,19 @@ export async function readInfra(caller: CallerInfo, asOf: Date = new Date()) {
       healthyAccountCount: fleet.healthyAccountCount,
       totalAccountCount: fleet.totalAccountCount,
       blockedDomainCount: fleet.blockedDomainCount,
+      blockedAddressCount: fleet.blockedAddressCount,
+      /** Domains in the domain policy (brand + cancelled), the list served in `exclusions.domainPolicy`. */
+      domainPolicyCount: policies.domainPolicy.length,
       queuedSteps: [...queue.values()].reduce((a, b) => a + b, 0),
-      byLifecycle: countBy([...health.lifecycleByEmail.values()], (l) => l.status),
+      /** Lifecycle of the PRESENT addresses (sums to `totalAccountCount`). */
+      byLifecycle: countBy([...lifecycleOfPresent.values()], (l) => l.status),
+      /** Addresses whose mailbox the vendor no longer lists, by their last lifecycle (not sendable). */
+      goneByLifecycle: countBy(
+        [...health.lifecycleByEmail].filter(([email]) => !presentEmails.has(email.toLowerCase())).map(([, l]) => l),
+        (l) => l.status,
+      ),
+      /** The served capacity verdict: render as is (red only when `status` is `broken`). */
+      capacityVerdict: verdict,
     },
     pools: perPool,
     exclusions: policies,

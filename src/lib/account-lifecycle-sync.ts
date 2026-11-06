@@ -15,6 +15,7 @@
  *   - fetchTestablePoolEmails   — Silver read for placement-test seeding.
  */
 
+import { loadDrainedCancelledAddresses } from "./ops/exclusions";
 import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 import { MICROSOFT_ESPS } from "./seed-placement/seeds";
@@ -559,9 +560,13 @@ export async function fetchTestablePoolEmails(): Promise<string[]> {
              <= now() - make_interval(days => ${TESTABLE_MIN_AGE_DAYS})
       )
   `);
+  // A mailbox on a CANCELLED domain that owes no prospect step is not tested
+  // any more (SENDING-INFRA-AUDIT-1106): its verdict decides nothing.
+  const drained = await loadDrainedCancelledAddresses();
   return rowsOf<{ email: string }>(result)
     .map((r) => r.email)
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((email) => !drained.has(email.trim().toLowerCase()));
 }
 
 // ─── Gold: reconcile ────────────────────────────────────────────────────────

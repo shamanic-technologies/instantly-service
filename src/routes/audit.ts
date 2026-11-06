@@ -164,6 +164,71 @@ async function loadPendingLeads(): Promise<PendingLead[]> {
   });
 }
 
+
+/**
+ * The fleet forecast, cached with REFRESH-AHEAD (SENDING-INFRA-AUDIT-1106 item
+ * 7): the computation takes ~26 s on the loaded box, longer than the caller's
+ * abort, so with a plain 60 s TTL every poll past a minute recomputed and timed
+ * out ("Could not read the send forecast"). A hit past 60 s now answers from
+ * memory at once and recomputes in the background (never older than 15 min), and
+ * a worker keeps it warm from boot (`startSendingForecastWarmer`).
+ */
+export const SENDING_FORECAST_TTL_MS = 15 * 60 * 1000;
+export const SENDING_FORECAST_REFRESH_MS = 60 * 1000;
+
+export function loadSendingForecastCached() {
+  return getOrSetCachedStats(
+    statsCacheKey("sending-forecast", {}),
+    async () => {
+      const asOf = new Date();
+
+      // The account list is OUR silver (last Instantly snapshot + our own
+      // limits), so the forecast survives the Instantly plan being cancelled.
+      // The ramp reads measured volume, and the quota belongs to the relay
+      // login — so the fleet total needs both, or it reports the theoretical
+      // ceiling instead of what can actually go out today.
+      const [accounts, lifecycleByEmail, volume, mailboxOf] = await Promise.all([
+        listAccountsFromSilver(),
+        fetchLifecycleByEmail(),
+        fetchRecentDailyVolume(),
+        loadMailboxLogins({ method: "GET", path: "/internal/audit/sending-forecast" }),
+      ]);
+      const capacity = computeCapacitySummary(
+        accounts,
+        lifecycleByEmail,
+        volume,
+        mailboxOf,
+        asOf,
+      );
+
+      const pendingLeads = await loadPendingLeads();
+      const days = projectDailySchedule(pendingLeads, asOf);
+
+      return {
+        asOf: asOf.toISOString(),
+        dailyCapacity: capacity.dailyCapacity,
+        healthyAccountCount: capacity.healthyAccountCount,
+        totalAccountCount: capacity.totalAccountCount,
+        blockedDomainCount: capacity.blockedDomainCount,
+        blockedAddressCount: capacity.blockedAddressCount,
+        days,
+      };
+    },
+    SENDING_FORECAST_TTL_MS,
+    { refreshAfterMs: SENDING_FORECAST_REFRESH_MS },
+  );
+}
+
+/** Warm the forecast 30 s after boot, then every 5 min, so no caller pays for a cold read. */
+export function startSendingForecastWarmer(): void {
+  const warm = () =>
+    loadSendingForecastCached().catch((error: unknown) =>
+      console.error(`[audit] sending-forecast warm failed: ${errorMessage(error)}`),
+    );
+  setTimeout(warm, 30_000).unref?.();
+  setInterval(warm, 5 * 60_000).unref?.();
+}
+
 /**
  * GET /internal/audit/sending-forecast
  *
@@ -185,43 +250,7 @@ router.get("/sending-forecast", async (_req: Request, res: Response) => {
     // the short TTL serves subsequent polls instantly. Platform-scoped, no
     // params → a single fixed key. Fail-loud preserved: a loader throw rejects
     // (nothing cached) and still 500s below.
-    const payload = await getOrSetCachedStats(
-      statsCacheKey("sending-forecast", {}),
-      async () => {
-        const asOf = new Date();
-
-        // The account list is OUR silver (last Instantly snapshot + our own
-        // limits), so the forecast survives the Instantly plan being cancelled.
-        // The ramp reads measured volume, and the quota belongs to the relay
-        // login — so the fleet total needs both, or it reports the theoretical
-        // ceiling instead of what can actually go out today.
-        const [accounts, lifecycleByEmail, volume, mailboxOf] = await Promise.all([
-          listAccountsFromSilver(),
-          fetchLifecycleByEmail(),
-          fetchRecentDailyVolume(),
-          loadMailboxLogins({ method: "GET", path: "/internal/audit/sending-forecast" }),
-        ]);
-        const capacity = computeCapacitySummary(
-          accounts,
-          lifecycleByEmail,
-          volume,
-          mailboxOf,
-          asOf,
-        );
-
-        const pendingLeads = await loadPendingLeads();
-        const days = projectDailySchedule(pendingLeads, asOf);
-
-        return {
-          asOf: asOf.toISOString(),
-          dailyCapacity: capacity.dailyCapacity,
-          healthyAccountCount: capacity.healthyAccountCount,
-          totalAccountCount: capacity.totalAccountCount,
-          blockedDomainCount: capacity.blockedDomainCount,
-          days,
-        };
-      },
-    );
+    const payload = await loadSendingForecastCached();
 
     res.json(payload);
   } catch (error: unknown) {

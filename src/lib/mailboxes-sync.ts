@@ -64,6 +64,11 @@ export interface MailboxSyncInput {
   accounts: AccountInput[];
   vendorMailboxes: VendorMailboxInput[];
   domainProviders: DomainProviderInput[];
+  /**
+   * Domains the vendor no longer lists or that were cancelled, with the date
+   * (SENDING-INFRA-AUDIT-1106 item 6). Optional: absent = none known.
+   */
+  goneDomains?: Array<{ domain: string; goneSince: Date }>;
 }
 
 export interface MailboxRow {
@@ -192,6 +197,9 @@ export function deriveMailboxes(input: MailboxSyncInput): MailboxDerivation {
     if (row.vendorCreatedAt === null) row.vendorCreatedAt = vendor.createdAtProvider;
   }
 
+  const goneByDomain = new Map(
+    (input.goneDomains ?? []).map((g) => [g.domain.trim().toLowerCase(), g.goneSince]),
+  );
   const rows: MailboxRow[] = [];
   for (const row of byLogin.values()) {
     const vendor = vendorByEmail.get(row.login);
@@ -201,10 +209,16 @@ export function deriveMailboxes(input: MailboxSyncInput): MailboxDerivation {
         : row.allAliasesAbsent && (!vendor || vendor.absentSince !== null)
           ? minDate(row.absentSince, vendor?.absentSince ?? null)
           : null;
+    // A mailbox on a domain the vendor no longer lists, for which we hold no
+    // credential, is gone too, whatever the last Instantly snapshot said about
+    // its addresses (boostdistribute / growdistribute: domains gone 2026-11-04,
+    // their 8 mailboxes still read present with no vendor).
+    const domainGone = goneByDomain.get(row.domain.toLowerCase()) ?? null;
+    const goneWithDomain = domainGone !== null && row.credentialSource === "none";
     const subscription: Subscription | null =
       row.provider === "primeforge" && row.vendorPrewarmedAt ? "prewarmed" : row.subscription;
     const { aliasCount: _a, allAliasesAbsent: _b, ...rest } = row;
-    rows.push({ ...rest, absentSince, subscription });
+    rows.push({ ...rest, absentSince: goneWithDomain ? minDate(absentSince, domainGone) : absentSince, subscription });
   }
   rows.sort((a, b) => a.login.localeCompare(b.login));
   accountLogins.sort((a, b) => a.email.localeCompare(b.email));
@@ -232,7 +246,7 @@ export async function syncMailboxes(caller: CallerInfo): Promise<MailboxSyncSumm
     source: e.source,
   }));
 
-  const [accountsRes, vendorRes, domainsRes] = await Promise.all([
+  const [accountsRes, vendorRes, domainsRes, goneRes] = await Promise.all([
     db.execute(sql`
       SELECT email, timestamp_created, vendor_prewarmed_at, absent_since
       FROM instantly_accounts
@@ -245,6 +259,13 @@ export async function syncMailboxes(caller: CallerInfo): Promise<MailboxSyncSumm
       SELECT domain, provider
       FROM infra_domains
       WHERE absent_since IS NULL AND cancelled_at IS NULL
+    `),
+    // A domain is gone when NO vendor still lists it live.
+    db.execute(sql`
+      SELECT lower(domain) AS domain, MIN(COALESCE(absent_since, cancelled_at)) AS gone_since
+      FROM infra_domains
+      GROUP BY lower(domain)
+      HAVING bool_and(absent_since IS NOT NULL OR cancelled_at IS NOT NULL)
     `),
   ]);
 
@@ -265,7 +286,10 @@ export async function syncMailboxes(caller: CallerInfo): Promise<MailboxSyncSumm
     provider: String(r.provider),
   }));
 
-  const derived = deriveMailboxes({ credentials, accounts, vendorMailboxes, domainProviders });
+  const goneDomains = rowsOf<Record<string, unknown>>(goneRes)
+    .map((r) => ({ domain: String(r.domain), goneSince: toDate(r.gone_since) }))
+    .filter((g): g is { domain: string; goneSince: Date } => g.goneSince !== null);
+  const derived = deriveMailboxes({ credentials, accounts, vendorMailboxes, domainProviders, goneDomains });
   const now = new Date();
 
   for (const row of derived.mailboxes) {

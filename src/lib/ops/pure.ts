@@ -166,3 +166,72 @@ export function queuedStepsForAddresses(
     return sum + (steps.get(key) ?? size.get(key) ?? 0);
   }, 0);
 }
+
+/**
+ * The cap trajectory STARTING FROM the cap the sender applies today
+ * (SENDING-INFRA-AUDIT-1106 item 5): day 0 IS `capToday`, each next day the
+ * ramp re-applied to a mailbox that used its whole room, never above
+ * `ceiling` (its limit). `rampProjection` started from the measured volume and
+ * ignored the limit, so day 0 disagreed with "cap today" on 80 of 131 mailboxes.
+ */
+export function projectCapFrom(
+  capToday: number,
+  ceiling: number,
+  asOf: Date = new Date(),
+  maxDays = 30,
+): Array<{ date: string; cap: number }> {
+  const out: Array<{ date: string; cap: number }> = [];
+  let cap = Math.max(0, capToday);
+  for (let day = 0; day < maxDays; day++) {
+    out.push({ date: new Date(asOf.getTime() + day * DAY_MS).toISOString().slice(0, 10), cap });
+    if (cap >= ceiling || cap <= 0) break;
+    cap = Math.min(ceiling, rampCapForVolume(cap, ceiling));
+  }
+  return out;
+}
+
+/** Lifecycle states in the order a list shows the rows the picker does NOT rank. */
+export const LIFECYCLE_LIST_ORDER = ["in_production", "in_recovery", "deactivated_by_instantly", "deactivated_by_user"] as const;
+
+/** Sort key of a lifecycle status for list order (unknown last). */
+export function lifecycleListRank(status: string | null | undefined): number {
+  const i = LIFECYCLE_LIST_ORDER.indexOf((status ?? "") as (typeof LIFECYCLE_LIST_ORDER)[number]);
+  return i === -1 ? LIFECYCLE_LIST_ORDER.length : i;
+}
+
+/**
+ * List order = picker order (owner 2026-11-06, « les listes doivent être par
+ * rank »): rows the picker ranks first, by rank; then the rest by lifecycle
+ * (production, recovery, deactivated), present before gone, then by name.
+ */
+export function compareByPickerOrder(
+  a: { fillRank: number | null; lifecycle: string | null; gone: boolean; name: string },
+  b: { fillRank: number | null; lifecycle: string | null; gone: boolean; name: string },
+): number {
+  if (a.fillRank !== null && b.fillRank !== null) return a.fillRank - b.fillRank;
+  if (a.fillRank !== null) return -1;
+  if (b.fillRank !== null) return 1;
+  if (a.gone !== b.gone) return a.gone ? 1 : -1;
+  const l = lifecycleListRank(a.lifecycle) - lifecycleListRank(b.lifecycle);
+  if (l !== 0) return l;
+  return a.name.localeCompare(b.name);
+}
+
+/**
+ * What a person reads as a domain's state (item 12), from the inventory facts,
+ * never the registrar's EPP codes (`clientTransferProhibited` is a transfer
+ * lock, not a state). First match wins: gone (the vendor no longer lists it),
+ * cancelled, deletion scheduled, expired, expiring (within 30 days, no
+ * auto-renew), else active.
+ */
+export function domainState(
+  d: { absentSince: Date | null; cancelledAt: Date | null; deletionScheduled: boolean | null; expiresAt: Date | null; autorenew: boolean | null },
+  asOf: Date,
+): "gone" | "cancelled" | "deletion_scheduled" | "expired" | "expiring" | "active" {
+  if (d.absentSince) return "gone";
+  if (d.cancelledAt) return "cancelled";
+  if (d.deletionScheduled) return "deletion_scheduled";
+  if (d.expiresAt && d.expiresAt.getTime() <= asOf.getTime()) return "expired";
+  if (d.expiresAt && d.autorenew !== true && d.expiresAt.getTime() - asOf.getTime() <= 30 * DAY_MS) return "expiring";
+  return "active";
+}

@@ -76,7 +76,9 @@ describe("computeCapacitySummary", () => {
     expect(s.dailyCapacity).toBe(50); // 30 + 20 only
     expect(s.healthyAccountCount).toBe(2);
     expect(s.totalAccountCount).toBe(6);
-    expect(s.blockedDomainCount).toBe(2); // two deactivated_by_user
+    // Both deactivated_by_user addresses sit on ONE domain (SENDING-INFRA-AUDIT-1106).
+    expect(s.blockedDomainCount).toBe(1);
+    expect(s.blockedAddressCount).toBe(2);
   });
 
   it("in_production account missing daily_limit contributes 0 (no fabricated number)", () => {
@@ -250,6 +252,7 @@ describe("computeCapacitySummary", () => {
       healthyAccountCount: 0,
       totalAccountCount: 0,
       blockedDomainCount: 0,
+      blockedAddressCount: 0,
     });
   });
 });
