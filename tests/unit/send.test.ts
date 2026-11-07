@@ -1716,6 +1716,104 @@ describe("POST /send", () => {
     ).toBe(false);
   });
 
+  // SIGNATURE-TACTIC-1107: the script that wrote the email chooses who signs.
+  describe("script-chosen signature (SIGNATURE-TACTIC-1107)", () => {
+    const pinOf = () =>
+      mockDbInsertValues.mock.calls.find(
+        ([v]: [any]) => v.campaignId === "camp-1" && v.leadEmail === "test@example.com",
+      )![0];
+
+    it("case 1: our persona + the client's brand, persona filled from the sending mailbox", async () => {
+      mockNewCampaignFlow();
+      const app = await createSendApp();
+      const res = await request(app)
+        .post("/send")
+        .set(identityHeadersObj)
+        .send({ ...validBody, signature: { text: "{full_name}\nDoc Dinners" } });
+      expect(res.status).toBe(200);
+      expect(pinOf()).toMatchObject({
+        signatureHtml: "<p>{full_name}<br>Doc Dinners</p>",
+        metadata: expect.objectContaining({ signatureChoice: { requested: "custom", source: "script" } }),
+      });
+      for (const step of mockCreateCampaign.mock.calls[0][1].steps) {
+        // The mock mailbox has no name: the persona line renders empty and is
+        // tidied away (the filled case is pinned in brand-email-signature.test.ts).
+        expect(step.bodyHtml).toMatch(/<p>--<\/p><p>([^<{}]+<br>)?Doc Dinners<\/p>$/);
+        expect(step.bodyHtml).not.toContain("Distribute.you | Marketing Agency");
+        expect(step.bodyHtml).not.toContain("{full_name}");
+      }
+    });
+
+    it("case 2: \"default\" = ours, byte-identical to a send that asks nothing", async () => {
+      mockNewCampaignFlow();
+      let app = await createSendApp();
+      await request(app).post("/send").set(identityHeadersObj).send(validBody);
+      const plainSteps = mockCreateCampaign.mock.calls[0][1].steps.map((x: any) => x.bodyHtml);
+      const plainRow = pinOf();
+      expect(plainRow.signatureHtml).toBeNull();
+      expect(JSON.stringify(plainRow.metadata ?? null)).not.toContain("signatureChoice");
+
+      vi.clearAllMocks();
+      mockNewCampaignFlow();
+      app = await createSendApp();
+      await request(app).post("/send").set(identityHeadersObj).send({ ...validBody, signature: "default" });
+      const defaultSteps = mockCreateCampaign.mock.calls[0][1].steps.map((x: any) => x.bodyHtml);
+      expect(defaultSteps).toEqual(plainSteps);
+      expect(pinOf()).toMatchObject({
+        signatureHtml: null,
+        metadata: expect.objectContaining({ signatureChoice: { requested: "default", source: "ours" } }),
+      });
+    });
+
+    it("case 3: a person of the client + the client's brand, as the writer wrote it", async () => {
+      mockNewCampaignFlow();
+      const app = await createSendApp();
+      await request(app)
+        .post("/send")
+        .set(identityHeadersObj)
+        .send({ ...validBody, signature: { text: "Kevin\nDoc Dinners" } });
+      expect(pinOf()).toMatchObject({ signatureHtml: "<p>Kevin<br>Doc Dinners</p>" });
+      for (const step of mockCreateCampaign.mock.calls[0][1].steps) {
+        expect(step.bodyHtml.endsWith("<p>--</p><p>Kevin<br>Doc Dinners</p>")).toBe(true);
+      }
+    });
+
+    it("never refused: a messy writer text is cleaned, an empty one falls back to ours", async () => {
+      mockNewCampaignFlow();
+      let app = await createSendApp();
+      const res = await request(app)
+        .post("/send")
+        .set(identityHeadersObj)
+        .send({ ...validBody, signature: { text: "--\n{founder_name} Doc Dinners {" } });
+      expect(res.status).toBe(200);
+      expect(pinOf()).toMatchObject({ signatureHtml: "<p>Doc Dinners</p>" });
+
+      vi.clearAllMocks();
+      mockNewCampaignFlow();
+      app = await createSendApp();
+      const res2 = await request(app)
+        .post("/send")
+        .set(identityHeadersObj)
+        .send({ ...validBody, signature: { text: "  {client_founder}  " } });
+      expect(res2.status).toBe(200);
+      expect(pinOf()).toMatchObject({ signatureHtml: null });
+    });
+
+    it("the client's OWN brand signature wins over the script's choice", async () => {
+      mockResolveSignatureHtml.mockResolvedValueOnce("<p>Jane Doe<br>Acme Corp</p>");
+      mockNewCampaignFlow();
+      const app = await createSendApp();
+      await request(app)
+        .post("/send")
+        .set(identityHeadersObj)
+        .send({ ...validBody, signature: { text: "Kevin\nDoc Dinners" } });
+      expect(pinOf()).toMatchObject({
+        signatureHtml: "<p>Jane Doe<br>Acme Corp</p>",
+        metadata: expect.objectContaining({ signatureChoice: { requested: "custom", source: "brand" } }),
+      });
+    });
+  });
+
   it("should enable stop_on_reply when patching campaign", async () => {
     mockNewCampaignFlow();
     const app = await createSendApp();
@@ -3657,6 +3755,9 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
       .find((v) => "sendTransport" in v)!;
     expect(phase2.accountEmail).toBe("thread@example.com");
     expect(JSON.stringify(phase2.metadata)).toContain("followUpOf");
+    // SIGNATURE-TACTIC-1107: a thread keeps one signature, the continued thread's pin.
+    expect(phase2.signatureHtml).toBeDefined();
+    expect(JSON.stringify(phase2.signatureHtml)).toContain("03b09ae5-old");
     const steps = mockDbInsertValues.mock.calls
       .map((c) => c[0])
       .find((v) => Array.isArray(v) && (v as { subject?: string }[])[0]?.subject !== undefined) as { subject: string }[];

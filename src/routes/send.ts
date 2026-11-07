@@ -49,7 +49,9 @@ import { announceEvidenceChanged } from "../lib/evidence-changed";
 import { readHeldLead, type HeldLead } from "../lib/held-lead";
 import {
   EmailSignatureConflictError,
+  chooseThreadSignature,
   resolveSignatureHtmlForSend,
+  type SignatureSource,
 } from "../lib/brand-email-signature";
 
 /** Extract tracking headers from res.locals (set by requireOrgId middleware) */
@@ -285,9 +287,17 @@ router.post("/", async (req: Request, res: Response) => {
       //     follow-ups and replies never change it mid-thread. Two brands of
       //     the send stating different signatures = 409, before anything is
       //     reserved or billed. Fail loud on a DB error.
+      //     SIGNATURE-TACTIC-1107: when no brand states one, the SCRIPT may
+      //     choose who signs (`body.signature`); absent = ours, unchanged.
       let signatureHtml: string | null;
+      let signatureSource: SignatureSource;
       try {
-        signatureHtml = await resolveSignatureHtmlForSend(orgId, brandIds);
+        const chosen = chooseThreadSignature(
+          await resolveSignatureHtmlForSend(orgId, brandIds),
+          body.signature,
+        );
+        signatureHtml = chosen.html;
+        signatureSource = chosen.source;
       } catch (error: unknown) {
         if (error instanceof EmailSignatureConflictError) {
           console.warn(`[send] Refused — ${error.message}`);
@@ -547,7 +557,18 @@ router.post("/", async (req: Request, res: Response) => {
           runId: res.locals.runId as string,
           signatureHtml,
           followUp: isFollowUp,
-          metadata: attributionMetadata,
+          // Which signing approach the script asked for and what was pinned,
+          // only when it asked (absent = the row is exactly as before).
+          metadata:
+            body.signature === undefined
+              ? attributionMetadata
+              : {
+                  ...(attributionMetadata ?? {}),
+                  signatureChoice: {
+                    requested: body.signature === "default" ? "default" : "custom",
+                    source: signatureSource,
+                  },
+                },
         })
         .onConflictDoUpdate({
           // Three DISJOINT arbiters (migration 0075): a follow-up reserves on
@@ -864,6 +885,11 @@ router.post("/", async (req: Request, res: Response) => {
           sendTransport: transport,
           ...(queued.followUpOf
             ? {
+                // A thread keeps ONE signature for its whole life: this send
+                // continues an earlier thread, so it takes THAT thread's pin
+                // (null = ours), whatever this send's script or the brand's
+                // live setting says (SIGNATURE-TACTIC-1107).
+                signatureHtml: sql`(SELECT t.signature_html FROM ${instantlyCampaigns} t WHERE t.instantly_campaign_id = ${queued.followUpOf}::text LIMIT 1)`,
                 metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object('followUpOf', ${queued.followUpOf}::text)`,
               }
             : followUpThread

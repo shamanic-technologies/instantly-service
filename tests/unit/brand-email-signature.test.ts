@@ -9,6 +9,8 @@ vi.mock("../../src/db", () => ({
 
 import {
   EmailSignatureConflictError,
+  chooseThreadSignature,
+  cleanScriptSignatureText,
   normalizeSignatureText,
   renderSignatureHtml,
   fillSenderPlaceholders,
@@ -172,5 +174,58 @@ describe("sender placeholders: the signature names the mailbox that sends", () =
   it("a signature without placeholders is byte-identical to before", () => {
     expect(resolveSignatureBlock(ACCOUNT, CLIENT)).toBe(CLIENT);
     expect(fillSenderPlaceholders(CLIENT, ACCOUNT)).toBe(CLIENT);
+  });
+});
+
+// SIGNATURE-TACTIC-1107: the script that wrote a cold email chooses who signs it.
+describe("script-chosen signature", () => {
+  const SARAH = { email: "sarah@leaddistribute.com", first_name: "Sarah", last_name: "Miller" } as Account;
+
+  it("case 1: our persona + the client's brand renders the SENDING mailbox's name", () => {
+    const { html, source } = chooseThreadSignature(null, { text: "{full_name}\nDoc Dinners" });
+    expect(source).toBe("script");
+    expect(buildEmailBodyWithSignature("<p>Hi</p>", SARAH, html)).toBe(
+      "<p>Hi</p><p>--</p><p>Sarah Miller<br>Doc Dinners</p>",
+    );
+    // Mailboxes rotate: the same pin names whoever sends.
+    expect(resolveSignatureBlock(ACCOUNT, html)).toBe("<p>Amy Moore<br>Doc Dinners</p>");
+  });
+
+  it("case 2: \"default\" and absent both pin null = our signature, unchanged", () => {
+    expect(chooseThreadSignature(null, "default")).toEqual({ html: null, source: "ours" });
+    expect(chooseThreadSignature(null, undefined)).toEqual({ html: null, source: "ours" });
+    expect(buildEmailBodyWithSignature("<p>Hi</p>", SARAH, null)).toBe(
+      "<p>Hi</p><p>--</p><p>Sarah Miller<br>Distribute.you | Marketing Agency</p>",
+    );
+  });
+
+  it("case 3: a person of the client + the client's brand", () => {
+    const { html } = chooseThreadSignature(null, { text: "Kevin\nDoc Dinners" });
+    expect(buildEmailBodyWithSignature("<p>Hi</p>", SARAH, html)).toBe(
+      "<p>Hi</p><p>--</p><p>Kevin<br>Doc Dinners</p>",
+    );
+  });
+
+  it("the client's own brand signature wins over the script's choice", () => {
+    expect(chooseThreadSignature(CLIENT, { text: "Kevin\nDoc Dinners" })).toEqual({ html: CLIENT, source: "brand" });
+    expect(chooseThreadSignature(CLIENT, "default")).toEqual({ html: CLIENT, source: "brand" });
+  });
+
+  it("cleans deterministically, never refuses", () => {
+    expect(cleanScriptSignatureText("{full_name}\\nDoc Dinners")).toBe("{full_name}\nDoc Dinners");
+    expect(cleanScriptSignatureText("--\n{founder} Doc  Dinners }")).toBe("Doc Dinners");
+    expect(cleanScriptSignatureText("{first_name} {last_name}\nAcme")).toBe("{first_name} {last_name}\nAcme");
+    expect(cleanScriptSignatureText("  {unknown}  \n --")).toBeNull();
+    expect(cleanScriptSignatureText(Array.from({ length: 20 }, (_, i) => `l${i}`).join("\n"))!.split("\n")).toHaveLength(12);
+    expect(cleanScriptSignatureText("x".repeat(1500))!.length).toBe(1000);
+    // A cleaned text always passes the stored-signature rules.
+    for (const t of ["{x}{y} Acme {", "a\n--\nb", "{full_name}\nDoc"]) {
+      const c = cleanScriptSignatureText(t);
+      if (c) expect(signatureTextProblem(c)).toBeNull();
+    }
+  });
+
+  it("escapes HTML a writer typed", () => {
+    expect(chooseThreadSignature(null, { text: "Kevin <b>\nA&B" }).html).toBe("<p>Kevin &lt;b&gt;<br>A&amp;B</p>");
   });
 });

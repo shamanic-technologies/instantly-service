@@ -242,3 +242,72 @@ export async function resolveSignatureHtmlForSend(
   if (distinct.size > 1) throw new EmailSignatureConflictError(rows.map((r) => r.brandId).sort());
   return renderSignatureHtml(rows[0].signature);
 }
+
+/**
+ * SIGNATURE-TACTIC-1107 (owner 2026-11-07): the SCRIPT that writes a cold email
+ * may choose who signs it, so signing approaches compete as scripts and the
+ * Rating compares their yield. `POST /orgs/send` body `signature`:
+ *   - `"default"`        = ours (the sending persona + `Distribute.you | Marketing Agency`);
+ *   - `{ text: "..." }`  = the script's own lines, e.g. `{full_name}\nDoc Dinners`
+ *                          (our persona + the client's brand) or `Kevin\nDoc Dinners`
+ *                          (a person of the client + the client's brand);
+ *   - absent             = exactly as before (the brand's own signature, else ours).
+ *
+ * PRECEDENCE: the client's OWN brand signature (`PUT /orgs/email-signature`, the
+ * client's statement) wins over a script's choice; a script's choice wins over
+ * our default. The chosen block is pinned on the thread like the brand's.
+ */
+export type RequestedSignature = "default" | { text: string };
+
+/** Where the signature pinned on a new thread came from. */
+export type SignatureSource = "brand" | "script" | "ours";
+
+/**
+ * The script writer's text, cleaned DETERMINISTICALLY (a writer is trusted:
+ * never a refusal, an email is never blocked by its signature): normalized,
+ * `--` lines dropped (we add the separator), any `{token}` that is not a sender
+ * placeholder and any stray brace removed, capped at
+ * {@link EMAIL_SIGNATURE_MAX_LINES} lines and {@link EMAIL_SIGNATURE_MAX_CHARS}
+ * characters. Empty after cleanup = null (our default). Pure.
+ */
+export function cleanScriptSignatureText(text: string): string | null {
+  // An over-escaped writer output (a visible `\n`) means a line break.
+  const debraced = text
+    .replace(/\\n/g, "\n")
+    .split(/(\{[a-z_]+\})/)
+    .map((part) =>
+      /^\{[a-z_]+\}$/.test(part)
+        ? (SIGNATURE_PLACEHOLDERS as readonly string[]).includes(part.slice(1, -1))
+          ? part
+          : ""
+        : part.replace(/[{}]/g, ""),
+    )
+    .join("");
+  const kept: string[] = [];
+  for (const raw of normalizeSignatureText(debraced).split("\n")) {
+    // A removed token leaves no hole: collapsed spaces, trimmed line.
+    const line = raw.replace(/[ \t]{2,}/g, " ").trim();
+    if (line === "--") continue;
+    kept.push(line);
+  }
+  let out = normalizeSignatureText(kept.slice(0, EMAIL_SIGNATURE_MAX_LINES).join("\n"));
+  if (out.length > EMAIL_SIGNATURE_MAX_CHARS) {
+    out = normalizeSignatureText(out.slice(0, EMAIL_SIGNATURE_MAX_CHARS).replace(/\{[a-z_]*$/, ""));
+  }
+  return out === "" ? null : out;
+}
+
+/**
+ * The block a NEW thread is pinned with, given the brand's own signature
+ * (already resolved, {@link resolveSignatureHtmlForSend}) and the script's
+ * request. Pure. Null html = our default.
+ */
+export function chooseThreadSignature(
+  brandSignatureHtml: string | null,
+  requested: RequestedSignature | undefined,
+): { html: string | null; source: SignatureSource } {
+  if (brandSignatureHtml) return { html: brandSignatureHtml, source: "brand" };
+  if (requested === undefined || requested === "default") return { html: null, source: "ours" };
+  const cleaned = cleanScriptSignatureText(requested.text);
+  return cleaned ? { html: renderSignatureHtml(cleaned), source: "script" } : { html: null, source: "ours" };
+}
