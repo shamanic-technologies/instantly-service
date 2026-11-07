@@ -26,7 +26,7 @@
  */
 
 import { errorMessage } from "./db-error.js";
-import { readStatedNotToBrand, type StatedNotToBrandRecord } from "./crm-client";
+import { readStatedNotToBrand, readStatedNotToBrandMany, type StatedNotToBrandRecord } from "./crm-client";
 import { loadQueuedBrandSequences, type QueuedBrandSequence } from "./booked-stops-cold";
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { updateCampaignStatus } from "./instantly-client";
@@ -53,14 +53,18 @@ export async function findStatedNotToBrand(
   return found.get(key) ?? null;
 }
 
-/** Many addresses at once (the status read), keyed by NORMALIZED address. */
+/**
+ * Many addresses at once (the status read), keyed by NORMALIZED address. Read from the (org, brands) answer
+ * crm-service gives whole and this process caches for 30 s (STATUS-CRM-TIMEOUT-1107), never one crm-service
+ * request per batch. Throws when no fresh answer exists and crm-service cannot give one.
+ */
 export async function findStatedNotToBrands(
   orgId: string,
   leadEmails: string[],
   brandIds: string[],
 ): Promise<Map<string, StatedNotToBrandRecord>> {
   if (brandIds.length === 0 || leadEmails.length === 0) return new Map();
-  return readStatedNotToBrand({ orgId, brandIds, emails: leadEmails });
+  return readStatedNotToBrandMany({ orgId, brandIds, emails: leadEmails });
 }
 
 export function statedNotToBrandRefusal(leadEmail: string, record: StatedNotToBrandRecord) {
@@ -171,7 +175,7 @@ async function sweepStatedPeople(caller: CallerInfo, limit: number): Promise<Sta
     for (let group = pending.shift(); group; group = pending.shift()) {
       let stated: Map<string, StatedNotToBrandRecord>;
       try {
-        stated = await readStatedNotToBrand({
+        stated = await readStatedNotToBrandMany({
           orgId: group.orgId,
           brandIds: [group.brandId],
           emails: [...group.emails],
