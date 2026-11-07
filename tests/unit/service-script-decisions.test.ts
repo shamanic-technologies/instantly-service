@@ -105,7 +105,7 @@ describe("message_queued through the switch", () => {
     await drain();
     expect(run).not.toHaveBeenCalled();
     expect(inserted).toHaveLength(1);
-    expect(inserted[0]).toMatchObject({ outcome: "message_queued", path: "service", runId: `run-${QUEUE_DECISION_TASK}`, script: null, same: null });
+    expect(inserted[0]).toMatchObject({ outcome: "email_queued", path: "service", runId: `run-${QUEUE_DECISION_TASK}`, script: null, same: null });
     expect(inserted[0]!.material).toEqual(queuedStepsMaterial(followUp));
     expect(inserted[0]!.ours).toEqual(queuedStepsWords(ours));
   });
@@ -120,7 +120,7 @@ describe("message_queued through the switch", () => {
     const run = vi.fn(async () => ({ runId: "s1", scriptSlug: "message_queued/dy_x/v1", words: queuedStepsWords(ours) }));
     expect(await queuedStepsToStore(followUp, { switchState: shadow, run })).toEqual(ours);
     await drain();
-    expect(run).toHaveBeenCalledWith(expect.objectContaining({ outcome: "message_queued", dynasty: "dy_x", consumes: "message_written", parentRunId: `run-${QUEUE_DECISION_TASK}` }));
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ outcome: "email_queued", dynasty: "dy_x", consumes: "message_written", parentRunId: `run-${QUEUE_DECISION_TASK}` }));
     expect(inserted[0]).toMatchObject({ path: "shadow", same: true, scriptRunId: "s1" });
   });
 
@@ -244,7 +244,7 @@ describe("reply_received through the switch: one decision per poll batch", () =>
     await drain();
     expect(run).not.toHaveBeenCalled();
     expect(inserted).toHaveLength(1);
-    expect(inserted[0]).toMatchObject({ outcome: "reply_received", path: "service", runId: `run-${INBOUND_DECISION_TASK}` });
+    expect(inserted[0]).toMatchObject({ outcome: "email_reply_received", path: "service", runId: `run-${INBOUND_DECISION_TASK}` });
   });
 
   it("shadow: ours used, the script asked with the material on message_sent, compared", async () => {
@@ -253,7 +253,7 @@ describe("reply_received through the switch: one decision per poll batch", () =>
     const run = vi.fn(async () => ({ runId: "s", scriptSlug: null, words: inboundWords(ours) }));
     expect(await inboundDecisionsToAct(input, { switchState: shadow, run })).toEqual(ours);
     await drain();
-    expect(run).toHaveBeenCalledWith(expect.objectContaining({ outcome: "reply_received", consumes: "message_sent", material: inboundMaterial(input) }));
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ outcome: "email_reply_received", consumes: "message_sent", material: inboundMaterial(input) }));
     expect(inserted[0]).toMatchObject({ path: "shadow", same: true });
   });
 
