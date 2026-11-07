@@ -98,7 +98,7 @@ describe("the orphan-reply decision through the service switch", () => {
     expect(d.words.outcome).toBe("none");
     await drain();
     expect(inserted).toHaveLength(1);
-    expect(inserted[0]).toMatchObject({ outcome: "reply_received", task: ORPHAN_JUDGMENT_TASK, path: "service", runId: "run-orphan-judgment", same: null });
+    expect(inserted[0]).toMatchObject({ outcome: "email_reply_received", task: ORPHAN_JUDGMENT_TASK, path: "service", runId: "run-orphan-judgment", same: null });
     expect((inserted[0]!.calls as unknown[])).toHaveLength(1);
   });
 

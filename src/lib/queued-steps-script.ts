@@ -14,7 +14,8 @@ import { SEND_TRANSPORT_SMTP } from "./self-send/transport";
 import { stepRowsFromSendPayload, type InboundSequenceStep, type SequenceStep } from "./self-send/sequence-steps";
 import { decideThroughScript, type DecideDeps, type ServiceScriptEngine } from "./service-script";
 
-export const MESSAGE_QUEUED_OUTCOME = "message_queued";
+/** The Engine the queue decision's script makes (MIGRATE-1105 S5: the finest WHAT, the email queued; was message_queued). */
+export const MESSAGE_QUEUED_OUTCOME = "email_queued";
 export const QUEUE_DECISION_TASK = "queue-decision";
 
 export interface QueuedStepsInput {
