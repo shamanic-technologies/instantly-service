@@ -633,6 +633,35 @@ export function toOutreachFact(row: Record<string, unknown>): OutreachFact {
   };
 }
 
+/**
+ * Where a reader resumes after this page.
+ *
+ * A FULL page (`hasMore`) resumes after its last fact. A page that is NOT full
+ * says the reader has seen every fact of its filter up to the feed's head, so it
+ * resumes at the head (`feedHead` = MAX(seq) read in the SAME statement as the
+ * page). Exact: emission holds a global advisory lock for its whole transaction
+ * (FEED_LOCK_KEY), so every seq at or below a committed MAX is committed and no
+ * fact can appear below it later.
+ *
+ * Why (BOX-LOAD-1107): a filtered reader (crm-service polls every org x brand
+ * scope once a minute) whose scope has no new fact used to get `since` back
+ * unchanged, so its cursor never moved and each poll re-scanned the feed from
+ * there: scopes stuck at `since=0` read all 217k facts to return nothing, 350 ms
+ * each, 250 polls per 10 min. Same facts served; only the cursor goes further.
+ */
+export function nextFeedCursor(args: {
+  since: number | string;
+  lastFactSeq: string | null;
+  hasMore: boolean;
+  feedHead: string | null;
+}): string {
+  if (args.hasMore && args.lastFactSeq !== null) return args.lastFactSeq;
+  let cursor = BigInt(args.lastFactSeq ?? String(args.since));
+  if (args.feedHead !== null && BigInt(args.feedHead) > cursor) cursor = BigInt(args.feedHead);
+  if (BigInt(String(args.since)) > cursor) cursor = BigInt(String(args.since));
+  return cursor.toString();
+}
+
 /** The feed after `since` (exclusive), in feed order. */
 export async function readOutreachFacts(args: {
   since: number;
@@ -645,7 +674,12 @@ export async function readOutreachFacts(args: {
   // the page (campaign row by its unique id, bronze config by (id, fetched_at)).
   const rows = rowsOf(
     await db.execute(sql`
-      WITH page AS (
+      WITH head AS (
+        -- The feed's head in the page's own snapshot (nextFeedCursor): one
+        -- backward probe of the primary key.
+        SELECT MAX(seq)::text AS feed_head FROM outreach_facts
+      ),
+      page AS (
         SELECT * FROM outreach_facts f
         WHERE f.seq > ${args.since}
           ${args.orgId ? sql`AND f.org_id = ${args.orgId}` : sql``}
@@ -655,10 +689,13 @@ export async function readOutreachFacts(args: {
         LIMIT ${args.limit + 1}
       )
       SELECT page.*,
+             head.feed_head,
              c.timezone AS seq_timezone,
              latest_cfg.tz AS seq_schedule_timezone,
              first_cfg.ot AS seq_open_tracking
-      FROM page
+      -- FROM head: an EMPTY page still returns one row carrying the head.
+      FROM head
+      LEFT JOIN page ON true
       LEFT JOIN instantly_campaigns c ON c.instantly_campaign_id = page.instantly_campaign_id
       LEFT JOIN LATERAL (
         SELECT r.payload->'campaign_schedule'->'schedules'->0->>'timezone' AS tz
@@ -677,9 +714,12 @@ export async function readOutreachFacts(args: {
       ORDER BY page.seq
     `),
   );
-  const hasMore = rows.length > args.limit;
-  const facts = rows.slice(0, args.limit).map(toOutreachFact);
-  return { facts, nextCursor: facts.length ? facts[facts.length - 1].seq : String(args.since), hasMore };
+  const feedHead = rows.length > 0 && rows[0].feed_head != null ? String(rows[0].feed_head) : null;
+  const factRows = rows.filter((r) => r.seq != null);
+  const hasMore = factRows.length > args.limit;
+  const facts = factRows.slice(0, args.limit).map(toOutreachFact);
+  const lastFactSeq = facts.length ? facts[facts.length - 1].seq : null;
+  return { facts, nextCursor: nextFeedCursor({ since: args.since, lastFactSeq, hasMore, feedHead }), hasMore };
 }
 
 /** The files a `reply_sent` fact's answer carried. Absent when none. */

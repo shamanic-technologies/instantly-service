@@ -450,7 +450,6 @@ async function pollAccount(
   shared?: ImapClient,
 ): Promise<number> {
   let maxUid = 0;
-  const knownSends = await loadKnownSends(accountEmail);
 
   const client =
     shared ??
@@ -505,6 +504,16 @@ async function pollAccount(
       summary.messagesRead += candidates.length;
       const filed = await loadFiledMessageIds(accountEmail, candidates.map((c) => c.messageId));
       const fresh = candidates.filter((c) => !filed.has(c.messageId));
+
+      // The sends of this mailbox are read only when there is something NEW to
+      // correlate (BOX-LOAD-1107): every use below is over `fresh`, and the
+      // 3-day window re-read every poll is almost always all filed. Reading
+      // them unconditionally joined ~2,000 Instantly mirror rows per mailbox to
+      // their campaigns on every poll and every watcher arrival (231 ms each,
+      // ~23 a minute, the service's #2 Postgres cost). Read after the fetch, the
+      // set can only be a superset of what it was before it: a message fetched
+      // already cannot reference a send made after it.
+      const knownSends = fresh.length === 0 ? new Map<string, KnownSend>() : await loadKnownSends(accountEmail);
 
       // PASS 2, first reason to pay for a body: a DSN names the message it
       // bounced in its QUOTED HEADERS, inside the body. `classifyInbound`
