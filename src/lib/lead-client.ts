@@ -258,6 +258,41 @@ export async function findLeadOnCampaignByEmail(params: {
 }
 
 /**
+ * ANY lead row of this person at the brand (any campaign of the org), or null.
+ * lead-service keys the follow-up date on the person x brand, and its date doors
+ * accept any campaign's row of the person: a writer whose own campaign holds no
+ * row (or a platform send) still reaches the date through this.
+ * Same narrowing-then-exact-match as `findLeadOnCampaignByEmail`. Fails loud.
+ */
+export async function findLeadRowOfBrandByEmail(params: {
+  orgId: string;
+  brandId: string;
+  email: string;
+}): Promise<{ id: string } | null> {
+  if (!LEAD_SERVICE_URL || !LEAD_SERVICE_API_KEY) {
+    throw new Error("LEAD_SERVICE_URL or LEAD_SERVICE_API_KEY is not set");
+  }
+  const query = new URLSearchParams({
+    view: "basic",
+    brandId: params.brandId,
+    q: params.email,
+    status: "all",
+    limit: "25",
+  });
+  const response = await fetch(`${LEAD_SERVICE_URL}/orgs/leads?${query}`, {
+    headers: { "x-api-key": LEAD_SERVICE_API_KEY, "x-org-id": params.orgId },
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`lead-service GET /orgs/leads failed: ${response.status} - ${detail.slice(0, 200)}`);
+  }
+  const body = (await response.json()) as { leads?: Array<{ id?: string; email?: string }> };
+  const rows = Array.isArray(body.leads) ? body.leads : [];
+  const exact = rows.find((r) => sameAddress(r.email, params.email) && typeof r.id === "string" && r.id.length > 0);
+  return exact ? { id: String(exact.id) } : null;
+}
+
+/**
  * Empty a person's follow-up schedule, with a reason.
  *
  * ⚠️ NOBODY IN THE FLEET HAD EVER CALLED THIS. lead-service's queue documents
