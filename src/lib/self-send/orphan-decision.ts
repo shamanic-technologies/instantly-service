@@ -29,7 +29,8 @@ import {
 } from "./orphan-reply";
 
 export const ORPHAN_JUDGMENT_TASK = "orphan-judgment";
-export const ORPHAN_JUDGMENT_OUTCOME = "reply_received";
+/** MIGRATE-1105 S5: the orphan judgment's script makes the same Engine as the inbound decision (an email that came back). */
+export const ORPHAN_JUDGMENT_OUTCOME = "email_reply_received";
 export const JEV_CHOICE = "jev.choice";
 
 /** One message as the decision reads it. */

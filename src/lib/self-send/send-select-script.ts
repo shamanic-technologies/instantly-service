@@ -23,7 +23,9 @@ import { resolveLeadTimezone } from "../sending-window";
 import type { FleetBounceHistory } from "../bounce-budget";
 import type { AccountCapacity, DueSelection, DueStep, PendingSequence } from "./dispatch";
 
-export const MESSAGE_SENT_OUTCOME = "message_sent";
+/** The Engine the send selection's script makes (MIGRATE-1105 S5: the email sent; was message_sent). The ledger keys
+ *  this service declares (send-outcomes.ts) are not this: they stay what every dashboard reads. */
+export const MESSAGE_SENT_OUTCOME = "email_sent";
 export const CALLER_SERVICE = "instantly";
 export const DISPATCH_SELECTION_TASK = "dispatch-selection";
 const STATE_TTL_MS = 60_000;

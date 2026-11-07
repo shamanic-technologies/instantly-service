@@ -26,7 +26,8 @@ import { isMailtoUnsubscribeSubject, mailtoUnsubscribeSends } from "./opt-out-va
 import { orphanReplyExclusion } from "./orphan-reply";
 import { decideThroughScript, type DecideDeps, type ServiceScriptEngine } from "../service-script";
 
-export const REPLY_RECEIVED_OUTCOME = "reply_received";
+/** The Engine the inbound decision's script makes (MIGRATE-1105 S5: an email that came back; was reply_received). */
+export const REPLY_RECEIVED_OUTCOME = "email_reply_received";
 export const INBOUND_DECISION_TASK = "inbound-decision";
 
 /** One message as the decision reads it. */

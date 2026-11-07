@@ -2,8 +2,8 @@
  * MIGRATE-1105: the decisions of this service a stored factory Script can take, recorded on the live path either way
  * (`lib/service-script.ts`), served to workflow-service's case recorder. Same family as
  * `GET /internal/dispatch-selections/recorded`:
- *   - `GET /internal/script-decisions/message_queued/recorded?after=<seq>&limit=`
- *   - `GET /internal/script-decisions/reply_received/recorded?after=<seq>&limit=[&task=]`
+ *   - `GET /internal/script-decisions/email_queued/recorded?after=<seq>&limit=` (former name message_queued)
+ *   - `GET /internal/script-decisions/email_reply_received/recorded?after=<seq>&limit=[&task=]` (former reply_received)
  * `task` (MIGRATE-1105 S2b) narrows to one decision of the outcome (`inbound-decision`, `orphan-judgment`); none = every
  * row of the outcome (rows recorded before tasks carry none). A paid decision's row carries `calls` (its vendor calls in
  * the script's words).
@@ -11,7 +11,7 @@
  * decisions per path, same vs different.
  */
 import { Router, type Request, type Response } from "express";
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { scriptDecisions } from "../db/schema";
 import { errorMessage } from "../lib/db-error.js";
@@ -20,10 +20,19 @@ import { REPLY_RECEIVED_OUTCOME } from "../lib/self-send/inbound-decision";
 
 export const RECORDED_OUTCOMES: readonly string[] = [MESSAGE_QUEUED_OUTCOME, REPLY_RECEIVED_OUTCOME];
 
+/**
+ * MIGRATE-1105 S5: the name each outcome's decisions were recorded under before its Engine was re-homed onto its finest
+ * WHAT. A read under either name serves both (the recorder of a re-homed dynasty keeps every case recorded before).
+ */
+const FORMER_NAMES: Readonly<Record<string, string>> = { [MESSAGE_QUEUED_OUTCOME]: "message_queued", [REPLY_RECEIVED_OUTCOME]: "reply_received" };
+const CURRENT_OF: Readonly<Record<string, string>> = Object.fromEntries(Object.entries(FORMER_NAMES).map(([now, was]) => [was, now]));
+export const recordedUnder = (outcome: string): string[] => [outcome, FORMER_NAMES[outcome]].filter((x): x is string => !!x);
+
 const router = Router();
 
 function outcomeOf(req: Request, res: Response): string | null {
-  const outcome = String(req.params.outcome);
+  const asked = String(req.params.outcome);
+  const outcome = CURRENT_OF[asked] ?? asked;
   if (!RECORDED_OUTCOMES.includes(outcome)) {
     res.status(404).json({ error: `no decisions are recorded for ${outcome}`, outcomes: RECORDED_OUTCOMES });
     return null;
@@ -44,7 +53,7 @@ router.get("/:outcome/recorded", async (req: Request, res: Response) => {
     const rows = await db
       .select()
       .from(scriptDecisions)
-      .where(and(eq(scriptDecisions.outcome, outcome), task ? eq(scriptDecisions.task, task) : undefined, gt(scriptDecisions.seq, after), sql`${scriptDecisions.createdAt} < now() - interval '60 seconds'`))
+      .where(and(inArray(scriptDecisions.outcome, recordedUnder(outcome)), task ? eq(scriptDecisions.task, task) : undefined, gt(scriptDecisions.seq, after), sql`${scriptDecisions.createdAt} < now() - interval '60 seconds'`))
       .orderBy(asc(scriptDecisions.seq))
       .limit(limit);
     return res.json({ decisions: rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() })), nextAfter: rows.length > 0 ? rows[rows.length - 1]!.seq : after, hasMore: rows.length === limit });
@@ -66,7 +75,7 @@ router.get("/:outcome/proof", async (req: Request, res: Response) => {
         count(*) FILTER (WHERE same = false)::int AS different,
         count(*) FILTER (WHERE error IS NOT NULL)::int AS errors,
         max(created_at) AS last_at
-      FROM script_decisions WHERE outcome = ${outcome} ${task ? sql`AND task = ${task}` : sql``} GROUP BY path ORDER BY path
+      FROM script_decisions WHERE outcome IN (${sql.join(recordedUnder(outcome).map((o) => sql`${o}`), sql`, `)}) ${task ? sql`AND task = ${task}` : sql``} GROUP BY path ORDER BY path
     `);
     return res.json({ outcome, paths: (rows as unknown as { rows: unknown[] }).rows ?? rows });
   } catch (error) {
