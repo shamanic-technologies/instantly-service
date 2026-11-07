@@ -11,10 +11,12 @@ vi.mock("../../src/lib/reply-judging-run", () => ({
   replyJudgingRunForSequence: (...a: unknown[]) => mockRunFor(...a),
 }));
 const mockFindLead = vi.fn();
+const mockFindBrandRow = vi.fn();
 const mockReadDate = vi.fn();
 const mockStateDate = vi.fn();
 vi.mock("../../src/lib/lead-client", () => ({
   findLeadOnCampaignByEmail: (...a: unknown[]) => mockFindLead(...a),
+  findLeadRowOfBrandByEmail: (...a: unknown[]) => mockFindBrandRow(...a),
   readLeadFollowupDate: (...a: unknown[]) => mockReadDate(...a),
   stateLeadFollowupDate: (...a: unknown[]) => mockStateDate(...a),
 }));
@@ -141,9 +143,30 @@ describe("stateHoldAsFollowupDate (AC4: the next follow-up date is never before 
     expect(mockStateDate).not.toHaveBeenCalled();
   });
 
-  it("a platform send (no caller campaign) has no lead row to move", async () => {
-    await expect(stateHoldAsFollowupDate({ ...hold, campaignId: null })).resolves.toMatch(/^no_lead_row/);
+  it("a platform send (no caller campaign) moves the date through ANY row of the person at the brand", async () => {
+    mockFindBrandRow.mockResolvedValue({ id: "row-b" });
+    mockReadDate.mockResolvedValue({ nextFollowupAt: "2026-10-24T12:30:00Z", basis: "send" });
+    mockStateDate.mockResolvedValue({ nextFollowupAt: "2026-10-28T00:00:00Z", basis: "stated" });
+    await expect(stateHoldAsFollowupDate({ ...hold, campaignId: null })).resolves.toBe("brand-1:stated");
     expect(mockFindLead).not.toHaveBeenCalled();
+    expect(mockFindBrandRow).toHaveBeenCalledWith({ orgId: "org-1", brandId: "brand-1", email: "prospect@example.com" });
+    expect(mockStateDate.mock.calls[0][0].leadRowId).toBe("row-b");
+  });
+
+  it("mike@rxwellness.com 2026-11-07: the caller campaign holds no row: the date still moves through the brand's row, never left due", async () => {
+    mockFindLead.mockResolvedValue(null);
+    mockFindBrandRow.mockResolvedValue({ id: "row-other-campaign" });
+    mockReadDate.mockResolvedValue({ nextFollowupAt: "2026-10-24T12:30:00Z", basis: "send" });
+    mockStateDate.mockResolvedValue({ nextFollowupAt: "2026-10-28T00:00:00Z", basis: "stated" });
+    await expect(stateHoldAsFollowupDate(hold)).resolves.toBe("brand-1:stated");
+    expect(mockStateDate.mock.calls[0][0].leadRowId).toBe("row-other-campaign");
+  });
+
+  it("no row of the person anywhere at the brand: said per brand", async () => {
+    mockFindLead.mockResolvedValue(null);
+    mockFindBrandRow.mockResolvedValue(null);
+    await expect(stateHoldAsFollowupDate(hold)).resolves.toBe("brand-1:no_lead_row");
+    expect(mockStateDate).not.toHaveBeenCalled();
   });
 
   it("lead-service failing throws (retried next pass)", async () => {

@@ -3695,9 +3695,12 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     mockFetchThreadMailbox.mockImplementation(async () => null);
   });
 
-  it("THREAD-OWNER-DEACTIVATED-1107: a thread mailbox the OWNER deactivated (brand domain) is never continued from, even with a login: refused, the person waits", async () => {
+  it("THREAD-OWNER-DEACTIVATED-1107 (owner « B »): a thread mailbox the OWNER deactivated is never used: NEW thread from the pool, caller's subject, stored on the row, nobody waits", async () => {
     credentialedMailboxes.add("first@example.com");
     credentialedMailboxes.add("kevinl@distribute.you");
+    mockListAccounts.mockResolvedValue([
+      acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+    ]);
     mockFetchThreadMailbox.mockImplementation(async (email: string) => ({
       account: acct({ email: email.trim().toLowerCase(), stat_warmup_score: 100, daily_limit: 10 }),
       lifecycleStatus: "deactivated_by_user",
@@ -3710,14 +3713,18 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     });
     const app = await createSendApp();
     const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe("thread_mailbox_unavailable");
-    expect(res.body.reason).toBe("deactivated_by_owner");
-    expect(res.body.details).toContain("was deactivated by the owner");
-    expect(mockDbInsertValues).not.toHaveBeenCalled();
-    expect(mockCreateRun).not.toHaveBeenCalled();
-    const wait = mockMoveFollowupDateLater.mock.calls[0][0] as { reason: string };
-    expect(wait.reason).toBe("Waiting: their last thread's mailbox kevinl@distribute.you was deactivated by the owner");
+    expect(res.status).toBe(200);
+    const phase2 = mockDbUpdateSet.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((v) => "sendTransport" in v)!;
+    expect(phase2.accountEmail).toBe("first@example.com");
+    expect(JSON.stringify(phase2.metadata)).toContain("threadNotContinued");
+    expect(JSON.stringify(phase2.metadata)).not.toContain("followUpOf");
+    const steps = mockDbInsertValues.mock.calls
+      .map((c) => c[0])
+      .find((v) => Array.isArray(v) && (v as { subject?: string }[])[0]?.subject !== undefined) as { subject: string }[];
+    expect(steps[0].subject).toBe("Hello");
+    expect(mockMoveFollowupDateLater).not.toHaveBeenCalled();
   });
 
   it("THREAD-ANY-ROUTE-1107: a thread mailbox we hold no login for is REFUSED, the person waits (follow-up date later), never a new thread", async () => {
