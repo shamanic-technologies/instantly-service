@@ -1288,6 +1288,28 @@ export const instantlyFollowupCuts = pgTable(
   ],
 );
 
+// FOLLOWUP-JIT-1107 (migration 0107): the one-time cut of follow-up steps queued
+// with a first email (lib/followup-jit-cut.ts). ONE row per sequence; a re-run
+// that finds nothing left to cut writes nothing. `restore-cut-followups` never
+// puts these steps back: the lead's follow-up is written on its due day now.
+export const followupJitCuts = pgTable(
+  "followup_jit_cuts",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id"),
+    campaignId: text("campaign_id"),
+    brandIds: text("brand_ids").array(),
+    instantlyCampaignId: text("instantly_campaign_id").notNull(),
+    leadEmail: text("lead_email").notNull(),
+    steps: integer("steps").array().notNull(),
+    holdsCancelled: integer("holds_cancelled").notNull(),
+    releasedUsdCents: numeric("released_usd_cents").notNull(),
+    cutAt: timestamp("cut_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("followup_jit_cuts_sequence_idx").on(table.instantlyCampaignId)],
+);
+
 // The send door's verification ledger (lib/email-verification-gate.ts, migration
 // 0072). One row per time the gate asked apollo-service for an address's verdict
 // before letting mail leave for it: at `POST /orgs/send` (context `send`) and for
