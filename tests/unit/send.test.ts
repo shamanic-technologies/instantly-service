@@ -1934,6 +1934,12 @@ describe("POST /send", () => {
     expect(mockCreateRun).toHaveBeenCalledWith(expect.objectContaining({ taskName: "email-send-step-1" }), expect.objectContaining({ orgId: "org-1" }));
     expect(mockAddCosts).toHaveBeenCalledTimes(1);
     expect(mockUpdateRun).toHaveBeenCalledWith("step-run-1", "completed", expect.objectContaining({ orgId: "org-1" }));
+    // FOLLOWUP-JIT-1107: a send holds money for the steps it CARRIES only; the
+    // follow-ups are written and paid on their due day by lead-service.
+    expect(mockAuthorizeCreditSpend).toHaveBeenCalledTimes(1);
+    for (const item of mockAuthorizeCreditSpend.mock.calls[0][0] as Array<{ quantity: number }>) {
+      expect(item.quantity).toBe(1);
+    }
   });
 
   it("a duplicate says what we HOLD, so a caller can tell queued-with-us from lost", async () => {

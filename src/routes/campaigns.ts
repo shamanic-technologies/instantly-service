@@ -17,6 +17,7 @@ import { actualizeOrphanedSends } from "../lib/actualize-orphaned-sends";
 import { reconcileProvisionedHolds } from "../lib/reconcile-provisioned-holds";
 import { restoreStoppedFollowups } from "../lib/restore-stopped-followups";
 import { restoreCutFollowups } from "../lib/restore-cut-followups";
+import { cutQueuedFollowups } from "../lib/followup-jit-cut";
 
 const router = Router();
 
@@ -376,6 +377,46 @@ router.post("/restore-cut-followups", async (req: Request, res: Response) => {
   restoreCutFollowups({ dryRun, limit, orgId, caller }).catch((error: unknown) => {
     const message = errorMessage(error);
     console.error(`[instantly-service] restore-cut-followups run=${runId} failed: ${message}`);
+  });
+});
+
+/**
+ * POST /internal/campaigns/cut-queued-followups (FOLLOWUP-JIT-1107)
+ * One-time, fleet-wide: cancel every follow-up step (step 2+) still queued with
+ * a first email and give its held cost back to the org at once. Follow-ups are
+ * written and paid on their due day by lead-service now. Never a first email.
+ * Idempotent (a re-run finds nothing), audited per lead in `followup_jit_cuts`.
+ *
+ * Body: `{ dryRun?: boolean (default true), limit?: number, orgId?: string,
+ * instantlyCampaignIds?: string[] }`.
+ *   - dryRun (default) → per brand: leads, steps, dollars held now, synchronously.
+ *   - dryRun:false → 202 + background; log `followup-jit-cut: done`.
+ */
+router.post("/cut-queued-followups", async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { dryRun?: unknown; limit?: unknown; orgId?: unknown; instantlyCampaignIds?: unknown };
+  const dryRun = body.dryRun !== false;
+  const limit = typeof body.limit === "number" && body.limit > 0 ? Math.floor(body.limit) : undefined;
+  const orgId = typeof body.orgId === "string" && body.orgId.length > 0 ? body.orgId : undefined;
+  if (body.instantlyCampaignIds !== undefined && !(Array.isArray(body.instantlyCampaignIds) && body.instantlyCampaignIds.every((x) => typeof x === "string"))) {
+    return res.status(400).json({ error: "instantlyCampaignIds must be an array of strings" });
+  }
+  const instantlyCampaignIds = body.instantlyCampaignIds as string[] | undefined;
+
+  if (dryRun) {
+    try {
+      return res.status(200).json(await cutQueuedFollowups({ dryRun, limit, orgId, instantlyCampaignIds }));
+    } catch (error: unknown) {
+      const message = errorMessage(error);
+      console.error(`[instantly-service] followup-jit-cut dry-run failed: ${message}`);
+      return res.status(500).json({ error: message });
+    }
+  }
+
+  const runId = randomUUID();
+  console.log(`[instantly-service] followup-jit-cut: dispatched run=${runId} org=${orgId ?? "all"} limit=${limit ?? "all"}`);
+  res.status(202).json({ runId, dryRun: false, orgId: orgId ?? null, limit: limit ?? null });
+  cutQueuedFollowups({ dryRun, limit, orgId, instantlyCampaignIds }).catch((error: unknown) => {
+    console.error(`[instantly-service] followup-jit-cut run=${runId} failed: ${errorMessage(error)}`);
   });
 });
 

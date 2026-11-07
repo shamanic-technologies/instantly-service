@@ -24,7 +24,9 @@
  *     was retracted (any date: the cut rested on a fact we took back);
  *   - with NO stop evidence for the lead: reply / bounce / unsubscribe / click
  *     / any reply kind on the sequence, a standing opt-out, a manual
- *     qualification, a follow-up cut naming them (LEAK-1012), a refused latest
+ *     qualification, a follow-up cut naming them (LEAK-1012), the one-time
+ *     follow-up cut of FOLLOWUP-JIT-1107 (`followup_jit_cuts`: the follow-up
+ *     is written on its due day by lead-service now), a refused latest
  *     verdict, a newer sequence of the same org to the same address, a row
  *     closed by the Instantly plan cut or as a stalled first email;
  *   - whose campaign was not stopped for an org teardown (campaign-service);
@@ -174,6 +176,10 @@ export async function loadCutFollowupCandidates(
       AND NOT EXISTS (
         SELECT 1 FROM instantly_followup_cuts f
         WHERE f.instantly_campaign_id = s.instantly_campaign_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM followup_jit_cuts j
+        WHERE j.instantly_campaign_id = s.instantly_campaign_id
       )
       AND NOT EXISTS (
         SELECT 1 FROM instantly_campaigns n
