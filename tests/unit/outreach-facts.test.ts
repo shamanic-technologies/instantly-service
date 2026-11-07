@@ -35,6 +35,8 @@ import {
   toOutreachFact,
   toSequenceContext,
   localWallClock,
+  nextFeedCursor,
+  readOutreachFacts,
 } from "../../src/lib/outreach-facts";
 import { judgeReply, questionsForKind, NO_TEXT } from "../../src/lib/reply-judgments";
 import { REPLY_KINDS, replyKindDistinctions, replyKindFacts } from "../../src/lib/reply-kind";
@@ -414,5 +416,51 @@ describe("sequence context: the prospect's timezone and the open-pixel arm (LIVE
 
   it("midnight reads 00, never 24", () => {
     expect(localWallClock("2026-10-18T00:00:00Z", "UTC")).toEqual({ localAt: "2026-10-18T00:00:00", weekday: "Sunday" });
+  });
+});
+
+describe("the cursor moves to the feed head when a filtered page is not full (BOX-LOAD-1107)", () => {
+  const fact = (seq: number) => ({
+    seq, subject_key: `ievt:e${seq}`, supersedes_seq: null, type: "email_opened",
+    occurred_at: new Date("2026-10-01T10:00:00Z"), recorded_at: new Date("2026-10-01T10:00:00Z"),
+    lead_email: "a@x.com", org_id: "org", campaign_id: "camp", instantly_campaign_id: "self:1",
+    brand_ids: ["b"], transport: "smtp", payload: { step: 1 }, feed_head: "900",
+  });
+
+  it("an EMPTY page resumes at the head, never at the same `since` (the scope stuck at 0 re-scanned the whole feed)", async () => {
+    // FROM head LEFT JOIN page: an empty page is one row with only the head.
+    mockDbExecute.mockResolvedValueOnce(pgResult([{ seq: null, feed_head: "900" }]));
+    const page = await readOutreachFacts({ since: 0, limit: 1000, orgId: "org", brandId: "b" });
+    expect(page).toEqual({ facts: [], nextCursor: "900", hasMore: false });
+    const text = sqlText(mockDbExecute.mock.calls[0][0]);
+    expect(text).toContain("MAX(seq)::text AS feed_head FROM outreach_facts");
+    expect(text).toContain("FROM head");
+    expect(text).toContain("LEFT JOIN page ON true");
+  });
+
+  it("a page that is not full serves the same facts and resumes at the head", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([fact(500), fact(700)]));
+    const page = await readOutreachFacts({ since: 100, limit: 1000, orgId: "org", brandId: "b" });
+    expect(page.facts.map((f) => f.seq)).toEqual(["500", "700"]);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBe("900");
+  });
+
+  it("a FULL page still resumes after its last fact", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([fact(500), fact(700), fact(800)]));
+    const page = await readOutreachFacts({ since: 100, limit: 2 });
+    expect(page.facts.map((f) => f.seq)).toEqual(["500", "700"]);
+    expect(page.hasMore).toBe(true);
+    expect(page.nextCursor).toBe("700");
+  });
+
+  it("an unfiltered page that is not full ends on the head itself: byte-identical cursor", () => {
+    expect(nextFeedCursor({ since: 1, lastFactSeq: "900", hasMore: false, feedHead: "900" })).toBe("900");
+  });
+
+  it("never moves a cursor backwards, and an empty feed keeps `since`", () => {
+    expect(nextFeedCursor({ since: 1000, lastFactSeq: null, hasMore: false, feedHead: "900" })).toBe("1000");
+    expect(nextFeedCursor({ since: 5, lastFactSeq: null, hasMore: false, feedHead: null })).toBe("5");
+    expect(nextFeedCursor({ since: 0, lastFactSeq: null, hasMore: false, feedHead: "34636534" })).toBe("34636534");
   });
 });
