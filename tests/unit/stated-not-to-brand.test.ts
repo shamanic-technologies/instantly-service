@@ -23,7 +23,8 @@ vi.mock("../../src/lib/instantly-client", () => ({
   updateCampaignStatus: (...a: unknown[]) => mockUpdateCampaignStatus(...a),
 }));
 
-const { readStatedNotToBrand, CrmStatedReadError } = await import("../../src/lib/crm-client");
+const { readStatedNotToBrand, readStatedNotToBrandMany, clearStatedSetsCache, CrmStatedReadError, STATED_SETS_TTL_MS, STATED_SETS_REFRESH_AFTER_MS } =
+  await import("../../src/lib/crm-client");
 const { stopQueuedSequencesOfStatedPeople, findStatedNotToBrand, statedNotToBrandRefusal } = await import(
   "../../src/lib/stated-not-to-brand"
 );
@@ -37,6 +38,14 @@ const OTHER_BRAND = "33333333-3333-4333-8333-333333333333";
 function serveCrm(statedPairs: Array<[string, string]>, status = 200) {
   const set = new Set(statedPairs.map(([b, e]) => `${b}|${e}`));
   const fetchMock = vi.fn(async (url: string, init: { body?: string; headers?: Record<string, string> }) => {
+    if (url.endsWith("/internal/people/stated-not-to-brand/email-sets")) {
+      if (status !== 200) return new Response("down", { status });
+      const body = JSON.parse(init.body ?? "{}") as { orgId: string; brandIds: string[] };
+      const statements = statedPairs
+        .filter(([b]) => body.brandIds.includes(b))
+        .map(([b, e]) => ({ correctionId: `corr-${e}`, brandId: b, emails: [e] }));
+      return new Response(JSON.stringify({ orgId: body.orgId, brandIds: body.brandIds, statements }), { status: 200 });
+    }
     if (!url.endsWith("/internal/people/stated-not-to-brand")) return new Response("nf", { status: 404 });
     if (status !== 200) return new Response("down", { status });
     const body = JSON.parse(init.body ?? "{}") as { orgId: string; brandIds: string[]; emails: string[] };
@@ -52,6 +61,7 @@ function serveCrm(statedPairs: Array<[string, string]>, status = 200) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  clearStatedSetsCache();
   process.env.CRM_SERVICE_URL = "http://crm/";
   process.env.CRM_SERVICE_API_KEY = "crm-key";
   mockResolveInstantlyApiKey.mockResolvedValue({ key: "k", keySource: "platform" });
@@ -111,6 +121,73 @@ describe("crm-client readStatedNotToBrand", () => {
     await expect(readStatedNotToBrand({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] })).rejects.toThrow(
       /0 results for 1 emails/,
     );
+  });
+});
+
+// STATUS-CRM-TIMEOUT-1107: one crm-service request per 100-address status batch timed out 461 times in 3 h under a
+// features-service restart burst; the many-address read asks crm-service once per (org, brands) and matches here.
+describe("crm-client readStatedNotToBrandMany (status read + sweep)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("a burst of 300 status batches for one brand = ONE crm-service request, same answers as the per-address read", async () => {
+    const fetchMock = serveCrm([[BRAND, "p150@x.com"], [OTHER_BRAND, "p7@x.com"]]);
+    const batches = Array.from({ length: 300 }, (_, b) => Array.from({ length: 100 }, (_, i) => `P${(b * 100 + i) % 1000}@X.com`));
+    const answers = await Promise.all(batches.map((emails) => readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails })));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://crm/internal/people/stated-not-to-brand/email-sets");
+    expect(JSON.parse(init.body!)).toEqual({ orgId: ORG, brandIds: [BRAND] });
+    expect(answers[1]!.get("p150@x.com")).toEqual({ brandId: BRAND, correctionId: "corr-p150@x.com" });
+    expect(answers.reduce((n, a) => n + a.size, 0)).toBe(30); // p150 is in every 10th batch
+    // Byte-equal to the per-address read on the same population.
+    const one = await readStatedNotToBrand({ orgId: ORG, brandIds: [BRAND], emails: batches[1]! });
+    expect([...one.entries()]).toEqual([...answers[1]!.entries()]);
+  });
+
+  it("keyed on the brand SET: another brand is its own answer; brand order does not matter", async () => {
+    const fetchMock = serveCrm([[OTHER_BRAND, "a@x.com"]]);
+    expect((await readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] })).size).toBe(0);
+    expect((await readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND, OTHER_BRAND], emails: ["a@x.com"] })).size).toBe(1);
+    expect((await readStatedNotToBrandMany({ orgId: ORG, brandIds: [OTHER_BRAND, BRAND], emails: ["a@x.com"] })).size).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("a statement made after the read lands within the TTL (background refresh), never later", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = new Date("2026-11-07T15:00:00Z").getTime();
+    vi.setSystemTime(t0);
+    serveCrm([]);
+    expect((await readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] })).size).toBe(0);
+    const fetchMock = serveCrm([[BRAND, "a@x.com"]]);
+    vi.setSystemTime(t0 + STATED_SETS_REFRESH_AFTER_MS - 1);
+    expect((await readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] })).size).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.setSystemTime(t0 + STATED_SETS_REFRESH_AFTER_MS);
+    await readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] }); // served, refresh started
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((await readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] })).size).toBe(1);
+  });
+
+  it("FAIL LOUD: an expired answer crm-service cannot reload throws, never reads as nobody stated", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = new Date("2026-11-07T15:00:00Z").getTime();
+    vi.setSystemTime(t0);
+    serveCrm([]);
+    await readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] });
+    serveCrm([], 503);
+    vi.setSystemTime(t0 + STATED_SETS_TTL_MS);
+    await expect(readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] })).rejects.toBeInstanceOf(CrmStatedReadError);
+  });
+
+  it("FAIL LOUD: no answer yet and crm-service times out = throws naming the route; a malformed answer throws", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" })));
+    await expect(readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] })).rejects.toThrow(
+      /stated-not-to-brand\/email-sets unreachable/,
+    );
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ statements: [{ brandId: BRAND }] }), { status: 200 })));
+    await expect(readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] })).rejects.toThrow(/malformed/);
   });
 });
 

@@ -55,27 +55,28 @@ function chunk<T>(items: T[], size: number): T[][] {
   return out;
 }
 
-async function readOneChunk(
+/**
+ * POST a read to crm-service. A read, so a TRANSPORT failure is retried (twice, short backoff) before it fails:
+ * in prod the first hour showed bursts of bare `fetch failed` (a reused keep-alive socket the server had closed,
+ * while this process ran near 100% CPU) on reads that succeed at once when asked again. An HTTP answer (any
+ * status) is never retried; a timeout is not retried either (crm-service is slow, not gone).
+ */
+async function postCrmRead(
   config: { url: string; apiKey: string },
-  orgId: string,
-  brandIds: string[],
-  emails: string[],
+  routePath: string,
+  body: unknown,
   runId: string | null,
-): Promise<Array<{ email: string; stated: boolean; brandId: string | null; correctionId: string | null }>> {
-  const path = "POST /internal/people/stated-not-to-brand";
-  // A read, so a TRANSPORT failure is retried (twice, short backoff) before it fails the send / status read:
-  // in prod the first hour showed bursts of bare `fetch failed` (a reused keep-alive socket the server had
-  // closed, while this process ran near 100% CPU) on reads that succeed at once when asked again. An HTTP
-  // answer (any status) is never retried; a timeout is not retried either (crm-service is slow, not gone).
+): Promise<unknown> {
+  const path = `POST ${routePath}`;
   const request = () =>
-    fetch(`${config.url}/internal/people/stated-not-to-brand`, {
+    fetch(`${config.url}${routePath}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-api-key": config.apiKey,
         ...(runId ? { "x-run-id": runId } : {}),
       },
-      body: JSON.stringify({ orgId, brandIds, emails }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(CRM_STATED_TIMEOUT_MS),
     });
   let response: Response | null = null;
@@ -101,7 +102,20 @@ async function readOneChunk(
     const detail = await response.text().catch(() => "");
     throw new CrmStatedReadError(`crm-service ${path} failed: ${response.status} - ${detail.slice(0, 200)}`);
   }
-  const body = (await response.json().catch(() => null)) as { results?: unknown } | null;
+  return response.json().catch(() => null);
+}
+
+async function readOneChunk(
+  config: { url: string; apiKey: string },
+  orgId: string,
+  brandIds: string[],
+  emails: string[],
+  runId: string | null,
+): Promise<Array<{ email: string; stated: boolean; brandId: string | null; correctionId: string | null }>> {
+  const path = "POST /internal/people/stated-not-to-brand";
+  const body = (await postCrmRead(config, "/internal/people/stated-not-to-brand", { orgId, brandIds, emails }, runId)) as {
+    results?: unknown;
+  } | null;
   const results = body?.results;
   if (!Array.isArray(results) || results.length !== emails.length) {
     throw new CrmStatedReadError(
@@ -151,6 +165,117 @@ export async function readStatedNotToBrand(params: {
         if (!out.has(key)) out.set(key, { brandId: r.brandId, correctionId: r.correctionId });
       });
     }
+  }
+  return out;
+}
+
+// ─── Many addresses at once: the whole answer per (org, brands), read once (STATUS-CRM-TIMEOUT-1107) ──
+//
+// The status read asks for ~10 batches of 100 addresses a second, and a features-service restart fires hundreds
+// at once: one crm-service request per batch timed out 461 times in 3 h (2026-11-07, Distribute.you brand) and
+// every timeout failed the whole status read (500). crm-service serves the whole fact for (org, brands) on
+// `/internal/people/stated-not-to-brand/email-sets` (every address of every stated person, the same match as the
+// per-address read; 44 statements fleet-wide), so it is read ONCE per (org, brands) and matched here.
+//
+// Freshness: an answer is used for at most `STATED_SETS_TTL_MS`; past `STATED_SETS_REFRESH_AFTER_MS` it is
+// reloaded in the background while still served (a new statement or an undo lands within the TTL, the status
+// read's own per-address cache is 60 s). Concurrent misses join ONE request. Fail loud: an expired or absent
+// answer that cannot be reloaded THROWS (never read as "nobody stated"); a failed background refresh only logs,
+// and the answer it would have replaced expires on schedule.
+
+export const STATED_SETS_TTL_MS = 30_000;
+export const STATED_SETS_REFRESH_AFTER_MS = 15_000;
+const STATED_SETS_MAX_ENTRIES = 5_000;
+
+type StatedSets = Map<string, StatedNotToBrandRecord>;
+const statedSetsCache = new Map<string, { loadedAt: number; value: StatedSets }>();
+const statedSetsInFlight = new Map<string, Promise<StatedSets>>();
+
+/** Tests only. */
+export function clearStatedSetsCache(): void {
+  statedSetsCache.clear();
+  statedSetsInFlight.clear();
+}
+
+async function fetchStatedSets(orgId: string, brandIds: string[]): Promise<StatedSets> {
+  const config = crmConfig();
+  const path = "POST /internal/people/stated-not-to-brand/email-sets";
+  const out: StatedSets = new Map();
+  for (const brandChunk of chunk(brandIds, CRM_STATED_MAX_BRANDS)) {
+    const body = (await postCrmRead(config, "/internal/people/stated-not-to-brand/email-sets", { orgId, brandIds: brandChunk }, null)) as {
+      statements?: unknown;
+    } | null;
+    const statements = body?.statements;
+    if (!Array.isArray(statements)) throw new CrmStatedReadError(`crm-service ${path} returned no statements array`);
+    statements.forEach((raw, i) => {
+      const s = raw as { correctionId?: unknown; brandId?: unknown; emails?: unknown };
+      if (typeof s.correctionId !== "string" || typeof s.brandId !== "string" || !Array.isArray(s.emails)) {
+        throw new CrmStatedReadError(`crm-service ${path} statement ${i} is malformed`);
+      }
+      for (const email of s.emails) {
+        if (typeof email !== "string") throw new CrmStatedReadError(`crm-service ${path} statement ${i} carries a non-string address`);
+        const key = normalizeLeadEmail(email);
+        // Statements come oldest first: the first one covering an address answers, like the per-address read.
+        if (key && !out.has(key)) out.set(key, { brandId: s.brandId, correctionId: s.correctionId });
+      }
+    });
+  }
+  return out;
+}
+
+function loadStatedSets(key: string, orgId: string, brandIds: string[]): Promise<StatedSets> {
+  const pending = statedSetsInFlight.get(key);
+  if (pending) return pending;
+  const load = fetchStatedSets(orgId, brandIds)
+    .then((value) => {
+      statedSetsCache.delete(key);
+      statedSetsCache.set(key, { loadedAt: Date.now(), value });
+      while (statedSetsCache.size > STATED_SETS_MAX_ENTRIES) {
+        const oldest = statedSetsCache.keys().next().value;
+        if (oldest === undefined) break;
+        statedSetsCache.delete(oldest);
+      }
+      return value;
+    })
+    .finally(() => statedSetsInFlight.delete(key));
+  statedSetsInFlight.set(key, load);
+  return load;
+}
+
+/**
+ * Same answer as `readStatedNotToBrand`, for callers asking about many addresses (the status read, the dispatch
+ * sweep): read from the (org, brands) answer cached above. Throws `CrmStatedReadError` when no answer younger than
+ * the TTL exists and crm-service cannot give one.
+ */
+export async function readStatedNotToBrandMany(params: {
+  orgId: string;
+  brandIds: string[];
+  emails: string[];
+}): Promise<Map<string, StatedNotToBrandRecord>> {
+  const out = new Map<string, StatedNotToBrandRecord>();
+  const brandIds = [...new Set(params.brandIds.filter(Boolean))].sort();
+  const emails = [...new Set(params.emails.map(normalizeLeadEmail).filter(Boolean))];
+  if (brandIds.length === 0 || emails.length === 0) return out;
+
+  const key = `${params.orgId}\u0000${brandIds.join(",")}`;
+  const now = Date.now();
+  const cached = statedSetsCache.get(key);
+  let sets: StatedSets;
+  if (cached && now - cached.loadedAt < STATED_SETS_TTL_MS) {
+    sets = cached.value;
+    if (now - cached.loadedAt >= STATED_SETS_REFRESH_AFTER_MS && !statedSetsInFlight.has(key)) {
+      loadStatedSets(key, params.orgId, brandIds).catch((error: unknown) =>
+        console.warn(
+          `[instantly-service] stated-not-to-brand: background refresh failed for org=${params.orgId} brands=${brandIds.join(",")} (answer expires in ${Math.max(0, STATED_SETS_TTL_MS - (now - cached.loadedAt))} ms) — ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+    }
+  } else {
+    sets = await loadStatedSets(key, params.orgId, brandIds);
+  }
+  for (const email of emails) {
+    const hit = sets.get(email);
+    if (hit) out.set(email, hit);
   }
   return out;
 }

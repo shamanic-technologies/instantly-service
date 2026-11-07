@@ -25,7 +25,7 @@ vi.mock("../../src/lib/email-verification-gate", () => ({
 // DUALIST-WA-SILENCE-EMAIL: crm-service's "stated not to the brand" read.
 const mockReadStated = vi.fn();
 vi.mock("../../src/lib/crm-client", () => ({
-  readStatedNotToBrand: (...a: unknown[]) => mockReadStated(...a),
+  readStatedNotToBrandMany: (...a: unknown[]) => mockReadStated(...a),
 }));
 
 import { findSendRefusals } from "../../src/lib/send-refusal";
