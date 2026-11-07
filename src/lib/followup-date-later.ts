@@ -3,9 +3,8 @@
  * lead-service (`PUT /orgs/leads/{row}/followup-date`, LEAD-FOLLOWUP-DATE-1016).
  * Never earlier than what lead-service holds, never over a stop.
  *
- * ONE writer for every "this person waits" fact of this service: an
- * out-of-office return date (OOO-RETURN-DATE-1101) and a last thread whose
- * mailbox cannot send it (THREAD-ANY-ROUTE-1107).
+ * ONE writer for every "this person waits" fact of this service (an
+ * out-of-office return date, OOO-RETURN-DATE-1101).
  */
 
 import {

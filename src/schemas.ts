@@ -514,7 +514,7 @@ export const SendRequestSchema = z
           "Every send gate applies to it " +
           "(409 `lead_opted_out` org-wide, 409 `lead_not_a_prospect`, 409 `stated_not_to_brand`, the address verifier, 402 `insufficient_credits`). " +
           "Refused 409 `brand_sequence_queued` while a step of this brand's sequence to the person is still waiting to leave (two of our emails would race). " +
-          "Lands in the SAME thread as the brand's latest email to the person (same mailbox, `Re:` that subject, In-Reply-To/References), followUp or not. When that mailbox cannot send any more: 409 `thread_mailbox_unavailable` (`mailbox`, `reason`, `waitUntil`), nothing sent or billed, the person's next follow-up date moves 7 days later; never a new thread from another address. A thread whose mailbox was never known opens a new thread with this `subject`. " +
+          "Lands in the SAME thread as the brand's latest email to the person (same mailbox, `Re:` that subject, In-Reply-To/References), followUp or not. When that mailbox is dead for any reason (not ours, gone at the vendor, not in production, no credential, replies unreadable, relay refuses), the email opens a NEW thread with this `subject` from a pool mailbox picked like a first email; same for a thread whose mailbox was never known. " +
           "Each follow-up is its own send keyed on the caller's `x-run-id` (a retry with the same run = `200 duplicate`; the next follow-up of the same campaign = a new run). Billed like any send. Absent/false = a normal send.",
       ),
   })
@@ -561,7 +561,7 @@ const SendResponseSchema = z
 const SendRefusalSchema = z
   .object({
     error: z.string(),
-    code: z.enum(["lead_opted_out", "lead_not_a_prospect", "stated_not_to_brand", "email_not_verified", "thread_mailbox_unavailable"]),
+    code: z.enum(["lead_opted_out", "lead_not_a_prospect", "stated_not_to_brand", "email_not_verified"]),
     details: z.string(),
     verdict: z
       .string()
@@ -570,11 +570,7 @@ const SendRefusalSchema = z
     reason: z
       .string()
       .optional()
-      .describe("email_not_verified: `verdict_invalid` | `verdict_risky` | `verdict_unrecognised`; thread_mailbox_unavailable: `not_ours` | `no_credential` | `replies_unreadable` | `relay_refuses`"),
-    mailbox: z.string().optional().describe("thread_mailbox_unavailable only: the mailbox that wrote the person's last thread"),
-    threadInstantlyCampaignId: z.string().optional().describe("thread_mailbox_unavailable only: the sequence that thread belongs to"),
-    waitUntil: z.string().optional().describe("thread_mailbox_unavailable only: the follow-up date the person now waits for (ISO)"),
-    followupDate: z.string().optional().describe("thread_mailbox_unavailable only: what lead-service did per brand (`<brand>:stated|already_later|kept_stopped`, or `failed: …`)"),
+      .describe("email_not_verified: `verdict_invalid` | `verdict_risky` | `verdict_unrecognised`"),
     until: z
       .string()
       .nullable()
@@ -655,7 +651,6 @@ registry.registerPath({
         "`code: \"lead_not_a_prospect\"` = the recipient told the brand they are not a prospect. " +
         "`code: \"stated_not_to_brand\"` = the brand's team stated (crm-service people correction) that the recipient is not someone of the brand; never lapses, lifts when the statement is undone. " +
         "`code: \"email_signature_conflict\"` = two brands of this send set different email signatures (PUT /orgs/email-signature). " +
-        "`code: \"thread_mailbox_unavailable\"` = the person's last thread with the brand was written from a mailbox we cannot send from any more (`reason`: not_ours, no_credential, replies_unreadable, relay_refuses); the person waits: their next follow-up date moves to `waitUntil` (7 days). A thread whose mailbox the owner deactivated (a brand domain) is not refused: the email opens a NEW thread from a pool mailbox. " +
         "`code: \"email_not_verified\"` = our verifier (BounceVerify, via apollo-service) calls the " +
         "address `invalid` or `risky`: no email ever leaves our mailboxes for it. Every address is " +
         "verified before its sequence is queued (a verdict under 30 days old is reused for free; " +

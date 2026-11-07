@@ -277,6 +277,7 @@ import {
 } from "../../src/lib/send-lead";
 import { sequenceFootprintDays } from "../../src/lib/sending-window";
 import { requireOrgId } from "../../src/middleware/requireOrgId";
+import { dropRefusedSenders } from "../../src/lib/self-send/refused-senders";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
 import express from "express";
@@ -3663,118 +3664,127 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
     expect(steps[0].subject).toBe("Re: cash-pay shockwave & laser patients");
   });
 
-  it("THREAD-MAILBOX-1107: the thread's mailbox in RECOVERY (out of the pool) still takes it: same mailbox, same thread", async () => {
-    credentialedMailboxes.add("first@example.com");
-    credentialedMailboxes.add("recovering@example.com");
-    mockListAccounts.mockResolvedValue([
-      acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
-    ]);
-    mockFetchThreadMailbox.mockImplementation(async (email: string) =>
-      email === "recovering@example.com"
-        ? { account: acct({ email: "recovering@example.com", stat_warmup_score: 100, daily_limit: 20 }), lifecycleStatus: "in_recovery" }
-        : null,
-    );
-    mockFindFollowUpThread.mockResolvedValue({
-      instantlyCampaignId: "03b09ae5-old",
-      accountEmail: "Recovering@example.com",
-      subject: "Quick idea for TestCo",
-      reason: "our_last_email",
-    });
-    const app = await createSendApp();
-    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-    expect(res.status).toBe(200);
-    expect(mockFetchThreadMailbox).toHaveBeenCalledWith("recovering@example.com");
-    const phase2 = mockDbUpdateSet.mock.calls
-      .map((c) => c[0] as Record<string, unknown>)
-      .find((v) => "sendTransport" in v)!;
-    expect(phase2.accountEmail).toBe("recovering@example.com");
-    const steps = mockDbInsertValues.mock.calls
-      .map((c) => c[0])
-      .find((v) => Array.isArray(v) && (v as { subject?: string }[])[0]?.subject !== undefined) as { subject: string }[];
-    expect(steps[0].subject).toBe("Re: Quick idea for TestCo");
-    mockFetchThreadMailbox.mockImplementation(async () => null);
-  });
+  // DEAD-THREAD-MAILBOX-1107 (owner 2026-11-07 « A »): a thread mailbox dead for
+  // ANY reason never sends and never makes the person wait: NEW thread from a
+  // pool mailbox picked like a first cold email, the reason stored on the row.
+  const DEAD_THREAD_MAILBOX = "dead@example.com";
+  const deadCases: {
+    reason: string;
+    setup: () => void;
+    teardown?: () => void;
+  }[] = [
+    {
+      reason: "relay_refuses",
+      setup: () => {
+        credentialedMailboxes.add(DEAD_THREAD_MAILBOX);
+        vi.mocked(dropRefusedSenders).mockImplementation(async (accounts) =>
+          (accounts as { email: string }[]).filter((a) => a.email !== DEAD_THREAD_MAILBOX) as never,
+        );
+      },
+      teardown: () => {
+        vi.mocked(dropRefusedSenders).mockImplementation(async (accounts) => accounts as never);
+      },
+    },
+    {
+      reason: "gone_at_vendor",
+      setup: () => {
+        mockFetchThreadMailbox.mockImplementation(async (email: string) => ({
+          account: acct({ email: email.trim().toLowerCase(), stat_warmup_score: 100, daily_limit: 50 }),
+          lifecycleStatus: "in_production",
+          absentSince: "2026-11-01T00:00:00.000Z",
+        }));
+      },
+    },
+    {
+      reason: "in_recovery",
+      setup: () => {
+        mockFetchThreadMailbox.mockImplementation(async (email: string) => ({
+          account: acct({ email: email.trim().toLowerCase(), stat_warmup_score: 100, daily_limit: 20 }),
+          lifecycleStatus: "in_recovery",
+          absentSince: null,
+        }));
+      },
+    },
+    {
+      reason: "deactivated_by_instantly",
+      setup: () => {
+        mockFetchThreadMailbox.mockImplementation(async (email: string) => ({
+          account: acct({ email: email.trim().toLowerCase(), status: -3, daily_limit: 50 }),
+          lifecycleStatus: "deactivated_by_instantly",
+          absentSince: null,
+        }));
+      },
+    },
+    {
+      reason: "deactivated_by_owner",
+      setup: () => {
+        mockFetchThreadMailbox.mockImplementation(async (email: string) => ({
+          account: acct({ email: email.trim().toLowerCase(), stat_warmup_score: 100, daily_limit: 10 }),
+          lifecycleStatus: "deactivated_by_user",
+          absentSince: null,
+        }));
+      },
+    },
+    {
+      reason: "not_ours",
+      setup: () => {
+        mockFetchThreadMailbox.mockImplementation(async () => null);
+      },
+    },
+    {
+      reason: "no_credential",
+      setup: () => {
+        mockKeepSelfSendCapable.mockImplementation(async (accounts: readonly { email: string }[]) =>
+          accounts.filter((a) => credentialedMailboxes.has(a.email)),
+        );
+      },
+      teardown: () => {
+        mockKeepSelfSendCapable.mockImplementation(async (accounts: readonly { email: string }[]) => [...accounts]);
+      },
+    },
+  ];
 
-  it("THREAD-OWNER-DEACTIVATED-1107 (owner « B »): a thread mailbox the OWNER deactivated is never used: NEW thread from the pool, caller's subject, stored on the row, nobody waits", async () => {
-    credentialedMailboxes.add("first@example.com");
-    credentialedMailboxes.add("kevinl@distribute.you");
-    mockListAccounts.mockResolvedValue([
-      acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
-    ]);
-    mockFetchThreadMailbox.mockImplementation(async (email: string) => ({
-      account: acct({ email: email.trim().toLowerCase(), stat_warmup_score: 100, daily_limit: 10 }),
-      lifecycleStatus: "deactivated_by_user",
-    }));
-    mockFindFollowUpThread.mockResolvedValue({
-      instantlyCampaignId: "a27fefbc-april",
-      accountEmail: "kevinl@distribute.you",
-      subject: "Quick idea for TestCo",
-      reason: "our_last_email",
-    });
-    const app = await createSendApp();
-    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-    expect(res.status).toBe(200);
-    const phase2 = mockDbUpdateSet.mock.calls
-      .map((c) => c[0] as Record<string, unknown>)
-      .find((v) => "sendTransport" in v)!;
-    expect(phase2.accountEmail).toBe("first@example.com");
-    expect(JSON.stringify(phase2.metadata)).toContain("threadNotContinued");
-    expect(JSON.stringify(phase2.metadata)).not.toContain("followUpOf");
-    const steps = mockDbInsertValues.mock.calls
-      .map((c) => c[0])
-      .find((v) => Array.isArray(v) && (v as { subject?: string }[])[0]?.subject !== undefined) as { subject: string }[];
-    expect(steps[0].subject).toBe("Hello");
-    expect(mockMoveFollowupDateLater).not.toHaveBeenCalled();
-  });
-
-  it("THREAD-ANY-ROUTE-1107: a thread mailbox we hold no login for is REFUSED, the person waits (follow-up date later), never a new thread", async () => {
-    credentialedMailboxes.add("first@example.com");
-    mockKeepSelfSendCapable.mockImplementation(async (accounts: readonly { email: string }[]) =>
-      accounts.filter((a) => credentialedMailboxes.has(a.email)),
-    );
-    mockFindFollowUpThread.mockResolvedValue({
-      instantlyCampaignId: "03b09ae5-old",
-      accountEmail: "nocred@example.com",
-      subject: "Quick idea for TestCo",
-      reason: "our_last_email",
-    });
-    const app = await createSendApp();
-    const before = Date.now();
-    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe("thread_mailbox_unavailable");
-    expect(res.body.reason).toBe("no_credential");
-    expect(res.body.mailbox).toBe("nocred@example.com");
-    expect(res.body.followupDate).toBe("brand-1:stated");
-    // Before any reservation, run or cost: nothing sent, nothing billed, the verifier not asked.
-    expect(mockDbInsertValues).not.toHaveBeenCalled();
-    expect(mockCreateRun).not.toHaveBeenCalled();
-    expect(mockGateAddressForSend).not.toHaveBeenCalled();
-    const wait = mockMoveFollowupDateLater.mock.calls[0][0] as { until: Date; reason: string; leadEmail: string; brandIds: string[] };
-    expect(wait.leadEmail).toBe("test@example.com");
-    expect(wait.brandIds).toEqual(["brand-1"]);
-    expect(wait.reason).toContain("nocred@example.com");
-    expect(wait.until.getTime()).toBeGreaterThanOrEqual(before + 7 * 24 * 3600 * 1000 - 1000);
-    mockKeepSelfSendCapable.mockImplementation(async (accounts: readonly { email: string }[]) => [...accounts]);
-  });
-
-  it("THREAD-ANY-ROUTE-1107: a thread mailbox that is not ours any more is refused too (followUp or not), and a failed date move still refuses", async () => {
-    mockFetchThreadMailbox.mockImplementation(async () => null);
-    mockMoveFollowupDateLater.mockRejectedValue(new Error("lead-service 502"));
-    mockFindFollowUpThread.mockResolvedValue({
-      instantlyCampaignId: "ss-thread",
-      accountEmail: "gone@example.com",
-      subject: "Quick idea for TestCo",
-      reason: "their_last_reply",
-    });
-    const app = await createSendApp();
-    const res = await request(app).post("/send").set(identityHeadersObj).send(followUpBody);
-    expect(res.status).toBe(409);
-    expect(res.body.code).toBe("thread_mailbox_unavailable");
-    expect(res.body.reason).toBe("not_ours");
-    expect(res.body.followupDate).toMatch(/^failed: .*502/);
-    expect(mockDbInsertValues).not.toHaveBeenCalled();
-  });
+  for (const c of deadCases) {
+    for (const body of [
+      { label: "followUp", payload: followUpBody },
+      { label: "plain send", payload: validBody },
+    ]) {
+      it(`DEAD-THREAD-MAILBOX-1107: thread mailbox dead (${c.reason}), ${body.label} = NEW thread from a live pool mailbox, caller's subject, reason stored, nobody waits`, async () => {
+        credentialedMailboxes.add("first@example.com");
+        mockListAccounts.mockResolvedValue([
+          acct({ email: "first@example.com", stat_warmup_score: 100, daily_limit: 50 }),
+        ]);
+        mockFindFollowUpThread.mockResolvedValue({
+          instantlyCampaignId: "03b09ae5-old",
+          accountEmail: DEAD_THREAD_MAILBOX,
+          subject: "Quick idea for TestCo",
+          reason: "their_last_reply",
+        });
+        c.setup();
+        try {
+          const app = await createSendApp();
+          const res = await request(app).post("/send").set(identityHeadersObj).send(body.payload);
+          expect(res.status).toBe(200);
+          const phase2 = mockDbUpdateSet.mock.calls
+            .map((call) => call[0] as Record<string, unknown>)
+            .find((v) => "sendTransport" in v)!;
+          // Never the dead mailbox: the live pool mailbox, in a new thread.
+          expect(phase2.accountEmail).toBe("first@example.com");
+          const metadata = JSON.stringify(phase2.metadata);
+          expect(metadata).toContain("threadNotContinued");
+          expect(metadata).toContain(c.reason);
+          expect(metadata).not.toContain("followUpOf");
+          const steps = mockDbInsertValues.mock.calls
+            .map((call) => call[0])
+            .find((v) => Array.isArray(v) && (v as { subject?: string }[])[0]?.subject !== undefined) as { subject: string }[];
+          expect(steps[0].subject).toBe("Hello");
+          expect(mockMoveFollowupDateLater).not.toHaveBeenCalled();
+        } finally {
+          c.teardown?.();
+        }
+      });
+    }
+  }
 
   it("a thread whose mailbox we never knew (Instantly era, unread) still opens a new thread with the caller's subject, stored on the row", async () => {
     credentialedMailboxes.add("first@example.com");
