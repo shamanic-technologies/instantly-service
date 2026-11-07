@@ -517,6 +517,27 @@ export const SendRequestSchema = z
           "Lands in the SAME thread as the brand's latest email to the person (same mailbox, `Re:` that subject, In-Reply-To/References), followUp or not. When that mailbox is dead for any reason (not ours, gone at the vendor, not in production, no credential, replies unreadable, relay refuses), the email opens a NEW thread with this `subject` from a pool mailbox picked like a first email; same for a thread whose mailbox was never known. " +
           "Each follow-up is its own send keyed on the caller's `x-run-id` (a retry with the same run = `200 duplicate`; the next follow-up of the same campaign = a new run). Billed like any send. Absent/false = a normal send.",
       ),
+    signature: z
+      .union([
+        z.literal("default"),
+        z.object({
+          text: z
+            .string()
+            .describe(
+              "The signature lines as plain text, `\\n` between lines. Write whatever the context you have supports. " +
+                "`{first_name}`, `{last_name}`, `{full_name}`, `{sender_email}` are filled with the mailbox that sends each email (the From name: mailboxes rotate, so never type our persona's name). " +
+                "Examples: `{full_name}\\nDoc Dinners` (our sender + the client's brand); `Kevin\\nDoc Dinners` (a person of the client + the client's brand); no client person known = leave the person out (`Doc Dinners`). " +
+                "Never refused: any other `{token}` or stray brace is removed, a `--` line is dropped (the separator is ours), cut at 12 lines / 1,000 characters; empty after that = our default.",
+            ),
+        }),
+      ])
+      .optional()
+      .describe(
+        "WHO SIGNS this email, chosen by the script that wrote it (a tactic: competing scripts sign differently and their results are compared). " +
+          "`\"default\"` = our signature (the sending mailbox's name, then `Distribute.you | Marketing Agency`). `{ text }` = your own lines. Absent = exactly as before (the brand's own signature, else ours). " +
+          "The client's own brand signature (PUT /orgs/email-signature) WINS over this field: a client who stated how its emails are signed is never overridden. " +
+          "Pinned on the thread at its first send: every follow-up step and every reply of the thread keeps it, and a later send that continues an earlier thread of the brand with the person keeps THAT thread's signature (this field is then ignored).",
+      ),
   })
   .openapi("SendRequest");
 
