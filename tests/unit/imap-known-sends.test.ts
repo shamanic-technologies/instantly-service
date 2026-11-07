@@ -45,6 +45,19 @@ vi.mock("../../src/lib/self-send/mailbox-credentials", async (importOriginal) =>
 
 import { loadKnownSends } from "../../src/lib/self-send/imap-poller";
 
+function sqlOf(obj: unknown): string {
+  if (typeof obj === "string") return obj;
+  if (obj == null) return "";
+  if (Array.isArray(obj)) return obj.map(sqlOf).join("");
+  if (typeof obj === "object") {
+    const o = obj as Record<string, unknown>;
+    if (Array.isArray(o.value)) return o.value.join("");
+    if (Array.isArray(o.queryChunks)) return sqlOf(o.queryChunks);
+    return "";
+  }
+  return "";
+}
+
 function pgResult<T>(rows: T[]) {
   return { command: "SELECT", rowCount: rows.length, oid: null, fields: [], rows };
 }
@@ -282,10 +295,12 @@ describe("runPoll body fetching", () => {
     }));
     const { runPoll } = await import("../../src/lib/self-send/imap-poller");
 
-    // account list, then the two loadKnownSends reads, then everything else.
+    // account list, then our own dispatches (loadKnownSends' first read, only
+    // when the batch has an unfiled message), then everything else empty.
     mockDbExecute.mockResolvedValueOnce(pgResult([{ email: "kevin@live.com" }]));
-    mockDbExecute.mockResolvedValueOnce(pgResult(knownSends));
-    mockDbExecute.mockResolvedValue(pgResult([]));
+    mockDbExecute.mockImplementation(async (q: unknown) =>
+      pgResult(sqlOf(q).includes("FROM smtp_dispatch_raw d") ? knownSends : []),
+    );
     mockMailboxLogins.mockResolvedValue(new Map([["kevin@live.com", "kevin@live.com"]]));
     mockResolveCredential.mockResolvedValue({
       address: "kevin@live.com",
@@ -298,6 +313,36 @@ describe("runPoll body fetching", () => {
     const summary = await runPoll();
     return { summary, inserted: mockInserted, ...stub };
   }
+
+  it("reads no known sends when every message of the window is already filed (BOX-LOAD-1107)", async () => {
+    vi.resetModules();
+    const stub = imapStub([
+      { uid: 1, headers: "Message-ID: <old@x.com>\r\nFrom: p@prospect.com\r\nIn-Reply-To: <ours@live.com>\r\n" },
+    ]);
+    vi.doMock("../../src/lib/self-send/imap-client", () => ({
+      createImapClient: () => stub.client,
+      connectImapClient: (client: { connect: () => Promise<void> }) => client.connect(),
+    }));
+    const { runPoll } = await import("../../src/lib/self-send/imap-poller");
+    const asked: string[] = [];
+    mockDbExecute.mockResolvedValueOnce(pgResult([{ email: "kevin@live.com" }]));
+    mockDbExecute.mockImplementation(async (q: unknown) => {
+      const text = sqlOf(q);
+      asked.push(text);
+      return pgResult(text.includes("FROM imap_messages_raw") && text.includes("message_id = ANY") ? [{ messageId: "<old@x.com>" }] : []);
+    });
+    mockMailboxLogins.mockResolvedValue(new Map([["kevin@live.com", "kevin@live.com"]]));
+    mockResolveCredential.mockResolvedValue({ address: "kevin@live.com", appPassword: "pw", smtpHost: "smtp.gmail.com", imapHost: "imap.gmail.com" });
+    mockInserted.length = 0;
+
+    const summary = await runPoll();
+
+    expect(summary.messagesRead).toBe(1);
+    expect(summary.replies).toBe(0);
+    expect(mockInserted).toHaveLength(0);
+    expect(asked.some((t) => t.includes("FROM smtp_dispatch_raw d"))).toBe(false);
+    expect(asked.some((t) => t.includes("FROM instantly_emails_raw m"))).toBe(false);
+  });
 
   it("asks the server for headers, never for the whole message", async () => {
     const { fetchCalls } = await poll([
