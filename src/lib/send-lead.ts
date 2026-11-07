@@ -963,10 +963,20 @@ export async function fetchSendablePool(
   );
 }
 
-/** Why the mailbox of a person's last thread cannot send it any more. */
+/**
+ * Why the mailbox of a person's last thread is DEAD (DEAD-THREAD-MAILBOX-1107).
+ * Each reason is a fact already stored, read in this order: not a row of ours,
+ * Instantly no longer lists it (gone at the vendor), its lifecycle is not
+ * `in_production` (owner-deactivated, in recovery, disabled by Instantly, never
+ * classified), then the send pool's own capability gates.
+ */
 export type ThreadMailboxUnusableReason =
   | "not_ours"
+  | "gone_at_vendor"
   | "deactivated_by_owner"
+  | "in_recovery"
+  | "deactivated_by_instantly"
+  | "not_in_production"
   | "no_credential"
   | "replies_unreadable"
   | "relay_refuses";
@@ -975,16 +985,25 @@ export type ThreadMailboxResolution =
   | { ok: true; account: PooledAccount }
   | { ok: false; reason: ThreadMailboxUnusableReason };
 
+function deadLifecycleReason(status: string | null): ThreadMailboxUnusableReason | null {
+  if (status === "in_production") return null;
+  if (status === "deactivated_by_user") return "deactivated_by_owner";
+  if (status === "in_recovery") return "in_recovery";
+  if (status === "deactivated_by_instantly") return "deactivated_by_instantly";
+  return "not_in_production";
+}
+
 /**
- * The mailbox that wrote a person's last thread, when we can still send from
- * it (THREAD-MAILBOX-1107 + THREAD-ANY-ROUTE-1107, owner: « a follow-up replies
- * in the lead's LAST thread, from the address that thread used »). Never a
- * mailbox the owner deactivated (`deactivated_by_user`, THREAD-OWNER-DEACTIVATED-1107);
- * any other lifecycle (`fetchThreadMailbox`), the SAME capability gates as the send pool,
- * in the same order: a credential (an alias authenticates as its real mailbox),
- * replies we can read, a relay that accepts it. The first gate it fails is the
- * reason the caller states; the fill order never replaces it (a new thread
- * from another address is what this exists to stop).
+ * The mailbox that wrote a person's last thread, when it is still ALIVE
+ * (THREAD-MAILBOX-1107: a send continues the person's last thread from the
+ * address that thread used). Alive = exactly what the send pool admits: a row
+ * of ours Instantly still lists, `in_production`, and the SAME capability
+ * gates in the same order (a credential, an alias authenticating as its real
+ * mailbox; replies we can read; a relay that accepts it). Dead for ANY reason
+ * = the caller opens a NEW thread from a pool mailbox picked like a first cold
+ * email (DEAD-THREAD-MAILBOX-1107, owner 2026-11-07 « A »: Doc Dinners failed
+ * 17 times on 3 leads whose thread mailboxes the relay refuses, ~700 leads
+ * blocked behind them). The first fact it fails is the reason stored.
  */
 export async function resolveThreadMailbox(
   email: string,
@@ -992,9 +1011,9 @@ export async function resolveThreadMailbox(
 ): Promise<ThreadMailboxResolution> {
   const found = await fetchThreadMailbox(email.trim().toLowerCase());
   if (!found) return { ok: false, reason: "not_ours" };
-  // The owner took this mailbox out of sending (a brand domain): its threads
-  // are never continued from it, whatever route we could still find.
-  if (found.lifecycleStatus === "deactivated_by_user") return { ok: false, reason: "deactivated_by_owner" };
+  if (found.absentSince) return { ok: false, reason: "gone_at_vendor" };
+  const lifecycleDead = deadLifecycleReason(found.lifecycleStatus);
+  if (lifecycleDead) return { ok: false, reason: lifecycleDead };
   const row = found.account;
   if ((await keepSelfSendCapable([row], caller)).length === 0) {
     return { ok: false, reason: "no_credential" };

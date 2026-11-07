@@ -13,15 +13,11 @@ import {
 } from "../lib/instantly-client";
 import { resolveThreadMailbox, selectSendingAccount, sendLeadToInstantly, type SendResult } from "../lib/send-lead";
 import type { PooledAccount } from "../lib/account-lifecycle-sync";
-import { moveFollowupDateLater } from "../lib/followup-date-later";
 import { queuedStepsToStore } from "../lib/queued-steps-script";
 import {
   findFollowUpThread,
   findQueuedBrandSequence,
   followUpQueuedRefusal,
-  threadMailboxRefusal,
-  threadMailboxWaitReason,
-  THREAD_MAILBOX_WAIT_DAYS,
   type FollowUpThread,
 } from "../lib/follow-up-send";
 import { findNotAProspect, notAProspectRefusal } from "../lib/not-a-prospect";
@@ -405,21 +401,21 @@ router.post("/", async (req: Request, res: Response) => {
         return res.status(409).json(refusal);
       }
 
-      // 3c-ter. THE LAST THREAD'S MAILBOX (THREAD-ANY-ROUTE-1107, owner: « a
-      //     follow-up replies in the lead's LAST thread, from the address that
-      //     thread used »). The mailbox that wrote it, ANY lifecycle except one
-      //     the OWNER deactivated (`deactivated_by_user`: a brand domain kept out
-      //     of sending, THREAD-OWNER-DEACTIVATED-1107: that one goes to a NEW
-      //     thread from the pool, owner 2026-11-07), when we
-      //     still hold a route (credential, alias of a mailbox we log into,
-      //     readable replies, relay accepts). None = refused here, before the
-      //     verifier spends and before any reservation: the person WAITS (their
-      //     next follow-up date moves later, its reason says why) instead of a
-      //     new thread from another address (Doc Dinners 2026-11-06: 4 of 18
-      //     follow-ups opened new threads, their April threads' mailboxes were
-      //     distribute.you aliases out of the pool). A thread whose mailbox we
-      //     never knew (Instantly era, unread) still opens a new thread, logged.
+      // 3c-ter. THE LAST THREAD'S MAILBOX (THREAD-MAILBOX-1107: a send
+      //     continues the person's last thread from the address that thread
+      //     used). Taken only while it is ALIVE (`resolveThreadMailbox`: a row
+      //     of ours Instantly still lists, in_production, credential, readable
+      //     replies, relay accepts). DEAD for ANY reason (owner-deactivated,
+      //     gone at the vendor, in recovery, disabled by Instantly, refused by
+      //     the relay ...) = a NEW thread from a pool mailbox picked like a
+      //     first cold email, the reason stored on the row (`threadNotContinued`).
+      //     Never a send from a dead mailbox, never a wait (DEAD-THREAD-MAILBOX-1107,
+      //     owner 2026-11-07 « A »: Doc Dinners failed 17 times on 3 leads whose
+      //     thread mailboxes the relay refuses, ~700 leads blocked behind them).
+      //     A thread whose mailbox we never knew (Instantly era, unread) opens a
+      //     new thread too.
       let threadMailbox: PooledAccount | null = null;
+      let threadMailboxDeadReason: string | null = null;
       if (followUpThread?.accountEmail) {
         const resolved = await resolveThreadMailbox(followUpThread.accountEmail, {
           method: "POST",
@@ -427,49 +423,20 @@ router.post("/", async (req: Request, res: Response) => {
         });
         if (resolved.ok) {
           threadMailbox = resolved.account;
-        } else if (resolved.reason === "deactivated_by_owner") {
-          // Owner decision 2026-11-07 (« B »): a thread whose mailbox the owner
-          // took out of sending (`deactivated_by_user`, e.g. the brand domain
-          // distribute.you) gets its follow-up in a NEW thread from a pool
-          // mailbox picked the usual way; that mailbox never sends. The row
-          // stores the thread it could not continue (`threadNotContinued`).
-          console.log(
-            `[send] ${body.to}: last thread ${followUpThread.instantlyCampaignId} was written from ${followUpThread.accountEmail}, deactivated by the owner: new thread from the pool`,
-          );
         } else {
-          const waitUntil = new Date(Date.now() + THREAD_MAILBOX_WAIT_DAYS * 24 * 60 * 60 * 1000);
-          let followupDate: string;
-          try {
-            followupDate = await moveFollowupDateLater({
-              orgId,
-              campaignId,
-              brandIds,
-              leadEmail: body.to,
-              until: waitUntil,
-              reason: threadMailboxWaitReason(followUpThread.accountEmail, resolved.reason),
-            });
-          } catch (error: unknown) {
-            followupDate = `failed: ${messageOf(error)}`;
-            console.error(`[send] Could not move ${body.to}'s follow-up date after a thread-mailbox refusal: ${messageOf(error)}`);
-          }
-          const refusal = threadMailboxRefusal(
-            body.to,
-            { ...followUpThread, accountEmail: followUpThread.accountEmail },
-            resolved.reason,
-            waitUntil,
-            followupDate,
+          threadMailboxDeadReason = resolved.reason;
+          console.log(
+            `[send] ${body.to}: last thread ${followUpThread.instantlyCampaignId} was written from ${followUpThread.accountEmail}, dead (${resolved.reason}): new thread from the pool`,
           );
-          console.warn(`[send] Refused — ${refusal.details} (follow-up date: ${followupDate})`);
           traceEvent(
             res.locals.runId as string,
             {
               service: "instantly-service",
-              event: "send-refused-thread-mailbox-unavailable",
-              detail: `to=${body.to}, mailbox=${followUpThread.accountEmail}, reason=${resolved.reason}, thread=${followUpThread.instantlyCampaignId}, followupDate=${followupDate}`,
+              event: "send-thread-mailbox-dead-new-thread",
+              detail: `to=${body.to}, mailbox=${followUpThread.accountEmail}, reason=${resolved.reason}, thread=${followUpThread.instantlyCampaignId}`,
             },
             req.headers,
           ).catch(() => {});
-          return res.status(409).json(refusal);
         }
       }
 
@@ -902,9 +869,9 @@ router.post("/", async (req: Request, res: Response) => {
             : followUpThread
               ? {
                   // Never a SILENT new thread: the thread it could not continue
-                  // and why stay on the row (its mailbox is not ours any more,
-                  // or it holds no subject).
-                  metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object('threadNotContinued', jsonb_build_object('instantlyCampaignId', ${followUpThread.instantlyCampaignId}::text, 'mailbox', ${followUpThread.accountEmail}::text, 'hasSubject', ${followUpThread.subject !== null}::boolean, 'sentFrom', ${sendResult.value.account.email}::text, 'transport', ${transport}::text))`,
+                  // and why stay on the row (its mailbox is dead, `deadReason`,
+                  // or unknown, or it holds no subject).
+                  metadata: sql`COALESCE(${instantlyCampaigns.metadata}, '{}'::jsonb) || jsonb_build_object('threadNotContinued', jsonb_build_object('instantlyCampaignId', ${followUpThread.instantlyCampaignId}::text, 'mailbox', ${followUpThread.accountEmail}::text, 'hasSubject', ${followUpThread.subject !== null}::boolean, 'deadReason', ${threadMailboxDeadReason}::text, 'sentFrom', ${sendResult.value.account.email}::text, 'transport', ${transport}::text))`,
                 }
               : {}),
           updatedAt: new Date(),
