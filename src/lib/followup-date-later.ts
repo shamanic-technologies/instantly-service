@@ -10,6 +10,7 @@
 
 import {
   findLeadOnCampaignByEmail,
+  findLeadRowOfBrandByEmail,
   readLeadFollowupDate,
   stateLeadFollowupDate,
 } from "./lead-client";
@@ -27,13 +28,26 @@ export interface FollowupWait {
 
 /** Returns what happened per brand (`<brand>:stated|already_later|kept_stopped`). Throws on a lead-service failure. */
 export async function moveFollowupDateLater(wait: FollowupWait): Promise<string> {
-  if (!wait.orgId || !wait.campaignId) return "no_lead_row: platform send, no caller campaign";
+  if (!wait.orgId) return "no_org";
+  const orgId = wait.orgId;
   if (wait.brandIds.length === 0) return "no_brand";
-  const row = await findLeadOnCampaignByEmail({ orgId: wait.orgId, campaignId: wait.campaignId, email: wait.leadEmail });
-  if (!row || !row.id) return "no_lead_row";
+  // The caller campaign's row first; else ANY row of the person at the brand
+  // (the date is the person x brand's, lead-service accepts any of their rows):
+  // a wait that finds no row would leave the date due and the person refused
+  // again on every serve (mike@rxwellness.com, 2026-11-07).
+  const campaignRow = wait.campaignId
+    ? await findLeadOnCampaignByEmail({ orgId, campaignId: wait.campaignId, email: wait.leadEmail })
+    : null;
   const outcomes: string[] = [];
   for (const brandId of wait.brandIds) {
-    const current = await readLeadFollowupDate({ orgId: wait.orgId, leadRowId: row.id, brandId });
+    const rowId =
+      campaignRow?.id || (await findLeadRowOfBrandByEmail({ orgId, brandId, email: wait.leadEmail }))?.id;
+    if (!rowId) {
+      outcomes.push(`${brandId}:no_lead_row`);
+      continue;
+    }
+    const row = { id: rowId };
+    const current = await readLeadFollowupDate({ orgId, leadRowId: row.id, brandId });
     if (current.nextFollowupAt === null) {
       outcomes.push(`${brandId}:kept_stopped`);
       continue;
@@ -43,7 +57,7 @@ export async function moveFollowupDateLater(wait: FollowupWait): Promise<string>
       continue;
     }
     await stateLeadFollowupDate({
-      orgId: wait.orgId,
+      orgId,
       leadRowId: row.id,
       brandId,
       nextFollowupAt: wait.until.toISOString(),

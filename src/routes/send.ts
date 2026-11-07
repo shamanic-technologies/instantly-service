@@ -409,7 +409,8 @@ router.post("/", async (req: Request, res: Response) => {
       //     follow-up replies in the lead's LAST thread, from the address that
       //     thread used »). The mailbox that wrote it, ANY lifecycle except one
       //     the OWNER deactivated (`deactivated_by_user`: a brand domain kept out
-      //     of sending, THREAD-OWNER-DEACTIVATED-1107), when we
+      //     of sending, THREAD-OWNER-DEACTIVATED-1107: that one goes to a NEW
+      //     thread from the pool, owner 2026-11-07), when we
       //     still hold a route (credential, alias of a mailbox we log into,
       //     readable replies, relay accepts). None = refused here, before the
       //     verifier spends and before any reservation: the person WAITS (their
@@ -426,6 +427,15 @@ router.post("/", async (req: Request, res: Response) => {
         });
         if (resolved.ok) {
           threadMailbox = resolved.account;
+        } else if (resolved.reason === "deactivated_by_owner") {
+          // Owner decision 2026-11-07 (« B »): a thread whose mailbox the owner
+          // took out of sending (`deactivated_by_user`, e.g. the brand domain
+          // distribute.you) gets its follow-up in a NEW thread from a pool
+          // mailbox picked the usual way; that mailbox never sends. The row
+          // stores the thread it could not continue (`threadNotContinued`).
+          console.log(
+            `[send] ${body.to}: last thread ${followUpThread.instantlyCampaignId} was written from ${followUpThread.accountEmail}, deactivated by the owner: new thread from the pool`,
+          );
         } else {
           const waitUntil = new Date(Date.now() + THREAD_MAILBOX_WAIT_DAYS * 24 * 60 * 60 * 1000);
           let followupDate: string;
