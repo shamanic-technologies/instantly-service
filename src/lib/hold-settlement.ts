@@ -26,7 +26,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { sequenceCosts } from "../db/schema";
-import { updateCostStatus, type IdentityContext } from "./runs-client";
+import { updateCostStatus, type IdentityContext, type RunCost } from "./runs-client";
 
 /** The subset of a `sequence_costs` row settling needs. */
 export interface SettleableHold {
@@ -55,18 +55,22 @@ export function holdCostIds(hold: SettleableHold): string[] {
  * every cost the hold carries.
  *
  * Throws whatever `updateCostStatus` throws, before touching the local row.
+ * Returns the cost rows as runs-service answered them (their amounts), empty for
+ * an unbilled hold.
  */
 export async function settleHoldCost(
   hold: SettleableHold,
   target: HoldSettlement,
   identity: IdentityContext,
-): Promise<void> {
+): Promise<RunCost[]> {
+  const settled: RunCost[] = [];
   for (const costId of holdCostIds(hold)) {
-    await updateCostStatus(hold.runId, costId, target, identity);
+    settled.push(await updateCostStatus(hold.runId, costId, target, identity));
   }
 
   await db
     .update(sequenceCosts)
     .set({ status: target, updatedAt: new Date() })
     .where(eq(sequenceCosts.id, hold.id));
+  return settled;
 }
