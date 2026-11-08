@@ -58,6 +58,7 @@ import {
   type SmtpSenderHealth,
 } from "./sender-health";
 import { SEND_TRANSPORT_SMTP } from "./transport";
+import { hasVisibleText } from "../email-body-text";
 import { stopSelfSendSequence, type SelfSendStopTarget } from "./stop-sequence";
 import {
   INBOUND_BLIND_MIN_SENT,
@@ -837,7 +838,8 @@ async function loadStepContent(
   `);
 
   const row = (content.rows as Record<string, unknown>[])[0];
-  if (!row || typeof row.bodyHtml !== "string" || row.bodyHtml === "") return null;
+  // A body with nothing readable (`<p></p>`, `,`) is no body: never sent (`email-body-text.ts`).
+  if (!row || typeof row.bodyHtml !== "string" || !hasVisibleText(row.bodyHtml)) return null;
 
   return {
     bodyHtml: row.bodyHtml,
@@ -1376,7 +1378,7 @@ async function sendDueStep(
       // No body persisted for this step. Fail loud and leave the hold — sending
       // an empty email, or guessing at content, is worse than not sending.
       console.error(
-        `[instantly-service] self-send: no body for campaign=${step.instantlyCampaignId} step=${step.step} — skipped`,
+        `[instantly-service] self-send: no body (absent, or no readable text) for campaign=${step.instantlyCampaignId} step=${step.step} — skipped, nothing sent`,
       );
       summary.failed += 1;
       return;
