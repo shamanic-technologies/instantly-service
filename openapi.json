@@ -454,7 +454,7 @@
                 },
                 "bodyHtml": {
                   "type": "string",
-                  "description": "HTML body for this step"
+                  "description": "HTML body for this step. Refused 400 `empty_email_body` when it holds no readable text (no letter or digit once HTML tags and entities are removed, e.g. `<p></p>` or `,`): an empty email is never sent, and the send provisions nothing."
                 },
                 "daysSinceLastStep": {
                   "type": "integer",
@@ -1958,7 +1958,7 @@
           "body_html": {
             "type": "string",
             "minLength": 1,
-            "description": "The answer, HTML. Signed by this service with the sending account's persona — do NOT include a signature."
+            "description": "The answer, HTML. Signed by this service with the sending account's persona — do NOT include a signature. Refused 400 `empty_email_body` when it holds no readable text (no letter or digit once HTML tags and entities are removed): an empty email is never sent."
           },
           "sent_by": {
             "type": "string",
