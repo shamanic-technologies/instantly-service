@@ -20,6 +20,7 @@ import {
   GlobalStatusSchema as RawGlobalStatus,
   ProviderStatusSchema as RawProviderStatus,
 } from "@shamanic-technologies/email-domain-contract";
+import { EMPTY_EMAIL_BODY_MESSAGE, hasVisibleText } from "./lib/email-body-text";
 
 export const registry = new OpenAPIRegistry();
 
@@ -471,7 +472,12 @@ registry.registerPath({
 
 export const SequenceStepSchema = z.object({
   step: z.number().int().min(1).describe("1-based ordinal step number"),
-  bodyHtml: z.string().describe("HTML body for this step"),
+  bodyHtml: z
+    .string()
+    .refine(hasVisibleText, EMPTY_EMAIL_BODY_MESSAGE)
+    .describe(
+      "HTML body for this step. Refused 400 `empty_email_body` when it holds no readable text (no letter or digit once HTML tags and entities are removed, e.g. `<p></p>` or `,`): an empty email is never sent, and the send provisions nothing.",
+    ),
   daysSinceLastStep: z
     .number()
     .int()
@@ -1647,8 +1653,9 @@ export const ReplyToLeadBodySchema = z
     body_html: z
       .string()
       .min(1)
+      .refine(hasVisibleText, EMPTY_EMAIL_BODY_MESSAGE)
       .describe(
-        "The answer, HTML. Signed by this service with the sending account's persona — do NOT include a signature.",
+        "The answer, HTML. Signed by this service with the sending account's persona — do NOT include a signature. Refused 400 `empty_email_body` when it holds no readable text (no letter or digit once HTML tags and entities are removed): an empty email is never sent.",
       ),
     sent_by: z
       .enum(["human", "automation"])
