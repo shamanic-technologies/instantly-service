@@ -62,6 +62,7 @@
 
 import { errorMessage } from "./db-error.js";
 import type { SentAttachment } from "./offer-documents";
+import type { MessageParticipant } from "./message-participants";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
@@ -190,6 +191,14 @@ export interface ConversationMessage {
   outreachFact: ConversationSendFact | null;
   /** Offer documents this answer of ours carried as files. Absent when none. */
   attachments?: SentAttachment[];
+  /** Its RFC Message-ID (what `POST /orgs/replies` `in_reply_to` takes). Absent when unknown. */
+  messageId?: string;
+  /**
+   * EVERY address on it with its role (EVERY-PERSON-ON-THE-THREAD-1109): a
+   * colleague of the lead who answered in this thread reads as himself here,
+   * even though the message is filed on the lead's thread. Absent when unknown.
+   */
+  participants?: MessageParticipant[];
 }
 
 /** The served `email_sent` fact an outbound message is, in the feed's own words. */
@@ -352,6 +361,8 @@ function toConversationMessage(
     instantlyCampaignId: sequence.instantlyCampaignId,
     outreachFact: sendFactOf(m, facts),
     ...(m.attachments ? { attachments: m.attachments } : {}),
+    ...(m.messageId ? { messageId: m.messageId } : {}),
+    ...(m.participants ? { participants: m.participants } : {}),
   };
 }
 

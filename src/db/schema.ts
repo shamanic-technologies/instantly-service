@@ -2425,3 +2425,37 @@ export const outcomeAnchorRuns = pgTable(
   },
   (table) => [primaryKey({ columns: [table.taskName, table.orgId, table.day] })],
 );
+
+// EVERY-PERSON-ON-THE-THREAD-1109 (migration 0108): the cross-org feed of our
+// mailboxes' messages (lib/mailbox-messages.ts, `GET /internal/mailbox-messages`),
+// crm-service's mail source for our sending mailboxes. APPEND-ONLY: one row each
+// time what we serve about a message changes; the message itself is rebuilt from
+// bronze at read. `mailbox_message_dirty` is filled by DB TRIGGERS on
+// imap_messages_raw / smtp_dispatch_raw / instantly_emails_raw (every writer, no
+// caller remembers anything) and drained by the feed worker.
+export const mailboxMessageVersions = pgTable(
+  "mailbox_message_versions",
+  {
+    seq: bigserial("seq", { mode: "number" }).primaryKey(),
+    messageKey: text("message_key").notNull(),
+    sourceTable: text("source_table").notNull(),
+    sourceRowId: text("source_row_id").notNull(),
+    sourceHash: text("source_hash").notNull(),
+    threadKey: text("thread_key"),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("mailbox_message_versions_key_idx").on(table.messageKey, table.seq),
+    index("mailbox_message_versions_thread_idx").on(table.threadKey, table.seq),
+  ],
+);
+
+export const mailboxMessageDirty = pgTable(
+  "mailbox_message_dirty",
+  {
+    sourceTable: text("source_table").notNull(),
+    sourceRowId: text("source_row_id").notNull(),
+    markedAt: timestamp("marked_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.sourceTable, table.sourceRowId] })],
+);

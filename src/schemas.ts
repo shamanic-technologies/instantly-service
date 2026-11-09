@@ -1677,6 +1677,41 @@ export const ReplyToLeadBodySchema = z
       .describe(
         "Offer documents to attach to the reply as real files (a case study, a one-pager). This service reads each one from brand-service, bytes included, as this org, and attaches it under brand-service's filename and type. Up to 5, 10 MB together. FAIL LOUD, nothing sent: unknown or another org's document = 404 `attachment_not_found`; over the limits = 422 `attachment_too_large`; brand-service unreadable = 502 `attachment_unavailable`; a thread on the Instantly pipe (no attachment support) = 422 `attachments_unsupported_on_transport`. Absent or empty = the reply exactly as before. Replies only: cold sequence steps never carry a file.",
       ),
+    to: z
+      .array(z.string().email())
+      .min(1)
+      .max(20)
+      .optional()
+      .describe(
+        "WHO it goes to (EVERY-PERSON-ON-THE-THREAD-1109): the To header, exactly these addresses. Omitted = the thread's lead (`email`), as before. Our own sender only: on a thread carried by Instantly = 422 `recipients_unsupported_on_transport`.",
+      ),
+    cc: z
+      .array(z.string().email())
+      .max(20)
+      .optional()
+      .describe(
+        "The Cc header, exactly these addresses (empty array = no Cc). Omitted = today's default (agency inbox + the brand's rep).",
+      ),
+    bcc: z
+      .array(z.string().email())
+      .max(20)
+      .optional()
+      .describe("The Bcc header, exactly these addresses. Omitted = none (except a hand-over)."),
+    in_reply_to: z
+      .string()
+      .min(3)
+      .optional()
+      .describe(
+        "The RFC Message-ID (`<...>`, served as `messageId` by GET /orgs/conversations and on GET /internal/mailbox-messages) of the message to answer: any message of a thread this org holds, whoever wrote it (a colleague who answered in our lead's thread included). The answer leaves from the mailbox that holds it, In-Reply-To = it, References = the thread up to it. The thread is found from the message: `campaign_id` is ignored and `email` is only the default To. Unknown message = 404 `thread_message_not_found`.",
+      ),
+    new_thread_subject: z
+      .string()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        "Open a NEW email thread (no In-Reply-To, no quote) with this subject, from the mailbox of the thread `campaign_id`/`email` resolve to. Exclusive with `in_reply_to`.",
+      ),
   })
   .openapi("ReplyToLeadBody", {
     example: {
@@ -1714,8 +1749,13 @@ const ReplyToLeadResultSchema = z
       .describe(
         "The agency inbox this reply was CC'd to — VISIBLE to the prospect, so a reply-all reaches a human. Never a BCC.",
       ),
+    bcc: z.string().optional().describe("The Bcc header, when one was set"),
+    to: z.string().optional().describe("The To header, present only when the caller chose `to`"),
     messageId: z.string().describe("Instantly's email id, or the RFC 5322 Message-Id we sent"),
-    inReplyTo: z.string().describe("The prospect message this reply threads onto"),
+    inReplyTo: z
+      .string()
+      .nullable()
+      .describe("The message this reply threads onto; null only on a `new_thread_subject` send"),
     attachments: z
       .array(SentAttachmentSchema)
       .optional()
@@ -1946,6 +1986,20 @@ export const LeadConversationQuerySchema = z
   })
   .openapi("LeadConversationQuery");
 
+const MessageParticipantSchema = z
+  .object({
+    email: z.string().describe("Lowercased bare address"),
+    role: z.enum(["from", "to", "cc", "bcc"]),
+  })
+  .openapi("MessageParticipant");
+
+const MessageAddressSchema = z
+  .object({
+    address: z.string().describe("Lowercased bare address"),
+    name: z.string().nullable(),
+  })
+  .openapi("MessageAddress");
+
 const ConversationMessageSchema = z
   .object({
     direction: z
@@ -1986,6 +2040,16 @@ const ConversationMessageSchema = z
       .array(SentAttachmentSchema)
       .optional()
       .describe("Offer documents this answer of ours carried as files (POST /orgs/replies `attachments`). Absent when none."),
+    messageId: z
+      .string()
+      .optional()
+      .describe("Its RFC Message-ID: pass it as POST /orgs/replies `in_reply_to` to answer THIS message. Absent when the store holds none."),
+    participants: z
+      .array(MessageParticipantSchema)
+      .optional()
+      .describe(
+        "EVERY address on the message with its role, read from what it carried (EVERY-PERSON-ON-THE-THREAD-1109). A colleague of the lead who answered in this thread is named here as `from` even though the message is filed on the lead's thread. Absent when the store holds no envelope.",
+      ),
   })
   .openapi("ConversationMessage");
 
@@ -3013,6 +3077,17 @@ const OutreachFactSchema = z
           .describe("Whether this thread's emails carried the open-tracking pixel. `off` = a thread our own sender dispatched (it never carries one) or an Instantly campaign created with open tracking off; `on` = an Instantly campaign whose first stored settings had it on; `unplaceable` = an Instantly thread whose settings were never stored, so it cannot be placed in either arm."),
       })
       .describe("What the thread (`instantlyCampaignId`) says, on EVERY fact of it, read live at each page (also on facts stated before this field existed). Stable for a thread: a consumer may keep it once per `instantlyCampaignId`."),
+    participants: z
+      .array(MessageParticipantSchema)
+      .optional()
+      .describe(
+        "On `reply`, `reply_sent`, `email_sent` only: EVERY address on the message with its role (our own mailbox included), read at each page from the stored message (EVERY-PERSON-ON-THE-THREAD-1109). The writer of a reply is its `from`, who may be someone other than `leadEmail` (a colleague answering in the lead's thread). Absent on other types.",
+      ),
+    threadKey: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("On `reply`, `reply_sent`, `email_sent` only: the RFC root Message-Id of the message's thread (References[0] ?? In-Reply-To ?? its own id); null when we hold none."),
   })
   .openapi("OutreachFact");
 
@@ -5307,5 +5382,95 @@ registry.registerPath({
     400: { description: "Invalid body", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Unauthorized" },
     500: { description: "Ownership could not be read", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+
+// ─── Mailbox messages feed (EVERY-PERSON-ON-THE-THREAD-1109) ────────────────
+
+export const MailboxMessagesQuerySchema = z.object({
+  after: z
+    .string()
+    .regex(/^\d+$/, "after must be a cursor returned by this route (digits)")
+    .optional()
+    .describe("Cursor: return versions AFTER this one (exclusive). Omit (or 0) to start from the beginning."),
+  limit: z.coerce.number().int().min(1).max(500).optional().describe("Page size, default 200, max 500"),
+  threadKey: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Only this thread: every message of it, latest version each, in feed order (cursor ignored)."),
+});
+
+export const MailboxMessagesSyncSchema = z
+  .object({
+    sinceDays: z.number().int().min(1).nullable().optional().describe("Re-mark this window of bronze for the feed; null = whole history"),
+    drainBatches: z.number().int().min(0).max(1000).optional().describe("Batches of 500 to drain now (default 1)"),
+  })
+  .openapi("MailboxMessagesSync");
+
+const MailboxMessageSchema = z
+  .object({
+    id: z.string().describe("Stable: `smtp:<dispatch row>` (we sent it), `imap:<hash of its Message-Id>` (we received it; one id whatever alias holds the copy), `iem:<mirror row>` (Instantly-era Unibox)"),
+    version: z.string().describe("The feed position it was served at. A message is RE-SERVED (same id, higher version) whenever what we serve about it changes: keep the latest per id."),
+    mailbox: z.string().describe("Our mailbox address that sent or received it"),
+    direction: z.enum(["in", "out"]),
+    kind: z.enum(["outreach", "manual_reply", "reply", "auto_reply", "staff_reply", "bounce", "delay", "unrelated"]).describe("`outreach` = a sequence step; `manual_reply` = an answer through POST /orgs/replies; `staff_reply` = one of our people answered from their own client; `unrelated` = a person wrote to our mailbox outside any thread of ours"),
+    messageId: z.string().nullable(),
+    inReplyTo: z.string().nullable(),
+    references: z.array(z.string()),
+    threadKey: z.string().nullable().describe("Same for every message of one email thread: RFC root Message-Id (References[0] ?? In-Reply-To ?? its own id); `instantly-thread:<id>` on the Instantly-era mirror"),
+    occurredAt: z.string(),
+    subject: z.string().nullable(),
+    from: MessageAddressSchema.nullable(),
+    to: z.array(MessageAddressSchema),
+    cc: z.array(MessageAddressSchema),
+    bcc: z.array(MessageAddressSchema).describe("Only on what we sent"),
+    participants: z.array(MessageParticipantSchema).describe("Every address above with its role, our mailbox included"),
+    text: z.string().nullable().describe("The words as received / sent, readable text"),
+    textUnavailableReason: z.string().nullable().describe("Why `text` is null (`body_not_stored`)"),
+    sentBy: z.enum(["human", "automation"]).nullable(),
+    orgId: z.string().nullable(),
+    brandIds: z.array(z.string()),
+    campaignId: z.string().nullable(),
+    instantlyCampaignId: z.string().nullable(),
+    leadEmail: z.string().nullable().describe("The lead of the THREAD the message is filed on (not necessarily its writer: see `from`). Null with the rest of the attribution when we hold no thread for it."),
+  })
+  .openapi("MailboxMessage");
+
+export const MailboxMessagesResponseSchema = z
+  .object({
+    messages: z.array(MailboxMessageSchema),
+    nextCursor: z.string(),
+    hasMore: z.boolean(),
+  })
+  .openapi("MailboxMessagesPage");
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/mailbox-messages",
+  summary: "Every message of our sending mailboxes, with every address on it (fleet-wide feed)",
+  description:
+    "Cross-org feed (service key) of every email our sending mailboxes sent or received: sequence steps, answers, replies, a person writing outside any thread (warmup, seeds and machine noise excluded), each with EVERY address on it and its role, the words, the Message-Id chain, its thread key and the thread it is filed on. Built for crm-service to read our mailboxes as a mail source (EVERY-PERSON-ON-THE-THREAD-1109).\n\n" +
+    "**Paging.** Start with `after` omitted; pass `nextCursor` back until `hasMore` is false; then poll. A message is re-served (same `id`, higher `version`) when anything served about it changes (refiled onto a thread, body stored, attribution moved). A cursor never skips a version. `threadKey=` returns one thread's messages (latest version each).",
+  request: { query: MailboxMessagesQuerySchema },
+  responses: {
+    200: { description: "A page of messages", content: { "application/json": { schema: MailboxMessagesResponseSchema } } },
+    400: { description: "Invalid query", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "Could not be read", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/mailbox-messages/sync",
+  summary: "Re-mark bronze for the mailbox-messages feed and drain now",
+  request: { body: { content: { "application/json": { schema: MailboxMessagesSyncSchema } } } },
+  responses: {
+    200: { description: "What was marked and drained" },
+    400: { description: "Invalid body", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "Failed", content: { "application/json": { schema: ErrorSchema } } },
   },
 });

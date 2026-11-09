@@ -14,6 +14,7 @@
  * Instantly auto-pause the webhook).
  */
 
+import type { MessageParticipant } from "./message-participants";
 import type { SentAttachment } from "./offer-documents";
 import type { EmailRecord } from "./instantly-client";
 import { isEscalatedReplyKind, POSITIVE_REPLY_KINDS } from "./reply-kind";
@@ -86,6 +87,18 @@ export interface ThreadMessage {
   sequenceStep?: boolean;
   /** Offer documents an answer of ours carried as files. Absent when none. */
   attachments?: SentAttachment[];
+  /**
+   * The RFC 5322 Message-ID this message carried, when the store holds it
+   * (EVERY-PERSON-ON-THE-THREAD-1109): what `POST /orgs/replies` `in_reply_to`
+   * takes to continue the thread from THIS message. Absent when unknown.
+   */
+  messageId?: string;
+  /**
+   * EVERY address on the message with its role, read from what the message
+   * carried (headers / what we put on the wire). Absent when the store holds
+   * no envelope (lib/message-participants).
+   */
+  participants?: MessageParticipant[];
 }
 
 /**
