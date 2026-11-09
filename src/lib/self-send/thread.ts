@@ -27,6 +27,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../../db";
 import { htmlToText, type ImapThreadMessage, type ThreadMessage } from "../forward-positive-reply";
 import { sentAttachmentsOf, type SentAttachment } from "../offer-documents";
+import { dispatchEnvelope, imapEnvelope, type MessageParticipant } from "../message-participants";
 import { logUnsignedSteps, sentBodyHtml, type SentBody } from "./sent-body";
 
 /**
@@ -47,13 +48,17 @@ export async function fetchSelfSendThread(
     SELECT
       'outbound'                          AS "direction",
       d.account_email                     AS "from",
-      d.lead_email                        AS "to",
+      COALESCE(d.payload->>'to', d.lead_email) AS "to",
       COALESCE(s.subject, d.payload->>'subject', '')     AS "subject",
       COALESCE(s.body_html, d.payload->>'bodyHtml', '')  AS "bodyHtml",
       d.dispatched_at                     AS "at",
       d.id                                AS "dispatchId",
       (d.step > 0)                        AS "sequenceStep",
       d.payload->'attachments'            AS "attachments",
+      'dispatch'                          AS "envelopeSource",
+      d.message_id                        AS "messageId",
+      d.payload - 'bodyHtml'              AS "envelopePayload",
+      d.lead_email                        AS "leadEmail",
       sm.message_inputs->'built'->>'html' AS "sentHtml",
       c.signature_html                    AS "pinnedSignatureHtml",
       (a.email IS NOT NULL)               AS "accountKnown",
@@ -80,6 +85,10 @@ export async function fetchSelfSendThread(
       NULL                                             AS "dispatchId",
       false                                            AS "sequenceStep",
       NULL::jsonb                                      AS "attachments",
+      'imap'                                           AS "envelopeSource",
+      m.message_id                                     AS "messageId",
+      m.payload - 'textSnippet'                        AS "envelopePayload",
+      m.account_email                                  AS "leadEmail",
       NULL                                             AS "sentHtml",
       NULL                                             AS "pinnedSignatureHtml",
       NULL::boolean                                    AS "accountKnown",
@@ -103,6 +112,10 @@ export async function fetchSelfSendThread(
       NULL                                             AS "dispatchId",
       false                                            AS "sequenceStep",
       NULL::jsonb                                      AS "attachments",
+      'imap'                                           AS "envelopeSource",
+      m.message_id                                     AS "messageId",
+      m.payload - 'textSnippet'                        AS "envelopePayload",
+      m.account_email                                  AS "leadEmail",
       NULL                                             AS "sentHtml",
       NULL                                             AS "pinnedSignatureHtml",
       NULL::boolean                                    AS "accountKnown",
@@ -175,7 +188,41 @@ function toThreadMessage(row: Record<string, unknown>): ThreadMessage {
       : {}),
     ...(row.sequenceStep === true ? { sequenceStep: true } : {}),
     ...attachmentsField(row.attachments),
+    ...envelopeFields(row),
   };
+}
+
+/**
+ * The message's own Message-ID and EVERY address on it with its role
+ * (EVERY-PERSON-ON-THE-THREAD-1109, lib/message-participants): a colleague who
+ * answered in the lead's thread reads as himself, and the lead stays in the
+ * thread context. For an IMAP row `leadEmail` carries the receiving mailbox.
+ */
+function envelopeFields(row: Record<string, unknown>): {
+  messageId?: string;
+  participants?: MessageParticipant[];
+} {
+  const messageId =
+    typeof row.messageId === "string" && row.messageId.length > 0 ? row.messageId : null;
+  if (row.envelopeSource === "imap") {
+    const env = imapEnvelope({
+      accountEmail: String(row.leadEmail ?? ""),
+      fromAddress: typeof row.from === "string" ? row.from : null,
+      messageId,
+      payload: row.envelopePayload,
+    });
+    return { ...(env.messageId ? { messageId: env.messageId } : {}), participants: env.participants };
+  }
+  if (row.envelopeSource === "dispatch") {
+    const env = dispatchEnvelope({
+      accountEmail: String(row.from ?? ""),
+      leadEmail: String(row.leadEmail ?? ""),
+      messageId,
+      payload: row.envelopePayload,
+    });
+    return { ...(messageId ? { messageId } : {}), participants: env.participants };
+  }
+  return {};
 }
 
 /** The files a dispatched answer carried, as stored on its bronze row. */
@@ -213,7 +260,7 @@ export async function fetchOwnDispatchedMessages(
     SELECT
       'outbound'                                         AS "direction",
       d.account_email                                    AS "from",
-      d.lead_email                                       AS "to",
+      COALESCE(d.payload->>'to', d.lead_email)          AS "to",
       COALESCE(s.subject, d.payload->>'subject', '')     AS "subject",
       COALESCE(s.body_html, d.payload->>'bodyHtml', '')  AS "bodyHtml",
       d.dispatched_at                                    AS "at",
@@ -221,6 +268,10 @@ export async function fetchOwnDispatchedMessages(
       (d.step > 0)                                       AS "sequenceStep",
       d.payload->>'instantlyEmailId'                     AS "instantlyEmailId",
       d.payload->'attachments'                           AS "attachments",
+      'dispatch'                                         AS "envelopeSource",
+      d.message_id                                       AS "messageId",
+      d.payload - 'bodyHtml'                             AS "envelopePayload",
+      d.lead_email                                       AS "leadEmail",
       sm.message_inputs->'built'->>'html'                AS "sentHtml",
       c.signature_html                                   AS "pinnedSignatureHtml",
       (a.email IS NOT NULL)                              AS "accountKnown",
@@ -268,7 +319,10 @@ export async function fetchImapThreadMessages(
       COALESCE(m.subject, '')                          AS "subject",
       COALESCE(m.payload->>'textSnippet', '')          AS "bodyHtml",
       COALESCE(m.received_at, m.polled_at)             AS "at",
-      m.message_id                                     AS "messageId"
+      m.message_id                                     AS "messageId",
+      'imap'                                           AS "envelopeSource",
+      m.payload - 'textSnippet'                        AS "envelopePayload",
+      m.account_email                                  AS "leadEmail"
     FROM imap_messages_raw m
     WHERE m.instantly_campaign_id = ${instantlyCampaignId}
       AND m.kind IN ('reply', 'auto_reply', 'staff_reply')

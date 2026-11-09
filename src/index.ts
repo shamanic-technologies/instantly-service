@@ -47,6 +47,7 @@ import scriptDecisionsRoutes from "./routes/script-decisions";
 import infraRoutes from "./routes/infra";
 import opsRoutes from "./routes/ops";
 import outreachFactsRoutes from "./routes/outreach-facts";
+import mailboxMessagesRoutes from "./routes/mailbox-messages";
 import unsubscribeRoutes from "./routes/unsubscribe";
 import selfSendRoutes from "./routes/self-send";
 import clickRoutes from "./routes/click";
@@ -101,6 +102,7 @@ app.use("/internal/accounts", serviceAuth, accountsRoutes);    // list all accou
 app.use("/internal/transfer-brand", serviceAuth, transferBrandRoutes);
 app.use("/internal/bounced-emails", serviceAuth, bouncedEmailsRoutes); // fleet-wide bounce lookup (human-service serve gate)
 app.use("/internal/outreach-facts", serviceAuth, outreachFactsRoutes); // fleet fact feed lead-service copies by cursor
+app.use("/internal/mailbox-messages", serviceAuth, mailboxMessagesRoutes); // EVERY-PERSON-ON-THE-THREAD-1109: our mailboxes as a crm mail source
 app.use("/internal/seed-placement", serviceAuth, seedPlacementRoutes); // Microsoft seed receivers (OAuth) + daily placement series (MS-SEED-PLACEMENT-1018)
 app.use("/internal/sender-health", serviceAuth, senderHealthRoutes); // SENDER-HEALTH-1019: mailboxes out of prospect mail + daily series
 app.use("/internal/reply-qualifications", serviceAuth, replyQualificationsRoutes);
@@ -210,6 +212,12 @@ async function start() {
       .then(({ startSendingForecastWarmer }) => startSendingForecastWarmer())
       .catch((err: unknown) => {
         console.error(`[instantly-service] failed to start sending-forecast warmer: ${errorMessage(err)}`);
+      });
+
+    import("./lib/mailbox-messages-worker")
+      .then(({ startMailboxMessagesWorker }) => startMailboxMessagesWorker())
+      .catch((err: unknown) => {
+        console.error(`[instantly-service] failed to start mailbox-messages worker: ${errorMessage(err)}`);
       });
 
     import("./lib/messages-sync-worker")

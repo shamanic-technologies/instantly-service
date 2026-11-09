@@ -34,10 +34,10 @@ const REPLY = read("reply-to-lead.ts");
 const CLIENT = read("brand-client.ts");
 
 describe("the one-to-one reply copies the rep", () => {
-  it("asks the shared resolver on BOTH transports and on the answer from our person's own address", () => {
+  it("asks the shared resolver on BOTH transports, on the answer from our person's own address and into a caller-chosen thread", () => {
     expect(REPLY).toContain('import { salesRepCopyList } from "./sales-rep-copy"');
     const asks = REPLY.match(/salesRepCopyList\(campaign\.brandId, input\.orgId\)/g) ?? [];
-    expect(asks).toHaveLength(3);
+    expect(asks).toHaveLength(4);
   });
 
   it("puts the rep on the same VISIBLE cc the agency inbox already rides, on both transports", () => {
@@ -45,7 +45,8 @@ describe("the one-to-one reply copies the rep", () => {
     // prepare sites; only a hand-over overrides it (lib/escalate-reply).
     expect(REPLY).toContain("cc: replyCcList(agencyInbox(), salesRepCopy)");
     const sites = REPLY.match(/\.\.\.replyCopy\(input, salesRepCopy\)/g) ?? [];
-    expect(sites).toHaveLength(2);
+    // Instantly, self-send, and the caller-chosen thread (EVERY-PERSON-ON-THE-THREAD-1109).
+    expect(sites).toHaveLength(3);
     // The bare agency-only cc must be gone from both prepare sites.
     expect(REPLY).not.toContain("cc: agencyInbox(),");
   });

@@ -15,7 +15,10 @@ export class ReplyToLeadError extends Error {
       | "attachment_unavailable"
       | "attachments_unsupported_on_transport"
       | "stated_not_to_brand"
-      | "stated_not_to_brand_unreadable",
+      | "stated_not_to_brand_unreadable"
+      | "thread_message_not_found"
+      | "recipients_unsupported_on_transport"
+      | "recipient_opted_out",
     public readonly status: number,
     message: string,
   ) {
