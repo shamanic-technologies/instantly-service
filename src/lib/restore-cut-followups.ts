@@ -102,44 +102,51 @@ export async function loadCutFollowupCandidates(
           WHERE x.instantly_campaign_id = c.instantly_campaign_id AND x.status = 'cancelled'
         )
     ),
-    contacted AS (
-      SELECT s.id, MAX(e.step) AS last_sent_step
-      FROM seqs s
-      JOIN instantly_events e
-        ON e.campaign_id = s.instantly_campaign_id
-       AND e.event_type = 'email_sent'
-       AND e.inferred = false
-       AND e.withdrawn_at IS NULL
-      GROUP BY s.id
-    ),
+    -- DASH-SPEED-1110: each sequence's last sent step and cut steps are read
+    -- PER SEQUENCE (LATERAL, index lookups on its own id), never as grouped
+    -- CTEs joined back to the sequences: the planner estimated the grouped cut at
+    -- ONE row and nested-looped it against every sequence, re-running the
+    -- per-row verification lookup for each pair (1432 s in prod 2026-11-09,
+    -- every 6 h on the awaiting-verdict worker). Same rule, same rows.
     cut AS (
-      SELECT s.id, jsonb_agg(DISTINCT sc.step ORDER BY sc.step) AS steps
+      SELECT s.*, steps.steps
       FROM seqs s
-      JOIN contacted k ON k.id = s.id
-      JOIN sequence_costs sc ON sc.instantly_campaign_id = s.instantly_campaign_id
-      WHERE sc.status = 'cancelled'
-        AND sc.step > k.last_sent_step
-        AND (sc.updated_at >= ${CUT_SINCE}::timestamptz
-             OR s.instantly_campaign_id IN (SELECT id FROM retracted))
-        AND EXISTS (
-          SELECT 1 FROM sequence_steps st
-          WHERE st.instantly_campaign_id = s.instantly_campaign_id
-            AND st.step = sc.step AND st.body_html <> ''
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM sequence_costs live
-          WHERE live.instantly_campaign_id = s.instantly_campaign_id
-            AND live.step = sc.step
-            AND live.status IN ('provisioned', 'actual')
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM instantly_events se
-          WHERE se.campaign_id = s.instantly_campaign_id
-            AND se.event_type = 'email_sent'
-            AND se.step = sc.step
-            AND se.inferred = false
-        )
-      GROUP BY s.id
+      CROSS JOIN LATERAL (
+        SELECT MAX(e.step) AS last_sent_step
+        FROM instantly_events e
+        WHERE e.campaign_id = s.instantly_campaign_id
+          AND e.event_type = 'email_sent'
+          AND e.inferred = false
+          AND e.withdrawn_at IS NULL
+      ) k
+      CROSS JOIN LATERAL (
+        SELECT jsonb_agg(DISTINCT sc.step ORDER BY sc.step) AS steps
+        FROM sequence_costs sc
+        WHERE sc.instantly_campaign_id = s.instantly_campaign_id
+          AND sc.status = 'cancelled'
+          AND sc.step > k.last_sent_step
+          AND (sc.updated_at >= ${CUT_SINCE}::timestamptz
+               OR s.instantly_campaign_id IN (SELECT id FROM retracted))
+          AND EXISTS (
+            SELECT 1 FROM sequence_steps st
+            WHERE st.instantly_campaign_id = s.instantly_campaign_id
+              AND st.step = sc.step AND st.body_html <> ''
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM sequence_costs live
+            WHERE live.instantly_campaign_id = s.instantly_campaign_id
+              AND live.step = sc.step
+              AND live.status IN ('provisioned', 'actual')
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM instantly_events se
+            WHERE se.campaign_id = s.instantly_campaign_id
+              AND se.event_type = 'email_sent'
+              AND se.step = sc.step
+              AND se.inferred = false
+          )
+      ) steps
+      WHERE steps.steps IS NOT NULL
     )
     SELECT s.id                    AS "rowId",
            s.instantly_campaign_id AS "instantlyCampaignId",
@@ -151,9 +158,8 @@ export async function loadCutFollowupCandidates(
            s.lead_email            AS "leadEmail",
            s.account_email         AS "accountEmail",
            (s.status = 'paused')   AS "paused",
-           cut.steps               AS "steps"
-    FROM seqs s
-    JOIN cut ON cut.id = s.id
+           s.steps                 AS "steps"
+    FROM cut s
     WHERE NOT EXISTS (
         SELECT 1 FROM instantly_events x
         WHERE x.campaign_id = s.instantly_campaign_id
