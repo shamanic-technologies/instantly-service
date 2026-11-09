@@ -150,3 +150,26 @@ describe("queue and inbound indexes (migration 0096, BOX-DB-LOAD-1027 round 2)",
     expect(read("src/lib/account-sending-stats.ts")).toContain("WHERE p.status = 'provisioned'");
   });
 });
+
+describe("restore of cut follow-ups reads per sequence (migration 0109, DASH-SPEED-1110)", () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, "..", "..", rel), "utf-8");
+
+  it("indexes the exact cancelled-hold predicate the candidate query probes", () => {
+    const migration = read("drizzle/0109_sequence_costs_cancelled_idx.sql");
+    expect(migration).toContain(
+      "CREATE INDEX IF NOT EXISTS sequence_costs_cancelled_campaign_idx\n  ON sequence_costs (instantly_campaign_id, step)\n  WHERE status = 'cancelled';",
+    );
+    const query = read("src/lib/restore-cut-followups.ts");
+    expect(query).toContain("x.instantly_campaign_id = c.instantly_campaign_id AND x.status = 'cancelled'");
+  });
+
+  it("reads each sequence's last sent step and cut steps LATERAL, never as grouped CTEs joined back", () => {
+    // The grouped `contacted` / `cut` CTEs were estimated at ONE row and nested-looped against
+    // every sequence, re-running the verification lookup per pair: 1432 s on prod (2026-11-09).
+    const query = read("src/lib/restore-cut-followups.ts");
+    expect(query).toContain("CROSS JOIN LATERAL (\n        SELECT MAX(e.step) AS last_sent_step");
+    expect(query).toContain("FROM cut s\n");
+    expect(query).not.toContain("contacted AS (");
+    expect(query).not.toContain("JOIN cut ON cut.id = s.id");
+  });
+});
