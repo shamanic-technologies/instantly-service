@@ -47,6 +47,13 @@ import { sql, type SQL } from "drizzle-orm";
 import { db } from "../db";
 import { escalationColumns, escalationJoin, toReplyVerdictView, type ReplyVerdictView } from "./reply-verdicts";
 import { readReplyJudgments } from "./reply-judgments";
+import {
+  dispatchEnvelope,
+  imapEnvelope,
+  instantlyEnvelope,
+  type MessageEnvelope,
+  type MessageParticipant,
+} from "./message-participants";
 
 /** Any 64-bit constant unique to this lock. */
 const FEED_LOCK_KEY = 726_400_117;
@@ -490,6 +497,10 @@ export interface OutreachFact {
   replySent: { via: ReplySentVia; sentBy: "human" | "automation" | null; accountEmail: string | null; subject: string | null; attachments?: SentAttachment[] } | null;
   withdrawal: { withdrawnSeq: string; withdrawnType: string; reason: "source_removed" | "statement_withdrawn" } | null;
   sequence: SequenceContext;
+  /** On reply / reply_sent / email_sent only: every address on the message with its role. */
+  participants?: MessageParticipant[];
+  /** On reply / reply_sent / email_sent only: RFC root Message-Id of its thread (null when unknown). */
+  threadKey?: string | null;
 }
 
 // ─── Sequence context (derived at read) ──────────────────────────────────────
@@ -630,7 +641,55 @@ export function toOutreachFact(row: Record<string, unknown>): OutreachFact {
           }
         : null,
     sequence,
+    ...factEnvelope(type, row, p),
   };
+}
+
+/**
+ * Every address on the message a `reply` / `reply_sent` / `email_sent` fact is,
+ * with its role, and the thread it belongs to (EVERY-PERSON-ON-THE-THREAD-1109):
+ * a colleague answering in the lead's thread is named as himself, the fact stays
+ * on the lead. Derived at read from the stored message; absent on other types.
+ */
+export function factEnvelope(
+  type: OutreachFactType,
+  row: Record<string, unknown>,
+  p: Record<string, unknown>,
+): { participants?: MessageParticipant[]; threadKey?: string | null } {
+  if (type !== "reply" && type !== "reply_sent" && type !== "email_sent") return {};
+  const leadEmail = String(row.lead_email ?? "");
+  let env: MessageEnvelope | null = null;
+  if (row.env_imap_account != null) {
+    env = imapEnvelope({
+      accountEmail: String(row.env_imap_account),
+      fromAddress: (row.env_imap_from as string | null) ?? null,
+      messageId: (row.env_imap_message_id as string | null) ?? null,
+      payload: row.env_imap_payload,
+    });
+  } else if (row.env_iem_payload != null) {
+    env = instantlyEnvelope(row.env_iem_payload);
+  } else if (row.env_smtp_account != null) {
+    env = dispatchEnvelope({
+      accountEmail: String(row.env_smtp_account),
+      leadEmail: String(row.env_smtp_lead ?? leadEmail),
+      messageId: (row.env_smtp_message_id as string | null) ?? null,
+      payload: row.env_smtp_payload,
+    });
+  } else if (type === "email_sent" && typeof p.accountEmail === "string") {
+    // A sequence step goes to the lead alone, from the mailbox that sent it.
+    env = dispatchEnvelope({
+      accountEmail: p.accountEmail,
+      leadEmail,
+      messageId: (row.env_step_message_id as string | null) ?? null,
+      payload: row.env_step_payload ?? {},
+    });
+  } else if (type === "reply" && typeof (p as { fromEmail?: unknown }).fromEmail === "string") {
+    // A stated reply (manual qualification, webhook event) keeps no message: its sender only.
+    env = imapEnvelope({ accountEmail: "", fromAddress: String(p.fromEmail), messageId: null, payload: {} });
+    return { participants: env.participants.filter((x) => x.role === "from"), threadKey: null };
+  }
+  if (!env) return { participants: [], threadKey: null };
+  return { participants: env.participants, threadKey: env.threadKey };
 }
 
 /**
@@ -692,10 +751,62 @@ export async function readOutreachFacts(args: {
              head.feed_head,
              c.timezone AS seq_timezone,
              latest_cfg.tz AS seq_schedule_timezone,
-             first_cfg.ot AS seq_open_tracking
+             first_cfg.ot AS seq_open_tracking,
+             env_imap.account_email AS env_imap_account, env_imap.from_address AS env_imap_from,
+             env_imap.message_id AS env_imap_message_id, env_imap.payload AS env_imap_payload,
+             env_iem.payload AS env_iem_payload,
+             env_smtp.account_email AS env_smtp_account, env_smtp.lead_email AS env_smtp_lead,
+             env_smtp.message_id AS env_smtp_message_id, env_smtp.payload AS env_smtp_payload,
+             env_step.message_id AS env_step_message_id, env_step.payload AS env_step_payload
       -- FROM head: an EMPTY page still returns one row carrying the head.
       FROM head
       LEFT JOIN page ON true
+      -- EVERY-PERSON-ON-THE-THREAD-1109: the stored message each reply /
+      -- reply_sent / email_sent fact is, for its participants and thread key
+      -- (derived at read, so every past fact carries them too). One indexed
+      -- lookup per fact.
+      LEFT JOIN replies rp
+        ON page.type = 'reply' AND rp.id = substring(page.subject_key FROM 7)
+      LEFT JOIN LATERAL (
+        SELECT i.account_email, i.from_address, i.message_id, i.payload - 'textSnippet' AS payload
+        FROM imap_messages_raw i
+        WHERE i.id = CASE
+          WHEN page.type = 'reply' AND rp.source_table = 'imap_messages_raw' THEN rp.source_row_id
+          WHEN page.type = 'reply_sent' AND page.subject_key LIKE 'rsent:imap:%' THEN substring(page.subject_key FROM 12)
+        END
+      ) env_imap ON true
+      LEFT JOIN LATERAL (
+        SELECT e.payload - 'body' AS payload
+        FROM instantly_emails_raw e
+        WHERE e.id = CASE
+            WHEN page.type = 'reply' AND rp.source_table = 'instantly_emails_raw' THEN rp.source_row_id
+          END
+        UNION ALL
+        SELECT e.payload - 'body'
+        FROM instantly_emails_raw e
+        WHERE e.instantly_email_id = CASE
+            WHEN page.type = 'reply_sent' AND page.subject_key LIKE 'rsent:iem:%' THEN substring(page.subject_key FROM 11)
+          END
+        LIMIT 1
+      ) env_iem ON true
+      LEFT JOIN LATERAL (
+        SELECT d.account_email, d.lead_email, d.message_id, d.payload - 'bodyHtml' AS payload
+        FROM smtp_dispatch_raw d
+        WHERE d.id = CASE
+          WHEN page.type = 'reply_sent' AND page.subject_key NOT LIKE 'rsent:imap:%'
+               AND page.subject_key NOT LIKE 'rsent:iem:%' THEN substring(page.subject_key FROM 7)
+        END
+      ) env_smtp ON true
+      LEFT JOIN LATERAL (
+        SELECT d.message_id, d.payload - 'bodyHtml' AS payload
+        FROM smtp_dispatch_raw d
+        WHERE page.type = 'email_sent'
+          AND d.instantly_campaign_id = page.instantly_campaign_id
+          AND d.outcome = 'sent'
+          AND d.step = CASE WHEN page.payload->>'step' ~ '^[0-9]+$' THEN (page.payload->>'step')::int END
+        ORDER BY d.dispatched_at
+        LIMIT 1
+      ) env_step ON true
       LEFT JOIN instantly_campaigns c ON c.instantly_campaign_id = page.instantly_campaign_id
       LEFT JOIN LATERAL (
         SELECT r.payload->'campaign_schedule'->'schedules'->0->>'timezone' AS tz

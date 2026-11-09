@@ -37,18 +37,29 @@ router.post("/", async (req: Request, res: Response) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.message });
   }
-  const { email, body_html, sent_by, attachments } = parsed.data;
+  const { email, body_html, sent_by, attachments, to, cc, bcc, in_reply_to, new_thread_subject } =
+    parsed.data;
   // Named campaign wins; else the prospect's one thread (lib/resolve-reply-thread).
+  // A chosen message names its own thread: nothing to resolve from the address.
   let campaign_id = parsed.data.campaign_id;
+  const recipients =
+    to !== undefined || cc !== undefined || bcc !== undefined
+      ? { ...(to !== undefined ? { to } : {}), ...(cc !== undefined ? { cc } : {}), ...(bcc !== undefined ? { bcc } : {}) }
+      : undefined;
 
   try {
-    campaign_id = await resolveReplyCampaignId(orgId, email, campaign_id);
+    if (in_reply_to === undefined) {
+      campaign_id = await resolveReplyCampaignId(orgId, email, campaign_id);
+    }
     const outcome = await replyToLead({
       orgId,
       userId,
-      campaignId: campaign_id,
+      campaignId: campaign_id ?? "",
       leadEmail: email,
       bodyHtml: body_html,
+      ...(recipients ? { recipients } : {}),
+      ...(in_reply_to !== undefined ? { threadMessageId: in_reply_to } : {}),
+      ...(new_thread_subject !== undefined ? { newThreadSubject: new_thread_subject } : {}),
       // Absent on the wire means the automated responder: it is the only caller
       // today, so the takeover gate is live without waiting on anyone to
       // declare. See `DEFAULT_REPLY_SENDER`.

@@ -45,6 +45,10 @@ export interface ConversationIndexEntry {
   chars: number;
   campaignId: string;
   hasAttachments: boolean;
+  /** RFC Message-ID, for `POST /orgs/replies` `in_reply_to`. Absent when unknown. */
+  messageId?: string;
+  /** Every address on the message with its role. Absent when unknown. */
+  participants?: ConversationMessage["participants"];
 }
 
 export type ConversationIndex = Omit<LeadConversation, "messages"> & {
@@ -145,6 +149,8 @@ export function toConversationIndex(c: LeadConversation): ConversationIndex {
       chars: m.text.length,
       campaignId: m.campaignId,
       hasAttachments: (m.attachments?.length ?? 0) > 0,
+      ...(m.messageId ? { messageId: m.messageId } : {}),
+      ...(m.participants ? { participants: m.participants } : {}),
     })),
   };
 }
