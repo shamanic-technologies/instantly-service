@@ -681,6 +681,11 @@ export const sequenceCosts = pgTable(
     index("sequence_costs_provisioned_campaign_idx")
       .on(table.instantlyCampaignId, table.step)
       .where(sql`status = 'provisioned'`),
+    // The restore of cut follow-ups' cancelled-hold probe (migration 0109,
+    // hand-written, pre-built CONCURRENTLY on prod, DASH-SPEED-1110).
+    index("sequence_costs_cancelled_campaign_idx")
+      .on(table.instantlyCampaignId, table.step)
+      .where(sql`status = 'cancelled'`),
     index("sequence_costs_provisioned_legacy_idx")
       .on(table.campaignId, table.leadEmail, table.step)
       .where(sql`status = 'provisioned' AND instantly_campaign_id IS NULL`),
