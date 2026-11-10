@@ -162,13 +162,54 @@ export async function brandTeamMembers(orgId: string): Promise<OrgMember[]> {
   return listOrgMembers(orgId, { allMembers: true });
 }
 
+/** Google's consumer mail domains: dots and a `+tag` in the local part do not change the inbox. */
+const GMAIL_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
+
 /**
- * Email every member of the brand's org (`brandTeamMembers`). Returns the
- * addresses reached; throws when none was (no member with an address, or every
+ * Pure: the inbox an address lands in. Gmail ignores dots and anything after
+ * `+` in the local part, and googlemail.com is gmail.com, so
+ * `kevin.lourd+audit@gmail.com` and `kevinlourd@googlemail.com` are one inbox.
+ * Every other domain is only lowercased: plus-addressing differs by provider,
+ * so `a+b@corp.com` and `a@corp.com` stay two inboxes.
+ */
+export function inboxKey(email: string): string {
+  const address = email.trim().toLowerCase();
+  const at = address.lastIndexOf("@");
+  if (at <= 0) return address;
+  const local = address.slice(0, at);
+  const domain = address.slice(at + 1);
+  if (!GMAIL_DOMAINS.has(domain)) return address;
+  return `${local.split("+")[0].replace(/\./g, "")}@gmail.com`;
+}
+
+/**
+ * Pure: one member per inbox. One person often holds several accounts on one
+ * Gmail inbox (+tag variants, dotted spellings); that inbox gets ONE copy. The
+ * copy kept is the address without a `+tag` (the person's own account, so the
+ * greeting names them), else the first listed. Order follows the first time
+ * each inbox appears.
+ */
+export function oneMemberPerInbox(members: OrgMember[]): OrgMember[] {
+  const kept = new Map<string, OrgMember>();
+  for (const member of members) {
+    const key = inboxKey(member.email);
+    const held = kept.get(key);
+    if (!held) {
+      kept.set(key, member);
+    } else if (held.email.split("@")[0].includes("+") && !member.email.split("@")[0].includes("+")) {
+      kept.set(key, member);
+    }
+  }
+  return [...kept.values()];
+}
+
+/**
+ * Email every member of the brand's org (`brandTeamMembers`), one copy per
+ * inbox (`oneMemberPerInbox`). Returns the addresses reached; throws when none was (no member with an address, or every
  * send failed).
  */
 export async function emailBrandTeam(input: EmailBrandTeamInput): Promise<string[]> {
-  const members = await brandTeamMembers(input.orgId);
+  const members = oneMemberPerInbox(await brandTeamMembers(input.orgId));
   if (members.length === 0) {
     throw new Error(`org ${input.orgId} has no member with an email address: nobody of the brand's team can be told`);
   }
