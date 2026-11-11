@@ -28,14 +28,9 @@ import { loadSeedCredentialResolver } from "./credentials";
 import { MAX_SEED_RECEIVERS, selectSeedReceivers } from "./seeds";
 import { fetchLastSeedTestAt } from "./run";
 import { listMicrosoftSeedMailboxes } from "./microsoft-oauth";
-import { SEED_TEST_INTERVAL_DAYS } from "./due";
+import { SEED_TEST_OVERDUE_AGE_DAYS } from "./due";
 
-/**
- * Past this age the weekly test MISSED: a test lands every Sunday (interval 6
- * days, then the next non-sending day), so a healthy gap is at most 7 days plus
- * the day the sync takes to read it.
- */
-export const SEED_TEST_OVERDUE_AGE_DAYS = SEED_TEST_INTERVAL_DAYS + 2;
+export { SEED_TEST_OVERDUE_AGE_DAYS };
 
 /** A Microsoft receiver whose token has not refreshed for this long is broken (refreshed daily after each sync). */
 export const MICROSOFT_RECEIVER_STALE_DAYS = 2;
@@ -70,7 +65,7 @@ export function judgeSeedPlacementHealth(input: SeedPlacementHealthInput): SeedP
     ? (input.asOf.getTime() - input.lastGateTestAt.getTime()) / MS_PER_DAY
     : null;
   const lastWords = input.lastGateTestAt
-    ? `last test graded at Google on ${input.lastGateTestAt.toISOString().slice(0, 10)} (${ageDays!.toFixed(1)} days ago)`
+    ? `every mailbox last tested at Google by ${input.lastGateTestAt.toISOString().slice(0, 10)} (${ageDays!.toFixed(1)} days ago)`
     : "no test has ever graded a mailbox at Google";
   const problems: string[] = [];
 
@@ -117,8 +112,8 @@ async function countGoogleReceivers(): Promise<number> {
 export async function readSeedPlacementHealth(asOf: Date = new Date()): Promise<SeedPlacementHealth & { googleReceivers: number }> {
   // The receivers first: reading them refreshes the vendor refusal state.
   const googleReceivers = await countGoogleReceivers();
-  // The same "last test" the cadence decides on: one that graded a gate provider.
-  const [lastGateTestAt, microsoftReceivers] = await Promise.all([fetchLastSeedTestAt(), listMicrosoftSeedMailboxes()]);
+  // The same "last test" the cadence decides on: the fleet's least recently measured mailbox.
+  const [lastGateTestAt, microsoftReceivers] = await Promise.all([fetchLastSeedTestAt(asOf), listMicrosoftSeedMailboxes()]);
   return {
     ...judgeSeedPlacementHealth({ lastGateTestAt, googleReceivers, vendorRefusals: currentVendorRefusals(), microsoftReceivers, asOf }),
     googleReceivers,
