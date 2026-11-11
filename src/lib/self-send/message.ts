@@ -21,6 +21,7 @@
 
 import type { Account } from "../instantly-client";
 import { buildEmailBodyWithSignature } from "../send-lead";
+import { fillSenderTokensInSubject } from "../sender-placeholders";
 import { optOutHeaders, optOutTarget, type OptOutVariant } from "./opt-out-variant";
 import { buildUnsubscribeUrl, type UnsubscribeIdentity } from "./unsubscribe";
 
@@ -127,7 +128,7 @@ export function buildMessage(input: BuildMessageInput): BuiltMessage {
   return {
     from: buildFromHeader(input.account),
     to: input.leadEmail,
-    subject: subjectForStep(input.subject, input.step),
+    subject: subjectForStep(fillSenderTokensInSubject(input.subject, input.account), input.step),
     html,
     headers,
     ...(input.previousMessageId ? { inReplyTo: input.previousMessageId } : {}),

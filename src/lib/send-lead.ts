@@ -42,6 +42,7 @@ import { loadFleetBounceHistoryCached } from "./bounce-budget-history";
 import { dateKeyUTC, MS_PER_DAY } from "./sending-forecast";
 import { isSendingDay } from "./sending-calendar";
 import { fillSenderPlaceholders } from "./brand-email-signature";
+import { fillSenderTokensInBody, fillSenderTokensInSubject } from "./sender-placeholders";
 import { sequenceFootprintDays } from "./sending-window";
 import { tagColdEmailLinks } from "./cold-email-utm";
 
@@ -655,7 +656,9 @@ export function buildEmailBodyWithSignature(
   pinnedSignatureHtml?: string | null,
 ): string {
   const signature = resolveSignatureBlock(account, pinnedSignatureHtml);
-  const stripped = stripAccountSignature(body);
+  // The writer's `{first_name}`… name the mailbox that sends THIS email
+  // (SENDER-NAME-BODY-1111); a body without them is untouched.
+  const stripped = fillSenderTokensInBody(stripAccountSignature(body), account);
 
   const linkedBody = tagColdEmailLinks(autolinkifyHtml(stripped));
   const sigBlock = `${SIG_SEPARATOR_HTML}${signature}`;
@@ -684,7 +687,9 @@ export function buildReplyBodyWithSignature(
   pinnedSignatureHtml?: string | null,
 ): string {
   const signature = resolveSignatureBlock(account, pinnedSignatureHtml);
-  const stripped = stripAccountSignature(body);
+  // The writer's `{first_name}`… name the mailbox that sends THIS email
+  // (SENDER-NAME-BODY-1111); a body without them is untouched.
+  const stripped = fillSenderTokensInBody(stripAccountSignature(body), account);
   const linkedBody = tagColdEmailLinks(autolinkifyHtml(stripped));
   return `${linkedBody}${SIG_SEPARATOR_HTML}${signature}`;
 }
@@ -756,7 +761,7 @@ export function buildSequenceSteps(
   return [...sequence]
     .sort((a, b) => a.step - b.step)
     .map((s) => ({
-      subject,
+      subject: fillSenderTokensInSubject(subject, account),
       bodyHtml: buildEmailBodyWithSignature(s.bodyHtml, account, pinnedSignatureHtml),
       daysSinceLastStep: s.daysSinceLastStep,
     }));
