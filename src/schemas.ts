@@ -470,13 +470,25 @@ registry.registerPath({
 
 // ─── Send ───────────────────────────────────────────────────────────────────
 
+/**
+ * Sender placeholders in a body / subject (SENDER-NAME-BODY-1111,
+ * lib/sender-placeholders). Script writers (workflow-service) read this.
+ */
+const SENDER_PLACEHOLDERS_DOC =
+  "SENDER PLACEHOLDERS: the mailbox that sends an email is chosen AFTER it is written (mailboxes rotate, each with its own persona name in the From line). " +
+  "Write `{first_name}`, `{last_name}`, `{full_name}` or `{sender_email}` (single braces) to name the sender, e.g. `<p>My name is {first_name} and I help clinics fill their calendar.</p>`: " +
+  "each is filled per email from the sending mailbox, so the body always matches the From name and the signature (follow-ups and replies on the thread keep the same mailbox, so the same name). " +
+  "Never type a persona name yourself. A value the mailbox lacks renders empty, never blocks the email; no placeholder is ever left in a sent email. " +
+  "Only these four exact tokens are filled; every other text, `{{...}}` included, is sent as written. A body without them is sent exactly as before.";
+
 export const SequenceStepSchema = z.object({
   step: z.number().int().min(1).describe("1-based ordinal step number"),
   bodyHtml: z
     .string()
     .refine(hasVisibleText, EMPTY_EMAIL_BODY_MESSAGE)
     .describe(
-      "HTML body for this step. Refused 400 `empty_email_body` when it holds no readable text (no letter or digit once HTML tags and entities are removed, e.g. `<p></p>` or `,`): an empty email is never sent, and the send provisions nothing.",
+      "HTML body for this step. Refused 400 `empty_email_body` when it holds no readable text (no letter or digit once HTML tags and entities are removed, e.g. `<p></p>` or `,`): an empty email is never sent, and the send provisions nothing. " +
+        SENDER_PLACEHOLDERS_DOC,
     ),
   daysSinceLastStep: z
     .number()
@@ -501,7 +513,11 @@ export const SendRequestSchema = z
       .describe(
         "Recipient's IANA timezone (e.g. America/New_York). Sets the Instantly campaign sending-schedule timezone so business-hours sends land in the lead's local time. Absent/invalid → America/Chicago default.",
       ),
-    subject: z.string().describe("Shared subject for all steps in the sequence"),
+    subject: z
+      .string()
+      .describe(
+        "Shared subject for all steps in the sequence. Takes the same sender placeholders as `sequence[].bodyHtml` (`{first_name}`, `{last_name}`, `{full_name}`, `{sender_email}`), filled from the mailbox that sends each email.",
+      ),
     bcc: z
       .array(z.string())
       .optional()
@@ -1655,7 +1671,8 @@ export const ReplyToLeadBodySchema = z
       .min(1)
       .refine(hasVisibleText, EMPTY_EMAIL_BODY_MESSAGE)
       .describe(
-        "The answer, HTML. Signed by this service with the sending account's persona — do NOT include a signature. Refused 400 `empty_email_body` when it holds no readable text (no letter or digit once HTML tags and entities are removed): an empty email is never sent.",
+        "The answer, HTML. Signed by this service with the sending account's persona — do NOT include a signature. Refused 400 `empty_email_body` when it holds no readable text (no letter or digit once HTML tags and entities are removed): an empty email is never sent. " +
+          SENDER_PLACEHOLDERS_DOC,
       ),
     sent_by: z
       .enum(["human", "automation"])
