@@ -23,9 +23,21 @@ vi.mock("../../src/lib/instantly-client", () => ({
   updateCampaignStatus: (...a: unknown[]) => mockUpdateCampaignStatus(...a),
 }));
 
-const { readStatedNotToBrand, readStatedNotToBrandMany, clearStatedSetsCache, CrmStatedReadError, STATED_SETS_TTL_MS, STATED_SETS_REFRESH_AFTER_MS } =
-  await import("../../src/lib/crm-client");
-const { stopQueuedSequencesOfStatedPeople, findStatedNotToBrand, statedNotToBrandRefusal } = await import(
+const {
+  readStatedNotToBrand,
+  readStatedNotToBrandMany,
+  clearStatedSetsCache,
+  CrmStatedReadError,
+  STATED_SETS_TTL_MS,
+  STATED_SETS_REFRESH_AFTER_MS,
+} = await import("../../src/lib/crm-client");
+const {
+  stopQueuedSequencesOfStatedPeople,
+  findStatedNotToBrand,
+  findStatedNotToBrands,
+  statedNotToBrandRefusal,
+  STATED_SETS_STATUS_MAX_STALE_MS,
+} = await import(
   "../../src/lib/stated-not-to-brand"
 );
 
@@ -178,6 +190,36 @@ describe("crm-client readStatedNotToBrandMany (status read + sweep)", () => {
     await readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] });
     serveCrm([], 503);
     vi.setSystemTime(t0 + STATED_SETS_TTL_MS);
+    await expect(readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] })).rejects.toBeInstanceOf(CrmStatedReadError);
+  });
+
+  it("MON-DELIVERY-STATUS-500-1111: the STATUS read serves the last answer while crm-service times out, up to 1 h, then throws", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = new Date("2026-11-11T15:00:00Z").getTime();
+    vi.setSystemTime(t0);
+    serveCrm([[BRAND, "a@x.com"]]);
+    expect((await findStatedNotToBrands(ORG, ["a@x.com", "b@x.com"], [BRAND])).has("a@x.com")).toBe(true);
+    const timeout = vi.fn().mockRejectedValue(Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" }));
+    vi.stubGlobal("fetch", timeout);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.setSystemTime(t0 + STATED_SETS_TTL_MS);
+    const stale = await findStatedNotToBrands(ORG, ["a@x.com", "b@x.com"], [BRAND]);
+    expect([...stale.keys()]).toEqual(["a@x.com"]);
+    expect(timeout).toHaveBeenCalled();
+    expect(warn.mock.calls.some(([m]) => String(m).includes("serving its last answer"))).toBe(true);
+    vi.setSystemTime(t0 + STATED_SETS_STATUS_MAX_STALE_MS);
+    await expect(findStatedNotToBrands(ORG, ["a@x.com"], [BRAND])).rejects.toBeInstanceOf(CrmStatedReadError);
+    warn.mockRestore();
+  });
+
+  it("the sweep path (no maxStaleOnErrorMs) never serves a stale answer: it throws and holds", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = new Date("2026-11-11T15:00:00Z").getTime();
+    vi.setSystemTime(t0);
+    serveCrm([[BRAND, "a@x.com"]]);
+    await readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] });
+    serveCrm([], 503);
+    vi.setSystemTime(t0 + STATED_SETS_TTL_MS + 1);
     await expect(readStatedNotToBrandMany({ orgId: ORG, brandIds: [BRAND], emails: ["a@x.com"] })).rejects.toBeInstanceOf(CrmStatedReadError);
   });
 
