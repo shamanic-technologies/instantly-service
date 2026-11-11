@@ -35,7 +35,7 @@ import {
 } from "./seeds";
 import type { Account } from "../instantly-client";
 import { seedTestOffset } from "../self-send/opt-out-variant";
-import { decideSeedTestDue, type SeedDueReason } from "./due";
+import { decideSeedTestDue, fleetLastTestedAt, type SeedDueReason } from "./due";
 import { loadAuthorizedMicrosoftReceiverEsps } from "./microsoft-oauth";
 
 const CALLER: CallerInfo = {
@@ -55,29 +55,40 @@ export function isSeedPlacementEnabled(): boolean {
 }
 
 /**
- * The newest seed test we have run, or null if we never have.
+ * When the fleet was last measured, or null if never (`fleetLastTestedAt`).
  *
  * Reads the DISPATCH side rather than silver: a test that was sent but whose
  * results have not been read yet still counts as "measured recently", and
  * keying on silver would re-send every day until the sync caught up.
  *
- * Only a test that SENT a seed the lifecycle gate grades counts (any provider
- * but Microsoft, which is a routing signal only; GANDI-OPEN-1030). A test whose
- * Google receivers were all unreadable (their vendor refusing us) measures
- * nothing the 16-day evidence limit is about; counting it would push the next
- * real test a week out while the fleet's evidence ages.
+ * Only seeds sent to a provider the lifecycle gate grades count (any provider
+ * but Microsoft, which is a routing signal only; GANDI-OPEN-1030): a test whose
+ * Google receivers were all unreadable measures nothing the 16-day evidence
+ * limit is about.
+ *
+ * ⚠️ Per MAILBOX, never the newest seed of any test (MON-PLACEMENT-STOPPED-1111):
+ * a 30-seed hand probe on 2026-11-03 pushed the weekly test of 223 mailboxes
+ * from Sunday 11-08 to never, and nothing turned red.
  */
-export async function fetchLastSeedTestAt(): Promise<Date | null> {
-  const result = await db.execute(sql`
-    SELECT max(dispatched_at) AS "lastAt" FROM seed_placement_dispatches
-    WHERE outcome = 'sent'
-      AND recipient_esp NOT IN (${sql.join(MICROSOFT_ESPS.map((e) => sql`${e}`), sql`, `)})
-  `);
+export async function fetchLastSeedTestAt(asOf: Date = new Date()): Promise<Date | null> {
+  const [result, pool] = await Promise.all([
+    db.execute(sql`
+      SELECT lower(sender_email) AS sender, max(dispatched_at) AS "lastAt" FROM seed_placement_dispatches
+      WHERE outcome = 'sent'
+        AND recipient_esp NOT IN (${sql.join(MICROSOFT_ESPS.map((e) => sql`${e}`), sql`, `)})
+      GROUP BY 1
+    `),
+    fetchTestablePoolEmails(),
+  ]);
   const rows = (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as {
-    lastAt: string | Date | null;
+    sender: string;
+    lastAt: string | Date;
   }[];
-  const raw = rows[0]?.lastAt ?? null;
-  return raw ? new Date(raw) : null;
+  return fleetLastTestedAt(
+    rows.map((r) => ({ sender: r.sender, lastAt: new Date(r.lastAt) })),
+    pool,
+    asOf,
+  );
 }
 
 /**
@@ -134,7 +145,7 @@ export async function runSeedPlacementTest(
   // and most days it declines — which is what makes a skipped cron tick free
   // rather than a missed week. `force` is the manual override.
   if (!options.force) {
-    const decision = decideSeedTestDue(await fetchLastSeedTestAt(), asOf);
+    const decision = decideSeedTestDue(await fetchLastSeedTestAt(asOf), asOf);
     if (!decision.due) {
       console.log(
         `[seed-placement] not due (${decision.reason}, age=${

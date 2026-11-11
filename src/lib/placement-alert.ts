@@ -46,6 +46,7 @@ import { ESP_GOOGLE, ESP_OUTLOOK, ESP_OUTLOOK_CONSUMER } from "./seed-placement/
 import type { RecipientProvider } from "./provider-placement";
 import { mailboxOf } from "./ops/entity-scope";
 import { PRODUCTION_DELIVERY_PCT_BAR } from "./account-lifecycle";
+import { SEED_TEST_OVERDUE_AGE_DAYS } from "./seed-placement/due";
 
 /**
  * ONE bar (owner 2026-11-06, SENDING-INFRA-AUDIT-1106 item 9): the lifecycle's
@@ -347,6 +348,41 @@ export async function runPlacementAlert(opts: { dryRun: boolean; asOf?: Date }):
   return { evaluations, written };
 }
 
+/**
+ * Is each provider still MEASURED? (MON-PLACEMENT-STOPPED-1111)
+ *
+ * The tiles used to show a provider's latest measured day, however old: from
+ * 2026-11-04 no test ran and the hub kept printing 11-03's figure in calm
+ * colours for 8 days. A provider with no measured day for
+ * {@link SEED_TEST_OVERDUE_AGE_DAYS} days is BROKEN (the weekly test missed, or
+ * its test mailbox cannot be read): `overdue`, drawn red. Pure.
+ */
+export interface ProviderFreshness {
+  provider: RecipientProvider;
+  providerLabel: string;
+  /** Newest measured day in the window, null = none. */
+  lastMeasuredDay: string | null;
+  /** Whole days from that day to `asOf`'s day, null = none in the window. */
+  ageDays: number | null;
+  overdue: boolean;
+}
+
+export function providerFreshness(evaluations: readonly PlacementEvaluation[], asOf: Date): ProviderFreshness[] {
+  const today = Date.parse(`${asOf.toISOString().slice(0, 10)}T00:00:00Z`);
+  return (Object.keys(PROVIDER_LABELS) as RecipientProvider[]).map((provider) => {
+    let last: string | null = null;
+    for (const e of evaluations) if (e.provider === provider && e.measured && (!last || e.day > last)) last = e.day;
+    const ageDays = last === null ? null : Math.round((today - Date.parse(`${last}T00:00:00Z`)) / 86_400_000);
+    return {
+      provider,
+      providerLabel: PROVIDER_LABELS[provider],
+      lastMeasuredDay: last,
+      ageDays,
+      overdue: ageDays === null || ageDays >= SEED_TEST_OVERDUE_AGE_DAYS,
+    };
+  });
+}
+
 /** The staff read: the daily evaluation series, the bar and its sources, the episodes. */
 export async function readPlacementAlerts(days: number, asOf: Date = new Date()) {
   const [evaluations, episodes] = await Promise.all([loadEvaluations(days, asOf), loadEpisodes()]);
@@ -359,6 +395,8 @@ export async function readPlacementAlerts(days: number, asOf: Date = new Date())
       sources: PLACEMENT_ALERT_SOURCES,
     },
     days: evaluations,
+    /** Per provider: newest measured day and whether it is too old (red). */
+    freshness: { overdueAfterDays: SEED_TEST_OVERDUE_AGE_DAYS, providers: providerFreshness(evaluations, asOf) },
     episodes,
   };
 }

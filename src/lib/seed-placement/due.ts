@@ -91,6 +91,48 @@ export function decideSeedTestDue(
   return { due: true, reason: "weekend_cadence", ageDays };
 }
 
+/**
+ * When was the FLEET last measured? (pure, MON-PLACEMENT-STOPPED-1111)
+ *
+ * The oldest "newest seed" among the testable mailboxes seeded inside the
+ * evidence window: the cadence asks how old the fleet's evidence is, and that is
+ * the evidence of its least recently measured mailbox, never the newest seed of
+ * any one mailbox. Keyed on the newest seed of ANY test, a hand-run probe of 3
+ * mailboxes on 2026-11-03 (30 seeds) read as « tested 2 days ago » on Sunday
+ * 11-08, the full weekly test declined (`recently_tested`), and no mailbox was
+ * measured for 10 days while the hub stayed calm.
+ *
+ * Only mailboxes still in the testable pool count (one that left cannot be
+ * measured again), and only seeds inside {@link DELIVERY_EVIDENCE_MAX_AGE_DAYS}
+ * (a mailbox measured once long ago and never since, e.g. its credential gone,
+ * would otherwise force a test every day forever). No such seed = the newest
+ * seed of any mailbox (`fallbackAt`), else never tested.
+ */
+export function fleetLastTestedAt(
+  newestSeedBySender: ReadonlyArray<{ sender: string; lastAt: Date }>,
+  pool: ReadonlyArray<string>,
+  asOf: Date,
+): Date | null {
+  const inPool = new Set(pool.map((e) => e.trim().toLowerCase()));
+  const windowStart = asOf.getTime() - DELIVERY_EVIDENCE_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  let oldest: Date | null = null;
+  let newest: Date | null = null;
+  for (const { sender, lastAt } of newestSeedBySender) {
+    if (!newest || lastAt > newest) newest = lastAt;
+    if (!inPool.has(sender.trim().toLowerCase()) || lastAt.getTime() < windowStart) continue;
+    if (!oldest || lastAt < oldest) oldest = lastAt;
+  }
+  return oldest ?? newest;
+}
+
+
+/**
+ * Past this age the weekly test MISSED: a test lands every Sunday (interval 6
+ * days, then the next non-sending day), so a healthy gap is at most 7 days plus
+ * the day the sync takes to read it.
+ */
+export const SEED_TEST_OVERDUE_AGE_DAYS = SEED_TEST_INTERVAL_DAYS + 2;
+
 /** Sanity bound: the urgent trigger must leave room before evidence expires. */
 export const SEED_URGENT_MARGIN_DAYS =
   DELIVERY_EVIDENCE_MAX_AGE_DAYS - SEED_EVIDENCE_URGENT_AGE_DAYS;
