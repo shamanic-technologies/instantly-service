@@ -44,7 +44,8 @@ describe("findSendRefusals — what POST /orgs/send would refuse", () => {
     const out = await findSendRefusals("org-1", ["b1"], ["Thierry@X.com", "ok@x.com"]);
     expect(out.get("Thierry@X.com")).toEqual({ code: "stated_not_to_brand", until: null });
     expect(out.has("ok@x.com")).toBe(false);
-    expect(mockReadStated).toHaveBeenCalledWith({ orgId: "org-1", brandIds: ["b1"], emails: ["Thierry@X.com", "ok@x.com"] });
+    // The status read opts into a 1 h last-answer tolerance while crm-service is slow (MON-DELIVERY-STATUS-500-1111).
+    expect(mockReadStated).toHaveBeenCalledWith({ orgId: "org-1", brandIds: ["b1"], emails: ["Thierry@X.com", "ok@x.com"], maxStaleOnErrorMs: 3_600_000 });
   });
 
   it("stated outlasts an unverified verdict", async () => {
