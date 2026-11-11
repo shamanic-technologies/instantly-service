@@ -72,6 +72,7 @@ import {
 } from "./instantly-client";
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { buildReplyBodyWithSignature } from "./send-lead";
+import { fillSenderTokensInSubject } from "./sender-placeholders";
 import {
   resolveMailboxCredential,
   type MailboxCredential,
@@ -803,7 +804,7 @@ async function prepareInstantlyReply(
   }
 
   const account = await getAccount(key, accountEmail);
-  const subject = replySubject(target.subject);
+  const subject = fillSenderTokensInSubject(replySubject(target.subject), account);
 
   return {
     transport: "instantly",
@@ -948,7 +949,7 @@ async function prepareSmtpReply(
     accountEmail,
     credential,
     account,
-    subject: replySubject(anchor.subject),
+    subject: fillSenderTokensInSubject(replySubject(anchor.subject), account),
     bodyHtml: signedBody(input, account, campaign),
     from: buildFromHeader(account),
     ...replyCopy(input, salesRepCopy),
@@ -1007,7 +1008,7 @@ async function prepareOwnAddressReply(
     accountEmail: address,
     credential,
     account,
-    subject: replySubject(elsewhere.subject),
+    subject: fillSenderTokensInSubject(replySubject(elsewhere.subject), account),
     bodyHtml: signedBody(input, account, campaign),
     from: buildFromHeader(account),
     cc: notSelf(copy.cc),
@@ -1055,7 +1056,7 @@ async function prepareChosenThreadReply(
     accountEmail,
     credential,
     account,
-    subject: chosen ? replySubject(anchor.subject) : (input.newThreadSubject ?? "").trim(),
+    subject: fillSenderTokensInSubject(chosen ? replySubject(anchor.subject) : (input.newThreadSubject ?? "").trim(), account),
     bodyHtml: signedBody(input, account, campaign),
     from: buildFromHeader(account),
     ...replyCopy(input, salesRepCopy),
