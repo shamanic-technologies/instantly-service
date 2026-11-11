@@ -182,6 +182,13 @@ export async function readStatedNotToBrand(params: {
 // read's own per-address cache is 60 s). Concurrent misses join ONE request. Fail loud: an expired or absent
 // answer that cannot be reloaded THROWS (never read as "nobody stated"); a failed background refresh only logs,
 // and the answer it would have replaced expires on schedule.
+//
+// MON-DELIVERY-STATUS-500-1111: crm-service's answer costs ~1.5 s for an org holding statements (it opens a platform
+// run per read) and, under box load, past our 10 s timeout: 26 status reads a day 500'd, and lead-service's
+// `POST /orgs/buffer/next` failed the whole serve behind each. The STATUS read may opt into `maxStaleOnErrorMs`:
+// when the reload fails, the last answer crm-service gave for (org, brands) keeps being served up to that age, with a
+// loud warning. Safe because the status read only REPORTS the refusal: the send gate re-asks crm-service per
+// address (`readStatedNotToBrand`) and refuses on its own, and the dispatch sweep never opts in (it holds instead).
 
 export const STATED_SETS_TTL_MS = 30_000;
 export const STATED_SETS_REFRESH_AFTER_MS = 15_000;
@@ -251,6 +258,8 @@ export async function readStatedNotToBrandMany(params: {
   orgId: string;
   brandIds: string[];
   emails: string[];
+  /** Serve the last answer up to this age when crm-service cannot reload it (status read only; see above). */
+  maxStaleOnErrorMs?: number;
 }): Promise<Map<string, StatedNotToBrandRecord>> {
   const out = new Map<string, StatedNotToBrandRecord>();
   const brandIds = [...new Set(params.brandIds.filter(Boolean))].sort();
@@ -271,7 +280,16 @@ export async function readStatedNotToBrandMany(params: {
       );
     }
   } else {
-    sets = await loadStatedSets(key, params.orgId, brandIds);
+    try {
+      sets = await loadStatedSets(key, params.orgId, brandIds);
+    } catch (error: unknown) {
+      const age = cached ? now - cached.loadedAt : Infinity;
+      if (!cached || params.maxStaleOnErrorMs === undefined || age >= params.maxStaleOnErrorMs) throw error;
+      console.warn(
+        `[instantly-service] stated-not-to-brand: crm-service could not reload org=${params.orgId} brands=${brandIds.join(",")}, serving its last answer (${Math.round(age / 1000)} s old, ${cached.value.size} stated address(es)) — ${error instanceof Error ? error.message : String(error)}`,
+      );
+      sets = cached.value;
+    }
   }
   for (const email of emails) {
     const hit = sets.get(email);

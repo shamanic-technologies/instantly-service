@@ -53,10 +53,14 @@ export async function findStatedNotToBrand(
   return found.get(key) ?? null;
 }
 
+/** How old a last-known crm-service answer the status read accepts while crm-service cannot reload it. */
+export const STATED_SETS_STATUS_MAX_STALE_MS = 60 * 60_000;
+
 /**
  * Many addresses at once (the status read), keyed by NORMALIZED address. Read from the (org, brands) answer
  * crm-service gives whole and this process caches for 30 s (STATUS-CRM-TIMEOUT-1107), never one crm-service
- * request per batch. Throws when no fresh answer exists and crm-service cannot give one.
+ * request per batch. When crm-service cannot reload it, the last answer is served up to 1 h old
+ * (MON-DELIVERY-STATUS-500-1111); throws only when no answer that recent exists.
  */
 export async function findStatedNotToBrands(
   orgId: string,
@@ -64,7 +68,8 @@ export async function findStatedNotToBrands(
   brandIds: string[],
 ): Promise<Map<string, StatedNotToBrandRecord>> {
   if (brandIds.length === 0 || leadEmails.length === 0) return new Map();
-  return readStatedNotToBrandMany({ orgId, brandIds, emails: leadEmails });
+  // Reports only (the send gate re-asks per address): a slow crm-service serves the last answer, never a 500.
+  return readStatedNotToBrandMany({ orgId, brandIds, emails: leadEmails, maxStaleOnErrorMs: STATED_SETS_STATUS_MAX_STALE_MS });
 }
 
 export function statedNotToBrandRefusal(leadEmail: string, record: StatedNotToBrandRecord) {
