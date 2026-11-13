@@ -43,6 +43,7 @@ import { dateKeyUTC, MS_PER_DAY } from "./sending-forecast";
 import { isSendingDay } from "./sending-calendar";
 import { fillSenderPlaceholders } from "./brand-email-signature";
 import { fillSenderTokensInBody, fillSenderTokensInSubject } from "./sender-placeholders";
+import { stripTrailingSignatureRepeat } from "./trailing-signature-repeat";
 import { sequenceFootprintDays } from "./sending-window";
 import { tagColdEmailLinks } from "./cold-email-utm";
 
@@ -625,6 +626,31 @@ export function resolveSignatureBlock(
   return accountSig || buildDefaultSignature(account);
 }
 
+export interface BuildBodyOptions {
+  /**
+   * Keep a trailing copy of the signature the writer put in the body. ONLY for
+   * re-rendering an email sent before DOUBLE-SIGNATURE-1113 shipped
+   * (`sent-body.ts`): history is served as it left, never rewritten.
+   */
+  keepTrailingSignatureRepeat?: boolean;
+}
+
+/**
+ * The writer's body, ready for the signature: any old `--` block stripped, the
+ * writer's `{first_name}`… filled with the mailbox that sends THIS email
+ * (SENDER-NAME-BODY-1111), then a trailing copy of the very signature about to
+ * be appended removed (DOUBLE-SIGNATURE-1113), so the email is signed once.
+ */
+function prepareBodyForSignature(
+  body: string,
+  account: Account,
+  signature: string,
+  opts: BuildBodyOptions = {},
+): string {
+  const filled = fillSenderTokensInBody(stripAccountSignature(body), account);
+  return opts.keepTrailingSignatureRepeat ? filled : stripTrailingSignatureRepeat(filled, signature);
+}
+
 /**
  * Inject the selected account's signature into the email body.
  *
@@ -654,11 +680,10 @@ export function buildEmailBodyWithSignature(
   body: string,
   account: Account,
   pinnedSignatureHtml?: string | null,
+  opts: BuildBodyOptions = {},
 ): string {
   const signature = resolveSignatureBlock(account, pinnedSignatureHtml);
-  // The writer's `{first_name}`… name the mailbox that sends THIS email
-  // (SENDER-NAME-BODY-1111); a body without them is untouched.
-  const stripped = fillSenderTokensInBody(stripAccountSignature(body), account);
+  const stripped = prepareBodyForSignature(body, account, signature, opts);
 
   const linkedBody = tagColdEmailLinks(autolinkifyHtml(stripped));
   const sigBlock = `${SIG_SEPARATOR_HTML}${signature}`;
@@ -687,9 +712,7 @@ export function buildReplyBodyWithSignature(
   pinnedSignatureHtml?: string | null,
 ): string {
   const signature = resolveSignatureBlock(account, pinnedSignatureHtml);
-  // The writer's `{first_name}`… name the mailbox that sends THIS email
-  // (SENDER-NAME-BODY-1111); a body without them is untouched.
-  const stripped = fillSenderTokensInBody(stripAccountSignature(body), account);
+  const stripped = prepareBodyForSignature(body, account, signature);
   const linkedBody = tagColdEmailLinks(autolinkifyHtml(stripped));
   return `${linkedBody}${SIG_SEPARATOR_HTML}${signature}`;
 }
