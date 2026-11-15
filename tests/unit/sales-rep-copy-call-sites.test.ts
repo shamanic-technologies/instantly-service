@@ -44,7 +44,9 @@ describe("the one-to-one reply copies the rep", () => {
     // ONE default copy rule (agency inbox + rep, visible), read by BOTH
     // prepare sites; only a hand-over overrides it (lib/escalate-reply).
     expect(REPLY).toContain("cc: replyCcList(agencyInbox(), salesRepCopy)");
-    const sites = REPLY.match(/\.\.\.replyCopy\(input, salesRepCopy\)/g) ?? [];
+    // The self-send and chosen-thread sites pass whether anyone WROTE on the
+    // thread (CC-SILENT-LEAD-1115: a lead who never wrote gets no copy).
+    const sites = REPLY.match(/\.\.\.replyCopy\(input, salesRepCopy(, [^)]+)?\)/g) ?? [];
     // Instantly, self-send, and the caller-chosen thread (EVERY-PERSON-ON-THE-THREAD-1109).
     expect(sites).toHaveLength(3);
     // The bare agency-only cc must be gone from both prepare sites.
