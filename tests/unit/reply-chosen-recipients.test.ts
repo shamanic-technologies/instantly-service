@@ -141,7 +141,9 @@ function primeChosenThread(over: Record<string, unknown> = {}) {
     // the thread up to the chosen message, oldest first
     .mockResolvedValueOnce(
       pgResult([{ messageId: OUR_FIRST }, { messageId: MARKUS_MSG }, { messageId: OUR_ANSWER }]),
-    );
+    )
+    // someone other than us wrote on the thread (Markus did)
+    .mockResolvedValueOnce(pgResult([{ wrote: true }]));
 }
 
 describe("an answer goes to whoever the caller chose, in the thread it chose (EVERY-PERSON-ON-THE-THREAD-1109)", () => {
@@ -214,7 +216,9 @@ describe("an answer goes to whoever the caller chose, in the thread it chose (EV
       // loadCampaign
       .mockResolvedValueOnce(pgResult([chosenRow()]))
       // persona
-      .mockResolvedValueOnce(pgResult([{ email: "kevin@marketingagency.group", firstName: "Kevin", lastName: "Lourd" }]));
+      .mockResolvedValueOnce(pgResult([{ email: "kevin@marketingagency.group", firstName: "Kevin", lastName: "Lourd" }]))
+      // someone other than us wrote on the thread
+      .mockResolvedValueOnce(pgResult([{ wrote: true }]));
     const outcome = await replyToLead({
       ...ANSWER_TO_MARKUS,
       campaignId: "camp-lv",
@@ -242,5 +246,95 @@ describe("an answer goes to whoever the caller chose, in the thread it chose (EV
     }).catch((e: unknown) => e);
     expect((err as ReplyToLeadError).code).toBe("recipients_unsupported_on_transport");
     expect(mockDispatchMessage).not.toHaveBeenCalled();
+  });
+});
+
+// ─── CC-SILENT-LEAD-1115 ─────────────────────────────────────────────────────
+// 2026-11-15: 17 follow-ups to Beyond Logic prospects who never answered went
+// out with kevin@distribute.you AND the client's rep visible in Cc (e.g.
+// jay.worley@blastone.com 19:34:48, in_reply_to = our own last email).
+
+const SILENT_LEAD = "jay.worley@blastone.com";
+const OUR_LAST = "<d9386bfd-c867-3d34-0cbd-bc4804fc567e@agileconsultco.com>";
+
+const FOLLOW_UP = {
+  orgId: "org-bl",
+  userId: "user-1",
+  campaignId: "",
+  leadEmail: SILENT_LEAD,
+  bodyHtml: "<p>Following up on my note below.</p>",
+  sentBy: "automation" as const,
+  threadMessageId: OUR_LAST,
+  recipients: { to: [SILENT_LEAD] },
+};
+
+function primeFollowUp(wrote: boolean) {
+  mockDbExecute
+    // findThreadMessage: our own last email on the lead's thread
+    .mockResolvedValueOnce(
+      pgResult([chosenRow({ leadEmail: SILENT_LEAD, brandId: null, msgSubject: "Quick question" })]),
+    )
+    // no escalation claimed on the thread
+    .mockResolvedValueOnce(pgResult([]))
+    // persona
+    .mockResolvedValueOnce(pgResult([{ email: "kevin@marketingagency.group", firstName: "Kevin", lastName: "Lourd" }]))
+    // the thread up to our last email
+    .mockResolvedValueOnce(pgResult([{ messageId: OUR_FIRST }, { messageId: OUR_LAST }]))
+    // did anyone other than us write on it?
+    .mockResolvedValueOnce(pgResult([{ wrote }]));
+}
+
+describe("a follow-up to a lead who never wrote copies nobody (CC-SILENT-LEAD-1115)", () => {
+  it("no inbound message on the thread: no Cc, no Bcc", async () => {
+    primeFollowUp(false);
+    const outcome = await replyToLead(FOLLOW_UP);
+    const message = mockDispatchMessage.mock.calls[0][1];
+    expect(message.to).toBe(SILENT_LEAD);
+    expect(message.cc).toBe("");
+    expect(message.bcc).toBeUndefined();
+    expect(outcome.reply.cc).toBe("");
+    expect(outcome.reply.bcc).toBe("");
+    // Never a hidden copy as a substitute.
+    expect(JSON.stringify(mockInsertValues.mock.calls[0][0].payload)).not.toContain("distribute.you");
+  });
+
+  it("the question covers the thread the email continues AND the lead's other threads of the brand", async () => {
+    primeFollowUp(false);
+    await replyToLead(FOLLOW_UP);
+    const last = JSON.stringify(mockDbExecute.mock.calls[4][0]);
+    expect(last).toContain(THREAD);
+    expect(last).toContain(SILENT_LEAD);
+    expect(last).toContain("org-bl");
+    expect(last).toContain("brand_ids &&");
+  });
+
+  it("recipients the caller chose stay its choice on a silent lead", async () => {
+    primeFollowUp(false);
+    await replyToLead({ ...FOLLOW_UP, recipients: { to: [SILENT_LEAD], cc: ["ops@client.com"] } });
+    expect(mockDispatchMessage.mock.calls[0][1].cc).toBe("ops@client.com");
+  });
+
+  it("a lead who wrote on the thread keeps today's visible copy (agency inbox in Cc)", async () => {
+    primeFollowUp(true);
+    await replyToLead(FOLLOW_UP);
+    const message = mockDispatchMessage.mock.calls[0][1];
+    expect(message.cc).toBe("kevin@distribute.you");
+    expect(message.bcc).toBeUndefined();
+  });
+
+  it("the To address is never also in Cc or Bcc (2026-11-13: a lead copied on its own reply)", async () => {
+    primeChosenThread();
+    await replyToLead({
+      ...ANSWER_TO_MARKUS,
+      recipients: {
+        to: ["markus@markthalle-luzern.ch"],
+        cc: ["Markus@Markthalle-Luzern.ch", "thomas@markthalle-luzern.ch"],
+        bcc: ["markus@markthalle-luzern.ch", "kevin@distribute.you"],
+      },
+    });
+    const message = mockDispatchMessage.mock.calls[0][1];
+    expect(message.to).toBe("markus@markthalle-luzern.ch");
+    expect(message.cc).toBe("thomas@markthalle-luzern.ch");
+    expect(message.bcc).toBe("kevin@distribute.you");
   });
 });
