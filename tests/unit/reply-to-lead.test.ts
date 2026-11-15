@@ -593,6 +593,35 @@ describe("the agency inbox rides every reply, in CC", () => {
     expect(result.cc).toBe("kevin@distribute.you");
   });
 
+  it("only autoreplies on the thread (an out-of-office): nobody wrote, no copy (CC-SILENT-LEAD-1115)", async () => {
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow({ sendTransport: "smtp" })]))
+      .mockResolvedValueOnce(
+        pgResult([{ messageId: "<ooo-1@media.com>", subject: "Out of office", at: "2026-09-01", someoneWrote: false }]),
+      )
+      .mockResolvedValueOnce(pgResult([{ messageId: "<ooo-1@media.com>" }]))
+      .mockResolvedValueOnce(pgResult([{ firstName: "Amy", lastName: "Moore" }]));
+    mockResolveCredential.mockResolvedValue({
+      address: "amy@boostdistribute.com",
+      appPassword: "pw",
+      smtpHost: "smtp.gmail.com",
+      imapHost: "imap.gmail.com",
+    });
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<out-1@boostdistribute.com>",
+      response: "250 OK",
+      accepted: ["alice@media.com"],
+      rejected: [],
+    });
+
+    const result = await sendNow();
+
+    const message = mockDispatchMessage.mock.calls[0][1] as Record<string, unknown>;
+    expect(message.cc).toBe("");
+    expect(Object.keys(message)).not.toContain("bcc");
+    expect(result.cc).toBe("");
+  });
+
   it("follows ADMIN_NOTIFICATION_EMAIL — the address has ONE home, read at use", async () => {
     const previous = process.env.ADMIN_NOTIFICATION_EMAIL;
     process.env.ADMIN_NOTIFICATION_EMAIL = "inbox@agency.test";
