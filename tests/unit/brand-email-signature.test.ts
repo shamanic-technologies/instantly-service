@@ -17,7 +17,7 @@ import {
   resolveSignatureHtmlForSend,
   signatureTextProblem,
 } from "../../src/lib/brand-email-signature";
-import { buildFromHeader, buildMessage } from "../../src/lib/self-send/message";
+import { buildMessage } from "../../src/lib/self-send/message";
 import {
   buildEmailBodyWithSignature,
   buildReplyBodyWithSignature,
@@ -137,7 +137,9 @@ describe("sender placeholders: the signature names the mailbox that sends", () =
     const fallon = build(FALLON);
     expect(ruth.html).toContain("<p>--</p><p>Ruth Chandler, DefiniteJobs<br>ruth@agileconsultco.com</p>");
     expect(fallon.html).toContain("<p>--</p><p>Fallon Price, DefiniteJobs<br>fallon@boostdistribute.com</p>");
-    expect(ruth.from).toBe(buildFromHeader(RUTH));
+    // The From name is who signs: the pinned signature's first line, filled per mailbox.
+    expect(ruth.from).toBe('"Ruth Chandler, DefiniteJobs" <ruth@agileconsultco.com>');
+    expect(fallon.from).toBe('"Fallon Price, DefiniteJobs" <fallon@boostdistribute.com>');
     for (const m of [ruth, fallon]) expect(m.html).not.toMatch(/[{}]/);
   });
 

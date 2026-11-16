@@ -20,6 +20,7 @@
  */
 
 import type { Account } from "../instantly-client";
+import { fillSenderPlaceholders } from "../brand-email-signature";
 import { buildEmailBodyWithSignature } from "../send-lead";
 import { fillSenderTokensInSubject } from "../sender-placeholders";
 import { optOutHeaders, optOutTarget, type OptOutVariant } from "./opt-out-variant";
@@ -85,13 +86,48 @@ export function subjectForStep(subject: string, step: number): string {
   return /^\s*re:/i.test(subject) ? subject : `Re: ${subject}`;
 }
 
+/** Decode the five entities `renderSignatureHtml`/`fillSenderPlaceholders` escape. */
+function decodeSignatureEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
 /**
- * The From header. Uses the account's own name so the display name, the
- * signature and the mailbox all agree under multi-persona sending — the same
- * reasoning as `buildDefaultSignature`.
+ * The name the prospect reads in their inbox: WHO SIGNS the email
+ * (SENDER-NAME-VS-SOPHIE-1116, owner 2026-11-16: an intro written and signed
+ * "Sophie" arrived From "Bria Rosario"). With a signature pinned on the thread
+ * (the brand's, or the one the script chose, SIGNATURE-TACTIC-1107) it is the
+ * FIRST line of that signature, its sender placeholders filled from THIS
+ * mailbox (`{full_name}` = the mailbox's own name, as before). No pin = ours,
+ * which signs with the mailbox's own name: unchanged. A first line that is
+ * empty once tags are stripped falls back to the mailbox's name. Pure apart
+ * from the placeholder warning.
  */
-export function buildFromHeader(account: Account): string {
-  const name = [account.first_name, account.last_name].filter(Boolean).join(" ").trim();
+export function signerDisplayName(account: Account, pinnedSignatureHtml?: string | null): string {
+  const accountName = [account.first_name, account.last_name].filter(Boolean).join(" ").trim();
+  const pinned = pinnedSignatureHtml?.trim() || "";
+  if (!pinned) return accountName;
+  const filled = fillSenderPlaceholders(pinned, account);
+  const firstLine = filled
+    .split(/<br\s*\/?>|<\/p>\s*<p[^>]*>|\n/i)
+    .map((line) => decodeSignatureEntities(line.replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim())
+    .find((line) => line !== "");
+  return firstLine || accountName;
+}
+
+/**
+ * The From header. Its display name is WHO SIGNS the email
+ * ({@link signerDisplayName}): the mailbox's own name under our signature (the
+ * same reasoning as `buildDefaultSignature`), the first line of the thread's
+ * pinned signature otherwise, so the inbox line, the signature and the words
+ * all name one person.
+ */
+export function buildFromHeader(account: Account, pinnedSignatureHtml?: string | null): string {
+  const name = signerDisplayName(account, pinnedSignatureHtml);
   if (!name) return account.email;
   // Quote the display name and escape what RFC 5322 forbids raw inside a quoted
   // string, so an apostrophe or a comma in a persona name cannot split the header.
@@ -126,7 +162,7 @@ export function buildMessage(input: BuildMessageInput): BuiltMessage {
   const references = [...(input.priorMessageIds ?? [])];
 
   return {
-    from: buildFromHeader(input.account),
+    from: buildFromHeader(input.account, input.signatureHtml ?? null),
     to: input.leadEmail,
     subject: subjectForStep(fillSenderTokensInSubject(input.subject, input.account), input.step),
     html,

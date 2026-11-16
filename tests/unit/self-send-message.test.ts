@@ -150,6 +150,58 @@ describe("buildFromHeader", () => {
   });
 });
 
+// SENDER-NAME-VS-SOPHIE-1116 (prod 2026-11-16): an intro signed "Sophie" left
+// From "Bria Rosario" <bria@ariacoreco.com>. The inbox name is who SIGNS.
+describe("From name follows the thread's signature (SENDER-NAME-VS-SOPHIE-1116)", () => {
+  const BRIA = account({ email: "bria@ariacoreco.com", first_name: "Bria", last_name: "Rosario" });
+
+  it("the Sophie replay: a script signing 'Sophie' sends From Sophie, never the mailbox persona", () => {
+    expect(buildFromHeader(BRIA, "<p>Sophie</p>")).toBe('"Sophie" <bria@ariacoreco.com>');
+    const msg = buildMessage({
+      account: BRIA,
+      signatureHtml: "<p>Sophie</p>",
+      leadEmail: "prospect@example.com",
+      subject: "Kevin, founder of distribute.you",
+      bodyHtml: "<p>I am Sophie, an AI that connects founders.</p>",
+      step: 1,
+      identity: IDENTITY,
+      unsubscribeUrl: "https://opt.test/u/p/s",
+      optOut: "tracker_link",
+    });
+    expect(msg.from).toBe('"Sophie" <bria@ariacoreco.com>');
+    expect(msg.html.endsWith("<p>--</p><p>Sophie</p>")).toBe(true);
+  });
+
+  it("takes the FIRST line of a multi-line signature (a client person + brand)", () => {
+    expect(buildFromHeader(BRIA, "<p>David Tucker<br>Shockwave Centers of America</p>")).toBe(
+      '"David Tucker" <bria@ariacoreco.com>',
+    );
+    expect(buildFromHeader(BRIA, "<p>Chaim Tesser, MBA<br>Founder<br>Beyond Logic</p>")).toBe(
+      '"Chaim Tesser, MBA" <bria@ariacoreco.com>',
+    );
+  });
+
+  it("a {full_name} signature keeps the mailbox's own name (unchanged for 3,302 Doc Dinners threads)", () => {
+    expect(buildFromHeader(BRIA, "<p>{full_name}<br>Doc Dinners</p>")).toBe(buildFromHeader(BRIA));
+  });
+
+  it("no pin = ours = the mailbox's own name, byte-identical to before", () => {
+    for (const pin of [null, undefined, "", "   "]) {
+      expect(buildFromHeader(BRIA, pin)).toBe('"Bria Rosario" <bria@ariacoreco.com>');
+    }
+  });
+
+  it("decodes the escaped entities and quotes what must be quoted", () => {
+    expect(buildFromHeader(BRIA, "<p>Tom &amp; Jerry &quot;TJ&quot;<br>Co</p>")).toBe(
+      '"Tom & Jerry \\"TJ\\"" <bria@ariacoreco.com>',
+    );
+  });
+
+  it("a signature with no readable first line falls back to the mailbox's name", () => {
+    expect(buildFromHeader(BRIA, "<p><br></p>")).toBe('"Bria Rosario" <bria@ariacoreco.com>');
+  });
+});
+
 describe("buildMessage", () => {
   const URL = "https://opt.test/u/payload/sig";
 

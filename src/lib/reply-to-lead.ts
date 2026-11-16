@@ -29,26 +29,15 @@
  * it; on ours, both halves are in bronze and we send the SMTP reply ourselves
  * with `In-Reply-To` / `References`. Either way the prospect sees one thread.
  *
- * ⚠️ THE AGENCY INBOX IS ON EVERY REPLY, IN CC — VISIBLE, NEVER BCC. A human
- * has to be able to read the exchange and to be pulled INTO it, and only a CC
- * survives a reply-all: on a BCC the prospect's answer never reaches them, so
- * the thread silently goes back to being invisible the moment the conversation
- * continues. The address has ONE home (`agency-inbox.ts`), shared with the
- * positive-reply forward and the campaign-error notification.
- *
- * ⚠️ SEQUENCE SENDS CARRY NO CC. A visible agency address on cold outreach
- * reads as a mail-merge to a prospect who has never spoken to us — this applies
- * ONLY to the one-to-one answer, which is a conversation they started.
- *
- * ⚠️ A FOLLOW-UP TO A LEAD WHO NEVER WROTE COPIES NOBODY (CC-SILENT-LEAD-1115).
- * Since 2026-11-13 the due-day follow-ups to silent leads leave through this
- * door too (a chosen thread, `in_reply_to` = our own last email). The default
- * copy (agency inbox + rep) is added only when someone other than us WROTE on
- * the thread (`someoneWroteOnThread`); otherwise no Cc, no Bcc, exactly like a
- * sequence send. Never a hidden Bcc as a substitute. Recipients the caller
- * chose and the hand-over's own copy are unchanged. 2026-11-15: 17 Beyond Logic
- * follow-ups to people who never answered went out with our inbox and the
- * client's rep visible in Cc.
+ * ⚠️ THIS SERVICE ADDS NO RECIPIENT (NO-DEFAULT-COPY-1116, owner 2026-11-16).
+ * The answer reaches exactly the To / Cc / Bcc the caller named: To defaults to
+ * the thread's lead, Cc and Bcc default to NOBODY. Who is copied is the
+ * writer's decision (a script's tactic, a person in the Unibox), never ours:
+ * no agency inbox, no brand rep, no "copy once the prospect wrote" rule, no
+ * hidden Bcc instead. 2026-11-15/16: Beyond Logic follow-ups left with our
+ * inbox and the client's rep visible in Cc (CC-SILENT-LEAD-1115 kept the copy
+ * "once the prospect wrote"; David had answered with an EMPTY email).
+ * The escalation hand-over names its own copy (`copy`, the rep it hands to).
  *
  * ⚠️ THE TO ADDRESS IS NEVER ALSO IN CC/BCC (`withoutToInCopy`), whoever built
  * the lists (2026-11-13: a reply copied the lead on itself).
@@ -74,7 +63,6 @@ import {
   type ResolvedAttachment,
   type SentAttachment,
 } from "./offer-documents";
-import { salesRepCopyList } from "./sales-rep-copy";
 import { isStaffSender } from "./staff-senders";
 import {
   getAccount,
@@ -105,22 +93,13 @@ import type { ReplySender } from "./reply-sender";
 const CALLER: CallerInfo = { method: "POST", path: "/orgs/replies" };
 
 /**
- * The visible copy on a one-to-one reply: the agency inbox, plus the brand's
- * sales rep when it stated one.
- *
- * The rep JOINS the agency inbox and never replaces it — a human on our side
- * still has to be able to read the exchange and be pulled into it. Both
- * transports take the list as one comma-separated string, which is what
- * Instantly's reply API expects and what nodemailer accepts, so the two halves
- * cannot drift into two spellings of one list.
- *
- * Deduplicated case-insensitively: on a brand whose rep IS the agency address,
- * naming it twice would put the same mailbox on the header twice.
+ * One header list from addresses: trimmed, blanks dropped, deduplicated
+ * case-insensitively, comma-joined (what both transports take).
  */
-export function replyCcList(agency: string, salesRepCopy: string[]): string {
+function headerList(addresses: string[]): string {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const address of [agency, ...salesRepCopy]) {
+  for (const address of addresses) {
     const trimmed = address.trim();
     if (!trimmed) continue;
     const key = trimmed.toLowerCase();
@@ -132,68 +111,17 @@ export function replyCcList(agency: string, salesRepCopy: string[]): string {
 }
 
 /**
- * The (cc, bcc) pair a reply carries: the hand-over's own, else the default
- * when someone other than us wrote in this conversation, else nothing
- * (CC-SILENT-LEAD-1115: a lead who never wrote gets no copy, like a sequence send).
+ * The (cc, bcc) pair a reply carries before the caller's chosen lists apply:
+ * the hand-over's own copy, else nobody (NO-DEFAULT-COPY-1116).
  */
-function replyCopy(
-  input: ReplyToLeadInput,
-  salesRepCopy: string[],
-  someoneWrote = true,
-): { cc: string; bcc: string } {
+function replyCopy(input: ReplyToLeadInput): { cc: string; bcc: string } {
   if (input.copy) {
     return {
-      cc: replyCcList("", input.copy.cc),
-      bcc: replyCcList("", input.copy.bcc),
+      cc: headerList(input.copy.cc),
+      bcc: headerList(input.copy.bcc),
     };
   }
-  if (!someoneWrote) return { cc: "", bcc: "" };
-  return { cc: replyCcList(agencyInbox(), salesRepCopy), bcc: "" };
-}
-
-/**
- * Whether anyone other than us has written in this conversation: on this
- * thread, or the lead on another thread this org holds with them for one of
- * the thread's brands (James Barnett answered on one thread, our next email
- * opened another: he is in a conversation with us). "Written" = a real (not
- * automatic) reply our sender read (`imap_messages_raw` kind `reply`; our own
- * people's answers are filed `staff_reply`, autoreplies `auto_reply`), or a
- * `reply_received` on the silver log (an Instantly-era thread, or a reply staff
- * recorded by hand). Fail loud: a throw refuses the send, never a guess.
- */
-export async function someoneWroteOnThread(
-  orgId: string,
-  campaign: CampaignRow,
-): Promise<boolean> {
-  const brandIds =
-    campaign.brandIds && campaign.brandIds.length > 0
-      ? campaign.brandIds
-      : campaign.brandId
-        ? [campaign.brandId]
-        : [];
-  const result = await db.execute(sql`
-    WITH threads AS (
-      SELECT ${campaign.instantlyCampaignId}::text AS id
-      UNION
-      SELECT c.instantly_campaign_id
-      FROM instantly_campaigns c
-      WHERE c.org_id = ${orgId}
-        AND lower(c.lead_email) = lower(${campaign.leadEmail})
-        AND c.brand_ids && ${sql.param(brandIds)}::text[]
-    )
-    SELECT (
-      EXISTS (
-        SELECT 1 FROM imap_messages_raw m JOIN threads t ON m.instantly_campaign_id = t.id
-        WHERE m.kind = 'reply'
-      )
-      OR EXISTS (
-        SELECT 1 FROM instantly_events e JOIN threads t ON e.campaign_id = t.id
-        WHERE e.event_type = 'reply_received'
-      )
-    ) AS "wrote"
-  `);
-  const row = (result.rows as Record<string, unknown>[])[0];
-  return row?.wrote === true;
+  return { cc: "", bcc: "" };
 }
 
 /**
@@ -261,10 +189,9 @@ export interface ReplyToLeadInput {
    */
   sentBy: ReplySender;
   /**
-   * HAND-OVER ONLY (lib/escalate-reply). Replaces the default visible copy
-   * (agency inbox + rep in Cc) with exactly these lists: the client's rep in
-   * Cc — a party to the conversation from now on — and the agency inbox in Bcc,
-   * observing. Never set by the reply route: the wire cannot reach it.
+   * HAND-OVER ONLY (lib/escalate-reply, lib/not-a-prospect): the copy the
+   * escalation itself names. Absent = no Cc, no Bcc (NO-DEFAULT-COPY-1116).
+   * Never set by the reply route: the wire cannot reach it.
    */
   copy?: { cc: string[]; bcc: string[] };
   /**
@@ -288,8 +215,8 @@ export interface ReplyToLeadInput {
   /**
    * WHO the answer goes to, as the caller (the AI reading the Unibox) chose
    * (EVERY-PERSON-ON-THE-THREAD-1109). Each list given becomes that header
-   * EXACTLY; a list left out keeps today's default (To = the thread's lead,
-   * Cc = agency inbox + rep, no Bcc). Absent = byte-identical to before. Our
+   * EXACTLY; a list left out keeps its default (To = the thread's lead, no Cc,
+   * no Bcc: NO-DEFAULT-COPY-1116). Our
    * own sender only (refused 422 on an Instantly-pipe thread).
    */
   recipients?: { to?: string[]; cc?: string[]; bcc?: string[] };
@@ -314,7 +241,7 @@ export interface ReplyToLeadResult {
   /** The From header as the prospect sees it, persona included. */
   from: string;
   subject: string;
-  /** The agency inbox this reply was CC'd to, as the prospect sees it. */
+  /** The Cc header as sent: exactly what the caller named (empty = nobody). */
   cc: string;
   /** Blind copy — empty except on a hand-over or when the caller chose one. */
   bcc: string;
@@ -393,13 +320,10 @@ export interface CampaignRow {
    */
   timezone: string | null;
   /**
-   * The brand this sequence was sent for — what the CC list is resolved from.
-   *
-   * Read off the row rather than off the inbound `x-brand-id` header for the
-   * same reason the sending identity is: which brand this conversation belongs
-   * to is a fact about what already happened, not a caller's argument. Null on
-   * a platform send and on a row written before brand tagging, and both mean
-   * the reply goes out exactly as it did before the rep existed.
+   * The brand this sequence was sent for. Read off the row rather than off
+   * the inbound `x-brand-id` header: which brand this conversation belongs to
+   * is a fact about what already happened, not a caller's argument. Null on a
+   * platform send and on a row written before brand tagging.
    */
   brandId: string | null;
   /**
@@ -597,11 +521,6 @@ async function loadChosenAnchor(chosen: ChosenThreadMessage): Promise<SelfSendTh
   return { inReplyTo: chosen.messageId, subject: chosen.subject, references };
 }
 
-/** A caller-chosen address list as one header value (deduplicated, original casing). */
-function headerList(addresses: string[]): string {
-  return replyCcList("", addresses);
-}
-
 /** Every address the caller chose, lowercased. */
 function chosenAddresses(r: NonNullable<ReplyToLeadInput["recipients"]>): string[] {
   return [...(r.to ?? []), ...(r.cc ?? []), ...(r.bcc ?? [])]
@@ -726,8 +645,6 @@ async function loadSelfSendAccount(accountEmail: string): Promise<Account> {
 interface SelfSendThreadAnchor {
   /** Null only on a new thread the caller asked for. */
   inReplyTo: string | null;
-  /** False when every inbound message on the thread is an autoreply. */
-  someoneWrote?: boolean;
   subject: string;
   /** Every Message-Id of this conversation, oldest first (RFC 5322 References). */
   references: string[];
@@ -746,8 +663,7 @@ async function loadSelfSendAnchor(
   const result = await db.execute(sql`
     SELECT m.message_id AS "messageId",
            m.subject    AS "subject",
-           COALESCE(m.received_at, m.polled_at) AS "at",
-           bool_or(m.kind = 'reply') OVER () AS "someoneWrote"
+           COALESCE(m.received_at, m.polled_at) AS "at"
     FROM imap_messages_raw m
     WHERE m.instantly_campaign_id = ${instantlyCampaignId}
       AND m.kind IN ('reply', 'auto_reply')
@@ -780,8 +696,6 @@ async function loadSelfSendAnchor(
   return {
     inReplyTo: String(latest.messageId),
     subject: typeof latest.subject === "string" ? latest.subject : "",
-    // Only an explicit false (every inbound an autoreply) drops the copy.
-    someoneWrote: latest.someoneWrote !== false,
     references: (chain.rows as Record<string, unknown>[]).map((r) =>
       String(r.messageId),
     ),
@@ -871,7 +785,6 @@ async function prepareInstantlyReply(
   campaign: CampaignRow,
   input: ReplyToLeadInput,
 ): Promise<PreparedInstantlyReply> {
-  const salesRepCopy = await salesRepCopyList(campaign.brandId, input.orgId);
   const { key } = await resolveInstantlyApiKey(input.orgId, input.userId, CALLER);
 
   const records = await listEmails(key, {
@@ -909,7 +822,7 @@ async function prepareInstantlyReply(
     account,
     subject,
     bodyHtml: signedBody(input, account, campaign),
-    ...replyCopy(input, salesRepCopy),
+    ...replyCopy(input),
   };
 }
 
@@ -983,7 +896,7 @@ async function deliverInstantlyReply(
     instantlyCampaignId: campaign.instantlyCampaignId,
     leadEmail: campaign.leadEmail,
     accountEmail,
-    from: buildFromHeader(account),
+    from: buildFromHeader(account, campaign.signatureHtml),
     subject,
     cc,
     bcc,
@@ -1002,7 +915,6 @@ async function prepareSmtpReply(
   campaign: CampaignRow,
   input: ReplyToLeadInput,
 ): Promise<PreparedSmtpReply> {
-  const salesRepCopy = await salesRepCopyList(campaign.brandId, input.orgId);
   const anchor = await loadSelfSendAnchor(campaign.instantlyCampaignId);
   if (!anchor) {
     throw new ReplyToLeadError(
@@ -1045,8 +957,8 @@ async function prepareSmtpReply(
     account,
     subject: fillSenderTokensInSubject(replySubject(anchor.subject), account),
     bodyHtml: signedBody(input, account, campaign),
-    from: buildFromHeader(account),
-    ...replyCopy(input, salesRepCopy, anchor.someoneWrote !== false),
+    from: buildFromHeader(account, campaign.signatureHtml),
+    ...replyCopy(input),
   };
 }
 
@@ -1081,9 +993,8 @@ async function prepareOwnAddressReply(
     );
   }
 
-  const salesRepCopy = await salesRepCopyList(campaign.brandId, input.orgId);
   const account = await loadSelfSendAccount(address);
-  const copy = replyCopy(input, salesRepCopy);
+  const copy = replyCopy(input);
   const notSelf = (list: string): string =>
     list
       .split(",")
@@ -1104,7 +1015,7 @@ async function prepareOwnAddressReply(
     account,
     subject: fillSenderTokensInSubject(replySubject(elsewhere.subject), account),
     bodyHtml: signedBody(input, account, campaign),
-    from: buildFromHeader(account),
+    from: buildFromHeader(account, campaign.signatureHtml),
     cc: notSelf(copy.cc),
     bcc: notSelf(copy.bcc),
   };
@@ -1142,14 +1053,6 @@ async function prepareChosenThreadReply(
   const anchor: SelfSendThreadAnchor = chosen
     ? await loadChosenAnchor(chosen)
     : { inReplyTo: null, subject: input.newThreadSubject ?? "", references: [] };
-  // CC-SILENT-LEAD-1115: a follow-up to a lead who never wrote copies nobody.
-  const someoneWrote = input.copy
-    ? true
-    : await someoneWroteOnThread(input.orgId, campaign);
-  const salesRepCopy =
-    input.copy || !someoneWrote
-      ? []
-      : await salesRepCopyList(campaign.brandId, input.orgId);
   return {
     transport: SEND_TRANSPORT_SMTP,
     sentBy: input.sentBy,
@@ -1159,8 +1062,8 @@ async function prepareChosenThreadReply(
     account,
     subject: fillSenderTokensInSubject(chosen ? replySubject(anchor.subject) : (input.newThreadSubject ?? "").trim(), account),
     bodyHtml: signedBody(input, account, campaign),
-    from: buildFromHeader(account),
-    ...replyCopy(input, salesRepCopy, someoneWrote),
+    from: buildFromHeader(account, campaign.signatureHtml),
+    ...replyCopy(input),
   };
 }
 

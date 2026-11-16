@@ -1707,13 +1707,13 @@ export const ReplyToLeadBodySchema = z
       .max(20)
       .optional()
       .describe(
-        "The Cc header, exactly these addresses (empty array = no Cc). Omitted = today's default (agency inbox + the brand's rep).",
+        "The Cc header, exactly these addresses. Omitted or empty = no Cc: this service adds no recipient of its own (NO-DEFAULT-COPY-1116).",
       ),
     bcc: z
       .array(z.string().email())
       .max(20)
       .optional()
-      .describe("The Bcc header, exactly these addresses. Omitted = none (except a hand-over)."),
+      .describe("The Bcc header, exactly these addresses. Omitted = none."),
     in_reply_to: z
       .string()
       .min(3)
@@ -1764,7 +1764,7 @@ const ReplyToLeadResultSchema = z
     cc: z
       .string()
       .describe(
-        "The agency inbox this reply was CC'd to — VISIBLE to the prospect, so a reply-all reaches a human. Never a BCC.",
+        "The Cc header as sent: exactly the addresses the caller named (empty when it named none).",
       ),
     bcc: z.string().optional().describe("The Bcc header, when one was set"),
     to: z.string().optional().describe("The To header, present only when the caller chose `to`"),
@@ -1834,7 +1834,7 @@ registry.registerPath({
     "**The sending identity is resolved here, never supplied.** Which mailbox answers comes from `instantly_campaigns.account_email` (persisted at send time), with the mailbox recorded on the inbound message as the fallback for a historical row. The display name and signature follow that account. A caller-supplied from-address would let a reply arrive from a mailbox this prospect has never heard from — the exact failure this endpoint exists to prevent.\n\n" +
     "**Finding the thread from the address alone.** `campaign_id` is optional: with only `email`, the thread is the one campaign of this org where that prospect wrote back. Several such campaigns → `409 ambiguous_thread` with the `candidates` (campaign + last message date) so the caller can name one; never answered → `409 no_reply_to_thread`; never emailed → `404 campaign_not_found`. Naming the campaign behaves exactly as before.\n\n" +
     "**Threaded or nothing.** On the Instantly transport the reply goes out through `POST /emails/reply`, threaded onto the prospect's latest inbound message; on the self-send transport we dispatch it ourselves with `In-Reply-To` / `References` over the conversation we already hold in bronze. There is NO fallback to a fresh email: if the thread cannot be found the call fails with `code: \"no_reply_to_thread\"`.\n\n" +
-    "**The agency inbox is CC'd, visibly.** Every reply carries it as a CC (never a BCC) so a human can read the exchange and be pulled into it by a reply-all. Cold sequence sends carry no CC — this applies only to the one-to-one answer.\n\n" +
+    "**Recipients are the caller's, exactly.** To defaults to the thread's lead; Cc and Bcc default to nobody. This service never adds the agency inbox, the brand's rep or anyone else: who is copied is the writer's decision (pass `cc` / `bcc`).\n\n" +
     "**Signature:** send the prospect-facing words only. This service appends the account's persona signature (idempotently — a body re-sent never stacks signatures). Deliberately NO unsubscribe footer: a one-to-one answer is not bulk mail.\n\n" +
     "**The answer goes out immediately, at any hour, on any day.** A prospect who just wrote to us is at their inbox now, so a one-to-one answer is never held for their business hours (cold sequence steps still are). It is still NOT a sequence step: no hold, no step number, no capacity consumed.\n\n" +
     "**A hand reply never locks a thread.** A person of the brand answering by hand (their own mailbox, the Unibox, a CC) never refuses a later automated reply: that answer stays in the conversation, which the responder reads before writing now, later or not at all.\n\n" +
