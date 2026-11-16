@@ -22,7 +22,6 @@ vi.mock("../../src/lib/instantly-client", () => ({
   replyToEmail: (...a: unknown[]) => mockReplyToEmail(...a),
 }));
 vi.mock("../../src/lib/key-client", () => ({ resolveInstantlyApiKey: vi.fn() }));
-vi.mock("../../src/lib/sales-rep-copy", () => ({ salesRepCopyList: async () => [] }));
 
 const mockResolveCredential = vi.fn();
 vi.mock("../../src/lib/self-send/mailbox-credentials", () => ({

@@ -54,7 +54,6 @@ vi.mock("../../src/lib/lead-conversation", () => ({
 const mockBrandContext = vi.fn();
 vi.mock("../../src/lib/brand-client", () => ({
   getBrandHandoffContext: (...a: unknown[]) => mockBrandContext(...a),
-  getSalesRep: async () => ({ email: null, phone: null }),
 }));
 
 vi.mock("../../src/lib/client-org-client", () => ({

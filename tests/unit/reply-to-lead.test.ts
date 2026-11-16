@@ -239,7 +239,7 @@ describe("replyToLead over Instantly", () => {
       replyToUuid: "inbound-1",
       subject: "Re: Quick question",
       bodyHtml: expect.stringContaining("Amy Moore"),
-      ccAddressEmailList: "kevin@distribute.you",
+      ccAddressEmailList: "",
     });
     expect(result.transport).toBe("instantly");
     expect(result.accountEmail).toBe("amy@boostdistribute.com");
@@ -537,17 +537,15 @@ describe("replyToLead over the self-send transport", () => {
 });
 
 
-// ─── Agency inbox in CC ──────────────────────────────────────────────────────
+// ─── No default copy (NO-DEFAULT-COPY-1116) ──────────────────────────────────
 
 /**
- * A human has to be able to read the exchange AND be pulled into it. Only a
- * VISIBLE CC survives a reply-all — on a BCC the prospect's next answer never
- * reaches the agency inbox, so the thread silently goes dark again the moment
- * the conversation continues. Both transports carry it, because an inbox cannot
- * tell which pipe a given reply happened to take.
+ * Owner 2026-11-16: this service adds no recipient. The agency inbox and the
+ * brand's rep are never put on a reply the caller did not address to them,
+ * on either transport, whatever happened on the thread.
  */
-describe("the agency inbox rides every reply, in CC", () => {
-  it("CCs it on the Instantly transport, and never BCCs", async () => {
+describe("a reply copies nobody the caller did not name", () => {
+  it("Instantly transport: no Cc, no Bcc on the wire", async () => {
     mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
     mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Hi" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
@@ -555,15 +553,12 @@ describe("the agency inbox rides every reply, in CC", () => {
     const result = await sendNow();
 
     const body = mockReplyToEmail.mock.calls[0][1] as Record<string, unknown>;
-    // Instantly's contract for this field is a COMMA-SEPARATED STRING, not an
-    // array — an array is not silently coerced into one.
-    expect(body.ccAddressEmailList).toBe("kevin@distribute.you");
-    expect(typeof body.ccAddressEmailList).toBe("string");
+    expect(body.ccAddressEmailList).toBe("");
     expect(Object.keys(body)).not.toContain("bccAddressEmailList");
-    expect(result.cc).toBe("kevin@distribute.you");
+    expect(result.cc).toBe("");
   });
 
-  it("CCs it on the self-send transport, and never BCCs", async () => {
+  it("self-send transport, the lead WROTE on the thread: still no Cc, no Bcc", async () => {
     mockDbExecute
       .mockResolvedValueOnce(pgResult([campaignRow({ sendTransport: "smtp" })]))
       .mockResolvedValueOnce(
@@ -587,42 +582,13 @@ describe("the agency inbox rides every reply, in CC", () => {
     const result = await sendNow();
 
     const message = mockDispatchMessage.mock.calls[0][1] as Record<string, unknown>;
-    expect(message.cc).toBe("kevin@distribute.you");
-    expect(Object.keys(message)).not.toContain("bcc");
-    expect(message.headers).not.toHaveProperty("Bcc");
-    expect(result.cc).toBe("kevin@distribute.you");
-  });
-
-  it("only autoreplies on the thread (an out-of-office): nobody wrote, no copy (CC-SILENT-LEAD-1115)", async () => {
-    mockDbExecute
-      .mockResolvedValueOnce(pgResult([campaignRow({ sendTransport: "smtp" })]))
-      .mockResolvedValueOnce(
-        pgResult([{ messageId: "<ooo-1@media.com>", subject: "Out of office", at: "2026-09-01", someoneWrote: false }]),
-      )
-      .mockResolvedValueOnce(pgResult([{ messageId: "<ooo-1@media.com>" }]))
-      .mockResolvedValueOnce(pgResult([{ firstName: "Amy", lastName: "Moore" }]));
-    mockResolveCredential.mockResolvedValue({
-      address: "amy@boostdistribute.com",
-      appPassword: "pw",
-      smtpHost: "smtp.gmail.com",
-      imapHost: "imap.gmail.com",
-    });
-    mockDispatchMessage.mockResolvedValue({
-      messageId: "<out-1@boostdistribute.com>",
-      response: "250 OK",
-      accepted: ["alice@media.com"],
-      rejected: [],
-    });
-
-    const result = await sendNow();
-
-    const message = mockDispatchMessage.mock.calls[0][1] as Record<string, unknown>;
     expect(message.cc).toBe("");
     expect(Object.keys(message)).not.toContain("bcc");
+    expect(message.headers).not.toHaveProperty("Bcc");
     expect(result.cc).toBe("");
   });
 
-  it("follows ADMIN_NOTIFICATION_EMAIL — the address has ONE home, read at use", async () => {
+  it("ADMIN_NOTIFICATION_EMAIL set: the agency inbox still rides nothing", async () => {
     const previous = process.env.ADMIN_NOTIFICATION_EMAIL;
     process.env.ADMIN_NOTIFICATION_EMAIL = "inbox@agency.test";
     try {
@@ -632,14 +598,15 @@ describe("the agency inbox rides every reply, in CC", () => {
 
       const result = await sendNow();
 
-      expect(result.cc).toBe("inbox@agency.test");
+      expect(result.cc).toBe("");
+      expect(JSON.stringify(mockReplyToEmail.mock.calls[0])).not.toContain("agency.test");
     } finally {
       if (previous === undefined) delete process.env.ADMIN_NOTIFICATION_EMAIL;
       else process.env.ADMIN_NOTIFICATION_EMAIL = previous;
     }
   });
 
-  it("records the CC in bronze, so who was on the message stays recoverable", async () => {
+  it("records the (empty) Cc in bronze, so who was on the message stays recoverable", async () => {
     mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
     mockListEmails.mockResolvedValue([email({ id: "inbound-1", subject: "Hi" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
@@ -651,7 +618,7 @@ describe("the agency inbox rides every reply, in CC", () => {
       payload: Record<string, unknown>;
     };
     expect(row.step).toBe(MANUAL_REPLY_STEP);
-    expect(row.payload.cc).toBe("kevin@distribute.you");
+    expect(row.payload.cc).toBe("");
   });
 });
 
@@ -1038,7 +1005,7 @@ describe("every reply quotes the conversation below the signature (QUOTE-THREAD-
 
     const [, message] = mockDispatchMessage.mock.calls[0];
     expect(message.html.endsWith(QUOTE)).toBe(true);
-    expect(message.cc).toBe("kevin@distribute.you");
+    expect(message.cc).toBe("");
   });
 
   it("a caller's own quote (hand-over, not-a-prospect) is kept and nothing is re-read", async () => {
