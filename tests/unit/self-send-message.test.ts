@@ -18,6 +18,7 @@ import {
   extractReplyCode,
 } from "../../src/lib/self-send/smtp";
 import type { Account } from "../../src/lib/instantly-client";
+import { signatureBlockHtml as SIG, SIGNATURE_WRAPPER_OPEN } from "../../src/lib/send-lead";
 
 const SECRET = "test-secret";
 const IDENTITY = { instantlyCampaignId: "camp-1", leadEmail: "prospect@example.com" };
@@ -169,7 +170,7 @@ describe("From name follows the thread's signature (SENDER-NAME-VS-SOPHIE-1116)"
       optOut: "tracker_link",
     });
     expect(msg.from).toBe('"Sophie" <bria@ariacoreco.com>');
-    expect(msg.html.endsWith("<p>--</p><p>Sophie</p>")).toBe(true);
+    expect(msg.html.endsWith(SIG("<p>Sophie</p>"))).toBe(true);
   });
 
   it("takes the FIRST line of a multi-line signature (a client person + brand)", () => {
@@ -226,7 +227,7 @@ describe("buildMessage", () => {
 
   it("keeps the existing signature block rather than reimplementing it", () => {
     const message = build();
-    expect(message.html).toContain("<p>--</p>");
+    expect(message.html).toContain(SIGNATURE_WRAPPER_OPEN);
     expect(message.html).toContain("Amy Moore");
     expect(message.html).toContain("Distribute.you | Marketing Agency");
   });

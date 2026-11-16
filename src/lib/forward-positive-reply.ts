@@ -14,6 +14,7 @@
  * Instantly auto-pause the webhook).
  */
 
+import { signatureWrapperAsDashLine } from "./signature-marker";
 import type { MessageParticipant } from "./message-participants";
 import type { SentAttachment } from "./offer-documents";
 import type { EmailRecord } from "./instantly-client";
@@ -124,7 +125,7 @@ export interface ThreadMessage {
  */
 export function htmlToText(html: string): string {
   return quoteBlockquotes(flattenHtml(
-    html
+    signatureWrapperAsDashLine(html)
       .replace(/<\s*blockquote\b[^>]*>/gi, `\n${QUOTE_OPEN}\n`)
       .replace(/<\s*\/\s*blockquote\s*>/gi, `\n${QUOTE_CLOSE}\n`),
   ));

@@ -10,11 +10,13 @@ import { describe, expect, it, vi } from "vitest";
 import { buildMessage } from "../../src/lib/self-send/message";
 import { htmlToText } from "../../src/lib/forward-positive-reply";
 import {
+  INVISIBLE_SIGNATURE_MARKER_SINCE,
   logUnsignedSteps,
   sentBodyHtml,
   SIGNATURE_ONLY_SINCE,
 } from "../../src/lib/self-send/sent-body";
 import type { Account } from "../../src/lib/instantly-client";
+import { signatureBlockHtml as SIG } from "../../src/lib/send-lead";
 
 const STEP_BODY = "<p>Hi Stefan,</p><p>Worth a look: ascendqe.com</p>";
 const ELIZABETH = { email: "elizabeth@capebinaryio.com", first_name: "Elizabeth", last_name: "Thomas" } as Account;
@@ -37,7 +39,7 @@ function dispatched(account: Account, signatureHtml: string | null): string {
 const base = {
   bodyHtml: STEP_BODY,
   sequenceStep: true,
-  dispatchedAt: "2026-10-20T14:45:49Z",
+  dispatchedAt: "2026-11-20T14:45:49Z",
   accountKnown: true,
   accountEmail: ELIZABETH.email,
   accountFirstName: "Elizabeth",
@@ -64,6 +66,19 @@ describe("sentBodyHtml", () => {
     expect(served.bodyHtml).toBe(dispatched(ELIZABETH, pin));
     expect(htmlToText(served.bodyHtml)).toContain("Elizabeth Thomas\nHead of Growth, Acme\nelizabeth@capebinaryio.com");
     expect(served.bodyHtml).not.toContain("{");
+  });
+
+  it("SIG-NO-DASHES-1117: an unrecorded step sent before the change is re-rendered with its `--` line, as it left", () => {
+    const sig = "<p>Elizabeth Thomas<br>Distribute.you | Marketing Agency</p>";
+    const now = dispatched(ELIZABETH, null);
+    const served = sentBodyHtml({ ...base, dispatchedAt: "2026-10-20T14:45:49Z" });
+    expect(served.source).toBe("rendered");
+    expect(served.bodyHtml).toBe(now.replace(SIG(sig), `<p>--</p>${sig}`));
+    expect(served.bodyHtml.endsWith(`<p>--</p>${sig}`)).toBe(true);
+    const lastOld = sentBodyHtml({ ...base, dispatchedAt: new Date(INVISIBLE_SIGNATURE_MARKER_SINCE.getTime() - 1) });
+    expect(lastOld.bodyHtml).toBe(served.bodyHtml);
+    const firstNew = sentBodyHtml({ ...base, dispatchedAt: INVISIBLE_SIGNATURE_MARKER_SINCE });
+    expect(firstNew.bodyHtml).toBe(now);
   });
 
   it("serves a manual reply as stored (it is stored signed)", () => {
