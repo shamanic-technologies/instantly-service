@@ -68,6 +68,7 @@ import {
 import { buildMessage } from "../../src/lib/self-send/message";
 import { OPT_OUT_VARIANTS } from "../../src/lib/self-send/opt-out-variant";
 import type { Account } from "../../src/lib/instantly-client";
+import { SIGNATURE_WRAPPER_OPEN } from "../../src/lib/send-lead";
 
 describe("seed test id", () => {
   it("carries the seed: prefix so silver keeps our results distinguishable from Instantly's", () => {
@@ -393,7 +394,7 @@ describe("buildSeedMessage — the seed IS the email a prospect gets (UNSUB-3WAY
   it("carries the prospect machinery: From name, our signature, the variant's header", () => {
     const seed = buildSeedMessage({ testId: "seed:abc", account: ACCOUNT, receiverEmail: "r@two.com", optOut: "tracker_link", unsubscribeUrl: URL });
     expect(seed.from).toBe('"Amy Moore" <amy@one.com>');
-    expect(seed.html).toContain("<p>--</p>");
+    expect(seed.html).toContain(SIGNATURE_WRAPPER_OPEN);
     expect(seed.html).toContain("Distribute.you | Marketing Agency");
     expect(seed.headers["List-Unsubscribe"]).toBe(`<${URL}>`);
   });

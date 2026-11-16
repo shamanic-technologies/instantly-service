@@ -67,6 +67,7 @@ import {
 } from "../../src/lib/reply-to-lead";
 import { buildReplyBodyWithSignature } from "../../src/lib/send-lead";
 import type { Account, EmailRecord } from "../../src/lib/instantly-client";
+import { signatureBlockHtml as SIG, SIGNATURE_WRAPPER_OPEN } from "../../src/lib/send-lead";
 
 /** Recursively extract SQL text fragments from a drizzle SQL object. */
 function extractSqlText(obj: unknown): string {
@@ -205,7 +206,7 @@ describe("buildReplyBodyWithSignature", () => {
   it("signs with the account's OWN persona", () => {
     const html = buildReplyBodyWithSignature("<p>Hi</p>", ACCOUNT);
     expect(html).toContain("Amy Moore");
-    expect(html).toContain("<p>--</p>");
+    expect(html).toContain(SIGNATURE_WRAPPER_OPEN);
   });
 
   it("does NOT append the unsubscribe footer — a threaded reply is not bulk mail", () => {
@@ -258,7 +259,7 @@ describe("replyToLead over Instantly", () => {
     await sendNow();
 
     const body = mockReplyToEmail.mock.calls[0][1].bodyHtml as string;
-    expect(body.endsWith("<p>--</p><p>Jane Doe<br>Acme Corp</p>")).toBe(true);
+    expect(body.endsWith(SIG("<p>Jane Doe<br>Acme Corp</p>"))).toBe(true);
     expect(body).not.toContain("Distribute.you | Marketing Agency");
     expect(body).not.toContain("Amy Moore");
   });
@@ -271,7 +272,7 @@ describe("replyToLead over Instantly", () => {
     await sendNow();
 
     const body = mockReplyToEmail.mock.calls[0][1].bodyHtml as string;
-    expect(body).toContain("<p>--</p><p>Amy Moore<br>Distribute.you | Marketing Agency</p>");
+    expect(body).toContain(SIG("<p>Amy Moore<br>Distribute.you | Marketing Agency</p>"));
   });
 
   it("falls back to the mailbox on the inbound record when the row predates account_email", async () => {

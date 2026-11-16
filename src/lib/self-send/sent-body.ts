@@ -49,6 +49,14 @@ export const SIGNATURE_ONLY_SINCE = new Date("2026-09-29T00:00:00Z");
  */
 export const TRAILING_SIGNATURE_DEDUP_SINCE = new Date("2026-11-14T00:00:00Z");
 
+/**
+ * From this instant the signature's boundary is invisible (SIG-NO-DASHES-1117,
+ * shipped 2026-11-17): an unrecorded send before it is re-rendered with the
+ * retired `<p>--</p>` line, as it left. Midnight after the ship is the
+ * conservative bound, like the two cutoffs above.
+ */
+export const INVISIBLE_SIGNATURE_MARKER_SINCE = new Date("2026-11-18T00:00:00Z");
+
 /** The columns of one dispatched row the choice reads. */
 export interface DispatchedBodyRow {
   /** The stored body: the step's unsigned body, or a manual reply's signed one. */
@@ -103,6 +111,7 @@ export function sentBodyHtml(row: DispatchedBodyRow): SentBody {
   return {
     bodyHtml: buildEmailBodyWithSignature(row.bodyHtml, account, row.pinnedSignatureHtml ?? null, {
       keepTrailingSignatureRepeat: at.getTime() < TRAILING_SIGNATURE_DEDUP_SINCE.getTime(),
+      legacyDashSeparator: at.getTime() < INVISIBLE_SIGNATURE_MARKER_SINCE.getTime(),
     }),
     source: "rendered",
   };

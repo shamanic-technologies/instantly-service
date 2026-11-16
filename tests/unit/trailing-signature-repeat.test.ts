@@ -9,6 +9,7 @@ import {
 } from "../../src/lib/send-lead";
 import { sentBodyHtml } from "../../src/lib/self-send/sent-body";
 import type { Account } from "../../src/lib/instantly-client";
+import { signatureBlockHtml as SIG, SIGNATURE_WRAPPER_OPEN } from "../../src/lib/send-lead";
 
 vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -27,8 +28,8 @@ describe("DOUBLE-SIGNATURE-1113: a body ending with the signature is signed once
   it("Phitilda: the writer's {full_name}<br>Beyond Logic is dropped, the appended signature stays", () => {
     const out = buildEmailBodyWithSignature(PHITILDA_BODY, kevin, PIN);
     expect(count(out, "Kevin Lourd<br>Beyond Logic")).toBe(1);
-    expect(out.endsWith("<p>--</p><p>Kevin Lourd<br>Beyond Logic</p>")).toBe(true);
-    expect(out).toContain("authorization tracking.</p><p>--</p>");
+    expect(out.endsWith(SIG("<p>Kevin Lourd<br>Beyond Logic</p>"))).toBe(true);
+    expect(out).toContain(`authorization tracking.</p>${SIGNATURE_WRAPPER_OPEN}`);
   });
 
   it("same with the placeholder already filled by the writer", () => {
@@ -61,7 +62,7 @@ describe("DOUBLE-SIGNATURE-1113: a body ending with the signature is signed once
 
   it("a reply carrying the signature is signed once", () => {
     const out = buildReplyBodyWithSignature("<p>Sure, Tuesday works.</p><p>{full_name}<br>Beyond Logic</p>", kevin, PIN);
-    expect(out).toBe("<p>Sure, Tuesday works.</p><p>--</p><p>Kevin Lourd<br>Beyond Logic</p>");
+    expect(out).toBe("<p>Sure, Tuesday works.</p>" + SIG("<p>Kevin Lourd<br>Beyond Logic</p>"));
   });
 
   it("a body that does not END with it is untouched (byte-identical to before)", () => {
@@ -80,7 +81,7 @@ describe("DOUBLE-SIGNATURE-1113: a body ending with the signature is signed once
       expect(stripTrailingSignatureRepeat(body, "<p>Kevin Lourd<br>Beyond Logic</p>")).toBe(body);
     }
     const out = buildEmailBodyWithSignature(PHITILDA_HEAD, kevin, PIN);
-    expect(out).toBe(`${PHITILDA_HEAD}<p>--</p><p>Kevin Lourd<br>Beyond Logic</p>`);
+    expect(out).toBe(`${PHITILDA_HEAD}` + SIG(`<p>Kevin Lourd<br>Beyond Logic</p>`));
   });
 
   it("idempotent: f(f(x)) === f(x)", () => {

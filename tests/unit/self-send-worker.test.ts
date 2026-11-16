@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { signatureBlockHtml as SIG } from "../../src/lib/send-lead";
 
 const mockExecute = vi.fn();
 const mockInsertValues = vi.fn();
@@ -556,7 +557,7 @@ describe("runDispatch — the client's signature pinned on the thread", () => {
     await runDispatch({ asOf: NOW });
 
     const message = mockDispatchMessage.mock.calls[0]![1] as Record<string, unknown>;
-    expect(message.html).toContain("<p>--</p><p>Jane Doe<br>Acme Corp</p>");
+    expect(message.html).toContain(SIG("<p>Jane Doe<br>Acme Corp</p>"));
     expect(message.html).not.toContain("Distribute.you | Marketing Agency");
   });
 });

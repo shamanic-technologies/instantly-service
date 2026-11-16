@@ -75,7 +75,9 @@ export const MAX_PRIOR_MESSAGES = 5;
  * (`\n\n--\n`) survives depends on how the delimiter was wrapped (`<p>--</p>`
  * yields an empty line before it, `<br>--<br>` does not). What survives the
  * conversion in EVERY case is a line that is exactly `--`, which is what this
- * matches.
+ * matches. Since SIG-NO-DASHES-1117 the sent HTML carries no `--` (an invisible
+ * wrapper marks the signature), and `htmlToText` writes that wrapper back as a
+ * `--` line, so this cut keeps working on every body, old and new.
  */
 const SPOKEN_SIGNATURE_LINE = /^[ \t]*--[ \t]*$/;
 

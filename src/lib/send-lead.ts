@@ -17,6 +17,11 @@
  * 72h later if the campaign never sends).
  */
 
+import {
+  SIGNATURE_WRAPPER_CLOSE,
+  SIGNATURE_WRAPPER_MARKER,
+  SIGNATURE_WRAPPER_OPEN,
+} from "./signature-marker";
 import linkifyHtml from "linkify-html";
 import {
   createCampaign as createInstantlyCampaign,
@@ -578,12 +583,35 @@ export function buildDefaultSignature(account: Account): string {
 }
 
 /**
- * HTML signature separator. RFC 3676 plain text uses `\n\n--\n`, but Instantly's
- * HTML sanitizer normalizes that to nothing on PATCH round-trip — the `<p>--</p>`
- * form survives and renders as the expected `--` delimiter line in mail clients.
- * Matched in stripAccountSignature via the `<p>--</p>` regex in SIG_MARKERS.
+ * The signature's boundary is INVISIBLE (SIG-NO-DASHES-1117, owner 2026-11-17:
+ * the `--` line printed between "Cheers," and the signature on every email is
+ * gone from what the reader sees, on both transports).
+ *
+ * The signature is wrapped in a `<div>` whose `style` is the marker: a zero box
+ * (`margin:0;padding:0;border:0`) that renders nothing of its own, so the email
+ * reads "Cheers," + one blank line (the paragraphs' own spacing) + the
+ * signature. A style attribute on an element survives Instantly's HTML sanitizer
+ * on PATCH (bronze configs carry our `<p style="...">` verbatim), where bare
+ * text and a plain `\n\n--\n` did not (a live probe 2026-11-17 was refused:
+ * the platform Instantly account answers 402, the transport sends nothing
+ * today). No hidden text, no tiny font (spam signals), no HTML comment (never
+ * seen through the sanitizer).
+ *
+ * The retired visible separator `<p>--</p>` (every email built before
+ * 2026-11-17) is still READ everywhere: `stripAccountSignature` cuts at either
+ * marker, `htmlToText` turns the new one back into a `--` line for every text
+ * reader, and `sent-body.ts` re-renders an unrecorded send from before the
+ * change with `legacyDashSeparator`, exactly as it left.
  */
-const SIG_SEPARATOR_HTML = "<p>--</p>";
+/** The retired visible separator: only for re-rendering history. */
+export const LEGACY_SIG_SEPARATOR_HTML = "<p>--</p>";
+
+/** The marker-wrapped signature block every email ends on. */
+export function signatureBlockHtml(signature: string, opts: { legacyDashSeparator?: boolean } = {}): string {
+  return opts.legacyDashSeparator
+    ? `${LEGACY_SIG_SEPARATOR_HTML}${signature}`
+    : `${SIGNATURE_WRAPPER_OPEN}${signature}${SIGNATURE_WRAPPER_CLOSE}`;
+}
 
 /**
  * ⚠️ NOTHING is appended below the signature — a cold email ENDS on it.
@@ -602,8 +630,8 @@ const SIG_SEPARATOR_HTML = "<p>--</p>";
  *     recorded as a consent statement, and ANY human reply stops the sequence.
  *
  * A body stored with either retired footer loses it on the next build: both sat
- * after the `<p>--</p>` marker, so `stripAccountSignature` removes them with the
- * old signature.
+ * after the old `<p>--</p>` marker, so `stripAccountSignature` removes them with
+ * the old signature.
  */
 
 /**
@@ -633,6 +661,11 @@ export interface BuildBodyOptions {
    * (`sent-body.ts`): history is served as it left, never rewritten.
    */
   keepTrailingSignatureRepeat?: boolean;
+  /**
+   * Sign with the retired visible `<p>--</p>` separator. ONLY for re-rendering an
+   * email sent before SIG-NO-DASHES-1117 (`sent-body.ts`): history as it left.
+   */
+  legacyDashSeparator?: boolean;
 }
 
 /**
@@ -686,7 +719,7 @@ export function buildEmailBodyWithSignature(
   const stripped = prepareBodyForSignature(body, account, signature, opts);
 
   const linkedBody = tagColdEmailLinks(autolinkifyHtml(stripped));
-  const sigBlock = `${SIG_SEPARATOR_HTML}${signature}`;
+  const sigBlock = signatureBlockHtml(signature, opts);
 
   return linkedBody.includes("{{accountSignature}}")
     ? linkedBody.replace("{{accountSignature}}", sigBlock)
@@ -697,7 +730,7 @@ export function buildEmailBodyWithSignature(
  * Body of a CONVERSATIONAL REPLY, signed with the sending account's persona.
  *
  * Same strip-then-append shape as `buildEmailBodyWithSignature` — the same
- * `stripAccountSignature`, the same separator, the same per-account signature —
+ * `stripAccountSignature`, the same marker, the same per-account signature —
  * so a reply is signed by the person the prospect has been talking to, and is
  * idempotent (`f(f(x)) === f(x)`) for exactly the reasons that function
  * documents.
@@ -714,12 +747,15 @@ export function buildReplyBodyWithSignature(
   const signature = resolveSignatureBlock(account, pinnedSignatureHtml);
   const stripped = prepareBodyForSignature(body, account, signature);
   const linkedBody = tagColdEmailLinks(autolinkifyHtml(stripped));
-  return `${linkedBody}${SIG_SEPARATOR_HTML}${signature}`;
+  return `${linkedBody}${signatureBlockHtml(signature)}`;
 }
 
 /**
- * Markers that announce a signature block. Each matches a standalone `--`
- * line in one of the common email/HTML forms:
+ * Markers that announce a signature block:
+ *   - `SIGNATURE_WRAPPER_OPEN`, the invisible marker every email carries since
+ *     SIG-NO-DASHES-1117 (style tolerated in the spacing a sanitizer may give it)
+ * and the retired visible `--` line, in every common email/HTML form, still
+ * read so a body built or stored before the change is stripped exactly as before:
  *   - `\n\n--\n` plain text (RFC 3676 sig delimiter, with optional trailing space)
  *   - `<p>--</p>` paragraph-wrapped
  *   - `<br>--<br>` line-break-wrapped
@@ -727,6 +763,7 @@ export function buildReplyBodyWithSignature(
  * `&nbsp;` may appear adjacent to the `--` in HTML forms (HTML-rendered RFC 3676).
  */
 const SIG_MARKERS: RegExp[] = [
+  SIGNATURE_WRAPPER_MARKER,
   /\n\n--\s*\n/,
   /<p[^>]*>\s*--\s*(?:&nbsp;)?\s*<\/p>/i,
   /<br\s*\/?>\s*--\s*(?:&nbsp;)?\s*<br\s*\/?>/i,
@@ -763,6 +800,8 @@ export function stripAccountSignature(body: string): string {
   if (earliest === -1) return body;
   return body.slice(0, earliest);
 }
+
+export { SIGNATURE_WRAPPER_OPEN, SIGNATURE_WRAPPER_MARKER };
 
 export interface SortedSequenceStep {
   step: number;
