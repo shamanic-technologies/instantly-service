@@ -281,6 +281,7 @@ import { dropRefusedSenders } from "../../src/lib/self-send/refused-senders";
 import type { Account } from "../../src/lib/instantly-client";
 import request from "supertest";
 import express from "express";
+import { signatureBlockHtml as SIG, SIGNATURE_WRAPPER_OPEN } from "../../src/lib/send-lead";
 
 async function createSendApp() {
   const sendRouter = (await import("../../src/routes/send")).default;
@@ -1165,32 +1166,33 @@ describe("autolinkifyHtml", () => {
 describe("buildEmailBodyWithSignature", () => {
   const sig = "<p>Best,<br>John Doe</p>";
 
-  it("should append HTML <p>--</p> separator + signature to body", () => {
+  it("should append the invisibly marked signature block to body", () => {
     const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: sig }));
-    expect(result).toBe(`<p>Hello</p><p>--</p>${sig}`);
+    expect(result).toBe(`<p>Hello</p>` + SIG(sig));
   });
 
   it("should replace {{accountSignature}} placeholder with HTML separator + signature", () => {
     const body = "Hello\n\n{{accountSignature}}";
     const result = buildEmailBodyWithSignature(body, acct({ signature: sig }));
-    expect(result).toBe(`Hello\n\n<p>--</p>${sig}`);
+    expect(result).toBe(`Hello\n\n` + SIG(sig));
   });
 
   it("falls back to the canonical Distribute.you signature when account.signature is empty (with placeholder)", () => {
     const body = "Hello\n\n{{accountSignature}}";
     const result = buildEmailBodyWithSignature(body, acct({ email: "kevinl@growthagency.dev", signature: "" }));
-    expect(result).toContain("<p>--</p>");
+    expect(result).toContain(SIGNATURE_WRAPPER_OPEN);
     expect(result).toContain("Kevin Lourd");
     expect(result).not.toContain("Founder");
     expect(result).toContain("Distribute.you | Marketing Agency");
-    expect((result.match(/<p>--<\/p>/g) ?? []).length).toBe(1);
+    expect(result.split(SIGNATURE_WRAPPER_OPEN).length - 1).toBe(1);
+    expect(result).not.toMatch(/--/);
   });
 
   it("falls back to the canonical Distribute.you signature when account.signature is empty (no placeholder)", () => {
     // Brand line is plain text — NOT auto-linkified into an <a>.
     const result = buildEmailBodyWithSignature("Hello", acct({ email: "kevinl@growthagency.dev" }));
     expect(result).toBe(
-      `Hello<p>--</p><p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>`,
+      `Hello` + SIG(`<p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>`),
     );
     // The brand line stays plain text, and the opt-out line carries no link.
     expect((result.match(/<a /g) ?? []).length).toBe(0);
@@ -1214,7 +1216,7 @@ describe("buildEmailBodyWithSignature", () => {
       acct({ email: "amy@gildcultivatecoil.com", first_name: "Amy", last_name: "Moore" }),
     );
     expect(result).toBe(
-      `Hello<p>--</p><p>Amy Moore<br>Distribute.you | Marketing Agency</p>`,
+      `Hello` + SIG(`<p>Amy Moore<br>Distribute.you | Marketing Agency</p>`),
     );
     expect(result).not.toContain("Kevin Lourd");
     expect(result).not.toContain("Founder");
@@ -1242,8 +1244,8 @@ describe("buildEmailBodyWithSignature", () => {
     const newSig = "<p>Best,<br>Jane</p>";
     const body = `<p>Hello world</p>\n\n--\n<p>Old signature from Bob</p>`;
     const result = buildEmailBodyWithSignature(body, acct({ signature: newSig }));
-    expect(result).toBe(`<p>Hello world</p><p>--</p>${newSig}`);
-    expect(result.match(/--/g)?.length).toBe(1);
+    expect(result).toBe(`<p>Hello world</p>` + SIG(newSig));
+    expect(result).not.toMatch(/--/);
   });
 
   it("strips a pre-existing HTML <p>--</p> signature marker before appending", () => {
@@ -1274,7 +1276,7 @@ describe("buildEmailBodyWithSignature", () => {
     expect(result).not.toContain("Sig Two");
     expect(result).not.toContain("Sig Three");
     expect(result).toContain(newSig);
-    expect(result).toBe(`<p>Hello</p><p>--</p>${newSig}`);
+    expect(result).toBe(`<p>Hello</p>` + SIG(newSig));
   });
 
   it("collapses stacked HTML signatures into exactly 1 signature", () => {
@@ -1299,7 +1301,7 @@ describe("buildEmailBodyWithSignature", () => {
   // and the reply classifier. This test is the guard against a footer returning.
   it("ends on the signature: nothing appended after the brand line", () => {
     const result = buildEmailBodyWithSignature("<p>Hi</p>", acct({ email: "kevinl@growthagency.dev" }));
-    expect(result).toBe("<p>Hi</p><p>--</p><p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>");
+    expect(result).toBe("<p>Hi</p>" + SIG("<p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>"));
     expect(result).not.toContain('Reply "stop"');
     expect(result).not.toContain("&nbsp;");
   });
@@ -1310,20 +1312,20 @@ describe("buildEmailBodyWithSignature", () => {
       "<p>Hi</p><p>--</p><p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>" +
       '<p>&nbsp;</p><p>Not relevant? Reply "stop" and I won\'t email you again.</p>';
     const once = buildEmailBodyWithSignature(stored, account);
-    expect(once).toBe("<p>Hi</p><p>--</p><p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>");
+    expect(once).toBe("<p>Hi</p>" + SIG("<p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>"));
     expect(buildEmailBodyWithSignature(once, account)).toBe(once);
   });
 
   it("account.signature wins over per-account default signature when present", () => {
     const result = buildEmailBodyWithSignature("<p>Hello</p>", acct({ signature: "<p>Account Sig</p>" }));
-    expect(result).toBe(`<p>Hello</p><p>--</p><p>Account Sig</p>`);
+    expect(result).toBe(`<p>Hello</p>` + SIG(`<p>Account Sig</p>`));
     expect(result).not.toContain("Kevin Lourd");
   });
 
   it("canonical fallback also strips stacked sigs (idempotence preserved)", () => {
     const body = "<p>Hello</p>\n\n--\n<p>Old Sig 1</p>\n\n--\n<p>Old Sig 2</p>";
     const result = buildEmailBodyWithSignature(body, acct({ email: "kevinl@growthagency.dev", signature: "" }));
-    expect(result).toContain("<p>Hello</p><p>--</p><p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>");
+    expect(result).toContain("<p>Hello</p>" + SIG("<p>Kevin Lourd<br>Distribute.you | Marketing Agency</p>"));
     expect(result).not.toContain("Old Sig 1");
     expect(result).not.toContain("Old Sig 2");
   });
@@ -1379,6 +1381,7 @@ describe("stripAccountSignature", () => {
     const inputs = [
       "<p>Hello</p>\n\n--\n<p>Sig</p>",
       "<p>Hello</p><p>--</p><p>Sig</p>",
+      "<p>Hello</p>" + SIG("<p>Sig</p>"),
       "<p>Hello</p>",
       "<p>Hello</p><br>--<br><p>Sig</p>",
     ];
@@ -1673,7 +1676,7 @@ describe("POST /send", () => {
     );
     const createCall = mockCreateCampaign.mock.calls[0][1];
     for (const step of createCall.steps) {
-      expect(step.bodyHtml.endsWith("<p>--</p><p>Jane Doe<br>Acme Corp</p>")).toBe(true);
+      expect(step.bodyHtml.endsWith(SIG("<p>Jane Doe<br>Acme Corp</p>"))).toBe(true);
       expect(step.bodyHtml).not.toContain("<p>Best,<br>Sender</p>");
       expect(step.bodyHtml).not.toContain("Distribute.you | Marketing Agency");
     }
@@ -1738,7 +1741,7 @@ describe("POST /send", () => {
       for (const step of mockCreateCampaign.mock.calls[0][1].steps) {
         // The mock mailbox has no name: the persona line renders empty and is
         // tidied away (the filled case is pinned in brand-email-signature.test.ts).
-        expect(step.bodyHtml).toMatch(/<p>--<\/p><p>([^<{}]+<br>)?Doc Dinners<\/p>$/);
+        expect(step.bodyHtml).toMatch(/<div style="margin:0;padding:0;border:0"><p>([^<{}]+<br>)?Doc Dinners<\/p><\/div>$/);
         expect(step.bodyHtml).not.toContain("Distribute.you | Marketing Agency");
         expect(step.bodyHtml).not.toContain("{full_name}");
       }
@@ -1774,7 +1777,7 @@ describe("POST /send", () => {
         .send({ ...validBody, signature: { text: "Kevin\nDoc Dinners" } });
       expect(pinOf()).toMatchObject({ signatureHtml: "<p>Kevin<br>Doc Dinners</p>" });
       for (const step of mockCreateCampaign.mock.calls[0][1].steps) {
-        expect(step.bodyHtml.endsWith("<p>--</p><p>Kevin<br>Doc Dinners</p>")).toBe(true);
+        expect(step.bodyHtml.endsWith(SIG("<p>Kevin<br>Doc Dinners</p>"))).toBe(true);
       }
     });
 

@@ -24,6 +24,7 @@ import {
   resolveSignatureBlock,
 } from "../../src/lib/send-lead";
 import type { Account } from "../../src/lib/instantly-client";
+import { signatureBlockHtml as SIG } from "../../src/lib/send-lead";
 
 const ACCOUNT = { email: "amy@boostdistribute.com", first_name: "Amy", last_name: "Moore" } as Account;
 const CLIENT = renderSignatureHtml("Jane Doe\nHead of Sales, Acme");
@@ -60,7 +61,7 @@ describe("the signature an email ends with", () => {
     const email = buildEmailBodyWithSignature("<p>Hi Bob</p>", ACCOUNT, CLIENT);
     const reply = buildReplyBodyWithSignature("<p>Thanks</p>", ACCOUNT, CLIENT);
     for (const body of [email, reply]) {
-      expect(body.endsWith(`<p>--</p>${CLIENT}`)).toBe(true);
+      expect(body.endsWith(SIG(CLIENT))).toBe(true);
       expect(body).not.toContain("Distribute.you | Marketing Agency");
       expect(body).not.toContain("Amy Moore");
     }
@@ -135,8 +136,8 @@ describe("sender placeholders: the signature names the mailbox that sends", () =
       });
     const ruth = build(RUTH);
     const fallon = build(FALLON);
-    expect(ruth.html).toContain("<p>--</p><p>Ruth Chandler, DefiniteJobs<br>ruth@agileconsultco.com</p>");
-    expect(fallon.html).toContain("<p>--</p><p>Fallon Price, DefiniteJobs<br>fallon@boostdistribute.com</p>");
+    expect(ruth.html).toContain(SIG("<p>Ruth Chandler, DefiniteJobs<br>ruth@agileconsultco.com</p>"));
+    expect(fallon.html).toContain(SIG("<p>Fallon Price, DefiniteJobs<br>fallon@boostdistribute.com</p>"));
     // The From name is who signs: the pinned signature's first line, filled per mailbox.
     expect(ruth.from).toBe('"Ruth Chandler, DefiniteJobs" <ruth@agileconsultco.com>');
     expect(fallon.from).toBe('"Fallon Price, DefiniteJobs" <fallon@boostdistribute.com>');
@@ -147,7 +148,7 @@ describe("sender placeholders: the signature names the mailbox that sends", () =
     const pinned = renderSignatureHtml("{full_name}\nDefiniteJobs");
     const email = buildEmailBodyWithSignature("<p>Hi</p>", RUTH, pinned);
     const reply = buildReplyBodyWithSignature("<p>Thanks</p>", RUTH, pinned);
-    for (const body of [email, reply]) expect(body.endsWith("<p>--</p><p>Ruth Chandler<br>DefiniteJobs</p>")).toBe(true);
+    for (const body of [email, reply]) expect(body.endsWith(SIG("<p>Ruth Chandler<br>DefiniteJobs</p>"))).toBe(true);
     expect(buildEmailBodyWithSignature(email, RUTH, pinned)).toBe(email);
   });
 
@@ -187,7 +188,7 @@ describe("script-chosen signature", () => {
     const { html, source } = chooseThreadSignature(null, { text: "{full_name}\nDoc Dinners" });
     expect(source).toBe("script");
     expect(buildEmailBodyWithSignature("<p>Hi</p>", SARAH, html)).toBe(
-      "<p>Hi</p><p>--</p><p>Sarah Miller<br>Doc Dinners</p>",
+      "<p>Hi</p>" + SIG("<p>Sarah Miller<br>Doc Dinners</p>"),
     );
     // Mailboxes rotate: the same pin names whoever sends.
     expect(resolveSignatureBlock(ACCOUNT, html)).toBe("<p>Amy Moore<br>Doc Dinners</p>");
@@ -197,14 +198,14 @@ describe("script-chosen signature", () => {
     expect(chooseThreadSignature(null, "default")).toEqual({ html: null, source: "ours" });
     expect(chooseThreadSignature(null, undefined)).toEqual({ html: null, source: "ours" });
     expect(buildEmailBodyWithSignature("<p>Hi</p>", SARAH, null)).toBe(
-      "<p>Hi</p><p>--</p><p>Sarah Miller<br>Distribute.you | Marketing Agency</p>",
+      "<p>Hi</p>" + SIG("<p>Sarah Miller<br>Distribute.you | Marketing Agency</p>"),
     );
   });
 
   it("case 3: a person of the client + the client's brand", () => {
     const { html } = chooseThreadSignature(null, { text: "Kevin\nDoc Dinners" });
     expect(buildEmailBodyWithSignature("<p>Hi</p>", SARAH, html)).toBe(
-      "<p>Hi</p><p>--</p><p>Kevin<br>Doc Dinners</p>",
+      "<p>Hi</p>" + SIG("<p>Kevin<br>Doc Dinners</p>"),
     );
   });
 
