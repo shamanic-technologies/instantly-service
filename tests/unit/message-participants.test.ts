@@ -176,6 +176,29 @@ describe("what we sent states every address on it", () => {
     expect(m.text).toContain("Schweiz");
   });
 
+  it("serves the From name as it LEFT (recorded header), else the mailbox's name (SENDER-NAME-VS-SOPHIE-1116)", () => {
+    const row = {
+      id: "d2",
+      instantly_campaign_id: "self:y",
+      lead_email: "steve@example.com",
+      account_email: "bria@ariacoreco.com",
+      step: 1,
+      outcome: "sent",
+      message_id: "<s@x>",
+      payload: {},
+      dispatched_at: new Date("2026-11-16T13:09:00Z"),
+      a_email: "bria@ariacoreco.com",
+      a_first_name: "Bria",
+      a_last_name: "Rosario",
+    };
+    const fromOf = (m: ReturnType<typeof buildDispatchMessage>) => m.from;
+    expect(fromOf(buildDispatchMessage({ ...row, sent_from: '"Sophie" <bria@ariacoreco.com>' }))).toEqual({
+      address: "bria@ariacoreco.com",
+      name: "Sophie",
+    });
+    expect(fromOf(buildDispatchMessage(row))).toEqual({ address: "bria@ariacoreco.com", name: "Bria Rosario" });
+  });
+
   it("the Instantly mirror's lists are read too", () => {
     const env = instantlyEnvelope({
       from_address_email: "drgallego@shinwellness.com",
