@@ -35,6 +35,7 @@ import { db } from "../db";
 import { htmlToText } from "./forward-positive-reply";
 import {
   dispatchEnvelope,
+  parseAddressHeader,
   imapEnvelope,
   instantlyEnvelope,
   type MessageAddress,
@@ -193,7 +194,10 @@ export function buildDispatchMessage(r: Record<string, unknown>): BuiltMessage {
   const step = Number(r.step);
   const manual = step === 0;
   const accountEmail = String(r.account_email).toLowerCase();
-  const name = [str(r.a_first_name), str(r.a_last_name)].filter(Boolean).join(" ");
+  // The From name as it LEFT (recorded header), since SENDER-NAME-VS-SOPHIE-1116
+  // the thread's signer; an unrecorded send = the mailbox's own name, as then.
+  const sentName = parseAddressHeader(str(r.sent_from))[0]?.name ?? null;
+  const name = sentName ?? [str(r.a_first_name), str(r.a_last_name)].filter(Boolean).join(" ");
   const env = dispatchEnvelope({
     accountEmail,
     accountName: name || null,
@@ -305,6 +309,7 @@ async function loadDispatchRows(ids: string[]): Promise<Record<string, unknown>[
              d.message_id, d.payload, d.dispatched_at,
              s.subject AS s_subject, s.body_html AS s_body_html,
              sm.message_inputs->'built'->>'html' AS sent_html,
+             sm.message_inputs->'built'->>'from' AS sent_from,
              a.email AS a_email, a.first_name AS a_first_name, a.last_name AS a_last_name,
              ${CAMPAIGN_COLUMNS}
       FROM smtp_dispatch_raw d

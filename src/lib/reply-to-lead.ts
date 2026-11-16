@@ -983,7 +983,7 @@ async function deliverInstantlyReply(
     instantlyCampaignId: campaign.instantlyCampaignId,
     leadEmail: campaign.leadEmail,
     accountEmail,
-    from: buildFromHeader(account),
+    from: buildFromHeader(account, campaign.signatureHtml),
     subject,
     cc,
     bcc,
@@ -1045,7 +1045,7 @@ async function prepareSmtpReply(
     account,
     subject: fillSenderTokensInSubject(replySubject(anchor.subject), account),
     bodyHtml: signedBody(input, account, campaign),
-    from: buildFromHeader(account),
+    from: buildFromHeader(account, campaign.signatureHtml),
     ...replyCopy(input, salesRepCopy, anchor.someoneWrote !== false),
   };
 }
@@ -1104,7 +1104,7 @@ async function prepareOwnAddressReply(
     account,
     subject: fillSenderTokensInSubject(replySubject(elsewhere.subject), account),
     bodyHtml: signedBody(input, account, campaign),
-    from: buildFromHeader(account),
+    from: buildFromHeader(account, campaign.signatureHtml),
     cc: notSelf(copy.cc),
     bcc: notSelf(copy.bcc),
   };
@@ -1159,7 +1159,7 @@ async function prepareChosenThreadReply(
     account,
     subject: fillSenderTokensInSubject(chosen ? replySubject(anchor.subject) : (input.newThreadSubject ?? "").trim(), account),
     bodyHtml: signedBody(input, account, campaign),
-    from: buildFromHeader(account),
+    from: buildFromHeader(account, campaign.signatureHtml),
     ...replyCopy(input, salesRepCopy, someoneWrote),
   };
 }
