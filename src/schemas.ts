@@ -3375,6 +3375,32 @@ const OptOutVariantCountsSchema = z.object({
   microsoftConsumer: OptOutProviderCountsSchema.describe("Outlook.com (shown, never scored)"),
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/internal/seed-placement/postmark-domains",
+  summary: "Gandi sending domains moving to Postmark: state per domain",
+  description:
+    "POSTMARK-COLD-1117. Platform-scoped, read-only. A domain whose `liveSince` is set sends every email to a person (sequence steps, answers, weekly seeds) through the Postmark cold server; `lastError` `domain_cap` = the Postmark account holds no more domains (plan), `awaiting_dns_verification` = DNS written, Postmark not verified yet.",
+  responses: { 200: { description: "Domains", content: { "application/json": { schema: z.object({ domains: z.array(z.record(z.string(), z.unknown())) }) } } }, 401: { description: "Unauthorized" } },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/seed-placement/postmark-domains/onboard",
+  summary: "Move Gandi sending domains one step toward Postmark now (the worker does it every 15 min)",
+  description:
+    "POSTMARK-COLD-1117. Candidates = Gandi domains with an address in production or recovery, brand domains (`instantly_domain_policy`) excluded. Per domain: created on the Postmark account, DKIM TXT + Return-Path CNAME written at Gandi (nothing else), verification asked; live once both pass. `dryRun` defaults TRUE.",
+  request: { body: { content: { "application/json": { schema: z.object({ dryRun: z.boolean().optional(), domains: z.array(z.string()).optional() }) } } } },
+  responses: { 200: { description: "Summary", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 401: { description: "Unauthorized" } },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/seed-placement/postmark-bounces",
+  summary: "File Postmark's bounce reports on their sends now (the worker does it every 15 min)",
+  responses: { 200: { description: "Summary", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 401: { description: "Unauthorized" } },
+});
+
 const PlacementComparisonCellSchema = z.object({
   transport: z.string().describe("`postmark` = the Postmark API from a domain we own; `smtp` = one of our mailboxes"),
   recipientEsp: z.number().int().describe("1 Gmail (Google Workspace receivers), 2 Microsoft 365, 4 Outlook.com"),

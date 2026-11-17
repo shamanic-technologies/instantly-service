@@ -17,6 +17,8 @@ import {
   refreshSeedPlacementDaily,
 } from "../lib/seed-placement/daily";
 import { loadOptOutComparison } from "../lib/seed-placement/opt-out-choice";
+import { listPostmarkSendingDomains, onboardPostmarkDomains } from "../lib/self-send/postmark-domains";
+import { pollPostmarkBounces } from "../lib/self-send/postmark-bounces";
 import {
   MAX_COMPARISON_COPIES,
   loadPlacementComparison,
@@ -25,6 +27,35 @@ import {
 } from "../lib/seed-placement/comparison";
 
 const router = Router();
+
+/** Gandi domains moving to Postmark: state per domain (POSTMARK-COLD-1117). */
+router.get("/postmark-domains", async (_req: Request, res: Response) => {
+  try {
+    return res.json({ domains: await listPostmarkSendingDomains() });
+  } catch (error) {
+    return res.status(500).json({ error: errorMessage(error) });
+  }
+});
+
+/** Move domains one step now. `dryRun` defaults TRUE; `domains` narrows the candidates. */
+router.post("/postmark-domains/onboard", async (req: Request, res: Response) => {
+  const dryRun = req.body?.dryRun !== false;
+  const domains = Array.isArray(req.body?.domains) ? req.body.domains.map(String) : undefined;
+  try {
+    return res.json(await onboardPostmarkDomains({ dryRun, domains }));
+  } catch (error) {
+    return res.status(500).json({ error: errorMessage(error) });
+  }
+});
+
+/** File Postmark's bounce reports now (the worker does it every 15 min). */
+router.post("/postmark-bounces", async (_req: Request, res: Response) => {
+  try {
+    return res.json(await pollPostmarkBounces());
+  } catch (error) {
+    return res.status(500).json({ error: errorMessage(error) });
+  }
+});
 
 /**
  * One-off placement comparison (POSTMARK-PLACEMENT-1117): the same email from

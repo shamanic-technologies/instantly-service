@@ -79,7 +79,7 @@ import {
   type MailboxCredential,
 } from "./self-send/mailbox-credentials";
 import { buildFromHeader, subjectForStep } from "./self-send/message";
-import { dispatchMessage } from "./self-send/smtp";
+import { sendFromMailbox } from "./self-send/outbound";
 import { recordSentMessage } from "./self-send/send-record";
 import {
   resolveTransportForSend,
@@ -1119,7 +1119,7 @@ async function deliverSmtpReply(
     attachments.length > 0 ? attachments.map(describeAttachment) : undefined;
 
   try {
-    const sent = await dispatchMessage(credential, message);
+    const sent = await sendFromMailbox(credential, message);
     const sentAt = new Date();
     const dispatchId = randomUUID();
 

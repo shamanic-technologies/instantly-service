@@ -335,6 +335,13 @@ async function start() {
       });
     // Is the seed placement test still measuring? Red on Monitoring when the
     // weekly test missed or no Google receiver is readable (GANDI-OPEN-1030).
+    // Cold mail of our Gandi domains through Postmark (POSTMARK-COLD-1117):
+    // domains onboarded and Postmark bounces filed, 60 s after boot then 15 min.
+    import("./lib/postmark-cold-worker")
+      .then(({ startPostmarkColdWorker }) => startPostmarkColdWorker())
+      .catch((err: unknown) => {
+        console.error(`[instantly-service] failed to start postmark-cold worker: ${errorMessage(err)}`);
+      });
     import("./lib/seed-placement-health-worker")
       .then(({ startSeedPlacementHealthWorker }) => startSeedPlacementHealthWorker())
       .catch((err: unknown) => {
