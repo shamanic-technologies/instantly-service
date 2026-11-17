@@ -252,7 +252,7 @@ export async function loadEvaluations(days: number, asOf: Date = new Date()): Pr
              count(o.id) FILTER (WHERE o.placement = 'spam')::int AS spam
       FROM seed_placement_dispatches d
       LEFT JOIN seed_placement_observations o ON o.message_id = d.message_id AND o.receiver_email = d.receiver_email
-      WHERE d.outcome = 'sent' AND (d.dispatched_at AT TIME ZONE 'UTC')::date BETWEEN ${fromDay}::date AND ${toDay}::date
+      WHERE d.outcome = 'sent' AND d.purpose = 'fleet' AND (d.dispatched_at AT TIME ZONE 'UTC')::date BETWEEN ${fromDay}::date AND ${toDay}::date
       GROUP BY 1, 2, 3
     `),
     db.execute(sql`

@@ -3375,6 +3375,69 @@ const OptOutVariantCountsSchema = z.object({
   microsoftConsumer: OptOutProviderCountsSchema.describe("Outlook.com (shown, never scored)"),
 });
 
+const PlacementComparisonCellSchema = z.object({
+  transport: z.string().describe("`postmark` = the Postmark API from a domain we own; `smtp` = one of our mailboxes"),
+  recipientEsp: z.number().int().describe("1 Gmail (Google Workspace receivers), 2 Microsoft 365, 4 Outlook.com"),
+  provider: z.string(),
+  sent: z.number().int().describe("Seeds that left (the sample)"),
+  inbox: z.number().int().describe("Gmail Primary tab / Outlook Focused"),
+  promotions: z.number().int().describe("Another Gmail tab (Promotions, Updates, ...) / Outlook Other"),
+  spam: z.number().int(),
+  missing: z.number().int().describe("Sent, found in neither inbox nor spam"),
+  failed: z.number().int().describe("Refused before leaving (outside the sample)"),
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/seed-placement/comparison",
+  summary: "Send one email from Postmark senders and from our mailboxes to the seed receivers (placement comparison)",
+  description:
+    "POSTMARK-PLACEMENT-1117. Platform-scoped. The same subject + body, built like a prospect's first email (signature, mailto opt-out header), sent from every `postmarkSenders` address through the cold-placement Postmark server (key-service `postmark-cold-placement`; refused when it is the transactional server) and from every `mailboxes` mailbox over its own SMTP, to the weekly test's seed receivers (our own mailboxes only), `copies` times. Bronze rows are tagged `purpose=comparison`: no lifecycle, daily series, alert or cadence reads them. 202 + background; run the seed sync, then GET /internal/seed-placement/comparison/{testId}.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            subject: z.string(),
+            bodyHtml: z.string(),
+            postmarkSenders: z.array(z.object({ email: z.string(), firstName: z.string().optional(), lastName: z.string().optional() })).optional(),
+            mailboxes: z.array(z.string()).optional(),
+            copies: z.number().int().min(1).max(5).optional(),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    202: { description: "Started", content: { "application/json": { schema: z.object({ testId: z.string() }) } } },
+    400: { description: "Invalid body" },
+    401: { description: "Unauthorized" },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/seed-placement/comparison/{testId}",
+  summary: "Placement comparison result: per sending path x provider, inbox / promotions / spam / missing",
+  request: { params: z.object({ testId: z.string() }) },
+  responses: {
+    200: {
+      description: "Result",
+      content: {
+        "application/json": {
+          schema: z.object({
+            testId: z.string(),
+            cells: z.array(PlacementComparisonCellSchema),
+            senders: z.array(PlacementComparisonCellSchema.extend({ senderEmail: z.string() })),
+          }),
+        },
+      },
+    },
+    404: { description: "Unknown comparison test" },
+    401: { description: "Unauthorized" },
+  },
+});
+
 registry.registerPath({
   method: "get",
   path: "/internal/seed-placement/opt-out",

@@ -74,7 +74,7 @@ export async function fetchLastSeedTestAt(asOf: Date = new Date()): Promise<Date
   const [result, pool] = await Promise.all([
     db.execute(sql`
       SELECT lower(sender_email) AS sender, max(dispatched_at) AS "lastAt" FROM seed_placement_dispatches
-      WHERE outcome = 'sent'
+      WHERE outcome = 'sent' AND purpose = 'fleet'
         AND recipient_esp NOT IN (${sql.join(MICROSOFT_ESPS.map((e) => sql`${e}`), sql`, `)})
       GROUP BY 1
     `),

@@ -12856,6 +12856,243 @@
         }
       }
     },
+    "/internal/seed-placement/comparison": {
+      "post": {
+        "summary": "Send one email from Postmark senders and from our mailboxes to the seed receivers (placement comparison)",
+        "description": "POSTMARK-PLACEMENT-1117. Platform-scoped. The same subject + body, built like a prospect's first email (signature, mailto opt-out header), sent from every `postmarkSenders` address through the cold-placement Postmark server (key-service `postmark-cold-placement`; refused when it is the transactional server) and from every `mailboxes` mailbox over its own SMTP, to the weekly test's seed receivers (our own mailboxes only), `copies` times. Bronze rows are tagged `purpose=comparison`: no lifecycle, daily series, alert or cadence reads them. 202 + background; run the seed sync, then GET /internal/seed-placement/comparison/{testId}.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subject": {
+                    "type": "string"
+                  },
+                  "bodyHtml": {
+                    "type": "string"
+                  },
+                  "postmarkSenders": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "email": {
+                          "type": "string"
+                        },
+                        "firstName": {
+                          "type": "string"
+                        },
+                        "lastName": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "email"
+                      ]
+                    }
+                  },
+                  "mailboxes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "copies": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5
+                  }
+                },
+                "required": [
+                  "subject",
+                  "bodyHtml"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "testId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "testId"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/seed-placement/comparison/{testId}": {
+      "get": {
+        "summary": "Placement comparison result: per sending path x provider, inbox / promotions / spam / missing",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "testId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "testId": {
+                      "type": "string"
+                    },
+                    "cells": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "transport": {
+                            "type": "string",
+                            "description": "`postmark` = the Postmark API from a domain we own; `smtp` = one of our mailboxes"
+                          },
+                          "recipientEsp": {
+                            "type": "integer",
+                            "description": "1 Gmail (Google Workspace receivers), 2 Microsoft 365, 4 Outlook.com"
+                          },
+                          "provider": {
+                            "type": "string"
+                          },
+                          "sent": {
+                            "type": "integer",
+                            "description": "Seeds that left (the sample)"
+                          },
+                          "inbox": {
+                            "type": "integer",
+                            "description": "Gmail Primary tab / Outlook Focused"
+                          },
+                          "promotions": {
+                            "type": "integer",
+                            "description": "Another Gmail tab (Promotions, Updates, ...) / Outlook Other"
+                          },
+                          "spam": {
+                            "type": "integer"
+                          },
+                          "missing": {
+                            "type": "integer",
+                            "description": "Sent, found in neither inbox nor spam"
+                          },
+                          "failed": {
+                            "type": "integer",
+                            "description": "Refused before leaving (outside the sample)"
+                          }
+                        },
+                        "required": [
+                          "transport",
+                          "recipientEsp",
+                          "provider",
+                          "sent",
+                          "inbox",
+                          "promotions",
+                          "spam",
+                          "missing",
+                          "failed"
+                        ]
+                      }
+                    },
+                    "senders": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "transport": {
+                            "type": "string",
+                            "description": "`postmark` = the Postmark API from a domain we own; `smtp` = one of our mailboxes"
+                          },
+                          "recipientEsp": {
+                            "type": "integer",
+                            "description": "1 Gmail (Google Workspace receivers), 2 Microsoft 365, 4 Outlook.com"
+                          },
+                          "provider": {
+                            "type": "string"
+                          },
+                          "sent": {
+                            "type": "integer",
+                            "description": "Seeds that left (the sample)"
+                          },
+                          "inbox": {
+                            "type": "integer",
+                            "description": "Gmail Primary tab / Outlook Focused"
+                          },
+                          "promotions": {
+                            "type": "integer",
+                            "description": "Another Gmail tab (Promotions, Updates, ...) / Outlook Other"
+                          },
+                          "spam": {
+                            "type": "integer"
+                          },
+                          "missing": {
+                            "type": "integer",
+                            "description": "Sent, found in neither inbox nor spam"
+                          },
+                          "failed": {
+                            "type": "integer",
+                            "description": "Refused before leaving (outside the sample)"
+                          },
+                          "senderEmail": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "transport",
+                          "recipientEsp",
+                          "provider",
+                          "sent",
+                          "inbox",
+                          "promotions",
+                          "spam",
+                          "missing",
+                          "failed",
+                          "senderEmail"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "testId",
+                    "cells",
+                    "senders"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Unknown comparison test"
+          }
+        }
+      }
+    },
     "/internal/seed-placement/opt-out": {
       "get": {
         "summary": "The three opt-out headers compared on seeds, and the one prospect mail carries (staff chart)",

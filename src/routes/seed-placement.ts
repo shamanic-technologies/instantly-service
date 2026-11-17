@@ -17,8 +17,59 @@ import {
   refreshSeedPlacementDaily,
 } from "../lib/seed-placement/daily";
 import { loadOptOutComparison } from "../lib/seed-placement/opt-out-choice";
+import {
+  MAX_COMPARISON_COPIES,
+  loadPlacementComparison,
+  mintComparisonTestId,
+  runPlacementComparison,
+} from "../lib/seed-placement/comparison";
 
 const router = Router();
+
+/**
+ * One-off placement comparison (POSTMARK-PLACEMENT-1117): the same email from
+ * Postmark senders and from our mailboxes to the weekly test's seed receivers.
+ * 202 + background (`seed-placement-comparison: done`); read the result with
+ * GET /comparison/:testId after the next sync (POST /internal/audit/seed-placement/sync).
+ */
+router.post("/comparison", async (req: Request, res: Response) => {
+  const body = req.body ?? {};
+  const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+  const bodyHtml = typeof body.bodyHtml === "string" ? body.bodyHtml.trim() : "";
+  const postmarkSenders = Array.isArray(body.postmarkSenders) ? body.postmarkSenders : [];
+  const mailboxes = Array.isArray(body.mailboxes) ? body.mailboxes : [];
+  const copies = body.copies === undefined ? 1 : Number(body.copies);
+  const validSenders = postmarkSenders.every(
+    (s: unknown) => typeof s === "object" && s !== null && typeof (s as { email?: unknown }).email === "string" && (s as { email: string }).email.includes("@"),
+  );
+  if (!subject || !bodyHtml) return res.status(400).json({ error: "subject and bodyHtml are required" });
+  if (!validSenders || !mailboxes.every((m: unknown) => typeof m === "string" && m.includes("@"))) {
+    return res.status(400).json({ error: "postmarkSenders = [{email, firstName?, lastName?}], mailboxes = [email]" });
+  }
+  if (postmarkSenders.length + mailboxes.length === 0) return res.status(400).json({ error: "at least one sender is required" });
+  if (!Number.isInteger(copies) || copies < 1 || copies > MAX_COMPARISON_COPIES) {
+    return res.status(400).json({ error: `copies must be an integer 1..${MAX_COMPARISON_COPIES}` });
+  }
+  const testId = mintComparisonTestId();
+  res.status(202).json({ testId });
+  try {
+    const summary = await runPlacementComparison({ testId, subject, bodyHtml, postmarkSenders, mailboxes, copies });
+    console.log(`[instantly-service] seed-placement-comparison: done ${JSON.stringify(summary)}`);
+  } catch (error) {
+    console.error(`[instantly-service] seed-placement-comparison ${testId} failed: ${errorMessage(error)}`);
+  }
+});
+
+/** Result per sending path x provider: inbox / promotions / spam / missing, plus per sender. */
+router.get("/comparison/:testId", async (req: Request, res: Response) => {
+  try {
+    const result = await loadPlacementComparison(String(req.params.testId));
+    if (!result) return res.status(404).json({ error: "unknown comparison test" });
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({ error: errorMessage(error) });
+  }
+});
 
 /**
  * Start authorizing one Microsoft mailbox as a seed receiver. Answers the code

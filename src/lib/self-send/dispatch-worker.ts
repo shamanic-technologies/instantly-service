@@ -421,7 +421,7 @@ export async function loadSmtpSenderHealth(
         WHERE dispatched_at > now() - interval '7 days' AND outcome = 'sent'
         UNION ALL
         SELECT sender_email, dispatched_at FROM seed_placement_dispatches
-        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'sent'
+        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'sent' AND transport = 'smtp'
         UNION ALL
         SELECT sender_email, dispatched_at FROM warmup_dispatches
         WHERE dispatched_at > now() - interval '7 days' AND outcome = 'sent'
@@ -441,7 +441,7 @@ export async function loadSmtpSenderHealth(
         SELECT sender_email, response,
                substring(response from '(?:^|[[:space:]])([45][0-9]{2})[ -]')::int, dispatched_at
         FROM seed_placement_dispatches
-        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'permanent'
+        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'permanent' AND transport = 'smtp'
         UNION ALL
         SELECT sender_email, response,
                substring(response from '(?:^|[[:space:]])([45][0-9]{2})[ -]')::int, dispatched_at
