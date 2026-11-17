@@ -1729,6 +1729,35 @@ export const seedPlacementDispatches = pgTable(
   ],
 );
 
+// POSTMARK-COLD-1117 (migration 0111): a sending domain whose prospect mail
+// leaves through Postmark once `liveSince` is set. Written only by
+// `self-send/postmark-domains.ts`.
+export const postmarkSendingDomains = pgTable("postmark_sending_domains", {
+  domain: text("domain").primaryKey(),
+  postmarkDomainId: bigint("postmark_domain_id", { mode: "number" }),
+  dkimVerified: boolean("dkim_verified").notNull().default(false),
+  returnPathVerified: boolean("return_path_verified").notNull().default(false),
+  dnsWrittenAt: timestamp("dns_written_at"),
+  liveSince: timestamp("live_since"),
+  lastError: text("last_error"),
+  checkedAt: timestamp("checked_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Postmark's bounce reports (bronze, one row per Postmark bounce id).
+export const postmarkBouncesRaw = pgTable("postmark_bounces_raw", {
+  bounceId: bigint("bounce_id", { mode: "number" }).primaryKey(),
+  postmarkMessageId: text("postmark_message_id").notNull(),
+  type: text("type").notNull(),
+  email: text("email"),
+  bouncedAt: timestamp("bounced_at"),
+  payload: jsonb("payload").notNull(),
+  filedAs: text("filed_as").notNull(),
+  instantlyCampaignId: text("instantly_campaign_id"),
+  step: integer("step"),
+  polledAt: timestamp("polled_at").defaultNow().notNull(),
+});
+
 // Bronze B: one row per seed found in a receiver mailbox.
 //
 // FIRST OBSERVATION WINS (the unique index makes a re-read a no-op). Gmail can

@@ -161,10 +161,10 @@ describe("a comparison never reaches what the fleet decides on", () => {
     expect(src("src/lib/seed-placement/daily.ts").match(/d\.purpose = 'fleet'/g)).toHaveLength(2);
     expect(src("src/lib/placement-alert.ts")).toMatch(/d\.purpose = 'fleet'/);
   });
-  it("mailbox volume and sender health never count a Postmark seed", () => {
-    expect(src("src/lib/recent-send-volume.ts")).toMatch(/s\.transport = 'smtp'/);
+  it("mailbox volume and sender health count a mailbox's weekly seeds whatever the pipe, never a comparison", () => {
+    expect(src("src/lib/recent-send-volume.ts")).toMatch(/s\.purpose = 'fleet'/);
     const worker = src("src/lib/self-send/dispatch-worker.ts");
-    expect(worker).toMatch(/outcome = 'sent' AND transport = 'smtp'/);
-    expect(worker).toMatch(/outcome = 'permanent' AND transport = 'smtp'/);
+    expect(worker).toMatch(/outcome = 'sent' AND purpose = 'fleet'/);
+    expect(worker).toMatch(/outcome = 'permanent' AND purpose = 'fleet'/);
   });
 });

@@ -94,7 +94,7 @@ export async function fetchRecentDailyVolume(
                date_trunc('day', s.dispatched_at),
                COUNT(*)
           FROM seed_placement_dispatches s
-         WHERE s.outcome = 'sent' AND s.transport = 'smtp'
+         WHERE s.outcome = 'sent' AND s.purpose = 'fleet'
            AND s.dispatched_at >= ${since}
          GROUP BY 1, 2
       ) sources

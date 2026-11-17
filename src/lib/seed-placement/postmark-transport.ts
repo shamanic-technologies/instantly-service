@@ -42,6 +42,7 @@ export class PostmarkDispatchError extends Error {
   constructor(
     public readonly kind: "permanent" | "transient",
     public readonly response: string,
+    public readonly responseCode: number | null = null,
   ) {
     super(response);
   }
@@ -102,6 +103,17 @@ export async function loadPostmarkSeedServer(caller: CallerInfo): Promise<Postma
   return { token, serverId: server.body.ID, serverName: String(server.body.Name ?? "") };
 }
 
+let cachedServer: { at: number; server: PostmarkSeedServer } | null = null;
+const SERVER_CACHE_MS = 60_000;
+
+/** `loadPostmarkSeedServer`, held 60 s (the send path asks per email). */
+export async function loadPostmarkSeedServerCached(caller: CallerInfo): Promise<PostmarkSeedServer> {
+  if (cachedServer && Date.now() - cachedServer.at < SERVER_CACHE_MS) return cachedServer.server;
+  const server = await loadPostmarkSeedServer(caller);
+  cachedServer = { at: Date.now(), server };
+  return server;
+}
+
 export function assertNotTransactional(serverId: number): void {
   if (serverId === TRANSACTIONAL_POSTMARK_SERVER_ID) {
     throw new PostmarkSeedServerError(
@@ -127,19 +139,61 @@ export function mintPostmarkMessageId(from: string): string {
  * tracking (our mailboxes track neither), so only the pipe differs.
  */
 export function postmarkPayload(message: BuiltMessage, messageId: string): Record<string, unknown> {
+  const threading = [
+    ...(message.inReplyTo ? [{ Name: "In-Reply-To", Value: message.inReplyTo }] : []),
+    ...(message.references && message.references.length > 0
+      ? [{ Name: "References", Value: message.references.join(" ") }]
+      : []),
+  ];
   return {
     From: message.from,
     To: message.to,
+    ...(message.cc ? { Cc: message.cc } : {}),
+    ...(message.bcc ? { Bcc: message.bcc } : {}),
     Subject: message.subject,
     HtmlBody: message.html,
     Headers: [
       { Name: "Message-ID", Value: messageId },
+      ...threading,
       ...Object.entries(message.headers).map(([Name, Value]) => ({ Name, Value })),
     ],
+    ...(message.attachments && message.attachments.length > 0
+      ? {
+          Attachments: message.attachments.map((a) => ({
+            Name: a.filename,
+            Content: a.content.toString("base64"),
+            ContentType: a.contentType,
+          })),
+        }
+      : {}),
     TrackOpens: false,
     TrackLinks: "None",
     MessageStream: "outbound",
   };
+}
+
+/**
+ * A Postmark API refusal in SMTP words (pure), so every caller's existing
+ * failure handling reads it unchanged (`classifyPermanentFailure`: a recipient
+ * fault promotes a bounce, a sender fault leaves the lead untouched).
+ * - 406 inactive recipient (Postmark suppressed it after a hard bounce or a
+ *   complaint) and 300 invalid address = the RECIPIENT (5.1.1).
+ * - 429 / 5xx / 405 or 412 (sending paused, credits) = transient: the mail waits.
+ * - anything else (sender signature, token, server) = the SENDER (5.7.1).
+ */
+export function postmarkRefusalAsSmtp(
+  status: number,
+  errorCode: number,
+  message: string,
+): { kind: "permanent" | "transient"; responseCode: number | null; response: string } {
+  const text = `Postmark ${status} ErrorCode=${errorCode}: ${message}`;
+  if (errorCode === 406 || errorCode === 300) {
+    return { kind: "permanent", responseCode: 550, response: `550 5.1.1 ${text}` };
+  }
+  if (status === 429 || status >= 500 || errorCode === 405 || errorCode === 412) {
+    return { kind: "transient", responseCode: 451, response: `451 4.3.0 ${text}` };
+  }
+  return { kind: "permanent", responseCode: 554, response: `554 5.7.1 ${text}` };
 }
 
 /** The Message-Id header of a raw RFC 5322 message, or null. */
@@ -161,7 +215,7 @@ export async function sendThroughPostmark(
   server: PostmarkSeedServer,
   message: BuiltMessage,
   wait: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
-): Promise<{ messageId: string; response: string }> {
+): Promise<{ messageId: string; response: string; postmarkMessageId: string; rawMessage: Buffer }> {
   assertNotTransactional(server.serverId);
   const wished = mintPostmarkMessageId(message.from);
   const sent = await postmarkJson("/email", server.token, {
@@ -170,21 +224,21 @@ export async function sendThroughPostmark(
   });
   const errorCode = typeof sent.body.ErrorCode === "number" ? sent.body.ErrorCode : -1;
   if (sent.status !== 200 || errorCode !== 0) {
-    throw new PostmarkDispatchError(
-      sent.status >= 500 ? "transient" : "permanent",
-      `Postmark ${sent.status} ErrorCode=${errorCode}: ${String(sent.body.Message ?? "")}`,
-    );
+    const refusal = postmarkRefusalAsSmtp(sent.status, errorCode, String(sent.body.Message ?? ""));
+    throw new PostmarkDispatchError(refusal.kind, refusal.response, refusal.responseCode);
   }
   const postmarkId = String(sent.body.MessageID);
   for (let attempt = 0; attempt < DUMP_ATTEMPTS; attempt += 1) {
     const dump = await postmarkJson(`/messages/outbound/${postmarkId}/dump`, server.token);
     const raw = typeof dump.body.Body === "string" ? dump.body.Body : "";
     const actual = raw ? messageIdFromRaw(raw) : null;
-    if (actual) return { messageId: actual, response: `postmark:${postmarkId}` };
+    if (actual) {
+      return { messageId: actual, response: `postmark:${postmarkId}`, postmarkMessageId: postmarkId, rawMessage: Buffer.from(raw, "utf8") };
+    }
     await wait(DUMP_WAIT_MS);
   }
   // The email left; only its dump is late. Our requested header is what
   // Postmark was asked to carry: keep it, say so.
   console.warn(`[seed-placement] postmark dump of ${postmarkId} unreadable, keeping requested Message-Id ${wished}`);
-  return { messageId: wished, response: `postmark:${postmarkId} (dump unread)` };
+  return { messageId: wished, response: `postmark:${postmarkId}`, postmarkMessageId: postmarkId, rawMessage: Buffer.alloc(0) };
 }

@@ -40,6 +40,17 @@ vi.mock("../../src/lib/reply-destination", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
   findProspectWroteElsewhere: (...a: unknown[]) => mockWroteElsewhere(...a),
 }));
+// POSTMARK-COLD-1117: the outbound door reads the live Postmark domains from the
+// DB; here no domain is live, so it is the (mocked) SMTP dispatch.
+vi.mock("../../src/lib/self-send/outbound", async () => {
+  const smtp = await import("../../src/lib/self-send/smtp");
+  return {
+    sendFromMailbox: vi.fn(async (c: unknown, m: unknown) => ({
+      ...(await (smtp.dispatchMessage as (a: unknown, b: unknown) => Promise<object>)(c, m)),
+      transport: "smtp",
+    })),
+  };
+});
 vi.mock("../../src/lib/self-send/smtp", () => ({
   dispatchMessage: (...a: unknown[]) => mockDispatchMessage(...a),
 }));
