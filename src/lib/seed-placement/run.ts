@@ -21,7 +21,8 @@ import { db } from "../../db";
 import { seedPlacementDispatches } from "../../db/schema";
 import type { CallerInfo } from "../key-client";
 import { fetchTestablePoolEmails } from "../account-lifecycle-sync";
-import { dispatchMessage, SmtpDispatchError } from "../self-send/smtp";
+import { SmtpDispatchError } from "../self-send/smtp";
+import { sendFromMailbox } from "../self-send/outbound";
 import { buildSeedMessage } from "./message";
 import { loadSeedCredentialResolver } from "./credentials";
 import {
@@ -274,7 +275,7 @@ export async function runSeedPlacementTest(
         optOut: send.optOut,
       });
 
-      const result = await dispatchMessage(credential, message);
+      const result = await sendFromMailbox(credential, message);
 
       await db.insert(seedPlacementDispatches).values({
         testId,
@@ -285,6 +286,7 @@ export async function runSeedPlacementTest(
         optOutVariant: send.optOut,
         outcome: "sent",
         response: result.response,
+        transport: result.transport,
       });
 
       summary.sent += 1;

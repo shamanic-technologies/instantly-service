@@ -123,6 +123,17 @@ vi.mock("../../src/lib/self-send/send-record", () => ({
   recordSentMessage: (...args: unknown[]) => mockRecordSentMessage(...(args as [])),
 }));
 
+// POSTMARK-COLD-1117: the outbound door reads the live Postmark domains from the
+// DB; here no domain is live, so it is the (mocked) SMTP dispatch.
+vi.mock("../../src/lib/self-send/outbound", async () => {
+  const smtp = await import("../../src/lib/self-send/smtp");
+  return {
+    sendFromMailbox: vi.fn(async (c: unknown, m: unknown) => ({
+      ...(await (smtp.dispatchMessage as (a: unknown, b: unknown) => Promise<object>)(c, m)),
+      transport: "smtp",
+    })),
+  };
+});
 vi.mock("../../src/lib/self-send/smtp", async (importOriginal) => ({
   ...((await importOriginal()) as Record<string, unknown>),
   dispatchMessage: (...args: unknown[]) => mockDispatchMessage(...args),

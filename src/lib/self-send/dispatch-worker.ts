@@ -35,7 +35,8 @@ import { runPoll } from "./imap-poller";
 import { runOrphanReplySweep } from "./orphan-reply-sweep";
 import { runDsnJudgmentSweep } from "./dsn-judgment-sweep";
 import { judgeStoredAbsences } from "./absence-judgment";
-import { dispatchMessage, SmtpDispatchError } from "./smtp";
+import { SmtpDispatchError } from "./smtp";
+import { sendFromMailbox } from "./outbound";
 import { buildSendDecision, type SendTrigger } from "./send-decision";
 import { selectionToSend } from "./send-select-script";
 import { recordSentMessage } from "./send-record";
@@ -421,7 +422,7 @@ export async function loadSmtpSenderHealth(
         WHERE dispatched_at > now() - interval '7 days' AND outcome = 'sent'
         UNION ALL
         SELECT sender_email, dispatched_at FROM seed_placement_dispatches
-        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'sent' AND transport = 'smtp'
+        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'sent' AND purpose = 'fleet'
         UNION ALL
         SELECT sender_email, dispatched_at FROM warmup_dispatches
         WHERE dispatched_at > now() - interval '7 days' AND outcome = 'sent'
@@ -441,7 +442,7 @@ export async function loadSmtpSenderHealth(
         SELECT sender_email, response,
                substring(response from '(?:^|[[:space:]])([45][0-9]{2})[ -]')::int, dispatched_at
         FROM seed_placement_dispatches
-        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'permanent' AND transport = 'smtp'
+        WHERE dispatched_at > now() - interval '7 days' AND outcome = 'permanent' AND purpose = 'fleet'
         UNION ALL
         SELECT sender_email, response,
                substring(response from '(?:^|[[:space:]])([45][0-9]{2})[ -]')::int, dispatched_at
@@ -1440,7 +1441,7 @@ async function sendDueStep(
       optOut: await currentOptOutVariant(),
     });
 
-    const result = await dispatchMessage(credential, message);
+    const result = await sendFromMailbox(credential, message);
     const sentAt = new Date();
     rememberSent(step);
 

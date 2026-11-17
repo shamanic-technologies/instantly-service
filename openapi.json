@@ -12856,6 +12856,108 @@
         }
       }
     },
+    "/internal/seed-placement/postmark-domains": {
+      "get": {
+        "summary": "Gandi sending domains moving to Postmark: state per domain",
+        "description": "POSTMARK-COLD-1117. Platform-scoped, read-only. A domain whose `liveSince` is set sends every email to a person (sequence steps, answers, weekly seeds) through the Postmark cold server; `lastError` `domain_cap` = the Postmark account holds no more domains (plan), `awaiting_dns_verification` = DNS written, Postmark not verified yet.",
+        "responses": {
+          "200": {
+            "description": "Domains",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "domains": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "nullable": true
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "domains"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/seed-placement/postmark-domains/onboard": {
+      "post": {
+        "summary": "Move Gandi sending domains one step toward Postmark now (the worker does it every 15 min)",
+        "description": "POSTMARK-COLD-1117. Candidates = Gandi domains with an address in production or recovery, brand domains (`instantly_domain_policy`) excluded. Per domain: created on the Postmark account, DKIM TXT + Return-Path CNAME written at Gandi (nothing else), verification asked; live once both pass. `dryRun` defaults TRUE.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "dryRun": {
+                    "type": "boolean"
+                  },
+                  "domains": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/seed-placement/postmark-bounces": {
+      "post": {
+        "summary": "File Postmark's bounce reports on their sends now (the worker does it every 15 min)",
+        "responses": {
+          "200": {
+            "description": "Summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
     "/internal/seed-placement/comparison": {
       "post": {
         "summary": "Send one email from Postmark senders and from our mailboxes to the seed receivers (placement comparison)",
