@@ -36,7 +36,7 @@ export async function refreshSeedPlacementDaily(): Promise<number> {
     DELETE FROM seed_placement_daily s
     WHERE NOT EXISTS (
       SELECT 1 FROM seed_placement_dispatches d
-      WHERE d.outcome = 'sent' AND d.recipient_esp = s.recipient_esp
+      WHERE d.outcome = 'sent' AND d.purpose = 'fleet' AND d.recipient_esp = s.recipient_esp
         AND COALESCE(d.opt_out_variant, '') = s.opt_out_variant
         AND (d.dispatched_at AT TIME ZONE 'UTC')::date = s.day
     )
@@ -66,7 +66,7 @@ export async function refreshSeedPlacementDaily(): Promise<number> {
       ORDER BY i.created_at_provider ASC NULLS LAST, i.provider ASC
       LIMIT 1
     ) v ON true
-    WHERE d.outcome = 'sent'
+    WHERE d.outcome = 'sent' AND d.purpose = 'fleet'
     GROUP BY 1, 2, 3, 4
     ON CONFLICT (day, recipient_esp, sender_vendor, opt_out_variant) DO UPDATE SET
       seeds = EXCLUDED.seeds, inbox = EXCLUDED.inbox, spam = EXCLUDED.spam, missing = EXCLUDED.missing,

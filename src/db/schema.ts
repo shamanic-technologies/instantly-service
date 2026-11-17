@@ -1715,6 +1715,13 @@ export const seedPlacementDispatches = pgTable(
     outcome: text("outcome").notNull(),
     response: text("response"),
     dispatchedAt: timestamp("dispatched_at").defaultNow().notNull(),
+    // How the seed left (migration 0110, POSTMARK-PLACEMENT-1117): `smtp` = one
+    // of our mailboxes, `postmark` = the Postmark API. A postmark row's sender
+    // is not a mailbox of ours: no per-mailbox read may count it.
+    transport: text("transport").notNull().default("smtp"),
+    // `fleet` = the weekly test (silver, daily series, alerts, cadence read it);
+    // `comparison` = a one-off test none of those read.
+    purpose: text("purpose").notNull().default("fleet"),
   },
   (table) => [
     uniqueIndex("seed_placement_dispatches_message_id_idx").on(table.messageId),
@@ -1748,6 +1755,9 @@ export const seedPlacementObservations = pgTable(
     // a Google receiver, never a default.
     msInference: text("ms_inference"),
     msScl: integer("ms_scl"),
+    // Google receivers only (migration 0110): the Gmail tab of a seed found in
+    // INBOX (`primary` | `promotions` | `social` | `updates` | `forums`).
+    gmailCategory: text("gmail_category"),
     observedAt: timestamp("observed_at").defaultNow().notNull(),
   },
   (table) => [

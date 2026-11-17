@@ -32,8 +32,12 @@ import { readMicrosoftSeedFolders } from "./microsoft-graph";
 import { refreshSeedPlacementDaily } from "./daily";
 import {
   aggregateSeedPlacement,
+  GMAIL_SECONDARY_CATEGORIES,
   classifySeedFolder,
+  gmailCategoryOf,
+  isGmailImapHost,
   parseAuthResults,
+  type GmailCategory,
   type SeedDispatchRecord,
   type SeedObservationRecord,
 } from "./classify";
@@ -137,6 +141,18 @@ async function pollReceiver(
 
       const lock = await client.getMailboxLock(folder);
       try {
+        // Which Gmail tab each INBOX message sits under (POSTMARK-PLACEMENT-1117:
+        // Promotions is not Primary). One X-GM-RAW search per secondary tab,
+        // UIDs only; a message in none of them is Primary. Google receivers only.
+        const categories: Map<GmailCategory, Set<number>> | null =
+          placement === "inbox" && isGmailImapHost(credential.imapHost) ? new Map() : null;
+        if (categories) {
+          const days = Math.max(1, Math.ceil((Date.now() - since.getTime()) / 86_400_000));
+          for (const category of GMAIL_SECONDARY_CATEGORIES) {
+            const uids = await client.search({ gmraw: `category:${category} newer_than:${days}d` }, { uid: true });
+            categories.set(category, new Set(Array.isArray(uids) ? uids : []));
+          }
+        }
         // ⚠️ HEADERS, NOT SOURCE. Everything this sweep reads is a header —
         // the `Message-Id` that identifies the seed and the
         // `Authentication-Results` that carries SPF/DKIM/DMARC. `source: true`
@@ -144,7 +160,7 @@ async function pollReceiver(
         // window of every folder of every receiver, which is the cost that made
         // the sibling self-send poller take ~54 minutes a run. A seed's body is
         // one we WROTE; there is nothing in it to learn.
-        for await (const message of client.fetch({ since }, { headers: true })) {
+        for await (const message of client.fetch({ since }, { uid: true, headers: true })) {
           if (!message.headers) continue;
 
           const parsed: ParsedMail = await simpleParser(message.headers);
@@ -175,6 +191,7 @@ async function pollReceiver(
               spfPass: auth.spfPass,
               dkimPass: auth.dkimPass,
               dmarcPass: auth.dmarcPass,
+              gmailCategory: categories ? gmailCategoryOf(message.uid, categories) : null,
             })
             .onConflictDoNothing({
               target: [
@@ -258,7 +275,7 @@ async function promoteSeedTests(
         SELECT message_id AS "messageId", sender_email AS "senderEmail",
                recipient_esp::int AS "recipientEsp", dispatched_at AS "dispatchedAt"
         FROM seed_placement_dispatches
-        WHERE test_id = ${testId} AND outcome = 'sent'
+        WHERE test_id = ${testId} AND outcome = 'sent' AND purpose = 'fleet'
       `),
     );
     if (dispatchRows.length === 0) continue;
