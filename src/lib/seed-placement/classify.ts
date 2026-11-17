@@ -35,6 +35,31 @@ export function classifySeedFolder(path: string): SeedPlacement | null {
   return null;
 }
 
+/** Gmail's non-primary tabs, searchable over IMAP with `X-GM-RAW "category:<tab>"`. */
+export const GMAIL_SECONDARY_CATEGORIES = ["promotions", "social", "updates", "forums"] as const;
+export type GmailCategory = "primary" | (typeof GMAIL_SECONDARY_CATEGORIES)[number];
+
+/**
+ * The Gmail tab of a message found in INBOX (pure): the first secondary tab
+ * whose search returned its UID, else `primary`. A message can carry one
+ * category only, so the order never decides between two real answers.
+ */
+export function gmailCategoryOf(
+  uid: number,
+  uidsByCategory: ReadonlyMap<GmailCategory, ReadonlySet<number>>,
+): GmailCategory {
+  for (const category of GMAIL_SECONDARY_CATEGORIES) {
+    if (uidsByCategory.get(category)?.has(uid)) return category;
+  }
+  return "primary";
+}
+
+/** Only a Google IMAP host has Gmail tabs to read. */
+export function isGmailImapHost(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  return h === "imap.gmail.com" || h === "imap.google.com";
+}
+
 export interface AuthResults {
   spfPass: boolean | null;
   dkimPass: boolean | null;
