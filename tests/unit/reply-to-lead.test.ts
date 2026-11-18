@@ -18,6 +18,11 @@ vi.mock("../../src/db/schema", () => ({
 const mockListEmails = vi.fn();
 const mockGetAccount = vi.fn();
 const mockReplyToEmail = vi.fn();
+// REPLY-SENT-UNIT-1118: the record of an answer that went out (declared later by its own sweep), kept out of the
+// database call counts below, which count the gates read before a send.
+const mockRecordReplySend = vi.fn(async (_r: Record<string, unknown>) => {});
+vi.mock("../../src/lib/reply-send-outcomes", () => ({ recordReplySend: (r: Record<string, unknown>) => mockRecordReplySend(r) }));
+
 vi.mock("../../src/lib/instantly-client", () => ({
   listEmails: (...a: unknown[]) => mockListEmails(...a),
   getAccount: (...a: unknown[]) => mockGetAccount(...a),
@@ -718,6 +723,39 @@ describe("a person's hand reply never refuses an automated one", () => {
     expect(outcome.status).toBe("sent");
     expect(mockReplyToEmail).toHaveBeenCalledTimes(1);
     expect(mockDbExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it("REPLY-SENT-UNIT-1118: an answer that went out is recorded once, with the run that asked for it; a refused one is not", async () => {
+    mockRecordReplySend.mockClear();
+    mockDbExecute
+      .mockResolvedValueOnce(pgResult([campaignRow()]))
+      .mockResolvedValueOnce(pgResult([]));
+    mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+
+    const outcome = await replyToLead({ ...AUTOMATED, runId: "4c8b7a1e-1111-4222-8333-444455556666" });
+
+    expect(mockRecordReplySend).toHaveBeenCalledTimes(1);
+    expect(mockRecordReplySend.mock.calls[0][0]).toEqual({
+      orgId: AUTOMATED.orgId,
+      instantlyCampaignId: outcome.reply.instantlyCampaignId,
+      leadEmail: outcome.reply.leadEmail,
+      messageId: outcome.reply.messageId,
+      transport: outcome.reply.transport,
+      sentBy: "automation",
+      runId: "4c8b7a1e-1111-4222-8333-444455556666",
+    });
+
+    // No run named: recorded with none (never an invented one). Nothing sent: nothing recorded.
+    mockRecordReplySend.mockClear();
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    await replyToLead({ ...INPUT, sentBy: "human" });
+    expect(mockRecordReplySend.mock.calls[0][0]).toMatchObject({ sentBy: "human", runId: null });
+
+    mockRecordReplySend.mockClear();
+    mockDbExecute.mockResolvedValueOnce(pgResult([]));
+    await expect(replyToLead({ ...INPUT, sentBy: "human" })).rejects.toThrow();
+    expect(mockRecordReplySend).not.toHaveBeenCalled();
   });
 
   it("NEVER gates a person answering their own thread", async () => {

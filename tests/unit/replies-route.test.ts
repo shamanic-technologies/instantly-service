@@ -93,6 +93,15 @@ describe("POST /orgs/replies — who asked reaches the gate", () => {
     );
   });
 
+  it("REPLY-SENT-UNIT-1118: the caller's run reaches the reply, so the answer's sent Unit is declared on it; no run = none named", async () => {
+    await request(app()).post("/orgs/replies").send(REPLY_BODY).expect(200);
+    expect(mockReplyToLead).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }));
+
+    mockReplyToLead.mockClear();
+    await request(app()).post("/orgs/replies").set("x-no-run", "1").send(REPLY_BODY).expect(200);
+    expect(mockReplyToLead.mock.calls[0][0]).not.toHaveProperty("runId");
+  });
+
   it("resolves an undeclared caller to automation, so the gate is live", async () => {
     await request(app()).post("/orgs/replies").send(REPLY_BODY).expect(200);
 

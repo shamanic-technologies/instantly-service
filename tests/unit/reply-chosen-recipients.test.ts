@@ -18,6 +18,10 @@ vi.mock("../../src/db/schema", () => ({
 const mockListEmails = vi.fn();
 const mockGetAccount = vi.fn();
 const mockReplyToEmail = vi.fn();
+// REPLY-SENT-UNIT-1118: the record of an answer that went out is its own module's (tests/unit/reply-send-outcomes),
+// kept out of the database call counts below, which count what is read before a send.
+vi.mock("../../src/lib/reply-send-outcomes", () => ({ recordReplySend: async () => {} }));
+
 vi.mock("../../src/lib/instantly-client", () => ({
   listEmails: (...a: unknown[]) => mockListEmails(...a),
   getAccount: (...a: unknown[]) => mockGetAccount(...a),

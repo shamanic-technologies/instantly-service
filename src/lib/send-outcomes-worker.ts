@@ -8,6 +8,7 @@
  */
 import { errorMessage } from "./db-error.js";
 import { declarePositiveReplies } from "./positive-reply-outcomes";
+import { declareReplySends } from "./reply-send-outcomes";
 import { declareSendOutcomes } from "./send-outcomes";
 import { completeWebsiteVisitPerformers, declareWebsiteVisits } from "./website-visit-outcomes";
 
@@ -22,6 +23,11 @@ function tick(): void {
   declareSendOutcomes()
     .catch((error: unknown) => {
       console.error(`[instantly-service] send-outcomes tick failed: ${errorMessage(error)}`);
+    })
+    // REPLY-SENT-UNIT-1118: an answer sent in a thread is a message_sent too, before what consumes it.
+    .then(() => declareReplySends())
+    .catch((error: unknown) => {
+      console.error(`[instantly-service] reply-send-outcomes tick failed: ${errorMessage(error)}`);
     })
     .then(() => declarePositiveReplies())
     .catch((error: unknown) => {
