@@ -51,6 +51,7 @@ describe("classifyReplySendAnswer", () => {
   it("a gone run and a refused run end the row; anything unreadable is retried", () => {
     expect(classifyReplySendAnswer(422, invalid("run_not_found"))).toBe("run_gone");
     expect(classifyReplySendAnswer(422, invalid("run_outcomes_voided"))).toBe("refused");
+    expect(classifyReplySendAnswer(409, '{"error":"run_marked_support"}')).toBe("refused");
     expect(classifyReplySendAnswer(422, "not json")).toBe("retry");
     expect(classifyReplySendAnswer(422, JSON.stringify({ error: "other" }))).toBe("retry");
     for (const status of [400, 401, 500, 502, 503]) expect(classifyReplySendAnswer(status, "x")).toBe("retry");

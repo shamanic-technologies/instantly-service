@@ -97,11 +97,14 @@ export type ReplySendMark = Extract<DeclarationMark, "declared" | "run_gone" | "
 /**
  * How runs-service's answer to ONE answer's declaration ends its row. 2xx =
  * recorded or already recorded. 422 `invalid_runs`: `run_not_found` = the run
- * is gone, any other reason = refused for good (kept with the body). Anything
+ * is gone, any other reason = refused for good (kept with the body); a 409 is
+ * refused for good too. Anything
  * else (401, 5xx, a 400 from an unreadable catalogue) = retry next tick.
  */
 export function classifyReplySendAnswer(status: number, body: string): ReplySendMark | "retry" {
   if (status >= 200 && status < 300) return "declared";
+  // runs-service refuses THIS occurrence for good (a run marked support, a conflicting quantity).
+  if (status === 409) return "refused";
   if (status !== 422) return "retry";
   try {
     const parsed = JSON.parse(body) as { error?: string; details?: { invalid?: Array<{ reason?: string }> } };
