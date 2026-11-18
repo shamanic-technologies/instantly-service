@@ -42,6 +42,10 @@
  * ⚠️ THE TO ADDRESS IS NEVER ALSO IN CC/BCC (`withoutToInCopy`), whoever built
  * the lists (2026-11-13: a reply copied the lead on itself).
  *
+ * The answer that goes out is declared to the ledger as the lead's
+ * `message_sent`, on the caller's run (REPLY-SENT-UNIT-1118,
+ * lib/reply-send-outcomes).
+ *
  * Declares NO cost — same reasoning as the sequence sends themselves: the
  * mailbox estate is a fixed cost we absorb rather than rebill, so a zero-priced
  * row would assert something false (see CLAUDE.md, "Sending declares NO cost").
@@ -89,6 +93,7 @@ import {
 import { MANUAL_REPLY_STEP } from "./manual-reply-step";
 import { findProspectWroteElsewhere, type ElsewhereDestination } from "./reply-destination";
 import type { ReplySender } from "./reply-sender";
+import { recordReplySend } from "./reply-send-outcomes";
 
 const CALLER: CallerInfo = { method: "POST", path: "/orgs/replies" };
 
@@ -230,6 +235,13 @@ export interface ReplyToLeadInput {
   threadMessageId?: string;
   /** A NEW thread (no In-Reply-To) with this subject, from the thread's mailbox. */
   newThreadSubject?: string;
+  /**
+   * The run that asked for this answer (the caller's `x-run-id`). The answer
+   * that goes out is declared on it as the lead's `message_sent`
+   * (REPLY-SENT-UNIT-1118, lib/reply-send-outcomes). Absent = recorded,
+   * undeclared: never declared under a run nobody named.
+   */
+  runId?: string;
 }
 
 export interface ReplyToLeadResult {
@@ -1459,6 +1471,19 @@ export async function replyToLead(
     prepared.transport === SEND_TRANSPORT_SMTP
       ? await deliverSmtpReply(campaign, prepared, attachments)
       : await deliverInstantlyReply(campaign, prepared);
+
+  // REPLY-SENT-UNIT-1118: an answer that went out is an email sent. Recorded
+  // here (every caller, both transports), declared by the outcomes sweep.
+  // Fail-soft: the answer is out.
+  await recordReplySend({
+    orgId: input.orgId,
+    instantlyCampaignId: reply.instantlyCampaignId,
+    leadEmail: reply.leadEmail,
+    messageId: reply.messageId,
+    transport: reply.transport,
+    sentBy: input.sentBy,
+    runId: input.runId ?? null,
+  });
 
   return { status: "sent", reply };
 }
