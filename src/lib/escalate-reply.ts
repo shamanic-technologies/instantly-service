@@ -367,6 +367,8 @@ export async function escalateReply(
           bodyHtml: handoffTextToHtml(text),
           sentBy: "automation",
           handoff: true,
+          // REPLY-SENT-UNIT-1118: the hand-over is an email sent to the lead, declared on the escalating run.
+          runId: input.runId,
           copy: {
             cc: [repEmail],
             bcc: repEmail.toLowerCase() === agency.toLowerCase() ? [] : [agency],

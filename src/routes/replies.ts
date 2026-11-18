@@ -64,6 +64,8 @@ router.post("/", async (req: Request, res: Response) => {
       // today, so the takeover gate is live without waiting on anyone to
       // declare. See `DEFAULT_REPLY_SENDER`.
       sentBy: resolveReplySender(sent_by),
+      // REPLY-SENT-UNIT-1118: the run the answer's message_sent is declared on.
+      ...(typeof res.locals.runId === "string" && res.locals.runId ? { runId: res.locals.runId } : {}),
       ...(attachments && attachments.length > 0
         ? { attachmentDocumentIds: attachments.map((a) => a.document_id) }
         : {}),
