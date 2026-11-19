@@ -3,8 +3,9 @@
  *
  * The same email (subject + body), sent from several sending paths to the SAME
  * seed receivers the weekly test uses, read back by the SAME sync. A sending
- * path is either one of our mailboxes (SMTP, `transport='smtp'`) or an address
- * on a domain we own sent through Postmark (`transport='postmark'`).
+ * path is either one of our mailboxes, sent by ITS live pipe (`outbound.ts`:
+ * `transport` = `smtp` or, for an SES domain, `ses`) or an address on a domain
+ * we own sent through Postmark (`transport='postmark'`).
  *
  * Rows are bronze like every seed (`seed_placement_dispatches`), tagged
  * `purpose='comparison'`: nothing the fleet decides on reads them (silver and
@@ -24,7 +25,8 @@ import type { CallerInfo } from "../key-client";
 import type { Account } from "../instantly-client";
 import { fetchTestablePoolEmails } from "../account-lifecycle-sync";
 import { buildMessage } from "../self-send/message";
-import { dispatchMessage, SmtpDispatchError } from "../self-send/smtp";
+import { SmtpDispatchError } from "../self-send/smtp";
+import { sendFromMailbox } from "../self-send/outbound";
 import { errorMessage } from "../db-error.js";
 import { loadSeedCredentialResolver } from "./credentials";
 import { loadAuthorizedMicrosoftReceiverEsps } from "./microsoft-oauth";
@@ -173,10 +175,12 @@ export async function runPlacementComparison(input: ComparisonInput): Promise<Co
       optOut: "mailbox_only",
     });
     try {
+      // A mailbox sender leaves by ITS live pipe (SES-COLD-1119: SES for our Gandi
+      // domains), exactly like its prospect mail; `transport` records which.
       const result =
         send.sender.transport === "postmark"
-          ? await sendThroughPostmark(postmark as PostmarkSeedServer, message)
-          : await dispatchMessage(resolveCredential(send.sender.email)!, message);
+          ? { ...(await sendThroughPostmark(postmark as PostmarkSeedServer, message)), transport: "postmark" as const }
+          : await sendFromMailbox(resolveCredential(send.sender.email)!, message);
       await db.insert(seedPlacementDispatches).values({
         testId: input.testId,
         senderEmail: send.sender.email,
@@ -186,7 +190,7 @@ export async function runPlacementComparison(input: ComparisonInput): Promise<Co
         optOutVariant: "mailbox_only",
         outcome: "sent",
         response: result.response,
-        transport: send.sender.transport,
+        transport: result.transport,
         purpose: "comparison",
       });
       summary.sent += 1;

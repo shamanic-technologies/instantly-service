@@ -1,12 +1,14 @@
 /**
- * POSTMARK-COLD-1117 in-process drive: first pass 60 s after boot, then every
- * 15 min. Each pass moves every waiting Gandi domain one step closer to sending
- * through Postmark (DNS written, verification asked) and files Postmark's
- * bounce reports. A domain blocked by the account's domain cap is retried every
- * pass, so a plan upgrade finishes the migration by itself.
+ * Cold-mail pipes, in-process drive (POSTMARK-COLD-1117, SES-COLD-1119): first
+ * pass 60 s after boot, then every 15 min. Each pass moves every Gandi sending
+ * domain one step closer to sending through Amazon SES (identity, DNS written,
+ * verification read; `ses-domains.ts`) and files Postmark's bounce reports for
+ * what Postmark already sent. Postmark onboarding is no longer driven (SES-COLD-1119:
+ * no domain uses Postmark; `POST /internal/seed-placement/postmark-domains/onboard`
+ * stays by hand). SES bounces arrive by SNS on `/webhooks/ses`, not here.
  */
 import { errorMessage } from "./db-error.js";
-import { onboardPostmarkDomains } from "./self-send/postmark-domains";
+import { onboardSesDomains } from "./self-send/ses-domains";
 import { pollPostmarkBounces } from "./self-send/postmark-bounces";
 
 export const POSTMARK_COLD_INTERVAL_MS = 15 * 60 * 1000;
@@ -19,10 +21,10 @@ export function postmarkColdTick(): Promise<void> {
   if (inFlight) return inFlight;
   inFlight = (async () => {
     try {
-      const onboarding = await onboardPostmarkDomains({ dryRun: false });
-      console.log(`[instantly-service] postmark-cold: onboarding ${JSON.stringify(onboarding)}`);
+      const onboarding = await onboardSesDomains({ dryRun: false });
+      console.log(`[instantly-service] ses-cold: onboarding ${JSON.stringify(onboarding)}`);
     } catch (error: unknown) {
-      console.error(`[instantly-service] postmark-cold: onboarding FAILED: ${errorMessage(error)}`);
+      console.error(`[instantly-service] ses-cold: onboarding FAILED: ${errorMessage(error)}`);
     }
     try {
       const bounces = await pollPostmarkBounces();

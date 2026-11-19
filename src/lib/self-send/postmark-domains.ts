@@ -25,7 +25,7 @@ import { sql } from "drizzle-orm";
 import { db } from "../../db";
 import { errorMessage } from "../db-error.js";
 import { resolvePlatformKey, type CallerInfo } from "../key-client";
-import { clearPostmarkLiveDomainsCache } from "./outbound";
+import { clearLivePipesCache } from "./outbound";
 
 export const POSTMARK_ACCOUNT_PROVIDER = "postmark-account";
 export const POSTMARK_DOMAIN_CAP_ERROR = 614;
@@ -257,7 +257,7 @@ export async function onboardPostmarkDomains(
       console.error(`[instantly-service] postmark onboarding ${domain} failed: ${message}`);
     }
   }
-  if (summary.becameLive.length > 0) clearPostmarkLiveDomainsCache();
+  if (summary.becameLive.length > 0) clearLivePipesCache();
   return summary;
 }
 
