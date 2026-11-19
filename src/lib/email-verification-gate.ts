@@ -63,7 +63,8 @@ export const VERDICT_REFUSAL_DAYS = 30;
 /** Label stored by apollo-service on its bronze row (`verify:<source>`). */
 export const VERIFY_SOURCE = "instantly-send-gate";
 
-export type GateContext = "send" | "queued";
+/** `check` = `POST /orgs/send-checks`, asked before a message is written (SEND-CHECK-BEFORE-WRITE-1120). */
+export type GateContext = "send" | "queued" | "check";
 
 export type GateReason =
   | "verdict_valid"

@@ -716,6 +716,57 @@ registry.registerPath({
   },
 });
 
+// SEND-CHECK-BEFORE-WRITE-1120: the send's checks on the person, asked before a message is written.
+export const SendCheckRequestSchema = z
+  .object({
+    to: z.string().min(3).describe("The address `POST /orgs/send` would be asked to mail"),
+  })
+  .openapi("SendCheckRequest");
+
+export const SendCheckResponseSchema = z
+  .object({
+    sendable: z.literal(true),
+    to: z.string(),
+    verdict: z.string().nullable().describe("Our verifier's verdict for the address: `valid`, `catch_all` or `unknown`"),
+    reused: z.boolean().nullable().describe("true = a verdict under 30 days old was reused (nothing billed); false = verified now, billed on the caller's run"),
+    verifiedAt: z.string().nullable(),
+  })
+  .openapi("SendCheckResponse");
+
+registry.registerPath({
+  method: "post",
+  path: "/orgs/send-checks",
+  summary: "Would POST /orgs/send refuse this person? Asked before a message is written",
+  description:
+    "Runs the checks `POST /orgs/send` runs on the person, in its order, with its answers: opt-out, " +
+    "not a prospect, stated not to the brand (x-brand-id), our verifier's verdict on the address. " +
+    "A verdict under 30 days old is reused for free; otherwise the address is verified now and billed on " +
+    "the caller's run (x-run-id, x-user-id required), and the decision is recorded so the send right after " +
+    "reuses it at no cost. Nothing is reserved, queued or sent. Not checked: the follow-up race " +
+    "(`brand_sequence_queued`) and the signature conflict, which are about our queued work.",
+  request: {
+    headers: TrackingHeadersSchema,
+    body: { content: { "application/json": { schema: SendCheckRequestSchema } } },
+  },
+  responses: {
+    200: { description: "The send would not refuse the person", content: { "application/json": { schema: SendCheckResponseSchema } } },
+    400: { description: "Missing `to`, x-run-id or x-user-id", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    402: {
+      description: "The org cannot pay to verify the address: the send's 402 body (`code: \"insufficient_credits\"`).",
+      content: { "application/json": { schema: SendCreditRefusalSchema } },
+    },
+    409: {
+      description: "The send's own 409: `lead_opted_out`, `lead_not_a_prospect`, `stated_not_to_brand` or `email_not_verified` (verdict `invalid` / `risky`), same body.",
+      content: { "application/json": { schema: SendRefusalSchema } },
+    },
+    502: {
+      description: "No verdict could be had (`email_verification_unavailable`) or crm-service unreadable (`stated_not_to_brand_unreadable`): the send would not send either. Retry later.",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ─── Campaigns ──────────────────────────────────────────────────────────────
 
 registry.registerPath({
