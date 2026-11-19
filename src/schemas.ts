@@ -3401,6 +3401,25 @@ registry.registerPath({
   responses: { 200: { description: "Summary", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 401: { description: "Unauthorized" } },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/internal/seed-placement/ses-domains",
+  summary: "Gandi sending domains on Amazon SES: state per domain",
+  description:
+    "SES-COLD-1119. Platform-scoped, read-only. A domain whose `liveSince` is set sends every email to a person (sequence steps, answers, weekly seeds) through Amazon SES (marketing account, our own configuration set), unless the kill switch `SES_COLD_SENDING_DISABLED=true` is set. `lastError` says why a domain is not live yet (`dkim_pending`, `mail_from_pending`, `events_not_confirmed`, or the failure of the last pass).",
+  responses: { 200: { description: "Domains", content: { "application/json": { schema: z.object({ domains: z.array(z.record(z.string(), z.unknown())) }) } } }, 401: { description: "Unauthorized" } },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/seed-placement/ses-domains/onboard",
+  summary: "Move Gandi sending domains one step toward Amazon SES now (the worker does it every 15 min)",
+  description:
+    "SES-COLD-1119. Candidates = Gandi domains with an address in production or recovery, brand domains (`instantly_domain_policy`) excluded. Per domain: SES identity (Easy DKIM, our configuration set), MAIL FROM `ses.<domain>`, the 3 DKIM CNAMEs + the MAIL FROM subdomain's MX and SPF written at Gandi (never the root MX/SPF); live once SES verifies all and the event subscription is confirmed. `dryRun` defaults TRUE and only reads SES.",
+  request: { body: { content: { "application/json": { schema: z.object({ dryRun: z.boolean().optional(), domains: z.array(z.string()).optional() }) } } } },
+  responses: { 200: { description: "Summary", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 401: { description: "Unauthorized" } },
+});
+
 const PlacementComparisonCellSchema = z.object({
   transport: z.string().describe("`postmark` = the Postmark API from a domain we own; `smtp` = one of our mailboxes"),
   recipientEsp: z.number().int().describe("1 Gmail (Google Workspace receivers), 2 Microsoft 365, 4 Outlook.com"),

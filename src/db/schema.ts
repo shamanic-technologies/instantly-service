@@ -1758,6 +1758,36 @@ export const postmarkBouncesRaw = pgTable("postmark_bounces_raw", {
   polledAt: timestamp("polled_at").defaultNow().notNull(),
 });
 
+// SES-COLD-1119 (migration 0113): a sending domain whose mail to people leaves
+// through Amazon SES while `liveSince` is set. Written only by
+// `self-send/ses-domains.ts`.
+export const sesSendingDomains = pgTable("ses_sending_domains", {
+  domain: text("domain").primaryKey(),
+  dkimTokens: jsonb("dkim_tokens"),
+  dkimStatus: text("dkim_status"),
+  mailFromDomain: text("mail_from_domain"),
+  mailFromStatus: text("mail_from_status"),
+  verifiedForSending: boolean("verified_for_sending").notNull().default(false),
+  dnsWrittenAt: timestamp("dns_written_at"),
+  liveSince: timestamp("live_since"),
+  lastError: text("last_error"),
+  checkedAt: timestamp("checked_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// SES events of cold mail as SNS delivered them (bronze, one row per SNS id).
+export const sesEventsRaw = pgTable("ses_events_raw", {
+  snsMessageId: text("sns_message_id").primaryKey(),
+  eventType: text("event_type").notNull(),
+  sesMessageId: text("ses_message_id"),
+  recipient: text("recipient"),
+  payload: jsonb("payload").notNull(),
+  filedAs: text("filed_as").notNull(),
+  instantlyCampaignId: text("instantly_campaign_id"),
+  step: integer("step"),
+  receivedAt: timestamp("received_at").defaultNow().notNull(),
+});
+
 // Bronze B: one row per seed found in a receiver mailbox.
 //
 // FIRST OBSERVATION WINS (the unique index makes a re-read a no-op). Gmail can

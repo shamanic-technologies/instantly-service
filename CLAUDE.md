@@ -1,6 +1,6 @@
 # Project: instantly-service
 
-Cold email outreach via Instantly.ai API V2 plus our own self-send transport: campaigns, leads, accounts, warmup, analytics, webhooks, reply handling. Fleet-generic traps (deploy, rtk, probes, cost declaration, pg connect retry, async EventEmitter crashes) live in the global CLAUDE.md and skills.
+Cold email outreach via Instantly.ai API V2 plus our own self-send transport (our Gandi domains leave through Amazon SES since SES-COLD-1119, kill switch `SES_COLD_SENDING_DISABLED`, see `src/lib/self-send/CLAUDE.md`): campaigns, leads, accounts, warmup, analytics, webhooks, reply handling. Fleet-generic traps (deploy, rtk, probes, cost declaration, pg connect retry, async EventEmitter crashes) live in the global CLAUDE.md and skills.
 
 **Where the detail lives (read the matching file BEFORE touching that code):**
 - `src/lib/self-send/CLAUDE.md`: self-send transport, dispatch worker, IMAP poller (incl. replies from ANOTHER address, Jev-judged), click tracking, unsubscribe.

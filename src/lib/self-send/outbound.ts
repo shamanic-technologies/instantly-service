@@ -1,14 +1,22 @@
 /**
- * The ONE door every email to a person leaves through (POSTMARK-COLD-1117).
+ * The ONE door every email to a person leaves through (POSTMARK-COLD-1117,
+ * SES-COLD-1119).
  *
- * A mailbox whose DOMAIN is live on Postmark (`postmark_sending_domains.live_since`,
- * DKIM + Return-Path verified) sends through the Postmark cold server (never the
- * transactional one); every other mailbox sends over its own SMTP as before.
- * Same built message either way (From, signature, threading headers, opt-out
- * header, attachments); replies still land in the mailbox (MX untouched), so the
- * poll, the Unibox and threading are unchanged. A Postmark refusal is thrown as
- * an `SmtpDispatchError` in SMTP words, so every caller's bounce / sender-fault
- * handling reads it unchanged.
+ * ONE pipe per sending DOMAIN, decided here and nowhere else (`pipeForSender`):
+ *   1. `ses` = the domain is live in `ses_sending_domains` (identity, Easy DKIM
+ *      and custom MAIL FROM verified on the marketing SES account) AND the kill
+ *      switch `SES_COLD_SENDING_DISABLED` is not "true";
+ *   2. `postmark` = the domain is live in `postmark_sending_domains` and NOT live
+ *      on SES (kept as a per-domain choice; since SES-COLD-1119 no domain uses it);
+ *   3. else `smtp`, the mailbox's own relay.
+ * The kill switch is read at EVERY send: "true" puts every SES domain back on its
+ * mailbox's SMTP, no deploy (edit the env file, recreate the container).
+ * Same built message on every pipe (From, signature, threading headers, opt-out
+ * header, attachments); replies still land in the mailbox (MX untouched), so
+ * the poll, the Unibox and threading are unchanged. A refusal on any pipe is an
+ * `SmtpDispatchError` in SMTP words, so every caller's bounce / sender-fault
+ * handling reads it unchanged. No silent fallback: an SES domain whose SES
+ * account cannot be read fails the send (the mail waits), never leaves by SMTP.
  *
  * Callers: the dispatch worker (sequence steps), reply-to-lead (answers) and the
  * weekly seed test (the seed IS the email a prospect gets). Warmup stays on SMTP.
@@ -26,12 +34,20 @@ import {
   loadPostmarkSeedServerCached,
   sendThroughPostmark,
 } from "../seed-placement/postmark-transport";
+import { sendThroughSes } from "./ses-transport";
 
-export type OutboundTransport = "smtp" | "postmark";
+export type OutboundTransport = "smtp" | "postmark" | "ses";
+
+/** Kill switch, read at each send: "true" = every SES domain sends over SMTP again. */
+export const SES_KILL_SWITCH_ENV = "SES_COLD_SENDING_DISABLED";
+
+export function sesColdSendingDisabled(): boolean {
+  return (process.env[SES_KILL_SWITCH_ENV] ?? "").trim().toLowerCase() === "true";
+}
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/outbound" };
 const LIVE_CACHE_MS = 60_000;
-let liveCache: { at: number; domains: Set<string> } | null = null;
+let liveCache: { at: number; pipes: LivePipes } | null = null;
 
 /** The sending address inside a From header (pure). */
 export function senderAddressOf(from: string): string {
@@ -43,32 +59,53 @@ export function domainOfAddress(address: string): string {
   return address.slice(address.lastIndexOf("@") + 1).toLowerCase();
 }
 
-/** Domains whose mail leaves through Postmark, held 60 s. Fails loud. */
-export async function loadPostmarkLiveDomains(): Promise<Set<string>> {
-  if (liveCache && Date.now() - liveCache.at < LIVE_CACHE_MS) return liveCache.domains;
-  const result = await db.execute(sql`SELECT domain FROM postmark_sending_domains WHERE live_since IS NOT NULL`);
-  const rows = ((result as { rows?: unknown[] }).rows ?? []) as { domain: string }[];
-  const domains = new Set(rows.map((r) => r.domain.toLowerCase()));
-  liveCache = { at: Date.now(), domains };
-  return domains;
+export interface LivePipes {
+  ses: ReadonlySet<string>;
+  postmark: ReadonlySet<string>;
+}
+
+/** Domains live on each pipe, held 60 s. Fails loud. */
+export async function loadLivePipes(): Promise<LivePipes> {
+  if (liveCache && Date.now() - liveCache.at < LIVE_CACHE_MS) return liveCache.pipes;
+  const result = await db.execute(sql`
+    SELECT 'ses' AS pipe, domain FROM ses_sending_domains WHERE live_since IS NOT NULL
+    UNION ALL
+    SELECT 'postmark', domain FROM postmark_sending_domains WHERE live_since IS NOT NULL
+  `);
+  const rows = ((result as { rows?: unknown[] }).rows ?? []) as { pipe: string; domain: string }[];
+  const pipes: LivePipes = {
+    ses: new Set(rows.filter((r) => r.pipe === "ses").map((r) => r.domain.toLowerCase())),
+    postmark: new Set(rows.filter((r) => r.pipe === "postmark").map((r) => r.domain.toLowerCase())),
+  };
+  liveCache = { at: Date.now(), pipes };
+  return pipes;
 }
 
 /** Drop the cache (after an onboarding flips a domain live; tests). */
-export function clearPostmarkLiveDomainsCache(): void {
+export function clearLivePipesCache(): void {
   liveCache = null;
 }
 
-/** Which pipe a sending address uses right now (pure over the live set). */
-export function transportForSender(senderEmail: string, liveDomains: ReadonlySet<string>): OutboundTransport {
-  return liveDomains.has(domainOfAddress(senderEmail.trim().toLowerCase())) ? "postmark" : "smtp";
+/** Which pipe a sending address uses right now (pure). The one decision. */
+export function pipeForSender(
+  senderEmail: string,
+  live: LivePipes,
+  sesDisabled: boolean = sesColdSendingDisabled(),
+): OutboundTransport {
+  const domain = domainOfAddress(senderEmail.trim().toLowerCase());
+  if (live.ses.has(domain)) return sesDisabled ? "smtp" : "ses";
+  if (live.postmark.has(domain)) return "postmark";
+  return "smtp";
 }
 
 export async function sendFromMailbox(
   credential: MailboxCredential,
   message: BuiltMessage,
 ): Promise<DispatchResult & { transport: OutboundTransport }> {
-  const transport = transportForSender(senderAddressOf(message.from), await loadPostmarkLiveDomains());
+  const sender = senderAddressOf(message.from);
+  const transport = pipeForSender(sender, await loadLivePipes());
   if (transport === "smtp") return { ...(await dispatchMessage(credential, message)), transport };
+  if (transport === "ses") return { ...(await sendThroughSes(sender, message)), transport };
 
   const server = await loadPostmarkSeedServerCached(CALLER);
   try {
