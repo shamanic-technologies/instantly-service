@@ -7,17 +7,17 @@ import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 
 import { postmarkPayload, postmarkRefusalAsSmtp } from "../../src/lib/seed-placement/postmark-transport";
-import { senderAddressOf, transportForSender } from "../../src/lib/self-send/outbound";
+import { senderAddressOf, pipeForSender } from "../../src/lib/self-send/outbound";
 import { filingForBounceType } from "../../src/lib/self-send/postmark-bounces";
 import { recordNameInZone } from "../../src/lib/self-send/postmark-domains";
 import { classifyPermanentFailure } from "../../src/lib/self-send/dispatch";
 
 describe("which pipe a mailbox uses", () => {
-  const live = new Set(["growthservice.org"]);
+  const live = { ses: new Set<string>(), postmark: new Set(["growthservice.org"]) };
   it("a domain live on Postmark sends through Postmark, every other over its own SMTP", () => {
-    expect(transportForSender(senderAddressOf('"Kevin Lourd" <Lourd@GrowthService.org>'), live)).toBe("postmark");
-    expect(transportForSender(senderAddressOf("k.lourd@maildistribute.com"), live)).toBe("smtp");
-    expect(transportForSender(senderAddressOf("kevin@growthagency.bio"), new Set())).toBe("smtp");
+    expect(pipeForSender(senderAddressOf('"Kevin Lourd" <Lourd@GrowthService.org>'), live, false)).toBe("postmark");
+    expect(pipeForSender(senderAddressOf("k.lourd@maildistribute.com"), live, false)).toBe("smtp");
+    expect(pipeForSender(senderAddressOf("kevin@growthagency.bio"), { ses: new Set(), postmark: new Set() }, false)).toBe("smtp");
   });
 });
 

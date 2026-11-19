@@ -19,6 +19,7 @@ import {
 import { loadOptOutComparison } from "../lib/seed-placement/opt-out-choice";
 import { listPostmarkSendingDomains, onboardPostmarkDomains } from "../lib/self-send/postmark-domains";
 import { pollPostmarkBounces } from "../lib/self-send/postmark-bounces";
+import { listSesSendingDomains, onboardSesDomains } from "../lib/self-send/ses-domains";
 import {
   MAX_COMPARISON_COPIES,
   loadPlacementComparison,
@@ -43,6 +44,26 @@ router.post("/postmark-domains/onboard", async (req: Request, res: Response) => 
   const domains = Array.isArray(req.body?.domains) ? req.body.domains.map(String) : undefined;
   try {
     return res.json(await onboardPostmarkDomains({ dryRun, domains }));
+  } catch (error) {
+    return res.status(500).json({ error: errorMessage(error) });
+  }
+});
+
+/** Gandi domains on Amazon SES: state per domain (SES-COLD-1119). */
+router.get("/ses-domains", async (_req: Request, res: Response) => {
+  try {
+    return res.json({ domains: await listSesSendingDomains() });
+  } catch (error) {
+    return res.status(500).json({ error: errorMessage(error) });
+  }
+});
+
+/** Move domains one step toward SES now. `dryRun` defaults TRUE (read-only); `domains` narrows. */
+router.post("/ses-domains/onboard", async (req: Request, res: Response) => {
+  const dryRun = req.body?.dryRun !== false;
+  const domains = Array.isArray(req.body?.domains) ? req.body.domains.map(String) : undefined;
+  try {
+    return res.json(await onboardSesDomains({ dryRun, domains }));
   } catch (error) {
     return res.status(500).json({ error: errorMessage(error) });
   }

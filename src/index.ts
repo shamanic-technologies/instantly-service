@@ -15,6 +15,7 @@ import accountsRoutes from "./routes/accounts";
 import analyticsRoutes from "./routes/analytics";
 import analyticsPublicRoutes from "./routes/analytics-public";
 import webhooksRoutes from "./routes/webhooks";
+import sesWebhookRoutes from "./routes/ses-webhook";
 import sendRoutes from "./routes/send";
 import statusRoutes from "./routes/status";
 import transferBrandRoutes from "./routes/transfer-brand";
@@ -81,6 +82,9 @@ app.get("/openapi.json", (_req, res) => {
 
 // ─── Public routes (no auth) ────────────────────────────────────────────────
 app.use(healthRoutes);
+// SNS -> cold-mail SES bounces/complaints (SES-COLD-1119): gated by the SNS
+// signature + the pinned topic, mounted before the Instantly webhook router.
+app.use("/webhooks/ses", sesWebhookRoutes);
 app.use("/webhooks", webhooksRoutes);
 // Opt-out link carried by mail we dispatch ourselves. Necessarily unauthenticated
 // — a prospect clicks it from their inbox — and gated entirely by the HMAC in the
@@ -335,8 +339,8 @@ async function start() {
       });
     // Is the seed placement test still measuring? Red on Monitoring when the
     // weekly test missed or no Google receiver is readable (GANDI-OPEN-1030).
-    // Cold mail of our Gandi domains through Postmark (POSTMARK-COLD-1117):
-    // domains onboarded and Postmark bounces filed, 60 s after boot then 15 min.
+    // Cold mail of our Gandi domains through Amazon SES (SES-COLD-1119): domains
+    // onboarded and Postmark's past bounces filed, 60 s after boot then 15 min.
     import("./lib/postmark-cold-worker")
       .then(({ startPostmarkColdWorker }) => startPostmarkColdWorker())
       .catch((err: unknown) => {

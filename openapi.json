@@ -12958,6 +12958,85 @@
         }
       }
     },
+    "/internal/seed-placement/ses-domains": {
+      "get": {
+        "summary": "Gandi sending domains on Amazon SES: state per domain",
+        "description": "SES-COLD-1119. Platform-scoped, read-only. A domain whose `liveSince` is set sends every email to a person (sequence steps, answers, weekly seeds) through Amazon SES (marketing account, our own configuration set), unless the kill switch `SES_COLD_SENDING_DISABLED=true` is set. `lastError` says why a domain is not live yet (`dkim_pending`, `mail_from_pending`, `events_not_confirmed`, or the failure of the last pass).",
+        "responses": {
+          "200": {
+            "description": "Domains",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "domains": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "nullable": true
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "domains"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/internal/seed-placement/ses-domains/onboard": {
+      "post": {
+        "summary": "Move Gandi sending domains one step toward Amazon SES now (the worker does it every 15 min)",
+        "description": "SES-COLD-1119. Candidates = Gandi domains with an address in production or recovery, brand domains (`instantly_domain_policy`) excluded. Per domain: SES identity (Easy DKIM, our configuration set), MAIL FROM `ses.<domain>`, the 3 DKIM CNAMEs + the MAIL FROM subdomain's MX and SPF written at Gandi (never the root MX/SPF); live once SES verifies all and the event subscription is confirmed. `dryRun` defaults TRUE and only reads SES.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "dryRun": {
+                    "type": "boolean"
+                  },
+                  "domains": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
     "/internal/seed-placement/comparison": {
       "post": {
         "summary": "Send one email from Postmark senders and from our mailboxes to the seed receivers (placement comparison)",
