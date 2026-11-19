@@ -23,7 +23,8 @@ import {
 import { findNotAProspect, notAProspectRefusal } from "../lib/not-a-prospect";
 import { findStatedNotToBrand, statedNotToBrandRefusal } from "../lib/stated-not-to-brand";
 import { findStandingOptOut, optOutRefusal } from "../lib/lead-optouts";
-import { emailNotVerifiedRefusal, gateAddressForSend } from "../lib/email-verification-gate";
+import { gateAddressForSend } from "../lib/email-verification-gate";
+import { statedNotToBrandUnreadable, verificationRefusal } from "../lib/send-checks";
 import { resolveTransportForNewSequence } from "../lib/self-send/capability";
 import { sendAnswerNowIfOwed } from "../lib/self-send/answer-now";
 import {
@@ -388,13 +389,8 @@ router.post("/", async (req: Request, res: Response) => {
       try {
         statedNotToBrand = await findStatedNotToBrand(orgId, body.to, brandIds, sendRunId);
       } catch (error: unknown) {
-        const message = messageOf(error);
-        console.error(`[send] Refused — cannot read whether ${body.to} was stated not to brand(s) ${brandIds.join(",")}: ${message}`);
-        return res.status(502).json({
-          error: "Could not read whether the brand stated this person is not theirs",
-          code: "stated_not_to_brand_unreadable",
-          details: `${message}. No email was sent and nothing was billed.`,
-        });
+        const unreadable = statedNotToBrandUnreadable(body.to, brandIds, error);
+        return res.status(unreadable.status).json(unreadable.body);
       }
       if (statedNotToBrand) {
         const refusal = statedNotToBrandRefusal(body.to, statedNotToBrand);
@@ -465,46 +461,20 @@ router.post("/", async (req: Request, res: Response) => {
         featureSlug: tracking.featureSlug ?? null,
         workflowSlug: tracking.workflowSlug ?? null,
       });
-      if (!verification.accepted) {
+      // The answer for a refused verification is shared with `POST /orgs/send-checks`
+      // (src/lib/send-checks.ts): one rule, one body, whichever door asks.
+      const verificationRefused = verificationRefusal(body.to, orgId, verification);
+      if (verificationRefused) {
         traceEvent(
           res.locals.runId as string,
           {
             service: "instantly-service",
-            event: "send-refused-email-not-verified",
-            detail: `to=${body.to}, verdict=${verification.verdict ?? "none"}, reason=${verification.reason}`,
+            event: verificationRefused.event,
+            detail: verificationRefused.detail,
           },
           req.headers,
         ).catch(() => {});
-        if (verification.reason === "insufficient_credits") {
-          const cause = verification.fundingCause ?? null;
-          console.warn(
-            cause
-              ? `[send] Refused — ${fundingRefusalError(cause)} (${cause.reason}) for org ${orgId}, cannot verify ${body.to}`
-              : `[send] Refused — org ${orgId} cannot pay to verify ${body.to}`,
-          );
-          return res.status(402).json(
-            creditRefusalBody(
-              {
-                error: "Insufficient credits",
-                code: "insufficient_credits",
-                details: `the address ${body.to} must be verified before it is emailed and the org's balance cannot pay for it`,
-              },
-              cause,
-              `the address ${body.to} must be verified before it is emailed`,
-            ),
-          );
-        }
-        if (verification.reason === "verifier_failed") {
-          console.error(`[send] NOT SENT — no verdict could be obtained for ${body.to} (verifier unavailable)`);
-          return res.status(502).json({
-            error: "Email verification unavailable",
-            code: "email_verification_unavailable",
-            details: `no verdict could be obtained for ${body.to}; nothing was sent or billed for the email`,
-          });
-        }
-        const refusal = emailNotVerifiedRefusal(body.to, verification);
-        console.warn(`[send] Refused — ${refusal.details}`);
-        return res.status(409).json(refusal);
+        return res.status(verificationRefused.status).json(verificationRefused.body);
       }
 
       let savedLead: { id: string } | undefined;

@@ -18,6 +18,7 @@ import webhooksRoutes from "./routes/webhooks";
 import sesWebhookRoutes from "./routes/ses-webhook";
 import sendRoutes from "./routes/send";
 import statusRoutes from "./routes/status";
+import sendChecksRoutes from "./routes/send-checks";
 import transferBrandRoutes from "./routes/transfer-brand";
 import bouncedEmailsRoutes from "./routes/bounced-emails";
 import manualQualificationsRoutes from "./routes/manual-qualifications";
@@ -126,6 +127,7 @@ app.use("/internal/self-send", serviceAuth, selfSendRoutes);   // dispatch sweep
 // ─── Org-scoped routes (x-api-key + x-org-id required, rest optional) ───────
 app.use("/orgs/send", serviceAuth, requireOrgId, sendRoutes);
 app.use("/orgs/status", serviceAuth, requireOrgId, statusRoutes);
+app.use("/orgs/send-checks", serviceAuth, requireOrgId, sendChecksRoutes); // the send's checks on the person, before a message is written (SEND-CHECK-BEFORE-WRITE-1120)
 app.use("/orgs/campaigns", serviceAuth, requireOrgId, campaignsRoutes);
 app.use("/orgs/campaigns", serviceAuth, requireOrgId, leadsRoutes);
 app.use("/orgs/accounts", serviceAuth, requireOrgId, accountsRoutes);
