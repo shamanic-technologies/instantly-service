@@ -29,6 +29,7 @@ import { GMAIL_IMAP_PORT, loginFor, type MailboxCredential } from "../self-send/
 import { loadSeedCredentialResolver } from "./credentials";
 import { getMicrosoftAccessToken, keepMicrosoftReceiversAlive, loadAuthorizedMicrosoftReceivers } from "./microsoft-oauth";
 import { readMicrosoftSeedFolders } from "./microsoft-graph";
+import { liftRecoveredReceiverSuppressions } from "./ses-suppression";
 import { refreshSeedPlacementDaily } from "./daily";
 import {
   aggregateSeedPlacement,
@@ -78,6 +79,10 @@ export interface SeedPlacementSyncSummary {
   /** Microsoft receivers whose token was refreshed after the read (keepalive). */
   microsoftTokensRefreshed: number;
   microsoftTokensFailed: number;
+  /** Our receivers on the SES suppression list, and those lifted because they found a seed since (MON-SEED-MS365-MISSING-1120). */
+  sesSuppressedReceivers: number;
+  sesSuppressionsLifted: number;
+  sesSuppressionChecksFailed: number;
 }
 
 interface PendingSeed {
@@ -339,6 +344,9 @@ export async function syncSeedPlacement(): Promise<SeedPlacementSyncSummary> {
     dailyRows: 0,
     microsoftTokensRefreshed: 0,
     microsoftTokensFailed: 0,
+    sesSuppressedReceivers: 0,
+    sesSuppressionsLifted: 0,
+    sesSuppressionChecksFailed: 0,
   };
 
   const pending = await loadPendingSeeds();
@@ -399,6 +407,19 @@ export async function syncSeedPlacement(): Promise<SeedPlacementSyncSummary> {
   const keepalive = await keepMicrosoftReceiversAlive();
   summary.microsoftTokensRefreshed = keepalive.refreshed;
   summary.microsoftTokensFailed = keepalive.failed;
+
+  // A receiver SES suppressed while it refused mail is lifted once it finds a
+  // seed again, else every SES seed to it reads missing forever. Fail-soft: the
+  // sync's own results are already written.
+  try {
+    const lift = await liftRecoveredReceiverSuppressions();
+    summary.sesSuppressedReceivers = lift.suppressed;
+    summary.sesSuppressionsLifted = lift.lifted;
+    summary.sesSuppressionChecksFailed = lift.failed;
+  } catch (error) {
+    summary.sesSuppressionChecksFailed += 1;
+    console.error(`[seed-placement] SES suppression check failed: ${errorMessage(error)}`);
+  }
 
   return summary;
 }

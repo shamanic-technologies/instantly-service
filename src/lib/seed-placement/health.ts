@@ -16,7 +16,11 @@
  *     next test cannot grade the gate, whatever the calendar says;
  *   - or a Microsoft receiver can no longer be read (its token refused for
  *     more than {@link MICROSOFT_RECEIVER_STALE_DAYS} days): prod 2026-10-25,
- *     the Microsoft 365 one read 0 of 227 seeds, refused since 10-19.
+ *     the Microsoft 365 one read 0 of 227 seeds, refused since 10-19;
+ *   - or a receiver (any provider) found NONE of the last
+ *     {@link SILENT_RECEIVER_MIN_SEEDS}+ seeds sent to it (`silent-receivers.ts`,
+ *     MON-SEED-MS365-MISSING-1120: the Microsoft 365 tenant stopped accepting
+ *     mail when its trial ended, token fine, 0 of 205 read, nothing red).
  * The registry also turns the check red on its own when this service stops
  * reporting (3 x the hourly cadence). Never an email.
  */
@@ -29,6 +33,7 @@ import { loadGoogleSeedReceivers } from "./receivers";
 import { fetchLastSeedTestAt } from "./run";
 import { listMicrosoftSeedMailboxes } from "./microsoft-oauth";
 import { SEED_TEST_OVERDUE_AGE_DAYS } from "./due";
+import { loadSilentReceivers, silentReceiverProblem, SILENT_RECEIVER_MIN_SEEDS, type SilentReceiver } from "./silent-receivers";
 
 export { SEED_TEST_OVERDUE_AGE_DAYS };
 
@@ -48,6 +53,8 @@ export interface SeedPlacementHealthInput {
   vendorRefusals: ReadonlyArray<{ vendor: string; error: string; since: string }>;
   /** Every Microsoft receiver on file (a pending or never-authorized one is not a receiver yet). */
   microsoftReceivers: ReadonlyArray<{ email: string; status: string; lastRefreshedAt: string | null; lastError: string | null }>;
+  /** Receivers that found none of the seeds sent to them since their last finding (absent = none). */
+  silentReceivers?: ReadonlyArray<SilentReceiver>;
   asOf: Date;
 }
 
@@ -88,6 +95,7 @@ export function judgeSeedPlacementHealth(input: SeedPlacementHealthInput): SeedP
       );
     }
   }
+  for (const r of input.silentReceivers ?? []) problems.push(silentReceiverProblem(r));
   if (ageDays === null || ageDays > SEED_TEST_OVERDUE_AGE_DAYS) {
     problems.push(`The weekly test stopped: ${lastWords}, limit ${SEED_TEST_OVERDUE_AGE_DAYS} days`);
   }
@@ -104,14 +112,19 @@ async function countGoogleReceivers(): Promise<number> {
   return (await loadGoogleSeedReceivers(pool, resolve, CALLER)).length;
 }
 
-export async function readSeedPlacementHealth(asOf: Date = new Date()): Promise<SeedPlacementHealth & { googleReceivers: number }> {
+export async function readSeedPlacementHealth(asOf: Date = new Date()): Promise<SeedPlacementHealth & { googleReceivers: number; silentReceivers: number }> {
   // The receivers first: reading them refreshes the vendor refusal state.
   const googleReceivers = await countGoogleReceivers();
   // The same "last test" the cadence decides on: the fleet's least recently measured mailbox.
-  const [lastGateTestAt, microsoftReceivers] = await Promise.all([fetchLastSeedTestAt(asOf), listMicrosoftSeedMailboxes()]);
+  const [lastGateTestAt, microsoftReceivers, silentReceivers] = await Promise.all([
+    fetchLastSeedTestAt(asOf),
+    listMicrosoftSeedMailboxes(),
+    loadSilentReceivers(asOf),
+  ]);
   return {
-    ...judgeSeedPlacementHealth({ lastGateTestAt, googleReceivers, vendorRefusals: currentVendorRefusals(), microsoftReceivers, asOf }),
+    ...judgeSeedPlacementHealth({ lastGateTestAt, googleReceivers, vendorRefusals: currentVendorRefusals(), microsoftReceivers, silentReceivers, asOf }),
     googleReceivers,
+    silentReceivers: silentReceivers.length,
   };
 }
 
@@ -130,7 +143,12 @@ export async function reportSeedPlacementHealth(asOf: Date = new Date()): Promis
     reason: health.reason,
     cadenceMinutes: SEED_PLACEMENT_CHECK_CADENCE_MINUTES,
     ...(health.ageDays === null ? {} : { value: Math.round(health.ageDays * 10) / 10, unit: "days" }),
-    details: { googleReceivers: health.googleReceivers, overdueAfterDays: SEED_TEST_OVERDUE_AGE_DAYS },
+    details: {
+      googleReceivers: health.googleReceivers,
+      silentReceivers: health.silentReceivers,
+      silentAfterSeeds: SILENT_RECEIVER_MIN_SEEDS,
+      overdueAfterDays: SEED_TEST_OVERDUE_AGE_DAYS,
+    },
   };
   const response = await fetch(`${url}/internal/box-checks/runs`, {
     method: "POST",
