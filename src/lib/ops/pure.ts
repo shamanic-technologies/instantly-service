@@ -13,7 +13,7 @@ import {
   RAMP_GROWTH_FACTOR,
   rampCapForVolume,
 } from "../account-lifecycle";
-import { decideSeedTestDue, type SeedDueDecision } from "../seed-placement/due";
+import { decideSeedTestDue, SEED_WEEKEND_MIN_AGE_DAYS, type SeedDueDecision } from "../seed-placement/due";
 import { SENDING_WEEKDAYS } from "../sending-calendar";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -69,8 +69,8 @@ export function projectNextSeedTest(lastTestedAt: Date | null, asOf: Date): Seed
   const decision = decideSeedTestDue(lastTestedAt, asOf);
   if (decision.due) return { ...decision, expectedAt: asOf.toISOString().slice(0, 10) };
   if (decision.reason === "recently_tested" && lastTestedAt) {
-    // The interval elapses on a given day; the test then waits for the weekend.
-    const elapses = new Date(lastTestedAt.getTime() + 6 * DAY_MS);
+    // The next send-free day at least SEED_WEEKEND_MIN_AGE_DAYS after the test.
+    const elapses = new Date(lastTestedAt.getTime() + SEED_WEEKEND_MIN_AGE_DAYS * DAY_MS);
     return { ...decision, expectedAt: nextNonSendingDay(elapses > asOf ? elapses : asOf) };
   }
   return { ...decision, expectedAt: nextNonSendingDay(asOf) };

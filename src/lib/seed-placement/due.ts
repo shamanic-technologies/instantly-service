@@ -39,6 +39,20 @@ export const SEED_TEST_INTERVAL_DAYS = 6;
  */
 export const SEED_EVIDENCE_URGENT_AGE_DAYS = 12;
 
+/**
+ * On a send-free day (Sunday) a test runs unless one already ran in the last
+ * day: the cadence re-anchors to Sunday after ANY off-cycle test.
+ *
+ * MON-SEED-PLACEMENT-1120: the 6-day interval used to gate Sundays too. A
+ * catch-up test forced on Wednesday 2026-11-11 made Sunday 11-15 decline
+ * (`recently_tested`, 4 days), every weekday then waited for Sunday 11-22
+ * (11 days after the test), and the health check went red at 8 days. Under
+ * « interval, then Sunday only » an off-cycle test opens a gap of up to 13 days
+ * against an 8-day limit. Over-seeding a Sunday is the cheap direction: every
+ * sender and receiver is our own mailbox and Sunday carries no cold volume.
+ */
+export const SEED_WEEKEND_MIN_AGE_DAYS = 1;
+
 export type SeedDueReason =
   | "no_previous_test"
   | "weekend_cadence"
@@ -64,10 +78,10 @@ function daysBetween(from: Date, to: Date): number {
  * mechanism exists to prevent, and waiting for a preferred weekday would leave
  * it unmeasured for up to a week.
  *
- * Otherwise: not due inside the interval; due on a NON-sending day once the
- * interval has passed (Saturday and Sunday are both send-free, so a missed
- * Saturday is picked up by Sunday); and due on ANY day once the evidence is
- * urgently old.
+ * Otherwise: due on ANY day once the evidence is urgently old; never on a
+ * sending day below that; on the send-free day (Sunday) due unless a test ran
+ * in the last day, so the weekly cadence holds whatever day the last test
+ * landed on (MON-SEED-PLACEMENT-1120).
  */
 export function decideSeedTestDue(
   lastTestedAt: Date | null,
@@ -80,13 +94,18 @@ export function decideSeedTestDue(
   if (ageDays >= SEED_EVIDENCE_URGENT_AGE_DAYS) {
     return { due: true, reason: "evidence_urgent", ageDays };
   }
-  if (ageDays < SEED_TEST_INTERVAL_DAYS) {
-    return { due: false, reason: "recently_tested", ageDays };
-  }
-  // Interval elapsed. Prefer a send-free day so the seed volume lands on a
-  // mailbox that is otherwise idle, exactly as the weekly cadence intended.
   if (isSendingDay(asOf)) {
-    return { due: false, reason: "waiting_for_weekend", ageDays };
+    // Seeds land on the send-free day, where the mailbox is otherwise idle.
+    return {
+      due: false,
+      reason: ageDays < SEED_TEST_INTERVAL_DAYS ? "recently_tested" : "waiting_for_weekend",
+      ageDays,
+    };
+  }
+  // Send-free day: run every week, whatever weekday the last test landed on
+  // (see SEED_WEEKEND_MIN_AGE_DAYS); only a test from the last day declines.
+  if (ageDays < SEED_WEEKEND_MIN_AGE_DAYS) {
+    return { due: false, reason: "recently_tested", ageDays };
   }
   return { due: true, reason: "weekend_cadence", ageDays };
 }

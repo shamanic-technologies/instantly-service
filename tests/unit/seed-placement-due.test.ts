@@ -12,6 +12,7 @@ import { describe, it, expect } from "vitest";
 import {
   SEED_EVIDENCE_URGENT_AGE_DAYS,
   SEED_TEST_INTERVAL_DAYS,
+  SEED_TEST_OVERDUE_AGE_DAYS,
   SEED_URGENT_MARGIN_DAYS,
   decideSeedTestDue,
 } from "../../src/lib/seed-placement/due";
@@ -84,6 +85,40 @@ describe("decideSeedTestDue", () => {
     const d = decideSeedTestDue(daysBefore(SUN, 7), SUN);
     expect(d.ageDays).toBeCloseTo(7, 5);
     expect(decideSeedTestDue(null, SUN).ageDays).toBeNull();
+  });
+});
+
+describe("MON-SEED-PLACEMENT-1120: an off-cycle test never skips the next Sunday", () => {
+  // Prod: a catch-up test forced on Wednesday 2026-11-11 13:20; Sunday 11-15 declined it as
+  // recently_tested (4 days), the next eligible Sunday was 11-22 (11 days), red at 8.
+  const WED_TEST = new Date("2026-11-11T13:20:00.000Z");
+  const SUN_1115 = new Date("2026-11-15T15:24:00.000Z");
+
+  it("the Sunday 4 days after a Wednesday test runs", () => {
+    expect(decideSeedTestDue(WED_TEST, SUN_1115)).toMatchObject({ due: true, reason: "weekend_cadence" });
+  });
+
+  it("a test from the last day still declines on Sunday (no double run)", () => {
+    expect(decideSeedTestDue(daysBefore(SUN, 0.5), SUN)).toMatchObject({ due: false, reason: "recently_tested" });
+  });
+
+  it("whatever weekday a test lands on, the next test comes before the overdue limit", () => {
+    // Walk every test hour of a week, then the daily ticks after it (cron hours drift 08:00-19:00).
+    for (let h = 0; h < 7 * 24; h++) {
+      const tested = new Date(Date.parse("2026-11-09T00:00:00.000Z") + h * 3600000);
+      let next: Date | null = null;
+      for (let d = 0; d < 20 && !next; d++) {
+        const tick = new Date(Date.parse("2026-11-09T19:00:00.000Z") + d * 86400000);
+        if (tick > tested && decideSeedTestDue(tested, tick).due) next = tick;
+      }
+      expect(next).not.toBeNull();
+      expect((next!.getTime() - tested.getTime()) / 86400000).toBeLessThanOrEqual(SEED_TEST_OVERDUE_AGE_DAYS);
+    }
+  });
+
+  it("weekdays still never run below the urgent age", () => {
+    expect(decideSeedTestDue(daysBefore(MON, 1), MON)).toMatchObject({ due: false, reason: "recently_tested" });
+    expect(decideSeedTestDue(daysBefore(WED, 10), WED)).toMatchObject({ due: false, reason: "waiting_for_weekend" });
   });
 });
 
