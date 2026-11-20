@@ -850,7 +850,8 @@ export async function runPoll(
   // fan-out below never opens two sessions for one login. Fails LOUD: a poll
   // that cannot establish the fleet's credentials cannot read any mailbox
   // anyway — `resolveMailboxCredential` reads the same sources one line later.
-  const logins = await loadMailboxLogins(CALLER);
+  // Logins only: a send-only address (SES, no password) is never logged into.
+  const logins = await loadMailboxLogins(CALLER, { readableOnly: true });
   const byMailbox = new Map<string, string[]>();
   for (const accountEmail of accounts) {
     // An address the login map does not know is its own mailbox — the same

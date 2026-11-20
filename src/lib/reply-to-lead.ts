@@ -78,12 +78,9 @@ import {
 import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { buildReplyBodyWithSignature } from "./send-lead";
 import { fillSenderTokensInSubject } from "./sender-placeholders";
-import {
-  resolveMailboxCredential,
-  type MailboxCredential,
-} from "./self-send/mailbox-credentials";
+import type { MailboxCredential } from "./self-send/mailbox-credentials";
 import { buildFromHeader, subjectForStep } from "./self-send/message";
-import { sendFromMailbox } from "./self-send/outbound";
+import { resolveSendCredential, sendFromMailbox } from "./self-send/outbound";
 import { recordSentMessage } from "./self-send/send-record";
 import {
   resolveTransportForSend,
@@ -291,7 +288,8 @@ interface PreparedSmtpReply {
   sentBy: ReplySender;
   anchor: SelfSendThreadAnchor;
   accountEmail: string;
-  credential: MailboxCredential;
+  /** Null = a send-only address (SES, no login held, PF-CLOUDFLARE-1120). */
+  credential: MailboxCredential | null;
   account: Account;
   subject: string;
   bodyHtml: string;
@@ -947,7 +945,7 @@ async function prepareSmtpReply(
 
   let credential;
   try {
-    credential = await resolveMailboxCredential(accountEmail, CALLER);
+    credential = await resolveSendCredential(accountEmail, CALLER);
   } catch (error: unknown) {
     throw new ReplyToLeadError(
       "mailbox_credential_unavailable",
@@ -996,9 +994,9 @@ async function prepareOwnAddressReply(
   if (!address) return refuse("none of those addresses is one of ours");
   if (!elsewhere.messageId.startsWith("<")) return refuse("their message carries no Message-ID to thread on");
 
-  let credential: MailboxCredential;
+  let credential: MailboxCredential | null;
   try {
-    credential = await resolveMailboxCredential(address, CALLER);
+    credential = await resolveSendCredential(address, CALLER);
   } catch (error: unknown) {
     return refuse(
       `we hold no credential to send as ${address} (${errorMessage(error)})`,
@@ -1051,9 +1049,9 @@ async function prepareChosenThreadReply(
       `Sequence ${campaign.instantlyCampaignId} carries no sending account, so nothing can open a new thread as the mailbox this lead knows`,
     );
   }
-  let credential: MailboxCredential;
+  let credential: MailboxCredential | null;
   try {
-    credential = await resolveMailboxCredential(accountEmail, CALLER);
+    credential = await resolveSendCredential(accountEmail, CALLER);
   } catch (error: unknown) {
     throw new ReplyToLeadError(
       "mailbox_credential_unavailable",

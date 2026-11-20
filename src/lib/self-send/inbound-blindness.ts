@@ -38,6 +38,7 @@ import { db } from "../../db";
 import { getOrSetCachedStats } from "../stats-cache";
 import { loadMailboxLogins } from "./mailbox-credentials";
 import type { CallerInfo } from "../key-client";
+import { loadLiveRoutedDomains } from "./email-routing";
 
 export const INBOUND_BLIND_WINDOW_DAYS = 14;
 export const INBOUND_BLIND_MIN_SENT = 20;
@@ -124,6 +125,28 @@ export async function loadAddressInboundRows(): Promise<AddressInboundRow[]> {
   }));
 }
 
+/**
+ * Pure: an address whose DOMAIN's inbound is routed to the staff mirror and live
+ * (Cloudflare Email Routing, `email-routing.ts`, PF-CLOUDFLARE-1120) IS read:
+ * through that route, by the forwarded-reply pass, not by a login. Its window
+ * counts as read whatever the IMAP bronze says (its mailbox may be gone).
+ */
+export function withRoutedInboundRead(
+  rows: readonly AddressInboundRow[],
+  routedDomains: ReadonlySet<string>,
+): AddressInboundRow[] {
+  if (routedDomains.size === 0) return [...rows];
+  return rows.map((row) =>
+    routedDomains.has(row.accountEmail.trim().toLowerCase().split("@")[1] ?? "") ? { ...row, hasInbound: true } : row,
+  );
+}
+
+/** Every sending address's window, a live routed domain's addresses counted as read. */
+async function loadReadAwareInboundRows(): Promise<AddressInboundRow[]> {
+  const [rows, routed] = await Promise.all([loadAddressInboundRows(), loadLiveRoutedDomains()]);
+  return withRoutedInboundRead(rows, routed);
+}
+
 /** Lowercased real mailbox for an address; an unknown address is its own mailbox. */
 export function mailboxResolver(
   mailboxLogins: ReadonlyMap<string, string>,
@@ -139,7 +162,7 @@ export async function loadInboundBlindMailboxes(
   mailboxLogins: ReadonlyMap<string, string>,
 ): Promise<Set<string>> {
   return selectInboundBlindMailboxes(
-    await loadAddressInboundRows(),
+    await loadReadAwareInboundRows(),
     mailboxResolver(mailboxLogins),
   );
 }
@@ -154,7 +177,7 @@ const BLIND_ADDRESSES_CACHE_KEY = "inbound-blind-addresses";
 export async function loadInboundBlindAddresses(caller: CallerInfo): Promise<Set<string>> {
   const addresses = await getOrSetCachedStats(BLIND_ADDRESSES_CACHE_KEY, async () => {
     const mailboxLogins = await loadMailboxLogins(caller);
-    const rows = await loadAddressInboundRows();
+    const rows = await loadReadAwareInboundRows();
     const mailboxOf = mailboxResolver(mailboxLogins);
     const blind = selectInboundBlindMailboxes(rows, mailboxOf);
     const out: string[] = [];

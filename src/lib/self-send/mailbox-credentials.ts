@@ -40,6 +40,7 @@ import {
   type PrimeforgeRawMailbox,
 } from "../providers/primeforge-client";
 import { loadLastPrimeforgeListing } from "./primeforge-last-listing";
+import { loadSendOnlyCandidates } from "./send-only-senders";
 
 export const GMAIL_SMTP_HOST = "smtp.gmail.com";
 export const GMAIL_IMAP_HOST = "imap.gmail.com";
@@ -195,13 +196,18 @@ export async function loadCredentialedMailboxes(
  */
 export async function loadMailboxLogins(
   caller: CallerInfo,
+  options: { readableOnly?: boolean } = {},
 ): Promise<Map<string, string>> {
-  const entries = await loadMailboxLoginEntries(caller);
+  const entries = await loadMailboxLoginEntries(caller, { includeSendOnly: !options.readableOnly });
   return new Map([...entries].map(([address, e]) => [address, e.login]));
 }
 
-/** Which source holds a mailbox's password. */
-export type CredentialSource = "manual" | "primeforge";
+/**
+ * Which source holds a mailbox's password; `ses` = none: an address that only
+ * SENDS, through its domain's live SES pipe (`send-only-senders.ts`), never
+ * logged into.
+ */
+export type CredentialSource = "manual" | "primeforge" | "ses";
 
 export interface MailboxLoginEntry {
   /** The real mailbox (SASL login) this address authenticates as. */
@@ -217,7 +223,7 @@ export interface MailboxLoginEntry {
  */
 export async function loadMailboxLoginEntries(
   caller: CallerInfo,
-  options: { onVendorRefusal?: "skip" | "throw" } = {},
+  options: { onVendorRefusal?: "skip" | "throw"; includeSendOnly?: boolean } = {},
 ): Promise<Map<string, MailboxLoginEntry>> {
   const manual = await loadManualCredentials(caller);
   const mailboxes = await loadPrimeforgeMailboxes(
@@ -240,6 +246,13 @@ export async function loadMailboxLoginEntries(
     const appPassword = String(mailbox.appPassword ?? "").replace(/\s/g, "");
     if (address && appPassword && !logins.has(address)) {
       logins.set(address, { login: address, source: "primeforge" });
+    }
+  }
+  // Last, never overwriting a login: addresses that send through SES with no
+  // password (PF-CLOUDFLARE-1120). Readers that LOG IN pass includeSendOnly:false.
+  if (options.includeSendOnly !== false) {
+    for (const address of await loadSendOnlyCandidates()) {
+      if (!logins.has(address)) logins.set(address, { login: address, source: "ses" });
     }
   }
   return logins;

@@ -413,6 +413,8 @@ async function recoverMailbox(
   aliases: ReadonlySet<string>,
   asOf: Date,
   summary: ForwardedRepliesSummary,
+  since?: Date,
+  includeSpam?: boolean,
 ): Promise<void> {
   const identity = await identityFor(aliases);
   if (!identity) {
@@ -420,7 +422,7 @@ async function recoverMailbox(
     return;
   }
   const knownSends = await loadAliasedSends(aliases);
-  const messages = await fetchMirroredMailForAddresses([...aliases], identity);
+  const messages = await fetchMirroredMailForAddresses([...aliases], identity, since, includeSpam);
   summary.messagesRead += messages.length;
 
   // Our own answers first, so a prospect already answered is never asked about.
@@ -585,7 +587,16 @@ function reportOf(send: AliasedSend, kind: string, message: MirroredMessage, del
  * one unreadable mailbox is counted and logged, the rest still run.
  */
 export async function recoverForwardedReplies(
-  options: { dryRun?: boolean; mailboxes?: string[]; domains?: string[]; asOf?: Date } = {},
+  options: {
+    dryRun?: boolean;
+    mailboxes?: string[];
+    domains?: string[];
+    asOf?: Date;
+    /** Only messages dated at or after this (the routed-inbound pass reads a recent window). */
+    since?: Date;
+    /** Also what Gmail put in SPAM (the routed-inbound pass: a forwarded reply is a reply). */
+    includeSpam?: boolean;
+  } = {},
 ): Promise<ForwardedRepliesSummary> {
   const dryRun = options.dryRun ?? true;
   const asOf = options.asOf ?? new Date();
@@ -612,7 +623,7 @@ export async function recoverForwardedReplies(
 
   for (const [login, aliases] of groups) {
     try {
-      await recoverMailbox(login, aliases, asOf, summary);
+      await recoverMailbox(login, aliases, asOf, summary, options.since, options.includeSpam);
     } catch (error) {
       summary.mailboxesFailed += 1;
       console.error(

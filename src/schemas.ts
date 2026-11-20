@@ -3455,18 +3455,46 @@ registry.registerPath({
 registry.registerPath({
   method: "get",
   path: "/internal/seed-placement/ses-domains",
-  summary: "Gandi sending domains on Amazon SES: state per domain",
+  summary: "Sending domains on Amazon SES: state per domain",
   description:
-    "SES-COLD-1119. Platform-scoped, read-only. A domain whose `liveSince` is set sends every email to a person (sequence steps, answers, weekly seeds) through Amazon SES (marketing account, our own configuration set), unless the kill switch `SES_COLD_SENDING_DISABLED=true` is set. `lastError` says why a domain is not live yet (`dkim_pending`, `mail_from_pending`, `events_not_confirmed`, or the failure of the last pass).",
+    "SES-COLD-1119. Platform-scoped, read-only. A domain whose `liveSince` is set sends every email to a person (sequence steps, answers, weekly seeds) through Amazon SES (marketing account, our own configuration set), unless the kill switch `SES_COLD_SENDING_DISABLED=true` is set. `lastError` says why a domain is not live yet (`dkim_pending`, `mail_from_pending`, `events_not_confirmed`, `dns_host_unsupported:<ns>`, or the failure of the last pass). `dnsHost` = where its records are written (`gandi` | `cloudflare` | `unsupported`), read from its NS each pass (PF-CLOUDFLARE-1120).",
   responses: { 200: { description: "Domains", content: { "application/json": { schema: z.object({ domains: z.array(z.record(z.string(), z.unknown())) }) } } }, 401: { description: "Unauthorized" } },
 });
 
 registry.registerPath({
   method: "post",
   path: "/internal/seed-placement/ses-domains/onboard",
-  summary: "Move Gandi sending domains one step toward Amazon SES now (the worker does it every 15 min)",
+  summary: "Move sending domains one step toward Amazon SES now (the worker does it every 15 min)",
   description:
-    "SES-COLD-1119. Candidates = Gandi domains with an address in production or recovery, brand domains (`instantly_domain_policy`) excluded. Per domain: SES identity (Easy DKIM, our configuration set), MAIL FROM `ses.<domain>`, the 3 DKIM CNAMEs + the MAIL FROM subdomain's MX and SPF written at Gandi (never the root MX/SPF); live once SES verifies all and the event subscription is confirmed. `dryRun` defaults TRUE and only reads SES.",
+    "SES-COLD-1119, PF-CLOUDFLARE-1120. Candidates = every domain of ours (any vendor) with an address in production or recovery, `instantly_domain_policy` domains excluded. Its DNS host is read from its NS: Gandi LiveDNS or Cloudflare (active zone); any other = pending `dns_host_unsupported`, nothing created at SES. Per domain: SES identity (Easy DKIM, our configuration set), MAIL FROM `ses.<domain>`, the 3 DKIM CNAMEs + the MAIL FROM subdomain's MX and SPF written at that host (never the root MX/SPF); live once SES verifies all and the event subscription is confirmed. `dryRun` defaults TRUE and only reads SES and NS.",
+  request: { body: { content: { "application/json": { schema: z.object({ dryRun: z.boolean().optional(), domains: z.array(z.string()).optional() }) } } } },
+  responses: { 200: { description: "Summary", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 401: { description: "Unauthorized" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/internal/self-send/email-routing",
+  summary: "Domains whose inbound is routed to the staff Gmail mirror (Cloudflare Email Routing): state per domain",
+  description:
+    "PF-CLOUDFLARE-1120. Platform-scoped, read-only. `mxSwitchAfter` = when the root MX may move to Cloudflare, `mxSwitchedAt` = when it did, `liveSince` = routing enabled and ready, catch-all forwarding to the staff Gmail, destination verified (the domain's addresses then count as READ and their replies are filed every 15 min).",
+  responses: { 200: { description: "Domains", content: { "application/json": { schema: z.object({ domains: z.array(z.record(z.string(), z.unknown())) }) } } }, 401: { description: "Unauthorized" } },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/self-send/email-routing/schedule",
+  summary: "Register domains for routed inbound and when their root MX may move to Cloudflare",
+  description:
+    "PF-CLOUDFLARE-1120. `{domains, mxSwitchAfter (ISO, null = prepare the catch-all only)}`. A brand domain (`instantly_domain_policy` reason `brand`) is refused 409. A domain already switched keeps its date. The worker (every 15 min) prepares the catch-all at once and moves the MX (foreign root MX and SPF deleted, Cloudflare's written) on the first pass after `mxSwitchAfter`.",
+  request: { body: { content: { "application/json": { schema: z.object({ domains: z.array(z.string()).min(1), mxSwitchAfter: z.string().datetime().nullable() }) } } } },
+  responses: { 200: { description: "Scheduled rows", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 400: { description: "Invalid body" }, 401: { description: "Unauthorized" }, 409: { description: "Brand domain refused" } },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/internal/self-send/email-routing/sync",
+  summary: "Move routed-inbound domains one step now (the worker does it every 15 min)",
+  description: "PF-CLOUDFLARE-1120. `{dryRun (default TRUE), domains?}`. Dry run reads Cloudflare and NS and writes nothing.",
   request: { body: { content: { "application/json": { schema: z.object({ dryRun: z.boolean().optional(), domains: z.array(z.string()).optional() }) } } } },
   responses: { 200: { description: "Summary", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 401: { description: "Unauthorized" } },
 });
