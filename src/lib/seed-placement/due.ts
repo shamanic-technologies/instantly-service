@@ -146,6 +146,24 @@ export function fleetLastTestedAt(
 
 
 /**
+ * A run RESUMES: senders already seeded inside the last
+ * {@link SEED_WEEKEND_MIN_AGE_DAYS} are dropped from the plan (pure).
+ *
+ * MON-SEED-PLACEMENT-1120: the test dispatches in-process for ~45 min; a deploy
+ * of an unrelated commit recreated the container 35 min into the 2026-11-20 run
+ * (1,475 seeds of ~2,200), and the mailboxes it never reached kept the fleet's
+ * age at 9 days. Re-running then would have seeded the 1,475 a second time on a
+ * sending day. With this, any re-run (forced or the next tick) sends only what
+ * is missing, and a mailbox never carries two tests in a day.
+ */
+export function dropRecentlySeededSenders<T extends { senderEmail: string }>(
+  planned: ReadonlyArray<T>,
+  recentlySeeded: ReadonlySet<string>,
+): T[] {
+  return planned.filter((p) => !recentlySeeded.has(p.senderEmail.trim().toLowerCase()));
+}
+
+/**
  * Past this age the weekly test MISSED: a test lands every Sunday (interval 6
  * days, then the next non-sending day), so a healthy gap is at most 7 days plus
  * the day the sync takes to read it.

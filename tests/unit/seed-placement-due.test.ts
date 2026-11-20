@@ -15,6 +15,7 @@ import {
   SEED_TEST_OVERDUE_AGE_DAYS,
   SEED_URGENT_MARGIN_DAYS,
   decideSeedTestDue,
+  dropRecentlySeededSenders,
 } from "../../src/lib/seed-placement/due";
 import { DELIVERY_EVIDENCE_MAX_AGE_DAYS } from "../../src/lib/account-lifecycle";
 
@@ -140,5 +141,18 @@ describe("cadence constants leave room to recover", () => {
     // at 12 days, which is inside the 16-day limit.
     const stale = daysBefore(WED, 14);
     expect(decideSeedTestDue(stale, WED).due).toBe(true);
+  });
+});
+
+describe("dropRecentlySeededSenders: a cut run resumes (MON-SEED-PLACEMENT-1120)", () => {
+  it("drops every seed of a sender already seeded today, keeps the others", () => {
+    const plan = [
+      { senderEmail: "A@x.test", receiverEmail: "r1" },
+      { senderEmail: "a@x.test", receiverEmail: "r2" },
+      { senderEmail: "b@x.test", receiverEmail: "r1" },
+    ];
+    expect(dropRecentlySeededSenders(plan, new Set(["a@x.test"]))).toEqual([{ senderEmail: "b@x.test", receiverEmail: "r1" }]);
+    // Control: nothing seeded today = the full plan.
+    expect(dropRecentlySeededSenders(plan, new Set())).toHaveLength(3);
   });
 });
