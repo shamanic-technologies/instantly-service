@@ -30,7 +30,9 @@ import { sendFromMailbox } from "../self-send/outbound";
 import { errorMessage } from "../db-error.js";
 import { loadSeedCredentialResolver } from "./credentials";
 import { loadAuthorizedMicrosoftReceiverEsps } from "./microsoft-oauth";
-import { MAX_SEED_RECEIVERS, type SeedReceiver, selectSeedReceivers } from "./seeds";
+import { type SeedReceiver } from "./seeds";
+import { loadGoogleSeedReceivers } from "./receivers";
+import { loadSendOnlyCandidates } from "../self-send/send-only-senders";
 import {
   PostmarkDispatchError,
   loadPostmarkSeedServer,
@@ -119,18 +121,15 @@ export async function runPlacementComparison(input: ComparisonInput): Promise<Co
 
   const resolveCredential = await loadSeedCredentialResolver(CALLER);
   const mailboxes = input.mailboxes.map((m) => m.trim().toLowerCase());
-  const missing = mailboxes.filter((m) => !resolveCredential(m));
+  // A send-only address (SES, no login, PF-CLOUDFLARE-1120) sends like any mailbox.
+  const sendOnly = new Set(await loadSendOnlyCandidates());
+  const missing = mailboxes.filter((m) => !resolveCredential(m) && !sendOnly.has(m));
   if (missing.length > 0) throw new Error(`no credential for mailbox(es): ${missing.join(", ")}`);
 
-  // The weekly test's receivers, exactly: Google from the credentialed pool,
-  // plus every authorized Microsoft mailbox.
+  // The weekly test's receivers, exactly (`receivers.ts`), plus every
+  // authorized Microsoft mailbox.
   const pool = await fetchTestablePoolEmails();
-  const google = selectSeedReceivers(
-    pool
-      .map((email) => ({ email, imapHost: resolveCredential(email)?.imapHost ?? "" }))
-      .filter((c) => c.imapHost !== ""),
-    MAX_SEED_RECEIVERS,
-  );
+  const google = await loadGoogleSeedReceivers(pool, resolveCredential, CALLER);
   const receivers: SeedReceiver[] = [
     ...google,
     ...(await loadAuthorizedMicrosoftReceiverEsps()).filter((r) => !google.some((g) => g.email === r.email)),
@@ -180,7 +179,7 @@ export async function runPlacementComparison(input: ComparisonInput): Promise<Co
       const result =
         send.sender.transport === "postmark"
           ? { ...(await sendThroughPostmark(postmark as PostmarkSeedServer, message)), transport: "postmark" as const }
-          : await sendFromMailbox(resolveCredential(send.sender.email)!, message);
+          : await sendFromMailbox(resolveCredential(send.sender.email), message);
       await db.insert(seedPlacementDispatches).values({
         testId: input.testId,
         senderEmail: send.sender.email,

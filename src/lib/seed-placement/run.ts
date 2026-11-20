@@ -26,14 +26,12 @@ import { sendFromMailbox } from "../self-send/outbound";
 import { buildSeedMessage } from "./message";
 import { loadSeedCredentialResolver } from "./credentials";
 import { loadSendOnlyCandidates } from "../self-send/send-only-senders";
-import { loadDomainsInboundRoutedAway } from "../self-send/email-routing";
+import { loadGoogleSeedReceivers } from "./receivers";
 import {
-  MAX_SEED_RECEIVERS,
   MICROSOFT_ESPS,
   type SeedReceiver,
   mintSeedTestId,
   planSeedSends,
-  selectSeedReceivers,
   withOptOutVariants,
 } from "./seeds";
 import type { Account } from "../instantly-client";
@@ -216,24 +214,16 @@ export async function runSeedPlacementTest(
     sendable.push(email);
   }
 
-  // A mailbox whose domain's inbound now goes elsewhere (MX moved to Cloudflare
-  // Email Routing, or scheduled to before this test is read) receives nothing new:
-  // a seed sent to it would read as MISSING and sink every sender's score.
-  const routedAway = await loadDomainsInboundRoutedAway(asOf);
-
-  // Receivers are drawn from the SENDABLE set, because a receiver has to be read
-  // over IMAP with the same credential — a mailbox we cannot authenticate is no
-  // more readable than it is sendable. The credential also carries the real
-  // HOST, which is what decides whether the mailbox can grade at all (only a
-  // Google/Microsoft-hosted one can; see `selectSeedReceivers`).
-  const googleReceivers = selectSeedReceivers(
-    sendable
-      .filter((email) => credentials.get(email) && !routedAway.has(email.split("@")[1]?.toLowerCase() ?? ""))
-      .map((email) => ({
-        email,
-        imapHost: credentials.get(email)?.imapHost ?? "",
-      })),
-    MAX_SEED_RECEIVERS,
+  // Receivers are drawn from the SENDABLE set read over IMAP with its own
+  // credential (the HOST decides whether it can grade, `selectSeedReceivers`),
+  // minus mailboxes whose inbound is routed away by this test, plus the
+  // receive-only Google mailboxes of the manual key (`receivers.ts`,
+  // PF-CLOUDFLARE-1120). One rule for run, comparison and health.
+  const googleReceivers = await loadGoogleSeedReceivers(
+    sendable,
+    (email) => credentials.get(email) ?? null,
+    CALLER,
+    asOf,
   );
 
   // Microsoft receivers (Outlook.com, Microsoft 365): our own mailboxes a person
