@@ -36,7 +36,7 @@ import {
 } from "./seeds";
 import type { Account } from "../instantly-client";
 import { seedTestOffset } from "../self-send/opt-out-variant";
-import { decideSeedTestDue, fleetLastTestedAt, type SeedDueReason } from "./due";
+import { decideSeedTestDue, dropRecentlySeededSenders, SEED_WEEKEND_MIN_AGE_DAYS, fleetLastTestedAt, type SeedDueReason } from "./due";
 import { loadAuthorizedMicrosoftReceiverEsps } from "./microsoft-oauth";
 
 const CALLER: CallerInfo = {
@@ -92,6 +92,18 @@ export async function fetchLastSeedTestAt(asOf: Date = new Date()): Promise<Date
   );
 }
 
+/** Senders with a gate-graded fleet seed sent inside the last SEED_WEEKEND_MIN_AGE_DAYS (lower-cased). */
+async function fetchRecentlySeededSenders(asOf: Date): Promise<Set<string>> {
+  const since = new Date(asOf.getTime() - SEED_WEEKEND_MIN_AGE_DAYS * 24 * 60 * 60 * 1000);
+  const result = await db.execute(sql`
+    SELECT DISTINCT lower(sender_email) AS sender FROM seed_placement_dispatches
+    WHERE outcome = 'sent' AND purpose = 'fleet' AND dispatched_at >= ${since.toISOString()}
+      AND recipient_esp NOT IN (${sql.join(MICROSOFT_ESPS.map((e) => sql`${e}`), sql`, `)})
+  `);
+  const rows = (Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])) as { sender: string }[];
+  return new Set(rows.map((r) => r.sender));
+}
+
 /**
  * Persona names of the senders, read from silver like the dispatch worker's
  * `loadSendingAccounts`. A mailbox silver does not name signs with the default
@@ -132,6 +144,8 @@ export interface SeedPlacementRunSummary {
   failed: number;
   /** Mailboxes we hold no credential for — expected for the legacy fleet, not an error. */
   skippedNoCredential: number;
+  /** Senders dropped because they were already seeded in the last day (a resumed run). */
+  skippedRecentlySeeded?: number;
   /** Set when the run was declined because no test was due. */
   skippedReason?: SeedDueReason;
 }
@@ -249,7 +263,13 @@ export async function runSeedPlacementTest(
   }
   // Every seed carries one of the three opt-out variants (UNSUB-3WAY-1103),
   // rotated over sender x receiver x test so no variant rides one mailbox.
-  const planned = withOptOutVariants(planSeedSends(sendable, receivers), seedTestOffset(asOf));
+  const fullPlan = withOptOutVariants(planSeedSends(sendable, receivers), seedTestOffset(asOf));
+  // Resume: a sender already seeded in the last day is not seeded again
+  // (a run cut by a deploy re-runs only what it missed; MON-SEED-PLACEMENT-1120).
+  const recentlySeeded = await fetchRecentlySeededSenders(asOf);
+  const planned = dropRecentlySeededSenders(fullPlan, recentlySeeded);
+  summary.skippedRecentlySeeded =
+    new Set(fullPlan.map((w) => w.senderEmail)).size - new Set(planned.map((w) => w.senderEmail)).size;
   const work = options.limit ? planned.slice(0, options.limit) : planned;
   const accounts = await loadSeedSenderAccounts(work.map((w) => w.senderEmail));
 
