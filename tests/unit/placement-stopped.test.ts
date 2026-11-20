@@ -29,8 +29,9 @@ describe("fleetLastTestedAt: the fleet is as fresh as its least recently tested 
   it("so the weekly test is due on Sunday 11-08 (it declined as recently_tested)", () => {
     const decision = decideSeedTestDue(fleetLastTestedAt(prodRows, fleet, SUNDAY), SUNDAY);
     expect(decision.due).toBe(true);
-    // Control: the old rule (newest seed of any test) declines.
-    expect(decideSeedTestDue(PROBE, SUNDAY)).toMatchObject({ due: false, reason: "recently_tested" });
+    // Since MON-SEED-PLACEMENT-1120 a Sunday runs whatever weekday the last test landed on,
+    // so even the probe's date no longer makes it decline.
+    expect(decideSeedTestDue(PROBE, SUNDAY)).toMatchObject({ due: true, reason: "weekend_cadence" });
   });
 
   it("ignores a mailbox no longer in the testable pool", () => {
