@@ -29,6 +29,11 @@ vi.mock("../../src/lib/providers/primeforge-client", () => ({
 // The listing the infra sync last stored (bronze). Empty by default: a refusal
 // with nothing stored takes the vendor's mailboxes out.
 const mockLoadLastPrimeforgeListing = vi.fn();
+// No domain live on SES in these cases: the send-only layer adds nothing.
+const mockLoadSendOnly = vi.hoisted(() => vi.fn());
+vi.mock("../../src/lib/self-send/send-only-senders", () => ({
+  loadSendOnlyCandidates: (...a: unknown[]) => mockLoadSendOnly(...a),
+}));
 vi.mock("../../src/lib/self-send/primeforge-last-listing", () => ({
   loadLastPrimeforgeListing: (...a: unknown[]) => mockLoadLastPrimeforgeListing(...a),
 }));
@@ -63,6 +68,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   resetVendorRefusals();
   mockLoadLastPrimeforgeListing.mockResolvedValue({ fetchedAt: null, mailboxes: [] });
+  mockLoadSendOnly.mockResolvedValue([]);
   mockListPrimeforgeRawMailboxes.mockResolvedValue([
     { address: "kevin@boostdistribute.com", appPassword: "abcd efgh ijkl mnop" },
   ]);
@@ -359,5 +365,34 @@ describe("a mailbox vendor refusing us (SEND-PRIMEFORGE-402-1030)", () => {
   it("the manual layer failing is NOT a vendor refusal: it still fails the whole read", async () => {
     mockResolvePlatformKey.mockRejectedValue(new KeyServiceError(500, "boom"));
     await expect(loadMailboxLogins(CALLER)).rejects.toThrow("boom");
+  });
+});
+
+describe("an address that only SENDS, through its domain's SES pipe (PF-CLOUDFLARE-1120)", () => {
+  beforeEach(() => {
+    mockResolvePlatformKey.mockImplementation(async (provider: string) =>
+      provider === MANUAL_CREDENTIALS_PROVIDER ? manualKey([GANDI_ALIAS]) : "pf-key",
+    );
+  });
+
+  it("is a sender of its own mailbox (one address = one quota), never overriding a login", async () => {
+    mockLoadSendOnly.mockResolvedValue(["fallon@acutezoneco.com", "kevin@boostdistribute.com"]);
+    const entries = await loadMailboxLoginEntries(CALLER);
+    expect(entries.get("fallon@acutezoneco.com")).toEqual({ login: "fallon@acutezoneco.com", source: "ses" });
+    // Still held by a login: the login wins.
+    expect(entries.get("kevin@boostdistribute.com")?.source).toBe("primeforge");
+    expect((await loadCredentialedMailboxes(CALLER)).has("fallon@acutezoneco.com")).toBe(true);
+  });
+
+  it("a reader that LOGS IN never sees it", async () => {
+    mockLoadSendOnly.mockResolvedValue(["fallon@acutezoneco.com"]);
+    const readable = await loadMailboxLogins(CALLER, { readableOnly: true });
+    expect(readable.has("fallon@acutezoneco.com")).toBe(false);
+    expect(readable.has("kevinl@marketingagency.life")).toBe(true);
+  });
+
+  it("no login is ever invented for it: resolving its password still throws", async () => {
+    mockLoadSendOnly.mockResolvedValue(["fallon@acutezoneco.com"]);
+    await expect(resolveMailboxCredential("fallon@acutezoneco.com", CALLER)).rejects.toBeInstanceOf(MailboxCredentialError);
   });
 });

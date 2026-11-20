@@ -3,7 +3,7 @@
 Cold email outreach via Instantly.ai API V2 plus our own self-send transport (our Gandi domains leave through Amazon SES since SES-COLD-1119, kill switch `SES_COLD_SENDING_DISABLED`, see `src/lib/self-send/CLAUDE.md`): campaigns, leads, accounts, warmup, analytics, webhooks, reply handling. Fleet-generic traps (deploy, rtk, probes, cost declaration, pg connect retry, async EventEmitter crashes) live in the global CLAUDE.md and skills.
 
 **Where the detail lives (read the matching file BEFORE touching that code):**
-- `src/lib/self-send/CLAUDE.md`: self-send transport, dispatch worker, IMAP poller (incl. replies from ANOTHER address, Jev-judged), click tracking, unsubscribe.
+- `src/lib/self-send/CLAUDE.md`: self-send transport, dispatch worker, IMAP poller (incl. replies from ANOTHER address, Jev-judged), click tracking, unsubscribe, cold pipes (SES on Gandi AND Cloudflare DNS, read from NS), send-only senders and Cloudflare Email Routing for domains whose mailboxes are gone (PF-CLOUDFLARE-1120).
 - `src/lib/warmup/CLAUDE.md`: warmup mesh. `src/lib/seed-placement/CLAUDE.md`: Instantly placement test + in-house seed placement + Microsoft receivers (Graph, device-code OAuth) and the Microsoft-recipient routing.
 - `src/lib/ops/CLAUDE.md`: ops reads, account-health columns, queue breakdown, messages/mailboxes projections. `src/lib/providers/CLAUDE.md`: vendor inventory, infra cost, FX.
 - `src/routes/CLAUDE.md`: audit routes (forecast, reconcile, Unibox backfill), finished-contact cleanup, gold stats SQL.

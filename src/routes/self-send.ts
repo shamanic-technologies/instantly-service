@@ -18,6 +18,12 @@ import { runPoll } from "../lib/self-send/imap-poller";
 import { runOrphanReplySweep } from "../lib/self-send/orphan-reply-sweep";
 import { runDsnJudgmentSweep } from "../lib/self-send/dsn-judgment-sweep";
 import { recoverForwardedReplies } from "../lib/self-send/forwarded-replies";
+import {
+  EmailRoutingScheduleError,
+  listEmailRoutingDomains,
+  scheduleEmailRouting,
+  syncEmailRouting,
+} from "../lib/self-send/email-routing";
 import { refileOurSideReplies } from "../lib/self-send/our-side-refile";
 import {
   DsnJudgmentsRequestSchema,
@@ -197,6 +203,42 @@ router.post("/our-side-replies", async (req: Request, res: Response) => {
  * mailboxes?: string[], domains?: string[] }`; no target = every mailbox blind
  * now. 202, then `forwarded-replies: done` with the summary.
  */
+/** Routed-inbound domains (Cloudflare Email Routing → staff Gmail), state per domain (PF-CLOUDFLARE-1120). */
+router.get("/email-routing", async (_req: Request, res: Response) => {
+  try {
+    res.json({ domains: await listEmailRoutingDomains() });
+  } catch (error) {
+    res.status(500).json({ error: errorMessage(error) });
+  }
+});
+
+/** Register domains and when their root MX may move. `{domains, mxSwitchAfter: ISO | null}`. */
+router.post("/email-routing/schedule", async (req: Request, res: Response) => {
+  const domains = Array.isArray(req.body?.domains) ? req.body.domains.map(String) : [];
+  const raw = req.body?.mxSwitchAfter;
+  const at = raw === null || raw === undefined ? null : new Date(String(raw));
+  if (domains.length === 0 || (at !== null && Number.isNaN(at.getTime()))) {
+    res.status(400).json({ error: "body must be {domains: string[], mxSwitchAfter: ISO date | null}" });
+    return;
+  }
+  try {
+    res.json({ domains: await scheduleEmailRouting(domains, at) });
+  } catch (error) {
+    res.status(error instanceof EmailRoutingScheduleError ? 409 : 500).json({ error: errorMessage(error) });
+  }
+});
+
+/** One routing step now. `{dryRun (default TRUE), domains?}`. */
+router.post("/email-routing/sync", async (req: Request, res: Response) => {
+  const dryRun = req.body?.dryRun !== false;
+  const domains = Array.isArray(req.body?.domains) ? req.body.domains.map(String) : undefined;
+  try {
+    res.json(await syncEmailRouting({ dryRun, domains }));
+  } catch (error) {
+    res.status(500).json({ error: errorMessage(error) });
+  }
+});
+
 router.post("/forwarded-replies", async (req: Request, res: Response) => {
   const parsed = ForwardedRepliesRequestSchema.safeParse(req.body ?? {});
   if (!parsed.success) {

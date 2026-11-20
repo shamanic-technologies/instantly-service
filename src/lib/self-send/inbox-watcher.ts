@@ -340,7 +340,8 @@ export async function refreshInboxWatchers(): Promise<{
 
   const [accounts, logins] = await Promise.all([
     loadSelfSendAccounts(),
-    loadMailboxLogins(CALLER),
+    // Logins only: a send-only address (SES, no password) is never logged into.
+    loadMailboxLogins(CALLER, { readableOnly: true }),
   ]);
   const groups = groupAccountsByLogin(accounts, logins);
 

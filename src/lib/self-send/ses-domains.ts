@@ -5,10 +5,13 @@
  * SES Gmail 9 Primary / 20 Promotions / 1 spam, Postmark 9 / 21 / 0, Google
  * Workspace 9 / 18 / 0).
  *
- * Candidates = the same population as Postmark's (`loadOnboardingCandidates`):
- * every Gandi domain of ours with a present address in production or recovery,
- * brand/product domains of `instantly_domain_policy` excluded, Primeforge
- * excluded (not `provider = 'gandi'`).
+ * Candidates (`loadSesCandidates`): every domain of ours, ANY vendor, with a
+ * present address in production or recovery, brand/product and retiring domains
+ * of `instantly_domain_policy` excluded. Which API writes its records is read
+ * from its NS each pass (`dns/dns-host.ts`, PF-CLOUDFLARE-1120): Gandi LiveDNS
+ * or Cloudflare; any other DNS host = pending `dns_host_unsupported:<ns>`,
+ * nothing created at SES (the 3 Primeforge domains whose NS still sit at
+ * Primeforge go live on their own once their NS reach Cloudflare).
  *
  * Each pass (worker every 15 min, idempotent, one step further each time):
  *   0. the cold EVENT pipeline exists: our configuration set
@@ -19,8 +22,10 @@
  *   1. the domain is an SES identity (Easy DKIM), defaulting to our set;
  *   2. its custom MAIL FROM is `ses.<domain>` (SPF aligned for DMARC);
  *   3. the 3 DKIM CNAMEs and the MAIL FROM subdomain's MX + SPF TXT are written
- *      at Gandi LiveDNS (the org's token, `gandi-<provider_account>`). NOTHING
- *      else: never the root MX/SPF, so the mailboxes keep receiving replies;
+ *      at the domain's DNS host: Gandi LiveDNS (the org's token,
+ *      `gandi-<provider_account>`) or Cloudflare (platform key `cloudflare-dns`,
+ *      active zone only). NOTHING else: never the root MX/SPF, so the
+ *      mailboxes keep receiving replies;
  *   4. live once SES says verified for sending, DKIM SUCCESS, MAIL FROM SUCCESS
  *      AND the event subscription is confirmed (no bounce may go unseen).
  *      A domain that loses any of these is taken off SES (live_since cleared):
@@ -43,8 +48,15 @@ import {
   SES_COLD_WEBHOOK_URL,
   type SesAccount,
 } from "../aws/ses-account";
-import { loadOnboardingCandidates } from "./postmark-domains";
 import { clearLivePipesCache } from "./outbound";
+import { resolveDnsHost, type DnsHost } from "../dns/dns-host";
+import {
+  activeZone,
+  loadCloudflareClient,
+  toCloudflareRecord,
+  upsertRecord,
+  type CloudflareClient,
+} from "../dns/cloudflare";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/ses-sending/onboard" };
 
@@ -74,10 +86,15 @@ export function sesDnsRecords(region: string, tokens: readonly string[]): DnsRec
   ];
 }
 
-async function writeGandiRecord(token: string, domain: string, record: DnsRecord): Promise<void> {
+/** Only DKIM CNAMEs and the MAIL FROM subdomain are ever written, on any DNS host (pure guard). */
+export function assertSesRecordAllowed(domain: string, record: DnsRecord): void {
   if (record.name === "@" || record.name === "" || (record.type === "MX" && record.name !== SES_MAIL_FROM_LABEL)) {
     throw new Error(`refused to write ${record.type} on "${record.name}" of ${domain}: only DKIM CNAMEs and the MAIL FROM subdomain`);
   }
+}
+
+async function writeGandiRecord(token: string, domain: string, record: DnsRecord): Promise<void> {
+  assertSesRecordAllowed(domain, record);
   const response = await fetch(
     `https://api.gandi.net/v5/livedns/domains/${domain}/records/${encodeURIComponent(record.name)}/${record.type}`,
     {
@@ -89,6 +106,41 @@ async function writeGandiRecord(token: string, domain: string, record: DnsRecord
   if (!response.ok) {
     throw new Error(`Gandi LiveDNS PUT ${record.name} ${record.type} on ${domain}: ${response.status} ${await response.text()}`);
   }
+}
+
+async function writeCloudflareRecord(client: CloudflareClient, zoneId: string, domain: string, record: DnsRecord): Promise<void> {
+  assertSesRecordAllowed(domain, record);
+  await upsertRecord(client, zoneId, toCloudflareRecord(domain, record));
+}
+
+export interface SesCandidate {
+  domain: string;
+  /** The Gandi organisation of a Gandi-bought domain (its LiveDNS token), else null. */
+  gandiOrg: string | null;
+}
+
+/**
+ * Every sending domain of ours, any vendor, with a present address in production
+ * or recovery; brand/product and retiring domains (`instantly_domain_policy`)
+ * excluded. Where its DNS lives is NOT read here: it is asked each pass.
+ */
+export async function loadSesCandidates(only?: readonly string[]): Promise<SesCandidate[]> {
+  const rows = rowsOf<{ domain: string; org: string | null }>(
+    await db.execute(sql`
+      SELECT i.domain, max(CASE WHEN i.provider = 'gandi' THEN i.provider_account END) AS org
+      FROM infra_domains i
+      JOIN instantly_accounts a
+        ON lower(split_part(a.email, '@', 2)) = i.domain
+       AND a.absent_since IS NULL
+       AND a.lifecycle_status IN ('in_production', 'in_recovery')
+      WHERE i.absent_since IS NULL
+        AND NOT EXISTS (SELECT 1 FROM instantly_domain_policy p WHERE p.domain = i.domain)
+      GROUP BY i.domain
+      ORDER BY i.domain
+    `),
+  );
+  const wanted = only && only.length > 0 ? new Set(only.map((d) => d.toLowerCase())) : null;
+  return rows.filter((r) => !wanted || wanted.has(r.domain)).map((r) => ({ domain: r.domain, gandiOrg: r.org }));
 }
 
 export interface EventPipeline {
@@ -223,15 +275,23 @@ async function readIdentity(account: SesAccount, domain: string): Promise<SesIde
   return identityStateOf(got.status, got.json);
 }
 
-async function saveState(domain: string, state: SesIdentityState, live: boolean, dnsWritten: boolean, lastError: string | null): Promise<void> {
+async function saveState(
+  domain: string,
+  state: SesIdentityState,
+  live: boolean,
+  dnsWritten: boolean,
+  lastError: string | null,
+  dnsHost: string | null,
+): Promise<void> {
   await db.execute(sql`
     INSERT INTO ses_sending_domains
       (domain, dkim_tokens, dkim_status, mail_from_domain, mail_from_status, verified_for_sending,
-       dns_written_at, live_since, last_error, checked_at)
+       dns_written_at, live_since, last_error, checked_at, dns_host)
     VALUES (${domain}, ${JSON.stringify(state.dkimTokens)}::jsonb, ${state.dkimStatus}, ${state.mailFromDomain},
             ${state.mailFromStatus}, ${state.verifiedForSending}, CASE WHEN ${dnsWritten} THEN now() END,
-            CASE WHEN ${live} THEN now() END, ${lastError}, now())
+            CASE WHEN ${live} THEN now() END, ${lastError}, now(), ${dnsHost})
     ON CONFLICT (domain) DO UPDATE SET
+      dns_host = COALESCE(EXCLUDED.dns_host, ses_sending_domains.dns_host),
       dkim_tokens = EXCLUDED.dkim_tokens,
       dkim_status = EXCLUDED.dkim_status,
       mail_from_domain = EXCLUDED.mail_from_domain,
@@ -244,12 +304,20 @@ async function saveState(domain: string, state: SesIdentityState, live: boolean,
   `);
 }
 
-async function saveError(domain: string, message: string): Promise<void> {
+async function saveError(domain: string, message: string, dnsHost: string | null = null): Promise<void> {
   // A failed pass changes nothing it did not see: live stays as it was.
   await db.execute(sql`
-    INSERT INTO ses_sending_domains (domain, last_error, checked_at) VALUES (${domain}, ${message}, now())
-    ON CONFLICT (domain) DO UPDATE SET last_error = EXCLUDED.last_error, checked_at = now()
+    INSERT INTO ses_sending_domains (domain, last_error, checked_at, dns_host) VALUES (${domain}, ${message}, now(), ${dnsHost})
+    ON CONFLICT (domain) DO UPDATE SET last_error = EXCLUDED.last_error, checked_at = now(),
+      dns_host = COALESCE(EXCLUDED.dns_host, ses_sending_domains.dns_host)
   `);
+}
+
+/** Pure: the reason a domain cannot be onboarded on this DNS host, or null when it can. */
+export function dnsHostBlocker(dnsHost: DnsHost, gandiOrg: string | null): string | null {
+  if (dnsHost.host === "unsupported") return `dns_host_unsupported:${dnsHost.nameservers.join(",") || "no_ns"}`;
+  if (dnsHost.host === "gandi" && !gandiOrg) return "dns_host_gandi_without_gandi_org";
+  return null;
 }
 
 export interface SesOnboardingSummary {
@@ -265,11 +333,20 @@ export interface SesOnboardingSummary {
 }
 
 export async function onboardSesDomains(
-  options: { dryRun?: boolean; domains?: string[]; account?: SesAccount } = {},
+  options: {
+    dryRun?: boolean;
+    domains?: string[];
+    account?: SesAccount;
+    /** Test seam: the NS read. */
+    resolveDnsHost?: (domain: string) => Promise<DnsHost>;
+    /** Test seam: the Cloudflare client. */
+    cloudflare?: CloudflareClient;
+  } = {},
 ): Promise<SesOnboardingSummary> {
   const dryRun = options.dryRun !== false;
-  const candidates = await loadOnboardingCandidates(options.domains);
+  const candidates = await loadSesCandidates(options.domains);
   const account = options.account ?? (await loadSesAccount(CALLER));
+  const dnsHostOf = options.resolveDnsHost ?? resolveDnsHost;
   const summary: SesOnboardingSummary = {
     dryRun,
     candidates: candidates.length,
@@ -292,10 +369,21 @@ export async function onboardSesDomains(
   const subscriptionConfirmed = summary.pipeline?.subscriptionConfirmed ?? false;
 
   const gandiTokens = new Map<string, string>();
+  let cloudflare: CloudflareClient | null = options.cloudflare ?? null;
   for (const candidate of candidates) {
     const domain = candidate.domain;
+    let host: DnsHost | null = null;
     try {
+      // Where its records can be written, read first: a domain we cannot write
+      // to is never created at SES (nothing half-done to clean up).
+      host = await dnsHostOf(domain);
+      const blocker = dnsHostBlocker(host, candidate.gandiOrg);
       let state = await readIdentity(account, domain);
+      if (blocker && !(state.dkimStatus === "SUCCESS" && state.mailFromStatus === "SUCCESS")) {
+        summary.pending.push({ domain, reason: blocker });
+        if (!dryRun) await saveError(domain, blocker, host.host);
+        continue;
+      }
       if (dryRun) {
         if (!state.exists) summary.wouldCreate.push(domain);
         else {
@@ -329,18 +417,25 @@ export async function onboardSesDomains(
       let dnsWritten = false;
       if (state.dkimStatus !== "SUCCESS" || state.mailFromStatus !== "SUCCESS") {
         if (state.dkimTokens.length === 0) throw new Error(`SES gave no DKIM tokens for ${domain}`);
-        if (!candidate.gandiOrg) throw new Error(`no Gandi organisation recorded for ${domain}`);
-        let gandi = gandiTokens.get(candidate.gandiOrg);
-        if (!gandi) {
-          gandi = await resolvePlatformKey(`gandi-${candidate.gandiOrg}`, CALLER);
-          gandiTokens.set(candidate.gandiOrg, gandi);
+        const records = sesDnsRecords(account.region, state.dkimTokens);
+        if (host.host === "cloudflare") {
+          cloudflare = cloudflare ?? (await loadCloudflareClient(CALLER));
+          const zone = await activeZone(cloudflare, domain);
+          for (const record of records) await writeCloudflareRecord(cloudflare, zone.id, domain, record);
+        } else {
+          if (!candidate.gandiOrg) throw new Error(`no Gandi organisation recorded for ${domain}`);
+          let gandi = gandiTokens.get(candidate.gandiOrg);
+          if (!gandi) {
+            gandi = await resolvePlatformKey(`gandi-${candidate.gandiOrg}`, CALLER);
+            gandiTokens.set(candidate.gandiOrg, gandi);
+          }
+          for (const record of records) await writeGandiRecord(gandi, domain, record);
         }
-        for (const record of sesDnsRecords(account.region, state.dkimTokens)) await writeGandiRecord(gandi, domain, record);
         dnsWritten = true;
       }
       state = await readIdentity(account, domain);
       const verdict = sesLiveVerdict(domain, state, subscriptionConfirmed);
-      await saveState(domain, state, verdict.live, dnsWritten, verdict.reason);
+      await saveState(domain, state, verdict.live, dnsWritten, verdict.reason, host.host);
       if (verdict.live) {
         summary.live.push(domain);
         if (!wasLive.has(domain)) summary.becameLive.push(domain);
@@ -351,7 +446,7 @@ export async function onboardSesDomains(
     } catch (error) {
       const message = errorMessage(error).slice(0, 500);
       summary.failed.push({ domain, error: message });
-      if (!dryRun) await saveError(domain, message);
+      if (!dryRun) await saveError(domain, message, host?.host ?? null);
       console.error(`[instantly-service] ses onboarding ${domain} failed: ${message}`);
     }
   }
@@ -365,6 +460,7 @@ export async function listSesSendingDomains(): Promise<Record<string, unknown>[]
       SELECT domain, dkim_status AS "dkimStatus", mail_from_domain AS "mailFromDomain",
              mail_from_status AS "mailFromStatus", verified_for_sending AS "verifiedForSending",
              dns_written_at AS "dnsWrittenAt", live_since AS "liveSince", last_error AS "lastError",
+             dns_host AS "dnsHost",
              checked_at AS "checkedAt"
       FROM ses_sending_domains ORDER BY live_since NULLS LAST, domain
     `),

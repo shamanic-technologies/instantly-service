@@ -23,11 +23,7 @@ import { BounceBudget, PROOF_FRESH_DAYS } from "../bounce-budget";
 import { loadFleetBounceHistory } from "../bounce-budget-history";
 import type { Account } from "../instantly-client";
 import type { CallerInfo } from "../key-client";
-import {
-  loadMailboxLogins,
-  resolveMailboxCredential,
-  type MailboxCredential,
-} from "./mailbox-credentials";
+import { loadMailboxLogins, type MailboxCredential } from "./mailbox-credentials";
 import { loadPendingScheduledReplies } from "../scheduled-replies";
 import { currentOptOutVariant } from "../seed-placement/opt-out-choice";
 import { buildMessage } from "./message";
@@ -36,7 +32,7 @@ import { runOrphanReplySweep } from "./orphan-reply-sweep";
 import { runDsnJudgmentSweep } from "./dsn-judgment-sweep";
 import { judgeStoredAbsences } from "./absence-judgment";
 import { SmtpDispatchError } from "./smtp";
-import { sendFromMailbox } from "./outbound";
+import { resolveSendCredential, sendFromMailbox } from "./outbound";
 import { buildSendDecision, type SendTrigger } from "./send-decision";
 import { selectionToSend } from "./send-select-script";
 import { recordSentMessage } from "./send-record";
@@ -1319,7 +1315,7 @@ async function runDispatchExclusive(
     // One credential lookup per mailbox per run, not per send: the vendor call
     // returns the whole fleet, so paying it per message would be dozens of
     // identical round-trips for a single sweep.
-    const credentials = new Map<string, MailboxCredential>();
+    const credentials = new Map<string, MailboxCredential | null>();
 
     const selectionContext: SelectionContext = {
       trigger: "sweep",
@@ -1357,7 +1353,7 @@ async function sendDueStep(
   step: DueStep,
   ctx: {
     accounts: Map<string, Account>;
-    credentials: Map<string, MailboxCredential>;
+    credentials: Map<string, MailboxCredential | null>;
     summary: DispatchSummary;
     asOf: Date;
     selection: SelectionContext;
@@ -1404,9 +1400,11 @@ async function sendDueStep(
       }
     }
 
+    // Null = a send-only address: its domain sends through SES, no login held
+    // (PF-CLOUDFLARE-1120). No credential AND no SES pipe throws, as before.
     let credential = credentials.get(step.accountEmail);
-    if (!credential) {
-      credential = await resolveMailboxCredential(step.accountEmail, CALLER);
+    if (credential === undefined) {
+      credential = await resolveSendCredential(step.accountEmail, CALLER);
       credentials.set(step.accountEmail, credential);
     }
 
@@ -1619,7 +1617,7 @@ export async function dispatchAnswerNow(
       heldPlacement: selection.heldPlacement,
       heldMostlySpam: selection.heldMostlySpam,
     };
-    const credentials = new Map<string, MailboxCredential>();
+    const credentials = new Map<string, MailboxCredential | null>();
     const selectionContext: SelectionContext = {
       trigger: "answer_now",
       sequences: new Map(sequences.map((s) => [s.instantlyCampaignId, s])),

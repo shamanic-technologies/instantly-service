@@ -215,7 +215,8 @@ describe("onboarding: DNS and verdict", () => {
     ]);
     const src = readFileSync("src/lib/self-send/ses-domains.ts", "utf8");
     expect(src).toMatch(/record\.type === "MX" && record\.name !== SES_MAIL_FROM_LABEL/);
-    expect(src).toMatch(/loadOnboardingCandidates/);
+    // Candidates: any vendor (the Primeforge domains on Cloudflare too, PF-CLOUDFLARE-1120).
+    expect(src).toMatch(/loadSesCandidates/);
   });
   it("live only when identity, DKIM, MAIL FROM, our configuration set AND the event subscription all hold", () => {
     const ok = identityStateOf(200, {

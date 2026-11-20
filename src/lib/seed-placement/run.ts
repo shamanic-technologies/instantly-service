@@ -25,6 +25,8 @@ import { SmtpDispatchError } from "../self-send/smtp";
 import { sendFromMailbox } from "../self-send/outbound";
 import { buildSeedMessage } from "./message";
 import { loadSeedCredentialResolver } from "./credentials";
+import { loadSendOnlyCandidates } from "../self-send/send-only-senders";
+import { loadDomainsInboundRoutedAway } from "../self-send/email-routing";
 import {
   MAX_SEED_RECEIVERS,
   MICROSOFT_ESPS,
@@ -198,11 +200,15 @@ export async function runSeedPlacementTest(
   // accounts have no retrievable app password. Planning against the full pool
   // and discovering that per-seed would attempt ~10 doomed sends per dead
   // mailbox and write ~1,900 failure rows that mean nothing.
+  // A send-only address (its domain sends through SES, no login held,
+  // PF-CLOUDFLARE-1120) is a SENDER like any other: the seed is the email a
+  // prospect gets from it. It is never a receiver (nothing can read it).
+  const sendOnly = new Set(await loadSendOnlyCandidates());
   const credentials = new Map<string, ReturnType<typeof resolveCredential>>();
   const sendable: string[] = [];
   for (const email of pool) {
     const credential = resolveCredential(email);
-    if (!credential) {
+    if (!credential && !sendOnly.has(email.trim().toLowerCase())) {
       summary.skippedNoCredential += 1;
       continue;
     }
@@ -210,16 +216,23 @@ export async function runSeedPlacementTest(
     sendable.push(email);
   }
 
+  // A mailbox whose domain's inbound now goes elsewhere (MX moved to Cloudflare
+  // Email Routing, or scheduled to before this test is read) receives nothing new:
+  // a seed sent to it would read as MISSING and sink every sender's score.
+  const routedAway = await loadDomainsInboundRoutedAway(asOf);
+
   // Receivers are drawn from the SENDABLE set, because a receiver has to be read
   // over IMAP with the same credential — a mailbox we cannot authenticate is no
   // more readable than it is sendable. The credential also carries the real
   // HOST, which is what decides whether the mailbox can grade at all (only a
   // Google/Microsoft-hosted one can; see `selectSeedReceivers`).
   const googleReceivers = selectSeedReceivers(
-    sendable.map((email) => ({
-      email,
-      imapHost: credentials.get(email)?.imapHost ?? "",
-    })),
+    sendable
+      .filter((email) => credentials.get(email) && !routedAway.has(email.split("@")[1]?.toLowerCase() ?? ""))
+      .map((email) => ({
+        email,
+        imapHost: credentials.get(email)?.imapHost ?? "",
+      })),
     MAX_SEED_RECEIVERS,
   );
 
@@ -263,8 +276,8 @@ export async function runSeedPlacementTest(
 
   for (const send of work) {
     try {
-      const credential = credentials.get(send.senderEmail);
-      if (!credential) continue;
+      if (!credentials.has(send.senderEmail)) continue;
+      const credential = credentials.get(send.senderEmail) ?? null;
 
       // The sending account as the dispatcher holds it (persona name), so the
       // From and the signature match what this mailbox sends a prospect.

@@ -1773,6 +1773,23 @@ export const sesSendingDomains = pgTable("ses_sending_domains", {
   lastError: text("last_error"),
   checkedAt: timestamp("checked_at").defaultNow().notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  // PF-CLOUDFLARE-1120: gandi | cloudflare | unsupported, read from NS each pass.
+  dnsHost: text("dns_host"),
+});
+
+// PF-CLOUDFLARE-1120: inbound routed to the staff Gmail mirror (Cloudflare
+// Email Routing catch-all). Migration 0114, written by self-send/email-routing.ts.
+export const emailRoutingDomains = pgTable("email_routing_domains", {
+  domain: text("domain").primaryKey(),
+  zoneId: text("zone_id"),
+  destination: text("destination").notNull(),
+  ruleReadyAt: timestamp("rule_ready_at", { withTimezone: true }),
+  mxSwitchAfter: timestamp("mx_switch_after", { withTimezone: true }),
+  mxSwitchedAt: timestamp("mx_switched_at", { withTimezone: true }),
+  liveSince: timestamp("live_since", { withTimezone: true }),
+  lastError: text("last_error"),
+  checkedAt: timestamp("checked_at", { withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 // SES events of cold mail as SNS delivered them (bronze, one row per SNS id).
