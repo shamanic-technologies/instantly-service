@@ -348,6 +348,13 @@ async function start() {
       .catch((err: unknown) => {
         console.error(`[instantly-service] failed to start postmark-cold worker: ${errorMessage(err)}`);
       });
+    // Replies to domains whose mailboxes are gone, routed by Cloudflare Email
+    // Routing to the staff Gmail mirror and filed (PF-CLOUDFLARE-1120).
+    import("./lib/self-send/email-routing-worker")
+      .then(({ startEmailRoutingWorker }) => startEmailRoutingWorker())
+      .catch((err: unknown) => {
+        console.error(`[instantly-service] failed to start email-routing worker: ${errorMessage(err)}`);
+      });
     import("./lib/seed-placement-health-worker")
       .then(({ startSeedPlacementHealthWorker }) => startSeedPlacementHealthWorker())
       .catch((err: unknown) => {

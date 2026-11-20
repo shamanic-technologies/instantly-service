@@ -27,7 +27,11 @@ import { sql } from "drizzle-orm";
 import { db } from "../../db";
 import type { CallerInfo } from "../key-client";
 import { dispatchMessage, SmtpDispatchError, type DispatchResult } from "./smtp";
-import type { MailboxCredential } from "./mailbox-credentials";
+import {
+  MailboxCredentialError,
+  resolveMailboxCredential,
+  type MailboxCredential,
+} from "./mailbox-credentials";
 import type { BuiltMessage } from "./message";
 import {
   PostmarkDispatchError,
@@ -39,11 +43,8 @@ import { sendThroughSes } from "./ses-transport";
 export type OutboundTransport = "smtp" | "postmark" | "ses";
 
 /** Kill switch, read at each send: "true" = every SES domain sends over SMTP again. */
-export const SES_KILL_SWITCH_ENV = "SES_COLD_SENDING_DISABLED";
-
-export function sesColdSendingDisabled(): boolean {
-  return (process.env[SES_KILL_SWITCH_ENV] ?? "").trim().toLowerCase() === "true";
-}
+export { SES_KILL_SWITCH_ENV, sesColdSendingDisabled } from "./ses-kill-switch";
+import { sesColdSendingDisabled } from "./ses-kill-switch";
 
 const CALLER: CallerInfo = { method: "POST", path: "/internal/self-send/outbound" };
 const LIVE_CACHE_MS = 60_000;
@@ -98,13 +99,36 @@ export function pipeForSender(
   return "smtp";
 }
 
+/**
+ * The credential a SEND from this address needs (PF-CLOUDFLARE-1120): the
+ * mailbox's own login, or null when the address sends through SES and we hold
+ * no login for it (a domain whose mailboxes are gone, sending only through SES:
+ * the Primeforge domains after 2026-11-29). An address with neither throws
+ * exactly as `resolveMailboxCredential` does: never sent from anywhere else.
+ */
+export async function resolveSendCredential(
+  address: string,
+  caller: CallerInfo,
+): Promise<MailboxCredential | null> {
+  try {
+    return await resolveMailboxCredential(address, caller);
+  } catch (error) {
+    if (error instanceof MailboxCredentialError && pipeForSender(address, await loadLivePipes()) === "ses") return null;
+    throw error;
+  }
+}
+
 export async function sendFromMailbox(
-  credential: MailboxCredential,
+  credential: MailboxCredential | null,
   message: BuiltMessage,
 ): Promise<DispatchResult & { transport: OutboundTransport }> {
   const sender = senderAddressOf(message.from);
   const transport = pipeForSender(sender, await loadLivePipes());
-  if (transport === "smtp") return { ...(await dispatchMessage(credential, message)), transport };
+  if (transport === "smtp") {
+    // A send-only address (no login) whose SES pipe is off: it has no way out.
+    if (!credential) throw new MailboxCredentialError(`no credential for ${sender} and its domain is not live on SES: cannot send from it`);
+    return { ...(await dispatchMessage(credential, message)), transport };
+  }
   if (transport === "ses") return { ...(await sendThroughSes(sender, message)), transport };
 
   const server = await loadPostmarkSeedServerCached(CALLER);

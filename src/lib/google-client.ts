@@ -180,6 +180,13 @@ export async function fetchMirroredMailForAddresses(
   identity: GoogleCallerIdentity,
   /** Only messages dated at or after this instant (google-service filters on the message date). */
   since?: Date,
+  /**
+   * Also messages Gmail put in SPAM (PF-CLOUDFLARE-1120): a reply Cloudflare
+   * Email Routing forwarded is a reply whatever Gmail's folder (prod 2026-11-20:
+   * the first forwarded test landed in SPAM). Ignored by a google-service that
+   * does not know the field yet (the body is not strict).
+   */
+  includeSpam?: boolean,
 ): Promise<MirroredMessage[]> {
   const { url, key } = config();
   const out: MirroredMessage[] = [];
@@ -192,6 +199,7 @@ export async function fetchMirroredMailForAddresses(
         addresses,
         limit: 500,
         ...(since ? { since: since.toISOString() } : {}),
+        ...(includeSpam ? { includeSpam: true } : {}),
         ...(cursor ? { cursor } : {}),
       }),
     });

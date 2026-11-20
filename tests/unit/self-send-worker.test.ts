@@ -128,6 +128,10 @@ vi.mock("../../src/lib/self-send/send-record", () => ({
 vi.mock("../../src/lib/self-send/outbound", async () => {
   const smtp = await import("../../src/lib/self-send/smtp");
   return {
+    // The login when one is held (the mocked resolver), as the real door does.
+    resolveSendCredential: vi.fn(async (address: string, caller: unknown) =>
+      (await import("../../src/lib/self-send/mailbox-credentials")).resolveMailboxCredential(address, caller as never),
+    ),
     sendFromMailbox: vi.fn(async (c: unknown, m: unknown) => ({
       ...(await (smtp.dispatchMessage as (a: unknown, b: unknown) => Promise<object>)(c, m)),
       transport: "smtp",

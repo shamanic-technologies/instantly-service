@@ -31,6 +31,10 @@ vi.mock("../../src/lib/self-send/primeforge-last-listing", () => ({
 }));
 
 // No cache between cases.
+// No domain live on SES here: the send-only layer adds nothing (PF-CLOUDFLARE-1120).
+vi.mock("../../src/lib/self-send/send-only-senders", () => ({
+  loadSendOnlyCandidates: async () => [],
+}));
 vi.mock("../../src/lib/stats-cache", () => ({
   getOrSetCachedStats: async (_key: string, loader: () => Promise<unknown>) => loader(),
 }));
