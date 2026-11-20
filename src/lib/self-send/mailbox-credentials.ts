@@ -378,6 +378,12 @@ export interface ManualMailboxEntry {
    * Optional — omitted means the address is the login.
    */
   authUser?: string;
+  /**
+   * A mailbox that only RECEIVES the weekly seed test (PF-CLOUDFLARE-1120): a
+   * Gmail / Google mailbox of ours that is not a sender (no account in the
+   * fleet). `true` only; anything else = absent.
+   */
+  seedReceiver?: boolean;
 }
 
 /**
@@ -426,6 +432,7 @@ export function parseManualCredentials(raw: string): ManualMailboxEntry[] {
       smtpHost,
       imapHost,
       ...(authUser && authUser !== address ? { authUser } : {}),
+      ...((e as { seedReceiver?: unknown } | null)?.seedReceiver === true ? { seedReceiver: true } : {}),
     };
   });
 }

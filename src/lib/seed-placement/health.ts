@@ -25,7 +25,7 @@ import type { CallerInfo } from "../key-client";
 import { fetchTestablePoolEmails } from "../account-lifecycle-sync";
 import { currentVendorRefusals } from "../self-send/mailbox-credentials";
 import { loadSeedCredentialResolver } from "./credentials";
-import { MAX_SEED_RECEIVERS, selectSeedReceivers } from "./seeds";
+import { loadGoogleSeedReceivers } from "./receivers";
 import { fetchLastSeedTestAt } from "./run";
 import { listMicrosoftSeedMailboxes } from "./microsoft-oauth";
 import { SEED_TEST_OVERDUE_AGE_DAYS } from "./due";
@@ -101,12 +101,7 @@ const CALLER: CallerInfo = { method: "GET", path: "/internal/seed-placement/heal
 /** The Google receivers the run would pick right now, by the run's own rule. */
 async function countGoogleReceivers(): Promise<number> {
   const [pool, resolve] = await Promise.all([fetchTestablePoolEmails(), loadSeedCredentialResolver(CALLER)]);
-  const candidates = [];
-  for (const email of pool) {
-    const credential = resolve(email);
-    if (credential) candidates.push({ email, imapHost: credential.imapHost });
-  }
-  return selectSeedReceivers(candidates, MAX_SEED_RECEIVERS).length;
+  return (await loadGoogleSeedReceivers(pool, resolve, CALLER)).length;
 }
 
 export async function readSeedPlacementHealth(asOf: Date = new Date()): Promise<SeedPlacementHealth & { googleReceivers: number }> {
