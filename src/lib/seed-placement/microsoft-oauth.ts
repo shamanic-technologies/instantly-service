@@ -40,7 +40,12 @@ export function msSeedClientId(): string {
   return configured ? configured : DEFAULT_MS_SEED_CLIENT_ID;
 }
 
-export type MicrosoftSeedMailboxStatus = "pending" | "authorized" | "failed" | "expired";
+/**
+ * `retired` = we stopped using this receiver on purpose (MON-SEED-MS365-RETIRED-1121:
+ * the Microsoft 365 tenant's trial ended, owner chose not to pay). Never seeded,
+ * never read, never red; re-running the authorize flow brings it back.
+ */
+export type MicrosoftSeedMailboxStatus = "pending" | "authorized" | "failed" | "expired" | "retired";
 
 export class MicrosoftOAuthError extends Error {
   constructor(
