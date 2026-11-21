@@ -1719,6 +1719,48 @@ describe("POST /send", () => {
     ).toBe(false);
   });
 
+  // OUTREACH-3WAYS-1121: the caller's Cc/Bcc rides on the sequence row; none = as before.
+  describe("caller-named copy on a cold send (OUTREACH-3WAYS-1121)", () => {
+    const rowOf = () =>
+      mockDbInsertValues.mock.calls.find(
+        ([v]: [any]) => v.campaignId === "camp-1" && v.leadEmail === "test@example.com",
+      )![0];
+
+    it("stores exactly the named Cc (and Bcc) on the sequence row", async () => {
+      mockNewCampaignFlow();
+      const app = await createSendApp();
+      const res = await request(app)
+        .post("/send")
+        .set(identityHeadersObj)
+        .send({ ...validBody, cc: ["kevin@distribute.test"], bcc: ["observer@distribute.test"] });
+      expect(res.status).toBe(200);
+      expect(rowOf().metadata).toMatchObject({
+        copy: { cc: ["kevin@distribute.test"], bcc: ["observer@distribute.test"] },
+      });
+    });
+
+    it("without Cc or Bcc the row carries no copy", async () => {
+      mockNewCampaignFlow();
+      const app = await createSendApp();
+      const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+      expect(res.status).toBe(200);
+      expect(rowOf().metadata?.copy).toBeUndefined();
+    });
+
+    it("a malformed Cc is a 400, nothing reserved", async () => {
+      mockNewCampaignFlow();
+      const app = await createSendApp();
+      const res = await request(app)
+        .post("/send")
+        .set(identityHeadersObj)
+        .send({ ...validBody, cc: ["not-an-address"] });
+      expect(res.status).toBe(400);
+      expect(
+        mockDbInsertValues.mock.calls.some(([v]: [any]) => v.leadEmail === "test@example.com"),
+      ).toBe(false);
+    });
+  });
+
   // SIGNATURE-TACTIC-1107: the script that wrote the email chooses who signs.
   describe("script-chosen signature (SIGNATURE-TACTIC-1107)", () => {
     const pinOf = () =>
