@@ -120,6 +120,11 @@ export async function loadSilentReceivers(asOf: Date = new Date()): Promise<Sile
         AND d.dispatched_at > ${windowStart.toISOString()}::timestamp
         AND d.dispatched_at < nr.at - make_interval(mins => ${SILENT_RECEIVER_SETTLE_MINUTES})
         AND (lf.at IS NULL OR d.dispatched_at > lf.at)
+        -- A Microsoft receiver we retired (or that is not authorized) is no receiver any more.
+        AND NOT EXISTS (
+          SELECT 1 FROM microsoft_seed_mailboxes m
+          WHERE m.email = d.receiver_email AND m.status <> 'authorized'
+        )
         AND NOT EXISTS (
           SELECT 1 FROM seed_placement_observations o
           WHERE o.receiver_email = d.receiver_email AND o.message_id = d.message_id
