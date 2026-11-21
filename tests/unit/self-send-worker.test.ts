@@ -179,6 +179,7 @@ function primeReads(
     signatureHtml?: string | null;
     sequence?: Record<string, unknown>;
     priorMessageIds?: string[];
+    copy?: unknown;
   } = {},
 ) {
   const { hasBody = true } = options;
@@ -232,6 +233,7 @@ function primeReads(
           subject: "Quick question",
           priorMessageIds: options.priorMessageIds ?? [],
           signatureHtml: options.signatureHtml ?? null,
+          copy: options.copy ?? null,
         },
       ],
     });
@@ -574,6 +576,43 @@ describe("runDispatch — the client's signature pinned on the thread", () => {
     const message = mockDispatchMessage.mock.calls[0]![1] as Record<string, unknown>;
     expect(message.html).toContain(SIG("<p>Jane Doe<br>Acme Corp</p>"));
     expect(message.html).not.toContain("Distribute.you | Marketing Agency");
+  });
+});
+
+describe("runDispatch — the caller's copy (OUTREACH-3WAYS-1121)", () => {
+  const sent = {
+    messageId: "<m1@mail>",
+    response: "250 OK",
+    accepted: ["prospect@example.com"],
+    rejected: [],
+  };
+
+  it("a sequence whose caller named a Cc sends with exactly that Cc and logs it", async () => {
+    primeReads({ copy: { cc: ["kevin@distribute.test"], bcc: [] } });
+    mockDispatchMessage.mockResolvedValue(sent);
+
+    await runDispatch({ asOf: NOW });
+
+    const message = mockDispatchMessage.mock.calls[0]![1] as Record<string, unknown>;
+    expect(message.to).toBe("prospect@example.com");
+    expect(message.cc).toBe("kevin@distribute.test");
+    expect(message).not.toHaveProperty("bcc");
+    const bronze = mockInsertValues.mock.calls[0]![0] as { payload: Record<string, unknown> };
+    expect(bronze.payload.cc).toBe("kevin@distribute.test");
+    expect(bronze.payload).not.toHaveProperty("bcc");
+  });
+
+  it("no copy stored = no Cc, no Bcc, nothing added by this service", async () => {
+    primeReads();
+    mockDispatchMessage.mockResolvedValue(sent);
+
+    await runDispatch({ asOf: NOW });
+
+    const message = mockDispatchMessage.mock.calls[0]![1] as Record<string, unknown>;
+    expect(message).not.toHaveProperty("cc");
+    expect(message).not.toHaveProperty("bcc");
+    const bronze = mockInsertValues.mock.calls[0]![0] as { payload: Record<string, unknown> };
+    expect(bronze.payload).not.toHaveProperty("cc");
   });
 });
 

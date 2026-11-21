@@ -27,6 +27,7 @@ import { loadMailboxLogins, type MailboxCredential } from "./mailbox-credentials
 import { loadPendingScheduledReplies } from "../scheduled-replies";
 import { currentOptOutVariant } from "../seed-placement/opt-out-choice";
 import { buildMessage } from "./message";
+import { copyHeadersFromMetadata } from "../send-copy";
 import { runPoll } from "./imap-poller";
 import { runOrphanReplySweep } from "./orphan-reply-sweep";
 import { runDsnJudgmentSweep } from "./dsn-judgment-sweep";
@@ -782,11 +783,16 @@ async function loadStepContent(
   bodyHtml: string;
   priorMessageIds: string[];
   signatureHtml: string | null;
+  /** Who THIS sequence's caller copied (OUTREACH-3WAYS-1121); "" = nobody. */
+  cc: string;
+  bcc: string;
 } | null> {
   const content = await db.execute(sql`
     SELECT
       (SELECT c.signature_html FROM instantly_campaigns c
         WHERE c.instantly_campaign_id = ${instantlyCampaignId}) AS "signatureHtml",
+      (SELECT c.metadata->'copy' FROM instantly_campaigns c
+        WHERE c.instantly_campaign_id = ${instantlyCampaignId}) AS "copy",
       (SELECT s.body_html FROM sequence_steps s
         WHERE s.instantly_campaign_id = ${instantlyCampaignId} AND s.step = ${step}) AS "bodyHtml",
       (SELECT s.subject FROM sequence_steps s
@@ -843,6 +849,7 @@ async function loadStepContent(
     subject: typeof row.subject === "string" ? row.subject : "",
     // The client's signature pinned on this thread at send; null = ours.
     signatureHtml: typeof row.signatureHtml === "string" ? row.signatureHtml : null,
+    ...copyHeadersFromMetadata(row.copy),
     priorMessageIds: Array.isArray(row.priorMessageIds)
       ? (row.priorMessageIds as string[])
       : [],
@@ -1437,6 +1444,8 @@ async function sendDueStep(
       // The opt-out header the seeds picked (UNSUB-3WAY-1103); the sending
       // mailbox (mailto) until every variant has its sample. Cached 10 min, fails loud.
       optOut: await currentOptOutVariant(),
+      cc: content.cc,
+      bcc: content.bcc,
     });
 
     const result = await sendFromMailbox(credential, message);
@@ -1454,7 +1463,13 @@ async function sendDueStep(
       outcome: "sent",
       messageId: result.messageId,
       response: result.response,
-      payload: dispatched,
+      // Who was copied, in the reply path's shape (comma lists): the Unibox
+      // participants and the our-side rule read it from here.
+      payload: {
+        ...dispatched,
+        ...(message.cc ? { cc: message.cc } : {}),
+        ...(message.bcc ? { bcc: message.bcc } : {}),
+      },
     });
 
     // Real, not inferred — this is what actualizes the hold via handleEmailSent.

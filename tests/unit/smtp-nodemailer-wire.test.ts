@@ -43,6 +43,8 @@ vi.mock("../../src/lib/self-send/mailbox-credentials", async (importOriginal) =>
 
 import { dispatchMessage, SmtpDispatchError } from "../../src/lib/self-send/smtp";
 import { smtpSender } from "../../src/lib/blocklist-removal";
+import { buildMessage } from "../../src/lib/self-send/message";
+import type { Account } from "../../src/lib/instantly-client";
 
 interface Session {
   auth: string[];
@@ -231,6 +233,37 @@ describe("dispatchMessage over a real SMTP conversation", () => {
 
     expect(result.rawMessage.equals(received(sessions[0]!))).toBe(true);
     expect(result.rawMessage.toString("utf8")).toMatch(/^In-Reply-To: <first@sender\.test>$/m);
+  });
+
+  // OUTREACH-3WAYS-1121: a cold first email built by the sequence path carries
+  // exactly the Cc its caller named, and no Cc header without one.
+  const coldEmail = (cc?: string) =>
+    buildMessage({
+      account: { email: "kevin@sender.test", first_name: "Kevin", last_name: "Lourd" } as Account,
+      leadEmail: "prospect@lead.test",
+      subject: "Quick question",
+      bodyHtml: "<p>Hi there</p>",
+      step: 1,
+      identity: { instantlyCampaignId: "self:x", leadEmail: "prospect@lead.test" },
+      unsubscribeUrl: "https://opt.test/u/p/s",
+      optOut: "mailbox_only",
+      ...(cc ? { cc } : {}),
+    });
+
+  it("a cold first email with one Cc arrives with that Cc header", async () => {
+    await dispatchMessage(credential, coldEmail("kevin@distribute.test"));
+    const [session] = sessions;
+    expect(session!.rcptTo.sort()).toEqual(["kevin@distribute.test", "prospect@lead.test"]);
+    expect(session!.data).toMatch(/^Cc: kevin@distribute\.test$/m);
+    expect(session!.data).toMatch(/^To: prospect@lead\.test$/m);
+  });
+
+  it("a cold first email without Cc has no Cc header and one recipient", async () => {
+    await dispatchMessage(credential, coldEmail());
+    const [session] = sessions;
+    expect(session!.rcptTo).toEqual(["prospect@lead.test"]);
+    expect(session!.data).not.toMatch(/^Cc:/im);
+    expect(session!.data).not.toMatch(/^Bcc:/im);
   });
 
   it("a 550 on the prospect is a PERMANENT failure", async () => {
