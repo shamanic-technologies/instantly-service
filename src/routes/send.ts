@@ -45,6 +45,7 @@ import { provisionStepEmailCosts, sendAuthorizeItems, type SendableVerdict } fro
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { SendRequestSchema } from "../schemas";
 import { sendCopyFromRequest } from "../lib/send-copy";
+import { declareQueuedAtSend, QUEUED_PENDING, type QueuedHold } from "../lib/queued-outcomes";
 import { traceEvent } from "../lib/trace-event";
 import { refreshLeadStatusCurrent } from "../lib/status-gold";
 import { announceEvidenceChanged } from "../lib/evidence-changed";
@@ -946,8 +947,11 @@ router.post("/", async (req: Request, res: Response) => {
       //    The `sequence_costs` row is the send QUEUE as much as the billing
       //    hold — see the column comment in `db/schema.ts`. ONE row per step
       //    (both cost ids on it); every reader counts it once per step.
+      const queuedHolds: QueuedHold[] = [];
       for (const h of stepHolds) {
+        const holdId = crypto.randomUUID();
         await db.insert(sequenceCosts).values({
+          id: holdId,
           campaignId,
           // Persist the per-lead Instantly campaign id so the webhook/reconcile
           // resolvers can settle this hold even for platform sends
@@ -959,13 +963,23 @@ router.post("/", async (req: Request, res: Response) => {
           costId: h.costId,
           domainCostId: h.domainCostId,
           status: "provisioned",
+          // OUTREACH-3WAYS-1121: this step's `email_queued` is owed to the ledger (lib/queued-outcomes).
+          queuedDeclaration: QUEUED_PENDING,
         });
+        queuedHolds.push({ holdId, runId: h.runId });
 
         await updateRun(h.runId, "completed", { orgId, userId, runId: h.runId, tracking });
 
         stepRuns.push({ step: h.step, runId: h.runId });
       }
       stepHolds = [];
+
+      // 7b. The person is contacted NOW (the queue decision), not when the
+      //     throttled mailbox sends: each queued step's run states the person's
+      //     produced `email_queued`, so a campaign's "at most N new people a day"
+      //     counts them at once. Bounded and fail-soft (never changes the send);
+      //     a step not declared here is declared by the sweep.
+      await declareQueuedAtSend(queuedHolds, orgId, body.leadId);
 
       traceEvent(res.locals.runId as string, { service: "instantly-service", event: "send-done", detail: `to=${body.to}, campaignId=${campaignId ?? "none"}, added=${added}, stepRuns=${stepRuns.length}` }, req.headers).catch(() => {});
       console.log(`[send] Done — to=${body.to} campaignId=${campaignId ?? "none"} added=${added} stepRuns=${stepRuns.length}`);

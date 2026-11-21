@@ -276,6 +276,7 @@ export async function postRunOutcomes(
   orgId: string | null,
   declaration: SendOutcomeDeclaration,
   occurredAt?: string,
+  timeoutMs: number = DECLARE_TIMEOUT_MS,
 ): Promise<{ status: number; body: string }> {
   const headers = runsHeaders();
   if (orgId && UUID_RE.test(orgId)) headers["x-org-id"] = orgId;
@@ -283,7 +284,7 @@ export async function postRunOutcomes(
     method: "POST",
     headers,
     body: JSON.stringify(occurredAt ? { ...declaration, occurredAt } : declaration),
-    signal: AbortSignal.timeout(DECLARE_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   return { status: res.status, body: await res.text() };
 }
