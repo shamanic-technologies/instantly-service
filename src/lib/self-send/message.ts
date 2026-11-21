@@ -32,9 +32,9 @@ export const INSTANTLY_UNSUBSCRIBE_PLACEHOLDER = "{unsubscribe_link}";
 export interface BuiltMessage {
   from: string;
   to: string;
-  /** Visible CC. Absent on sequence sends — only a one-to-one reply carries one. */
+  /** Visible CC: exactly who the caller named (a reply, or a cold send's `cc`). */
   cc?: string;
-  /** Blind copy. Only a hand-over carries one (the agency inbox observing). */
+  /** Blind copy: exactly who the caller named. */
   bcc?: string;
   subject: string;
   html: string;
@@ -64,6 +64,12 @@ export interface BuildMessageInput {
   optOut: OptOutVariant;
   /** Injected so the URL builder can be exercised without the environment. */
   unsubscribeUrl?: string;
+  /**
+   * Who the send's caller copied, comma lists (OUTREACH-3WAYS-1121). Empty or
+   * absent = no header: this service adds nobody (NO-DEFAULT-COPY-1116).
+   */
+  cc?: string;
+  bcc?: string;
 }
 
 /**
@@ -164,6 +170,8 @@ export function buildMessage(input: BuildMessageInput): BuiltMessage {
   return {
     from: buildFromHeader(input.account, input.signatureHtml ?? null),
     to: input.leadEmail,
+    ...(input.cc ? { cc: input.cc } : {}),
+    ...(input.bcc ? { bcc: input.bcc } : {}),
     subject: subjectForStep(fillSenderTokensInSubject(input.subject, input.account), input.step),
     html,
     headers,

@@ -44,6 +44,7 @@ import { creditRefusalBody, fundingRefusalCause, fundingRefusalError } from "../
 import { provisionStepEmailCosts, sendAuthorizeItems, type SendableVerdict } from "../lib/send-costs";
 import { resolveInstantlyApiKey, KeyServiceError } from "../lib/key-client";
 import { SendRequestSchema } from "../schemas";
+import { sendCopyFromRequest } from "../lib/send-copy";
 import { traceEvent } from "../lib/trace-event";
 import { refreshLeadStatusCurrent } from "../lib/status-gold";
 import { announceEvidenceChanged } from "../lib/evidence-changed";
@@ -187,7 +188,13 @@ router.post("/", async (req: Request, res: Response) => {
   const campaignName = campaignId ? `Campaign ${campaignId}` : `Platform send ${body.to}`;
   const brandId = brandIds.join(",") || undefined;
   const workflowSlug = tracking.workflowSlug;
-  const attributionMetadata = buildAttributionMetadata(tracking);
+  // Who this send copies: exactly the caller's Cc/Bcc (OUTREACH-3WAYS-1121,
+  // NO-DEFAULT-COPY-1116). None = the row's metadata exactly as before.
+  const sendCopy = sendCopyFromRequest(body.to, body.cc, body.bcc);
+  const baseAttributionMetadata = buildAttributionMetadata(tracking);
+  const attributionMetadata = sendCopy
+    ? { ...(baseAttributionMetadata ?? {}), copy: sendCopy }
+    : baseAttributionMetadata;
 
   const isFollowUp = body.followUp === true;
   const sendRunId = (res.locals.runId as string | undefined) ?? null;

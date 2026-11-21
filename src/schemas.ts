@@ -518,11 +518,18 @@ export const SendRequestSchema = z
       .describe(
         "Shared subject for all steps in the sequence. Takes the same sender placeholders as `sequence[].bodyHtml` (`{first_name}`, `{last_name}`, `{full_name}`, `{sender_email}`), filled from the mailbox that sends each email.",
       ),
+    cc: z
+      .array(z.string().email())
+      .max(20)
+      .optional()
+      .describe(
+        "The Cc header of every email of THIS send (its `sequence` steps), exactly these addresses: the prospect sees who is copied. Omitted or empty = no Cc: this service adds no recipient of its own (NO-DEFAULT-COPY-1116). The To address is never copied on its own email. A later follow-up (`followUp: true`) copies only who ITS caller names. Stored with each sent email (Unibox participants). Our own sender only; the retired Instantly pipe ignores it.",
+      ),
     bcc: z
       .array(z.string())
       .optional()
       .describe(
-        "Optional BCC recipients — set as the created campaign's bcc_list so every step of the sequence BCCs these addresses. Absent/empty = no BCC.",
+        "The Bcc header of every email of THIS send, exactly these addresses. Absent/empty = no Bcc. Same rules as `cc` (an address in both lists is kept in Cc only).",
       ),
     sequence: z
       .array(SequenceStepSchema)
