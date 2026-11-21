@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 
 // MON-SEED-MS365-MISSING-1120: on 2026-11-20 the Microsoft 365 test mailbox read
 // 0 of 205 seeds (its tenant's trial ended: `451 4.4.4 … no mail-enabled
@@ -96,5 +97,23 @@ describe("SES suppression of our own receivers", () => {
     expect(parseSesTimestamp("2026-11-20T06:18:33Z")?.toISOString()).toBe("2026-11-20T06:18:33.000Z");
     expect(parseSesTimestamp("x")).toBeNull();
     expect(parseSesTimestamp(null)).toBeNull();
+  });
+});
+
+describe("a retired Microsoft receiver (MON-SEED-MS365-RETIRED-1121)", () => {
+  it("is never red: neither as a dead token nor as a silent receiver", () => {
+    const h = judgeSeedPlacementHealth({
+      lastGateTestAt: new Date("2026-11-20T07:30:00Z"),
+      googleReceivers: 10,
+      vendorRefusals: [],
+      microsoftReceivers: [
+        { email: MS365_ROW.receiverEmail, status: "retired", lastRefreshedAt: "2026-11-20T11:07:48Z", lastError: "retired: trial ended, not renewed" },
+      ],
+      silentReceivers: [],
+      asOf: new Date("2026-11-21T12:00:00Z"),
+    });
+    expect(h.ok).toBe(true);
+    const src = readFileSync("src/lib/seed-placement/silent-receivers.ts", "utf8");
+    expect(src).toMatch(/microsoft_seed_mailboxes m\s+WHERE m\.email = d\.receiver_email AND m\.status <> 'authorized'/);
   });
 });
