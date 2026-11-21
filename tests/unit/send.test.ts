@@ -219,6 +219,13 @@ vi.mock("../../src/lib/runs-client", () => ({
   updateCostStatus: (...args: unknown[]) => mockUpdateCostStatus(...args),
 }));
 
+// OUTREACH-3WAYS-1121: the queue decision's `email_queued` declaration (lib/queued-outcomes).
+const mockDeclareQueuedAtSend = vi.fn(async (..._args: unknown[]) => {});
+vi.mock("../../src/lib/queued-outcomes", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/lib/queued-outcomes")>()),
+  declareQueuedAtSend: (...args: unknown[]) => mockDeclareQueuedAtSend(...args),
+}));
+
 // Mock billing-client
 const mockAuthorizeCreditSpend = vi.fn();
 
@@ -1961,6 +1968,51 @@ describe("POST /send", () => {
         domainCostId: `cost-step-run-${i}-instantly-domain-email-sent`,
       });
     }
+  });
+
+  describe("OUTREACH-3WAYS-1121: the person is declared contacted at the QUEUE decision", () => {
+    it("marks every queued step owed an `email_queued` and declares it on the step's run before answering", async () => {
+      mockNewCampaignFlow();
+      mockDbReturning.mockReset();
+      mockDbReturning.mockResolvedValueOnce([{ id: "sub-camp-1", campaignId: "camp-1", instantlyCampaignId: "inst-camp-new" }]);
+      mockDbReturning.mockResolvedValueOnce([{ id: "lead-1" }]);
+      mockDbReturning.mockResolvedValue([]);
+      mockDeclareQueuedAtSend.mockClear();
+      const app = await createSendApp();
+
+      const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+      expect(res.status).toBe(200);
+      const holds = mockDbInsertValues.mock.calls
+        .map(([v]: [any]) => v)
+        .filter((v: any) => v.step !== undefined && v.leadEmail !== undefined);
+      expect(holds).toHaveLength(3);
+      for (const h of holds) {
+        expect(h.queuedDeclaration).toBe("pending");
+        expect(typeof h.id).toBe("string");
+      }
+      // Declared ONCE per queued email, on the step's own run (the one its later
+      // message_sent lands on), about the caller's lead, during the request.
+      expect(mockDeclareQueuedAtSend).toHaveBeenCalledTimes(1);
+      const [declared, orgId, leadId] = mockDeclareQueuedAtSend.mock.calls[0] as [Array<{ holdId: string; runId: string }>, string, string];
+      expect(declared).toEqual(holds.map((h: any) => ({ holdId: h.id, runId: h.runId })));
+      expect(declared.map((d) => d.runId)).toEqual(["step-run-1", "step-run-2", "step-run-3"]);
+      expect(orgId).toBe("org-1");
+      expect(leadId).toBe(validBody.leadId);
+    });
+
+    it("a refused send declares nothing (no queue decision)", async () => {
+      mockDeclareQueuedAtSend.mockClear();
+      mockNewCampaignFlow();
+      mockAuthorizeCreditSpend.mockReset();
+      mockAuthorizeCreditSpend.mockResolvedValue({ sufficient: false, balance_cents: 0, required_cents: 10 });
+      const app = await createSendApp();
+
+      const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+
+      expect(res.status).toBe(402);
+      expect(mockDeclareQueuedAtSend).not.toHaveBeenCalled();
+    });
   });
 
   it("should work with a single-step sequence (1 run, 1 provisioned pair)", async () => {
