@@ -8,6 +8,7 @@
  */
 import { errorMessage } from "./db-error.js";
 import { declarePositiveReplies } from "./positive-reply-outcomes";
+import { declareQueuedOutcomes } from "./queued-outcomes";
 import { declareReplySends } from "./reply-send-outcomes";
 import { declareSendOutcomes } from "./send-outcomes";
 import { completeWebsiteVisitPerformers, declareWebsiteVisits } from "./website-visit-outcomes";
@@ -23,6 +24,11 @@ function tick(): void {
   declareSendOutcomes()
     .catch((error: unknown) => {
       console.error(`[instantly-service] send-outcomes tick failed: ${errorMessage(error)}`);
+    })
+    // OUTREACH-3WAYS-1121: a queued step the send path could not declare as `email_queued` at once.
+    .then(() => declareQueuedOutcomes())
+    .catch((error: unknown) => {
+      console.error(`[instantly-service] queued-outcomes tick failed: ${errorMessage(error)}`);
     })
     // REPLY-SENT-UNIT-1118: an answer sent in a thread is a message_sent too, before what consumes it.
     .then(() => declareReplySends())

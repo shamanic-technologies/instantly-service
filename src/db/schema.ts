@@ -662,8 +662,17 @@ export const sequenceCosts = pgTable(
     // NULL = still to declare; `outcomesDeclaration` names how it ended.
     outcomesDeclaredAt: timestamp("outcomes_declared_at", { withTimezone: true }),
     outcomesDeclaration: text("outcomes_declaration"),
+    // OUTREACH-3WAYS-1121 (migration 0115): the step's produced `email_queued`
+    // declared at the queue decision (lib/queued-outcomes.ts). 'pending' = the
+    // send path asked for it and it is not in the ledger yet; NULL = never asked.
+    queuedDeclaration: text("queued_declaration"),
+    queuedDeclaredAt: timestamp("queued_declared_at", { withTimezone: true }),
   },
   (table) => [
+    // The queued-declaration sweep's retry scan (hand-written in 0115).
+    index("sequence_costs_queued_pending_idx")
+      .on(table.createdAt)
+      .where(sql`queued_declaration = 'pending'`),
     // The declaration sweep's pending scan (hand-written in 0090).
     index("sequence_costs_outcomes_pending_idx")
       .on(table.updatedAt.desc())
