@@ -28,6 +28,7 @@ import repliesRoutes from "./routes/replies";
 import leadConversationsRoutes from "./routes/lead-conversations";
 import engagedLeadsRoutes from "./routes/engaged-leads";
 import writtenToLeadsRoutes from "./routes/written-to-leads";
+import providerEmailsRoutes from "./routes/provider-emails";
 import replyOwnershipRoutes from "./routes/reply-ownership";
 import emailSequencesRoutes from "./routes/email-sequences";
 import emailSignatureRoutes from "./routes/email-signature";
@@ -138,6 +139,7 @@ app.use("/orgs/replies", serviceAuth, requireOrgId, repliesRoutes);
 app.use("/orgs/conversations", serviceAuth, requireOrgId, leadConversationsRoutes);
 app.use("/orgs/engaged-leads", serviceAuth, requireOrgId, engagedLeadsRoutes);
 app.use("/orgs/written-to-leads", serviceAuth, requireOrgId, writtenToLeadsRoutes);
+app.use("/orgs/emails", serviceAuth, requireOrgId, providerEmailsRoutes); // Provider reads of email_queued / email_sent (a Script's ctx.get)
 app.use("/orgs/email-sequences", serviceAuth, requireOrgId, emailSequencesRoutes);
 app.use("/orgs/email-signature", serviceAuth, requireOrgId, emailSignatureRoutes);
 app.use("/orgs/sending-schedule", serviceAuth, requireOrgId, leadSendingScheduleRoutes);

@@ -2732,6 +2732,138 @@ registry.registerPath({
   },
 });
 
+// ─── Provider reads: email_queued / email_sent (GET-BEFORE-WRITE-1123) ──────
+
+const BoolQuery = z.enum(["true", "false"]);
+
+export const ProviderEmailsQuerySchema = z
+  .object({
+    email: z
+      .string()
+      .min(3)
+      .optional()
+      .describe("The person's email address (trimmed, case-insensitive). `email` and/or `lead_id` is REQUIRED: this is a read about one person."),
+    lead_id: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("The person's lead-service lead id. With `email` too, either one identifies the person."),
+    brand_id: z
+      .string()
+      .uuid()
+      .optional()
+      .describe("Only emails for this brand. Omitted = every brand of the caller's org (every brand of every org with `across_orgs=true`)."),
+    campaign_id: z.string().min(1).optional().describe("Only emails of this campaign"),
+    since: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("ISO instant, inclusive: only emails queued / sent at or after it (e.g. three months ago). Omitted = since the beginning."),
+    before: z.string().min(1).optional().describe("ISO instant, exclusive: only emails queued / sent before it."),
+    first_email: BoolQuery.optional().describe("`true` = first emails only, `false` = follow-ups only. Omitted = both."),
+    across_orgs: BoolQuery.optional().describe(
+      "`true` = emails to this person from EVERY org, not only the caller's (an inbox does not know which org wrote to it). A Unit of another org carries no brand and no campaign (`ownOrg: false`, `brandIds: null`, `campaignId: null`). Omitted / `false` = the caller's org only.",
+    ),
+    limit: z.coerce.number().int().positive().max(500).optional().describe("Units returned, newest first, 1-500. Omitted = 100."),
+  })
+  .openapi("ProviderEmailsQuery");
+
+export const ProviderQueuedEmailsQuerySchema = ProviderEmailsQuerySchema.extend({
+  include_stopped: BoolQuery.optional().describe(
+    "`true` = also the queue decisions that never sent an email (`state: \"stopped\"`). Omitted / `false` = only `queued` and `sent`.",
+  ),
+}).openapi("ProviderQueuedEmailsQuery");
+
+const ProviderEmailUnitBase = {
+  email: z.string().describe("The person's address, lowercased"),
+  leadId: z.string().nullable().describe("lead-service lead id (null on a send that named none)"),
+  firstEmail: z.boolean().describe("true = a first email to the person; false = a follow-up"),
+  ownOrg: z.boolean().describe("true = an email of the caller's org. false only with `across_orgs=true`."),
+  brandIds: z.array(z.string()).nullable().describe("The brand(s) the email is for. Null on a Unit of another org."),
+  campaignId: z.string().nullable().describe("The campaign. Null on a Unit of another org, or a send outside any campaign."),
+};
+
+const QueuedEmailUnitSchema = z
+  .object({
+    id: z.string().describe("The queue decision's id"),
+    outcome: z.literal("email_queued"),
+    queuedAt: z.string().describe("ISO instant (UTC) the email was queued: the moment the send was decided, before anything left"),
+    state: z
+      .enum(["queued", "sent", "stopped"])
+      .describe("`queued` = decided, nothing sent yet; `sent` = at least one email left; `stopped` = it never sent (failed, cancelled, paused or completed first)"),
+    ...ProviderEmailUnitBase,
+  })
+  .openapi("QueuedEmailUnit");
+
+const SentEmailUnitSchema = z
+  .object({
+    id: z.string().describe("The sent email's id"),
+    outcome: z.literal("email_sent"),
+    sentAt: z.string().describe("ISO instant (UTC) the email left"),
+    step: z.number().int().nullable().describe("Its step in the sequence (1 = the first email). Null when unknown."),
+    ...ProviderEmailUnitBase,
+  })
+  .openapi("SentEmailUnit");
+
+const providerReadCommon =
+  "**How a Script reads it.** `ctx.get(\"<outcome>\", { query: { email, brand_id, since, ... } })`: workflow-service finds this operation by its tag `provider:<outcome>` and calls it as the Script's run (its org in `x-org-id`).\n\n" +
+  "**Filters are the caller's choice** (a tactic of its Script): the person (`email` and/or `lead_id`, required), the brand, the campaign, a window (`since`, `before`), first emails or follow-ups, the caller's org or every org.\n\n" +
+  "**Nothing is consumed.** A read declares nothing, reserves nothing and changes nothing for the next reader. Empty `units` = no such email exists. **Cost:** none.";
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/emails/queued",
+  operationId: "readQueuedEmails",
+  tags: ["provider:email_queued"],
+  summary: "Provider read: the emails queued for one person",
+  description:
+    "The Units of outcome `email_queued`: one per queue decision (a first email, or one follow-up send), newest first. A decision is readable from the instant `POST /orgs/send` reserves it, before the email is sent (a throttled mailbox sends hours later), so an email queued a second ago is returned. `state` says what became of it.\n\n" +
+    providerReadCommon,
+  request: { headers: TrackingHeadersSchema, query: ProviderQueuedEmailsQuerySchema },
+  responses: {
+    200: {
+      description: "The person's queued emails (possibly none)",
+      content: {
+        "application/json": {
+          schema: z
+            .object({ outcome: z.literal("email_queued"), count: z.number().int(), units: z.array(QueuedEmailUnitSchema) })
+            .openapi("ProviderQueuedEmailsResponse"),
+        },
+      },
+    },
+    400: { description: "No person named, or an invalid filter", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "The emails could not be read", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/emails/sent",
+  operationId: "readSentEmails",
+  tags: ["provider:email_sent"],
+  summary: "Provider read: the emails sent to one person",
+  description:
+    "The Units of outcome `email_sent`: one per email that really left (never an inferred send), newest first, with its step.\n\n" +
+    providerReadCommon,
+  request: { headers: TrackingHeadersSchema, query: ProviderEmailsQuerySchema },
+  responses: {
+    200: {
+      description: "The emails sent to the person (possibly none)",
+      content: {
+        "application/json": {
+          schema: z
+            .object({ outcome: z.literal("email_sent"), count: z.number().int(), units: z.array(SentEmailUnitSchema) })
+            .openapi("ProviderSentEmailsResponse"),
+        },
+      },
+    },
+    400: { description: "No person named, or an invalid filter", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Unauthorized" },
+    500: { description: "The emails could not be read", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 export const EmailSequencesQuerySchema = z
   .object({
     brandId: z.string().uuid().describe("The brand whose sequences to list (required)"),

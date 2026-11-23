@@ -3194,6 +3194,192 @@
           "disqualified"
         ]
       },
+      "ProviderQueuedEmailsResponse": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "email_queued"
+            ]
+          },
+          "count": {
+            "type": "integer"
+          },
+          "units": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueuedEmailUnit"
+            }
+          }
+        },
+        "required": [
+          "outcome",
+          "count",
+          "units"
+        ]
+      },
+      "QueuedEmailUnit": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The queue decision's id"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "email_queued"
+            ]
+          },
+          "queuedAt": {
+            "type": "string",
+            "description": "ISO instant (UTC) the email was queued: the moment the send was decided, before anything left"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "sent",
+              "stopped"
+            ],
+            "description": "`queued` = decided, nothing sent yet; `sent` = at least one email left; `stopped` = it never sent (failed, cancelled, paused or completed first)"
+          },
+          "email": {
+            "type": "string",
+            "description": "The person's address, lowercased"
+          },
+          "leadId": {
+            "type": "string",
+            "nullable": true,
+            "description": "lead-service lead id (null on a send that named none)"
+          },
+          "firstEmail": {
+            "type": "boolean",
+            "description": "true = a first email to the person; false = a follow-up"
+          },
+          "ownOrg": {
+            "type": "boolean",
+            "description": "true = an email of the caller's org. false only with `across_orgs=true`."
+          },
+          "brandIds": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "The brand(s) the email is for. Null on a Unit of another org."
+          },
+          "campaignId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The campaign. Null on a Unit of another org, or a send outside any campaign."
+          }
+        },
+        "required": [
+          "id",
+          "outcome",
+          "queuedAt",
+          "state",
+          "email",
+          "leadId",
+          "firstEmail",
+          "ownOrg",
+          "brandIds",
+          "campaignId"
+        ]
+      },
+      "ProviderSentEmailsResponse": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "email_sent"
+            ]
+          },
+          "count": {
+            "type": "integer"
+          },
+          "units": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SentEmailUnit"
+            }
+          }
+        },
+        "required": [
+          "outcome",
+          "count",
+          "units"
+        ]
+      },
+      "SentEmailUnit": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The sent email's id"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "email_sent"
+            ]
+          },
+          "sentAt": {
+            "type": "string",
+            "description": "ISO instant (UTC) the email left"
+          },
+          "step": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Its step in the sequence (1 = the first email). Null when unknown."
+          },
+          "email": {
+            "type": "string",
+            "description": "The person's address, lowercased"
+          },
+          "leadId": {
+            "type": "string",
+            "nullable": true,
+            "description": "lead-service lead id (null on a send that named none)"
+          },
+          "firstEmail": {
+            "type": "boolean",
+            "description": "true = a first email to the person; false = a follow-up"
+          },
+          "ownOrg": {
+            "type": "boolean",
+            "description": "true = an email of the caller's org. false only with `across_orgs=true`."
+          },
+          "brandIds": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "The brand(s) the email is for. Null on a Unit of another org."
+          },
+          "campaignId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The campaign. Null on a Unit of another org, or a send outside any campaign."
+          }
+        },
+        "required": [
+          "id",
+          "outcome",
+          "sentAt",
+          "step",
+          "email",
+          "leadId",
+          "firstEmail",
+          "ownOrg",
+          "brandIds",
+          "campaignId"
+        ]
+      },
       "EmailSequencesResponse": {
         "type": "object",
         "properties": {
@@ -12052,6 +12238,468 @@
           },
           "500": {
             "description": "The written-to leads could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/emails/queued": {
+      "get": {
+        "operationId": "readQueuedEmails",
+        "tags": [
+          "provider:email_queued"
+        ],
+        "summary": "Provider read: the emails queued for one person",
+        "description": "The Units of outcome `email_queued`: one per queue decision (a first email, or one follow-up send), newest first. A decision is readable from the instant `POST /orgs/send` reserves it, before the email is sent (a throttled mailbox sends hours later), so an email queued a second ago is returned. `state` says what became of it.\n\n**How a Script reads it.** `ctx.get(\"<outcome>\", { query: { email, brand_id, since, ... } })`: workflow-service finds this operation by its tag `provider:<outcome>` and calls it as the Script's run (its org in `x-org-id`).\n\n**Filters are the caller's choice** (a tactic of its Script): the person (`email` and/or `lead_id`, required), the brand, the campaign, a window (`since`, `before`), first emails or follow-ups, the caller's org or every org.\n\n**Nothing is consumed.** A read declares nothing, reserves nothing and changes nothing for the next reader. Empty `units` = no such email exists. **Cost:** none.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "description": "The person's email address (trimmed, case-insensitive). `email` and/or `lead_id` is REQUIRED: this is a read about one person."
+            },
+            "required": false,
+            "description": "The person's email address (trimmed, case-insensitive). `email` and/or `lead_id` is REQUIRED: this is a read about one person.",
+            "name": "email",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The person's lead-service lead id. With `email` too, either one identifies the person."
+            },
+            "required": false,
+            "description": "The person's lead-service lead id. With `email` too, either one identifies the person.",
+            "name": "lead_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Only emails for this brand. Omitted = every brand of the caller's org (every brand of every org with `across_orgs=true`)."
+            },
+            "required": false,
+            "description": "Only emails for this brand. Omitted = every brand of the caller's org (every brand of every org with `across_orgs=true`).",
+            "name": "brand_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Only emails of this campaign"
+            },
+            "required": false,
+            "description": "Only emails of this campaign",
+            "name": "campaign_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "ISO instant, inclusive: only emails queued / sent at or after it (e.g. three months ago). Omitted = since the beginning."
+            },
+            "required": false,
+            "description": "ISO instant, inclusive: only emails queued / sent at or after it (e.g. three months ago). Omitted = since the beginning.",
+            "name": "since",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "ISO instant, exclusive: only emails queued / sent before it."
+            },
+            "required": false,
+            "description": "ISO instant, exclusive: only emails queued / sent before it.",
+            "name": "before",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "`true` = first emails only, `false` = follow-ups only. Omitted = both."
+            },
+            "required": false,
+            "description": "`true` = first emails only, `false` = follow-ups only. Omitted = both.",
+            "name": "first_email",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "`true` = emails to this person from EVERY org, not only the caller's (an inbox does not know which org wrote to it). A Unit of another org carries no brand and no campaign (`ownOrg: false`, `brandIds: null`, `campaignId: null`). Omitted / `false` = the caller's org only."
+            },
+            "required": false,
+            "description": "`true` = emails to this person from EVERY org, not only the caller's (an inbox does not know which org wrote to it). A Unit of another org carries no brand and no campaign (`ownOrg: false`, `brandIds: null`, `campaignId: null`). Omitted / `false` = the caller's org only.",
+            "name": "across_orgs",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 500,
+              "description": "Units returned, newest first, 1-500. Omitted = 100."
+            },
+            "required": false,
+            "description": "Units returned, newest first, 1-500. Omitted = 100.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "`true` = also the queue decisions that never sent an email (`state: \"stopped\"`). Omitted / `false` = only `queued` and `sent`."
+            },
+            "required": false,
+            "description": "`true` = also the queue decisions that never sent an email (`state: \"stopped\"`). Omitted / `false` = only `queued` and `sent`.",
+            "name": "include_stopped",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The person's queued emails (possibly none)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderQueuedEmailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No person named, or an invalid filter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "The emails could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/emails/sent": {
+      "get": {
+        "operationId": "readSentEmails",
+        "tags": [
+          "provider:email_sent"
+        ],
+        "summary": "Provider read: the emails sent to one person",
+        "description": "The Units of outcome `email_sent`: one per email that really left (never an inferred send), newest first, with its step.\n\n**How a Script reads it.** `ctx.get(\"<outcome>\", { query: { email, brand_id, since, ... } })`: workflow-service finds this operation by its tag `provider:<outcome>` and calls it as the Script's run (its org in `x-org-id`).\n\n**Filters are the caller's choice** (a tactic of its Script): the person (`email` and/or `lead_id`, required), the brand, the campaign, a window (`since`, `before`), first emails or follow-ups, the caller's org or every org.\n\n**Nothing is consumed.** A read declares nothing, reserves nothing and changes nothing for the next reader. Empty `units` = no such email exists. **Cost:** none.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 3,
+              "description": "The person's email address (trimmed, case-insensitive). `email` and/or `lead_id` is REQUIRED: this is a read about one person."
+            },
+            "required": false,
+            "description": "The person's email address (trimmed, case-insensitive). `email` and/or `lead_id` is REQUIRED: this is a read about one person.",
+            "name": "email",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The person's lead-service lead id. With `email` too, either one identifies the person."
+            },
+            "required": false,
+            "description": "The person's lead-service lead id. With `email` too, either one identifies the person.",
+            "name": "lead_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Only emails for this brand. Omitted = every brand of the caller's org (every brand of every org with `across_orgs=true`)."
+            },
+            "required": false,
+            "description": "Only emails for this brand. Omitted = every brand of the caller's org (every brand of every org with `across_orgs=true`).",
+            "name": "brand_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Only emails of this campaign"
+            },
+            "required": false,
+            "description": "Only emails of this campaign",
+            "name": "campaign_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "ISO instant, inclusive: only emails queued / sent at or after it (e.g. three months ago). Omitted = since the beginning."
+            },
+            "required": false,
+            "description": "ISO instant, inclusive: only emails queued / sent at or after it (e.g. three months ago). Omitted = since the beginning.",
+            "name": "since",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "ISO instant, exclusive: only emails queued / sent before it."
+            },
+            "required": false,
+            "description": "ISO instant, exclusive: only emails queued / sent before it.",
+            "name": "before",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "`true` = first emails only, `false` = follow-ups only. Omitted = both."
+            },
+            "required": false,
+            "description": "`true` = first emails only, `false` = follow-ups only. Omitted = both.",
+            "name": "first_email",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "`true` = emails to this person from EVERY org, not only the caller's (an inbox does not know which org wrote to it). A Unit of another org carries no brand and no campaign (`ownOrg: false`, `brandIds: null`, `campaignId: null`). Omitted / `false` = the caller's org only."
+            },
+            "required": false,
+            "description": "`true` = emails to this person from EVERY org, not only the caller's (an inbox does not know which org wrote to it). A Unit of another org carries no brand and no campaign (`ownOrg: false`, `brandIds: null`, `campaignId: null`). Omitted / `false` = the caller's org only.",
+            "name": "across_orgs",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 500,
+              "description": "Units returned, newest first, 1-500. Omitted = 100."
+            },
+            "required": false,
+            "description": "Units returned, newest first, 1-500. Omitted = 100.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The emails sent to the person (possibly none)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderSentEmailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No person named, or an invalid filter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "The emails could not be read",
             "content": {
               "application/json": {
                 "schema": {
