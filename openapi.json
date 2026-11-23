@@ -3194,6 +3194,326 @@
           "disqualified"
         ]
       },
+      "EmailSentUnitsResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "email_sent"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "description": "Units on THIS page"
+          },
+          "units": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EmailSentUnit"
+            },
+            "description": "Newest first. Empty when none exists."
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass as `cursor` for the next page. Null = last page."
+          }
+        },
+        "required": [
+          "success",
+          "outcome",
+          "count",
+          "units",
+          "nextCursor"
+        ]
+      },
+      "EmailSentUnit": {
+        "type": "object",
+        "properties": {
+          "unitId": {
+            "type": "string",
+            "description": "Stable id of this Unit at this Provider"
+          },
+          "subject": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "service": {
+                "type": "string",
+                "enum": [
+                  "lead-service"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "description": "The person's lead id in lead-service"
+              }
+            },
+            "required": [
+              "service",
+              "id"
+            ],
+            "description": "Who the Unit is about. Null when the sequence holds no lead id (the address still names the person)."
+          },
+          "email": {
+            "type": "string",
+            "description": "The person's address, lowercased"
+          },
+          "domain": {
+            "type": "string",
+            "description": "The address's company domain (after '@')"
+          },
+          "at": {
+            "type": "string",
+            "description": "When the Unit happened (ISO 8601 UTC)"
+          },
+          "step": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The sequence step (1 = first). Null for an answer."
+          },
+          "continuesThread": {
+            "type": "boolean",
+            "description": "The send continued an earlier thread with this person"
+          },
+          "campaignId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The Campaign. Null on a send outside any Campaign."
+          },
+          "brandIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The brand(s) the sequence carries"
+          },
+          "sequenceId": {
+            "type": "string",
+            "description": "This service's per-person sequence id"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "email_sent"
+            ]
+          },
+          "ledgerOutcome": {
+            "type": "string",
+            "enum": [
+              "message_sent"
+            ],
+            "description": "The outcome key this Unit carries in runs-service's ledger"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "first",
+              "follow_up",
+              "answer"
+            ]
+          },
+          "bounced": {
+            "type": "boolean",
+            "description": "The email left and was refused by the recipient's server. Always false for an answer."
+          }
+        },
+        "required": [
+          "unitId",
+          "subject",
+          "email",
+          "domain",
+          "at",
+          "step",
+          "continuesThread",
+          "campaignId",
+          "brandIds",
+          "sequenceId",
+          "outcome",
+          "ledgerOutcome",
+          "kind",
+          "bounced"
+        ]
+      },
+      "UnitsError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "A code (`person_filter_required`, `invalid_cursor`, `invalid_kinds`, ...) or the validation message"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "EmailQueuedUnitsResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "email_queued"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "description": "Units on THIS page"
+          },
+          "units": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EmailQueuedUnit"
+            },
+            "description": "Newest first. Empty when none exists."
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass as `cursor` for the next page. Null = last page."
+          }
+        },
+        "required": [
+          "success",
+          "outcome",
+          "count",
+          "units",
+          "nextCursor"
+        ]
+      },
+      "EmailQueuedUnit": {
+        "type": "object",
+        "properties": {
+          "unitId": {
+            "type": "string",
+            "description": "Stable id of this Unit at this Provider"
+          },
+          "subject": {
+            "type": "object",
+            "nullable": true,
+            "properties": {
+              "service": {
+                "type": "string",
+                "enum": [
+                  "lead-service"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "description": "The person's lead id in lead-service"
+              }
+            },
+            "required": [
+              "service",
+              "id"
+            ],
+            "description": "Who the Unit is about. Null when the sequence holds no lead id (the address still names the person)."
+          },
+          "email": {
+            "type": "string",
+            "description": "The person's address, lowercased"
+          },
+          "domain": {
+            "type": "string",
+            "description": "The address's company domain (after '@')"
+          },
+          "at": {
+            "type": "string",
+            "description": "When the Unit happened (ISO 8601 UTC)"
+          },
+          "step": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The sequence step (1 = first). Null for an answer."
+          },
+          "continuesThread": {
+            "type": "boolean",
+            "description": "The send continued an earlier thread with this person"
+          },
+          "campaignId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The Campaign. Null on a send outside any Campaign."
+          },
+          "brandIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The brand(s) the sequence carries"
+          },
+          "sequenceId": {
+            "type": "string",
+            "description": "This service's per-person sequence id"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "email_queued"
+            ]
+          },
+          "ledgerOutcome": {
+            "type": "string",
+            "enum": [
+              "email_queued"
+            ],
+            "description": "The outcome key this Unit carries in runs-service's ledger"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "first",
+              "follow_up"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "waiting",
+              "sent",
+              "cancelled"
+            ],
+            "description": "What became of the queued step: still waiting to send, sent, or cancelled"
+          },
+          "declaredOnLedger": {
+            "type": "boolean",
+            "description": "True when runs-service's ledger holds this Unit (declared since 2026-11-21 only; older queued steps are served with false)"
+          }
+        },
+        "required": [
+          "unitId",
+          "subject",
+          "email",
+          "domain",
+          "at",
+          "step",
+          "continuesThread",
+          "campaignId",
+          "brandIds",
+          "sequenceId",
+          "outcome",
+          "ledgerOutcome",
+          "kind",
+          "state",
+          "declaredOnLedger"
+        ]
+      },
       "EmailSequencesResponse": {
         "type": "object",
         "properties": {
@@ -12052,6 +12372,550 @@
           },
           "500": {
             "description": "The written-to leads could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/units/email-sent": {
+      "get": {
+        "operationId": "listEmailSentUnits",
+        "tags": [
+          "provider:email_sent"
+        ],
+        "summary": "Units of `email_sent` that already exist for a person",
+        "description": "This service is the Provider of the outcome `email_sent`. A Unit = ONE email of ours that really left for the person: a sequence step (`kind` `first` or `follow_up`) or an answer sent in a thread (`kind` `answer`). An email that left and bounced is still a Unit (`bounced: true`). A step still waiting to send is not: see `GET /orgs/units/email-queued`.\n\n**Example.** Has this org already written to Jane in the last three months? `GET /orgs/units/email-sent?emails=jane@acme.com&since=2026-08-23T00:00:00Z`: a non-empty `units` means yes, `units[0].at` is the latest email. Anyone at her company: `?domains=acme.com&since=...`.\n\n**Who.** Name the person with at least ONE of `emails`, `leadIds`, `domains` (a Unit matching any of them is returned); none = 400 `person_filter_required`.\n\n**When.** `since` is yours to choose; omitted = since inception, so old Units are included. `until` is optional.\n\n**Scope.** Every brand and Campaign of the CALLING org (`x-org-id`), narrowed by `brandId` / `campaignId` when given. Never another org's data.\n\n**Answer.** Newest first, paged by `cursor` (read until `nextCursor` is null). No Unit = 200 with an empty `units`, never a 404.\n\n**Cost.** None: it reads this service's own records, calls nothing, sends nothing, changes nothing.\n\n**Indexes read.** Sequences by `lower(lead_email)`, `lead_id`, or `(org_id, domain of lead_email)`; then each sequence's own rows by its sequence id.",
+        "parameters": [
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "description": "Email addresses, comma-separated (or the parameter repeated). Trimmed and lowercased; max 100. Units of the sequences sent to any of these addresses."
+            },
+            "required": false,
+            "description": "Email addresses, comma-separated (or the parameter repeated). Trimmed and lowercased; max 100. Units of the sequences sent to any of these addresses.",
+            "name": "emails",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "description": "lead-service lead ids, comma-separated (or repeated); max 100. The person's identity in lead-service: reaches the same person under another address."
+            },
+            "required": false,
+            "description": "lead-service lead ids, comma-separated (or repeated); max 100. The person's identity in lead-service: reaches the same person under another address.",
+            "name": "leadIds",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "description": "Company domains (the part after '@'), comma-separated (or repeated); lowercased, a leading '@' is dropped; max 100. Units of everyone we wrote to at that company."
+            },
+            "required": false,
+            "description": "Company domains (the part after '@'), comma-separated (or repeated); lowercased, a leading '@' is dropped; max 100. Units of everyone we wrote to at that company.",
+            "name": "domains",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "ISO 8601 datetime, INCLUSIVE lower bound on the Unit's `at` (a datetime without a zone is read as UTC). Omitted = since inception: old Units are included."
+            },
+            "required": false,
+            "description": "ISO 8601 datetime, INCLUSIVE lower bound on the Unit's `at` (a datetime without a zone is read as UTC). Omitted = since inception: old Units are included.",
+            "name": "since",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "ISO 8601 datetime, EXCLUSIVE upper bound on the Unit's `at`. Omitted = up to now."
+            },
+            "required": false,
+            "description": "ISO 8601 datetime, EXCLUSIVE upper bound on the Unit's `at`. Omitted = up to now.",
+            "name": "until",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Only Units whose sequence carries this brand. Omitted = every brand of the calling org."
+            },
+            "required": false,
+            "description": "Only Units whose sequence carries this brand. Omitted = every brand of the calling org.",
+            "name": "brandId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Only Units of this Campaign. Omitted = every Campaign of the calling org."
+            },
+            "required": false,
+            "description": "Only Units of this Campaign. Omitted = every Campaign of the calling org.",
+            "name": "campaignId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "description": "Comma-separated subset of `first` (the first email of a sequence that opens the outreach), `follow_up` (a later step, or any step of a follow-up send), `answer` (an answer sent in a thread). Omitted = all three."
+            },
+            "required": false,
+            "description": "Comma-separated subset of `first` (the first email of a sequence that opens the outreach), `follow_up` (a later step, or any step of a follow-up send), `answer` (an answer sent in a thread). Omitted = all three.",
+            "name": "kinds",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "description": "Page size, 1-1000. Omitted = 100."
+            },
+            "required": false,
+            "description": "Page size, 1-1000. Omitted = 100.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The previous page's `nextCursor`, verbatim (opaque). Omitted = first page."
+            },
+            "required": false,
+            "description": "The previous page's `nextCursor`, verbatim (opaque). Omitted = first page.",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of `email_sent` Units, newest first (possibly empty)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailSentUnitsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query, no person named (`person_filter_required`), or a cursor this service did not issue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnitsError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "The Units could not be read (never an empty page on a read failure)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orgs/units/email-queued": {
+      "get": {
+        "operationId": "listEmailQueuedUnits",
+        "tags": [
+          "provider:email_queued"
+        ],
+        "summary": "Units of `email_queued` that already exist for a person",
+        "description": "This service is the Provider of the outcome `email_queued`. A Unit = ONE sequence step we decided to send to the person, created at the queue decision, whatever became of it: `state` `waiting` (not sent yet), `sent`, or `cancelled`. Ask `states=waiting` to know whether an email to the person is on its way.\n\n**Example.** Is an email to Jane already queued? `GET /orgs/units/email-queued?emails=jane@acme.com&states=waiting`. Everything queued for her since a date: `?emails=jane@acme.com&since=2026-08-23T00:00:00Z`.\n\n**Who.** Name the person with at least ONE of `emails`, `leadIds`, `domains` (a Unit matching any of them is returned); none = 400 `person_filter_required`.\n\n**When.** `since` is yours to choose; omitted = since inception, so old Units are included. `until` is optional.\n\n**Scope.** Every brand and Campaign of the CALLING org (`x-org-id`), narrowed by `brandId` / `campaignId` when given. Never another org's data.\n\n**Answer.** Newest first, paged by `cursor` (read until `nextCursor` is null). No Unit = 200 with an empty `units`, never a 404.\n\n**Cost.** None: it reads this service's own records, calls nothing, sends nothing, changes nothing.\n\n**Indexes read.** Sequences by `lower(lead_email)`, `lead_id`, or `(org_id, domain of lead_email)`; then each sequence's own rows by its sequence id.",
+        "parameters": [
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "description": "Email addresses, comma-separated (or the parameter repeated). Trimmed and lowercased; max 100. Units of the sequences sent to any of these addresses."
+            },
+            "required": false,
+            "description": "Email addresses, comma-separated (or the parameter repeated). Trimmed and lowercased; max 100. Units of the sequences sent to any of these addresses.",
+            "name": "emails",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "description": "lead-service lead ids, comma-separated (or repeated); max 100. The person's identity in lead-service: reaches the same person under another address."
+            },
+            "required": false,
+            "description": "lead-service lead ids, comma-separated (or repeated); max 100. The person's identity in lead-service: reaches the same person under another address.",
+            "name": "leadIds",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "description": "Company domains (the part after '@'), comma-separated (or repeated); lowercased, a leading '@' is dropped; max 100. Units of everyone we wrote to at that company."
+            },
+            "required": false,
+            "description": "Company domains (the part after '@'), comma-separated (or repeated); lowercased, a leading '@' is dropped; max 100. Units of everyone we wrote to at that company.",
+            "name": "domains",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "ISO 8601 datetime, INCLUSIVE lower bound on the Unit's `at` (a datetime without a zone is read as UTC). Omitted = since inception: old Units are included."
+            },
+            "required": false,
+            "description": "ISO 8601 datetime, INCLUSIVE lower bound on the Unit's `at` (a datetime without a zone is read as UTC). Omitted = since inception: old Units are included.",
+            "name": "since",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "ISO 8601 datetime, EXCLUSIVE upper bound on the Unit's `at`. Omitted = up to now."
+            },
+            "required": false,
+            "description": "ISO 8601 datetime, EXCLUSIVE upper bound on the Unit's `at`. Omitted = up to now.",
+            "name": "until",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Only Units whose sequence carries this brand. Omitted = every brand of the calling org."
+            },
+            "required": false,
+            "description": "Only Units whose sequence carries this brand. Omitted = every brand of the calling org.",
+            "name": "brandId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Only Units of this Campaign. Omitted = every Campaign of the calling org."
+            },
+            "required": false,
+            "description": "Only Units of this Campaign. Omitted = every Campaign of the calling org.",
+            "name": "campaignId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "description": "Comma-separated subset of `first`, `follow_up`. Omitted = both."
+            },
+            "required": false,
+            "description": "Comma-separated subset of `first`, `follow_up`. Omitted = both.",
+            "name": "kinds",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "description": "Comma-separated subset of `waiting` (queued, not sent yet), `sent` (the email left), `cancelled` (the step will never send). Omitted = all three."
+            },
+            "required": false,
+            "description": "Comma-separated subset of `waiting` (queued, not sent yet), `sent` (the email left), `cancelled` (the step will never send). Omitted = all three.",
+            "name": "states",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "description": "Page size, 1-1000. Omitted = 100."
+            },
+            "required": false,
+            "description": "Page size, 1-1000. Omitted = 100.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The previous page's `nextCursor`, verbatim (opaque). Omitted = first page."
+            },
+            "required": false,
+            "description": "The previous page's `nextCursor`, verbatim (opaque). Omitted = first page.",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Campaign ID — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Campaign ID — automatically injected by workflow-service on all DAG calls",
+            "name": "x-campaign-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3"
+            },
+            "required": false,
+            "description": "Brand ID(s) — comma-separated UUIDs, automatically injected by workflow-service on all DAG calls. Example: uuid1,uuid2,uuid3",
+            "name": "x-brand-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Workflow slug — automatically injected by workflow-service on all DAG calls"
+            },
+            "required": false,
+            "description": "Workflow slug — automatically injected by workflow-service on all DAG calls",
+            "name": "x-workflow-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Feature slug — propagated through the full call chain for tracking"
+            },
+            "required": false,
+            "description": "Feature slug — propagated through the full call chain for tracking",
+            "name": "x-feature-slug",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit active goal attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit active goal attribution. Stored only when supplied; never inferred.",
+            "name": "x-goal",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit brand-profile attribution. Stored only when supplied; never inferred.",
+            "name": "x-brand-profile-id",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred."
+            },
+            "required": false,
+            "description": "Explicit audience attribution (human-service audience.id). Stored only when supplied; never inferred.",
+            "name": "x-audience-id",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of `email_queued` Units, newest first (possibly empty)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailQueuedUnitsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query, no person named (`person_filter_required`), or a cursor this service did not issue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnitsError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "The Units could not be read (never an empty page on a read failure)",
             "content": {
               "application/json": {
                 "schema": {

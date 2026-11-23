@@ -2732,6 +2732,212 @@ registry.registerPath({
   },
 });
 
+// ─── Provider reads of our Units (ENGINE-GET-ASK-1123) ──────────────────────
+// workflow-service finds these two operations by their TAG (`provider:<outcome>`)
+// in the served openapi.json and calls them for a script. Never rename a tag or
+// an operationId. Lists are normalised by `parseUnitsQuery` (lib/provider-units).
+
+const unitsList = (what: string) =>
+  z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .describe(what);
+
+const unitsPersonFilters = {
+  emails: unitsList(
+    "Email addresses, comma-separated (or the parameter repeated). Trimmed and lowercased; max 100. Units of the sequences sent to any of these addresses.",
+  ),
+  leadIds: unitsList(
+    "lead-service lead ids, comma-separated (or repeated); max 100. The person's identity in lead-service: reaches the same person under another address.",
+  ),
+  domains: unitsList(
+    "Company domains (the part after '@'), comma-separated (or repeated); lowercased, a leading '@' is dropped; max 100. Units of everyone we wrote to at that company.",
+  ),
+};
+
+const unitsWindowFilters = {
+  since: z
+    .string()
+    .optional()
+    .describe(
+      "ISO 8601 datetime, INCLUSIVE lower bound on the Unit's `at` (a datetime without a zone is read as UTC). Omitted = since inception: old Units are included.",
+    ),
+  until: z.string().optional().describe("ISO 8601 datetime, EXCLUSIVE upper bound on the Unit's `at`. Omitted = up to now."),
+  brandId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Only Units whose sequence carries this brand. Omitted = every brand of the calling org."),
+  campaignId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Only Units of this Campaign. Omitted = every Campaign of the calling org."),
+};
+
+const unitsPagingFilters = {
+  limit: z.coerce.number().int().min(1).max(1000).optional().describe("Page size, 1-1000. Omitted = 100."),
+  cursor: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("The previous page's `nextCursor`, verbatim (opaque). Omitted = first page."),
+};
+
+export const EmailSentUnitsQuerySchema = z
+  .object({
+    ...unitsPersonFilters,
+    ...unitsWindowFilters,
+    kinds: unitsList(
+      "Comma-separated subset of `first` (the first email of a sequence that opens the outreach), `follow_up` (a later step, or any step of a follow-up send), `answer` (an answer sent in a thread). Omitted = all three.",
+    ),
+    ...unitsPagingFilters,
+  })
+  .openapi("EmailSentUnitsQuery");
+
+export const EmailQueuedUnitsQuerySchema = z
+  .object({
+    ...unitsPersonFilters,
+    ...unitsWindowFilters,
+    kinds: unitsList("Comma-separated subset of `first`, `follow_up`. Omitted = both."),
+    states: unitsList(
+      "Comma-separated subset of `waiting` (queued, not sent yet), `sent` (the email left), `cancelled` (the step will never send). Omitted = all three.",
+    ),
+    ...unitsPagingFilters,
+  })
+  .openapi("EmailQueuedUnitsQuery");
+
+const unitBaseShape = {
+  unitId: z.string().describe("Stable id of this Unit at this Provider"),
+  subject: z
+    .object({
+      service: z.literal("lead-service"),
+      id: z.string().describe("The person's lead id in lead-service"),
+    })
+    .nullable()
+    .describe("Who the Unit is about. Null when the sequence holds no lead id (the address still names the person)."),
+  email: z.string().describe("The person's address, lowercased"),
+  domain: z.string().describe("The address's company domain (after '@')"),
+  at: z.string().describe("When the Unit happened (ISO 8601 UTC)"),
+  step: z.number().int().nullable().describe("The sequence step (1 = first). Null for an answer."),
+  continuesThread: z.boolean().describe("The send continued an earlier thread with this person"),
+  campaignId: z.string().nullable().describe("The Campaign. Null on a send outside any Campaign."),
+  brandIds: z.array(z.string()).describe("The brand(s) the sequence carries"),
+  sequenceId: z.string().describe("This service's per-person sequence id"),
+};
+
+const EmailSentUnitSchema = z
+  .object({
+    ...unitBaseShape,
+    outcome: z.literal("email_sent"),
+    ledgerOutcome: z
+      .literal("message_sent")
+      .describe("The outcome key this Unit carries in runs-service's ledger"),
+    kind: z.enum(["first", "follow_up", "answer"]),
+    bounced: z.boolean().describe("The email left and was refused by the recipient's server. Always false for an answer."),
+  })
+  .openapi("EmailSentUnit");
+
+const EmailQueuedUnitSchema = z
+  .object({
+    ...unitBaseShape,
+    outcome: z.literal("email_queued"),
+    ledgerOutcome: z.literal("email_queued").describe("The outcome key this Unit carries in runs-service's ledger"),
+    kind: z.enum(["first", "follow_up"]),
+    state: z
+      .enum(["waiting", "sent", "cancelled"])
+      .describe("What became of the queued step: still waiting to send, sent, or cancelled"),
+    declaredOnLedger: z
+      .boolean()
+      .describe("True when runs-service's ledger holds this Unit (declared since 2026-11-21 only; older queued steps are served with false)"),
+  })
+  .openapi("EmailQueuedUnit");
+
+export const EmailSentUnitsResponseSchema = z
+  .object({
+    success: z.literal(true),
+    outcome: z.literal("email_sent"),
+    count: z.number().int().describe("Units on THIS page"),
+    units: z.array(EmailSentUnitSchema).describe("Newest first. Empty when none exists."),
+    nextCursor: z.string().nullable().describe("Pass as `cursor` for the next page. Null = last page."),
+  })
+  .openapi("EmailSentUnitsResponse");
+
+export const EmailQueuedUnitsResponseSchema = z
+  .object({
+    success: z.literal(true),
+    outcome: z.literal("email_queued"),
+    count: z.number().int().describe("Units on THIS page"),
+    units: z.array(EmailQueuedUnitSchema).describe("Newest first. Empty when none exists."),
+    nextCursor: z.string().nullable().describe("Pass as `cursor` for the next page. Null = last page."),
+  })
+  .openapi("EmailQueuedUnitsResponse");
+
+const UnitsErrorSchema = z
+  .object({
+    error: z.string().describe("A code (`person_filter_required`, `invalid_cursor`, `invalid_kinds`, ...) or the validation message"),
+    message: z.string().optional(),
+  })
+  .openapi("UnitsError");
+
+const UNITS_COMMON_DESCRIPTION =
+  "**Who.** Name the person with at least ONE of `emails`, `leadIds`, `domains` (a Unit matching any of them is returned); none = 400 `person_filter_required`.\n\n" +
+  "**When.** `since` is yours to choose; omitted = since inception, so old Units are included. `until` is optional.\n\n" +
+  "**Scope.** Every brand and Campaign of the CALLING org (`x-org-id`), narrowed by `brandId` / `campaignId` when given. Never another org's data.\n\n" +
+  "**Answer.** Newest first, paged by `cursor` (read until `nextCursor` is null). No Unit = 200 with an empty `units`, never a 404.\n\n" +
+  "**Cost.** None: it reads this service's own records, calls nothing, sends nothing, changes nothing.\n\n" +
+  "**Indexes read.** Sequences by `lower(lead_email)`, `lead_id`, or `(org_id, domain of lead_email)`; then each sequence's own rows by its sequence id.";
+
+const unitsResponses = (schema: z.ZodTypeAny, what: string) => ({
+  200: {
+    description: `One page of ${what} Units, newest first (possibly empty)`,
+    content: { "application/json": { schema } },
+  },
+  400: {
+    description: "Invalid query, no person named (`person_filter_required`), or a cursor this service did not issue",
+    content: { "application/json": { schema: UnitsErrorSchema } },
+  },
+  401: { description: "Unauthorized" },
+  500: {
+    description: "The Units could not be read (never an empty page on a read failure)",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/units/email-sent",
+  operationId: "listEmailSentUnits",
+  tags: ["provider:email_sent"],
+  summary: "Units of `email_sent` that already exist for a person",
+  description:
+    "This service is the Provider of the outcome `email_sent`. A Unit = ONE email of ours that really left for the person: a sequence step (`kind` `first` or `follow_up`) or an answer sent in a thread (`kind` `answer`). An email that left and bounced is still a Unit (`bounced: true`). A step still waiting to send is not: see `GET /orgs/units/email-queued`.\n\n" +
+    "**Example.** Has this org already written to Jane in the last three months? `GET /orgs/units/email-sent?emails=jane@acme.com&since=2026-08-23T00:00:00Z`: a non-empty `units` means yes, `units[0].at` is the latest email. Anyone at her company: `?domains=acme.com&since=...`.\n\n" +
+    UNITS_COMMON_DESCRIPTION,
+  request: {
+    headers: TrackingHeadersSchema,
+    query: EmailSentUnitsQuerySchema,
+  },
+  responses: unitsResponses(EmailSentUnitsResponseSchema, "`email_sent`"),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/orgs/units/email-queued",
+  operationId: "listEmailQueuedUnits",
+  tags: ["provider:email_queued"],
+  summary: "Units of `email_queued` that already exist for a person",
+  description:
+    "This service is the Provider of the outcome `email_queued`. A Unit = ONE sequence step we decided to send to the person, created at the queue decision, whatever became of it: `state` `waiting` (not sent yet), `sent`, or `cancelled`. Ask `states=waiting` to know whether an email to the person is on its way.\n\n" +
+    "**Example.** Is an email to Jane already queued? `GET /orgs/units/email-queued?emails=jane@acme.com&states=waiting`. Everything queued for her since a date: `?emails=jane@acme.com&since=2026-08-23T00:00:00Z`.\n\n" +
+    UNITS_COMMON_DESCRIPTION,
+  request: {
+    headers: TrackingHeadersSchema,
+    query: EmailQueuedUnitsQuerySchema,
+  },
+  responses: unitsResponses(EmailQueuedUnitsResponseSchema, "`email_queued`"),
+});
+
 export const EmailSequencesQuerySchema = z
   .object({
     brandId: z.string().uuid().describe("The brand whose sequences to list (required)"),

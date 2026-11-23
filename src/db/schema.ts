@@ -194,6 +194,11 @@ export const instantlyCampaigns = pgTable(
     // cannot be declared here. It serves the per-address lookups keyed on
     // the normalized address (`normalizeLeadEmail`, src/lib/lead-email.ts). Do NOT drop it on a
     // `db:generate` diff.
+    // NOTE: a third hand-written EXPRESSION index exists in migration 0116:
+    //   instantly_campaigns_org_lead_domain_idx (org_id, split_part(lower(lead_email), '@', 2))
+    // It serves the Provider reads of our Units by company domain
+    // (src/lib/provider-units.ts, ENGINE-GET-ASK-1123). Do NOT drop it on a
+    // `db:generate` diff.
     index("instantly_campaigns_brand_ids_idx").using("gin", table.brandIds),
     index("instantly_campaigns_org_id_idx").on(table.orgId),
     index("instantly_campaigns_run_id_idx").on(table.runId),
