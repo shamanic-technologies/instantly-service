@@ -173,3 +173,16 @@ describe("restore of cut follow-ups reads per sequence (migration 0109, DASH-SPE
     expect(query).not.toContain("JOIN cut ON cut.id = s.id");
   });
 });
+
+describe("Provider reads of our Units by company domain (migration 0116, ENGINE-GET-ASK-1123)", () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, "..", "..", rel), "utf-8");
+
+  it("indexes the exact domain expression the read filters on", () => {
+    const migration = read("drizzle/0116_units_person_domain_index.sql");
+    expect(migration).toContain(
+      "CREATE INDEX IF NOT EXISTS instantly_campaigns_org_lead_domain_idx\n  ON instantly_campaigns (org_id, split_part(lower(lead_email), '@', 2));",
+    );
+    expect(read("src/lib/provider-units.ts")).toContain("split_part(lower(c.lead_email), '@', 2) = ANY(");
+    expect(read("src/db/schema.ts")).toContain("instantly_campaigns_org_lead_domain_idx");
+  });
+});
