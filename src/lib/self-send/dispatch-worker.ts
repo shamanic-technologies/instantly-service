@@ -36,11 +36,13 @@ import { SmtpDispatchError } from "./smtp";
 import { resolveSendCredential, sendFromMailbox } from "./outbound";
 import { buildSendDecision, type SendTrigger } from "./send-decision";
 import { selectionToSend } from "./send-select-script";
+import { loadRecentPersonSends } from "./recent-person-sends";
 import { recordSentMessage } from "./send-record";
 import {
   classifyPermanentFailure,
   drainLimitFor,
   holdFirstEmailsBehindFollowUps,
+  holdSecondEmailToPerson,
   isAnswerOwed,
   mailboxesWithOverdueFollowUps,
   selectDueSteps,
@@ -90,6 +92,12 @@ export interface DispatchSummary {
    * the room (`holdFirstEmailsBehindFollowUps`). They stay queued.
    */
   heldForFollowUps: number;
+  /**
+   * Sequences left out of this run because their person already got an email
+   * of ANOTHER sequence within a day, or another sequence writes to them this
+   * run (`holdSecondEmailToPerson`, FOLLOWUP-SAME-MAILBOX-1125). They stay queued.
+   */
+  heldSecondEmailToPerson: number;
   /** Steps this run will actually send — what is left AFTER capacity clips. */
   due: number;
   /**
@@ -959,6 +967,7 @@ function emptySummary(): DispatchSummary {
     heldPlacement: 0,
     heldMostlySpam: 0,
     heldForFollowUps: 0,
+    heldSecondEmailToPerson: 0,
     sent: 0,
     bounced: 0,
     senderBlocked: 0,
@@ -1082,9 +1091,19 @@ async function runDispatchExclusive(
     // A stopped campaign's sequence the sweep has not reached yet is never sent.
     // A person away until a stated return date (OOO-RETURN-DATE-1101) is left out
     // of the selection itself, so the stored selection script never sees them either.
-    const sequences = (await loadPendingSequences()).filter(
-      (s) => !notYetStopped.has(s.instantlyCampaignId) && !isHeldForAbsence(s, asOf),
+    // ONE email per person per day across sequences (FOLLOWUP-SAME-MAILBOX-1125):
+    // a second sequence to the same person waits, out of the selection.
+    const person = holdSecondEmailToPerson(
+      (await loadPendingSequences()).filter(
+        (s) => !notYetStopped.has(s.instantlyCampaignId) && !isHeldForAbsence(s, asOf),
+      ),
+      await loadRecentPersonSends(asOf),
+      asOf,
     );
+    const sequences = person.kept;
+    if (person.held > 0) {
+      console.warn(`[instantly-service] self-send-dispatch: ${person.held} sequence(s) wait this run: their person already gets an email of ours today`);
+    }
     const overdueMailboxes = mailboxesWithOverdueFollowUps(
       sequences,
       (accountEmail) => mailboxLogins.get(accountEmail.trim().toLowerCase()),
@@ -1128,6 +1147,7 @@ async function runDispatchExclusive(
     return {
       sequences: kept,
       heldForFollowUps: held,
+      heldSecondEmailToPerson: person.held,
       accounts,
       capacities,
       bounceHistory,
@@ -1196,6 +1216,7 @@ async function runDispatchExclusive(
       heldPlacement: current.selection.heldPlacement,
       heldMostlySpam: current.selection.heldMostlySpam,
       heldForFollowUps: current.heldForFollowUps,
+      heldSecondEmailToPerson: current.heldSecondEmailToPerson,
     };
     console.log(
       `[instantly-service] self-send-dispatch: done ${JSON.stringify(idle)}`,
@@ -1298,6 +1319,7 @@ async function runDispatchExclusive(
       heldPlacement: selection.heldPlacement,
       heldMostlySpam: selection.heldMostlySpam,
       heldForFollowUps: current.heldForFollowUps,
+      heldSecondEmailToPerson: current.heldSecondEmailToPerson,
       polled,
     };
 
