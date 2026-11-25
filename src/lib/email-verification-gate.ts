@@ -85,6 +85,14 @@ export interface GateDecision {
   verifiedAt: string | null;
   reused: boolean | null;
   /**
+   * `verifier_failed` only: the verifier ANSWERED that it could give no verdict
+   * for this address (BounceBan still verifying past its wait, every step-1
+   * verifier unable to answer), as opposed to an outage on our side (apollo,
+   * runs or billing unreachable). Not persisted: the ledger keeps
+   * `verifier_failed`, a fact about no person, asked again on the next send.
+   */
+  vendorNoVerdict?: boolean;
+  /**
    * `insufficient_credits` only: billing's NAMED cause when the refusal was a
    * sales funnel's max budget, not the balance (relayed verbatim; not persisted,
    * the ledger keeps `insufficient_credits`). Absent otherwise.
@@ -128,6 +136,81 @@ function decisionFromVerification(v: EmailVerification): GateDecision {
   };
 }
 
+/**
+ * apollo-service's words for "the verifier answered, and it has no verdict for
+ * this address" (lib/email-verification.ts there): BounceBan still verifying
+ * past its wait (`the next ask resumes it`, a free poll), every step-1 verifier
+ * unable to answer, BounceBan ending without a result. Anything else (apollo,
+ * runs, billing, treg unreachable or 5xx) is an outage, retried below.
+ */
+const VENDOR_NO_VERDICT =
+  /the next ask resumes it|every step-1 verifier failed|bounceban task ended with status|returned no known (verdict|result)/i;
+
+/** Pure: the verifier answered that it could give no verdict (never an outage, never a credit refusal). */
+export function isVendorNoVerdict(error: EmailVerifierError): boolean {
+  return !error.insufficientCredits && VENDOR_NO_VERDICT.test(error.message);
+}
+
+/**
+ * Pure: a failure worth asking again. A credit refusal is a decision and a 4xx
+ * is our own request: never retried. An unreachable apollo (no status) or any
+ * 5xx is (an outage, or a vendor still working: a re-ask resumes it).
+ */
+export function isRetryableVerifierError(error: EmailVerifierError): boolean {
+  if (error.insufficientCredits) return false;
+  return error.status === null || error.status >= 500;
+}
+
+/**
+ * SEND-CHECK-502-1125: a check or a send waiting on a verdict asks again, with
+ * backoff, when the verifier fails transiently (22 follow-up runs died on a 502
+ * in 3 days: BounceBan still verifying, billing "Failed to compute balance",
+ * treg's pool saturated). A re-ask never pays twice: apollo-service hands back
+ * any decisive verdict it already holds for free and RESUMES a BounceBan task
+ * still running (a free poll), and the next ask starts only once the previous
+ * one has answered. No new attempt starts past VERIFY_RETRY_START_BUDGET_MS, so
+ * the whole check stays within the gateway's wait (email-gateway
+ * VERIFYING_TIMEOUT_MS). The dispatch sweep (`queued`) never waits: its next
+ * tick asks again.
+ */
+export const VERIFY_RETRY_WAITS_MS: readonly number[] = [5_000, 15_000];
+export const VERIFY_RETRY_START_BUDGET_MS = 120_000;
+const RETRYING_CONTEXTS: ReadonlySet<GateContext> = new Set<GateContext>(["send", "check"]);
+
+let sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Tests only. */
+export function setVerifyRetrySleepForTests(fn: ((ms: number) => Promise<void>) | null): void {
+  sleep = fn ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+}
+
+async function verifyWithRetry(
+  chunk: string[],
+  identity: VerificationIdentity,
+  context: GateContext,
+): Promise<EmailVerification[]> {
+  const started = Date.now();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await verifyEmailAddresses(chunk, identity, VERIFY_SOURCE);
+    } catch (error: unknown) {
+      if (!(error instanceof EmailVerifierError)) throw error;
+      const wait = VERIFY_RETRY_WAITS_MS[attempt];
+      if (
+        !RETRYING_CONTEXTS.has(context) ||
+        !isRetryableVerifierError(error) ||
+        wait === undefined ||
+        Date.now() - started + wait > VERIFY_RETRY_START_BUDGET_MS
+      ) {
+        throw error;
+      }
+      console.warn(
+        `[instantly-service] email-verification-gate: no verdict yet for ${chunk.length} address(es) of org ${identity.orgId} (run ${identity.runId}), asking again in ${wait / 1000}s (attempt ${attempt + 2}) — ${messageOf(error)}`,
+      );
+      await sleep(wait);
+    }
+  }
+}
+
 function failureDecision(email: string, error: EmailVerifierError): GateDecision {
   return {
     email: normalizeLeadEmail(email),
@@ -137,6 +220,7 @@ function failureDecision(email: string, error: EmailVerifierError): GateDecision
     verificationId: null,
     verifiedAt: null,
     reused: null,
+    ...(!error.insufficientCredits && isVendorNoVerdict(error) ? { vendorNoVerdict: true } : {}),
     ...(error.fundingCause ? { fundingCause: error.fundingCause } : {}),
   };
 }
@@ -185,7 +269,7 @@ export async function gateAddresses(
     const chunk = distinct.slice(i, i + 50);
     let decisions: GateDecision[];
     try {
-      const results = await verifyEmailAddresses(chunk, identity, VERIFY_SOURCE);
+      const results = await verifyWithRetry(chunk, identity, context);
       const byEmail = new Map(results.map((r) => [normalizeLeadEmail(r.email), r]));
       decisions = chunk.map((email) => {
         const found = byEmail.get(email);
@@ -250,7 +334,10 @@ export function emailNotVerifiedRefusal(email: string, decision: GateDecision) {
     reason: decision.reason,
     verifiedAt: decision.verifiedAt,
     until: until ? until.toISOString() : null,
-    details: `${email} was not sent: our verifier's verdict is ${decision.verdict} (${decision.reason}); only valid, catch_all and unknown addresses are ever emailed`,
+    details:
+      decision.verdict === null
+        ? `${email} was not sent: our verifier could give no verdict for it (${decision.reason}); only valid, catch_all and unknown addresses are ever emailed, and the next send asks again`
+        : `${email} was not sent: our verifier's verdict is ${decision.verdict} (${decision.reason}); only valid, catch_all and unknown addresses are ever emailed`,
   };
 }
 
