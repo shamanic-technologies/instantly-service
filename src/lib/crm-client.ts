@@ -18,6 +18,12 @@ export const CRM_STATED_MAX_BRANDS = 50;
 const CRM_STATED_TIMEOUT_MS = 10_000;
 export const CRM_STATED_TRANSPORT_RETRIES = 2;
 
+let crmSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Tests only. */
+export function setCrmRetrySleepForTests(fn: ((ms: number) => Promise<void>) | null): void {
+  crmSleep = fn ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+}
+
 function isTimeout(error: unknown): boolean {
   const name = (error as { name?: string } | null)?.name;
   return name === "TimeoutError" || name === "AbortError";
@@ -59,13 +65,19 @@ function chunk<T>(items: T[], size: number): T[][] {
  * POST a read to crm-service. A read, so a TRANSPORT failure is retried (twice, short backoff) before it fails:
  * in prod the first hour showed bursts of bare `fetch failed` (a reused keep-alive socket the server had closed,
  * while this process ran near 100% CPU) on reads that succeed at once when asked again. An HTTP answer (any
- * status) is never retried; a timeout is not retried either (crm-service is slow, not gone).
+ * status) is never retried. A timeout is retried only when `retryTimeout` is set: the ONE-address send gate
+ * (SEND-CHECK-502-1125: crm-service's event loop stalls for seconds under box load, 1 read in 20 took 9.8 s on
+ * 2026-11-25 while the DB answers in ms; 12 follow-up sends and checks died on that 10 s timeout in 3 days, and the
+ * next ask a second later answers). The many-address reads keep not re-asking a slow crm-service (load).
  */
+export const CRM_STATED_TIMEOUT_RETRY_WAITS_MS: readonly number[] = [1_000, 3_000];
+
 async function postCrmRead(
   config: { url: string; apiKey: string },
   routePath: string,
   body: unknown,
   runId: string | null,
+  retryTimeout = false,
 ): Promise<unknown> {
   const path = `POST ${routePath}`;
   const request = () =>
@@ -82,13 +94,16 @@ async function postCrmRead(
   let response: Response | null = null;
   let lastError: unknown = null;
   for (let attempt = 0; attempt <= CRM_STATED_TRANSPORT_RETRIES; attempt++) {
-    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+    if (attempt > 0) {
+      const wait = isTimeout(lastError) ? CRM_STATED_TIMEOUT_RETRY_WAITS_MS[attempt - 1] ?? 3_000 : 100 * attempt;
+      await crmSleep(wait);
+    }
     try {
       response = await request();
       break;
     } catch (error: unknown) {
       lastError = error;
-      if (isTimeout(error)) break;
+      if (isTimeout(error) && !retryTimeout) break;
     }
   }
   if (!response) {
@@ -113,7 +128,8 @@ async function readOneChunk(
   runId: string | null,
 ): Promise<Array<{ email: string; stated: boolean; brandId: string | null; correctionId: string | null }>> {
   const path = "POST /internal/people/stated-not-to-brand";
-  const body = (await postCrmRead(config, "/internal/people/stated-not-to-brand", { orgId, brandIds, emails }, runId)) as {
+  // The send gate's read: a timeout is asked again (see postCrmRead).
+  const body = (await postCrmRead(config, "/internal/people/stated-not-to-brand", { orgId, brandIds, emails }, runId, true)) as {
     results?: unknown;
   } | null;
   const results = body?.results;
