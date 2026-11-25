@@ -19,7 +19,10 @@ import {
   findEmailNotVerifiedRefusals,
   gateAddresses,
   gateAddressForSend,
+  isVendorNoVerdict,
   judgeVerdict,
+  setVerifyRetrySleepForTests,
+  VERIFY_RETRY_WAITS_MS,
 } from "../../src/lib/email-verification-gate";
 import { EmailVerifierError } from "../../src/lib/apollo-client";
 
@@ -41,11 +44,17 @@ describe("judgeVerdict — what the send door does with a verdict", () => {
   });
 });
 
+const sleeps: number[] = [];
+
 describe("gateAddresses — verify, decide, record", () => {
   beforeEach(() => {
     mockInsertValues.mockReset().mockResolvedValue(undefined);
     mockVerify.mockReset();
     mockExecute.mockReset();
+    sleeps.length = 0;
+    setVerifyRetrySleepForTests(async (ms) => {
+      sleeps.push(ms);
+    });
   });
 
   it("asks apollo with the sending run's identity and records every decision with its reason", async () => {
@@ -77,6 +86,64 @@ describe("gateAddresses — verify, decide, record", () => {
       accepted: false,
       reason: "verifier_failed",
     });
+  });
+
+  it("a transient verifier failure is asked again with backoff, and the verdict of the next ask is the decision (SEND-CHECK-502-1125)", async () => {
+    mockVerify
+      .mockRejectedValueOnce(new EmailVerifierError('502 - {"error":"billing-service POST /v1/customer_balance/authorize failed: 502 - Failed to compute balance"}', 502, false))
+      .mockRejectedValueOnce(new EmailVerifierError("apollo-service POST /email-verifications unreachable: fetch failed", null, false))
+      .mockResolvedValueOnce([verdictRow("a@x.com", "valid")]);
+    const d = await gateAddressForSend("a@x.com", IDENTITY);
+    expect(d).toMatchObject({ accepted: true, reason: "verdict_valid" });
+    expect(mockVerify).toHaveBeenCalledTimes(3);
+    expect(sleeps).toEqual([...VERIFY_RETRY_WAITS_MS]);
+    // ONE decision recorded, the final one: a retry is never a second ledger row.
+    expect(mockInsertValues).toHaveBeenCalledTimes(1);
+  });
+
+  it("a BounceBan task still verifying is RESUMED by the next ask (free poll), and still pending after the retries is a vendor no-verdict", async () => {
+    const pending = new EmailVerifierError(
+      'apollo-service POST /email-verifications failed: 502 - {"error":"email verification failed: 1 of 1 address(es) could not be verified — a@x.com: email verification failed: bounceban: bounceban still verifying after 98s (task fri-1); the next ask resumes it"}',
+      502,
+      false,
+    );
+    mockVerify.mockRejectedValue(pending);
+    const d = await gateAddresses(["a@x.com"], IDENTITY, "check");
+    expect(mockVerify).toHaveBeenCalledTimes(1 + VERIFY_RETRY_WAITS_MS.length);
+    expect(d.get("a@x.com")).toMatchObject({ accepted: false, reason: "verifier_failed", verdict: null, vendorNoVerdict: true });
+    // The ledger keeps `verifier_failed` (a fact about no person), never the in-memory flag.
+    expect((mockInsertValues.mock.calls[0][0] as Record<string, unknown>[])[0]).toMatchObject({ reason: "verifier_failed", accepted: false });
+  });
+
+  it("an outage that outlasts the retries stays an outage (no vendorNoVerdict)", async () => {
+    mockVerify.mockRejectedValue(new EmailVerifierError("apollo-service POST /email-verifications unreachable: fetch failed", null, false));
+    const d = await gateAddressForSend("a@x.com", IDENTITY);
+    expect(d).toMatchObject({ reason: "verifier_failed" });
+    expect(d.vendorNoVerdict).toBeUndefined();
+  });
+
+  it("never retries a credit refusal, a 4xx, or the dispatch sweep (`queued` asks again next tick)", async () => {
+    mockVerify.mockRejectedValue(new EmailVerifierError("insufficient balance", 502, true));
+    await gateAddressForSend("a@x.com", IDENTITY);
+    expect(mockVerify).toHaveBeenCalledTimes(1);
+
+    mockVerify.mockReset().mockRejectedValue(new EmailVerifierError("400 bad request", 400, false));
+    await gateAddressForSend("a@x.com", IDENTITY);
+    expect(mockVerify).toHaveBeenCalledTimes(1);
+
+    mockVerify.mockReset().mockRejectedValue(new EmailVerifierError("502 boom", 502, false));
+    await gateAddresses(["a@x.com"], IDENTITY, "queued");
+    expect(mockVerify).toHaveBeenCalledTimes(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it("isVendorNoVerdict reads apollo's no-verdict answers, never an outage or a credit refusal", () => {
+    const e = (m: string, credits = false) => new EmailVerifierError(m, 502, credits);
+    expect(isVendorNoVerdict(e("…: every step-1 verifier failed — contactout: treg contactout responded 404"))).toBe(true);
+    expect(isVendorNoVerdict(e("bounceban task ended with status \"failed\""))).toBe(true);
+    expect(isVendorNoVerdict(e("bounceban: treg bounceban.people.email.verify responded 503: pool saturated"))).toBe(false);
+    expect(isVendorNoVerdict(e("billing-service POST /v1/customer_balance/authorize failed: 502"))).toBe(false);
+    expect(isVendorNoVerdict(e("the next ask resumes it", true))).toBe(false);
   });
 
   it("an org that cannot pay is told apart from an outage", async () => {

@@ -120,6 +120,19 @@ describe("POST /orgs/send-checks", () => {
     expect(res.body.code).toBe("email_verification_unavailable");
   });
 
+  it("the verifier ANSWERED it has no verdict (SEND-CHECK-502-1125): the send's 409 email_not_verified, never a 502", async () => {
+    const d = decision({ verdict: null, accepted: false, reason: "verifier_failed", verifiedAt: null, reused: null, vendorNoVerdict: true });
+    mockGateAddresses.mockImplementation(async () => new Map([["lead@example.com", d]]));
+    const res = await request(await app()).post("/orgs/send-checks").set(headers).send({ to: "lead@example.com" });
+    const { emailNotVerifiedRefusal } = await import("../../src/lib/email-verification-gate");
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual(emailNotVerifiedRefusal("lead@example.com", d as never));
+    expect(res.body.code).toBe("email_not_verified");
+    expect(res.body.verdict).toBeNull();
+    expect(res.body.until).toBeNull();
+    expect(res.body.details).toMatch(/could give no verdict/);
+  });
+
   it("an org that cannot pay to verify answers 402 insufficient_credits", async () => {
     mockGateAddresses.mockImplementation(async () => new Map([["lead@example.com", decision({ verdict: null, accepted: false, reason: "insufficient_credits", verifiedAt: null, reused: null })]]));
     const res = await request(await app()).post("/orgs/send-checks").set(headers).send({ to: "lead@example.com" });

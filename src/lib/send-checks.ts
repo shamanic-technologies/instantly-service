@@ -13,7 +13,9 @@
  * - not a prospect (`lead_not_a_prospect`, per brand)
  * - stated not to the brand (`stated_not_to_brand`, crm-service; 502 when unreadable)
  * - address verdict (`email_not_verified`; 402 when the org cannot pay to
- *   verify, 502 when no verdict could be had). A verdict under 30 days old is
+ *   verify; 409 `email_not_verified` when the verifier answered it has no
+ *   verdict; 502 only when the verifier stayed unreachable through the gate's
+ *   retries, SEND-CHECK-502-1125). A verdict under 30 days old is
  *   reused for free by apollo-service; otherwise verified now and billed on the
  *   caller's run. The decision is recorded (`email_send_verifications`), so the
  *   send right after reuses the verdict at no cost.
@@ -72,6 +74,15 @@ export function verificationRefusal(to: string, orgId: string, verification: Gat
         `the address ${to} must be verified before it is emailed`,
       ) as unknown as Record<string, unknown>,
     };
+  }
+  // The verifier ANSWERED it has no verdict for this address (after the gate's
+  // retries): a refusal about the address, like a bad verdict, never an outage
+  // 502 that kills the caller's run (SEND-CHECK-502-1125). No verdict is never
+  // sent (the gate's rule); the next send asks again.
+  if (verification.reason === "verifier_failed" && verification.vendorNoVerdict === true) {
+    const refusal = emailNotVerifiedRefusal(to, verification);
+    console.warn(`[send] Refused — ${refusal.details}`);
+    return { status: 409, event: "send-refused-email-not-verified", detail, body: refusal };
   }
   if (verification.reason === "verifier_failed") {
     console.error(`[send] NOT SENT — no verdict could be obtained for ${to} (verifier unavailable)`);
