@@ -145,6 +145,93 @@ export function isHeldForAbsence(sequence: PendingSequence, asOf: Date): boolean
   return until !== null && until.getTime() > asOf.getTime();
 }
 
+/**
+ * A real email we sent a person (any sequence, any step, an answer included),
+ * as `smtp_dispatch_raw` logs it. Read for {@link holdSecondEmailToPerson}.
+ */
+export interface RecentPersonSend {
+  leadEmail: string;
+  instantlyCampaignId: string;
+  sentAt: Date;
+}
+
+/** How long after an email of ours a person gets no email of ANOTHER sequence. */
+export const PERSON_SEND_SPACING_MS = MS_PER_DAY;
+
+/**
+ * ONE email per person per day, across sequences (FOLLOWUP-SAME-MAILBOX-1125,
+ * owner no-go: never a second email to a person the same day from two
+ * mailboxes). Each sequence keeps its own cadence, but two campaigns can each
+ * owe the same person an email: prod 2026-11-25 17:07:56 and 17:07:58,
+ * christine.mcginn@alphaocg.com got two first emails from two mailboxes, two
+ * subjects, two seconds apart.
+ *
+ * Left OUT of this run (stay queued, come back next run, nothing persisted):
+ *   - a sequence whose person got an email of ANOTHER sequence of ours within
+ *     {@link PERSON_SEND_SPACING_MS} (its own previous steps are its cadence's);
+ *   - among sequences of one person due now, all but ONE: the thread
+ *     continuation first, then the most overdue, then the campaign id.
+ * An answer owed to the person's own action (`isAnswerOwed`) is never held, and
+ * while one is due no other sequence writes to that person in the same run.
+ * Applied before the selection, so whichever selection is sent (ours or the
+ * stored script) agrees.
+ */
+export function holdSecondEmailToPerson(
+  sequences: readonly PendingSequence[],
+  recentSends: readonly RecentPersonSend[],
+  asOf: Date,
+): { kept: PendingSequence[]; held: number } {
+  const key = (email: string) => email.trim().toLowerCase();
+  const since = asOf.getTime() - PERSON_SEND_SPACING_MS;
+  const sentBy = new Map<string, Set<string>>();
+  for (const send of recentSends) {
+    if (send.sentAt.getTime() <= since || send.sentAt.getTime() > asOf.getTime()) continue;
+    const k = key(send.leadEmail);
+    const set = sentBy.get(k) ?? new Set<string>();
+    set.add(send.instantlyCampaignId);
+    sentBy.set(k, set);
+  }
+  const heldIds = new Set<string>();
+  const duePerPerson = new Map<string, Array<{ sequence: PendingSequence; dueAt: number }>>();
+  for (const sequence of sequences) {
+    if (isAnswerOwed(sequence)) continue;
+    const k = key(sequence.leadEmail);
+    const sentFrom = sentBy.get(k);
+    if (sentFrom && [...sentFrom].some((id) => id !== sequence.instantlyCampaignId)) {
+      heldIds.add(sequence.instantlyCampaignId);
+    }
+  }
+  for (const sequence of sequences) {
+    if (heldIds.has(sequence.instantlyCampaignId)) continue;
+    const due = nextDueStep(sequence, asOf);
+    if (due === null) continue;
+    const k = key(sequence.leadEmail);
+    const list = duePerPerson.get(k) ?? [];
+    list.push({ sequence, dueAt: due.dueAt.getTime() });
+    duePerPerson.set(k, list);
+  }
+  for (const list of duePerPerson.values()) {
+    if (list.length < 2) continue;
+    const answers = list.filter((d) => isAnswerOwed(d.sequence));
+    const others = list.filter((d) => !isAnswerOwed(d.sequence));
+    if (answers.length > 0) {
+      for (const d of others) heldIds.add(d.sequence.instantlyCampaignId);
+      continue;
+    }
+    others.sort(
+      (a, b) =>
+        Number(isThreadReplyOwed(b.sequence)) - Number(isThreadReplyOwed(a.sequence)) ||
+        a.dueAt - b.dueAt ||
+        a.sequence.instantlyCampaignId.localeCompare(b.sequence.instantlyCampaignId),
+    );
+    for (const d of others.slice(1)) heldIds.add(d.sequence.instantlyCampaignId);
+  }
+  return {
+    kept: sequences.filter((s) => !heldIds.has(s.instantlyCampaignId)),
+    held: heldIds.size,
+  };
+}
+
 export interface DueStep {
   instantlyCampaignId: string;
   leadEmail: string;

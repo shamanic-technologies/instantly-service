@@ -1033,15 +1033,23 @@ export async function fetchSendablePool(
 /**
  * Why the mailbox of a person's last thread is DEAD (DEAD-THREAD-MAILBOX-1107).
  * Each reason is a fact already stored, read in this order: not a row of ours,
- * Instantly no longer lists it (gone at the vendor), its lifecycle is not
- * `in_production` (owner-deactivated, in recovery, disabled by Instantly, never
- * classified), then the send pool's own capability gates.
+ * Instantly no longer lists it (gone at the vendor), its lifecycle neither
+ * `in_production` nor `in_recovery` (owner-deactivated, disabled by Instantly,
+ * never classified), then the send pool's own capability gates.
+ *
+ * `in_recovery` is ALIVE for a thread (FOLLOWUP-SAME-MAILBOX-1125, owner rule:
+ * a person we already emailed gets a follow-up IN THEIR THREAD or nothing):
+ * a recovering mailbox still sends every follow-up already assigned to it (the
+ * dispatcher drains it, `drainLimitFor`); it only takes no NEW person. Read as
+ * dead, 290 follow-ups in 7 days (org f0420eb5) left from another mailbox under
+ * a new subject while their thread's mailbox kept sending (Christine McGinn,
+ * kevin@maildistribute.com, 2026-11-25). The dispatcher still moves the step,
+ * same thread, when that mailbox is mostly in spam at the prospect's provider.
  */
 export type ThreadMailboxUnusableReason =
   | "not_ours"
   | "gone_at_vendor"
   | "deactivated_by_owner"
-  | "in_recovery"
   | "deactivated_by_instantly"
   | "not_in_production"
   | "no_credential"
@@ -1053,9 +1061,8 @@ export type ThreadMailboxResolution =
   | { ok: false; reason: ThreadMailboxUnusableReason };
 
 function deadLifecycleReason(status: string | null): ThreadMailboxUnusableReason | null {
-  if (status === "in_production") return null;
+  if (status === "in_production" || status === "in_recovery") return null;
   if (status === "deactivated_by_user") return "deactivated_by_owner";
-  if (status === "in_recovery") return "in_recovery";
   if (status === "deactivated_by_instantly") return "deactivated_by_instantly";
   return "not_in_production";
 }
@@ -1063,8 +1070,9 @@ function deadLifecycleReason(status: string | null): ThreadMailboxUnusableReason
 /**
  * The mailbox that wrote a person's last thread, when it is still ALIVE
  * (THREAD-MAILBOX-1107: a send continues the person's last thread from the
- * address that thread used). Alive = exactly what the send pool admits: a row
- * of ours Instantly still lists, `in_production`, and the SAME capability
+ * address that thread used). Alive = a row of ours Instantly still lists,
+ * `in_production` or `in_recovery` (it still sends what it holds,
+ * FOLLOWUP-SAME-MAILBOX-1125), and the send pool's SAME capability
  * gates in the same order (a credential, an alias authenticating as its real
  * mailbox; replies we can read; a relay that accepts it). Dead for ANY reason
  * = the caller opens a NEW thread from a pool mailbox picked like a first cold
