@@ -89,6 +89,9 @@ vi.mock("../../src/db/schema", () => ({
 
 // The bounce budget's history read (bounce-budget.ts): an empty fleet, so the
 // db.execute sequence below stays the one the dispatcher made before it.
+vi.mock("../../src/lib/self-send/recent-person-sends", () => ({
+  loadRecentPersonSends: vi.fn(async () => []),
+}));
 vi.mock("../../src/lib/bounce-budget-history", () => ({
   loadFleetBounceHistory: vi.fn(async () => new Map()),
   loadFleetBounceHistoryCached: vi.fn(async () => new Map()),

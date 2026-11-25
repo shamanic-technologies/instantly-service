@@ -418,9 +418,10 @@ router.post("/", async (req: Request, res: Response) => {
       // 3c-ter. THE LAST THREAD'S MAILBOX (THREAD-MAILBOX-1107: a send
       //     continues the person's last thread from the address that thread
       //     used). Taken only while it is ALIVE (`resolveThreadMailbox`: a row
-      //     of ours Instantly still lists, in_production, credential, readable
+      //     of ours Instantly still lists, in_production or in_recovery (it
+      //     still sends, FOLLOWUP-SAME-MAILBOX-1125), credential, readable
       //     replies, relay accepts). DEAD for ANY reason (owner-deactivated,
-      //     gone at the vendor, in recovery, disabled by Instantly, refused by
+      //     gone at the vendor, disabled by Instantly, refused by
       //     the relay ...) = a NEW thread from a pool mailbox picked like a
       //     first cold email, the reason stored on the row (`threadNotContinued`).
       //     Never a send from a dead mailbox, never a wait (DEAD-THREAD-MAILBOX-1107,

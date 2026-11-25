@@ -3900,16 +3900,6 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
       },
     },
     {
-      reason: "in_recovery",
-      setup: () => {
-        mockFetchThreadMailbox.mockImplementation(async (email: string) => ({
-          account: acct({ email: email.trim().toLowerCase(), stat_warmup_score: 100, daily_limit: 20 }),
-          lifecycleStatus: "in_recovery",
-          absentSince: null,
-        }));
-      },
-    },
-    {
       reason: "deactivated_by_instantly",
       setup: () => {
         mockFetchThreadMailbox.mockImplementation(async (email: string) => ({
@@ -3988,6 +3978,50 @@ describe("POST /send — follow-up of the brand's own outreach (NEVER-NO-FOLLOWU
         }
       });
     }
+  }
+
+  // FOLLOWUP-SAME-MAILBOX-1125 (owner rule: a follow-up IN THEIR THREAD or
+  // nothing): a RECOVERING mailbox still sends what it holds, so it keeps the
+  // person's thread. Replay of christine.mcginn@alphaocg.com (2026-11-25): her
+  // thread 4a113580 was written from kevin@maildistribute.com (in_recovery,
+  // delivery_below_bar), the follow-up left from kevin.lourd@growthagency.group
+  // under a new subject.
+  for (const body of [
+    { label: "followUp", payload: followUpBody },
+    { label: "plain send", payload: validBody },
+  ]) {
+    it(`FOLLOWUP-SAME-MAILBOX-1125: thread mailbox in_recovery (Christine replay), ${body.label} = SAME mailbox, Re: her thread's subject`, async () => {
+      credentialedMailboxes.add("kevin.lourd@growthagency.group");
+      credentialedMailboxes.add("kevin@maildistribute.com");
+      mockListAccounts.mockResolvedValue([
+        acct({ email: "kevin.lourd@growthagency.group", stat_warmup_score: 100, daily_limit: 50 }),
+      ]);
+      mockFetchThreadMailbox.mockImplementation(async (email: string) => ({
+        account: acct({ email: email.trim().toLowerCase(), stat_warmup_score: 100, daily_limit: 20 }),
+        lifecycleStatus: "in_recovery",
+        absentSince: null,
+      }));
+      mockFindFollowUpThread.mockResolvedValue({
+        instantlyCampaignId: "4a113580-6d66-4878-a7a3-9c6dfba3a168",
+        accountEmail: "kevin@maildistribute.com",
+        subject: "Quick idea for Alpha OCG",
+        reason: "our_last_email",
+      });
+      const app = await createSendApp();
+      const res = await request(app).post("/send").set(identityHeadersObj).send(body.payload);
+      expect(res.status).toBe(200);
+      const phase2 = mockDbUpdateSet.mock.calls
+        .map((call) => call[0] as Record<string, unknown>)
+        .find((v) => "sendTransport" in v)!;
+      expect(phase2.accountEmail).toBe("kevin@maildistribute.com");
+      const metadata = JSON.stringify(phase2.metadata);
+      expect(metadata).toContain("followUpOf");
+      expect(metadata).not.toContain("threadNotContinued");
+      const steps = mockDbInsertValues.mock.calls
+        .map((call) => call[0])
+        .find((v) => Array.isArray(v) && (v as { subject?: string }[])[0]?.subject !== undefined) as { subject: string }[];
+      expect(steps[0].subject).toBe("Re: Quick idea for Alpha OCG");
+    });
   }
 
   it("a thread whose mailbox we never knew (Instantly era, unread) still opens a new thread with the caller's subject, stored on the row", async () => {
