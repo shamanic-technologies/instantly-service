@@ -501,6 +501,14 @@ export interface OutreachFact {
   participants?: MessageParticipant[];
   /** On reply / reply_sent / email_sent only: RFC root Message-Id of its thread (null when unknown). */
   threadKey?: string | null;
+  /**
+   * On reply_sent / email_sent only: the run that ASKED for this send, the
+   * caller's `x-run-id` exactly as it arrived on the send request
+   * (MODEL-TAG-EVERY-AI-MESSAGE-1126). Null when no run asked or none was
+   * recorded (a person's own client, the provider's Unibox, an answer sent
+   * before the run was kept). Read from recorded facts only, never matched by time.
+   */
+  callerRunId?: string | null;
 }
 
 // ─── Sequence context (derived at read) ──────────────────────────────────────
@@ -642,7 +650,29 @@ export function toOutreachFact(row: Record<string, unknown>): OutreachFact {
         : null,
     sequence,
     ...factEnvelope(type, row, p),
+    ...callerRunIdOf(type, row),
   };
+}
+
+/**
+ * The run that asked for a send (MODEL-TAG-EVERY-AI-MESSAGE-1126), from what
+ * was RECORDED with it, never a time match:
+ *  - `email_sent`: the sequence row's `run_id`, the `x-run-id` its
+ *    `POST /orgs/send` carried (each follow-up send is its own row);
+ *  - `reply_sent` through `POST /orgs/replies`: the dispatch row's own
+ *    `callerRunId`, else the run the answer was recorded under for the ledger
+ *    (`reply_send_outcomes`, same thread + same message id: REPLY-SENT-UNIT-1118);
+ *  - an answer from a person's own client or the provider's Unibox: null.
+ * Absent on every other type.
+ */
+export function callerRunIdOf(
+  type: OutreachFactType,
+  row: Record<string, unknown>,
+): { callerRunId?: string | null } {
+  if (type === "email_sent") return { callerRunId: nonEmpty(row.seq_caller_run_id) };
+  if (type !== "reply_sent") return {};
+  const payload = (row.env_smtp_payload ?? null) as Record<string, unknown> | null;
+  return { callerRunId: nonEmpty(payload?.callerRunId) ?? nonEmpty(row.env_smtp_outcome_run_id) };
 }
 
 /**
@@ -757,7 +787,9 @@ export async function readOutreachFacts(args: {
              env_iem.payload AS env_iem_payload,
              env_smtp.account_email AS env_smtp_account, env_smtp.lead_email AS env_smtp_lead,
              env_smtp.message_id AS env_smtp_message_id, env_smtp.payload AS env_smtp_payload,
-             env_step.message_id AS env_step_message_id, env_step.payload AS env_step_payload
+             env_step.message_id AS env_step_message_id, env_step.payload AS env_step_payload,
+             env_smtp_outcome.run_id AS env_smtp_outcome_run_id,
+             CASE WHEN page.type = 'email_sent' THEN c.run_id END AS seq_caller_run_id
       -- FROM head: an EMPTY page still returns one row carrying the head.
       FROM head
       LEFT JOIN page ON true
@@ -797,6 +829,17 @@ export async function readOutreachFacts(args: {
                AND page.subject_key NOT LIKE 'rsent:iem:%' THEN substring(page.subject_key FROM 7)
         END
       ) env_smtp ON true
+      -- MODEL-TAG-EVERY-AI-MESSAGE-1126: an answer sent before its dispatch row
+      -- kept the caller's run still names it where the ledger record holds it,
+      -- keyed on the same thread + message id (unique index), never by time.
+      LEFT JOIN LATERAL (
+        SELECT o.run_id
+        FROM reply_send_outcomes o
+        WHERE env_smtp.account_email IS NOT NULL
+          AND o.instantly_campaign_id = page.instantly_campaign_id
+          AND o.message_id = COALESCE(env_smtp.message_id, env_smtp.payload->>'instantlyEmailId')
+        LIMIT 1
+      ) env_smtp_outcome ON true
       LEFT JOIN LATERAL (
         SELECT d.message_id, d.payload - 'bodyHtml' AS payload
         FROM smtp_dispatch_raw d

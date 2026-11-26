@@ -527,6 +527,26 @@ describe("replyToLead over the self-send transport", () => {
     expect(row.payload.kind).toBe("manual_reply");
   });
 
+  it("MODEL-TAG-EVERY-AI-MESSAGE-1126: keeps the run that asked for the answer on the bronze row; none asked = no key", async () => {
+    mockDispatchMessage.mockResolvedValue({
+      messageId: "<ours-3@mail>",
+      response: "250 OK",
+      accepted: ["alice@media.com"],
+      rejected: [],
+    });
+    mockResolveCredential.mockResolvedValue(CREDENTIAL);
+
+    primeSelfSend();
+    mockInsertValues.mockClear();
+    await sendNow({ ...INPUT, runId: "run-asked-1" });
+    expect(mockInsertValues.mock.calls[0][0].payload.callerRunId).toBe("run-asked-1");
+
+    primeSelfSend();
+    mockInsertValues.mockClear();
+    await sendNow(INPUT);
+    expect("callerRunId" in mockInsertValues.mock.calls[0][0].payload).toBe(false);
+  });
+
   it("refuses when we hold no credential for the mailbox that contacted the lead", async () => {
     primeSelfSend();
     mockResolveCredential.mockRejectedValue(new Error("no mailbox"));
@@ -795,6 +815,20 @@ describe("a person's hand reply never refuses an automated one", () => {
     };
     expect(row.payload.kind).toBe("manual_reply");
     expect(row.payload.sentBy).toBe("automation");
+  });
+
+  it("MODEL-TAG-EVERY-AI-MESSAGE-1126: an Instantly-transport answer keeps the run that asked for it; none asked = no key", async () => {
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
+    mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
+    mockInsertValues.mockClear();
+    await replyToLead({ ...AUTOMATED, runId: "run-asked-2" });
+    expect(mockInsertValues.mock.calls[0][0].payload.callerRunId).toBe("run-asked-2");
+
+    mockDbExecute.mockResolvedValueOnce(pgResult([campaignRow()]));
+    mockInsertValues.mockClear();
+    await replyToLead({ ...INPUT, sentBy: "human" });
+    expect("callerRunId" in mockInsertValues.mock.calls[0][0].payload).toBe(false);
   });
 });
 

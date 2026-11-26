@@ -3369,6 +3369,11 @@ const OutreachFactSchema = z
       .nullable()
       .optional()
       .describe("On `reply`, `reply_sent`, `email_sent` only: the RFC root Message-Id of the message's thread (References[0] ?? In-Reply-To ?? its own id); null when we hold none."),
+    callerRunId: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("On `reply_sent`, `email_sent` only: the run that ASKED for this send, i.e. the `x-run-id` its send request (`POST /orgs/send`, `POST /orgs/replies`) carried, exactly as it arrived. Read from what was recorded with the send, never matched by time. Null when no run asked or none was recorded (an answer from a person's own email client or the provider's Unibox, an older answer whose run was never kept). Absent on other types."),
   })
   .openapi("OutreachFact");
 

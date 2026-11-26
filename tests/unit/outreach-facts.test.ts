@@ -308,6 +308,37 @@ describe("the served fact", () => {
     transport: "smtp",
   };
 
+  it("MODEL-TAG-EVERY-AI-MESSAGE-1126: a send states the run that asked for it, from recorded facts only", () => {
+    // An answer through POST /orgs/replies: the dispatch row's own record.
+    const asked = toOutreachFact({
+      ...base, subject_key: "rsent:d1", type: "reply_sent",
+      payload: { via: "replies_route", sentBy: "automation" },
+      env_smtp_account: "amy@x.com", env_smtp_lead: base.lead_email,
+      env_smtp_payload: { callerRunId: "run-a" }, env_smtp_outcome_run_id: "run-other",
+    });
+    expect(asked.callerRunId).toBe("run-a");
+    // Older dispatch row: the run the answer was recorded under for the ledger (same message).
+    const older = toOutreachFact({
+      ...base, subject_key: "rsent:d2", type: "reply_sent",
+      payload: { via: "replies_route", sentBy: "automation" },
+      env_smtp_account: "amy@x.com", env_smtp_payload: {}, env_smtp_outcome_run_id: "run-b",
+    });
+    expect(older.callerRunId).toBe("run-b");
+    // No run asked (a human's own client): null, never guessed.
+    const human = toOutreachFact({
+      ...base, subject_key: "rsent:imap:9", type: "reply_sent",
+      payload: { via: "staff_client", sentBy: "human" },
+    });
+    expect(human.callerRunId).toBeNull();
+    // A sequence send: the x-run-id its POST /orgs/send carried.
+    const sent = toOutreachFact({
+      ...base, type: "email_sent", payload: { step: 1, position: "first" }, seq_caller_run_id: "run-c",
+    });
+    expect(sent.callerRunId).toBe("run-c");
+    // Other types: absent.
+    expect("callerRunId" in toOutreachFact({ ...base, type: "link_clicked", payload: { step: 1 } })).toBe(false);
+  });
+
   it("fills exactly the object matching its type", () => {
     const sent = toOutreachFact({
       ...base,
