@@ -45,6 +45,7 @@ router.post("/", async (req: Request, res: Response) => {
       brandIds,
       runId,
       context: "check",
+      maxVerdictAgeDays: parsed.data.maxVerdictAgeDays,
       identity: {
         orgId,
         userId,

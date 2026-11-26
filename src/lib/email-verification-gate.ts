@@ -11,7 +11,8 @@
  *
  * The rule, one for every source and every channel, no branch per caller:
  *  - an address is verified before mail leaves for it. apollo-service reuses a
- *    decisive verdict under 30 days old for free; otherwise it verifies now and
+ *    decisive verdict under 30 days old for free (or under the caller's stated
+ *    `maxVerdictAgeDays`, VERDICT-WINDOW-BY-CALLER-1126); otherwise it verifies now and
  *    bills the org on a child run of the run that sends (the campaign's run).
  *  - `valid`, `catch_all`, `unknown` are SENT (owner 2026-10-14: the email price
  *    follows the verdict, valid ×1, catch_all ×2, unknown ×3).
@@ -98,6 +99,12 @@ export interface GateDecision {
    * the ledger keeps `insufficient_credits`). Absent otherwise.
    */
   fundingCause?: FundingRefusalCause | null;
+  /**
+   * VERDICT-WINDOW-BY-CALLER-1126: the oldest verdict (days) the caller stated it
+   * accepts (`maxVerdictAgeDays`). Present only when stated; sets when a refusal
+   * may be re-asked (`refusalUntil`). Not persisted.
+   */
+  maxVerdictAgeDays?: number;
 }
 
 /** Pure: what the door does with one verdict. */
@@ -115,12 +122,17 @@ export function judgeVerdict(verdict: string): { accepted: boolean; reason: Gate
   }
 }
 
-/** Pure: when a refusal on this decision lapses (null = no lapse stated). */
-export function refusalUntil(decision: Pick<GateDecision, "verifiedAt">): Date | null {
+/**
+ * Pure: when a refusal on this decision lapses (null = no lapse stated). The
+ * caller's stated window when it stated one (the verdict is re-verified for it
+ * once older than that), else VERDICT_REFUSAL_DAYS.
+ */
+export function refusalUntil(decision: Pick<GateDecision, "verifiedAt" | "maxVerdictAgeDays">): Date | null {
   if (!decision.verifiedAt) return null;
   const at = new Date(decision.verifiedAt);
   if (Number.isNaN(at.getTime())) return null;
-  return new Date(at.getTime() + VERDICT_REFUSAL_DAYS * 24 * 60 * 60 * 1000);
+  const days = decision.maxVerdictAgeDays ?? VERDICT_REFUSAL_DAYS;
+  return new Date(at.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
 function decisionFromVerification(v: EmailVerification): GateDecision {
@@ -187,11 +199,15 @@ async function verifyWithRetry(
   chunk: string[],
   identity: VerificationIdentity,
   context: GateContext,
+  maxVerdictAgeDays: number | undefined,
 ): Promise<EmailVerification[]> {
   const started = Date.now();
   for (let attempt = 0; ; attempt++) {
     try {
-      return await verifyEmailAddresses(chunk, identity, VERIFY_SOURCE);
+      // Not stated = the call exactly as before (no fourth argument, no body field).
+      return maxVerdictAgeDays === undefined
+        ? await verifyEmailAddresses(chunk, identity, VERIFY_SOURCE)
+        : await verifyEmailAddresses(chunk, identity, VERIFY_SOURCE, maxVerdictAgeDays);
     } catch (error: unknown) {
       if (!(error instanceof EmailVerifierError)) throw error;
       const wait = VERIFY_RETRY_WAITS_MS[attempt];
@@ -261,6 +277,12 @@ export async function gateAddresses(
   emails: string[],
   identity: VerificationIdentity,
   context: GateContext,
+  /**
+   * VERDICT-WINDOW-BY-CALLER-1126: the oldest held verdict (days) this request
+   * accepts for reuse, stated by the caller (0 = verify now). Undefined = not
+   * stated: apollo-service's 30-day default, requests byte-identical to before.
+   */
+  maxVerdictAgeDays?: number,
 ): Promise<Map<string, GateDecision>> {
   const distinct = [...new Set(emails.map(normalizeLeadEmail))].filter((e) => e.length > 0);
   const out = new Map<string, GateDecision>();
@@ -269,7 +291,7 @@ export async function gateAddresses(
     const chunk = distinct.slice(i, i + 50);
     let decisions: GateDecision[];
     try {
-      const results = await verifyWithRetry(chunk, identity, context);
+      const results = await verifyWithRetry(chunk, identity, context, maxVerdictAgeDays);
       const byEmail = new Map(results.map((r) => [normalizeLeadEmail(r.email), r]));
       decisions = chunk.map((email) => {
         const found = byEmail.get(email);
@@ -287,7 +309,7 @@ export async function gateAddresses(
       decisions = chunk.map((email) => failureDecision(email, error));
     }
     await recordDecisions(identity.orgId, decisions, context, identity.runId);
-    for (const d of decisions) out.set(d.email, d);
+    for (const d of decisions) out.set(d.email, maxVerdictAgeDays === undefined ? d : { ...d, maxVerdictAgeDays });
   }
   return out;
 }
@@ -296,8 +318,9 @@ export async function gateAddresses(
 export async function gateAddressForSend(
   email: string,
   identity: VerificationIdentity,
+  maxVerdictAgeDays?: number,
 ): Promise<GateDecision> {
-  const decisions = await gateAddresses([email], identity, "send");
+  const decisions = await gateAddresses([email], identity, "send", maxVerdictAgeDays);
   const decision = decisions.get(normalizeLeadEmail(email));
   if (!decision) throw new Error(`email-verification-gate: no decision for ${email}`);
   return decision;

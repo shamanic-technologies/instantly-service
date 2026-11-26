@@ -72,6 +72,7 @@ export async function verifyEmailAddresses(
   emails: string[],
   identity: VerificationIdentity,
   source: string,
+  maxVerdictAgeDays?: number,
 ): Promise<EmailVerification[]> {
   if (!APOLLO_SERVICE_URL || !APOLLO_SERVICE_API_KEY) {
     throw new EmailVerifierError("APOLLO_SERVICE_URL or APOLLO_SERVICE_API_KEY is not set", null, false);
@@ -93,7 +94,11 @@ export async function verifyEmailAddresses(
     response = await fetch(`${APOLLO_SERVICE_URL}/email-verifications`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ emails, source }),
+      // VERDICT-WINDOW-BY-CALLER-1126: the caller's stated window, forwarded only
+      // when stated (absent = apollo's own 30-day default, body byte-identical).
+      body: JSON.stringify(
+        maxVerdictAgeDays === undefined ? { emails, source } : { emails, source, maxVerdictAgeDays },
+      ),
     });
   } catch (error: unknown) {
     throw new EmailVerifierError(
