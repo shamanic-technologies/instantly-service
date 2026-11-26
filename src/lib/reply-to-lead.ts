@@ -744,6 +744,7 @@ async function recordInstantlyReply(input: {
   outcome: "sent" | "transient";
   instantlyEmailId: string | null;
   error: unknown;
+  callerRunId: string | null;
 }): Promise<void> {
   const row = {
     instantlyCampaignId: input.campaign.instantlyCampaignId,
@@ -759,6 +760,7 @@ async function recordInstantlyReply(input: {
       kind: "manual_reply",
       sentBy: input.sentBy,
       transport: "instantly",
+      ...callerRunIdPayload(input.callerRunId),
       subject: input.subject,
       cc: input.cc,
       ...(input.bcc ? { bcc: input.bcc } : {}),
@@ -837,10 +839,21 @@ async function prepareInstantlyReply(
   };
 }
 
+/**
+ * The run that asked for this answer (the caller's `x-run-id` as it arrived),
+ * kept on the dispatch row so the outreach fact of the answer can state it
+ * (MODEL-TAG-EVERY-AI-MESSAGE-1126). Absent when no run asked: the row of a
+ * run-less answer is byte-identical to before.
+ */
+function callerRunIdPayload(callerRunId: string | null): { callerRunId?: string } {
+  return callerRunId ? { callerRunId } : {};
+}
+
 /** Send the prepared Instantly reply and record what happened. */
 async function deliverInstantlyReply(
   campaign: CampaignRow,
   prepared: PreparedInstantlyReply,
+  callerRunId: string | null,
 ): Promise<ReplyToLeadResult> {
   const { sentBy, key, target, accountEmail, account, subject, bodyHtml, cc, bcc } =
     prepared;
@@ -872,6 +885,7 @@ async function deliverInstantlyReply(
       outcome: "transient",
       instantlyEmailId: null,
       error,
+      callerRunId,
     });
 
     throw new ReplyToLeadError(
@@ -900,6 +914,7 @@ async function deliverInstantlyReply(
     outcome: "sent",
     instantlyEmailId: sent.id == null ? null : String(sent.id),
     error: null,
+    callerRunId,
   });
 
   return {
@@ -1096,6 +1111,7 @@ async function deliverSmtpReply(
   campaign: CampaignRow,
   prepared: PreparedSmtpReply,
   attachments: ResolvedAttachment[],
+  callerRunId: string | null,
 ): Promise<ReplyToLeadResult> {
   const { sentBy, anchor, accountEmail, credential, subject, bodyHtml, from, cc, bcc } =
     prepared;
@@ -1150,6 +1166,7 @@ async function deliverSmtpReply(
       payload: {
         kind: "manual_reply",
         sentBy,
+        ...callerRunIdPayload(callerRunId),
         subject,
         ...(chosenTo ? { to: chosenTo } : {}),
         cc,
@@ -1227,6 +1244,7 @@ async function deliverSmtpReply(
         payload: {
           kind: "manual_reply",
           sentBy,
+          ...callerRunIdPayload(callerRunId),
           subject,
           ...(chosenTo ? { to: chosenTo } : {}),
           cc,
@@ -1488,8 +1506,8 @@ async function sendAfterHandoverGate(
 
   const reply =
     prepared.transport === SEND_TRANSPORT_SMTP
-      ? await deliverSmtpReply(campaign, prepared, attachments)
-      : await deliverInstantlyReply(campaign, prepared);
+      ? await deliverSmtpReply(campaign, prepared, attachments, input.runId ?? null)
+      : await deliverInstantlyReply(campaign, prepared, input.runId ?? null);
 
   // REPLY-SENT-UNIT-1118: an answer that went out is an email sent. Recorded
   // here (every caller, both transports), declared by the outcomes sweep.
