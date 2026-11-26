@@ -15,8 +15,8 @@
  * - address verdict (`email_not_verified`; 402 when the org cannot pay to
  *   verify; 409 `email_not_verified` when the verifier answered it has no
  *   verdict; 502 only when the verifier stayed unreachable through the gate's
- *   retries, SEND-CHECK-502-1125). A verdict under 30 days old is
- *   reused for free by apollo-service; otherwise verified now and billed on the
+ *   retries, SEND-CHECK-502-1125). A verdict under 30 days old (or the
+ *   caller's `maxVerdictAgeDays`) is reused for free by apollo-service; otherwise verified now and billed on the
  *   caller's run. The decision is recorded (`email_send_verifications`), so the
  *   send right after reuses the verdict at no cost.
  *
@@ -126,6 +126,8 @@ export interface PersonCheckInput {
   runId: string | null;
   identity: VerificationIdentity;
   context: GateContext;
+  /** VERDICT-WINDOW-BY-CALLER-1126: the caller's stated verdict window; undefined = not stated. */
+  maxVerdictAgeDays?: number;
 }
 
 export type PersonCheckAnswer =
@@ -165,7 +167,7 @@ export async function checkPersonForSend(input: PersonCheckInput): Promise<Perso
     };
   }
 
-  const decisions = await gateAddresses([to], input.identity, input.context);
+  const decisions = await gateAddresses([to], input.identity, input.context, input.maxVerdictAgeDays);
   const verification = decisions.get(normalizeLeadEmail(to));
   if (!verification) throw new Error(`send-checks: no verification decision for ${to}`);
   const refused = verificationRefusal(to, orgId, verification);

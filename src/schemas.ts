@@ -567,6 +567,18 @@ export const SendRequestSchema = z
           "The client's own brand signature (PUT /orgs/email-signature) WINS over this field: a client who stated how its emails are signed is never overridden. " +
           "Pinned on the thread at its first send: every follow-up step and every reply of the thread keeps it, and a later send that continues an earlier thread of the brand with the person keeps THAT thread's signature (this field is then ignored).",
       ),
+    maxVerdictAgeDays: z
+      .number()
+      .int()
+      .min(0)
+      .max(3650)
+      .optional()
+      .describe(
+        "VERDICT-WINDOW-BY-CALLER-1126: the oldest address verdict (in days) this request accepts. " +
+          "A verdict our verifier already holds for the address and younger than this is reused for free; an older one (or none) is verified now and billed on the caller's run. " +
+          "0 = verify now (no held verdict is reused). The same figure sets when an `email_not_verified` refusal may be asked again (`until` = `verifiedAt` + this many days). " +
+          "Absent = 30 days, the behaviour unchanged. Only the AGE of a verdict: `invalid` and `risky` are refused whatever the window. Same name and bounds as apollo-service `POST /email-verifications`.",
+      ),
   })
   .openapi("SendRequest");
 
@@ -727,6 +739,18 @@ registry.registerPath({
 export const SendCheckRequestSchema = z
   .object({
     to: z.string().min(3).describe("The address `POST /orgs/send` would be asked to mail"),
+    maxVerdictAgeDays: z
+      .number()
+      .int()
+      .min(0)
+      .max(3650)
+      .optional()
+      .describe(
+        "VERDICT-WINDOW-BY-CALLER-1126: the oldest address verdict (in days) this request accepts. " +
+          "A verdict our verifier already holds for the address and younger than this is reused for free; an older one (or none) is verified now and billed on the caller's run. " +
+          "0 = verify now (no held verdict is reused). The same figure sets when an `email_not_verified` refusal may be asked again (`until` = `verifiedAt` + this many days). " +
+          "Absent = 30 days, the behaviour unchanged. Only the AGE of a verdict: `invalid` and `risky` are refused whatever the window. Same name and bounds as apollo-service `POST /email-verifications`.",
+      ),
   })
   .openapi("SendCheckRequest");
 
@@ -735,7 +759,7 @@ export const SendCheckResponseSchema = z
     sendable: z.literal(true),
     to: z.string(),
     verdict: z.string().nullable().describe("Our verifier's verdict for the address: `valid`, `catch_all` or `unknown`"),
-    reused: z.boolean().nullable().describe("true = a verdict under 30 days old was reused (nothing billed); false = verified now, billed on the caller's run"),
+    reused: z.boolean().nullable().describe("true = a held verdict younger than the window (`maxVerdictAgeDays`, else 30 days) was reused (nothing billed); false = verified now, billed on the caller's run"),
     verifiedAt: z.string().nullable(),
   })
   .openapi("SendCheckResponse");
@@ -747,7 +771,7 @@ registry.registerPath({
   description:
     "Runs the checks `POST /orgs/send` runs on the person, in its order, with its answers: opt-out, " +
     "not a prospect, stated not to the brand (x-brand-id), our verifier's verdict on the address. " +
-    "A verdict under 30 days old is reused for free; otherwise the address is verified now and billed on " +
+    "A verdict under 30 days old (or under the body's `maxVerdictAgeDays`) is reused for free; otherwise the address is verified now and billed on " +
     "the caller's run (x-run-id, x-user-id required), and the decision is recorded so the send right after " +
     "reuses it at no cost. Nothing is reserved, queued or sent. Not checked: the follow-up race " +
     "(`brand_sequence_queued`) and the signature conflict, which are about our queued work.",

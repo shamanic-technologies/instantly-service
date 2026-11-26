@@ -461,7 +461,7 @@ router.post("/", async (req: Request, res: Response) => {
       //     this send's run. Same placement as the gates above: a refused send
       //     creates no reservation, no run, no cost row. See
       //     src/lib/email-verification-gate.ts.
-      const verification = await gateAddressForSend(body.to, {
+      const verificationIdentity = {
         orgId,
         userId,
         runId: res.locals.runId as string,
@@ -469,7 +469,13 @@ router.post("/", async (req: Request, res: Response) => {
         campaignId,
         featureSlug: tracking.featureSlug ?? null,
         workflowSlug: tracking.workflowSlug ?? null,
-      });
+      };
+      // VERDICT-WINDOW-BY-CALLER-1126: the caller's stated verdict window; not
+      // stated = the call exactly as before.
+      const verification =
+        body.maxVerdictAgeDays === undefined
+          ? await gateAddressForSend(body.to, verificationIdentity)
+          : await gateAddressForSend(body.to, verificationIdentity, body.maxVerdictAgeDays);
       // The answer for a refused verification is shared with `POST /orgs/send-checks`
       // (src/lib/send-checks.ts): one rule, one body, whichever door asks.
       const verificationRefused = verificationRefusal(body.to, orgId, verification);

@@ -506,6 +506,12 @@
               }
             ],
             "description": "WHO SIGNS this email, chosen by the script that wrote it (a tactic: competing scripts sign differently and their results are compared). `\"default\"` = our signature (the sending mailbox's name, then `Distribute.you | Marketing Agency`). `{ text }` = your own lines. Absent = exactly as before (the brand's own signature, else ours). The client's own brand signature (PUT /orgs/email-signature) WINS over this field: a client who stated how its emails are signed is never overridden. Pinned on the thread at its first send: every follow-up step and every reply of the thread keeps it, and a later send that continues an earlier thread of the brand with the person keeps THAT thread's signature (this field is then ignored)."
+          },
+          "maxVerdictAgeDays": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3650,
+            "description": "VERDICT-WINDOW-BY-CALLER-1126: the oldest address verdict (in days) this request accepts. A verdict our verifier already holds for the address and younger than this is reused for free; an older one (or none) is verified now and billed on the caller's run. 0 = verify now (no held verdict is reused). The same figure sets when an `email_not_verified` refusal may be asked again (`until` = `verifiedAt` + this many days). Absent = 30 days, the behaviour unchanged. Only the AGE of a verdict: `invalid` and `risky` are refused whatever the window. Same name and bounds as apollo-service `POST /email-verifications`."
           }
         },
         "required": [
@@ -534,7 +540,7 @@
           "reused": {
             "type": "boolean",
             "nullable": true,
-            "description": "true = a verdict under 30 days old was reused (nothing billed); false = verified now, billed on the caller's run"
+            "description": "true = a held verdict younger than the window (`maxVerdictAgeDays`, else 30 days) was reused (nothing billed); false = verified now, billed on the caller's run"
           },
           "verifiedAt": {
             "type": "string",
@@ -556,6 +562,12 @@
             "type": "string",
             "minLength": 3,
             "description": "The address `POST /orgs/send` would be asked to mail"
+          },
+          "maxVerdictAgeDays": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3650,
+            "description": "VERDICT-WINDOW-BY-CALLER-1126: the oldest address verdict (in days) this request accepts. A verdict our verifier already holds for the address and younger than this is reused for free; an older one (or none) is verified now and billed on the caller's run. 0 = verify now (no held verdict is reused). The same figure sets when an `email_not_verified` refusal may be asked again (`until` = `verifiedAt` + this many days). Absent = 30 days, the behaviour unchanged. Only the AGE of a verdict: `invalid` and `risky` are refused whatever the window. Same name and bounds as apollo-service `POST /email-verifications`."
           }
         },
         "required": [
@@ -9455,7 +9467,7 @@
     "/orgs/send-checks": {
       "post": {
         "summary": "Would POST /orgs/send refuse this person? Asked before a message is written",
-        "description": "Runs the checks `POST /orgs/send` runs on the person, in its order, with its answers: opt-out, not a prospect, stated not to the brand (x-brand-id), our verifier's verdict on the address. A verdict under 30 days old is reused for free; otherwise the address is verified now and billed on the caller's run (x-run-id, x-user-id required), and the decision is recorded so the send right after reuses it at no cost. Nothing is reserved, queued or sent. Not checked: the follow-up race (`brand_sequence_queued`) and the signature conflict, which are about our queued work.",
+        "description": "Runs the checks `POST /orgs/send` runs on the person, in its order, with its answers: opt-out, not a prospect, stated not to the brand (x-brand-id), our verifier's verdict on the address. A verdict under 30 days old (or under the body's `maxVerdictAgeDays`) is reused for free; otherwise the address is verified now and billed on the caller's run (x-run-id, x-user-id required), and the decision is recorded so the send right after reuses it at no cost. Nothing is reserved, queued or sent. Not checked: the follow-up race (`brand_sequence_queued`) and the signature conflict, which are about our queued work.",
         "parameters": [
           {
             "schema": {

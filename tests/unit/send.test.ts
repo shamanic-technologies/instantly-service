@@ -3542,6 +3542,31 @@ describe("POST /send — no email to an address without a verdict from our verif
     expect(identity.runId).toBe(identityHeadersObj["x-run-id"]);
   });
 
+  // VERDICT-WINDOW-BY-CALLER-1126: the caller states how old a verdict it accepts.
+  it("a stated maxVerdictAgeDays reaches the verifier gate verbatim", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send({ ...validBody, maxVerdictAgeDays: 7 });
+    expect(res.status).toBe(200);
+    expect(mockGateAddressForSend.mock.calls[0]).toHaveLength(3);
+    expect(mockGateAddressForSend.mock.calls[0][2]).toBe(7);
+  });
+
+  it("no maxVerdictAgeDays stated = the gate is called exactly as before (two arguments)", async () => {
+    mockNewCampaignFlow();
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send(validBody);
+    expect(res.status).toBe(200);
+    expect(mockGateAddressForSend.mock.calls[0]).toHaveLength(2);
+  });
+
+  it.each([-1, 1.5, 3651, "7"])("maxVerdictAgeDays %s is a 400, nothing verified", async (bad) => {
+    const app = await createSendApp();
+    const res = await request(app).post("/send").set(identityHeadersObj).send({ ...validBody, maxVerdictAgeDays: bad });
+    expect(res.status).toBe(400);
+    expect(mockGateAddressForSend).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["valid", "instantly-account-email-sent", "instantly-domain-email-sent"],
     ["catch_all", "instantly-account-email-sent-catch-all", "instantly-domain-email-sent-catch-all"],
