@@ -20,9 +20,12 @@ vi.mock("../../src/lib/reply-to-lead", () => ({
   ReplyToLeadError: FakeReplyToLeadError,
 }));
 
-vi.mock("../../src/lib/forward-positive-reply", () => ({
-  formatThreadDate: (iso: string) => iso,
-}));
+vi.mock("../../src/lib/forward-positive-reply", async () => {
+  const actual = await vi.importActual<typeof import("../../src/lib/forward-positive-reply")>(
+    "../../src/lib/forward-positive-reply",
+  );
+  return { formatThreadDate: (iso: string) => iso, htmlToText: actual.htmlToText };
+});
 
 const mockListMembers = vi.fn();
 const mockExternalOrgId = vi.fn();
@@ -406,5 +409,98 @@ describe("pure helpers", () => {
     const html = renderQuotedHistory(HISTORY.messages as never);
     expect(html.indexOf("Comparable")).toBeLessThan(html.indexOf("cold 1"));
     expect(html).toContain("michael@clinic.com wrote:");
+  });
+});
+
+// ─── ESCALATION-AND-AI-REPLY-1126: one path per reply ─────────────────────────
+// Living Vital 2026-11-09 (replayed with the prod shape): Markus asked whether the psyllium grows in Switzerland
+// at 15:28:51; the escalation claimed the thread at 15:30:12.5 and told the client "Our AI paused so you can answer
+// it yourself", and the AI's own answer left at 15:30:13.9. The client then answered by hand too.
+describe("an escalated reply the AI also answered (ESCALATION-AND-AI-REPLY-1126)", () => {
+  const MARKUS_REPLY = {
+    direction: "inbound" as const,
+    from: "\"Markus Schmid\" <markus@markthalle-luzern.ch>",
+    to: "kevin@marketingagency.group",
+    date: "2026-11-09T15:28:51.000Z",
+    subject: "Re: Flohsamenschalen für die Markthalle",
+    bodyText: "Hoi Kevin\n\nIch denk, die Flohsamenschalen sind nicht in der CH gewachsen gell?\n\nMarkus",
+  };
+  const AI_ANSWER_HTML =
+    "Hoi Markus\n\nDu hast recht: Flohsamenschalen wachsen nicht in der Schweiz.<p>--</p><p>Kevin Lourd<br>Living Vital</p>" +
+    "<br><blockquote><div>On Nov 9, 2026, Markus wrote:</div><div>Hoi Kevin</div></blockquote>";
+
+  function primeDb(opts: { inFlightReads?: boolean[]; answer?: boolean }) {
+    const inFlight = [...(opts.inFlightReads ?? [])];
+    mockExecute.mockImplementation(async (q: unknown) => {
+      const text = JSON.stringify(q);
+      if (text.includes("SET escalated_at = now()")) return { rows: [{ id: "row" }] };
+      if (text.includes("inFlight")) return { rows: [{ inFlight: inFlight.shift() ?? false }] };
+      if (text.includes("FROM smtp_sent_messages")) {
+        return {
+          rows: opts.answer ? [{ sentAt: "2026-11-09T15:30:13.918Z", bodyHtml: AI_ANSWER_HTML }] : [],
+        };
+      }
+      return { rows: [] };
+    });
+  }
+
+  beforeEach(() => {
+    mockLoadHistory.mockResolvedValue({ history: { ...HISTORY, messages: [MARKUS_REPLY] }, latestReply: MARKUS_REPLY });
+    mockBrand.mockResolvedValue({ name: "Living Vital", rep: { email: null, firstName: null, role: null } });
+    mockListMembers.mockResolvedValue([{ email: "founder@livingvital.ch", firstName: "Zarina", lastName: null }]);
+    mockFindLead.mockResolvedValue({ id: "lead-row-1" });
+  });
+
+  it("the AI answered: the team is told so, with its words, never 'our AI paused'", async () => {
+    primeDb({ answer: true });
+
+    const result = await escalateReply(INPUT);
+
+    expect(result.handoff).toBe("team");
+    expect(mockReplyToLead).not.toHaveBeenCalled();
+    expect(mockSendEmail).toHaveBeenCalledTimes(1);
+    const { subject, html, text } = mockSendEmail.mock.calls[0][0].metadata;
+    expect(subject).toContain("Our AI answered");
+    for (const body of [html, text]) {
+      expect(body).not.toContain("paused");
+      expect(body).toContain("Du hast recht: Flohsamenschalen wachsen nicht in der Schweiz.");
+      // The answer's own words only: no signature, no quoted conversation.
+      expect(body).not.toContain("On Nov 9, 2026, Markus wrote");
+    }
+    // The answer is looked for from the moment Markus wrote, never before.
+    const lookup = mockExecute.mock.calls.map((c) => JSON.stringify(c[0])).find((t) => t.includes("FROM smtp_sent_messages"));
+    expect(lookup).toContain("2026-11-09T15:28:51.000Z");
+    expect(lookup).toContain("automation");
+  });
+
+  it("an answer still in flight is waited on, then told the same way", async () => {
+    primeDb({ inFlightReads: [true, false], answer: true });
+
+    await escalateReply(INPUT);
+
+    expect(mockExecute.mock.calls.filter((c) => JSON.stringify(c[0]).includes("inFlight"))).toHaveLength(2);
+    expect(mockSendEmail.mock.calls[0][0].metadata.subject).toContain("Our AI answered");
+  });
+
+  it("the AI sent nothing: 'our AI paused' is true and is what the team reads", async () => {
+    primeDb({ answer: false });
+
+    await escalateReply(INPUT);
+
+    const { subject, text } = mockSendEmail.mock.calls[0][0].metadata;
+    expect(subject).toContain("asked your Living Vital team a question");
+    expect(text).toContain("Our AI paused so you can answer it yourself.");
+  });
+
+  it("a brand with a rep: the AI's answer replaces the in-thread hand-over (the prospect gets ONE email)", async () => {
+    mockBrand.mockResolvedValue({ name: "Living Vital", rep: { email: "rep@livingvital.ch", firstName: "Zarina", role: null } });
+    primeDb({ answer: true });
+
+    const result = await escalateReply(INPUT);
+
+    expect(mockReplyToLead).not.toHaveBeenCalled();
+    expect(mockComplete).not.toHaveBeenCalled();
+    expect(result.handoff).toBe("team");
+    expect(mockSendEmail.mock.calls[0][0].metadata.subject).toContain("Our AI answered");
   });
 });

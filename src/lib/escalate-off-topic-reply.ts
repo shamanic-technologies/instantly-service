@@ -41,7 +41,7 @@ export interface OffTopicCampaign {
 }
 
 /** Why the ladder stops, and what the brand's team is told, per escalated kind. */
-const WHY: Record<string, { reason: Exclude<TeamEscalationReason, "question">; stopReason: string }> = {
+const WHY: Record<string, { reason: Exclude<TeamEscalationReason, "question" | "ai_answered">; stopReason: string }> = {
   lead_off_topic: {
     reason: "off_topic",
     stopReason: OFF_TOPIC_HANDOFF_REASON,

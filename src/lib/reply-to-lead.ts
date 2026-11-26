@@ -56,6 +56,7 @@ import { errorMessage } from "./db-error.js";
 import { sql } from "drizzle-orm";
 
 import { db } from "../db";
+import { finishAiAnswer, startAiAnswer } from "./ai-answer-in-flight";
 import { smtpDispatchRaw } from "../db/schema";
 import { agencyInbox } from "./agency-inbox";
 import { ReplyToLeadError } from "./reply-to-lead-error";
@@ -1301,16 +1302,36 @@ export async function replyToLead(
   // this thread (lib/escalate-reply), the responder never writes on it again —
   // the rep answers from their own inbox. The hand-over itself is the one
   // automated write allowed through.
+  // ⚠️ ONE PATH PER REPLY (ESCALATION-AND-AI-REPLY-1126): the check is ATOMIC
+  // with the escalation claim (one UPDATE on the same row, lib/ai-answer-in-flight).
+  // A plain SELECT here let the AI answer Markus 1.4 s after the client was told
+  // "our AI paused" (Living Vital 2026-11-09). The mark tells a concurrent
+  // escalation to wait for this answer and quote it to the client.
+  let aiAnswerMark: string | null = null;
   if (input.sentBy === "automation" && !input.handoff) {
-    const handedTo = await findEscalationHandoff(campaign.instantlyCampaignId);
-    if (handedTo) {
+    aiAnswerMark = await startAiAnswer(campaign.instantlyCampaignId);
+    if (aiAnswerMark === null) {
+      const handedTo = await findEscalationHandoff(campaign.instantlyCampaignId);
       throw new ReplyToLeadError(
         "handed_over",
         409,
-        `The thread with ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} was handed to a person (${handedTo.handedTo ?? "hand-over in progress"}) at ${handedTo.at}; the automated responder does not write on it again`,
+        `The thread with ${campaign.leadEmail} on sequence ${campaign.instantlyCampaignId} was handed to a person (${handedTo?.handedTo ?? "hand-over in progress"})${handedTo ? ` at ${handedTo.at}` : ""}; the automated responder does not write on it again`,
       );
     }
   }
+  try {
+    return await sendAfterHandoverGate(input, campaign, chosen);
+  } finally {
+    if (aiAnswerMark !== null) await finishAiAnswer(campaign.instantlyCampaignId, aiAnswerMark);
+  }
+}
+
+/** Everything `replyToLead` does once the hand-over gate let the reply through. */
+async function sendAfterHandoverGate(
+  input: ReplyToLeadInput,
+  campaign: CampaignRow,
+  chosen: ChosenThreadMessage | null,
+): Promise<ReplyToLeadOutcome> {
 
   // ⚠️ NO AUTOMATED EMAIL TO A PERSON THE BRAND STATED IS NOT THEIRS
   // (DUALIST-WA-SILENCE-EMAIL, owner 2026-11-04). The responder, the hand-over

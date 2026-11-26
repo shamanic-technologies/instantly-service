@@ -10,6 +10,14 @@ vi.mock("../../src/db", () => ({
     insert: () => ({ values: (...a: unknown[]) => mockInsertValues(...a) }),
   },
 }));
+// ESCALATION-AND-AI-REPLY-1126: the atomic "answer in flight" mark is its own module (pinned in
+// ai-answer-in-flight.test.ts), kept out of the database call counts below.
+const mockStartAiAnswer = vi.fn(async (_id: string): Promise<string | null> => "2026-11-26 10:00:00.123456");
+const mockFinishAiAnswer = vi.fn(async (_id: string, _mark: string) => {});
+vi.mock("../../src/lib/ai-answer-in-flight", () => ({
+  startAiAnswer: (id: string) => mockStartAiAnswer(id),
+  finishAiAnswer: (id: string, mark: string) => mockFinishAiAnswer(id, mark),
+}));
 vi.mock("../../src/db/schema", () => ({
   smtpDispatchRaw: { id: "id" },
   scheduledReplies: { id: "id", scheduledFor: "scheduled_for" },
@@ -717,8 +725,7 @@ describe("a person's hand reply never refuses an automated one", () => {
     // back, and nobody answered for 30 h because the thread was "held". The
     // hand reply stays in the Unibox the AI reads; nothing here refuses on it.
     mockDbExecute
-      .mockResolvedValueOnce(pgResult([campaignRow()])) // loadCampaign
-      .mockResolvedValueOnce(pgResult([])); // not handed over
+      .mockResolvedValueOnce(pgResult([campaignRow()])); // loadCampaign
     mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
@@ -726,14 +733,16 @@ describe("a person's hand reply never refuses an automated one", () => {
 
     expect(outcome.status).toBe("sent");
     expect(mockReplyToEmail).toHaveBeenCalledTimes(1);
-    expect(mockDbExecute).toHaveBeenCalledTimes(2);
+    expect(mockDbExecute).toHaveBeenCalledTimes(1);
+    // ESCALATION-AND-AI-REPLY-1126: the thread was marked BEFORE the answer and cleared once it went out.
+    expect(mockStartAiAnswer).toHaveBeenCalledWith("ic-1");
+    expect(mockFinishAiAnswer).toHaveBeenCalledWith("ic-1", "2026-11-26 10:00:00.123456");
   });
 
   it("REPLY-SENT-UNIT-1118: an answer that went out is recorded once, with the run that asked for it; a refused one is not", async () => {
     mockRecordReplySend.mockClear();
     mockDbExecute
-      .mockResolvedValueOnce(pgResult([campaignRow()]))
-      .mockResolvedValueOnce(pgResult([]));
+      .mockResolvedValueOnce(pgResult([campaignRow()]));
     mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
@@ -775,8 +784,7 @@ describe("a person's hand reply never refuses an automated one", () => {
 
   it("freezes who sent it onto the bronze row", async () => {
     mockDbExecute
-      .mockResolvedValueOnce(pgResult([campaignRow()]))
-      .mockResolvedValueOnce(pgResult([]));
+      .mockResolvedValueOnce(pgResult([campaignRow()]));
     mockListEmails.mockResolvedValue([email({ id: "in-1" })]);
     mockReplyToEmail.mockResolvedValue({ id: "sent-1" });
 
@@ -800,8 +808,7 @@ describe("a person the brand stated is not theirs gets no AUTOMATED reply (DUALI
 
   it("refuses 409 stated_not_to_brand, nothing prepared or sent, asked on every brand of the thread", async () => {
     mockDbExecute
-      .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]))
-      .mockResolvedValueOnce(pgResult([])); // not handed over
+      .mockResolvedValueOnce(pgResult([campaignRow(BRANDED)]));
     mockReadStated.mockResolvedValue(new Map([["alice@media.com", { brandId: "brand-2", correctionId: "corr-1" }]]));
 
     await expect(replyToLead(AUTOMATED)).rejects.toMatchObject({ code: "stated_not_to_brand", status: 409 });
@@ -862,6 +869,7 @@ describe("a thread handed to a person (escalation)", () => {
   const AUTOMATED = { ...INPUT, sentBy: "automation" as const };
 
   it("refuses every automated reply once the escalation is claimed", async () => {
+    mockStartAiAnswer.mockResolvedValueOnce(null); // the atomic mark found escalated_at set
     mockDbExecute
       .mockResolvedValueOnce(pgResult([campaignRow()]))
       .mockResolvedValueOnce(
