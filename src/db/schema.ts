@@ -100,6 +100,11 @@ export const instantlyCampaigns = pgTable(
     // it is set the automated responder never writes on this thread again.
     escalatedAt: timestamp("escalated_at"),
     escalationHandedTo: text("escalation_handed_to"),
+    // An automated answer in flight on this thread (migration 0117,
+    // ESCALATION-AND-AI-REPLY-1126): set atomically only while no escalation is
+    // claimed, cleared once the answer went out or failed. The escalation claim
+    // reads it so one reply never gets both an AI answer and "our AI paused".
+    aiAnswerStartedAt: timestamp("ai_answer_started_at"),
     // Which pipe dispatches THIS lead's sequence: 'instantly' (default) or 'smtp'
     // (our own sender). FROZEN at send time from the chosen account's policy
     // column, never re-read from the account afterwards — a sequence spans days,

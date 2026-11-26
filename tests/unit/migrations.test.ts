@@ -186,3 +186,15 @@ describe("Provider reads of our Units by company domain (migration 0116, ENGINE-
     expect(read("src/db/schema.ts")).toContain("instantly_campaigns_org_lead_domain_idx");
   });
 });
+
+describe("an automated answer in flight on a thread (migration 0117, ESCALATION-AND-AI-REPLY-1126)", () => {
+  const read = (rel: string) => fs.readFileSync(path.join(__dirname, "..", "..", rel), "utf-8");
+
+  it("adds the column the reply gate and the escalation claim meet on", () => {
+    expect(read("drizzle/0117_ai_answer_in_flight.sql")).toContain(
+      'ALTER TABLE "instantly_campaigns" ADD COLUMN IF NOT EXISTS "ai_answer_started_at" timestamp;',
+    );
+    expect(read("drizzle/meta/_journal.json")).toContain('"tag": "0117_ai_answer_in_flight"');
+    expect(read("src/db/schema.ts")).toContain('aiAnswerStartedAt: timestamp("ai_answer_started_at")');
+  });
+});
