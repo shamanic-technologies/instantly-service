@@ -60,6 +60,10 @@ import {
 } from "./forward-positive-reply";
 import { findLeadOnCampaignByEmail, handFollowupsToHuman } from "./lead-client";
 import { emailBrandTeam, type TeamEscalationReason } from "./notify-brand-team";
+import { findAiAnswerSince, waitForAiAnswer, type AiAnswer } from "./ai-answer-in-flight";
+
+/** When the prospect's reply cannot be read, an AI answer this recent counts as the answer to it. */
+export const AI_ANSWER_LOOKBACK_MS = 30 * 60_000;
 import { loadHistoryWithLatestReply, REPLY_WAIT_SHORT_MS } from "./prospect-history";
 import { loadCampaign, replyToLead, ReplyToLeadError } from "./reply-to-lead";
 import { stripQuotedHistory } from "./self-send/qualify-reply";
@@ -332,6 +336,7 @@ export async function escalateReply(
   let handedTo: string | null = null;
   let threadMessages = 0;
   let replyRead = false;
+  let aiAnswer: AiAnswer | null = null;
 
   try {
     const brand = await brandContextOrNull(campaign.brandId, input.orgId);
@@ -346,8 +351,23 @@ export async function escalateReply(
     // info request recorded on the thread is never announced (celebrateOnce).
     void celebrateOnce(thread, campaign.leadEmail);
 
+    // ⚠️ ONE PATH PER REPLY (ESCALATION-AND-AI-REPLY-1126). The claim above
+    // shut the door on any NEW automated answer; one already past it is waited
+    // on. If our AI answered since the prospect wrote, the prospect gets no
+    // hand-over (a second email) and the team is told the AI answered, its
+    // words quoted, never "our AI paused" (Living Vital 2026-11-09).
+    await waitForAiAnswer(campaign.instantlyCampaignId);
+    aiAnswer = await findAiAnswerSince(
+      campaign.instantlyCampaignId,
+      latestReply ? new Date(latestReply.date) : new Date(Date.now() - AI_ANSWER_LOOKBACK_MS),
+    );
+
     const repEmail = brand?.rep.email ?? null;
-    if (repEmail && latestReply) {
+    if (aiAnswer) {
+      console.log(
+        `[instantly-service] reply-escalation: campaign=${campaign.instantlyCampaignId} lead=${campaign.leadEmail} was ANSWERED by our AI at ${aiAnswer.sentAt}; no hand-over is sent, the brand's team is told what the AI wrote`,
+      );
+    } else if (repEmail && latestReply) {
       try {
         const written = input.handoffText?.trim();
         const text = written
@@ -397,7 +417,8 @@ export async function escalateReply(
 
     if (!handoff) {
       const reached = await emailBrandTeam({
-        reason: "question",
+        reason: aiAnswer ? "ai_answered" : "question",
+        aiAnswer,
         orgId: input.orgId,
         userId: input.userId,
         runId: input.runId,
@@ -430,7 +451,9 @@ export async function escalateReply(
     reason:
       handoff === "rep"
         ? `Handed to ${handedTo}: the automated responder could not answer this reply.`
-        : `Handed to the brand's team (${handedTo}): the automated responder could not answer this reply.`,
+        : aiAnswer
+          ? `Handed to the brand's team (${handedTo}) after the automated responder answered this reply.`
+          : `Handed to the brand's team (${handedTo}): the automated responder could not answer this reply.`,
   });
 
   console.log(
@@ -500,7 +523,7 @@ export interface HandThreadToHumanInput {
    * Why the brand's team is told, or null when nobody is: a brand that pays for
    * no AI responder answers its replies by hand in the Unibox, nothing is sent.
    */
-  notifyTeam: Exclude<TeamEscalationReason, "question"> | null;
+  notifyTeam: Exclude<TeamEscalationReason, "question" | "ai_answered"> | null;
   /** Recorded on lead-service's stop, so the lead timeline says why. */
   stopReason: string;
 }

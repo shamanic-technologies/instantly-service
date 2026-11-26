@@ -23,6 +23,7 @@ import { listOrgMembers, type OrgMember } from "./client-org-client";
 import { sendEmail } from "./email-client";
 import { formatThreadDate, type ThreadMessage } from "./forward-positive-reply";
 import type { ProspectHistory } from "./prospect-history";
+import type { AiAnswer } from "./ai-answer-in-flight";
 import { renderProspectHistory } from "./prospect-history";
 import { stripQuotedHistory } from "./self-send/qualify-reply";
 
@@ -50,10 +51,13 @@ const TINT_RULE = "#D6E2FB";
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
 /**
- * Why the team is told: the AI met a question it cannot answer, or the reply is
- * one the AI never answers (about something other than the offer, a referral).
+ * Why the team is told: the AI met a question it cannot answer, the AI
+ * answered a question the escalation also handed over (ESCALATION-AND-AI-REPLY-1126:
+ * the email then says so and quotes the answer, never "our AI paused"), or the
+ * reply is one the AI never answers (about something other than the offer, a
+ * referral).
  */
-export type TeamEscalationReason = "question" | "off_topic" | "referral";
+export type TeamEscalationReason = "question" | "ai_answered" | "off_topic" | "referral";
 
 export interface TeamEscalationInput {
   reason: TeamEscalationReason;
@@ -66,6 +70,8 @@ export interface TeamEscalationInput {
   /** The whole exchange, for the block below the button. */
   history: Pick<ProspectHistory, "items" | "notes">;
   uniboxUrl: string;
+  /** What our AI sent them, required for `ai_answered` (quoted word for word). */
+  aiAnswer?: AiAnswer | null;
 }
 
 export interface TeamEscalationContent {
@@ -82,14 +88,25 @@ export interface TeamEscalationContent {
 export function renderTeamEscalation(input: TeamEscalationInput): TeamEscalationContent {
   const who = prospectLabel(input.leadEmail, input.reply);
   const outreach = `your ${input.brandName ? `${input.brandName} ` : ""}outreach`;
+  if (input.reason === "ai_answered" && !input.aiAnswer) {
+    throw new Error(`an "ai_answered" team email needs the AI's answer to quote (lead ${input.leadEmail})`);
+  }
   const subject =
     input.reason === "question"
       ? `${who} asked your ${input.brandName ? `${input.brandName} ` : ""}team a question`
-      : `${who} replied to ${outreach}`;
+      : input.reason === "ai_answered"
+        ? `Our AI answered ${who}'s question`
+        : `${who} replied to ${outreach}`;
   const greeting = input.memberFirstName ? `Hi ${input.memberFirstName},` : "Hi,";
   const lines =
     input.reason === "question"
       ? [`${who} replied to ${outreach} with a question for your team.`, `Our AI paused so you can answer it yourself.`]
+      : input.reason === "ai_answered"
+        ? [
+            `${who} replied to ${outreach} with a question, and our AI answered it.`,
+            `Our AI's answer is below, word for word.`,
+            `Our AI will not write on this thread again. Add anything you like in your Unibox.`,
+          ]
       : input.reason === "referral"
         ? [`${who} replied to ${outreach} and pointed you to someone else.`, `Our AI does not write to a referred contact, so this reply is yours.`]
         : [`${who} replied to ${outreach} about something other than your offer.`, `Our AI only answers sales conversations, so this reply is yours.`];
@@ -105,6 +122,14 @@ export function renderTeamEscalation(input: TeamEscalationInput): TeamEscalation
       ].join("")
     : `<div style="font:14px/1.6 ${FONT};color:${MUTED};">${unreadable}</div>`;
 
+  const answer = input.reason === "ai_answered" ? input.aiAnswer ?? null : null;
+  const answerHtml = answer
+    ? `<tr><td style="padding:16px 0 0 0;"><div style="border:1px solid ${TINT_RULE};border-radius:12px;padding:16px 18px;">` +
+      `<div style="font:12px/1.5 ${FONT};color:${MUTED};">${escapeHtml(`Our AI · ${formatThreadDate(answer.sentAt)}`)}</div>` +
+      `<div style="padding:6px 0 0 0;font:15px/1.6 ${FONT};color:${INK};white-space:pre-wrap;word-break:break-word;">${escapeHtml(answer.text)}</div>` +
+      `</div></td></tr>`
+    : "";
+
   const html = [
     `<!doctype html><html><body style="margin:0;padding:0;background:#FFFFFF;">`,
     `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:32px 16px;">`,
@@ -112,6 +137,7 @@ export function renderTeamEscalation(input: TeamEscalationInput): TeamEscalation
     `<tr><td style="font:15px/1.6 ${FONT};color:${INK};">${escapeHtml(greeting)}</td></tr>`,
     ...lines.map((l) => `<tr><td style="padding:8px 0 0 0;font:15px/1.6 ${FONT};color:${INK};">${escapeHtml(l)}</td></tr>`),
     `<tr><td style="padding:20px 0 0 0;"><div style="background:${TINT};border:1px solid ${TINT_RULE};border-radius:12px;padding:16px 18px;">${replyHtml}</div></td></tr>`,
+    answerHtml,
     `<tr><td style="padding:20px 0 0 0;"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="border-radius:10px;background:${BLUE};">`,
     `<a href="${href}" style="display:inline-block;padding:12px 20px;font:600 14px/1 ${FONT};color:#FFFFFF;text-decoration:none;border-radius:10px;">${UNIBOX_BUTTON_LABEL}</a>`,
     `</td></tr></table></td></tr>`,
@@ -127,6 +153,7 @@ export function renderTeamEscalation(input: TeamEscalationInput): TeamEscalation
     ``,
     input.reply ? words : unreadable,
     ``,
+    ...(answer ? [`Our AI's answer (${formatThreadDate(answer.sentAt)}):`, ``, answer.text, ``] : []),
     `${UNIBOX_BUTTON_LABEL}: ${input.uniboxUrl}`,
     ``,
     `The whole conversation`,
@@ -147,6 +174,8 @@ export interface EmailBrandTeamInput {
   leadEmail: string;
   history: Pick<ProspectHistory, "items" | "notes">;
   latestReply: ThreadMessage | null;
+  /** What our AI sent them (reason `ai_answered`). */
+  aiAnswer?: AiAnswer | null;
 }
 
 /**
@@ -225,6 +254,7 @@ export async function emailBrandTeam(input: EmailBrandTeamInput): Promise<string
       reply: input.latestReply,
       history: input.history,
       uniboxUrl,
+      aiAnswer: input.aiAnswer ?? null,
     });
     try {
       await sendEmail(

@@ -10,6 +10,14 @@ vi.mock("../../src/db", () => ({
     insert: () => ({ values: (...a: unknown[]) => mockInsertValues(...a) }),
   },
 }));
+// ESCALATION-AND-AI-REPLY-1126: the atomic "answer in flight" mark is its own module (pinned in
+// ai-answer-in-flight.test.ts), kept out of the database call counts below.
+const mockStartAiAnswer = vi.fn(async (_id: string): Promise<string | null> => "2026-11-26 10:00:00.123456");
+const mockFinishAiAnswer = vi.fn(async (_id: string, _mark: string) => {});
+vi.mock("../../src/lib/ai-answer-in-flight", () => ({
+  startAiAnswer: (id: string) => mockStartAiAnswer(id),
+  finishAiAnswer: (id: string, mark: string) => mockFinishAiAnswer(id, mark),
+}));
 vi.mock("../../src/db/schema", () => ({
   smtpDispatchRaw: { id: "id" },
   scheduledReplies: { id: "id", scheduledFor: "scheduled_for" },
@@ -219,9 +227,7 @@ describe("an answer goes to whoever the caller chose, in the thread it chose (EV
 
   it("an automated answer never reaches a chosen recipient who opted out (409, nothing sent)", async () => {
     mockDbExecute
-      .mockResolvedValueOnce(pgResult([chosenRow()]))
-      // no escalation claimed on the thread
-      .mockResolvedValueOnce(pgResult([]));
+      .mockResolvedValueOnce(pgResult([chosenRow()]));
     mockOptOuts.mockResolvedValue(new Map([["markus@markthalle-luzern.ch", { id: "o1" }]]));
     const err = await replyToLead({ ...ANSWER_TO_MARKUS, sentBy: "automation" }).catch((e: unknown) => e);
     expect((err as ReplyToLeadError).code).toBe("recipient_opted_out");
@@ -293,8 +299,6 @@ function primeFollowUp(lead = SILENT_LEAD, chain = [OUR_FIRST, OUR_LAST]) {
     .mockResolvedValueOnce(
       pgResult([chosenRow({ leadEmail: lead, brandId: "brand-bl", brandIds: ["brand-bl"], msgSubject: "Quick question" })]),
     )
-    // no escalation claimed on the thread
-    .mockResolvedValueOnce(pgResult([]))
     // persona
     .mockResolvedValueOnce(pgResult([{ email: "kevin@marketingagency.group", firstName: "Kevin", lastName: "Lourd" }]))
     // the thread up to that message
@@ -310,7 +314,7 @@ function expectNobodyCopied(outcome: { reply: { cc: string; bcc?: string } }) {
   // Never a hidden copy, never the rep, never our inbox.
   expect(JSON.stringify(mockInsertValues.mock.calls[0][0].payload)).not.toContain("distribute.you");
   // Nothing asked "did anyone write?" (the rule is gone, not inverted).
-  expect(mockDbExecute).toHaveBeenCalledTimes(4);
+  expect(mockDbExecute).toHaveBeenCalledTimes(3);
 }
 
 describe("the reply door copies nobody the caller did not name (NO-DEFAULT-COPY-1116)", () => {
