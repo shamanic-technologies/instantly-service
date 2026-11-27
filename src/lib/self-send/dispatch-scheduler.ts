@@ -1,7 +1,7 @@
 /**
  * What actually makes a due step go out — an in-process interval, not a cron.
  *
- * ⚠️ THE CRON WAS THE BUG. `self-send-cron.yml` declares `15 * * * *` and its
+ * ⚠️ THE CRON WAS THE BUG. The former GitHub Actions `self-send-cron.yml` declared `15 * * * *` and its
  * own comment promises the delay between "due" and "sent" stays under an hour.
  * GitHub Actions does not honour that: measured over 16.1 days it fired 100
  * times, **6.2 runs a day against 24 declared**, with observed gaps of 2.5h to
@@ -28,7 +28,7 @@
  * State lives entirely in the DB, so a deploy that kills the process mid-tick
  * loses nothing: the hold is still `provisioned`, the next container arms the
  * interval again and re-selects it. `POST /internal/self-send/dispatch` runs the
- * same sweep by hand, and `self-send-cron.yml` stays armed as a backstop — all
+ * same sweep by hand, and the box crontab (`instantly-cron.sh`, hourly :15) backstops it — all
  * three land in `runDispatch`, whose mutex makes the extra triggers free.
  */
 
