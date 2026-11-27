@@ -12,13 +12,13 @@ describe("registered email templates", () => {
     expect(layoutOf("campaign-error")).toBe("none");
   });
 
-  it("the AI escalation to the brand's team wears the brand layout", () => {
-    expect(layoutOf("reply-escalation")).toBe("brand");
+  it("the client emails (celebration, AI escalation to the brand's team) wear the brand layout", () => {
+    for (const n of ["positive-reply-celebration", "reply-escalation"]) expect(layoutOf(n), n).toBe("brand");
   });
 
-  // REP-REPLY-1127: the rep answers the celebration with Reply, to the prospect.
-  it("the celebration is a plain person-to-person email (its Reply reaches the prospect)", () => {
-    const t = EMAIL_TEMPLATES.find((x) => x.name === "positive-reply-celebration");
+  // REP-REPLY-1127: the thread email the rep answers with Reply, to the prospect.
+  it("the rep's thread email is plain and person-to-person", () => {
+    const t = EMAIL_TEMPLATES.find((x) => x.name === "positive-reply-thread");
     expect(t?.layout).toBe("none");
     expect(t?.stream).toBe("transactional");
   });
