@@ -156,8 +156,8 @@ router.patch("/:campaignId/status", async (req: Request, res: Response) => {
  *
  * Returns 202 Accepted immediately and runs the job in the background.
  * Synchronous execution exceeded the Cloudflare/Railway 15min proxy timeout
- * on the GH Actions runner, so the cron caller could not observe completion.
- * Caller verifies progress via Railway logs (`reconcile: done`) or by polling
+ * for the former cron caller, which could not observe completion.
+ * Caller verifies progress via the container logs (`reconcile: done`) or by polling
  * the `instantly_*_raw` bronze tables.
  */
 router.post("/reconcile", (_req: Request, res: Response) => {

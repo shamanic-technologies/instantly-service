@@ -353,8 +353,8 @@ export interface RunPlacementTestSummary {
  *
  * This is the plan-compatible path: automated (type 2) tests are gated to
  * Instantly HyperGrowth plans (402 on Growth), but one-time tests run on the
- * Growth Inbox Placement sub. The recurrence comes from OUR cron
- * (.github/workflows/placement-cron.yml) calling this every 6h — Instantly runs
+ * Growth Inbox Placement sub. The recurrence came from OUR cron (the former
+ * GitHub Actions `placement-cron.yml`, removed; manual only now) calling this every 6h — Instantly runs
  * each test once, server-side, from the whole workspace fleet; `sync` then pulls
  * the per-(sender, ESP) results into silver.
  *

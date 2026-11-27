@@ -302,8 +302,9 @@ async function start() {
       });
 
     // Send the self-send steps that have come due. An in-process interval, NOT
-    // a cron: `self-send-cron.yml` declares hourly and GitHub Actions delivered
-    // 6.2 runs a day, leaving leads hours past due and the fleet queue growing.
+    // a cron: the former GitHub Actions `self-send-cron.yml` declared hourly and
+    // delivered 6.2 runs a day, leaving leads hours past due. The box crontab
+    // (`instantly-cron.sh`) now only backstops it.
     // Armed after the port is bound; every scheduling rule stays in the sweep.
     import("./lib/self-send/dispatch-scheduler")
       .then(({ startSelfSendDispatchWorker }) => startSelfSendDispatchWorker())
