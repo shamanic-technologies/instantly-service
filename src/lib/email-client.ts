@@ -54,6 +54,15 @@ interface SendEmailParams {
    * Reply addresses them.
    */
   replyToEmail?: string;
+  /**
+   * SEVERAL Reply-To addresses (REP-REPLY-1127): the celebration names the
+   * prospect AND the thread's mailbox, so the rep's Reply writes to both.
+   */
+  replyToAddresses?: { name?: string; email: string }[];
+  /** The RFC 5322 Message-ID this email answers (`<id@host>`). */
+  inReplyTo?: string;
+  /** The thread's Message-IDs, oldest first (`<id@host>` each). */
+  references?: string[];
   metadata?: Record<string, string>;
 }
 
