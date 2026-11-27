@@ -80,7 +80,7 @@ import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { buildReplyBodyWithSignature } from "./send-lead";
 import { fillSenderTokensInSubject } from "./sender-placeholders";
 import type { MailboxCredential } from "./self-send/mailbox-credentials";
-import { buildFromHeader, subjectForStep } from "./self-send/message";
+import { buildFromHeader, signerDisplayName, subjectForStep } from "./self-send/message";
 import { resolveSendCredential, sendFromMailbox } from "./self-send/outbound";
 import { recordSentMessage } from "./self-send/send-record";
 import {
@@ -725,8 +725,8 @@ async function loadSelfSendAnchor(
  */
 export interface ThreadReplyPath {
   mailboxEmail: string;
-  /** `"Persona Name" <mailbox>`, the From our emails in this thread left with. */
-  mailbox: string;
+  /** The display name our emails in this thread left with (who signs), "" = none. */
+  mailboxName: string;
   anchor: SelfSendThreadAnchor | null;
   /** `Re: <conversation subject>`, sender tokens filled. Empty when unknown. */
   subject: string;
@@ -749,7 +749,7 @@ export async function loadThreadReplyPath(instantlyCampaignId: string): Promise<
   ]);
   return {
     mailboxEmail: campaign.accountEmail,
-    mailbox: buildFromHeader(account, campaign.signatureHtml),
+    mailboxName: signerDisplayName(account, campaign.signatureHtml),
     anchor,
     subject: anchor ? fillSenderTokensInSubject(replySubject(anchor.subject), account) : "",
   };

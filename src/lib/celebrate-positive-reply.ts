@@ -296,25 +296,54 @@ export function renderCelebration(input: CelebrationInput): CelebrationContent {
  * alone, no threading, the celebration's own subject.
  */
 export interface RepReplyThread {
-  /** `"Persona" <mailbox>`, the From the thread's emails left with. */
-  mailbox: string;
+  /** The thread's mailbox: who our emails in this thread left as. */
+  mailbox: ReplyToAddress;
   inReplyTo: string | null;
   references: string[];
   /** `Re: <conversation subject>`; empty = unknown. */
   subject: string;
 }
 
+/** One Reply-To address, structured: transactional-email-service renders the header. */
+export interface ReplyToAddress {
+  name?: string;
+  email: string;
+}
+
 export interface RepReplyPath {
-  replyTo: string[];
+  replyTo: ReplyToAddress[];
   inReplyTo?: string;
   references?: string[];
   subject?: string;
 }
 
+/** transactional-email-service's cap on `references` (1-50 Message-IDs). */
+export const MAX_REFERENCES = 50;
+
 /** A Message-ID as the wire wants it: one `<id@host>`. */
 export function bracketMessageId(id: string): string {
   const bare = id.trim().replace(/^<+/, "").replace(/>+$/, "");
   return `<${bare}>`;
+}
+
+/**
+ * A display name the header can carry: the producer refuses a double quote, a
+ * backslash or a line break (400, nothing sent), so those are dropped here,
+ * never a refusal (the email must still leave). Empty = no name.
+ */
+export function safeDisplayName(name: string | null | undefined): string | undefined {
+  const cleaned = (name ?? "").replace(/["\\\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned || undefined;
+}
+
+/**
+ * At most `MAX_REFERENCES` ids, keeping the thread's FIRST message and the most
+ * recent ones (RFC 5322 3.6.4: the first and the latest are what clients thread on).
+ */
+export function capReferences(ids: string[]): string[] {
+  const unique = [...new Set(ids.map(bracketMessageId))];
+  if (unique.length <= MAX_REFERENCES) return unique;
+  return [unique[0], ...unique.slice(unique.length - (MAX_REFERENCES - 1))];
 }
 
 export function repReplyPath(input: {
@@ -325,14 +354,16 @@ export function repReplyPath(input: {
   const fromAddress = input.reply?.from?.match(/<\s*([^<>\s]+@[^<>\s]+)\s*>/)?.[1] ??
     (input.reply?.from && /^[^\s<>"]+@[^\s<>"]+$/.test(input.reply.from.trim()) ? input.reply.from.trim() : null);
   const prospectAddress = fromAddress ?? input.leadEmail;
-  const name = prospectLabel(prospectAddress, input.reply);
-  const prospect =
-    name !== prospectAddress ? `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" <${prospectAddress}>` : prospectAddress;
+  const label = prospectLabel(prospectAddress, input.reply);
+  const name = label !== prospectAddress ? safeDisplayName(label) : undefined;
+  const prospect: ReplyToAddress = name ? { name, email: prospectAddress } : { email: prospectAddress };
   const { thread } = input;
   if (!thread) return { replyTo: [prospect] };
-  const references = thread.references.map(bracketMessageId);
+  const mailboxName = safeDisplayName(thread.mailbox.name);
+  const mailbox: ReplyToAddress = mailboxName ? { name: mailboxName, email: thread.mailbox.email } : { email: thread.mailbox.email };
+  const references = capReferences(thread.references);
   return {
-    replyTo: [prospect, thread.mailbox],
+    replyTo: [prospect, mailbox],
     ...(thread.inReplyTo ? { inReplyTo: bracketMessageId(thread.inReplyTo) } : {}),
     ...(references.length > 0 ? { references } : {}),
     ...(thread.subject.trim() ? { subject: thread.subject.trim() } : {}),
@@ -526,7 +557,7 @@ export async function sendCelebration(
       eventType: CELEBRATION_EVENT_TYPE,
       recipientEmail: recipient,
       ...(bcc.length > 0 ? { bccEmails: bcc } : {}),
-      replyToEmails: path.replyTo,
+      replyToAddresses: path.replyTo,
       ...(path.inReplyTo ? { inReplyTo: path.inReplyTo } : {}),
       ...(path.references ? { references: path.references } : {}),
       metadata: { subject: path.subject ?? content.subject, html: content.html, text: content.text },
@@ -542,7 +573,7 @@ export async function sendCelebration(
     },
   );
   console.log(
-    `[instantly-service] celebrate: sent for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${recipient}${bcc.length ? ` bcc=${bcc.join(",")}` : ""} replyRead=${latestReply !== null} variant=${celebrationVariantFor(options.kind)} link=${conversationUrl} replyTo=${path.replyTo.join(" | ")} inReplyTo=${path.inReplyTo ?? "none"}`,
+    `[instantly-service] celebrate: sent for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${recipient}${bcc.length ? ` bcc=${bcc.join(",")}` : ""} replyRead=${latestReply !== null} variant=${celebrationVariantFor(options.kind)} link=${conversationUrl} replyTo=${path.replyTo.map((a) => a.email).join(",")} inReplyTo=${path.inReplyTo ?? "none"}`,
   );
   return { recipient, bcc, replyRead: latestReply !== null, conversationUrl };
 }
@@ -558,7 +589,7 @@ async function repReplyThreadOrNull(instantlyCampaignId: string): Promise<RepRep
   const path = await loadThreadReplyPath(instantlyCampaignId);
   if (!path) return null;
   return {
-    mailbox: path.mailbox,
+    mailbox: { name: path.mailboxName, email: path.mailboxEmail },
     inReplyTo: path.anchor?.inReplyTo ?? null,
     references: path.anchor?.references ?? [],
     subject: path.subject,

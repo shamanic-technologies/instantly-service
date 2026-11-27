@@ -315,7 +315,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
   it("REP-REPLY-1127: the rep's Reply reaches the prospect and the thread's mailbox, in the prospect's thread", async () => {
     mockLoadThreadReplyPath.mockResolvedValueOnce({
       mailboxEmail: "amy@distribute.com",
-      mailbox: '"Amy Lee" <amy@distribute.com>',
+      mailboxName: "Amy Lee",
       anchor: {
         inReplyTo: "<their-reply@x.com>",
         subject: "Re: Partnership?",
@@ -327,7 +327,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
     expect(mockLoadThreadReplyPath).toHaveBeenCalledWith(campaign.instantlyCampaignId);
     const [params] = mockSendEmail.mock.calls[0];
     expect(params.recipientEmail).toBe("rep@docdinners.com");
-    expect(params.replyToEmails).toEqual(["lead@x.com", '"Amy Lee" <amy@distribute.com>']);
+    expect(params.replyToAddresses).toEqual([{ email: "lead@x.com" }, { name: "Amy Lee", email: "amy@distribute.com" }]);
     expect(params.inReplyTo).toBe("<their-reply@x.com>");
     expect(params.references).toEqual(["<our-first@email.amazonses.com>", "<their-reply@x.com>"]);
     expect(params.metadata.subject).toBe("Re: Partnership?");
