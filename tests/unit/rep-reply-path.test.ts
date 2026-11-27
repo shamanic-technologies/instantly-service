@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { bracketMessageId, capReferences, renderThreadText, repReplyPath, safeDisplayName, threadReplySubject } from "../../src/lib/celebrate-positive-reply";
+import { bracketMessageId, capReferences, ownWordsOf, renderThreadText, repReplyPath, safeDisplayName, threadReplySubject } from "../../src/lib/celebrate-positive-reply";
 import type { ThreadMessage } from "../../src/lib/forward-positive-reply";
 
 // REP-REPLY-1127: the rep opens the celebration, hits Reply, and writes to the
@@ -130,5 +130,54 @@ describe("the thread email reads like a normal email thread (nothing of ours)", 
     expect(threadReplySubject([cold, { ...theirs, subject: "AW: AW: Living Vital für Ihre Drogerie" }])).toBe(
       "Re: Living Vital für Ihre Drogerie",
     );
+  });
+});
+
+// Prod 2026-11-27 (Living Vital): Outlook/bluewin replies quote our email under a
+// German header block; without a cut, our emails showed twice in the thread.
+describe("ownWordsOf cuts an Outlook header block, any language", () => {
+  const german = [
+    "Lieber Herr Lourd",
+    "",
+    "Verkaufen Sie ausschliesslich Flohsamenschalen?",
+    "",
+    "Sonnige Grüsse",
+    "",
+    "Marianne Wenger",
+    "",
+    "Von: Kevin Lourd",
+    "Gesendet: Freitag, 27. November 2026 11:58",
+    "An: drogerie.kadro@bluewin.ch",
+    "Betreff: Re: AW: AW: Flohsamenschalen",
+    "",
+    "Liebe Frau Wenger",
+  ].join("\n");
+
+  it("German Von:/Gesendet:", () => {
+    const own = ownWordsOf(german);
+    expect(own.endsWith("Marianne Wenger")).toBe(true);
+    expect(own).not.toContain("Von:");
+  });
+  it("English From:/Sent: and French De:/Envoyé:", () => {
+    expect(ownWordsOf("Yes please.\n\nFrom: Kevin\nSent: Friday\nTo: x\n\nold")).toBe("Yes please.");
+    expect(ownWordsOf("Oui.\n\nDe : Kevin\nEnvoyé : vendredi\nÀ : x\n\nold")).toBe("Oui.");
+  });
+  it("a lone 'Von: ...' sentence is NOT a header block", () => {
+    expect(ownWordsOf("Grüsse\nVon: unserem Team")).toBe("Grüsse\nVon: unserem Team");
+  });
+
+  it("our sends show 'Name <address>', each email quoted once", () => {
+    const ours: ThreadMessage = {
+      direction: "outbound",
+      from: "lourd@growthagency.media",
+      to: "drogerie.kadro@bluewin.ch",
+      date: "2026-11-27T10:58:00.000Z",
+      subject: "Re: AW: AW: Flohsamenschalen",
+      bodyText: "Liebe Frau Wenger\n\nBesten Dank.",
+    };
+    const theirs: ThreadMessage = { ...reply, date: "2026-11-27T11:06:00.000Z", bodyText: german };
+    const text = renderThreadText([ours, theirs], { name: "Kevin Lourd", email: "lourd@growthagency.media" });
+    expect(text).toContain("Kevin Lourd <lourd@growthagency.media> wrote:");
+    expect(text.match(/Liebe Frau Wenger/g)).toHaveLength(1);
   });
 });

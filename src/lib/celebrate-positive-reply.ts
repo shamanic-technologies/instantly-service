@@ -587,17 +587,14 @@ export async function sendCelebration(
  * it under the rep's answer (owner 2026-11-27: « tout doit être propre et
  * ressembler à un thread email normal »). Pure.
  */
-export function renderThreadText(messages: ThreadMessage[]): string {
+export function renderThreadText(messages: ThreadMessage[], mailbox?: ReplyToAddress | null): string {
   return messages
-    .map((m) => {
-      const own = stripQuotedHistory(m.bodyText).trim();
-      return own ? { ...m, bodyText: own } : m;
-    })
+    .map((m) => ({ ...m, bodyText: ownWordsOf(m.bodyText), from: namedSender(m.from, mailbox) }))
     .sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0))
     .map((m) => {
       const body = m.bodyText
         .replace(/\r\n/g, "\n")
-        .replace(/[ \t\u00A0\u200B]+$/gm, "")
+        .replace(/[ \t ​]+$/gm, "")
         .replace(/\n{3,}/g, "\n\n")
         .trim();
       const quoted = body
@@ -607,6 +604,44 @@ export function renderThreadText(messages: ThreadMessage[]): string {
       return `On ${formatThreadDate(m.date)}, ${m.from} wrote:\n${quoted}`;
     })
     .join("\n\n");
+}
+
+/** An Outlook header block's first line ("From:", "Von:", "De:"...), in the languages our prospects write in. */
+const QUOTE_FROM_LINE = /^\s*\*?(From|Von|De|Da|Van|Från|Fra|Od)\s*:\*?\s*\S/i;
+/** A line of the same block ("Sent:", "Gesendet:", "Envoyé:", "Betreff:"...). */
+const QUOTE_HEADER_LINE =
+  /^\s*\*?(Sent|Date|To|Cc|Subject|Gesendet|Datum|An|Betreff|Envoyé|Date d'envoi|À|Objet|Inviato|Data|A|Oggetto|Enviado|Fecha|Para|Asunto|Verzonden|Aan|Onderwerp|Skickat|Till|Ämne)\s*:/i;
+
+/**
+ * Pure: a message's OWN words. The shared cut (`stripQuotedHistory`: `>`
+ * blocks, "On ... wrote:", "Original Message"), then an Outlook header block
+ * (a From-line followed within 4 lines by Sent/To/Subject, any language) or
+ * its `____` rule: the earlier emails it quotes are quoted on their own in the
+ * thread email, once. Nothing left = the body as written.
+ */
+export function ownWordsOf(body: string): string {
+  const shared = stripQuotedHistory(body).trim() || body;
+  const lines = shared.split(/\r?\n/);
+  let cut = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*_{8,}\s*$/.test(lines[i])) {
+      cut = i;
+      break;
+    }
+    if (QUOTE_FROM_LINE.test(lines[i]) && lines.slice(i + 1, i + 5).some((l) => QUOTE_HEADER_LINE.test(l))) {
+      cut = i;
+      break;
+    }
+  }
+  const words = lines.slice(0, cut).join("\n").trim();
+  return words || body.trim();
+}
+
+/** Pure: our own send's bare address shown as `Name <address>`, the way it left. */
+function namedSender(from: string, mailbox?: ReplyToAddress | null): string {
+  const bare = from.trim();
+  if (!mailbox?.name || bare.toLowerCase() !== mailbox.email.toLowerCase()) return from;
+  return `${mailbox.name} <${mailbox.email}>`;
 }
 
 /** The subject a reply in this conversation carries: `Re:` + its subject, once. */
@@ -633,13 +668,10 @@ async function sendRepThreadEmail(input: {
   messages: ThreadMessage[];
   identity: Parameters<typeof sendEmail>[1];
 }): Promise<{ subject: string; replyTo: string[] }> {
-  const path = repReplyPath({
-    leadEmail: input.leadEmail,
-    reply: input.latestReply,
-    thread: await repReplyThreadOrNull(input.campaign.instantlyCampaignId),
-  });
+  const thread = await repReplyThreadOrNull(input.campaign.instantlyCampaignId);
+  const path = repReplyPath({ leadEmail: input.leadEmail, reply: input.latestReply, thread });
   const subject = path.subject ?? threadReplySubject(input.messages);
-  const text = renderThreadText(input.messages);
+  const text = renderThreadText(input.messages, thread?.mailbox);
   await sendEmail(
     {
       appId: "instantly-service",
