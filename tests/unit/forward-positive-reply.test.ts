@@ -39,6 +39,12 @@ vi.mock("../../src/db", () => ({
   },
 }));
 
+// REP-REPLY-1127: the thread the rep's Reply joins. Null by default (no mailbox).
+const mockLoadThreadReplyPath = vi.fn().mockResolvedValue(null);
+vi.mock("../../src/lib/reply-to-lead", () => ({
+  loadThreadReplyPath: (...a: unknown[]) => mockLoadThreadReplyPath(...a),
+}));
+
 vi.mock("../../src/lib/key-client", () => ({
   resolveInstantlyApiKey: (...a: unknown[]) => mockResolveInstantlyApiKey(...a),
 }));
@@ -304,6 +310,36 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
       expect(body).not.toContain("\u2014");
     }
     expect(identity.orgId).toBe("org-1");
+  });
+
+  it("REP-REPLY-1127: the rep's Reply reaches the prospect and the thread's mailbox, in the prospect's thread", async () => {
+    mockLoadThreadReplyPath.mockResolvedValueOnce({
+      mailboxEmail: "amy@distribute.com",
+      mailbox: '"Amy Lee" <amy@distribute.com>',
+      anchor: {
+        inReplyTo: "<their-reply@x.com>",
+        subject: "Re: Partnership?",
+        references: ["<our-first@email.amazonses.com>", "their-reply@x.com"],
+      },
+      subject: "Re: Partnership?",
+    });
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
+    expect(mockLoadThreadReplyPath).toHaveBeenCalledWith(campaign.instantlyCampaignId);
+    const [params] = mockSendEmail.mock.calls[0];
+    expect(params.recipientEmail).toBe("rep@docdinners.com");
+    expect(params.replyToEmails).toEqual(["lead@x.com", '"Amy Lee" <amy@distribute.com>']);
+    expect(params.inReplyTo).toBe("<their-reply@x.com>");
+    expect(params.references).toEqual(["<our-first@email.amazonses.com>", "<their-reply@x.com>"]);
+    expect(params.metadata.subject).toBe("Re: Partnership?");
+    expect(params.metadata.text).toContain("To answer them yourself, hit Reply");
+    expect(params.ccEmails).toBeUndefined();
+  });
+
+  it("a thread read that fails gives the claim back (never a celebration whose Reply misses the prospect)", async () => {
+    mockLoadThreadReplyPath.mockRejectedValueOnce(new Error("db down"));
+    await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
+    expect(mockSendEmail).not.toHaveBeenCalled();
+    expect(mockUpdate).toHaveBeenCalledTimes(2); // claim + release
   });
 
   it("a brand that names no rep celebrates to the agency inbox alone", async () => {

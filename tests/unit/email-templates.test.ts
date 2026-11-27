@@ -12,8 +12,15 @@ describe("registered email templates", () => {
     expect(layoutOf("campaign-error")).toBe("none");
   });
 
-  it("the client emails (celebration, AI escalation to the brand's team) wear the brand layout", () => {
-    for (const n of ["positive-reply-celebration", "reply-escalation"]) expect(layoutOf(n), n).toBe("brand");
+  it("the AI escalation to the brand's team wears the brand layout", () => {
+    expect(layoutOf("reply-escalation")).toBe("brand");
+  });
+
+  // REP-REPLY-1127: the rep answers the celebration with Reply, to the prospect.
+  it("the celebration is a plain person-to-person email (its Reply reaches the prospect)", () => {
+    const t = EMAIL_TEMPLATES.find((x) => x.name === "positive-reply-celebration");
+    expect(t?.layout).toBe("none");
+    expect(t?.stream).toBe("transactional");
   });
 
   // REPLY-NOTIFS-1013: no staff or client nudge about a reply outside a campaign.

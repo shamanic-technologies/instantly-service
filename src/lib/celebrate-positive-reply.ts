@@ -136,6 +136,8 @@ export interface CelebrationInput {
   kind?: string | null;
   /** Where the "Follow the conversation" button goes (`conversationHref`). */
   conversationUrl: string;
+  /** Reply on this email reaches the prospect (REP-REPLY-1127): the intro says so. */
+  replyReachesProspect?: boolean;
 }
 
 /**
@@ -211,7 +213,9 @@ export function renderCelebration(input: CelebrationInput): CelebrationContent {
   const subject = brandName ? `${title} (${brandName})` : title;
   // Names who acts in every sentence: "Reply to your outreach" read as an order
   // to the client (owner 2026-10-02).
-  const intro = `They answered your ${brandName ? `${brandName} ` : ""}outreach. You have nothing to do: we handle the reply and will only reach out if we need something from you.`;
+  const intro = `They answered your ${brandName ? `${brandName} ` : ""}outreach. You have nothing to do: we handle the reply and will only reach out if we need something from you.${
+    input.replyReachesProspect ? " To answer them yourself, hit Reply: your email goes to them, in the same conversation." : ""
+  }`;
   const href = escapeHtml(input.conversationUrl);
   const unreadable = "Their reply could not be read when this email was sent. It is in the conversation.";
 
@@ -266,6 +270,73 @@ export function renderCelebration(input: CelebrationInput): CelebrationContent {
   ].join("\n");
 
   return { subject, html, text };
+}
+
+/**
+ * Where the rep's REPLY goes (REP-REPLY-1127, owner 2026-11-27: the rep opens
+ * the celebration, hits Reply and is writing to the prospect, carrying on the
+ * conversation by hand).
+ *
+ * - Reply-To = the prospect (the address their latest reply came from, else the
+ *   one we emailed) AND the thread's own mailbox. Every mail client puts each
+ *   Reply-To address in To (RFC 5322 3.6.2): the rep writes to the prospect,
+ *   and our mailbox gets the same email, so the poll files it on the thread as
+ *   our side's answer (the rep is our side, `our-side-sender.ts`): the AI reads
+ *   it and does not answer over the rep; the prospect's reply-all comes back to
+ *   that mailbox too. No other copy is added (NO-DEFAULT-COPY-1116: these are
+ *   the two parties of the conversation, named on THIS email only).
+ * - In-Reply-To / References = the prospect's thread, so the rep's reply carries
+ *   the chain: the prospect's client keeps it in their conversation, the poll
+ *   correlates it to the sequence.
+ * - Subject `Re: <their subject>`: Reply turns it into exactly the subject of
+ *   the prospect's thread (Gmail threads on subject + References). A 🎉 subject
+ *   would have reached the prospect as "Re: 🎉 Anna is interested".
+ *
+ * Pure. Null `thread` (the sequence names no mailbox) = Reply-To the prospect
+ * alone, no threading, the celebration's own subject.
+ */
+export interface RepReplyThread {
+  /** `"Persona" <mailbox>`, the From the thread's emails left with. */
+  mailbox: string;
+  inReplyTo: string | null;
+  references: string[];
+  /** `Re: <conversation subject>`; empty = unknown. */
+  subject: string;
+}
+
+export interface RepReplyPath {
+  replyTo: string[];
+  inReplyTo?: string;
+  references?: string[];
+  subject?: string;
+}
+
+/** A Message-ID as the wire wants it: one `<id@host>`. */
+export function bracketMessageId(id: string): string {
+  const bare = id.trim().replace(/^<+/, "").replace(/>+$/, "");
+  return `<${bare}>`;
+}
+
+export function repReplyPath(input: {
+  leadEmail: string;
+  reply: ThreadMessage | null;
+  thread: RepReplyThread | null;
+}): RepReplyPath {
+  const fromAddress = input.reply?.from?.match(/<\s*([^<>\s]+@[^<>\s]+)\s*>/)?.[1] ??
+    (input.reply?.from && /^[^\s<>"]+@[^\s<>"]+$/.test(input.reply.from.trim()) ? input.reply.from.trim() : null);
+  const prospectAddress = fromAddress ?? input.leadEmail;
+  const name = prospectLabel(prospectAddress, input.reply);
+  const prospect =
+    name !== prospectAddress ? `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" <${prospectAddress}>` : prospectAddress;
+  const { thread } = input;
+  if (!thread) return { replyTo: [prospect] };
+  const references = thread.references.map(bracketMessageId);
+  return {
+    replyTo: [prospect, thread.mailbox],
+    ...(thread.inReplyTo ? { inReplyTo: bracketMessageId(thread.inReplyTo) } : {}),
+    ...(references.length > 0 ? { references } : {}),
+    ...(thread.subject.trim() ? { subject: thread.subject.trim() } : {}),
+  };
 }
 
 /**
@@ -445,7 +516,9 @@ export async function sendCelebration(
     history,
     kind: options.kind,
     conversationUrl,
+    replyReachesProspect: true,
   });
+  const path = repReplyPath({ leadEmail, reply: latestReply, thread: await repReplyThreadOrNull(campaign.instantlyCampaignId) });
 
   await sendEmail(
     {
@@ -453,7 +526,10 @@ export async function sendCelebration(
       eventType: CELEBRATION_EVENT_TYPE,
       recipientEmail: recipient,
       ...(bcc.length > 0 ? { bccEmails: bcc } : {}),
-      metadata: { subject: content.subject, html: content.html, text: content.text },
+      replyToEmails: path.replyTo,
+      ...(path.inReplyTo ? { inReplyTo: path.inReplyTo } : {}),
+      ...(path.references ? { references: path.references } : {}),
+      metadata: { subject: path.subject ?? content.subject, html: content.html, text: content.text },
     },
     {
       orgId: campaign.orgId,
@@ -466,9 +542,27 @@ export async function sendCelebration(
     },
   );
   console.log(
-    `[instantly-service] celebrate: sent for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${recipient}${bcc.length ? ` bcc=${bcc.join(",")}` : ""} replyRead=${latestReply !== null} variant=${celebrationVariantFor(options.kind)} link=${conversationUrl}`,
+    `[instantly-service] celebrate: sent for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${recipient}${bcc.length ? ` bcc=${bcc.join(",")}` : ""} replyRead=${latestReply !== null} variant=${celebrationVariantFor(options.kind)} link=${conversationUrl} replyTo=${path.replyTo.join(" | ")} inReplyTo=${path.inReplyTo ?? "none"}`,
   );
   return { recipient, bcc, replyRead: latestReply !== null, conversationUrl };
+}
+
+/**
+ * The thread the rep's Reply joins, or null when the sequence names no mailbox.
+ * A failed read FAILS the send (the claim is given back, retried on the next
+ * signal): a celebration whose Reply silently stopped reaching the prospect
+ * is the bug REP-REPLY-1127 fixed.
+ */
+async function repReplyThreadOrNull(instantlyCampaignId: string): Promise<RepReplyThread | null> {
+  const { loadThreadReplyPath } = await import("./reply-to-lead");
+  const path = await loadThreadReplyPath(instantlyCampaignId);
+  if (!path) return null;
+  return {
+    mailbox: path.mailbox,
+    inReplyTo: path.anchor?.inReplyTo ?? null,
+    references: path.anchor?.references ?? [],
+    subject: path.subject,
+  };
 }
 
 /**
