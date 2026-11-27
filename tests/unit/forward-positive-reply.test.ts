@@ -22,6 +22,11 @@ const whereObj = {
     Promise.resolve(undefined).then(onF, onR),
 };
 
+
+/** The celebration sends (each celebrated thread also gets its plain thread email first, REP-REPLY-1127). */
+const celebrationCalls = () =>
+  mockSendEmail.mock.calls.filter(([p]) => (p as { eventType: string }).eventType === "positive-reply-celebration");
+
 vi.mock("../../src/db", () => ({
   db: {
     execute: (...a: unknown[]) => mockExecute(...a),
@@ -294,8 +299,9 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
     await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
 
     expect(mockUpdate).toHaveBeenCalledTimes(1); // claim only
-    expect(mockSendEmail).toHaveBeenCalledTimes(1);
-    const [params, identity] = mockSendEmail.mock.calls[0];
+    expect(mockSendEmail).toHaveBeenCalledTimes(2); // the thread, then the celebration
+    expect(celebrationCalls()).toHaveLength(1);
+    const [params, identity] = celebrationCalls()[0];
     expect(params.eventType).toBe("positive-reply-celebration");
     expect(params.recipientEmail).toBe("rep@docdinners.com");
     expect(params.bccEmails).toEqual(["kevin@distribute.you"]);
@@ -312,7 +318,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
     expect(identity.orgId).toBe("org-1");
   });
 
-  it("REP-REPLY-1127: the rep's Reply reaches the prospect and the thread's mailbox, in the prospect's thread", async () => {
+  it("REP-REPLY-1127: TWO emails to the rep, the plain thread (Reply reaches the prospect) then the HTML celebration", async () => {
     mockLoadThreadReplyPath.mockResolvedValueOnce({
       mailboxEmail: "amy@distribute.com",
       mailboxName: "Amy Lee",
@@ -325,14 +331,25 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
     });
     await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
     expect(mockLoadThreadReplyPath).toHaveBeenCalledWith(campaign.instantlyCampaignId);
-    const [params] = mockSendEmail.mock.calls[0];
-    expect(params.recipientEmail).toBe("rep@docdinners.com");
-    expect(params.replyToAddresses).toEqual([{ email: "lead@x.com" }, { name: "Amy Lee", email: "amy@distribute.com" }]);
-    expect(params.inReplyTo).toBe("<their-reply@x.com>");
-    expect(params.references).toEqual(["<our-first@email.amazonses.com>", "<their-reply@x.com>"]);
-    expect(params.metadata.subject).toBe("Re: Partnership?");
-    expect(params.metadata.text).toContain("To answer them yourself, hit Reply");
-    expect(params.ccEmails).toBeUndefined();
+    expect(mockSendEmail).toHaveBeenCalledTimes(2);
+    const [thread] = mockSendEmail.mock.calls[0];
+    expect(thread.eventType).toBe("positive-reply-thread");
+    expect(thread.recipientEmail).toBe("rep@docdinners.com");
+    expect(thread.bccEmails).toBeUndefined();
+    expect(thread.ccEmails).toBeUndefined();
+    expect(thread.replyToAddresses).toEqual([{ email: "lead@x.com" }, { name: "Amy Lee", email: "amy@distribute.com" }]);
+    expect(thread.inReplyTo).toBe("<their-reply@x.com>");
+    expect(thread.references).toEqual(["<our-first@email.amazonses.com>", "<their-reply@x.com>"]);
+    expect(thread.metadata.subject).toBe("Re: Partnership?");
+    expect(thread.metadata.html).toBe("");
+    expect(thread.metadata.text).toMatch(/^On .+ wrote:\n> 1\. What results\?/);
+    expect(thread.metadata.text).toContain("> cold 1");
+    const [celebration] = mockSendEmail.mock.calls[1];
+    expect(celebration.eventType).toBe("positive-reply-celebration");
+    expect(celebration.replyToAddresses).toBeUndefined();
+    expect(celebration.inReplyTo).toBeUndefined();
+    expect(celebration.metadata.subject).toContain("Doc Dinners");
+    expect(celebration.metadata.text).not.toContain("hit Reply");
   });
 
   it("a thread read that fails gives the claim back (never a celebration whose Reply misses the prospect)", async () => {
@@ -345,7 +362,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
   it("a brand that names no rep celebrates to the agency inbox alone", async () => {
     mockBrandContext.mockResolvedValue({ name: "Doc Dinners", rep: { email: null, firstName: null, role: null } });
     await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
-    const [params] = mockSendEmail.mock.calls[0];
+    const [params] = celebrationCalls()[0];
     expect(params.recipientEmail).toBe("kevin@distribute.you");
     expect(params.bccEmails).toBeUndefined();
   });
@@ -380,7 +397,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
   it("links the conversation on the dashboard person page, under the CLERK org id", async () => {
     await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
     expect(mockExternalOrgId).toHaveBeenCalledWith("org-1");
-    const [params] = mockSendEmail.mock.calls[0];
+    const [params] = celebrationCalls()[0];
     const href =
       "https://dashboard.distribute.you/v2/orgs/org_3Jv0lYZiVaymxPEuyEbrbXs8hpv/brands/brand-1/people/346a5c86-ac49-4321-a873-a63c830b3217";
     expect(params.metadata.html).toContain(`href="${href}"`);
@@ -391,7 +408,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
   it("an unresolvable org still sends, the button opening the dashboard home", async () => {
     mockExternalOrgId.mockRejectedValue(new Error("client-service down"));
     await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
-    const [params] = mockSendEmail.mock.calls[0];
+    const [params] = celebrationCalls()[0];
     expect(params.metadata.html).toContain('href="https://dashboard.distribute.you/v2"');
   });
 
@@ -400,7 +417,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
     await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_meeting_requested", NOW);
     expect(mockSet.mock.calls[0][0]).toHaveProperty("meetingRequestCelebratedAt");
     expect(mockSet.mock.calls[0][0]).toHaveProperty("positiveReplyForwardedAt");
-    const [params] = mockSendEmail.mock.calls[0];
+    const [params] = celebrationCalls()[0];
     expect(params.metadata.subject).toContain("wants to book a call");
   });
 
@@ -443,8 +460,8 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
       expect(mockSendEmail).not.toHaveBeenCalled();
       await maybeForwardPositiveReply(campaign, "lead@x.com", later, NOW);
       expect(mockSet.mock.calls[0][0]).toHaveProperty("positiveReplyForwardedAt");
-      expect(mockSendEmail).toHaveBeenCalledTimes(1);
-      expect(mockSendEmail.mock.calls[0][0].metadata.subject).not.toContain("more information");
+      expect(celebrationCalls()).toHaveLength(1);
+      expect(celebrationCalls()[0][0].metadata.subject).not.toContain("more information");
     });
   }
 
@@ -453,7 +470,7 @@ describe("maybeForwardPositiveReply (the celebration)", () => {
       record({ ue_type: 1, subject: "Partnership?", body: { text: "cold 1" } }),
     ]);
     await maybeForwardPositiveReply(campaign, "lead@x.com", "lead_interested", NOW);
-    const [params] = mockSendEmail.mock.calls[0];
+    const [params] = celebrationCalls()[0];
     expect(params.metadata.html).toContain("Their reply could not be read");
     expect(params.metadata.text).toContain("Their reply could not be read");
   });
