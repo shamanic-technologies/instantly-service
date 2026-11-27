@@ -36,9 +36,13 @@ export const EMAIL_TEMPLATES: TemplateItem[] = [
       // Positive-reply celebration (lib/celebrate-positive-reply): sent to
       // the CLIENT's rep, the agency inbox in Bcc. The whole body is
       // rendered (and escaped) in code — the engine interpolates raw — so
-      // the template is only the envelope.
+      // the template is only the envelope. The rep answers it with Reply
+      // and writes to the prospect (REP-REPLY-1127): plain + transactional,
+      // so no layout, sign-off or unsubscribe link travels into the
+      // prospect's conversation when the rep's reply quotes it.
       name: "positive-reply-celebration",
-      layout: "brand",
+      layout: "none",
+      stream: "transactional",
       subject: "{{subject}}",
       htmlBody: "{{html}}",
       textBody: "{{text}}",

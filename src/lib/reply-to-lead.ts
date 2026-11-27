@@ -80,7 +80,7 @@ import { resolveInstantlyApiKey, type CallerInfo } from "./key-client";
 import { buildReplyBodyWithSignature } from "./send-lead";
 import { fillSenderTokensInSubject } from "./sender-placeholders";
 import type { MailboxCredential } from "./self-send/mailbox-credentials";
-import { buildFromHeader, subjectForStep } from "./self-send/message";
+import { buildFromHeader, signerDisplayName, subjectForStep } from "./self-send/message";
 import { resolveSendCredential, sendFromMailbox } from "./self-send/outbound";
 import { recordSentMessage } from "./self-send/send-record";
 import {
@@ -710,6 +710,48 @@ async function loadSelfSendAnchor(
     references: (chain.rows as Record<string, unknown>[]).map((r) =>
       String(r.messageId),
     ),
+  };
+}
+
+/**
+ * How a person OUTSIDE our mail stack (the brand's sales rep, REP-REPLY-1127)
+ * answers the prospect inside this sequence's thread from their own mailbox:
+ * the thread's mailbox (the From header our emails left with, so the prospect
+ * sees the same person on the To line) and the thread anchor (In-Reply-To = the
+ * prospect's latest message, References = the whole conversation, subject
+ * `Re:` the conversation's). Null when the sequence names no mailbox. The
+ * anchor is null on a thread that holds no message of theirs we stored (an
+ * Instantly-era thread): the mailbox is still named, threading is not invented.
+ */
+export interface ThreadReplyPath {
+  mailboxEmail: string;
+  /** The display name our emails in this thread left with (who signs), "" = none. */
+  mailboxName: string;
+  anchor: SelfSendThreadAnchor | null;
+  /** `Re: <conversation subject>`, sender tokens filled. Empty when unknown. */
+  subject: string;
+}
+
+export async function loadThreadReplyPath(instantlyCampaignId: string): Promise<ThreadReplyPath | null> {
+  const result = await db.execute(sql`
+    SELECT ${CAMPAIGN_ROW_COLUMNS}
+    FROM instantly_campaigns c
+    WHERE c.instantly_campaign_id = ${instantlyCampaignId}
+    LIMIT 1
+  `);
+  const row = (result.rows as Record<string, unknown>[])[0];
+  if (!row) return null;
+  const campaign = toCampaignRow(row);
+  if (!campaign.accountEmail) return null;
+  const [anchor, account] = await Promise.all([
+    loadSelfSendAnchor(instantlyCampaignId),
+    loadSelfSendAccount(campaign.accountEmail),
+  ]);
+  return {
+    mailboxEmail: campaign.accountEmail,
+    mailboxName: signerDisplayName(account, campaign.signatureHtml),
+    anchor,
+    subject: anchor ? fillSenderTokensInSubject(replySubject(anchor.subject), account) : "",
   };
 }
 
