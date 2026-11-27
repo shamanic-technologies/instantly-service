@@ -46,11 +46,15 @@ import { getBrandHandoffContext, type BrandHandoffContext } from "./brand-client
 import { sendEmail } from "./email-client";
 import { findLeadOnCampaignByEmail } from "./lead-client";
 import type { ForwardPositiveReplyCampaign, ThreadMessage } from "./forward-positive-reply";
-import { formatThreadDate } from "./forward-positive-reply";
+import { formatThreadDate, threadSubject } from "./forward-positive-reply";
+import { stripQuotedHistory } from "./self-send/qualify-reply";
 import type { HistoryItem, ProspectHistory } from "./prospect-history";
 
 /** The transactional-email template this module sends (deployed at startup). */
 export const CELEBRATION_EVENT_TYPE = "positive-reply-celebration";
+
+/** The plain-text thread email the rep answers with Reply (REP-REPLY-1127). */
+export const REP_THREAD_EVENT_TYPE = "positive-reply-thread";
 
 /** Where a client follows a conversation (the dashboard, v2). */
 export const DASHBOARD_ORIGIN = "https://dashboard.distribute.you";
@@ -136,8 +140,6 @@ export interface CelebrationInput {
   kind?: string | null;
   /** Where the "Follow the conversation" button goes (`conversationHref`). */
   conversationUrl: string;
-  /** Reply on this email reaches the prospect (REP-REPLY-1127): the intro says so. */
-  replyReachesProspect?: boolean;
 }
 
 /**
@@ -213,9 +215,7 @@ export function renderCelebration(input: CelebrationInput): CelebrationContent {
   const subject = brandName ? `${title} (${brandName})` : title;
   // Names who acts in every sentence: "Reply to your outreach" read as an order
   // to the client (owner 2026-10-02).
-  const intro = `They answered your ${brandName ? `${brandName} ` : ""}outreach. You have nothing to do: we handle the reply and will only reach out if we need something from you.${
-    input.replyReachesProspect ? " To answer them yourself, hit Reply: your email goes to them, in the same conversation." : ""
-  }`;
+  const intro = `They answered your ${brandName ? `${brandName} ` : ""}outreach. You have nothing to do: we handle the reply and will only reach out if we need something from you.`;
   const href = escapeHtml(input.conversationUrl);
   const unreadable = "Their reply could not be read when this email was sent. It is in the conversation.";
 
@@ -547,9 +547,21 @@ export async function sendCelebration(
     history,
     kind: options.kind,
     conversationUrl,
-    replyReachesProspect: true,
   });
-  const path = repReplyPath({ leadEmail, reply: latestReply, thread: await repReplyThreadOrNull(campaign.instantlyCampaignId) });
+
+  const identity = {
+    orgId: campaign.orgId,
+    userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
+    runId: campaign.runId || undefined,
+    tracking: {
+      campaignId: campaign.campaignId ?? undefined,
+      brandId: campaign.brandIds?.[0],
+    },
+  };
+
+  // The thread first: the email the rep answers with Reply (REP-REPLY-1127).
+  // A failure throws before the celebration, so a retry sends both once.
+  const thread = await sendRepThreadEmail({ campaign, leadEmail, recipient, latestReply, messages: history.messages, identity });
 
   await sendEmail(
     {
@@ -557,25 +569,90 @@ export async function sendCelebration(
       eventType: CELEBRATION_EVENT_TYPE,
       recipientEmail: recipient,
       ...(bcc.length > 0 ? { bccEmails: bcc } : {}),
+      metadata: { subject: content.subject, html: content.html, text: content.text },
+    },
+    identity,
+  );
+  console.log(
+    `[instantly-service] celebrate: sent for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${recipient}${bcc.length ? ` bcc=${bcc.join(",")}` : ""} replyRead=${latestReply !== null} variant=${celebrationVariantFor(options.kind)} link=${conversationUrl} thread="${thread.subject}" replyTo=${thread.replyTo.join(",")}`,
+  );
+  return { recipient, bcc, replyRead: latestReply !== null, conversationUrl };
+}
+
+/**
+ * The conversation as a mail client quotes it in plain text, NEWEST first:
+ * "On <date>, <from> wrote:" then each line under "> ". Each message keeps
+ * only its own words (its client's quote of the earlier ones is dropped, they
+ * are quoted on their own below). Nothing of ours: the prospect reads all of
+ * it under the rep's answer (owner 2026-11-27: « tout doit être propre et
+ * ressembler à un thread email normal »). Pure.
+ */
+export function renderThreadText(messages: ThreadMessage[]): string {
+  return messages
+    .map((m) => {
+      const own = stripQuotedHistory(m.bodyText).trim();
+      return own ? { ...m, bodyText: own } : m;
+    })
+    .sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0))
+    .map((m) => {
+      const body = m.bodyText
+        .replace(/\r\n/g, "\n")
+        .replace(/[ \t\u00A0\u200B]+$/gm, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      const quoted = body
+        .split("\n")
+        .map((line) => (line ? `> ${line}` : ">"))
+        .join("\n");
+      return `On ${formatThreadDate(m.date)}, ${m.from} wrote:\n${quoted}`;
+    })
+    .join("\n\n");
+}
+
+/** The subject a reply in this conversation carries: `Re:` + its subject, once. */
+export function threadReplySubject(messages: ThreadMessage[]): string {
+  const base = threadSubject(messages).trim().replace(/^((re|aw|fwd?|wg|tr|sv)\s*:\s*)+/i, "");
+  return base ? `Re: ${base}` : "";
+}
+
+/**
+ * The SECOND email (REP-REPLY-1127, owner 2026-11-27: « deux emails au client:
+ * la célébration en HTML, et l'email de thread en texte pour qu'il puisse
+ * reply »). Plain text, nothing but the conversation; Reply-To = the prospect
+ * + the thread's mailbox, In-Reply-To/References = their thread
+ * (`repReplyPath`), so the rep hits Reply and writes to the prospect in their
+ * own conversation, and our mailbox gets the same email (filed `staff_reply`,
+ * the AI never answers over the rep). Same recipient as the celebration, no
+ * copy. Throws on failure (the caller gives the claim back).
+ */
+async function sendRepThreadEmail(input: {
+  campaign: ForwardPositiveReplyCampaign;
+  leadEmail: string;
+  recipient: string;
+  latestReply: ThreadMessage | null;
+  messages: ThreadMessage[];
+  identity: Parameters<typeof sendEmail>[1];
+}): Promise<{ subject: string; replyTo: string[] }> {
+  const path = repReplyPath({
+    leadEmail: input.leadEmail,
+    reply: input.latestReply,
+    thread: await repReplyThreadOrNull(input.campaign.instantlyCampaignId),
+  });
+  const subject = path.subject ?? threadReplySubject(input.messages);
+  const text = renderThreadText(input.messages);
+  await sendEmail(
+    {
+      appId: "instantly-service",
+      eventType: REP_THREAD_EVENT_TYPE,
+      recipientEmail: input.recipient,
       replyToAddresses: path.replyTo,
       ...(path.inReplyTo ? { inReplyTo: path.inReplyTo } : {}),
       ...(path.references ? { references: path.references } : {}),
-      metadata: { subject: path.subject ?? content.subject, html: content.html, text: content.text },
+      metadata: { subject, text, html: "" },
     },
-    {
-      orgId: campaign.orgId,
-      userId: campaign.userId || "00000000-0000-0000-0000-000000000000",
-      runId: campaign.runId || undefined,
-      tracking: {
-        campaignId: campaign.campaignId ?? undefined,
-        brandId: campaign.brandIds?.[0],
-      },
-    },
+    input.identity,
   );
-  console.log(
-    `[instantly-service] celebrate: sent for campaign=${campaign.instantlyCampaignId} lead=${leadEmail} → ${recipient}${bcc.length ? ` bcc=${bcc.join(",")}` : ""} replyRead=${latestReply !== null} variant=${celebrationVariantFor(options.kind)} link=${conversationUrl} replyTo=${path.replyTo.map((a) => a.email).join(",")} inReplyTo=${path.inReplyTo ?? "none"}`,
-  );
-  return { recipient, bcc, replyRead: latestReply !== null, conversationUrl };
+  return { subject, replyTo: path.replyTo.map((a) => a.email) };
 }
 
 /**

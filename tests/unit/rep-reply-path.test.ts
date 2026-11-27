@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { bracketMessageId, capReferences, renderCelebration, repReplyPath, safeDisplayName } from "../../src/lib/celebrate-positive-reply";
+import { bracketMessageId, capReferences, renderThreadText, repReplyPath, safeDisplayName, threadReplySubject } from "../../src/lib/celebrate-positive-reply";
 import type { ThreadMessage } from "../../src/lib/forward-positive-reply";
 
 // REP-REPLY-1127: the rep opens the celebration, hits Reply, and writes to the
@@ -100,20 +100,35 @@ describe("bracketMessageId", () => {
   });
 });
 
-describe("the intro tells the rep Reply reaches the prospect", () => {
-  const base = {
-    leadEmail: "drogerie.kadro@bluewin.ch",
-    brandName: "Living Vital",
-    reply,
-    history: { items: [], notes: [] },
-    conversationUrl: "https://dashboard.distribute.you/v2",
+describe("the thread email reads like a normal email thread (nothing of ours)", () => {
+  const cold: ThreadMessage = {
+    direction: "outbound",
+    from: '"Kevin Lourd" <kevin@leaddistribute.com>',
+    to: "drogerie.kadro@bluewin.ch",
+    date: "2026-11-25T08:00:00.000Z",
+    subject: "Living Vital für Ihre Drogerie",
+    bodyText: "Guten Tag Frau Kadro,\n\nkurze Frage.\n\n--\nKevin Lourd",
   };
-  it("said when Reply reaches them", () => {
-    const c = renderCelebration({ ...base, replyReachesProspect: true });
-    expect(c.text).toContain("To answer them yourself, hit Reply");
-    expect(c.html).toContain("To answer them yourself, hit Reply");
+  const theirs: ThreadMessage = {
+    ...reply,
+    bodyText: "Gerne, schicken Sie mir mehr Infos.\n\nOn Tue, Nov 25, 2026, Kevin Lourd wrote:\n> Guten Tag Frau Kadro,",
+  };
+
+  it("newest first, each message quoted under its own 'On <date>, <from> wrote:', own words only", () => {
+    const text = renderThreadText([cold, theirs]);
+    const lines = text.split("\n");
+    expect(lines[0]).toMatch(/^On .+, "Anna Kadro" <drogerie\.kadro@bluewin\.ch> wrote:$/);
+    expect(lines[1]).toBe("> Gerne, schicken Sie mir mehr Infos.");
+    // their client's quote of our email is not repeated: our email is quoted once, below
+    expect(text.match(/Guten Tag Frau Kadro/g)).toHaveLength(1);
+    expect(text).toContain('"Kevin Lourd" <kevin@leaddistribute.com> wrote:\n> Guten Tag Frau Kadro,\n>\n> kurze Frage.');
+    // nothing of ours: no brand line, no link, no button, no HTML
+    for (const banned of ["distribute.you", "http", "<p", "<div", "Reply"]) expect(text).not.toContain(banned);
   });
-  it("not said otherwise", () => {
-    expect(renderCelebration(base).text).not.toContain("hit Reply");
+
+  it("subject = Re: + the conversation's subject, any Re:/AW: prefixes collapsed", () => {
+    expect(threadReplySubject([cold, { ...theirs, subject: "AW: AW: Living Vital für Ihre Drogerie" }])).toBe(
+      "Re: Living Vital für Ihre Drogerie",
+    );
   });
 });
